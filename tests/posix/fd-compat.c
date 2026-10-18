@@ -16,15 +16,86 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <stdbool.h>
 #include <sys/prctl.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <poll.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
 static volatile sig_atomic_t signals;
 static void on_signal(int signal_number) { (void)signal_number; signals++; }
+struct epoll_waiter { int ep, ready, result; };
+static pthread_mutex_t waiter_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t waiter_cond = PTHREAD_COND_INITIALIZER;
+static int eventpoll_fds(int *fds, int capacity)
+{
+    DIR *directory = opendir("/proc/self/fd");
+    CHECK(directory != NULL);
+    int count = 0;
+    struct dirent *item;
+    while ((item = readdir(directory))) {
+        char *end;
+        long fd = strtol(item->d_name, &end, 10);
+        if (*end || fd < 0 || fd > 1048576) continue;
+        char path[64], target[128];
+        snprintf(path, sizeof(path), "/proc/self/fd/%ld", fd);
+        ssize_t length = readlink(path, target, sizeof(target) - 1);
+        if (length < 0) continue;
+        target[length] = '\0';
+        if (strcmp(target, "anon_inode:[eventpoll]") == 0) {
+            CHECK(count < capacity);
+            fds[count++] = (int)fd;
+        }
+    }
+    CHECK(closedir(directory) == 0);
+    return count;
+}
+static bool contains_fd(const int *fds, int count, int fd)
+{
+    for (int i = 0; i < count; ++i) if (fds[i] == fd) return true;
+    return false;
+}
+static int added_eventpoll_fd(const int *before, int before_count,
+    const int *after, int after_count)
+{
+    int found = -1, added = 0;
+    for (int i = 0; i < after_count; ++i) if (!contains_fd(before, before_count, after[i])) {
+        found = after[i]; ++added;
+    }
+    return added == 1 ? found : -1;
+}
+static void *wait_on_private_snapshot(void *argument)
+{
+    struct epoll_waiter *waiter = argument;
+    pthread_mutex_lock(&waiter_mutex);
+    waiter->ready = 1;
+    pthread_cond_signal(&waiter_cond);
+    pthread_mutex_unlock(&waiter_mutex);
+    struct epoll_event event;
+    waiter->result = epoll_wait(waiter->ep, &event, 1, 5000);
+    return NULL;
+}
+struct close_replace_race { int ep, target, source, duplicate_result; pthread_barrier_t gate; };
+static void *close_private_epoll(void *argument)
+{
+    struct close_replace_race *race = argument;
+    int gate = pthread_barrier_wait(&race->gate);
+    CHECK(gate == 0 || gate == PTHREAD_BARRIER_SERIAL_THREAD);
+    CHECK(close(race->ep) == 0);
+    return NULL;
+}
+static void *replace_private_epoll_fd(void *argument)
+{
+    struct close_replace_race *race = argument;
+    int gate = pthread_barrier_wait(&race->gate);
+    CHECK(gate == 0 || gate == PTHREAD_BARRIER_SERIAL_THREAD);
+    race->duplicate_result = dup2(race->source, race->target);
+    return NULL;
+}
 
 static void *descriptor_churn(void *unused)
 {
@@ -96,8 +167,14 @@ int main(void)
     struct pollfd mixed[] = {{pipefd[0], POLLIN, 0}, {client, POLLOUT, 0}, {-1, POLLIN, 0}};
     CHECK(poll(mixed, 3, 2000) == 2 && (mixed[0].revents & POLLIN) &&
         (mixed[1].revents & POLLOUT) && !mixed[2].revents);
+    int epoll_before[64], epoll_after[64];
+    int epoll_before_count = eventpoll_fds(epoll_before, 64);
     int ep = epoll_create1(EPOLL_CLOEXEC);
     CHECK(ep >= 0);
+    int epoll_after_count = eventpoll_fds(epoll_after, 64);
+    int private_fd = added_eventpoll_fd(epoll_before, epoll_before_count,
+        epoll_after, epoll_after_count);
+    CHECK(private_fd >= 0);
     struct epoll_event event = {.events = EPOLLIN, .data.u64 = UINT64_C(0x1122334455667788)};
     CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, pipefd[0], &event) == 0);
     event.data.u64 = UINT64_C(0x8877665544332211);
@@ -125,8 +202,95 @@ int main(void)
     CHECK(epoll_ctl(ep, EPOLL_CTL_MOD, client, &event) == 0);
     CHECK(write(accepted, "AB", 2) == 2);
     CHECK(epoll_wait(ep, &event, 1, 2000) == 1 && read(client, bytes, 1) == 1);
+    /* An in-flight host epoll snapshot is a protected fixed-destination target.
+     * dup2 must fail without corrupting the shared epoll object. */
+    event.events = EPOLLIN;
+    CHECK(epoll_ctl(ep, EPOLL_CTL_DEL, client, NULL) == 0);
+    struct epoll_waiter waiter = {.ep = ep, .result = -2};
+    epoll_before_count = eventpoll_fds(epoll_before, 64);
+    pthread_t waiter_thread;
+    CHECK(pthread_create(&waiter_thread, NULL, wait_on_private_snapshot, &waiter) == 0);
+    pthread_mutex_lock(&waiter_mutex);
+    while (!waiter.ready) pthread_cond_wait(&waiter_cond, &waiter_mutex);
+    pthread_mutex_unlock(&waiter_mutex);
+    int snapshot_fd = -1;
+    for (unsigned int attempt = 0; attempt < 2000 && snapshot_fd < 0; ++attempt) {
+        epoll_after_count = eventpoll_fds(epoll_after, 64);
+        int candidate = added_eventpoll_fd(epoll_before, epoll_before_count,
+            epoll_after, epoll_after_count);
+        if (candidate >= 0) {
+            errno = 0;
+            if (dup2(listener, candidate) == -1 && errno == EBUSY) snapshot_fd = candidate;
+            else CHECK(close(candidate) == 0); /* The wait snapshot advanced. */
+        }
+        if (snapshot_fd < 0) usleep(100);
+    }
+    CHECK(snapshot_fd >= 0);
+    CHECK(write(pipefd[1], "W", 1) == 1);
+    CHECK(pthread_join(waiter_thread, NULL) == 0 && waiter.result == 1);
+    epoll_after_count = eventpoll_fds(epoll_after, 64);
+    CHECK(!contains_fd(epoll_after, epoll_after_count, snapshot_fd));
+    CHECK(read(pipefd[0], bytes, 1) == 1 && bytes[0] == 'W');
+    CHECK(epoll_wait(ep, &event, 1, 0) == 0);
+    CHECK(epoll_ctl(ep, EPOLL_CTL_DEL, pipefd[0], NULL) == 0);
+    /* Target the persistent private host epoll fd via each supported fixed
+     * replacement API. The app fd takes that number while the owner relocates. */
+    epoll_before_count = eventpoll_fds(epoll_before, 64);
+    int public_dup2_fd = private_fd;
+    CHECK(dup2(listener, private_fd) == private_fd);
+    epoll_after_count = eventpoll_fds(epoll_after, 64);
+    CHECK(!contains_fd(epoll_after, epoll_after_count, public_dup2_fd));
+    private_fd = added_eventpoll_fd(epoll_before, epoll_before_count,
+        epoll_after, epoll_after_count);
+    CHECK(private_fd >= 0);
+    event.events = EPOLLIN;
+    CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, pipefd[0], &event) == 0);
+    CHECK(write(pipefd[1], "2", 1) == 1);
+    CHECK(epoll_wait(ep, &event, 1, 2000) == 1);
+    CHECK(read(pipefd[0], bytes, 1) == 1 && bytes[0] == '2');
+    CHECK(epoll_ctl(ep, EPOLL_CTL_DEL, pipefd[0], NULL) == 0);
+
+    epoll_before_count = eventpoll_fds(epoll_before, 64);
+    CHECK(dup3(listener, private_fd, O_CLOEXEC) == private_fd);
+    CHECK(fcntl(private_fd, F_GETFD) & FD_CLOEXEC);
+    int public_dup3_fd = private_fd;
+    epoll_after_count = eventpoll_fds(epoll_after, 64);
+    CHECK(!contains_fd(epoll_after, epoll_after_count, public_dup3_fd));
+    private_fd = added_eventpoll_fd(epoll_before, epoll_before_count,
+        epoll_after, epoll_after_count);
+    CHECK(private_fd >= 0);
+    CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, pipefd[0], &event) == 0);
+    CHECK(write(pipefd[1], "3", 1) == 1);
+    CHECK(epoll_wait(ep, &event, 1, 2000) == 1);
+    CHECK(read(pipefd[0], bytes, 1) == 1 && bytes[0] == '3');
+    CHECK(epoll_ctl(ep, EPOLL_CTL_DEL, pipefd[0], NULL) == 0);
+    /* Race the final owner teardown against a fixed replacement of its host
+     * fd. The caller's new destination must remain open after both finish. */
+    for (unsigned int iteration = 0; iteration < 32; ++iteration) {
+        epoll_before_count = eventpoll_fds(epoll_before, 64);
+        int closing_ep = epoll_create1(EPOLL_CLOEXEC);
+        CHECK(closing_ep >= 0);
+        epoll_after_count = eventpoll_fds(epoll_after, 64);
+        int target = added_eventpoll_fd(epoll_before, epoll_before_count,
+            epoll_after, epoll_after_count);
+        CHECK(target >= 0);
+        struct close_replace_race race = {.ep = closing_ep, .target = target,
+            .source = listener, .duplicate_result = -1};
+        CHECK(pthread_barrier_init(&race.gate, NULL, 2) == 0);
+        pthread_t close_thread, duplicate_thread;
+        CHECK(pthread_create(&close_thread, NULL, close_private_epoll, &race) == 0);
+        CHECK(pthread_create(&duplicate_thread, NULL, replace_private_epoll_fd, &race) == 0);
+        CHECK(pthread_join(close_thread, NULL) == 0);
+        CHECK(pthread_join(duplicate_thread, NULL) == 0);
+        CHECK(pthread_barrier_destroy(&race.gate) == 0);
+        CHECK(race.duplicate_result == target);
+        CHECK(getsockname(target, (void *)&(struct sockaddr_in){0},
+            &(socklen_t){sizeof(struct sockaddr_in)}) == 0);
+        CHECK(close(target) == 0);
+    }
     CHECK(epoll_wait(ep, &event, 1, 0) == 0);
     event.events = EPOLLIN | EPOLLONESHOT;
+    CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, client, &event) == 0);
     CHECK(epoll_ctl(ep, EPOLL_CTL_MOD, client, &event) == 0);
     CHECK(epoll_wait(ep, &event, 1, 2000) == 1 && read(client, bytes, 1) == 1);
     /* Simulate an older host kernel while exercising the host-only epoll path. */
@@ -187,6 +351,7 @@ int main(void)
     }
     CHECK(pthread_sigmask(SIG_SETMASK, &original, NULL) == 0);
     CHECK(close(ep) == 0 && close(client) == 0 && close(accepted) == 0 && close(listener) == 0);
+    CHECK(close(public_dup2_fd) == 0 && close(public_dup3_fd) == 0);
     CHECK(close(pipefd[0]) == 0 && close(pipefd[1]) == 0);
     pthread_t threads[2];
     for (unsigned int i = 0; i < 2; ++i) CHECK(pthread_create(&threads[i], NULL, descriptor_churn, NULL) == 0);

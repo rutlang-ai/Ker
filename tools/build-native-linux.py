@@ -19,6 +19,9 @@ def source_fingerprint(root=ROOT):
     defconfig_path = root / 'config/native-linux.defconfig'
     overlay = root / 'src/posix/lkl-overlay'
     digest = hashlib.sha256(manifest_path.read_bytes() + defconfig_path.read_bytes())
+    # The builder controls how these inputs become an artifact. Include the
+    # exact script being executed so changes to that process invalidate proofs.
+    digest.update(Path(__file__).resolve().read_bytes())
     for path in sorted(overlay.rglob('*')):
         if path.is_file():
             digest.update(str(path.relative_to(overlay)).encode())

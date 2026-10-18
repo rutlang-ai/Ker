@@ -50,13 +50,15 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
 {
     if (count > KER_FD_LIMIT) { errno = EINVAL; return -1; }
     struct ker_fd **pinned = calloc(count ? count : 1, sizeof(*pinned));
+    int *host_snapshot = malloc((count ? count : 1) * sizeof(*host_snapshot));
     struct pollfd *host = calloc(count ? count : 1, sizeof(*host));
     struct lkl_pollfd *native = calloc(count ? count : 1, sizeof(*native));
-    if (!pinned || !host || !native) {
-        free(pinned); free(host); free(native); errno = ENOMEM; return -1;
+    if (!pinned || !host_snapshot || !host || !native) {
+        free(pinned); free(host_snapshot); free(host); free(native); errno = ENOMEM; return -1;
     }
     bool has_native = false;
     for (nfds_t i = 0; i < count; ++i) {
+        host_snapshot[i] = -1;
         pinned[i] = ker_fd_get(fds[i].fd);
         host[i] = fds[i];
         native[i].fd = -1;
@@ -64,7 +66,8 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
             has_native = true;
             native[i].fd = pinned[i]->native;
             native[i].events = fds[i].events;
-            host[i].fd = pinned[i]->host;
+            host[i].fd = -1;
+            if (pinned[i]->kind == KER_FD_EPOLL) host_snapshot[i] = -2;
         }
     }
     int result = 0, saved = 0;
@@ -76,7 +79,25 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
         if (remaining < 0 && timeout >= 0) remaining = 0;
         int64_t wait = !has_native ? remaining : (n || timeout == 0 ? 0 :
             (remaining < 0 || remaining > INT64_C(1000000) ? INT64_C(1000000) : remaining));
+        for (nfds_t i = 0; i < count; ++i) {
+            if (host_snapshot[i] == -2) {
+                host_snapshot[i] = ker_fd_host_dup(pinned[i]);
+                if (host_snapshot[i] < 0) { result = -1; saved = errno; break; }
+                host[i].fd = host_snapshot[i];
+            }
+        }
+        if (result < 0) {
+            for (nfds_t i = 0; i < count; ++i) if (host_snapshot[i] >= 0) {
+                ker_fd_host_put(host_snapshot[i]); host_snapshot[i] = -2;
+            }
+            break;
+        }
         int h = host_poll(host, count, wait, mask);
+        for (nfds_t i = 0; i < count; ++i) {
+            if (host_snapshot[i] >= 0) {
+                ker_fd_host_put(host_snapshot[i]); host_snapshot[i] = -2;
+            }
+        }
         if (h < 0) { result = -1; saved = errno; break; }
         for (nfds_t i = 0; i < count; ++i) {
             fds[i].revents = host[i].revents | native[i].revents;
@@ -85,7 +106,7 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
         if (result || timeout == 0 || (timeout >= 0 && now_ns() >= deadline)) break;
     }
     for (nfds_t i = 0; i < count; ++i) ker_fd_put(pinned[i]);
-    free(pinned); free(host); free(native);
+    free(pinned); free(host_snapshot); free(host); free(native);
     if (result < 0) errno = saved;
     return result;
 }
@@ -128,7 +149,7 @@ int epoll_create1(int flags)
     if (!ker_native_ready()) return syscall(SYS_epoll_create1, flags);
     long native = lkl_sys_epoll_create1(flags);
     if (native < 0) { errno = (int)-native; return -1; }
-    int host = syscall(SYS_epoll_create1, flags | EPOLL_CLOEXEC);
+    int host = ker_fd_epoll_host_create(flags);
     if (host < 0) { int saved = errno; lkl_sys_close(native); errno = saved; return -1; }
     return ker_fd_export(native, KER_FD_EPOLL, host, flags & EPOLL_CLOEXEC, 0, -1);
 }
@@ -150,7 +171,11 @@ int epoll_ctl(int fd, int operation, int target, struct epoll_event *event)
     } else if (entry) {
         native_call = true;
         result = lkl_sys_epoll_ctl(ep->native, operation, entry->native, (void *)event);
-    } else result = syscall(SYS_epoll_ctl, ep ? ep->host : fd, operation, target, event);
+    } else if (ep) {
+        int host = ker_fd_host_dup(ep);
+        if (host < 0) result = -1;
+        else { result = syscall(SYS_epoll_ctl, host, operation, target, event); ker_fd_host_put(host); }
+    } else result = syscall(SYS_epoll_ctl, fd, operation, target, event);
     int saved = errno;
     ker_fd_put(entry); ker_fd_put(ep);
     if (result < 0) errno = native_call ? (int)-result : saved;
@@ -190,9 +215,11 @@ static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum,
     for (;;) {
         for (unsigned int pass = 0; pass < 2 && result < maximum; ++pass) {
             bool native = pass == (native_first ? 0U : 1U);
+            int host = native ? -1 : ker_fd_host_dup(entry);
             long count = native ? lkl_sys_epoll_wait(entry->native,
-                (void *)(events + result), maximum - result, 0) :
-                syscall(SYS_epoll_pwait, entry->host, events + result, maximum - result, 0, NULL, 0);
+                (void *)(events + result), maximum - result, 0) : host < 0 ? -1 :
+                syscall(SYS_epoll_pwait, host, events + result, maximum - result, 0, NULL, 0);
+            if (!native && host >= 0) ker_fd_host_put(host);
             if (count < 0) { saved = native ? (int)-count : errno; result = -1; break; }
             result += (int)count;
         }
@@ -200,8 +227,13 @@ static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum,
         int64_t remaining = timeout < 0 ? INT64_C(1000000) : deadline - now_ns();
         if (remaining > INT64_C(1000000)) remaining = INT64_C(1000000);
         if (remaining < 0) remaining = 0;
-        struct pollfd host = {entry->host, POLLIN, 0};
-        if (host_poll(&host, 1, remaining, mask) < 0) { saved = errno; result = -1; break; }
+        int hostfd = ker_fd_host_dup(entry);
+        if (hostfd < 0) { saved = errno; result = -1; break; }
+        struct pollfd host = {hostfd, POLLIN, 0};
+        int polled = host_poll(&host, 1, remaining, mask);
+        saved = errno;
+        ker_fd_host_put(hostfd);
+        if (polled < 0) { result = -1; break; }
     }
     ker_fd_put(entry);
     if (result < 0) errno = saved;

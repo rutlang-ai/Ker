@@ -133,8 +133,8 @@ static int duplicate(struct ker_fd *entry, int flags, int minimum, int fixed)
         long error = lkl_sys_fcntl(native, F_SETFD, FD_CLOEXEC);
         if (error < 0) { lkl_sys_close(native); return result(error); }
     }
-    if (entry->host >= 0) {
-        host = syscall(SYS_fcntl, entry->host, F_DUPFD_CLOEXEC, 0);
+    if (entry->kind == KER_FD_EPOLL) {
+        host = ker_fd_host_dup(entry);
         if (host < 0) { int saved = errno; lkl_sys_close(native); errno = saved; return -1; }
     }
     return ker_fd_export(native, entry->kind, host, flags, minimum, fixed);

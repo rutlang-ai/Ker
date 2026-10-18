@@ -2,6 +2,7 @@
 #include "fd-table.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/epoll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/eventfd.h>
@@ -11,6 +12,48 @@
 
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct ker_fd *entries[KER_FD_LIMIT];
+static struct ker_fd *private_hosts;
+struct host_snapshot { int fd; struct host_snapshot *next; };
+static struct host_snapshot *snapshots;
+
+static void register_private(struct ker_fd *entry)
+{
+    if (entry->kind == KER_FD_EPOLL && entry->host >= 0) {
+        entry->private_next = private_hosts;
+        private_hosts = entry;
+    }
+}
+static void unregister_private(struct ker_fd *entry)
+{
+    struct ker_fd **link = &private_hosts;
+    while (*link && *link != entry) link = &(*link)->private_next;
+    if (*link) *link = entry->private_next;
+    entry->private_next = NULL;
+}
+static int relocate_private(int fd)
+{
+    for (struct ker_fd *entry = private_hosts; entry; entry = entry->private_next) {
+        if (entry->host != fd) continue;
+        int replacement = syscall(SYS_fcntl, fd, F_DUPFD_CLOEXEC, 0);
+        if (replacement < 0) return -1;
+        entry->host = replacement;
+        syscall(SYS_close, fd);
+        break;
+    }
+    return 0;
+}
+static bool is_snapshot(int fd)
+{
+    for (struct host_snapshot *snapshot = snapshots; snapshot; snapshot = snapshot->next)
+        if (snapshot->fd == fd) return true;
+    return false;
+}
+static void unregister_snapshot(int fd)
+{
+    struct host_snapshot **link = &snapshots;
+    while (*link && (*link)->fd != fd) link = &(*link)->next;
+    if (*link) { struct host_snapshot *snapshot = *link; *link = snapshot->next; free(snapshot); }
+}
 struct ker_fd *ker_fd_get(int fd)
 {
     if (fd < 0 || fd >= KER_FD_LIMIT) return NULL;
@@ -24,8 +67,13 @@ long ker_fd_put(struct ker_fd *entry)
 {
     long result = 0;
     if (entry && atomic_fetch_sub_explicit(&entry->references, 1, memory_order_acq_rel) == 1) {
+        pthread_mutex_lock(&mutex);
+        unregister_private(entry);
+        int host = entry->host;
+        entry->host = -1;
+        if (host >= 0) syscall(SYS_close, host);
+        pthread_mutex_unlock(&mutex);
         result = lkl_sys_close(entry->native);
-        if (entry->host >= 0) syscall(SYS_close, entry->host);
         free(entry);
     }
     return result;
@@ -40,6 +88,7 @@ int ker_fd_export(int native, enum ker_fd_kind kind, int host, int flags,
 {
     struct ker_fd *entry = calloc(1, sizeof(*entry));
     int fd = -1, saved = ENOMEM;
+    bool locked = false;
     if (!entry) goto fail;
     entry->native = native;
     entry->host = host;
@@ -57,10 +106,21 @@ int ker_fd_export(int native, enum ker_fd_kind kind, int host, int flags,
     }
     if (fd >= KER_FD_LIMIT || fixed >= KER_FD_LIMIT) { saved = EMFILE; goto fail; }
     pthread_mutex_lock(&mutex);
+    locked = true;
+    register_private(entry);
+    if (host >= 0) {
+        struct host_snapshot **link = &snapshots;
+        while (*link && (*link)->fd != host) link = &(*link)->next;
+        if (*link) { struct host_snapshot *snapshot = *link; *link = snapshot->next; free(snapshot); }
+    }
     if (fixed >= 0 && fixed != fd) {
+        if (is_snapshot(fixed) || relocate_private(fixed) < 0) {
+            saved = is_snapshot(fixed) ? EBUSY : errno;
+            goto fail;
+        }
+        host = entry->host;
         if (syscall(SYS_dup3, fd, fixed, flags & O_CLOEXEC) < 0) {
             saved = errno;
-            pthread_mutex_unlock(&mutex);
             goto fail;
         }
         syscall(SYS_close, fd);
@@ -69,11 +129,20 @@ int ker_fd_export(int native, enum ker_fd_kind kind, int host, int flags,
     struct ker_fd *previous = entries[fd];
     entries[fd] = entry;
     pthread_mutex_unlock(&mutex);
+    locked = false;
     ker_fd_put(previous);
     return fd;
 fail:
+    if (!locked) pthread_mutex_lock(&mutex);
+    if (entry) unregister_private(entry);
+    if (entry && entry->host >= 0) host = entry->host;
+    if (host >= 0) {
+        unregister_snapshot(host);
+        syscall(SYS_close, host);
+        if (entry) entry->host = -1;
+    }
+    pthread_mutex_unlock(&mutex);
     if (fd >= 0) syscall(SYS_close, fd);
-    if (host >= 0) syscall(SYS_close, host);
     lkl_sys_close(native);
     free(entry);
     errno = saved;
@@ -94,7 +163,10 @@ int ker_fd_close(int fd)
 int ker_fd_dup_host(int oldfd, int newfd, int flags)
 {
     pthread_mutex_lock(&mutex);
-    long result = syscall(SYS_dup3, oldfd, newfd, flags);
+    int result;
+    if (is_snapshot(newfd)) { errno = EBUSY; result = -1; }
+    else if (relocate_private(newfd) < 0) result = -1;
+    else result = syscall(SYS_dup3, oldfd, newfd, flags);
     int saved = errno;
     struct ker_fd *previous = NULL;
     if (result >= 0 && newfd < KER_FD_LIMIT) {
@@ -105,6 +177,39 @@ int ker_fd_dup_host(int oldfd, int newfd, int flags)
     ker_fd_put(previous);
     if (result < 0) errno = saved;
     return (int)result;
+}
+int ker_fd_host_dup(struct ker_fd *entry)
+{
+    pthread_mutex_lock(&mutex);
+    int fd = entry && entry->host >= 0 ? syscall(SYS_fcntl, entry->host, F_DUPFD_CLOEXEC, 0) : -1;
+    int saved = errno;
+    struct host_snapshot *snapshot = fd < 0 ? NULL : malloc(sizeof(*snapshot));
+    if (fd >= 0 && !snapshot) { syscall(SYS_close, fd); fd = -1; saved = ENOMEM; }
+    if (fd >= 0) { snapshot->fd = fd; snapshot->next = snapshots; snapshots = snapshot; }
+    pthread_mutex_unlock(&mutex);
+    if (fd < 0) errno = saved;
+    return fd;
+}
+void ker_fd_host_put(int fd)
+{
+    pthread_mutex_lock(&mutex);
+    struct host_snapshot **link = &snapshots;
+    while (*link && (*link)->fd != fd) link = &(*link)->next;
+    if (*link) { struct host_snapshot *snapshot = *link; *link = snapshot->next; free(snapshot); }
+    syscall(SYS_close, fd);
+    pthread_mutex_unlock(&mutex);
+}
+int ker_fd_epoll_host_create(int flags)
+{
+    pthread_mutex_lock(&mutex);
+    int fd = syscall(SYS_epoll_create1, flags | EPOLL_CLOEXEC);
+    int saved = errno;
+    struct host_snapshot *snapshot = fd < 0 ? NULL : malloc(sizeof(*snapshot));
+    if (fd >= 0 && !snapshot) { syscall(SYS_close, fd); fd = -1; saved = ENOMEM; }
+    if (fd >= 0) { snapshot->fd = fd; snapshot->next = snapshots; snapshots = snapshot; }
+    pthread_mutex_unlock(&mutex);
+    if (fd < 0) errno = saved;
+    return fd;
 }
 void ker_fd_close_all(void)
 {

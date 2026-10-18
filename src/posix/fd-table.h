@@ -9,6 +9,7 @@ struct ker_fd {
     int native, host;
     enum ker_fd_kind kind;
     atomic_uint references, turn;
+    struct ker_fd *private_next;
 };
 struct ker_fd *ker_fd_get(int fd);
 long ker_fd_put(struct ker_fd *entry);
@@ -18,6 +19,11 @@ int ker_fd_export(int native, enum ker_fd_kind kind, int host, int flags,
     int minimum, int fixed);
 int ker_fd_close(int fd);
 int ker_fd_dup_host(int oldfd, int newfd, int flags);
+/* Snapshot a private host descriptor while protected from fixed-destination
+ * dup2/dup3; the returned descriptor refers to the same host object. */
+int ker_fd_host_dup(struct ker_fd *entry);
+void ker_fd_host_put(int fd);
+int ker_fd_epoll_host_create(int flags);
 void ker_fd_close_all(void);
 bool ker_native_ready(void);
 #endif
