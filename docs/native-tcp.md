@@ -76,6 +76,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 错误 | RST、ECONNRESET、EPIPE、SIGPIPE/MSG_NOSIGNAL、SO_RCVTIMEO、ECONNREFUSED、SYN 重传后 ETIMEDOUT |
 | 阻塞接收超时 | 监听 accept 超时及继承；recv/recvmsg/readv 的 EAGAIN、部分 MSG_WAITALL、dup 共享选项、关闭超时后的 EOF 与恢复 |
 | 阻塞发送超时 | 双向小缓冲区压力；send/writev/sendmsg 的部分进度及 EAGAIN；dup 共享 SO_SNDTIMEO，恢复后字节流完整且无重复 |
+| connect 生命周期 | 拒绝连接与 dup 共享 SO_ERROR 清除、AF_UNSPEC 跨端口重连、原注册 fd 关闭后别名仍能使用 epoll 与完成收发 |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -117,6 +118,23 @@ control ACK 确认完整性，随后交换方向。末尾半关闭并要求 EOF�
 原生客户端和服务端均执行发送与接收阶段，每实例需要两次对应 TCP open、DPDK TX/RX
 非零及 outstanding=0。该测试只新增验收，不修改 Linux 协议或 Ker 适配层；未覆盖
 connect 超时、宿主信号中断和 pthread cancellation。
+
+`native-fstack-tcp-connect-lifecycle` 先跑宿主参考，再运行原生客户端和服务端，与
+独立 Linux 对端经 DPDK 连接。客户端仅创建一个非阻塞 socket 及其 dup alias；
+连接未监听端口后，poll/epoll 必须报告错误，alias 读取 SO_ERROR 得到 ECONNREFUSED，
+原 fd 随后读取为零，getpeername 返回 ENOTCONN。错误就绪清除后仍允许 HUP/可写就绪，
+不把它们误当作 SO_ERROR 仍非零。
+
+通过 AF_UNSPEC 将 socket 重置后，连接第一个监听端口并校验对端 tuple 与 echo。
+再次 AF_UNSPEC 断开 live connection，服务端必须收到 ECONNRESET；客户端清除可能
+遗留的本地 reset 错误，再用同一 socket 连接第二个端口。该断开/重连方式是本项
+明确验证的 Linux 扩展，不是跨平台 POSIX 或 F-Stack 等价性声明。
+
+整个过程不重新注册 epoll，64 位 event tag 必须保持。第二次接入后关闭原注册 fd，
+仍存活的 alias 必须继续完成收发、epoll 通知、半关闭和 EOF。原生客户端要求至少
+3 次 active open，原生服务端要求至少 2 次 passive open；两个端点均确认成功，且
+DPDK TX/RX 非零、outstanding=0。连接拒绝、RST 与重连完全来自导入 Linux；本项
+不新增协议或适配实现，也不覆盖并发 close 压力、宿主信号中断或 io_uring。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
