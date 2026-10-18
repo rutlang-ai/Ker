@@ -31,5 +31,29 @@ F-Stack 来源及文件 SHA-256 见 [provenance](../tests/fstack-provenance.json
 零长度 payload，本批明确覆盖这一差异，没有复制 ff_* 实现或测试 harness。
 
 本次范围为小报文 IPv4 unicast。DNS resolver 透明兼容、IPv6、多播、fragmented
-UDP 与异步 error queue 尚未由本批验收。公开能力位仍按 TCP 首版定义；本批
+UDP 尚未由本批验收。公开能力位仍按 TCP 首版定义；本批
 增加的是原生 UDP 路径验证和可追溯计数。
+
+
+## Linux 异步错误与恢复
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-errors$' --output-on-failure
+```
+
+在隔离网络 namespace 中，connected 和 unconnected UDP 各先跑宿主 Linux
+基线，再通过原生 Linux/DPDK 访问独立宿主对端。向未监听端口发送小报文，由
+宿主内核产生真实 ICMP port-unreachable；测试不构造或注入 ICMP。
+
+- 只订阅 EPOLLIN 仍收到 EPOLLERR；SO_ERROR 返回 ECONNREFUSED。
+- 读取 SO_ERROR 后 error queue 仍保持错误就绪；MSG_ERRQUEUE 返回原始 payload、
+  目标地址/端口、IP_RECVERR 控制消息及正确的 errno、ICMP origin/type/code 和 offender 地址。
+- 读空 error queue 返回 EAGAIN，SO_ERROR 清零且 epoll 不再报告错误。
+- 使用同一 socket 访问正常 UDP 对端并校验 echo；connected 模式重新 connect 到正常端口。
+- 原生实例 UDP OutDatagrams 至少 2、InDatagrams 至少 1，DPDK TX/RX 非零、
+  outstanding=0；独立对端也必须确认 payload。
+
+这是 Ker 针对 Linux 的兼容性扩展，并非 F-Stack 上游已经覆盖 IP_RECVERR 的声明。
+协议与错误队列均由导入 Linux 执行，适配层无需修改。此项只验证 IPv4 ICMP
+port-unreachable；不代表 PMTU/EMSGSIZE、所有 ICMP 错误、error queue 截断、
+时间戳或 IP_PKTINFO 等通用 ancillary data 已验收。
