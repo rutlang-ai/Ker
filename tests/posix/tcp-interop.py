@@ -171,6 +171,36 @@ def stream_compat(args, launcher, work, env, log):
 
 
 
+def udp_errors(args, launcher, work, env, log):
+    if not args.udp_errors_app:
+        return
+    # This isolated namespace owns these fixed ports; no listener uses the
+    # adjacent missing port. The host kernel generates the ICMP error itself.
+    for index, mode in enumerate(['unconnected', 'connected']):
+        for native in [False, True]:
+            port = 25200 + 4 * index + (2 if native else 0)
+            command = [str(args.udp_errors_app)]
+            suffix = ['198.18.0.1', str(port), str(port + 1), mode]
+            stats_path = work / ('udp-errors-' + mode + '.json')
+            connect = command + ['client', *suffix]
+            if native:
+                connect = [*launcher, '--stats', str(stats_path), '--', *connect]
+            captured = []
+            with server(command + ['server', *suffix], port, log, env, captured=captured):
+                client(connect, env)
+            if 'PASS:' not in ''.join(captured):
+                raise RuntimeError('UDP recovery peer did not verify payload')
+            print(''.join(captured).strip(), flush=True)
+            if native:
+                stats = json.loads(stats_path.read_text())
+                udp = stats['native']
+                if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                        udp['udp_out_datagrams'] < 2 or udp['udp_in_datagrams'] < 1 or
+                        udp['udp_in_errors'] or udp['udp_no_ports']):
+                    raise RuntimeError('UDP error recovery missed native traffic: ' + str(stats))
+                print('native UDP error queue ' + mode + ': ' + json.dumps(stats), flush=True)
+
+
 def udp_compat(args, launcher, work, env, log):
     if not args.udp_app:
         return
@@ -285,6 +315,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                udp_errors(args, launcher, work, env, log)
                 udp_compat(args, launcher, work, env, log)
                 stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
@@ -331,6 +362,7 @@ def main():
     parser.add_argument('--message-app', type=Path)
     parser.add_argument('--stream-app', type=Path)
     parser.add_argument('--udp-app', type=Path)
+    parser.add_argument('--udp-errors-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)
