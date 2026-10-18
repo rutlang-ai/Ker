@@ -594,7 +594,8 @@ int main(void)
     CHECK(state()==NUD_DELAY && memcmp(monitor.entry->ha,peer,ETH_ALEN)==0);
     monitor.entry->dev->addr_len=saved_addr_len;
     int64_t saved_clock=runtime_clock.now_ns;
-    runtime_clock.now_ns=INT64_MAX-INT64_C(50000000);
+    /* No whole tick remains, regardless of randomized reachable_time. */
+    runtime_clock.now_ns=INT64_MAX;
     unsigned long saved_confirmed=monitor.entry->confirmed;
     CHECK(ker_neighbor_monitor_update(&monitor, changed_peer, NEIGH_UPDATE_F_OVERRIDE)==-EOVERFLOW);
     CHECK(state()==NUD_DELAY && memcmp(monitor.entry->ha,peer,ETH_ALEN)==0 &&
