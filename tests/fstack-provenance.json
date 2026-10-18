@@ -407,6 +407,14 @@
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific RX linear-copy capacity extension motivated by the pinned multisegment TX case. Real net_ring RX carries small source-pool segments into an independently sized destination pool. Capacity-minus-one, exact capacity and capacity-plus-one are checked with three headrooms and a non-cache-line-aligned destination room size. With the destination pool exhausted, permanently oversized frames are consumed as ENOSPC drops before a fitting successor becomes ENOMEM pending; releasing one backing permits exact FIFO recovery. Direct allocation error precedence, byte preservation, Linux shared-info reservation, PMD packet counts and both pool baselines are verified. Payloads are opaque: no IPv4/TCP/UDP protocol processing, jumbo MTU negotiation, NIC, nonlinear skb or F-Stack RX support is claimed."
+    },
+    "ethdev-rx-fanout": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_main_loop_one_iteration_then_stop",
+        "test_ff_dpdk_pktmbuf_free_basic"
+      ],
+      "adaptation": "Ker-specific Linux packet_type fanout and ownership extension. Real net_ring RX supplies segmented opaque Ethernet frames through the actual worker, original Ethernet classification and imported Linux ptype delivery. Global-before-device ordering, per-callback descriptor references, final-handler status, explicit invalid-status reporting, no-handler drop, retained skb lifetime, cloned backing, COW ENOMEM rollback/recovery, independent header/payload mutation, both release orders and full pool reclamation are checked. The pinned F-Stack cases motivate worker iteration and basic ownership only; they do not test Linux ptype fanout or COW. No F-Stack RX, NIC, IP/transport processing or application-protocol behavior is claimed."
     }
   }
 }
