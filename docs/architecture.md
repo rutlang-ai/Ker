@@ -1,6 +1,6 @@
 # ker 架构与移植路线
 
-ker 的目标是将原始 Linux 网络协议实现编译进用户态，并通过 DPDK 驱动网卡。当前已接入基础运行环境、内存与 skb 适配、Ethernet/IPv4 分类、邻居和无状态报文处理。Ker-owned TCP/UDP 连接状态机及 ICMP 错误关联/PMTU policy 已移除；协议行为必须由原始 Linux 实现提供。当前公共能力仍仅为 checksum，不能独立提供 TCP/UDP 网络服务。
+ker 的目标是将原始 Linux 网络协议实现编译进用户态，并通过 DPDK 驱动网卡。当前已接入基础运行环境、内存与 skb 适配、Ethernet/IPv4 分类、邻居和无状态报文处理。Ker-owned TCP/UDP 连接状态机及 ICMP 错误关联/PMTU policy 已移除；协议行为必须由原始 Linux 实现提供。默认基础库的公共能力仍仅为 checksum。新增可选的完整 Linux POSIX 后端已提供 IPv4 TCP 服务，架构、运行与验收见 [原生 Linux POSIX TCP](native-tcp.md)。下文的逐文件移植路线描述基础库；完整后端采用固定 LKL 架构运行完整内核，保留原始协议语义。
 
 ## 数据路径和模块边界
 
@@ -20,7 +20,7 @@ ker 的目标是将原始 Linux 网络协议实现编译进用户态，并通过
 
 Linux 使用 `sk_buff` 管理网络包，NAPI 负责网络事件处理；DPDK 使用 `rte_mbuf` 管理包缓冲区。因此 ker 需要在这些接口之间实现包生命周期与事件调度适配，而不是只替换网卡驱动。参考 [Linux sk_buff](https://docs.kernel.org/networking/skbuff.html)、[Linux NAPI](https://docs.kernel.org/networking/napi.html) 和 [DPDK mbuf](https://doc.dpdk.org/guides/prog_guide/mbuf_lib.html)。
 
-公共 API 隐藏 Linux 和 DPDK 类型。HTTP 解析、TLS、WAF 规则和请求策略属于上层应用。当前 Ker 保留无状态 packet views/constructors、checksum 和运行时适配；TCP/UDP socket、连接、字节流和事件语义尚未由导入实现提供。
+公共 API 隐藏 Linux 和 DPDK 类型。HTTP 解析、TLS、WAF 规则和请求策略属于上层应用。基础库保留无状态 packet views/constructors、checksum 和运行时适配。完整后端通过单独的 `ker::posix` 组件提供导入 Linux 的 TCP socket、连接、字节流和事件 API，不使用基础库的报文构造器实现连接。
 
 ## Linux 用户态运行环境
 
@@ -69,6 +69,6 @@ submodule 的许可证以各自源码声明为准。移植前需要确认所选 
 
 TCP 控制字段与原生 MSS 解析的无状态边界见 [TCP control view](tcp-control.md)。
 
-TCP/UDP 连接与 socket 状态目前不可用。以前的 Ker-owned 状态机及其测试已删除，
-不会以私有协议实现替代原始 Linux。后续阶段应导入所需 Linux socket/协议源文件、
-配置及依赖，再由适配层完成用户态集成。
+以前的 Ker-owned TCP/UDP 状态机及其测试已删除，不会以私有协议实现替代原始 Linux。
+完整 POSIX 后端已通过独立对端验证 IPv4 TCP 的连接、重传、乱序、窗口、关闭与错误恢复；
+基础移植模块的连接能力仍关闭。UDP 和多核性能不属于本次 TCP 首版的验收范围。

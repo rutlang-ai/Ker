@@ -1,8 +1,10 @@
 # ker 用户态网络栈
 
-ker 的目标是把 Linux kernel 网络栈移植到用户态，以 DPDK 提供网卡收发和运行基础，向上层应用提供 C API。当前实现的是 Linux 网络基础代码的兼容层、DPDK 内存和队列适配，以及无状态 Ethernet/IP/ICMP/UDP/TCP 报文 view 与构造器；TCP/UDP socket 和连接语义尚未由导入的 Linux 实现提供，因此当前不能独立提供网络服务。
+ker 把原始 Linux 网络代码接入用户态，由 DPDK 收发 Ethernet 报文。新增的可选 POSIX TCP 后端运行完整 Linux 6.12.113 内核网络栈，支持 IPv4 主动连接、监听接入、双向字节流和关闭；现有动态链接的 socket 应用可通过 `ker-run` 启动，无需改写 TCP 逻辑。构建、部署、验收及兼容边界见 [原生 Linux POSIX TCP](docs/native-tcp.md)。
 
-目前已移植 checksum、rbtree、timerqueue 和 refcount 基础代码，并接入 DPDK heap、原子分配尺寸池、每 worker 分类容量预算、描述符 mempool、原生 mbuf 生命周期及 Linux 原始 skb 的线性子集，以及按容量压力限制 RX 的私有 worker 轮询框架，以及原始 net_device 布局、Ethernet 接收分类、单 worker NAPI 调度/完成、原始 packet_type 协议匹配/投递、ARP/Ethernet 报文构造、原始 IPv4 静态地址视图、固定容量永久邻居表，以及原始 ARP 接收门控和私有消息回调，以及按包数/truesize 限制的原始 skb FIFO。提供公共校验和 API，其他 runtime 与内存接口仍是私有接口。**完整 skb、IP/UDP/TCP 协议层、网卡收发和 socket API 尚未实现，当前不能提供网络服务。** `ker_capabilities()` 仍返回 `KER_CAP_CHECKSUM`（`0x20`），协议栈和网卡能力仍关闭。
+默认构建仍是基础移植库 `ker::ker`。以下基础模块的能力说明均针对该库；完整 TCP 使用独立的 `ker::posix` 组件及其能力查询。
+
+目前已移植 checksum、rbtree、timerqueue 和 refcount 基础代码，并接入 DPDK heap、原子分配尺寸池、每 worker 分类容量预算、描述符 mempool、原生 mbuf 生命周期及 Linux 原始 skb 的线性子集，以及按容量压力限制 RX 的私有 worker 轮询框架，以及原始 net_device 布局、Ethernet 接收分类、单 worker NAPI 调度/完成、原始 packet_type 协议匹配/投递、ARP/Ethernet 报文构造、原始 IPv4 静态地址视图、固定容量永久邻居表，以及原始 ARP 接收门控和私有消息回调，以及按包数/truesize 限制的原始 skb FIFO。提供公共校验和 API，其他 runtime 与内存接口仍是私有接口。**这些基础模块本身不提供有状态 socket 服务。** `ker_capabilities()` 仍返回 `KER_CAP_CHECKSUM`（`0x20`），协议栈和网卡能力仍关闭。
 
 现有 flow steering 仅解析 TCP/UDP 报文头并选择包的调度 worker；它不实现协议栈或连接状态。边界见[固定 flow steering](docs/flow-steering.md)。
 
@@ -49,6 +51,7 @@ DPDK 默认启用，从 fork 的本地安装目录查找，要求版本至少为
 | --- | --- |
 | `include/ker` | 上层应用使用的公共 API，不暴露 Linux 或 DPDK 内部类型 |
 | `src/compat` | 私有 Linux 兼容头文件和符号隔离声明 |
+| `src/posix` | 完整 Linux 内核运行时、POSIX API 与 DPDK 报文通道适配 |
 | `src/runtime` | 定时器、事件屏蔽、DPDK 内存、mbuf 与线性 skb 接入 |
 | `tests` | 校验和、定时器、refcount、锁与真实 EAL 内存生命周期测试 |
 | `tools` | 固定 fork 的 DPDK 构建脚本 |

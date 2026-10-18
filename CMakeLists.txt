@@ -169,6 +169,14 @@ target_link_libraries(ker PRIVATE $<BUILD_INTERFACE:ker_port_headers> Threads::T
 set_target_properties(ker PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0
     C_VISIBILITY_PRESET hidden)
 
+option(KER_WITH_NATIVE_TCP "Build the experimental full Linux POSIX TCP backend" OFF)
+if(KER_WITH_NATIVE_TCP)
+    if(NOT KER_WITH_DPDK)
+        message(FATAL_ERROR "KER_WITH_NATIVE_TCP requires KER_WITH_DPDK")
+    endif()
+    include(cmake/NativeLinux.cmake)
+endif()
+
 if(KER_BUILD_EXAMPLES)
     add_executable(ker-info examples/info.c)
     target_link_libraries(ker-info PRIVATE ker::ker)
