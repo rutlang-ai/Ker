@@ -31,7 +31,8 @@ F-Stack 来源及文件 SHA-256 见 [provenance](../tests/fstack-provenance.json
 零长度 payload，本批明确覆盖这一差异，没有复制 ff_* 实现或测试 harness。
 
 基础 datagram 测试范围为小报文 IPv4 unicast；分片由下文的独立测试验证。
-DNS resolver 透明兼容、IPv6、多播尚未验收。公开能力位仍按 TCP 首版定义；本批
+DNS resolver 透明兼容、IPv6、fragmented UDP 尚未由基础测试验收；IPv4 多播见下文
+的单独测试。公开能力位仍按 TCP 首版定义；本批
 增加的是原生 UDP 路径验证和可追溯计数。
 
 
@@ -120,3 +121,35 @@ TX/RX 非零、outstanding=0。诊断输出缓冲区扩为 1024 字节以容纳�
 分片、重组及 MTU 错误全部来自导入 Linux；没有构造替代协议路径或修改上游源码。
 该验收覆盖固定 MTU、无丢包的 IPv4 unicast。它不代表路由器 ICMP frag-needed 驱动的
 动态 PMTU 更新、分片丢失/重排/超时、IPv6、多播、硬件 offload 或物理 NIC 已通过。
+
+## IPv4 多播与成员关系
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-multicast$' --output-on-failure
+# 多播接收应用需要在原有 ker-run 参数中加上：
+ker-run --all-multicast ... -- application ...
+```
+
+测试先运行宿主参考，再将原生 Linux 分别作为发送端和接收端，使用
+239.255.42.17 和独立宿主 Linux 对端经 DPDK net_tap/veth 通信。
+
+- 发送端通过 IP_MULTICAST_IF 选择本地接口，查询确认设置；设置并查询
+  IP_MULTICAST_TTL=7、IP_MULTICAST_LOOP=1。loop=1 也使宿主参考能接收同内核的多播副本。
+- 两个接收 socket 使用 SO_REUSEADDR 绑定同一端口，各设置 IP_MULTICAST_ALL=0
+  并在本地接口入组；重复入组返回 EADDRINUSE。
+- 首个 datagram 必须送达两个 socket，逐字节校验 payload、源 tuple，
+  IP_PKTINFO 中的目标 group、本地地址和正 interface index，以及收到的 TTL=7。
+  poll 等待指定 socket，epoll 检查就绪集合，避免依赖两个接收者的唤醒顺序。
+- 一个 socket 退组并关闭；另一个退组、检查重复退组返回 EADDRNOTAVAIL，再重新入组。
+  完成重新入组后才发出 unicast ACK，随后接收第二个多播 datagram 并回 ACK。
+- 原生发送端 UDP InDatagrams/OutDatagrams 各至少 2；原生接收端 InDatagrams
+  至少 3、OutDatagrams 至少 2。两实例均要求 DPDK TX/RX 非零、UDP 错误为零和 outstanding=0。
+
+测试发现 net_tap 默认接收规则不会将这些多播帧交给原生接收端。新的显式
+`--all-multicast` 启动选项请求并检查 DPDK ethdev 的 all-multicast 模式；不支持或
+未成功启用时启动失败，不宣称接收成功。普通启动保留原来的接收模式。
+当前 packet channel 不传播动态 MAC group 订阅，all-multicast 将多播帧交给原始
+Linux，由 Linux 执行成员过滤和协议处理，不在 Ker 内实现多播/IGMP 协议。
+
+该验收是同一链路上的小报文 IPv4 ASM，不验证退组空窗期的非投递、多播路由器
+IGMP 互通、跨网段转发、source-specific multicast、IPv6 或物理 NIC 的过滤能力。

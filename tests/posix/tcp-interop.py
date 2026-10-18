@@ -204,6 +204,38 @@ def udp_mtu(args, launcher, work, env, log):
                 raise RuntimeError('UDP MTU scenarios missed native fragmentation: ' + str(stats))
             print('native UDP MTU ' + role + ': ' + json.dumps(stats), flush=True)
 
+def udp_multicast(args, launcher, work, env, log):
+    if not args.udp_multicast_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 25500 + index
+        native_server = role == 'server'
+        server_address = '198.18.0.2' if native_server else '198.18.0.1'
+        client_address = '198.18.0.2' if role == 'client' else '198.18.0.1'
+        listen = [str(args.udp_multicast_app), 'server', server_address, client_address, str(port)]
+        connect = [str(args.udp_multicast_app), 'client', client_address, server_address, str(port)]
+        stats_path = work / ('udp-multicast-' + role + '.json')
+        native = [*launcher, '--all-multicast', '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('UDP multicast receiver did not verify datagrams and metadata')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            udp = stats['native']
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    udp['udp_out_datagrams'] < 2 or
+                    udp['udp_in_datagrams'] < (3 if native_server else 2) or
+                    udp['udp_in_errors'] or udp['udp_no_ports']):
+                raise RuntimeError('UDP multicast scenarios missed native traffic: ' + str(stats))
+            print('native UDP multicast ' + role + ': ' + json.dumps(stats), flush=True)
+
 
 def udp_ancillary(args, launcher, work, env, log):
     if not args.udp_ancillary_app:
@@ -385,6 +417,7 @@ def inside(args):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
                 udp_mtu(args, launcher, work, env, log)
+                udp_multicast(args, launcher, work, env, log)
                 udp_ancillary(args, launcher, work, env, log)
                 udp_errors(args, launcher, work, env, log)
                 udp_compat(args, launcher, work, env, log)
@@ -436,6 +469,7 @@ def main():
     parser.add_argument('--udp-errors-app', type=Path)
     parser.add_argument('--udp-ancillary-app', type=Path)
     parser.add_argument('--udp-mtu-app', type=Path)
+    parser.add_argument('--udp-multicast-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)

@@ -50,9 +50,11 @@ static bool metadata_supported(const struct rte_mbuf *packet)
 int main(int argc, char **argv)
 {
     int packet_fd = -1, control_fd = -1, split = 0;
+    bool all_multicast = false;
     const char *port_name = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
+        if (!strcmp(argv[i], "--all-multicast")) { all_multicast = true; continue; }
         if (i + 1 >= argc) break;
         if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
@@ -60,7 +62,7 @@ int main(int argc, char **argv)
         else break;
     }
     if (packet_fd < 0 || control_fd < 0 || !port_name || !split) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--all-multicast] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -102,6 +104,19 @@ int main(int argc, char **argv)
         rte_eth_tx_queue_setup(port, 0, tx_desc, rte_socket_id(), NULL) ||
         rte_eth_dev_start(port)) goto device_error;
     started = true;
+    /* Membership filtering belongs to Linux. Until its receive-mode updates
+     * cross the packet channel, opt in to PMD all-multicast reception. */
+    if (all_multicast) {
+        int result = rte_eth_allmulticast_enable(port);
+        if (result) {
+            fprintf(stderr, "ker: ethdev cannot enable --all-multicast: %s\n", rte_strerror(-result));
+            goto cleanup;
+        }
+        if (rte_eth_allmulticast_get(port) != 1) {
+            fprintf(stderr, "ker: ethdev did not enable --all-multicast\n");
+            goto cleanup;
+        }
+    }
     struct rte_ether_addr mac;
     if (rte_eth_macaddr_get(port, &mac)) goto device_error;
     printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u}\n",

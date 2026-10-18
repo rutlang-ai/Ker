@@ -42,6 +42,8 @@ def main():
     parser.add_argument('--address', required=True, type=ipaddress.IPv4Interface)
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--port', required=True, help='DPDK ethdev name')
+    parser.add_argument('--all-multicast', action='store_true',
+        help='receive all Ethernet multicast frames for native Linux membership filtering')
     parser.add_argument('--eal', required=True, help='DPDK EAL arguments, parsed without a shell')
     parser.add_argument('--library', type=Path, default=Path(__file__).resolve().parent / LIB_FROM_BIN / 'libker-posix.so')
     parser.add_argument('--io-worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-worker')
@@ -68,8 +70,9 @@ def main():
     infrastructure_failure = False
     preserve_signal = False
     try:
+        multicast_options = ['--all-multicast'] if args.all_multicast else []
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, '--', *shlex.split(args.eal)],
+            '--control-fd', str(control_read), '--port', args.port, *multicast_options, '--', *shlex.split(args.eal)],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)
