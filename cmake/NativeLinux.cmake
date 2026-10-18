@@ -91,6 +91,8 @@ if(BUILD_TESTING)
     target_link_libraries(ker-posix-fd-compat-test PRIVATE Threads::Threads)
     add_executable(ker-posix-fstack-epoll-test tests/posix/fstack-epoll.c)
     target_compile_options(ker-posix-fstack-epoll-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-posix-fstack-message-io-test tests/posix/fstack-message-io.c)
+    target_compile_options(ker-posix-fstack-message-io-test PRIVATE -Wall -Wextra -Werror)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
@@ -110,6 +112,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-epoll COMMAND ${ker_native_test_command}
         --epoll-app "$<TARGET_FILE:ker-posix-fstack-epoll-test>")
     set_tests_properties(native-fstack-epoll PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-message-io COMMAND ${ker_native_test_command}
+        --message-app "$<TARGET_FILE:ker-posix-fstack-message-io-test>")
+    set_tests_properties(native-fstack-message-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-posix-tcp-loss-reorder COMMAND ${ker_native_test_command} --faults)
     add_test(NAME native-posix-tcp-zero-window COMMAND ${ker_native_test_command} --zero-window)
     add_test(NAME native-posix-tcp-errors COMMAND ${ker_native_test_command}

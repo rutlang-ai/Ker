@@ -12,6 +12,7 @@ FreeBSD 栈、cmocka mock/stub 或覆盖率脚本。没有通过宿主机 socket
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| native-fstack-message-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev / test_ff_host_ioctl_fionbio / test_ff_host_dup / test_ff_host_dup2 | 6 个公共 POSIX 场景分别在宿主 Linux 与完整导入内核运行：message/vector I/O、地址查询、半关闭、FIONBIO、dup/dup2；Ker 扩展覆盖零长度 iovec、短读、PEEK/DONTWAIT、FIONREAD、共享状态与跨后端 fd 替换。原生连接计数必须增长；UNIX socket 明确走宿主透传。上游场景只测试 FF_KERNEL_COEXIST 宿主桥接，本适配不声称上游已验证用户态 TCP。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-epoll | test_ff_epoll_create_returns_fd / test_ff_epoll_ctl_add_event / test_ff_epoll_ctl_mod_event / test_ff_epoll_ctl_del_event / test_ff_epoll_wait_* / EPOLLET / EPOLLONESHOT cases | 8 个真实 POSIX TCP 场景分别在宿主 Linux 与完整导入内核上运行并比较结果，覆盖参数、ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot 重置、仅写就绪、半关闭 EOF 与 RST/ERR/HUP；原生连接计数和 mbuf 回收必须通过。同一 CTest 还运行独立宿主对端的 DPDK 互通。上游用 cmocka 合成 kqueue 事件，本适配不复制 stub/FreeBSD 行为；Linux 的 create(0) 返回 EINVAL，半关闭检查 RDHUP，未声称覆盖无效指针和未知 kqueue filter。需 KER_WITH_NATIVE_TCP=ON |
 | flow-icmpv4 | test_ff_dpdk_if_send_multiseg | Stateless ICMP quotation parsing extracts the quoted UDP flow key for generic packet steering. Segmentation, truncation, length, options and fragment boundaries preserve input ownership; it creates no connection or send evidence and is not an F-Stack ICMP or NIC/RSS test |
 | fstack-mbuf-release | test_ff_dpdk_pktmbuf_free_basic | 实际 Ker packet pool alloc/free，验证可用对象数恢复 |
@@ -138,3 +139,25 @@ F-Stack 的原始测试检查 FreeBSD kqueue 转换和 mock 调用；这里检�
 的运行行为。Linux 的 `epoll_create(0)`、半关闭及错误标志按 Linux 语义断言，
 不强行匹配上游 stub 的结果。完整来源、原始文件 SHA-256、具体案例及未覆盖项
 见 [provenance](../tests/fstack-provenance.json) 的 `native-fstack-epoll`。
+
+## Message/vector I/O 与描述符桥接
+
+`native-fstack-message-io` 迁移固定版本 `test_ff_host_interface.c` 中
+`FF_KERNEL_COEXIST` 下的五个宿主桥接测试，并加入 Ker 兼容性边界检查。
+6 个场景仅调用普通 POSIX API，分别在宿主 Linux 和 Ker 原生 Linux 上执行，
+比较结果并检查至少 6 次原生 active/passive open。AF_UNIX socketpair 的
+vector roundtrip 明确验证宿主透传，不计作原生 TCP 覆盖。
+
+覆盖 `sendmsg/recvmsg`、`readv/writev`、四个端点地址查询、半关闭后反向发送，
+以及 `FIONBIO/FIONREAD`、`MSG_PEEK/MSG_DONTWAIT`、dup 共享的 `O_NONBLOCK`、
+独立的 `FD_CLOEXEC` 和 host/native 双向 `dup2` 替换。Vector 接收循环允许合法
+TCP 短读；message 接收的小缓冲区必须保留后续流数据，不能按 datagram 截断。
+这些附加检查是 Ker 扩展，不冒充上游原始用例。
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-message-io$' --output-on-failure
+```
+
+这些局部连接使用 loopback，不经过 DPDK；同一 CTest 另行执行现有的独立
+宿主对端双向 TCP/DPDK 互通，并验证 TX/RX、原生连接计数和 mbuf 回收。
+本批未增加 ancillary data、IPv6、零拷贝、fork 或 io_uring 支持。
