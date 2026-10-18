@@ -217,7 +217,13 @@ def inside(args):
                     print('native F-Stack epoll: ' + json.dumps(stats), flush=True)
                 application_compat(args, launcher, work, env)
                 if args.fd_app:
-                    client([*launcher, '--', str(args.fd_app)], env)
+                    stats_path = work / 'fd-app.json'
+                    client([*launcher, '--stats', str(stats_path), '--', str(args.fd_app)], env)
+                    stats = json.loads(stats_path.read_text())
+                    if (stats['outstanding'] or not stats['native']['active_opens'] or
+                            not stats['native']['passive_opens']):
+                        raise RuntimeError('fd scenarios did not use native TCP or leaked: ' + str(stats))
+                    print('native fd scenarios: ' + json.dumps(stats), flush=True)
                 if args.fd_app:
                     invalid_library = work / 'invalid.so'
                     invalid_library.write_text('not an ELF shared object\n')

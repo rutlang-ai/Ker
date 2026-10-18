@@ -14,9 +14,21 @@
     "tests/unit/test_ff_epoll.c": {
       "sha256": "25ee9d15ebc8bcc9827846030467a80681cdd0741876f01633fbe307ba1e43d7",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_epoll.c"
+    },
+    "tests/unit/test_ff_host_interface.c": {
+      "sha256": "56387b9e0b870fe184e591de661fc23c21bf83e9163c7ff26436a088c1fe491b",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_host_interface.c"
     }
   },
   "cases": {
+    "native-fstack-readiness": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_kqueue_ctl_poll",
+        "test_ff_host_ioctl_fionbio"
+      ],
+      "adaptation": "Ker-specific poll/select readiness extensions of the pinned FF_KERNEL_COEXIST host readiness and nonblocking bridge scenarios. Separate host-reference and native CTests execute the same eight public POSIX TCP cases: listener/accept transitions, read/write and duplicate-entry/set-bit counts, mixed host pipe/native TCP with pselect timeout preservation, invalid/negative fds, urgent-data POLLPRI/exceptfds, SO_RCVLOWAT, buffered EOF and zero/invalid timeouts. The upstream cases test host kqueue/epoll bridge registration and FIONBIO, not these poll/select or native TCP behaviors. Native CTest logs positive imported-kernel active/passive opens, verifies packet-buffer reclamation, runs independent host-peer TCP over DPDK, and rejects invalid preload/device startup. Local readiness cases use loopback rather than DPDK. No ff implementation, kqueue emulation, synthetic events, protocol state machine, performance claim, or io_uring support is added."
+    },
     "mbuf-release": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_pktmbuf_free_basic",

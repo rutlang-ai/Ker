@@ -130,4 +130,11 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(native-posix-tcp-interop native-posix-tcp-loss-reorder native-posix-tcp-zero-window native-posix-tcp-errors
         PROPERTIES TIMEOUT 90 LABELS native-tcp)
+    add_executable(ker-posix-fstack-readiness-test tests/posix/fstack-readiness.c)
+    target_compile_options(ker-posix-fstack-readiness-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME host-fstack-readiness-reference COMMAND ker-posix-fstack-readiness-test)
+    set_tests_properties(host-fstack-readiness-reference PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-readiness COMMAND ${ker_native_test_command}
+        --fd-app "$<TARGET_FILE:ker-posix-fstack-readiness-test>")
+    set_tests_properties(native-fstack-readiness PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()
