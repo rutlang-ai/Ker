@@ -59,6 +59,13 @@ static unsigned int backing_size(const struct rte_mbuf *packet)
 {
     return RTE_ALIGN_FLOOR((unsigned int)packet->buf_len, SMP_CACHE_BYTES);
 }
+static bool allocation_fits(unsigned int size, unsigned int payload_capacity,
+    unsigned int headroom)
+{
+    size_t shared_info = ker_skb_shared_info_size();
+    return size > shared_info && headroom <= size - shared_info &&
+        payload_capacity <= size - shared_info - headroom;
+}
 static int rx_metadata_supported(const struct rte_mbuf *packet)
 {
     const uint64_t transformed = RTE_MBUF_F_RX_VLAN_STRIPPED |
@@ -265,12 +272,17 @@ int ker_skb_alloc(struct ker_skb_context *ctx, unsigned int payload_capacity,
         return -EINVAL;
     if (!owner_active(ctx))
         return -EXDEV;
+    /* Pool geometry is fixed. Reject impossible requests before allocation so
+     * RX cannot mistake a permanent copy limit for retryable pool pressure. */
+    unsigned int pool_size = RTE_ALIGN_FLOOR(
+        (unsigned int)rte_pktmbuf_data_room_size(ctx->packets->mbufs), SMP_CACHE_BYTES);
+    if (!allocation_fits(pool_size, payload_capacity, headroom))
+        return -ENOSPC;
     struct rte_mbuf *packet = ker_packet_alloc(ctx->packets);
     if (!packet)
         return -ENOMEM;
     unsigned int size = backing_size(packet);
-    if (size <= ker_skb_shared_info_size() || headroom > size - ker_skb_shared_info_size() ||
-        payload_capacity > size - ker_skb_shared_info_size() - headroom) {
+    if (!allocation_fits(size, payload_capacity, headroom)) {
         ker_packet_free(packet);
         return -ENOSPC;
     }

@@ -402,6 +402,11 @@
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_pktmbuf_free_basic",
       "adaptation": "Ker-specific final-reference RX lifetime extension motivated by the upstream basic mbuf release case. A real net_ring ethdev feeds mixed external/direct/external chains into the existing copy/classify/dispatch adapter. No parent or sibling reference is retained. Actual DPDK external-buffer callbacks poison and quarantine released storage; retained owned skbs are checked before and after physical source deallocation. Repeated allocation failure, partial-budget FIFO recovery, cancellation transfer, transformed-metadata drop, exact callback counts, PMD receive counts and full source/destination pool reclamation are verified. The pinned upstream case only frees one basic mbuf and does not test external-buffer RX, deferred skb ownership, NICs, hardware offload or protocol behavior."
+    },
+    "ethdev-rx-capacity": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_multiseg",
+      "adaptation": "Ker-specific RX linear-copy capacity extension motivated by the pinned multisegment TX case. Real net_ring RX carries small source-pool segments into an independently sized destination pool. Capacity-minus-one, exact capacity and capacity-plus-one are checked with three headrooms and a non-cache-line-aligned destination room size. With the destination pool exhausted, permanently oversized frames are consumed as ENOSPC drops before a fitting successor becomes ENOMEM pending; releasing one backing permits exact FIFO recovery. Direct allocation error precedence, byte preservation, Linux shared-info reservation, PMD packet counts and both pool baselines are verified. Payloads are opaque: no IPv4/TCP/UDP protocol processing, jumbo MTU negotiation, NIC, nonlinear skb or F-Stack RX support is claimed."
     }
   }
 }
