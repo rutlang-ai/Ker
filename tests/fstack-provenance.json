@@ -513,6 +513,15 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific blocking receive/half-close and duplicated-descriptor extension of the pinned host bridge scenarios, not an upstream F-Stack timeout test. The same public POSIX program runs as a host reference and with the complete imported Linux kernel as client and server over DPDK net_tap/veth. Before READY, a blocking listener must time out accept with EAGAIN; its accepted socket inherits SO_RCVTIMEO and remains blocking. The client checks recv/recvmsg/readv empty-queue EAGAIN after a configured 120ms timeout, invalid microseconds EDOM without changing the prior option, shared timeout state through dup, MSG_WAITALL returning five existing bytes when no suffix arrives before timeout, a following empty-read timeout, disabling timeout through the alias, and partial WAITALL completion at EOF with successful reverse-direction acknowledgement. Explicit application handshakes suppress peer data until requested, and poll establishes that the first five bytes are queued before partial-WAITALL timing. Timing checks allow tick/scheduler variation (50ms to 5s) and are not a precision/performance claim. Native client exercises the receive cases; native server exercises listener timeout/inheritance and peer progress. Each native instance requires matching original-Linux TCP open counts, DPDK TX/RX and no outstanding packet buffers. No protocol changes, mocks, signal interruption/cancellation, send timeout, TCP connect-timeout or general time64 ABI support is added."
+    },
+    "native-fstack-tcp-send-timeouts": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_readv_writev",
+        "test_ff_host_dup"
+      ],
+      "adaptation": "Ker-specific blocking send/backpressure extension, not an upstream F-Stack timeout test. Host-reference and native client/server runs use a dedicated TCP control connection plus a small-buffer TCP data connection over DPDK net_tap/veth. Each endpoint takes a turn sending 512 KiB + 13 direction-specific bytes while its peer withholds application reads until a control marker. SO_SNDTIMEO=120ms must yield positive partial send progress, then no-progress EAGAIN via send, writev and sendmsg; all positive return lengths advance the source offset. Invalid microseconds return EDOM without replacing the prior value. Clearing the timeout through dup must affect the original fd. After an explicit resume marker, the peer enlarges its receive buffer, verifies the entire byte stream, acknowledges completion on the control connection, and the roles reverse. Both directions end at exact EOF without extra bytes. Elapsed checks allow 50ms..5s and option tick rounding, not precise timing. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol or runtime adapter changes, mocks, host signal interruption/cancellation, connect-timeout or general time64 ABI support is introduced."
     }
   }
 }

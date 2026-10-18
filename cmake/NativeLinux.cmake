@@ -184,4 +184,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-receive-timeouts COMMAND ${ker_native_test_command}
         --receive-timeouts-app "$<TARGET_FILE:ker-posix-fstack-tcp-timeouts-test>")
     set_tests_properties(native-fstack-tcp-receive-timeouts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-send-timeouts-test tests/posix/fstack-tcp-send-timeouts.c)
+    target_compile_options(ker-posix-fstack-tcp-send-timeouts-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-send-timeouts COMMAND ${ker_native_test_command}
+        --send-timeouts-app "$<TARGET_FILE:ker-posix-fstack-tcp-send-timeouts-test>")
+    set_tests_properties(native-fstack-tcp-send-timeouts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()
