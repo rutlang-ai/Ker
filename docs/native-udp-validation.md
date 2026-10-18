@@ -56,4 +56,35 @@ ctest --test-dir build-native-tcp -R '^native-fstack-udp-errors$' --output-on-fa
 这是 Ker 针对 Linux 的兼容性扩展，并非 F-Stack 上游已经覆盖 IP_RECVERR 的声明。
 协议与错误队列均由导入 Linux 执行，适配层无需修改。此项只验证 IPv4 ICMP
 port-unreachable；不代表 PMTU/EMSGSIZE、所有 ICMP 错误、error queue 截断、
-时间戳或 IP_PKTINFO 等通用 ancillary data 已验收。
+所有 ancillary data 已验收；IP_PKTINFO 和软件接收时间戳的单独验收见下文。
+
+
+## Packet info 与软件接收时间戳
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-ancillary$' --output-on-failure
+```
+
+同一 POSIX 测试程序先运行宿主 Linux 基线，再让原生 Linux 分别作为客户端和
+wildcard-bind 服务端，与独立宿主对端通信，每方向三个带不同内容的 datagram。
+两个端点均检查 payload、源地址/端口和控制消息。
+
+- 开启 IP_PKTINFO 和 SO_TIMESTAMPNS，并查询选项确认生效。
+- 接收 IP_PKTINFO 的目标地址、local address 与实际本地地址一致；interface index
+  为正且在同一 socket 上保持一致，不要求宿主与原生内核使用相同编号。
+- sendmsg 携带 IP_PKTINFO 选择本地源地址；获得接收 interface 后也指定该 interface，
+  对端验证实际源地址。wildcard 服务端不会把 INADDR_ANY 当作报文目标地址。
+- SCM_TIMESTAMPNS 包含有效 timespec，秒数处于宿主 CLOCK_REALTIME 收包区间内，
+  边界容差一秒；不以时间戳精度或性能作为断言。
+- 中间 datagram 的 control buffer 只有一字节，必须返回 MSG_CTRUNC，payload 仍完整。
+  下一报文恢复完整 buffer 后重新获得两个完整控制消息，且无 MSG_CTRUNC/MSG_TRUNC。
+- 每个原生实例 UDP InDatagrams/OutDatagrams 至少 3，DPDK TX/RX 非零，outstanding=0。
+
+该测试发现 LKL POSIX host 的 monotonic 时钟同时用于初始化 persistent clock，
+原生软件接收时间戳因此缺少墙钟 epoch。Ker 现在在内核启动后、网络启用前，
+读取宿主 CLOCK_REALTIME 并调用原生 clock_settime 初始化私有内核的 realtime。
+不会设置宿主时钟，也不改动上游 clocksource 或协议定时器。
+
+这里验证 x86_64/glibc 的 SO_TIMESTAMPNS 软件时间戳 ABI 和初始 realtime 对齐；
+没有实现启动后的宿主 NTP/手动时钟跳变同步，不包含硬件时间戳、所有 time64
+选项、multicast 或所有控制消息。来源与扩展范围记录在 provenance 中。

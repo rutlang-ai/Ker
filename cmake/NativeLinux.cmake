@@ -164,4 +164,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-errors COMMAND ${ker_native_test_command}
         --udp-errors-app "$<TARGET_FILE:ker-posix-fstack-udp-errors-test>")
     set_tests_properties(native-fstack-udp-errors PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-posix-fstack-udp-ancillary-test tests/posix/fstack-udp-ancillary.c)
+    target_compile_options(ker-posix-fstack-udp-ancillary-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-udp-ancillary COMMAND ${ker_native_test_command}
+        --udp-ancillary-app "$<TARGET_FILE:ker-posix-fstack-udp-ancillary-test>")
+    set_tests_properties(native-fstack-udp-ancillary PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
 endif()
