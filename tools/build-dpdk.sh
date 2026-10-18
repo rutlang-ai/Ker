@@ -14,7 +14,7 @@ if [[ -f "$ker_dpdk_build/meson-private/coredata.dat" ]]; then
 fi
 meson setup "${ker_meson_options[@]}" "$ker_dpdk_build" "$ker_dpdk_source" \
     --prefix "$ker_dpdk_prefix" --libdir lib64 \
-    -Denable_libs=eal,ring,mempool,mbuf,ethdev \
+    "-Denable_libs=${KER_DPDK_LIBS:-eal,ring,mempool,mbuf,ethdev}" \
     "-Denable_drivers=${KER_DPDK_DRIVERS:-mempool/ring,net/ring}" \
     -Ddisable_apps='*' -Dtests=false -Dplatform=generic
 meson compile -C "$ker_dpdk_build" -j "${KER_DPDK_JOBS:-4}"

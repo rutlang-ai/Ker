@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "linux": {
+    "repository": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
+    "revision": "7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e",
+    "version": "6.12.113"
+  },
+  "lkl": {
+    "repository": "https://github.com/lkl/linux.git",
+    "revision": "d0f76a77e8c2ca68bd7d96190b8da09040eab072",
+    "base_revision": "adc218676eef25575469234709c2d87185ca223a"
+  },
+  "protocol_paths": [
+    "net", "include/net", "include/uapi/linux", "include/linux/skbuff.h",
+    "include/linux/netdevice.h", "include/linux/tcp.h", "include/linux/udp.h",
+    "include/linux/socket.h", "include/linux/inet.h", "include/linux/inetdevice.h",
+    "include/linux/ip.h", "include/linux/icmp.h", "include/linux/net.h"
+  ]
+}
