@@ -159,15 +159,18 @@ __attribute__((destructor)) static void finalize(void)
     struct ker_native_counters counters;
     int diagnosed = ker_native_counters(&counters);
     if (!diagnosed) {
-        char json[512];
+        char json[1024];
         int length = snprintf(json, sizeof(json), "KER_NATIVE_STATS {\"active_opens\":%llu,\"passive_opens\":%llu,"
             "\"retransmitted_segments\":%llu,\"zero_window_probes\":%llu,\"out_of_order_queued\":%llu,"
-            "\"udp_in_datagrams\":%llu,\"udp_out_datagrams\":%llu,\"udp_in_errors\":%llu,\"udp_no_ports\":%llu}\n",
+            "\"udp_in_datagrams\":%llu,\"udp_out_datagrams\":%llu,\"udp_in_errors\":%llu,\"udp_no_ports\":%llu,"
+            "\"ip_frag_ok\":%llu,\"ip_frag_creates\":%llu,\"ip_reasm_ok\":%llu,\"ip_reasm_fails\":%llu}\n",
             (unsigned long long)counters.active_opens, (unsigned long long)counters.passive_opens,
             (unsigned long long)counters.retransmitted_segments, (unsigned long long)counters.zero_window_probes,
             (unsigned long long)counters.out_of_order_queued,
             (unsigned long long)counters.udp_in_datagrams, (unsigned long long)counters.udp_out_datagrams,
-            (unsigned long long)counters.udp_in_errors, (unsigned long long)counters.udp_no_ports);
+            (unsigned long long)counters.udp_in_errors, (unsigned long long)counters.udp_no_ports,
+            (unsigned long long)counters.ip_frag_ok, (unsigned long long)counters.ip_frag_creates,
+            (unsigned long long)counters.ip_reasm_ok, (unsigned long long)counters.ip_reasm_fails);
         if (length > 0 && (size_t)length < sizeof(json))
             (void)syscall(SYS_write, startup_fd, json, (size_t)length);
     }

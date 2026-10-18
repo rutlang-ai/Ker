@@ -67,6 +67,10 @@ int ker_native_counters(struct ker_native_counters *out)
         {"NoPorts", &value.udp_no_ports}};
     result = counters("/proc/net/snmp", "Udp:", udp, sizeof(udp) / sizeof(udp[0]));
     if (result) return result;
+    struct field ip[] = {{"FragOKs", &value.ip_frag_ok}, {"FragCreates", &value.ip_frag_creates},
+        {"ReasmOKs", &value.ip_reasm_ok}, {"ReasmFails", &value.ip_reasm_fails}};
+    result = counters("/proc/net/snmp", "Ip:", ip, sizeof(ip) / sizeof(ip[0]));
+    if (result) return result;
     *out = value;
     return 0;
 }

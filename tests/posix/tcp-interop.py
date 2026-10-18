@@ -171,6 +171,40 @@ def stream_compat(args, launcher, work, env, log):
 
 
 
+def udp_mtu(args, launcher, work, env, log):
+    if not args.udp_mtu_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 25400 + index
+        native_server = role == 'server'
+        server_address = '198.18.0.2' if native_server else '198.18.0.1'
+        client_address = '198.18.0.2' if role == 'client' else '198.18.0.1'
+        listen = [str(args.udp_mtu_app), 'server', server_address, client_address, str(port)]
+        connect = [str(args.udp_mtu_app), 'client', client_address, server_address, str(port)]
+        stats_path = work / ('udp-mtu-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('UDP MTU peer did not verify datagrams')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            native_stats = stats['native']
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    native_stats['udp_out_datagrams'] < 5 or native_stats['udp_in_datagrams'] < 5 or
+                    native_stats['udp_in_errors'] or native_stats['udp_no_ports'] or
+                    native_stats['ip_frag_ok'] < 3 or native_stats['ip_frag_creates'] < 50 or
+                    native_stats['ip_reasm_ok'] < 3 or native_stats['ip_reasm_fails']):
+                raise RuntimeError('UDP MTU scenarios missed native fragmentation: ' + str(stats))
+            print('native UDP MTU ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def udp_ancillary(args, launcher, work, env, log):
     if not args.udp_ancillary_app:
         return
@@ -278,6 +312,9 @@ def inside(args):
             ['ip', 'link', 'set', 'kerlink', 'up'],
             ['ip', 'link', 'set', 'kerpeer', 'up'],
         ]
+        if args.udp_mtu_app:
+            # The host-reference endpoints share loopback; match the wire MTU.
+            commands.append(['ip', 'link', 'set', 'lo', 'mtu', '1500'])
         if args.faults:
             for device in ['kerlink', 'kerhost']:
                 commands.append(['tc', 'qdisc', 'add', 'dev', device, 'root', 'netem',
@@ -347,6 +384,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                udp_mtu(args, launcher, work, env, log)
                 udp_ancillary(args, launcher, work, env, log)
                 udp_errors(args, launcher, work, env, log)
                 udp_compat(args, launcher, work, env, log)
@@ -397,6 +435,7 @@ def main():
     parser.add_argument('--udp-app', type=Path)
     parser.add_argument('--udp-errors-app', type=Path)
     parser.add_argument('--udp-ancillary-app', type=Path)
+    parser.add_argument('--udp-mtu-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)
