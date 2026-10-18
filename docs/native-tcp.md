@@ -74,6 +74,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 丢包与乱序 | 双向 2% seeded loss、delay、reorder，数据完整；原生内核重传与乱序队列计数增长 |
 | 零窗口 | 两个方向慢读和小接收缓存；原生窗口探测计数增长，恢复完整字节流 |
 | 错误 | RST、ECONNRESET、EPIPE、SIGPIPE/MSG_NOSIGNAL、SO_RCVTIMEO、ECONNREFUSED、SYN 重传后 ETIMEDOUT |
+| 阻塞接收超时 | 监听 accept 超时及继承；recv/recvmsg/readv 的 EAGAIN、部分 MSG_WAITALL、dup 共享选项、关闭超时后的 EOF 与恢复 |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -83,6 +84,23 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 信号等待 | ppoll/pselect/epoll_pwait/epoll_pwait2 原子解除阻塞、EINTR 与掩码恢复 |
 | 隔离与回收 | 宿主已占用的端口仍可在原生 loopback 使用；直接宿主 TCP syscall 被拒绝；worker mbuf outstanding=0 |
 | 现有应用（检测到程序时启用） | 原版 curl HTTP；原版 Redis/Valkey 无持久化、32 个连接、16 并发、1024 SET/GET 对及正常 SHUTDOWN |
+
+`native-fstack-tcp-receive-timeouts` 先运行宿主参考，再运行原生客户端和服务端，
+均连接独立 Linux 对端。监听器在报告 READY 前无客户端，accept 必须在
+SO_RCVTIMEO 到期后返回 EAGAIN；accept4 取得的 socket 继承该 timeout，仍为阻塞模式。
+客户端依次检查 recv、recvmsg、readv 的空队列超时，非法 tv_usec=1000000 返回
+EDOM 且原选项不变。对端等待应用指令才发送数据，避免用固定 sleep 制造时序。
+
+接收首段五字节前先用 poll 确认可读，再调用十字节 MSG_WAITALL；对端尚未收到
+下一指令，不会发送余量，因此超时后必须返回已有五字节。随后空读仍返回 EAGAIN。
+通过 dup alias 将 timeout 设为零，原 fd 查询也必须为零；后续 MSG_WAITALL 在
+对端半关闭时返回末尾五字节，再返回 EOF，反向 ACK 仍成功。120ms 设置允许 tick
+舍入，阻塞耗时仅要求 50ms..5s，不作为精度或性能指标。
+
+原生客户端验证接收路径，原生服务端验证监听超时、继承和对端恢复；每实例要求对应的
+原生 active/passive open、DPDK TX/RX 非零和 outstanding=0。本项是 F-Stack host
+bridge 场景的 Ker 扩展，协议及超时由原始 Linux 执行；未增加 SO_SNDTIMEO、宿主信号
+中断、pthread cancellation 或所有 time64 选项的验收。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 

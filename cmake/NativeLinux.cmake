@@ -179,4 +179,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-multicast COMMAND ${ker_native_test_command}
         --udp-multicast-app "$<TARGET_FILE:ker-posix-fstack-udp-multicast-test>")
     set_tests_properties(native-fstack-udp-multicast PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-posix-fstack-tcp-timeouts-test tests/posix/fstack-tcp-timeouts.c)
+    target_compile_options(ker-posix-fstack-tcp-timeouts-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-receive-timeouts COMMAND ${ker_native_test_command}
+        --receive-timeouts-app "$<TARGET_FILE:ker-posix-fstack-tcp-timeouts-test>")
+    set_tests_properties(native-fstack-tcp-receive-timeouts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()
