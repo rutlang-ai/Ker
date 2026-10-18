@@ -142,4 +142,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-readiness COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-fstack-readiness-test>")
     set_tests_properties(native-fstack-readiness PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-stream-io-test tests/posix/fstack-stream-io.c)
+    target_compile_options(ker-posix-fstack-stream-io-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-stream-io COMMAND ${ker_native_test_command}
+        --stream-app "$<TARGET_FILE:ker-posix-fstack-stream-io-test>")
+    set_tests_properties(native-fstack-stream-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()
