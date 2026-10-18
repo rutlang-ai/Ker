@@ -16,6 +16,7 @@ FreeBSD 栈、cmocka mock/stub 或覆盖率脚本。没有通过宿主机 socket
 | native-fstack-stream-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev | Ker-specific 独立对端扩展：vector、message、batched-message 三种 API × 原生客户端/服务端，共六种组合；每方向校验 256 KiB + 13 字节、非阻塞进度、半关闭和 EOF，逐实例断言 DPDK TX/RX、原生 open 和回收。上游只有小型宿主桥接，不覆盖本测试的原生 TCP、DPDK 或 sendmmsg/recvmmsg 扩展。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-epoll | test_ff_epoll_create_returns_fd / test_ff_epoll_ctl_add_event / test_ff_epoll_ctl_mod_event / test_ff_epoll_ctl_del_event / test_ff_epoll_wait_* / EPOLLET / EPOLLONESHOT cases | 8 个真实 POSIX TCP 场景分别在宿主 Linux 与完整导入内核上运行并比较结果，覆盖参数、ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot 重置、仅写就绪、半关闭 EOF 与 RST/ERR/HUP；原生连接计数和 mbuf 回收必须通过。同一 CTest 还运行独立宿主对端的 DPDK 互通。上游用 cmocka 合成 kqueue 事件，本适配不复制 stub/FreeBSD 行为；Linux 的 create(0) 返回 EINVAL，半关闭检查 RDHUP，未声称覆盖无效指针和未知 kqueue filter。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-readiness / host-fstack-readiness-reference | test_ff_host_kqueue_ctl_poll / test_ff_host_ioctl_fionbio | Ker-specific poll/select 扩展：同一公共 POSIX 程序在宿主基线和原生内核分别检查 8 个场景，包括监听、混合 pipe/TCP、计数、无效 fd、带外数据、低水位及 EOF。原生连接计数与回收须通过。上游仅为 FF_KERNEL_COEXIST 宿主 readiness/FIONBIO 桥接，本批不声称上游已有这些 poll/select 测试。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-socket-contracts / host-fstack-socket-contracts-reference | test_ff_host_msg_name_shutdown_bridges / test_ff_host_ioctl_fionbio / test_ff_host_dup | Ker-specific TCP socket 契约扩展：6 个宿主/原生场景覆盖创建与 accept 标志、地址长度截断、socket option 错误恢复、bind 冲突和重复 fd 的 fstat 身份/生命周期。上游仅测试 host bridge，本批以 Linux 语义断言，不复制 FreeBSD 行为。原生 open 与回收计数必须通过。需 KER_WITH_NATIVE_TCP=ON |
 | flow-icmpv4 | test_ff_dpdk_if_send_multiseg | Stateless ICMP quotation parsing extracts the quoted UDP flow key for generic packet steering. Segmentation, truncation, length, options and fragment boundaries preserve input ownership; it creates no connection or send evidence and is not an F-Stack ICMP or NIC/RSS test |
 | fstack-mbuf-release | test_ff_dpdk_pktmbuf_free_basic | 实际 Ker packet pool alloc/free，验证可用对象数恢复 |
 | fstack-clock-monotonic | test_ff_get_tsc_ns_monotonic | Ker CLOCK_MONOTONIC ns，验证非递减，不复制 TSC 算法 |
@@ -159,6 +160,27 @@ F-Stack 的原始测试检查 FreeBSD kqueue 转换和 mock 调用；这里检�
 的运行行为。Linux 的 `epoll_create(0)`、半关闭及错误标志按 Linux 语义断言，
 不强行匹配上游 stub 的结果。完整来源、原始文件 SHA-256、具体案例及未覆盖项
 见 [provenance](../tests/fstack-provenance.json) 的 `native-fstack-epoll`。
+
+## TCP socket 契约扩展
+
+`host-fstack-socket-contracts-reference` 和 `native-fstack-socket-contracts`
+分别用同一公共 POSIX 程序运行 6 个场景。检查创建时的 NONBLOCK/CLOEXEC、
+SO_TYPE/DOMAIN/PROTOCOL，普通 accept 不继承监听 fd 的非阻塞/close-on-exec
+标志，而 accept4 按显式参数设置它们。
+
+地址查询用 0 字节和仅够 sa_family 的缓冲区，必须返回完整地址长度且保持尾部
+sentinel 不变；双端 getpeername/getsockname tuple 必须一致。Option 测试覆盖
+KEEPALIVE、NODELAY、KEEPIDLE、错误值/未知 option 以及随后正常 I/O。
+bind 冲突后监听者继续接受连接；F_DUPFD_CLOEXEC 的 alias 必须保留同一 socket
+inode，关闭原 fd 后仍可传输，并验证 dup2/dup3 同号参数的不同规则。
+
+这些是固定 F-Stack host bridge 场景的 Ker 扩展，预期结果依据 Linux 契约，
+不声称上游案例或 FreeBSD 已有相同覆盖。局部契约用 loopback 检查，原生 CTest
+另行执行既有独立宿主 TCP/DPDK 互通、原生计数、回收和启动失败检查。
+
+```sh
+ctest --test-dir build-native-tcp -R '^(host-fstack-socket-contracts-reference|native-fstack-socket-contracts)$' --output-on-failure
+```
 
 ## Message/vector I/O 与描述符桥接
 

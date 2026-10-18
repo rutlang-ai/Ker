@@ -1,0 +1,180 @@
+/* Ker-specific socket-contract extensions of pinned F-Stack host bridge cases.
+ * Same public POSIX assertions on host Linux and the imported Linux stack. */
+#define _GNU_SOURCE
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/tcp.h>
+#include <poll.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
+#define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
+struct pair {int client, server;};
+static struct sockaddr_in local(void)
+{
+    return (struct sockaddr_in){.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+}
+static int listen_at(struct sockaddr_in *address)
+{
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    CHECK(fd >= 0 && bind(fd, (void *)address, sizeof(*address)) == 0 && listen(fd, 4) == 0);
+    socklen_t length = sizeof(*address);
+    CHECK(getsockname(fd, (void *)address, &length) == 0 && length == sizeof(*address));
+    return fd;
+}
+static int connect_to(struct sockaddr_in address)
+{
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    CHECK(fd >= 0 && connect(fd, (void *)&address, sizeof(address)) == 0);
+    return fd;
+}
+static void ready(int fd)
+{
+    struct pollfd event = {fd, POLLIN, 0};
+    CHECK(poll(&event, 1, 2000) == 1 && (event.revents & POLLIN));
+}
+static struct pair connected(void)
+{
+    struct sockaddr_in address = local(); int listener = listen_at(&address);
+    int client = connect_to(address); ready(listener);
+    int server = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+    CHECK(server >= 0 && close(listener) == 0);
+    return (struct pair){client, server};
+}
+static void finish(struct pair p) {CHECK(close(p.client) == 0 && close(p.server) == 0);}
+static int flags(int fd, int command)
+{
+    int value = fcntl(fd, command); CHECK(value >= 0); return value;
+}
+static int option(int fd, int level, int name)
+{
+    int value = -1; socklen_t length = sizeof(value);
+    CHECK(getsockopt(fd, level, name, &value, &length) == 0 && length == sizeof(value));
+    return value;
+}
+static void set(int fd, int level, int name, int value)
+{
+    CHECK(setsockopt(fd, level, name, &value, sizeof(value)) == 0);
+}
+static void creation_flags(void)
+{
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+    CHECK(fd >= 0 && (flags(fd, F_GETFL) & O_NONBLOCK) && (flags(fd, F_GETFD) & FD_CLOEXEC));
+    CHECK(option(fd, SOL_SOCKET, SO_TYPE) == SOCK_STREAM);
+    CHECK(option(fd, SOL_SOCKET, SO_DOMAIN) == AF_INET);
+    CHECK(option(fd, SOL_SOCKET, SO_PROTOCOL) == IPPROTO_TCP);
+    struct sockaddr_in peer; socklen_t length = sizeof(peer);
+    ERROR(getpeername(fd, (void *)&peer, &length), ENOTCONN);
+    CHECK(close(fd) == 0);
+    struct pair p = connected(); finish(p);
+}
+static void accepted_flags(void)
+{
+    struct sockaddr_in address = local(); int listener = listen_at(&address);
+    CHECK(flags(listener, F_GETFL) & O_NONBLOCK);
+    CHECK(flags(listener, F_GETFD) & FD_CLOEXEC);
+    ERROR(accept4(listener, NULL, NULL, SOCK_NONBLOCK), EAGAIN);
+    for (int explicit = 0; explicit < 2; ++explicit) {
+        int client = connect_to(address); ready(listener);
+        int server = explicit ? accept4(listener, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC) :
+            accept(listener, NULL, NULL);
+        CHECK(server >= 0);
+        CHECK(!!(flags(server, F_GETFL) & O_NONBLOCK) == explicit);
+        CHECK(!!(flags(server, F_GETFD) & FD_CLOEXEC) == explicit);
+        CHECK(write(client, "a", 1) == 1); ready(server);
+        char byte; CHECK(read(server, &byte, 1) == 1 && byte == 'a');
+        CHECK(close(server) == 0 && close(client) == 0);
+    }
+    CHECK(close(listener) == 0);
+}
+static void address_lengths(void)
+{
+    struct pair p = connected();
+    for (int peer = 0; peer < 2; ++peer) {
+        unsigned char bytes[32]; memset(bytes, 0xa5, sizeof(bytes));
+        socklen_t length = 0;
+        CHECK((peer ? getpeername(p.client, (void *)bytes, &length) :
+            getsockname(p.client, (void *)bytes, &length)) == 0);
+        CHECK(length == sizeof(struct sockaddr_in));
+        for (size_t i = 0; i < sizeof(bytes); ++i) CHECK(bytes[i] == 0xa5);
+        length = sizeof(sa_family_t);
+        CHECK((peer ? getpeername(p.client, (void *)bytes, &length) :
+            getsockname(p.client, (void *)bytes, &length)) == 0);
+        CHECK(length == sizeof(struct sockaddr_in));
+        sa_family_t family; memcpy(&family, bytes, sizeof(family)); CHECK(family == AF_INET);
+        for (size_t i = sizeof(family); i < sizeof(bytes); ++i) CHECK(bytes[i] == 0xa5);
+    }
+    struct sockaddr_in client, server, peer; socklen_t length = sizeof(client);
+    CHECK(getsockname(p.client, (void *)&client, &length) == 0);
+    length = sizeof(server); CHECK(getsockname(p.server, (void *)&server, &length) == 0);
+    length = sizeof(peer); CHECK(getpeername(p.client, (void *)&peer, &length) == 0);
+    CHECK(peer.sin_port == server.sin_port && peer.sin_addr.s_addr == server.sin_addr.s_addr);
+    length = sizeof(peer); CHECK(getpeername(p.server, (void *)&peer, &length) == 0);
+    CHECK(peer.sin_port == client.sin_port && peer.sin_addr.s_addr == client.sin_addr.s_addr);
+    finish(p);
+}
+static void option_roundtrip(void)
+{
+    struct pair p = connected();
+    set(p.client, SOL_SOCKET, SO_KEEPALIVE, 1); CHECK(option(p.client, SOL_SOCKET, SO_KEEPALIVE) == 1);
+    set(p.client, IPPROTO_TCP, TCP_NODELAY, 1); CHECK(option(p.client, IPPROTO_TCP, TCP_NODELAY) == 1);
+    set(p.client, IPPROTO_TCP, TCP_KEEPIDLE, 123); CHECK(option(p.client, IPPROTO_TCP, TCP_KEEPIDLE) == 123);
+    int invalid = 0;
+    ERROR(setsockopt(p.client, IPPROTO_TCP, TCP_KEEPIDLE, &invalid, sizeof(invalid)), EINVAL);
+    CHECK(option(p.client, IPPROTO_TCP, TCP_KEEPIDLE) == 123);
+    set(p.client, IPPROTO_TCP, TCP_NODELAY, 0); CHECK(option(p.client, IPPROTO_TCP, TCP_NODELAY) == 0);
+    int value; socklen_t length = sizeof(value);
+    ERROR(getsockopt(p.client, SOL_SOCKET, 0x7fffffff, &value, &length), ENOPROTOOPT);
+    length = sizeof(value); CHECK(getsockopt(p.client, SOL_SOCKET, SO_ERROR, &value, &length) == 0 && value == 0);
+    CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
+    char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    finish(p);
+}
+static void bind_collision(void)
+{
+    struct sockaddr_in address = local(); int listener = listen_at(&address);
+    int other = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(other >= 0);
+    ERROR(bind(other, (void *)&address, sizeof(address)), EADDRINUSE);
+    CHECK(close(other) == 0);
+    int client = connect_to(address); ready(listener);
+    int server = accept(listener, NULL, NULL);
+    CHECK(server >= 0 && close(listener) == 0);
+    finish((struct pair){client, server});
+}
+static void duplicate_identity(void)
+{
+    struct pair p = connected();
+    int alias = fcntl(p.client, F_DUPFD_CLOEXEC, 128);
+    CHECK(alias >= 128 && (flags(alias, F_GETFD) & FD_CLOEXEC));
+    struct stat original, duplicate;
+    CHECK(fstat(p.client, &original) == 0 && fstat(alias, &duplicate) == 0);
+    CHECK(S_ISSOCK(original.st_mode) && S_ISSOCK(duplicate.st_mode));
+    CHECK(original.st_ino != 0 && original.st_ino == duplicate.st_ino && original.st_dev == duplicate.st_dev);
+    CHECK(dup2(alias, alias) == alias && (flags(alias, F_GETFD) & FD_CLOEXEC));
+    ERROR(dup3(alias, alias, O_CLOEXEC), EINVAL);
+    CHECK(close(p.client) == 0);
+    CHECK(write(alias, "alias", 5) == 5); ready(p.server);
+    char bytes[5]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 5 && memcmp(bytes, "alias", 5) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
+int main(void)
+{
+    const struct {const char *name; void (*run)(void);} cases[] = {
+        {"creation-flags-and-socket-type", creation_flags},
+        {"accept-flags-are-explicit-not-inherited", accepted_flags},
+        {"address-length-truncation-and-peer-tuples", address_lengths},
+        {"socket-options-errors-and-recovery", option_roundtrip},
+        {"bind-collision-preserves-listener", bind_collision},
+        {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        cases[i].run(); printf("PASS: fstack socket contract %s\n", cases[i].name); fflush(stdout);
+    }
+    return 0;
+}
