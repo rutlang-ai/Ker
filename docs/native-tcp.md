@@ -70,6 +70,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 丢包与乱序 | 双向 2% seeded loss、delay、reorder，数据完整；原生内核重传与乱序队列计数增长 |
 | 零窗口 | 两个方向慢读和小接收缓存；原生窗口探测计数增长，恢复完整字节流 |
 | 错误 | RST、ECONNRESET、EPIPE、SIGPIPE/MSG_NOSIGNAL、SO_RCVTIMEO、ECONNREFUSED、SYN 重传后 ETIMEDOUT |
+| F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
 | fd 兼容 | 600 个宿主文件、高编号原生 fd、dup/fcntl/fstat、混合 poll/select/epoll、oneshot、多线程 churn |
 | 信号等待 | ppoll/pselect/epoll_pwait/epoll_pwait2 原子解除阻塞、EINTR 与掩码恢复 |
 | 隔离与回收 | 宿主已占用的端口仍可在原生 loopback 使用；直接宿主 TCP syscall 被拒绝；worker mbuf outstanding=0 |

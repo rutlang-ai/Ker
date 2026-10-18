@@ -204,6 +204,17 @@ def inside(args):
                     if not stats['native']['retransmitted_segments'] or stats['outstanding']:
                         raise RuntimeError('native SYN timeout did not retransmit or I/O leaked: ' + str(stats))
                     print('native errors: ' + json.dumps(stats), flush=True)
+                if args.epoll_app:
+                    baseline = client([str(args.epoll_app)], env)
+                    stats_path = work / 'fstack-epoll.json'
+                    observed = client([*launcher, '--stats', str(stats_path), '--', str(args.epoll_app)], env)
+                    if observed != baseline:
+                        raise RuntimeError('native epoll scenarios differ from the host baseline')
+                    stats = json.loads(stats_path.read_text())
+                    if (stats['outstanding'] or stats['native']['active_opens'] < 8 or
+                            stats['native']['passive_opens'] < 8):
+                        raise RuntimeError('epoll scenarios did not use native TCP or leaked: ' + str(stats))
+                    print('native F-Stack epoll: ' + json.dumps(stats), flush=True)
                 application_compat(args, launcher, work, env)
                 if args.fd_app:
                     client([*launcher, '--', str(args.fd_app)], env)
@@ -238,6 +249,7 @@ def main():
     parser.add_argument('--faults', action='store_true')
     parser.add_argument('--zero-window', action='store_true')
     parser.add_argument('--fd-app', type=Path)
+    parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)
