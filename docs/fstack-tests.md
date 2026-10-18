@@ -13,6 +13,7 @@ FreeBSD 栈、cmocka mock/stub 或覆盖率脚本。没有通过宿主机 socket
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
 | native-fstack-message-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev / test_ff_host_ioctl_fionbio / test_ff_host_dup / test_ff_host_dup2 | 6 个公共 POSIX 场景分别在宿主 Linux 与完整导入内核运行：message/vector I/O、地址查询、半关闭、FIONBIO、dup/dup2；Ker 扩展覆盖零长度 iovec、短读、PEEK/DONTWAIT、FIONREAD、共享状态与跨后端 fd 替换。原生连接计数必须增长；UNIX socket 明确走宿主透传。上游场景只测试 FF_KERNEL_COEXIST 宿主桥接，本适配不声称上游已验证用户态 TCP。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-stream-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev | Ker-specific 独立对端扩展：vector、message、batched-message 三种 API × 原生客户端/服务端，共六种组合；每方向校验 256 KiB + 13 字节、非阻塞进度、半关闭和 EOF，逐实例断言 DPDK TX/RX、原生 open 和回收。上游只有小型宿主桥接，不覆盖本测试的原生 TCP、DPDK 或 sendmmsg/recvmmsg 扩展。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-epoll | test_ff_epoll_create_returns_fd / test_ff_epoll_ctl_add_event / test_ff_epoll_ctl_mod_event / test_ff_epoll_ctl_del_event / test_ff_epoll_wait_* / EPOLLET / EPOLLONESHOT cases | 8 个真实 POSIX TCP 场景分别在宿主 Linux 与完整导入内核上运行并比较结果，覆盖参数、ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot 重置、仅写就绪、半关闭 EOF 与 RST/ERR/HUP；原生连接计数和 mbuf 回收必须通过。同一 CTest 还运行独立宿主对端的 DPDK 互通。上游用 cmocka 合成 kqueue 事件，本适配不复制 stub/FreeBSD 行为；Linux 的 create(0) 返回 EINVAL，半关闭检查 RDHUP，未声称覆盖无效指针和未知 kqueue filter。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-readiness / host-fstack-readiness-reference | test_ff_host_kqueue_ctl_poll / test_ff_host_ioctl_fionbio | Ker-specific poll/select 扩展：同一公共 POSIX 程序在宿主基线和原生内核分别检查 8 个场景，包括监听、混合 pipe/TCP、计数、无效 fd、带外数据、低水位及 EOF。原生连接计数与回收须通过。上游仅为 FF_KERNEL_COEXIST 宿主 readiness/FIONBIO 桥接，本批不声称上游已有这些 poll/select 测试。需 KER_WITH_NATIVE_TCP=ON |
 | flow-icmpv4 | test_ff_dpdk_if_send_multiseg | Stateless ICMP quotation parsing extracts the quoted UDP flow key for generic packet steering. Segmentation, truncation, length, options and fragment boundaries preserve input ownership; it creates no connection or send evidence and is not an F-Stack ICMP or NIC/RSS test |
@@ -180,3 +181,22 @@ ctest --test-dir build-native-tcp -R '^native-fstack-message-io$' --output-on-fa
 这些局部连接使用 loopback，不经过 DPDK；同一 CTest 另行执行现有的独立
 宿主对端双向 TCP/DPDK 互通，并验证 TX/RX、原生连接计数和 mbuf 回收。
 本批未增加 ancillary data、IPv6、零拷贝、fork 或 io_uring 支持。
+
+## 独立宿主对端的 message/vector stream I/O
+
+`native-fstack-stream-io` 将消息/vector 桥接场景推进到真实 DPDK `net_tap`、
+veth 和独立宿主 Linux TCP 对端。原生客户端和服务端各运行三种模式：
+`writev/readv`、`sendmsg/recvmsg`、`sendmmsg/recvmmsg`，共六种组合。
+每方向以不同 seed 校验 256 KiB + 13 字节，使用小发送缓存和非阻塞 socket，
+处理短进度、EAGAIN、半关闭及 EOF；输出实际 short/retry 计数，不把次数固定为
+调度或性能要求。TCP batch 不保证消息边界，接收按实际 msg_len 重组字节流。
+
+客户端和服务端都必须报告校验成功；每个原生实例独立断言对应 active/passive
+open、DPDK TX/RX 非零和 `outstanding=0`。这区别于已有
+`native-fstack-message-io` 的局部 loopback 场景，不能用宿主桥接成功替代原生结果。
+固定上游来源仍为小型 host-only message/vector 桥接；batch 与大流量独立对端
+属于 Ker 扩展，不声称 F-Stack 原始案例已有相同覆盖。
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-stream-io$' --output-on-failure
+```

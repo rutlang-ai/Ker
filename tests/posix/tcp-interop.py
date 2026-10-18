@@ -28,12 +28,14 @@ def ready(process, port):
 
 
 @contextmanager
-def server(command, port, log, env):
+def server(command, port, log, env, captured=None):
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
     try:
         ready(process, port)
         yield process
         output, _ = process.communicate(timeout=30)
+        if captured is not None:
+            captured.append(output)
         if process.returncode:
             raise RuntimeError(f'server exited {process.returncode}: {output}')
     finally:
@@ -136,6 +138,38 @@ def application_compat(args, launcher, work, env):
                         process.kill(); process.wait()
 
 
+
+def stream_compat(args, launcher, work, env, log):
+    if not args.stream_app:
+        return
+    for index, api in enumerate(['vector', 'message', 'batch']):
+        for native_server in [True, False]:
+            role = 'passive' if native_server else 'active'
+            port = 25020 + 2 * index + (0 if native_server else 1)
+            address = '198.18.0.2' if native_server else '198.18.0.1'
+            stats_path = work / ('stream-' + api + '-' + role + '.json')
+            listen = [str(args.stream_app), 'server', address, str(port), api]
+            connect = [str(args.stream_app), 'client', address, str(port), api]
+            native = [*launcher, '--stats', str(stats_path), '--']
+            if native_server:
+                listen = native + listen
+            else:
+                connect = native + connect
+            captured = []
+            with server(listen, port, log, env, captured=captured):
+                client(connect, env)
+            server_output = "".join(captured)
+            if "PASS:" not in server_output:
+                raise RuntimeError("stream server did not confirm the byte stream: " + server_output)
+            print(server_output.strip(), flush=True)
+            stats = json.loads(stats_path.read_text())
+            opens = 'passive_opens' if native_server else 'active_opens'
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    not stats['native'][opens]):
+                raise RuntimeError('stream I/O missed native TCP/DPDK or leaked: ' + str(stats))
+            print('native F-Stack stream ' + api + ' ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def inside(args):
     with tempfile.TemporaryDirectory(prefix='ker-native-tcp-') as temporary:
         work = Path(temporary)
@@ -218,6 +252,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
                 if args.fd_app:
                     stats_path = work / 'fd-app.json'
@@ -260,6 +295,7 @@ def main():
     parser.add_argument('--fd-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)
+    parser.add_argument('--stream-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)
