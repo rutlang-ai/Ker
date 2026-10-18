@@ -25,6 +25,15 @@
     }
   },
   "cases": {
+    "native-fstack-socket-contracts": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_ioctl_fionbio",
+        "test_ff_host_dup"
+      ],
+      "adaptation": "Six Ker-specific public POSIX socket-contract extensions of pinned host bridge name/nonblocking/dup scenarios. Separate host-reference and imported-Linux CTests execute the same assertions: socket creation flags and SO_TYPE/SO_DOMAIN/SO_PROTOCOL; explicit accept/accept4 flags rather than listener flag inheritance; zero/short address buffers with untouched sentinels and full returned lengths; TCP/keepalive options, invalid-option errors and recovery; bind collision without disrupting the live listener; and F_DUPFD_CLOEXEC/fstat alias identity, self-duplication errors and surviving I/O after the original closes. The upstream host-only bridge tests do not cover these additional Linux socket contracts. Native fd scenario execution requires original-Linux TCP open counters, no outstanding packet buffers, and the existing independent-host TCP/DPDK interop. Contract cases themselves use loopback. No ff implementation, private API, mock, protocol change or new supported capability is introduced."
+    },
     "native-fstack-readiness": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
