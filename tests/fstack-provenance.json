@@ -10,6 +10,10 @@
     "tests/integration/test_ff_dpdk_if_integration.c": {
       "sha256": "bf7829fb2c08bc8005969f55885f46b802aeb007d0667eca93ba694f4f17899a",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_ff_dpdk_if_integration.c"
+    },
+    "tests/unit/test_ff_epoll.c": {
+      "sha256": "25ee9d15ebc8bcc9827846030467a80681cdd0741876f01633fbe307ba1e43d7",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_epoll.c"
     }
   },
   "cases": {
@@ -415,6 +419,26 @@
         "test_ff_dpdk_pktmbuf_free_basic"
       ],
       "adaptation": "Ker-specific Linux packet_type fanout and ownership extension. Real net_ring RX supplies segmented opaque Ethernet frames through the actual worker, original Ethernet classification and imported Linux ptype delivery. Global-before-device ordering, per-callback descriptor references, final-handler status, explicit invalid-status reporting, no-handler drop, retained skb lifetime, cloned backing, COW ENOMEM rollback/recovery, independent header/payload mutation, both release orders and full pool reclamation are checked. The pinned F-Stack cases motivate worker iteration and basic ownership only; they do not test Linux ptype fanout or COW. No F-Stack RX, NIC, IP/transport processing or application-protocol behavior is claimed."
+    },
+    "native-fstack-epoll": {
+      "source_file": "tests/unit/test_ff_epoll.c",
+      "source_case": [
+        "test_ff_epoll_create_returns_fd",
+        "test_ff_epoll_ctl_add_event",
+        "test_ff_epoll_ctl_del_event",
+        "test_ff_epoll_ctl_mod_event",
+        "test_ff_epoll_wait_event_translation",
+        "test_ff_epoll_wait_zero_timeout",
+        "test_ff_epoll_wait_invalid_args",
+        "test_ff_epoll_ctl_invalid_op",
+        "test_ff_epoll_ctl_epollet_sets_ev_clear",
+        "test_ff_epoll_ctl_epolloneshot_sets_ev_oneshot",
+        "test_ff_epoll_wait_write_filter_to_epollout",
+        "test_ff_epoll_wait_ev_error_to_epollerr",
+        "test_ff_epoll_wait_ev_eof_read_to_hup_in",
+        "test_ff_epoll_wait_ev_eof_write_with_fflags"
+      ],
+      "adaptation": "Eight public POSIX scenarios use real loopback TCP connections, first on the host Linux baseline and then through libker-posix with the complete pinned Linux kernel. Covers create/invalid values, ADD/MOD/DEL and full 64-bit event data, level readiness while partially unread, ET drain/new data, ONESHOT explicit rearm, write-only readiness, buffered EOF with reverse-direction data, and abortive-close ERR/HUP with SO_ERROR. Kernel open counters and empty outstanding DPDK allocation counts are required. The same CTest also retains independent host TCP/DPDK interop checks. No ff implementation, FreeBSD stack, kqueue translation, synthetic events or cmocka stubs are copied. Linux rejects epoll_create(0), unlike the upstream stub; half-close uses EPOLLRDHUP instead of assuming EV_EOF translates to EPOLLHUP. Invalid-pointer and synthetic unknown-kqueue-filter cases are not claimed."
     }
   }
 }

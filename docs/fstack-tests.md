@@ -12,6 +12,7 @@ FreeBSD 栈、cmocka mock/stub 或覆盖率脚本。没有通过宿主机 socket
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| native-fstack-epoll | test_ff_epoll_create_returns_fd / test_ff_epoll_ctl_add_event / test_ff_epoll_ctl_mod_event / test_ff_epoll_ctl_del_event / test_ff_epoll_wait_* / EPOLLET / EPOLLONESHOT cases | 8 个真实 POSIX TCP 场景分别在宿主 Linux 与完整导入内核上运行并比较结果，覆盖参数、ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot 重置、仅写就绪、半关闭 EOF 与 RST/ERR/HUP；原生连接计数和 mbuf 回收必须通过。同一 CTest 还运行独立宿主对端的 DPDK 互通。上游用 cmocka 合成 kqueue 事件，本适配不复制 stub/FreeBSD 行为；Linux 的 create(0) 返回 EINVAL，半关闭检查 RDHUP，未声称覆盖无效指针和未知 kqueue filter。需 KER_WITH_NATIVE_TCP=ON |
 | flow-icmpv4 | test_ff_dpdk_if_send_multiseg | Stateless ICMP quotation parsing extracts the quoted UDP flow key for generic packet steering. Segmentation, truncation, length, options and fragment boundaries preserve input ownership; it creates no connection or send evidence and is not an F-Stack ICMP or NIC/RSS test |
 | fstack-mbuf-release | test_ff_dpdk_pktmbuf_free_basic | 实际 Ker packet pool alloc/free，验证可用对象数恢复 |
 | fstack-clock-monotonic | test_ff_get_tsc_ns_monotonic | Ker CLOCK_MONOTONIC ns，验证非递减，不复制 TSC 算法 |
@@ -118,3 +119,22 @@ EAL 测试初始化，显式检查全部 descriptor、queue 和 pool 回收。DP
 
 该套件是外部场景驱动的补充，既有 Linux 原始代码、DPDK 所有权和失败回滚
 测试继续保留。当前公共网络 capability 仍仅为 checksum。
+
+## 完整原生 Linux 的 epoll 场景
+
+`native-fstack-epoll` 将固定版本 `tests/unit/test_ff_epoll.c` 的 API 场景迁移为
+真实连接测试，区别于上表中基础库的报文 view 与 adapter 测试。C 程序仅使用公共
+POSIX 接口；先以宿主 Linux 为基线，再由 `ker-run` 在独立原生内核运行。两个后端的
+8 项断言必须分别全部通过，输出也必须相同；不能用基线结果代替原生结果。
+原生运行记录至少 8 次 active/passive open 和 `outstanding=0`。这部分 loopback
+连接不会经过 DPDK；同一测试中的主动/被动 1 MiB 独立宿主对端互通另行验证
+DPDK TX/RX 与原生连接计数。
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-epoll$' --output-on-failure
+```
+
+F-Stack 的原始测试检查 FreeBSD kqueue 转换和 mock 调用；这里检查原始 Linux
+的运行行为。Linux 的 `epoll_create(0)`、半关闭及错误标志按 Linux 语义断言，
+不强行匹配上游 stub 的结果。完整来源、原始文件 SHA-256、具体案例及未覆盖项
+见 [provenance](../tests/fstack-provenance.json) 的 `native-fstack-epoll`。
