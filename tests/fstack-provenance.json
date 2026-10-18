@@ -522,6 +522,15 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific blocking send/backpressure extension, not an upstream F-Stack timeout test. Host-reference and native client/server runs use a dedicated TCP control connection plus a small-buffer TCP data connection over DPDK net_tap/veth. Each endpoint takes a turn sending 512 KiB + 13 direction-specific bytes while its peer withholds application reads until a control marker. SO_SNDTIMEO=120ms must yield positive partial send progress, then no-progress EAGAIN via send, writev and sendmsg; all positive return lengths advance the source offset. Invalid microseconds return EDOM without replacing the prior value. Clearing the timeout through dup must affect the original fd. After an explicit resume marker, the peer enlarges its receive buffer, verifies the entire byte stream, acknowledges completion on the control connection, and the roles reverse. Both directions end at exact EOF without extra bytes. Elapsed checks allow 50ms..5s and option tick rounding, not precise timing. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol or runtime adapter changes, mocks, host signal interruption/cancellation, connect-timeout or general time64 ABI support is introduced."
+    },
+    "native-fstack-tcp-connect-lifecycle": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup",
+        "test_ff_host_kqueue_ctl_poll"
+      ],
+      "adaptation": "Ker-specific Linux TCP connect/error and epoll lifetime extension of the pinned host bridge scenarios, not an upstream F-Stack AF_UNSPEC reconnect test. Host-reference and native client/server runs use independent Linux peers over DPDK net_tap/veth. One nonblocking client socket plus its dup alias receives ECONNREFUSED from an unused port; poll/epoll report error readiness, reading SO_ERROR through the alias clears it for the original fd, and error readiness clears without assuming HUP/writable readiness disappears. AF_UNSPEC resets the socket; it connects to the first listener, verifies peer tuples and echo, then AF_UNSPEC aborts that live connection (the server must observe ECONNRESET). Any local reset error is cleared, and the same socket reconnects to a different listener port without replacing the epoll registration. Closing the originally registered fd must retain readiness and I/O through the live alias; the final exchange, half-close and EOF succeed with the full 64-bit event tag intact. Native client requires three active opens; native server requires two passive opens, plus positive DPDK TX/RX, both endpoint PASS results and zero outstanding buffers. Original Linux owns refusal, reset and reconnect semantics. No protocol/adapter changes, mocks, portable AF_UNSPEC guarantee, concurrent close stress, host signal interruption or io_uring coverage is introduced."
     }
   }
 }
