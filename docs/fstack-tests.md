@@ -13,6 +13,7 @@ FreeBSD 栈、cmocka mock/stub 或覆盖率脚本。没有通过宿主机 socket
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
 | native-fstack-epoll | test_ff_epoll_create_returns_fd / test_ff_epoll_ctl_add_event / test_ff_epoll_ctl_mod_event / test_ff_epoll_ctl_del_event / test_ff_epoll_wait_* / EPOLLET / EPOLLONESHOT cases | 8 个真实 POSIX TCP 场景分别在宿主 Linux 与完整导入内核上运行并比较结果，覆盖参数、ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot 重置、仅写就绪、半关闭 EOF 与 RST/ERR/HUP；原生连接计数和 mbuf 回收必须通过。同一 CTest 还运行独立宿主对端的 DPDK 互通。上游用 cmocka 合成 kqueue 事件，本适配不复制 stub/FreeBSD 行为；Linux 的 create(0) 返回 EINVAL，半关闭检查 RDHUP，未声称覆盖无效指针和未知 kqueue filter。需 KER_WITH_NATIVE_TCP=ON |
+| native-fstack-readiness / host-fstack-readiness-reference | test_ff_host_kqueue_ctl_poll / test_ff_host_ioctl_fionbio | Ker-specific poll/select 扩展：同一公共 POSIX 程序在宿主基线和原生内核分别检查 8 个场景，包括监听、混合 pipe/TCP、计数、无效 fd、带外数据、低水位及 EOF。原生连接计数与回收须通过。上游仅为 FF_KERNEL_COEXIST 宿主 readiness/FIONBIO 桥接，本批不声称上游已有这些 poll/select 测试。需 KER_WITH_NATIVE_TCP=ON |
 | flow-icmpv4 | test_ff_dpdk_if_send_multiseg | Stateless ICMP quotation parsing extracts the quoted UDP flow key for generic packet steering. Segmentation, truncation, length, options and fragment boundaries preserve input ownership; it creates no connection or send evidence and is not an F-Stack ICMP or NIC/RSS test |
 | fstack-mbuf-release | test_ff_dpdk_pktmbuf_free_basic | 实际 Ker packet pool alloc/free，验证可用对象数恢复 |
 | fstack-clock-monotonic | test_ff_get_tsc_ns_monotonic | Ker CLOCK_MONOTONIC ns，验证非递减，不复制 TSC 算法 |
@@ -119,6 +120,24 @@ EAL 测试初始化，显式检查全部 descriptor、queue 和 pool 回收。DP
 
 该套件是外部场景驱动的补充，既有 Linux 原始代码、DPDK 所有权和失败回滚
 测试继续保留。当前公共网络 capability 仍仅为 checksum。
+
+## poll/select 就绪语义扩展
+
+`host-fstack-readiness-reference` 与 `native-fstack-readiness` 分别运行同一套
+8 个公共 POSIX 场景：监听接入和 accept 后恢复空闲、重复 poll 条目与 select
+多集合计数、宿主 pipe/原生 TCP 混合等待、负数/已关闭 fd、带外数据
+`POLLPRI/exceptfds`、`SO_RCVLOWAT`、缓冲数据后的 EOF、零值/非法 timeout。
+`pselect` 的 timeout 必须保持不变，原生场景必须记录 imported-kernel TCP open
+并回收 packet buffers。数据到达通过有界等待同步，不把 send 返回当作对端已就绪。
+
+这些是受固定 F-Stack host readiness/FIONBIO 桥接场景启发的 Ker 扩展，
+上游没有用这些案例验证 poll/select 或原生 TCP。宿主基线单独列出，不冒充
+用户态栈通过；原生 CTest 另行执行独立宿主对端的 TCP/DPDK 互通和启动失败检查。
+本批不修改协议实现，也不作性能或 io_uring 支持声明。
+
+```sh
+ctest --test-dir build-native-tcp -R '^(host-fstack-readiness-reference|native-fstack-readiness)$' --output-on-failure
+```
 
 ## 完整原生 Linux 的 epoll 场景
 
