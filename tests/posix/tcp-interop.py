@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Test imported Linux TCP against an independent host TCP endpoint over DPDK."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import http.server
+from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
+import selectors
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+def ready(process, port):
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        if not selector.select(20):
+            raise RuntimeError('server did not become ready')
+        line = process.stdout.readline().strip()
+    if line != f'READY {port}':
+        raise RuntimeError('server startup failed: ' + line)
+
+
+@contextmanager
+def server(command, port, log, env):
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
+    try:
+        ready(process, port)
+        yield process
+        output, _ = process.communicate(timeout=30)
+        if process.returncode:
+            raise RuntimeError(f'server exited {process.returncode}: {output}')
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def client(command, env):
+    result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=40)
+    if result.returncode or 'PASS:' not in result.stdout:
+        raise RuntimeError(f'client exited {result.returncode}: {result.stdout}\n{result.stderr}')
+    print(result.stdout.strip(), flush=True)
+    return result.stdout
+
+
+def application_compat(args, launcher, work, env):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'Ker native Linux TCP via unmodified curl\n'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *_args):
+            pass
+    if args.curl:
+        httpd = http.server.ThreadingHTTPServer(('198.18.0.1', 25011), Handler)
+        thread = threading.Thread(target=httpd.serve_forever)
+        thread.start()
+        try:
+            result = subprocess.run([*launcher, '--stats', str(work / 'curl.json'), '--',
+                str(args.curl), '--noproxy', '*', '--fail', '--silent', '--show-error',
+                '--max-time', '10', 'http://198.18.0.1:25011/'], env=env, text=True,
+                capture_output=True, timeout=20)
+            if result.returncode or result.stdout != 'Ker native Linux TCP via unmodified curl\n':
+                raise RuntimeError('unmodified curl failed: ' + result.stdout + result.stderr)
+            print('PASS: unmodified curl HTTP over native TCP', flush=True)
+        finally:
+            httpd.shutdown(); thread.join(); httpd.server_close()
+    if args.redis_server:
+        def request(*parts):
+            return ('*' + str(len(parts)) + '\r\n' + ''.join(
+                '$' + str(len(part)) + '\r\n' + part + '\r\n' for part in parts)).encode()
+        stats_path = work / 'redis.json'
+        with (work / 'redis.log').open('w+') as log:
+            process = subprocess.Popen([*launcher, '--stats', str(stats_path), '--',
+                str(args.redis_server), '--bind', '198.18.0.2', '--port', '25012',
+                '--protected-mode', 'no', '--save', '', '--appendonly', 'no',
+                '--daemonize', 'no', '--dir', str(work)], env=env, stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 20
+                while True:
+                    try:
+                        with socket.create_connection(('198.18.0.2', 25012), timeout=.25) as peer:
+                            peer.sendall(request('PING'))
+                            if peer.recv(128) != b'+PONG\r\n':
+                                raise RuntimeError('unexpected PING response')
+                        break
+                    except OSError:
+                        if process.poll() is not None or time.monotonic() > deadline:
+                            raise RuntimeError('unmodified Redis/Valkey did not become ready')
+                        time.sleep(.025)
+                def exercise(index):
+                    with socket.create_connection(('198.18.0.2', 25012), timeout=10) as peer:
+                        stream = peer.makefile('rb')
+                        for iteration in range(32):
+                            key = f'key-{index}-{iteration}'
+                            value = f'value-{index}-{iteration}'
+                            peer.sendall(request('SET', key, value) + request('GET', key))
+                            if (stream.readline() != b'+OK\r\n' or
+                                stream.readline() != f'${len(value)}\r\n'.encode() or
+                                stream.readline() != value.encode() + b'\r\n'):
+                                raise RuntimeError('Redis/Valkey SET/GET response mismatch')
+                        stream.close()
+                with ThreadPoolExecutor(max_workers=16) as executor:
+                    list(executor.map(exercise, range(32)))
+                with socket.create_connection(('198.18.0.2', 25012), timeout=10) as peer:
+                    peer.sendall(request('SHUTDOWN', 'NOSAVE'))
+                    if peer.recv(128):
+                        raise RuntimeError('unexpected SHUTDOWN response')
+                if process.wait(timeout=15):
+                    raise RuntimeError('Redis/Valkey did not shut down cleanly')
+                stats = json.loads(stats_path.read_text())
+                if stats['outstanding'] or stats['native']['passive_opens'] < 34:
+                    raise RuntimeError('Redis/Valkey native connections or mbuf reclamation missing')
+                print('PASS: unmodified Redis/Valkey, 32 connections, 16 concurrent, 1024 SET/GET pairs', flush=True)
+            except BaseException:
+                log.seek(0); sys.stderr.write(log.read()); raise
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill(); process.wait()
+
+
+def inside(args):
+    with tempfile.TemporaryDirectory(prefix='ker-native-tcp-') as temporary:
+        work = Path(temporary)
+        env = dict(os.environ, RUNTIME_DIRECTORY=str(work))
+        commands = [
+            ['ip', 'link', 'set', 'lo', 'up'],
+            ['ip', 'tuntap', 'add', 'dev', 'kerpeer', 'mode', 'tap', 'multi_queue'],
+            ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
+            ['ip', 'addr', 'add', '198.18.0.1/24', 'dev', 'kerhost'],
+            ['ip', 'link', 'set', 'kerhost', 'up'],
+            ['ip', 'link', 'set', 'kerlink', 'up'],
+            ['ip', 'link', 'set', 'kerpeer', 'up'],
+        ]
+        if args.faults:
+            for device in ['kerlink', 'kerhost']:
+                commands.append(['tc', 'qdisc', 'add', 'dev', device, 'root', 'netem',
+                    'delay', '2ms', '1ms', 'loss', '2%', 'reorder', '20%', '50%', 'seed', '42'])
+        for command in commands:
+            subprocess.run(command, check=True, env=env)
+        if args.errors_app:
+            subprocess.run(['tc', 'qdisc', 'add', 'dev', 'kerhost', 'clsact'], check=True)
+            subprocess.run(['tc', 'filter', 'add', 'dev', 'kerhost', 'ingress', 'protocol', 'ip',
+                'flower', 'ip_proto', 'tcp', 'dst_port', '25010', 'action', 'drop'], check=True)
+        cpu = min(os.sched_getaffinity(0))
+        eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --iova-mode=va --no-telemetry -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink'
+        launcher = [sys.executable, str(args.launcher), '--address', '198.18.0.2/24',
+            '--port', 'net_tap0', '--eal', eal]
+        if not args.installed_defaults:
+            launcher += ['--library', str(args.library), '--io-worker', str(args.io_worker)]
+        app = str(args.app)
+        with (work / 'server.log').open('w+') as log:
+            try:
+                for native_server in [True, False]:
+                    stats_path = work / ('passive.json' if native_server else 'active.json')
+                    native = [*launcher, '--stats', str(stats_path), '--']
+                    address = '198.18.0.2' if native_server else '198.18.0.1'
+                    port = 25001 if native_server else 25002
+                    listen = [app, 'slow-server' if args.zero_window and not native_server else 'server', address, str(port)]
+                    connect = [app, 'slow-client' if args.zero_window and native_server else 'client', address, str(port)]
+                    if native_server:
+                        listen = native + listen
+                    else:
+                        connect = native + connect
+                    with server(listen, port, log, env):
+                        received = client(connect, env)
+                        if args.faults and not native_server:
+                            match = re.search(r"TCP_INFO total_retrans=(\d+)", received)
+                            if not match or int(match[1]) == 0:
+                                raise RuntimeError("native TCP retransmission was not exercised")
+                    stats = json.loads(stats_path.read_text())
+                    if not (stats['tx'] > 0 and stats['rx'] > 0 and stats['outstanding'] == 0):
+                        raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
+                    native_stats = stats['native']
+                    if not native_stats['passive_opens' if native_server else 'active_opens']:
+                        raise RuntimeError('native kernel did not record the TCP open')
+                    if args.faults and (not native_stats['retransmitted_segments'] or not native_stats['out_of_order_queued']):
+                        raise RuntimeError('native retransmission/reordering was not exercised: ' + str(native_stats))
+                    if args.zero_window and not native_stats['zero_window_probes']:
+                        raise RuntimeError('native zero-window probing was not exercised: ' + str(native_stats))
+                    print(('native passive' if native_server else 'native active') + ': ' + json.dumps(stats), flush=True)
+                if args.errors_app:
+                    stats_path = work / 'errors.json'
+                    with server([str(args.errors_app), 'peer'], 25008, log, env):
+                        client([*launcher, '--stats', str(stats_path), '--', str(args.errors_app), 'native'], env)
+                    stats = json.loads(stats_path.read_text())
+                    if not stats['native']['retransmitted_segments'] or stats['outstanding']:
+                        raise RuntimeError('native SYN timeout did not retransmit or I/O leaked: ' + str(stats))
+                    print('native errors: ' + json.dumps(stats), flush=True)
+                application_compat(args, launcher, work, env)
+                if args.fd_app:
+                    client([*launcher, '--', str(args.fd_app)], env)
+                if args.fd_app:
+                    invalid_library = work / 'invalid.so'
+                    invalid_library.write_text('not an ELF shared object\n')
+                    for boundary_args in [
+                        ['--library', str(invalid_library)], ['--port', 'missing-ethdev']]:
+                        rejected = subprocess.run([*launcher, *boundary_args, '--', '/bin/true'],
+                            capture_output=True, text=True, timeout=25, env=env)
+                        if rejected.returncode != 125:
+                            raise RuntimeError('startup failure escaped the native boundary: ' +
+                                str(rejected.returncode) + rejected.stderr)
+                    print('PASS: missing preload and invalid ethdev fail closed with exit 125', flush=True)
+                # Same port in the host and imported loopback domains rules out
+                # an accidental fallback to host-kernel TCP for the native side.
+                with socket.socket() as occupied:
+                    occupied.bind(('127.0.0.1', 0))
+                    occupied.listen()
+                    client([*launcher, '--', app, 'loopback', '127.0.0.1',
+                        str(occupied.getsockname()[1])], env)
+            except BaseException:
+                log.seek(0)
+                sys.stderr.write(log.read())
+                raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ['launcher', 'library', 'io-worker', 'app']:
+        parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--faults', action='store_true')
+    parser.add_argument('--zero-window', action='store_true')
+    parser.add_argument('--fd-app', type=Path)
+    parser.add_argument('--errors-app', type=Path)
+    parser.add_argument('--installed-defaults', action='store_true')
+    parser.add_argument('--curl', type=Path)
+    parser.add_argument('--redis-server', type=Path)
+    parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if not args.inside:
+        command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
+            '--inside', *sys.argv[1:]]
+        result = subprocess.run(command)
+        if result.returncode:
+            print('native TCP integration failed; see the error above. Environment prerequisites include user/network namespaces and the DPDK net_tap PMD.', file=sys.stderr)
+        return result.returncode
+    inside(args)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
