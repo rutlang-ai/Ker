@@ -18,6 +18,10 @@
     "tests/unit/test_ff_host_interface.c": {
       "sha256": "56387b9e0b870fe184e591de661fc23c21bf83e9163c7ff26436a088c1fe491b",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_host_interface.c"
+    },
+    "adapter/syscall/main_stack_udp.c": {
+      "sha256": "3bc1d65402321c5fae7f166a8e644533c0e69b062e2fded255e946b7d2261de5",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/adapter/syscall/main_stack_udp.c"
     }
   },
   "cases": {
@@ -470,6 +474,12 @@
         "test_ff_host_readv_writev"
       ],
       "adaptation": "Ker-specific independent-peer extension: public POSIX TCP programs run vector (writev/readv), message (sendmsg/recvmsg), and batched-message (sendmmsg/recvmmsg) modes against an independent host Linux endpoint over DPDK net_tap/veth. Each mode runs with Ker as client and as server, for six role/API combinations. Every direction validates 256 KiB + 13 bytes using direction-specific patterns, nonblocking progress/retry handling, zero-length vector entries where applicable, half-close and exact EOF. Batched TCP I/O is treated as a byte stream rather than preserving message boundaries. Small send buffers exercise backpressure; observed partial/retry counts are logged without imposing scheduler-dependent counts as performance requirements. Each native instance must show TX/RX, the matching native active/passive open, and zero outstanding packet buffers; both peer programs must report successful byte verification. Upstream covers small host-only bridge transfers, not this native TCP/DPDK or batched-message behavior. No ff implementation, FreeBSD stack, mock, new protocol path, zero-copy, ancillary-data, or io_uring support is added."
+    },
+    "native-fstack-udp-interop": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_udp_csum",
+      "source_example": "adapter/syscall/main_stack_udp.c",
+      "adaptation": "Ker-specific native UDP socket extension motivated by pinned UDP TX-checksum coverage and the public UDP/epoll example. The upstream checksum case tests TX offload metadata, not UDP socket semantics; the example is not an upstream automated test and ignores empty datagrams, unlike this validation. Three modes (sendto/recvfrom, sendmsg/recvmsg, sendmmsg/recvmmsg) run with Ker as both client and server against independent host Linux peers over DPDK net_tap/veth. Each direction verifies four distinct datagrams of lengths 0, 1, 33 and 257; checks peer tuples, epoll readiness, connected UDP in message mode, FIONREAD, MSG_PEEK/MSG_TRUNC, and empty-queue EAGAIN without interpreting zero payload as EOF. Every native instance requires positive DPDK TX/RX, at least four original-Linux UDP InDatagrams/OutDatagrams, zero UDP input/no-port errors and zero outstanding buffers. Protocol behavior is the complete imported Linux UDP implementation, not the basic Ker packet constructors/views. The change adds private native diagnostics fields; it does not change protocol sources, the TCP capability declaration, DNS, IPv6, multicast, fragmentation or error-queue coverage."
     }
   }
 }
