@@ -451,6 +451,17 @@
         "test_ff_epoll_wait_ev_eof_write_with_fflags"
       ],
       "adaptation": "Eight public POSIX scenarios use real loopback TCP connections, first on the host Linux baseline and then through libker-posix with the complete pinned Linux kernel. Covers create/invalid values, ADD/MOD/DEL and full 64-bit event data, level readiness while partially unread, ET drain/new data, ONESHOT explicit rearm, write-only readiness, buffered EOF with reverse-direction data, and abortive-close ERR/HUP with SO_ERROR. Kernel open counters and empty outstanding DPDK allocation counts are required. The same CTest also retains independent host TCP/DPDK interop checks. No ff implementation, FreeBSD stack, kqueue translation, synthetic events or cmocka stubs are copied. Linux rejects epoll_create(0), unlike the upstream stub; half-close uses EPOLLRDHUP instead of assuming EV_EOF translates to EPOLLHUP. Invalid-pointer and synthetic unknown-kqueue-filter cases are not claimed."
+    },
+    "native-fstack-message-io": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_readv_writev",
+        "test_ff_host_ioctl_fionbio",
+        "test_ff_host_dup",
+        "test_ff_host_dup2"
+      ],
+      "adaptation": "Six public POSIX behavioral scenarios run on host Linux and the complete imported Linux TCP stack, comparing successful scenario output and requiring at least six native active/passive opens plus zero outstanding DPDK buffers. Adapts the FF_KERNEL_COEXIST host bridge tests for sendmsg/recvmsg, address lookup, half-close, readv/writev, FIONBIO, dup and dup2. Unlike the upstream host-only bridge cases, the adapted AF_INET pairs must use native TCP under ker-run; the AF_UNIX vector roundtrip remains explicit host passthrough. Ker-specific extensions cover zero-length iovecs, stream short reads without MSG_TRUNC, MSG_PEEK/DONTWAIT, FIONREAD, shared O_NONBLOCK and independent descriptor CLOEXEC, and fixed-fd host/native replacement with post-replacement byte checks. No ff implementation, mock or FreeBSD protocol code is copied. Loopback scenarios do not exercise DPDK traffic; the same CTest separately runs existing independent-host-peer active/passive TCP interop and verifies DPDK counters. No new protocol implementation or zero-copy, ancillary-data, IPv6, fork, or io_uring support is claimed."
     }
   }
 }
