@@ -156,13 +156,30 @@ int epoll_ctl(int fd, int operation, int target, struct epoll_event *event)
     if (result < 0) errno = native_call ? (int)-result : saved;
     return result < 0 ? -1 : (int)result;
 }
-static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum, int64_t timeout, const sigset_t *mask)
+static int host_epoll_wait_ns(int fd, struct epoll_event *events, int maximum,
+    int64_t timeout, const sigset_t *mask, bool precise)
+{
+    if (!precise) {
+        int milliseconds = timeout < 0 ? -1 : (int)(timeout / 1000000);
+        return syscall(SYS_epoll_pwait, fd, events, maximum, milliseconds, mask, _NSIG / 8);
+    }
+#ifdef SYS_epoll_pwait2
+    struct timespec value = { .tv_sec = timeout < 0 ? 0 : timeout / 1000000000,
+        .tv_nsec = timeout < 0 ? 0 : timeout % 1000000000 };
+    return syscall(SYS_epoll_pwait2, fd, events, maximum,
+        timeout < 0 ? NULL : &value, mask, _NSIG / 8);
+#else
+    (void)fd; (void)events; (void)maximum; (void)timeout; (void)mask;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum,
+    int64_t timeout, const sigset_t *mask, bool precise)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) {
-        struct timespec value = { .tv_sec = timeout < 0 ? 0 : timeout / 1000000000,
-            .tv_nsec = timeout < 0 ? 0 : timeout % 1000000000 };
-        return syscall(SYS_epoll_pwait2, fd, events, maximum, timeout < 0 ? NULL : &value, mask, _NSIG / 8);
+        return host_epoll_wait_ns(fd, events, maximum, timeout, mask, precise);
     }
     if (entry->kind != KER_FD_EPOLL || maximum <= 0 || maximum > KER_FD_LIMIT) {
         ker_fd_put(entry); errno = EINVAL; return -1;
@@ -192,14 +209,14 @@ static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum, int64_
 }
 int epoll_wait(int fd, struct epoll_event *events, int maximum, int timeout)
 {
-    return epoll_wait_ns(fd, events, maximum, timeout < 0 ? -1 : (int64_t)timeout * 1000000, NULL);
+    return epoll_wait_ns(fd, events, maximum, timeout < 0 ? -1 : (int64_t)timeout * 1000000, NULL, false);
 }
 int epoll_pwait(int fd, struct epoll_event *events, int maximum, int timeout, const sigset_t *mask)
 {
     sigset_t old;
     if (mask_enter(mask, &old)) return -1;
     return mask_leave(mask, &old, epoll_wait_ns(fd, events, maximum,
-        timeout < 0 ? -1 : (int64_t)timeout * 1000000, mask));
+        timeout < 0 ? -1 : (int64_t)timeout * 1000000, mask, false));
 }
 int epoll_pwait2(int fd, struct epoll_event *events, int maximum, const struct timespec *timeout, const sigset_t *mask)
 {
@@ -207,7 +224,7 @@ int epoll_pwait2(int fd, struct epoll_event *events, int maximum, const struct t
     if (duration_ns(timeout, &duration)) return -1;
     sigset_t old;
     if (mask_enter(mask, &old)) return -1;
-    return mask_leave(mask, &old, epoll_wait_ns(fd, events, maximum, duration, mask));
+    return mask_leave(mask, &old, epoll_wait_ns(fd, events, maximum, duration, mask, true));
 }
 static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, int64_t duration, const sigset_t *mask)
 {

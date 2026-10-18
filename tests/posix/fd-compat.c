@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <signal.h>
 #include <time.h>
 #include <stdio.h>
@@ -15,6 +16,9 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <poll.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -118,6 +122,30 @@ int main(void)
     event.events = EPOLLIN | EPOLLONESHOT;
     CHECK(epoll_ctl(ep, EPOLL_CTL_MOD, client, &event) == 0);
     CHECK(epoll_wait(ep, &event, 1, 2000) == 1 && read(client, bytes, 1) == 1);
+    /* Simulate an older host kernel while exercising the host-only epoll path. */
+    int host_ep = (int)syscall(SYS_epoll_create1, EPOLL_CLOEXEC);
+    CHECK(host_ep >= 0);
+    struct epoll_event host_event = {.events = EPOLLIN, .data.u64 = 42};
+    CHECK(syscall(SYS_epoll_ctl, host_ep, EPOLL_CTL_ADD, pipefd[0], &host_event) == 0);
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_epoll_pwait2, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {.len = sizeof(filter) / sizeof(filter[0]), .filter = filter};
+    CHECK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
+    CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0);
+    CHECK(write(pipefd[1], "F", 1) == 1);
+    struct timespec short_wait = {0, 1000000};
+    errno = 0;
+    CHECK(epoll_pwait2(host_ep, &host_event, 1, &short_wait, NULL) == -1 && errno == ENOSYS);
+    CHECK(epoll_wait(host_ep, &host_event, 1, 100) == 1 &&
+        host_event.data.u64 == 42 && read(pipefd[0], bytes, 1) == 1 && bytes[0] == 'F');
+    CHECK(write(pipefd[1], "G", 1) == 1);
+    CHECK(epoll_pwait(host_ep, &host_event, 1, 100, NULL) == 1 &&
+        host_event.data.u64 == 42 && read(pipefd[0], bytes, 1) == 1 && bytes[0] == 'G');
+    CHECK(close(host_ep) == 0);
     CHECK(write(pipefd[1], "X", 1) == 1 && write(accepted, "Y", 1) == 1);
     CHECK(client < FD_SETSIZE && pipefd[0] < FD_SETSIZE);
     fd_set reads;

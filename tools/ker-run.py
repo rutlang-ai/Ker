@@ -23,6 +23,14 @@ def interrupted(signum, _frame):
     raise Interrupted(signum)
 
 
+def resolve_exit_code(exit_code, app_returncode, infrastructure_failure, preserve_signal):
+    if infrastructure_failure and not preserve_signal:
+        return 125
+    if app_returncode is not None and app_returncode < 0 and preserve_signal:
+        return 128 - app_returncode
+    return exit_code if exit_code >= 0 else 128 - exit_code
+
+
 # CMake substitutes the relative library path for the installed launcher.
 LIB_FROM_BIN = '@KER_POSIX_LIB_FROM_BIN@'
 if LIB_FROM_BIN.startswith('@'):
@@ -57,6 +65,8 @@ def main():
     exit_code = 125
     stats = None
     startup_status = b""
+    infrastructure_failure = False
+    preserve_signal = False
     try:
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
             '--control-fd', str(control_read), '--port', args.port, '--', *shlex.split(args.eal)],
@@ -96,6 +106,8 @@ def main():
         while True:
             try:
                 exit_code = app.wait(timeout=0.25)
+                if exit_code < 0:
+                    preserve_signal = True
                 break
             except subprocess.TimeoutExpired:
                 try:
@@ -110,6 +122,7 @@ def main():
                 elif worker.poll() is not None:
                     raise RuntimeError('DPDK worker stopped while the application was running')
     except (KeyboardInterrupt, Interrupted) as interruption:
+        preserve_signal = True
         signum = interruption.signum if isinstance(interruption, Interrupted) else signal.SIGINT
         exit_code = 128 + signum
         if app and app.poll() is None:
@@ -142,9 +155,9 @@ def main():
             except BlockingIOError:
                 break
         os.close(startup_read)
-        if app and exit_code == 0 and b'KER_NATIVE_DONE\n' not in startup_status:
+        if app and b'KER_NATIVE_READY\n' in startup_status and b'KER_NATIVE_DONE\n' not in startup_status:
             print('ker-run: native Linux shutdown did not complete', file=sys.stderr)
-            exit_code = 125
+            infrastructure_failure = True
         if startup_write >= 0:
             os.close(startup_write)
         if worker:
@@ -154,19 +167,20 @@ def main():
                 worker.kill()
                 output, _ = worker.communicate()
                 print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
-                exit_code = 125
+                infrastructure_failure = True
             for line in output.splitlines():
                 if line.startswith('KER_IO_DONE '):
                     stats = json.loads(line.removeprefix('KER_IO_DONE '))
-            if worker.returncode and exit_code == 0:
-                exit_code = 125
+            if worker.returncode:
+                infrastructure_failure = True
             if stats is not None:
                 for line in startup_status.splitlines():
                     if line.startswith(b'KER_NATIVE_STATS '):
                         stats['native'] = json.loads(line.removeprefix(b'KER_NATIVE_STATS '))
             if args.stats and stats:
                 args.stats.write_text(json.dumps(stats, indent=2) + '\n')
-    return exit_code if exit_code >= 0 else 128 - exit_code
+    return resolve_exit_code(exit_code, app.returncode if app else None,
+        infrastructure_failure, preserve_signal)
 
 
 if __name__ == '__main__':

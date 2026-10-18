@@ -87,6 +87,8 @@ if(BUILD_TESTING)
     add_executable(ker-posix-fd-compat-test tests/posix/fd-compat.c)
     target_link_libraries(ker-posix-fd-compat-test PRIVATE Threads::Threads)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME native-ker-run-exit-status
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
     set(ker_native_test_command "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/posix/tcp-interop.py"
         --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
