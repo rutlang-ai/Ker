@@ -204,6 +204,36 @@ def udp_mtu(args, launcher, work, env, log):
                 raise RuntimeError('UDP MTU scenarios missed native fragmentation: ' + str(stats))
             print('native UDP MTU ' + role + ': ' + json.dumps(stats), flush=True)
 
+
+def tcp_receive_timeouts(args, launcher, work, env, log):
+    if not args.receive_timeouts_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 25600 + index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.receive_timeouts_app), 'server', address, str(port)]
+        connect = [str(args.receive_timeouts_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-receive-timeouts-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP timeout server did not verify recovery')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    not stats['native']['passive_opens' if native_server else 'active_opens']):
+                raise RuntimeError('TCP timeout scenario missed native traffic: ' + str(stats))
+            print('native TCP receive timeouts ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def udp_multicast(args, launcher, work, env, log):
     if not args.udp_multicast_app:
         return
@@ -416,6 +446,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                tcp_receive_timeouts(args, launcher, work, env, log)
                 udp_mtu(args, launcher, work, env, log)
                 udp_multicast(args, launcher, work, env, log)
                 udp_ancillary(args, launcher, work, env, log)
@@ -470,6 +501,7 @@ def main():
     parser.add_argument('--udp-ancillary-app', type=Path)
     parser.add_argument('--udp-mtu-app', type=Path)
     parser.add_argument('--udp-multicast-app', type=Path)
+    parser.add_argument('--receive-timeouts-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)
