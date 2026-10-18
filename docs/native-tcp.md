@@ -75,6 +75,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 零窗口 | 两个方向慢读和小接收缓存；原生窗口探测计数增长，恢复完整字节流 |
 | 错误 | RST、ECONNRESET、EPIPE、SIGPIPE/MSG_NOSIGNAL、SO_RCVTIMEO、ECONNREFUSED、SYN 重传后 ETIMEDOUT |
 | 阻塞接收超时 | 监听 accept 超时及继承；recv/recvmsg/readv 的 EAGAIN、部分 MSG_WAITALL、dup 共享选项、关闭超时后的 EOF 与恢复 |
+| 阻塞发送超时 | 双向小缓冲区压力；send/writev/sendmsg 的部分进度及 EAGAIN；dup 共享 SO_SNDTIMEO，恢复后字节流完整且无重复 |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -99,8 +100,23 @@ EDOM 且原选项不变。对端等待应用指令才发送数据，避免用固
 
 原生客户端验证接收路径，原生服务端验证监听超时、继承和对端恢复；每实例要求对应的
 原生 active/passive open、DPDK TX/RX 非零和 outstanding=0。本项是 F-Stack host
-bridge 场景的 Ker 扩展，协议及超时由原始 Linux 执行；未增加 SO_SNDTIMEO、宿主信号
+bridge 场景的 Ker 扩展，协议及超时由原始 Linux 执行；发送侧 SO_SNDTIMEO 见下一独立测试；本项不增加宿主信号
 中断、pthread cancellation 或所有 time64 选项的验收。
+
+`native-fstack-tcp-send-timeouts` 用独立 TCP control/data 连接协调背压，先运行宿主
+参考，再运行原生客户端和服务端。两端轮流作为发送者；接收者在收到 resume marker
+前不读取 data，因此小 SO_RCVBUF/SO_SNDBUF 会形成可复现压力，不依赖固定 sleep。
+
+设置 SO_SNDTIMEO=120ms 后，首次大 send 必须返回正的部分进度；随后 send、writev、
+sendmsg 各自必须出现无进度 EAGAIN。过程中所有正返回长度都累计到偏移，恢复时不会
+重复发送已有前缀。非法 tv_usec=1000000 返回 EDOM 且保留原值；通过 dup alias 清零
+发送 timeout 后原 fd 查询也为零。timeout 舍入和耗时边界沿用上项，不作精度承诺。
+
+resume marker 之后，接收方增大接收缓存并逐字节验证 512 KiB + 13 字节，再通过
+control ACK 确认完整性，随后交换方向。末尾半关闭并要求 EOF，确认没有额外尾部数据。
+原生客户端和服务端均执行发送与接收阶段，每实例需要两次对应 TCP open、DPDK TX/RX
+非零及 outstanding=0。该测试只新增验收，不修改 Linux 协议或 Ker 适配层；未覆盖
+connect 超时、宿主信号中断和 pthread cancellation。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
