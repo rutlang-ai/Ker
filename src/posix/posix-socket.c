@@ -199,6 +199,13 @@ int fcntl(int fd, int command, ...)
 int fcntl64(int, int, ...) __attribute__((alias("fcntl")));
 int ioctl(int fd, unsigned long request, ...)
 {
+    if (request == FIOCLEX || request == FIONCLEX) {
+        int descriptor_flags = syscall(SYS_fcntl, fd, F_GETFD);
+        if (descriptor_flags < 0) return -1;
+        if (request == FIOCLEX) descriptor_flags |= FD_CLOEXEC;
+        else descriptor_flags &= ~FD_CLOEXEC;
+        return syscall(SYS_fcntl, fd, F_SETFD, descriptor_flags);
+    }
     va_list args;
     va_start(args, request);
     unsigned long argument = va_arg(args, unsigned long);

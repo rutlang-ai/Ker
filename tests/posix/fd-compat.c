@@ -62,6 +62,13 @@ int main(void)
     CHECK(fstat(listener, &stat) == 0 && S_ISSOCK(stat.st_mode));
     int duplicate = dup(listener);
     CHECK(duplicate >= 0 && !(fcntl(duplicate, F_GETFD) & FD_CLOEXEC));
+    CHECK(ioctl(listener, FIOCLEX) == 0 &&
+        (fcntl(listener, F_GETFD) & FD_CLOEXEC) &&
+        (syscall(SYS_fcntl, listener, F_GETFD) & FD_CLOEXEC));
+    CHECK(!(fcntl(duplicate, F_GETFD) & FD_CLOEXEC));
+    CHECK(ioctl(listener, FIONCLEX) == 0 &&
+        !(fcntl(listener, F_GETFD) & FD_CLOEXEC) &&
+        !(syscall(SYS_fcntl, listener, F_GETFD) & FD_CLOEXEC));
     CHECK(fcntl(duplicate, F_SETFL, 0) == 0 && !(fcntl(listener, F_GETFL) & O_NONBLOCK));
     CHECK(fcntl(listener, F_SETFL, O_NONBLOCK) == 0 && (fcntl(duplicate, F_GETFL) & O_NONBLOCK));
     /* Replacing a host file by a native descriptor and back must update both

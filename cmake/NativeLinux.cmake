@@ -6,6 +6,9 @@ set(ker_native_manifest "${KER_NATIVE_LINUX_BUILD}/native-linux.json")
 if(NOT EXISTS "${ker_native_manifest}")
     message(FATAL_ERROR "Run python3 tools/build-native-linux.py --build ${KER_NATIVE_LINUX_BUILD} first")
 endif()
+include("${PROJECT_SOURCE_DIR}/cmake/VerifyNativeLinuxFingerprint.cmake")
+ker_verify_native_linux_fingerprint("${PROJECT_SOURCE_DIR}" "${ker_native_manifest}"
+    "${PROJECT_SOURCE_DIR}/tools/build-native-linux.py")
 file(READ "${ker_native_manifest}" ker_native_json)
 string(JSON ker_native_source GET "${ker_native_json}" source)
 string(JSON ker_native_kernel GET "${ker_native_json}" kernel)
@@ -89,6 +92,12 @@ if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
+    add_test(NAME native-linux-fingerprint-stale-inputs
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fingerprint.py"
+            --builder "${PROJECT_SOURCE_DIR}/tools/build-native-linux.py"
+            --verifier "${PROJECT_SOURCE_DIR}/cmake/VerifyNativeLinuxFingerprint.cmake"
+            --cmake "${CMAKE_COMMAND}")
+    set_tests_properties(native-linux-fingerprint-stale-inputs PROPERTIES TIMEOUT 30)
     set(ker_native_test_command "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/posix/tcp-interop.py"
         --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"

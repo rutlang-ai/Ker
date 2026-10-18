@@ -13,6 +13,19 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def source_fingerprint(root=ROOT):
+    root = Path(root)
+    manifest_path = root / 'config/native-linux.json'
+    defconfig_path = root / 'config/native-linux.defconfig'
+    overlay = root / 'src/posix/lkl-overlay'
+    digest = hashlib.sha256(manifest_path.read_bytes() + defconfig_path.read_bytes())
+    for path in sorted(overlay.rglob('*')):
+        if path.is_file():
+            digest.update(str(path.relative_to(overlay)).encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def run(args, **kwargs):
     print('+', ' '.join(map(str, args)), flush=True)
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
@@ -39,7 +52,14 @@ def main():
         default=Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'ker/native-linux.git')
     parser.add_argument('--build', type=Path, default=ROOT / 'build-native-linux')
     parser.add_argument('--jobs', type=int, default=min(os.cpu_count() or 1, 16))
+    parser.add_argument('--print-fingerprint', action='store_true',
+        help='print the input fingerprint without reading or changing build artifacts')
+    parser.add_argument('--fingerprint-root', type=Path, default=ROOT,
+        help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.print_fingerprint:
+        print(source_fingerprint(args.fingerprint_root))
+        return
     if platform.system() != 'Linux' or platform.machine() != 'x86_64':
         parser.error('the native POSIX backend currently supports x86_64 Linux')
     if args.jobs < 1:
@@ -47,12 +67,7 @@ def main():
     manifest_path = ROOT / 'config/native-linux.json'
     manifest = json.loads(manifest_path.read_text())
     overlay = ROOT / 'src/posix/lkl-overlay'
-    digest = hashlib.sha256(manifest_path.read_bytes() + (ROOT / 'config/native-linux.defconfig').read_bytes())
-    for path in sorted(overlay.rglob('*')):
-        if path.is_file():
-            digest.update(str(path.relative_to(overlay)).encode())
-            digest.update(path.read_bytes())
-    fingerprint = digest.hexdigest()
+    fingerprint = source_fingerprint(ROOT)
     cache = args.cache.resolve()
     build = args.build.resolve()
     build.mkdir(parents=True, exist_ok=True)
