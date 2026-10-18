@@ -79,6 +79,8 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 隔离与回收 | 宿主已占用的端口仍可在原生 loopback 使用；直接宿主 TCP syscall 被拒绝；worker mbuf outstanding=0 |
 | 现有应用（检测到程序时启用） | 原版 curl HTTP；原版 Redis/Valkey 无持久化、32 个连接、16 并发、1024 SET/GET 对及正常 SHUTDOWN |
 
+独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
+
 这些测试运行的是完整导入内核的 TCP，区别于基础库的 F-Stack 报文 view、checksum 和生命周期适配用例。`--stats` 同时输出 Ethernet、重试/丢弃/mbuf 与原生 TCP 计数，便于追溯。
 
 正常退出先关闭应用原生 fd，再让原始 Linux 处理待确认发送队列，默认等待最多 5 秒，可用 `--shutdown-timeout-ms 0..60000` 调整。超时或启动/设备/退出不完整返回 125；其余正常应用返回值保留。SIGKILL、`_exit` 和宿主崩溃不能进行正常排空。应用应正常关闭连接后退出。

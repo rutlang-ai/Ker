@@ -62,6 +62,11 @@ int ker_native_counters(struct ker_native_counters *out)
     struct field extended[] = {{"TCPWinProbe", &value.zero_window_probes}, {"TCPOFOQueue", &value.out_of_order_queued}};
     result = counters("/proc/net/netstat", "TcpExt:", extended, sizeof(extended) / sizeof(extended[0]));
     if (result) return result;
+    struct field udp[] = {{"InDatagrams", &value.udp_in_datagrams},
+        {"OutDatagrams", &value.udp_out_datagrams}, {"InErrors", &value.udp_in_errors},
+        {"NoPorts", &value.udp_no_ports}};
+    result = counters("/proc/net/snmp", "Udp:", udp, sizeof(udp) / sizeof(udp[0]));
+    if (result) return result;
     *out = value;
     return 0;
 }

@@ -170,6 +170,39 @@ def stream_compat(args, launcher, work, env, log):
             print('native F-Stack stream ' + api + ' ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+
+def udp_compat(args, launcher, work, env, log):
+    if not args.udp_app:
+        return
+    for index, mode in enumerate(['basic', 'message', 'batch']):
+        for native_server in [True, False]:
+            role = 'server' if native_server else 'client'
+            port = 25100 + 2 * index + (0 if native_server else 1)
+            address = '198.18.0.2' if native_server else '198.18.0.1'
+            stats_path = work / ('udp-' + mode + '-' + role + '.json')
+            listen = [str(args.udp_app), 'server', address, str(port), mode]
+            connect = [str(args.udp_app), 'client', address, str(port), mode]
+            native = [*launcher, '--stats', str(stats_path), '--']
+            if native_server:
+                listen = native + listen
+            else:
+                connect = native + connect
+            captured = []
+            with server(listen, port, log, env, captured=captured):
+                client(connect, env)
+            output = ''.join(captured)
+            if 'PASS:' not in output:
+                raise RuntimeError('UDP server did not confirm datagrams: ' + output)
+            print(output.strip(), flush=True)
+            stats = json.loads(stats_path.read_text())
+            udp = stats['native']
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    udp['udp_in_datagrams'] < 4 or udp['udp_out_datagrams'] < 4 or
+                    udp['udp_in_errors'] or udp['udp_no_ports']):
+                raise RuntimeError('UDP scenarios missed native traffic or failed: ' + str(stats))
+            print('native F-Stack UDP ' + mode + ' ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def inside(args):
     with tempfile.TemporaryDirectory(prefix='ker-native-tcp-') as temporary:
         work = Path(temporary)
@@ -252,6 +285,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                udp_compat(args, launcher, work, env, log)
                 stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
                 if args.fd_app:
@@ -296,6 +330,7 @@ def main():
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)
     parser.add_argument('--stream-app', type=Path)
+    parser.add_argument('--udp-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)

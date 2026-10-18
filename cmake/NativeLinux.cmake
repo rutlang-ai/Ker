@@ -147,4 +147,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-stream-io COMMAND ${ker_native_test_command}
         --stream-app "$<TARGET_FILE:ker-posix-fstack-stream-io-test>")
     set_tests_properties(native-fstack-stream-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-udp-test tests/posix/fstack-udp.c)
+    target_compile_options(ker-posix-fstack-udp-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-udp-interop COMMAND ${ker_native_test_command}
+        --udp-app "$<TARGET_FILE:ker-posix-fstack-udp-test>")
+    set_tests_properties(native-fstack-udp-interop PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
 endif()
