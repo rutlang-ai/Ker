@@ -21,7 +21,9 @@ struct ker_skb_context {
 };
 int ker_skb_context_init(struct ker_skb_context *ctx, struct ker_packet_pool *packets, const char *name);
 int ker_skb_context_cleanup(struct ker_skb_context *ctx);
-/* Allocations stay in the fixed DPDK pools; errors leave *result unchanged. */
+/* Allocations stay in the fixed DPDK pools; errors leave *result unchanged.
+ * Requests exceeding aligned backing minus skb_shared_info/headroom return
+ * ENOSPC even when the pool is exhausted. Fitting requests may return ENOMEM. */
 int ker_skb_alloc(struct ker_skb_context *ctx, unsigned int payload_capacity,
     unsigned int headroom, struct sk_buff **result);
 /* Adopts a unique direct single-segment mbuf only on success. Its tail must
