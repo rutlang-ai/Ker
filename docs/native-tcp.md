@@ -12,6 +12,10 @@
 
 应用 fd 使用真实宿主占位描述符保留编号，表中持有私有 Linux fd；不会根据编号大小猜测后端。引用保护支持并发操作与关闭。宿主文件、pipe、UNIX socket 和原生网络 socket 可共同用于 poll/select/epoll；混合等待以最多 1 ms 的间隔检查原生就绪。协议定时器由原生内核运行。原生 realtime 时钟在启动时从宿主 CLOCK_REALTIME 初始化，供软件收包时间戳等使用；monotonic clocksource 保持上游行为，启动后的宿主墙钟调整尚不持续同步。
 
+UDP 多播接收需显式给 `ker-run` 添加 `--all-multicast`，请求 DPDK ethdev 接收所有多播帧，
+由原始 Linux 按 socket 成员关系过滤。设备无法启用该模式时启动失败；动态 MAC group
+订阅尚未跨 packet channel 传播。已验证的 net_tap 场景见 [UDP 验证](native-udp-validation.md)。
+
 ## 可复现构建
 
 验证平台为 x86_64 Linux、glibc、GCC。需要 Python 3、CMake ≥3.20、make、Git、Meson、Ninja、pkg-config、flex、bison、bc、libelf 和 OpenSSL 开发包，以及 DPDK 的构建依赖。以下路径为构建时选择，可改用工作目录以外的位置：
