@@ -171,6 +171,39 @@ def stream_compat(args, launcher, work, env, log):
 
 
 
+def udp_receive_truncation(args, launcher, work, env, log):
+    if not args.udp_receive_truncation_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 26900 + index
+        native_server = role == 'server'
+        server_address = '198.18.0.2' if native_server else '198.18.0.1'
+        client_address = '198.18.0.2' if role == 'client' else '198.18.0.1'
+        listen = [str(args.udp_receive_truncation_app), 'server', server_address, client_address, str(port)]
+        connect = [str(args.udp_receive_truncation_app), 'client', client_address, server_address, str(port)]
+        stats_path = work / ('udp-receive-truncation-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('UDP receive truncation peer did not verify payload and metadata')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            udp = stats['native']
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    udp['udp_out_datagrams'] < (17 if native_server else 13) or
+                    udp['udp_in_datagrams'] < (13 if native_server else 17) or
+                    udp['udp_in_errors'] or udp['udp_no_ports']):
+                raise RuntimeError('UDP receive truncation scenarios missed native traffic: ' + str(stats))
+            print('native UDP receive truncation ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def udp_mtu(args, launcher, work, env, log):
     if not args.udp_mtu_app:
         return
@@ -831,6 +864,7 @@ def inside(args):
                 udp_errors(args, launcher, work, env, log)
                 udp_reuseport(args, launcher, work, env, log)
                 udp_compat(args, launcher, work, env, log)
+                udp_receive_truncation(args, launcher, work, env, log)
                 stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
                 if args.fd_app:
@@ -894,6 +928,7 @@ def main():
     parser.add_argument('--defer-accept-app', type=Path)
     parser.add_argument('--connect-lifecycle-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
+    parser.add_argument('--udp-receive-truncation-app', type=Path)
     parser.add_argument('--installed-defaults', action='store_true')
     parser.add_argument('--curl', type=Path)
     parser.add_argument('--redis-server', type=Path)

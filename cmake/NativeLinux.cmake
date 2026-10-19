@@ -174,6 +174,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-mtu COMMAND ${ker_native_test_command}
         --udp-mtu-app "$<TARGET_FILE:ker-posix-fstack-udp-mtu-test>")
     set_tests_properties(native-fstack-udp-mtu PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-posix-fstack-udp-receive-truncation-test tests/posix/fstack-udp-receive-truncation.c)
+    target_compile_options(ker-posix-fstack-udp-receive-truncation-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-udp-receive-truncation COMMAND ${ker_native_test_command}
+        --udp-receive-truncation-app "$<TARGET_FILE:ker-posix-fstack-udp-receive-truncation-test>")
+    set_tests_properties(native-fstack-udp-receive-truncation PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
     add_executable(ker-posix-fstack-udp-multicast-test tests/posix/fstack-udp-multicast.c)
     target_compile_options(ker-posix-fstack-udp-multicast-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-multicast COMMAND ${ker_native_test_command}
