@@ -179,6 +179,12 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-mtu COMMAND ${ker_native_test_command}
         --udp-mtu-app "$<TARGET_FILE:ker-posix-fstack-udp-mtu-test>")
     set_tests_properties(native-fstack-udp-mtu PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-posix-fstack-udp-waitforone-test tests/posix/fstack-udp-waitforone.c)
+    target_compile_options(ker-posix-fstack-udp-waitforone-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-udp-waitforone COMMAND ${ker_native_test_command}
+        --udp-waitforone-app "$<TARGET_FILE:ker-posix-fstack-udp-waitforone-test>")
+    set_tests_properties(native-fstack-udp-waitforone PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+
     add_executable(ker-posix-fstack-udp-receive-truncation-test tests/posix/fstack-udp-receive-truncation.c)
     target_compile_options(ker-posix-fstack-udp-receive-truncation-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-receive-truncation COMMAND ${ker_native_test_command}

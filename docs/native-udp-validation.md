@@ -299,3 +299,9 @@ ctest --test-dir build-native-tcp -R '^native-fstack-udp-cork$' --output-on-fail
 UDP/epoll 示例的 Ker/Linux 扩展，不声明上游 UDP_CORK 或 MSG_MORE 等价性；没有
 修改 Linux 协议或 Ker 适配代码。未覆盖超大 cork 报文错误恢复、未 flush 就 close、
 更换目的地址、并发 writer、UDP_SEGMENT 或 TCP_CORK。
+
+## 阻塞批量接收的 MSG_WAITFORONE
+
+`native-fstack-udp-waitforone` 在宿主参考、native 主动端和 native 监听端三种组合中双向验证 Linux `recvmmsg(MSG_WAITFORONE)`。UDP socket 保持阻塞模式，四项数组每次接收一个长度为 0、17 或 33 的报文；独立 TCP 控制连接要求接收完成后才发送下一报文，避免偶然已有数据掩盖后续读取应转为非阻塞的语义。发送前检查 100 ms 内没有提前确认，接收耗时须小于四秒，低于五秒接收超时。验证源地址、内容、未写入区域、队列清空和文件状态标志不变，零长度报文必须计为一项。
+
+这是固定 F-Stack UDP 示例的 Ker/Linux 扩展场景，协议行为来自原始 Linux；不宣称上游 F-Stack 测试等价、每次固定批量填满、信号中断或 timeout 指针语义覆盖。
