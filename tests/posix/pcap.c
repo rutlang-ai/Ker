@@ -69,6 +69,10 @@ static void disabled_and_open_failure(void)
     ERROR(ker_pcap_open(&c, "missing/child", "bad", 64, 4096, false), ENOENT);
     CHECK(ker_pcap_close(&c) == 0);
     ERROR(ker_pcap_open(&c, ".", "bad", 0, 4096, false), EINVAL);
+    CHECK(mkdir("cleanup-fail-3.pcap", 0700) == 0);
+    ERROR(ker_pcap_open(&c, ".", "cleanup-fail", 64, 4096, false), EISDIR);
+    CHECK(access("cleanup-fail-0.pcap", F_OK) == -1 && errno == ENOENT);
+    CHECK(rmdir("cleanup-fail-3.pcap") == 0);
     rte_pktmbuf_free(m);
 }
 static void rotate_and_append(void)
