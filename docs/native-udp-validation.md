@@ -305,3 +305,11 @@ UDP/epoll 示例的 Ker/Linux 扩展，不声明上游 UDP_CORK 或 MSG_MORE 等
 `native-fstack-udp-waitforone` 在宿主参考、native 主动端和 native 监听端三种组合中双向验证 Linux `recvmmsg(MSG_WAITFORONE)`。UDP socket 保持阻塞模式，四项数组每次接收一个长度为 0、17 或 33 的报文；独立 TCP 控制连接要求接收完成后才发送下一报文，避免偶然已有数据掩盖后续读取应转为非阻塞的语义。发送前检查 100 ms 内没有提前确认，接收耗时须小于四秒，低于五秒接收超时。验证源地址、内容、未写入区域、队列清空和文件状态标志不变，零长度报文必须计为一项。
 
 这是固定 F-Stack UDP 示例的 Ker/Linux 扩展场景，协议行为来自原始 Linux；不宣称上游 F-Stack 测试等价、每次固定批量填满、信号中断或 timeout 指针语义覆盖。
+
+## UDP 接收低水位与 MSG_WAITALL 边界
+
+`native-fstack-udp-lowwater` 通过宿主参考、native 主动端和 native 监听端组合双向验证 `SO_RCVLOWAT=1/4096`。每种设置下依次发送长度 0、17、33 的报文，即使小于高水位也必须产生 poll/select/epoll 可读事件。特别是零长度报文，`FIONREAD=0` 不等于接收队列为空。
+
+使用 dup 查询共享低水位，并通过 alias 的两段 iovec 调用 `recvmsg(MSG_WAITALL)`，64 字节容量仍只返回当前报文；检查源地址、内容和未写入区域。独立 TCP 控制连接在当前接收完成之前不发送下一报文；接收须在四秒内完成，低于五秒接收超时。每次接收后队列到 EAGAIN 且 epoll 无事件，文件状态保持阻塞，最终通过原 fd 恢复低水位并在 alias 验证。
+
+这是固定 F-Stack UDP 示例的 Ker/Linux 扩展，测试原始 Linux 的报文语义，不声明上游测试等价或 TCP 低水位行为等价；未覆盖信号中断、并发读者、IPv6 或 timeout 指针语义。
