@@ -2846,9 +2846,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_malloc_normal",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual native LKL host callbacks cover the memory, monotonic-time or private anonymous mapping contract; fixed-address mmap convention and remaining interface boundaries are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-runtime",
+          "provenance_case": "native-fstack-host-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_calloc_zeros_memory",
@@ -2867,16 +2872,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_free_null",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual native LKL host callbacks cover the memory, monotonic-time or private anonymous mapping contract; fixed-address mmap convention and remaining interface boundaries are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-runtime",
+          "provenance_case": "native-fstack-host-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_monotonic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual native LKL host callbacks cover the memory, monotonic-time or private anonymous mapping contract; fixed-address mmap convention and remaining interface boundaries are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-runtime",
+          "provenance_case": "native-fstack-host-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_arc4rand_buf_filled",
@@ -2902,9 +2917,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_ns_advances",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual native LKL host callbacks cover the memory, monotonic-time or private anonymous mapping contract; fixed-address mmap convention and remaining interface boundaries are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-runtime",
+          "provenance_case": "native-fstack-host-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_arc4random_distribution",
@@ -2923,9 +2943,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_munmap_roundtrip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual native LKL host callbacks cover the memory, monotonic-time or private anonymous mapping contract; fixed-address mmap convention and remaining interface boundaries are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-runtime",
+          "provenance_case": "native-fstack-host-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
@@ -2958,16 +2983,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_prot_writeonly",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual native LKL host callbacks cover the memory, monotonic-time or private anonymous mapping contract; fixed-address mmap convention and remaining interface boundaries are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-runtime",
+          "provenance_case": "native-fstack-host-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_prot_readonly",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual native LKL host callbacks cover the memory, monotonic-time or private anonymous mapping contract; fixed-address mmap convention and remaining interface boundaries are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-runtime",
+          "provenance_case": "native-fstack-host-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",

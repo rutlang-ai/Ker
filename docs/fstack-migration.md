@@ -14,15 +14,15 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 41 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 48 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 320 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 313 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
-一个 Ker CTest 可以适配多项上游场景；97 个既有 Ker 来源条目中还包含大量
+一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 
 ## 自动检查
@@ -77,7 +77,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 18 | 0 | 1 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 7 | 0 | 27 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 14 | 0 | 20 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 0 | 0 | 6 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -110,3 +110,21 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 `native-dualstack-drain` 使用实际内核分别填满 IPv4/IPv6 发送队列，验证排空超时
 及读取后的恢复，避免 IPv6 socket 被关闭流程遗漏。内核只启用原始 IPv6 配置；
 未修改协议源码。外部 IPv6 地址、路由和 NDP 接收部署尚未验收。
+
+## 主机内存与时钟回调
+
+`native-fstack-host-runtime` 适配 7 个 `test_ff_host_interface.c` 场景，直接调用
+Ker 原生内核所用的 `lkl_host_ops`，检查分配区可写、释放 NULL、单调纳秒时钟、
+匿名映射读写权限和解除映射。读写区逐字节校验；只读区在内核启动前的子进程中
+验证写入触发 SIGSEGV，并关闭 core dump。还验证页分配对齐与释放。
+随后真实启动和关闭固定版本 Linux，通过计数转发回调确认内核使用主机内存和时钟。
+
+LKL 的 `mmap` 回调要求精确地址，与 F-Stack 的 NULL 地址分配接口不同。
+碰撞回归发现固定 LKL POSIX 回调在失败时会解除原有地址，访问原有内容导致崩溃。
+Ker 在 `src/posix/host-memory.c` 安装安全回调：失败保持原映射；若老宿主忽略
+`MAP_FIXED_NOREPLACE` 并返回其他地址，只释放新返回的映射并报告失败。
+原始 LKL 源码保持不变。当前非 MMU 内核通过 `page_alloc` 获取启动内存，
+固定地址回调由测试直接验证，不声称内核启动已走该路径。
+
+这些是运行时适配证据，不增加 TCP/UDP 协议覆盖。共享或文件映射、calloc/realloc、
+随机数、实时时钟等剩余主机接口仍保留未迁移状态。
