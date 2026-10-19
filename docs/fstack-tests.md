@@ -1,13 +1,17 @@
 # F-Stack 测试场景迁移
 
+全量范围、源快照、433 项清单及未完成项见 [全量迁移清单](fstack-migration.md)。
+下表仅列既有场景适配，不能作为上游全部测试迁移完成的声明。
+
 F-Stack 的 tests/unit 和 tests/integration 主要针对 lib/ff_* glue layer；
 unit 使用多种 stub/wrap，部分 integration 启动实际 EAL，但也用 stub 替代
 FreeBSD mbuf/veth。这不是可直接搬入 Ker 的 Linux TCP/IP 一致性套件。
 当前迁移固定到 F-Stack dev commit 646a641cfff77f4815e1e29829a09e1ed15a2999。
 
 适配场景由下表逐项列出，各自运行独立 CTest。测试实现重新编写，使用 Ker CHECK
-harness 和真实 EAL/mempool，不复制 ff_* glue、
-FreeBSD 栈、cmocka mock/stub 或覆盖率脚本。没有通过宿主机 socket 的结果
+harness 和真实 EAL/mempool，不将 ff_* glue、
+FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存为完整只读快照，
+用于来源审计，不自动运行或计为 Ker 通过。没有通过宿主机 socket 的结果
 冒充 Ker 网络栈通过，也不因 EAL 初始化失败跳过用例。
 
 | Ker CTest | 上游场景 | 适配边界 |

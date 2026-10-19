@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/F-Stack/f-stack",
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
-  "mode": "scenario-adaptation; no upstream implementation or harness copied",
+  "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
     "tests/unit/test_ff_dpdk_if.c": {
       "sha256": "785ca7c734b1ec783a3b31b3e7b4d01cebf2f78393d2e09c20e958dbf0bbedfe",
@@ -486,9 +486,13 @@
         "test_ff_epoll_wait_write_filter_to_epollout",
         "test_ff_epoll_wait_ev_error_to_epollerr",
         "test_ff_epoll_wait_ev_eof_read_to_hup_in",
-        "test_ff_epoll_wait_ev_eof_write_with_fflags"
+        "test_ff_epoll_wait_ev_eof_write_with_fflags",
+        "test_ff_epoll_ctl_null_event_non_del",
+        "test_ff_epoll_ctl_add_writeonly_only_epollout",
+        "test_ff_epoll_wait_zero_maxevents_returns_einval",
+        "test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup"
       ],
-      "adaptation": "Eight public POSIX scenarios use real loopback TCP connections, first on the host Linux baseline and then through libker-posix with the complete pinned Linux kernel. Covers create/invalid values, ADD/MOD/DEL and full 64-bit event data, level readiness while partially unread, ET drain/new data, ONESHOT explicit rearm, write-only readiness, buffered EOF with reverse-direction data, and abortive-close ERR/HUP with SO_ERROR. Kernel open counters and empty outstanding DPDK allocation counts are required. The same CTest also retains independent host TCP/DPDK interop checks. No ff implementation, FreeBSD stack, kqueue translation, synthetic events or cmocka stubs are copied. Linux rejects epoll_create(0), unlike the upstream stub; half-close uses EPOLLRDHUP instead of assuming EV_EOF translates to EPOLLHUP. Invalid-pointer and synthetic unknown-kqueue-filter cases are not claimed."
+      "adaptation": "Eight public POSIX scenarios use real loopback TCP connections, first on the host Linux baseline and then through libker-posix with the complete pinned Linux kernel. Covers create/invalid values, ADD/MOD/DEL and full 64-bit event data, level readiness while partially unread, ET drain/new data, ONESHOT explicit rearm, write-only readiness, buffered EOF with reverse-direction data, and abortive-close ERR/HUP with SO_ERROR. Kernel open counters and empty outstanding DPDK allocation counts are required. The same CTest also retains independent host TCP/DPDK interop checks. No ff implementation, FreeBSD stack, kqueue translation, synthetic events or cmocka stubs are copied. Linux rejects epoll_create(0), unlike the upstream stub; half-close uses EPOLLRDHUP instead of assuming EV_EOF translates to EPOLLHUP. Invalid-pointer and synthetic unknown-kqueue-filter cases are not claimed. Full-suite inventory adds NULL ADD/MOD event recovery: Linux EFAULT replaces the upstream wrapper EINVAL; Ker must reject NULL before the LKL user-copy path dereferences it. DEL with NULL remains valid. Existing write-only, zero-maxevents and empty-FIN scenarios cover the corresponding additional upstream registrations. Unknown FreeBSD filter translation has no Linux equivalent and remains separately classified."
     },
     "native-fstack-message-io": {
       "source_file": "tests/unit/test_ff_host_interface.c",

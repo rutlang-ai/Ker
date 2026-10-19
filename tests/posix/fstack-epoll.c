@@ -195,10 +195,24 @@ static void reset(void)
     CHECK(close(c.receiver) == 0);
     CHECK(close(c.ep) == 0);
 }
+static void null_event_non_delete(void)
+{
+    struct connection c = connection();
+    /* Linux returns EFAULT here; F-Stack's kqueue wrapper uses EINVAL. */
+    EXPECT_ERROR(epoll_ctl(c.ep, EPOLL_CTL_ADD, c.receiver, NULL), EFAULT);
+    control(c, EPOLL_CTL_ADD, EPOLLIN, UINT64_C(0xabcdef0123456789));
+    EXPECT_ERROR(epoll_ctl(c.ep, EPOLL_CTL_MOD, c.receiver, NULL), EFAULT);
+    put(c, "after-null");
+    event(c, EPOLLIN, UINT64_C(0xabcdef0123456789));
+    take(c, "after-null");
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_DEL, c.receiver, NULL) == 0);
+    empty(c); finish(c);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"create-and-invalid-arguments", create_and_arguments},
+        {"null-event-and-registration-recovery", null_event_non_delete},
         {"add-modify-delete-and-u64-data", add_modify_delete},
         {"level-triggered-unread-data", level_triggered},
         {"edge-triggered-drain-and-new-data", edge_triggered},

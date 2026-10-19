@@ -1,0 +1,4115 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "source_root": "tests/upstream/fstack",
+  "scope": "Every blob under the pinned tests/ directory plus upstream LICENSE; all registered C/Python cases and both end-to-end shell entrypoints. No upstream test/harness is executed implicitly.",
+  "files": {
+    "LICENSE": {
+      "git_blob": "604ef9762695864bc4b2b35f50d9ea6c8a10cb53",
+      "sha256": "2d663af37353eebc435c03b97bfaebc0c358a7df82d5767802cf27e30a4dc544",
+      "executable": false
+    },
+    "tests/README.md": {
+      "git_blob": "ef9e67cde788849e842a622639d88199aec83988",
+      "sha256": "492315224958155f9a907ec07a1f6cd1fc821457f6bdd789f0d47fa0be08ce65",
+      "executable": false
+    },
+    "tests/README.zh_CN.md": {
+      "git_blob": "e69a2d98fa9d42618f69037a1b9324654d3d719c",
+      "sha256": "87e3277fc034af1d90705279645ef292b67e276ed5f34d30eeb6df2787ccabcc",
+      "executable": false
+    },
+    "tests/integration/Makefile": {
+      "git_blob": "3fe0a866985931f7f180d2fe3ee010bc0a599afe",
+      "sha256": "1205fed64590ae722bcbe282d270e15ce0d6cf02741b13c74d724fad55fe245b",
+      "executable": false
+    },
+    "tests/integration/common/orphan_capture_analyze.py": {
+      "git_blob": "d49751d8a9f77b3189d354255fbfdd3091b49dd6",
+      "sha256": "8c5dc0a3e648450771270fbfc623bce0e69f330e110bfdb0ac02ec5c166857ba",
+      "executable": false
+    },
+    "tests/integration/common/reload_checks.py": {
+      "git_blob": "a8f5354661034be3e2255cc7adf34d21384b06fa",
+      "sha256": "686a57c12981af7be78a24f2f8e94e0070e456ee5042fe0f528b200bfc37bb7d",
+      "executable": false
+    },
+    "tests/integration/common/reload_probes/http_probe.py": {
+      "git_blob": "eaf45d9272840d84b4fcdd0804aa60a5a86bf249",
+      "sha256": "7c19eae3b1dd6eeaa914d12e4d42fbb45d03370aad40232c42c42cfe8c756b31",
+      "executable": false
+    },
+    "tests/integration/common/reload_probes/m4_cps.py": {
+      "git_blob": "96570aa4d15fea655dea48957a7e2e0408b66bc3",
+      "sha256": "64c3f277457cb0bfff0c2fa458ffd52ec0f40e38c1e021749ba34c25288b105e",
+      "executable": false
+    },
+    "tests/integration/common/reload_probes/m4_lc.py": {
+      "git_blob": "56fc4d509eda5d92419ead25236326b544d82d8d",
+      "sha256": "b6539d6c81cd9fceff3c657493b52d962cd4260e09e2d8dec38ecfe88ecca8ac",
+      "executable": false
+    },
+    "tests/integration/common/reload_probes/m4_outage.py": {
+      "git_blob": "14de34dd7b8100ca5383217c40f2b01ddb18fd12",
+      "sha256": "4d57b775a52ceab27b6a64aae6334ad168f6944cf74250054ab8ea6cc2231569",
+      "executable": false
+    },
+    "tests/integration/common/reload_probes/m4_stream.py": {
+      "git_blob": "fb16b7ea9f9761586e5362672381984b9f130ef4",
+      "sha256": "838aaa38d72220d4b8d0f8a2c93bbcc1d45886d96db896e13c1d64a0e4b01958",
+      "executable": false
+    },
+    "tests/integration/common/reload_remote.py": {
+      "git_blob": "233a4a9f7b0d8d698fcfe05a30ed5be1ad70a49b",
+      "sha256": "b679a74477f835f25ab7e0ba144bceeb7569611433ecefc15e344d7046c58d07",
+      "executable": false
+    },
+    "tests/integration/common/reload_runtime.sh": {
+      "git_blob": "1b3ea613ddc60bd2339ba4ef8631372df8361348",
+      "sha256": "af7961ecd6bf9bf3d9e9a924c5cec94ca4ce1ae0d07ee2f40e4712d11d2e7841",
+      "executable": false
+    },
+    "tests/integration/common/reload_supervisor.py": {
+      "git_blob": "ea3ecad8aa33987eb6d52dd13a69be35ae5a714f",
+      "sha256": "901e5ab1acff7110621a205786bf349cb8085a9f8e6c8549d9901e2449fd5d74",
+      "executable": false
+    },
+    "tests/integration/common/rte_stub.c": {
+      "git_blob": "617809b510cce8cec21e0fab3d3e10ff06c7d5ee",
+      "sha256": "3f9f687617e1386c0858a55ebfb6fa933b4ac5f4b64f074b36965e3c3283be59",
+      "executable": false
+    },
+    "tests/integration/common/rte_stub.h": {
+      "git_blob": "2ef8cfa883103245c7f536ef0195ee6ab3085c5f",
+      "sha256": "0b849999bb14858d3859fe8e2cfc4a270a58249da9358c204c1a45c2ee15b7f0",
+      "executable": false
+    },
+    "tests/integration/test_ff_dpdk_if_integration.c": {
+      "git_blob": "8db2bd79609aae2e0fc317842e720282195d7254",
+      "sha256": "bf7829fb2c08bc8005969f55885f46b802aeb007d0667eca93ba694f4f17899a",
+      "executable": false
+    },
+    "tests/integration/test_ff_gendir_mp_integration.c": {
+      "git_blob": "ecaaf4cb9398ffbc1759b940975aebcf0e5fe7b1",
+      "sha256": "9fa32d1e63fedf5e692f0f360fcbb65916d4b3bc3c411d9ad4b291e1ac946534",
+      "executable": false
+    },
+    "tests/integration/test_ff_kni_integration.c": {
+      "git_blob": "9051845b8bc82432906ff0ed0d37a7dcd5ebc022",
+      "sha256": "73b02718c9ac006f7c69158e257e8de81a74e66f4887b70e589954d4f2267a8e",
+      "executable": false
+    },
+    "tests/integration/test_ff_reload_integration.c": {
+      "git_blob": "8e96cc4443196b725e514b1727bf9d3279e6f8ad",
+      "sha256": "09a9e44777c012bcb1c4ef1f95f3f43c8577c554ff9c140656d18dadfea4487c",
+      "executable": false
+    },
+    "tests/integration/test_graceful_reload.sh": {
+      "git_blob": "b9112a8ae394b9ea4fad223238d41f24f119c1dd",
+      "sha256": "7efd3e0d10e584daa57377915da0ba2a9d1f67bebbcd2f512298230d71f35203",
+      "executable": true
+    },
+    "tests/integration/test_mtu.sh": {
+      "git_blob": "b9f62116259993e4f1e700f782fd3da116991592",
+      "sha256": "63d7875718ef7ce2f3e98a20d592a496561449b45c36df0cf05a313f1e62a9f6",
+      "executable": true
+    },
+    "tests/integration/valgrind.supp": {
+      "git_blob": "b5afde113ca66b9072e3289ba474960b6190d56c",
+      "sha256": "784c8a73417034039f376323e22757d450dbfd4631ae7eec01c248e5b06bf88d",
+      "executable": false
+    },
+    "tests/run_full_coverage.sh": {
+      "git_blob": "0acec0a785a6d2dce5dbd83158a1fa2fa6e69930",
+      "sha256": "d4472e22d8e1fbf1e7a9be85aec4a890b22172464dd309897116790535a647f2",
+      "executable": true
+    },
+    "tests/unit/Makefile": {
+      "git_blob": "64b7f141b8704764452a76378da2595e2d290d7f",
+      "sha256": "9e03b444894cc79f1bec2d8f3e4b2de6ad9d4c01a0b79c807dac2fefa43ba17f",
+      "executable": false
+    },
+    "tests/unit/common/ff_log_stub.c": {
+      "git_blob": "66330aa2b277be88179aa9b6da14fdbe3d8a4e5c",
+      "sha256": "f8e068ef61f3ec9f0d2fed38a445bd9405b1f80e8113d5214168229bd3a48852",
+      "executable": false
+    },
+    "tests/unit/common/ff_log_stub.h": {
+      "git_blob": "553b650bf47e4f73575ba97dd2c5273460257591",
+      "sha256": "a35489892532ab02a833c45b620ebf57113bc25954ecbe83e02f6e55b0ffe999",
+      "executable": false
+    },
+    "tests/unit/common/rte_stub.c": {
+      "git_blob": "821be7c9e521a5af5da10b60c1af0d2dfd681f30",
+      "sha256": "4792b40d332ce3338a971c4657bf782c941d5e7696cbd5c0d959162311503677",
+      "executable": false
+    },
+    "tests/unit/common/rte_stub.h": {
+      "git_blob": "2ef8cfa883103245c7f536ef0195ee6ab3085c5f",
+      "sha256": "0b849999bb14858d3859fe8e2cfc4a270a58249da9358c204c1a45c2ee15b7f0",
+      "executable": false
+    },
+    "tests/unit/coverage_threshold.sh": {
+      "git_blob": "1b12da8aff870590613daf66c263db3d5b2265ae",
+      "sha256": "3fa0621c0692c76d5eb864bb3d4a0e9fac3ee0d0bc92d3783a31d92c24d7c149",
+      "executable": true
+    },
+    "tests/unit/fixtures/invalid_bad_lcore.ini": {
+      "git_blob": "55a9236b710e0b3a02afc64fef002da6ce886d5b",
+      "sha256": "942d01e8879918a768923028ee3dc72972d5c75bba87801ee1cd43e171d1655a",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_bond_bad_section.ini": {
+      "git_blob": "013c13b5e3e3e3584220d6ea08e7f37c22d9ac25",
+      "sha256": "47d0f3137bec11e5a67446e5e9ac7a31bf95bc0684116e1ebe042afaf9723bf9",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_bond_no_nb_bond.ini": {
+      "git_blob": "6040da760d7e36c049a1009ea41c1debe2749a54",
+      "sha256": "56994e650cc07cdd597eed8ef224aaae8b4c884ca5865782ee3b77ca4f09258d",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_drain_ring_size_pow2.ini": {
+      "git_blob": "8ffddf9ef7fe1a2c6c1c81a1f6290d88ed71349c",
+      "sha256": "c35bcc4c49f49827920ed52d88e13391e2d998925d206fe4184d83fdc3ee3bdb",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_greload_hb_small.ini": {
+      "git_blob": "6f75bedd68c9b89119ac7e67031f7d5066660a81",
+      "sha256": "eed132a193e1186d71a4fd77571bda7ee9b66f08c8bf24c86774f2fb6e18965c",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_greload_no_slim.ini": {
+      "git_blob": "e2f88f1267427e21bce4db69aa064686a534e04d",
+      "sha256": "411868680f79d6be1db0d5c942c1222f85fd9961ccf1a58b3908e3270ba37735",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_greload_thread_mode.ini": {
+      "git_blob": "7220e3897025fdee7348b445b0b175ca24fe5eb7",
+      "sha256": "cff267890fde099c9f4d977a06c9dd89955144535aceadc4bc047a6487f2671f",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_kni_method_bad.ini": {
+      "git_blob": "999dffed0f99ec482f5b7a4710b45242087c6a9f",
+      "sha256": "05e8bb15f9fb1a2e3f1ad4968fde6231f2307a37d144142e0ff7c225e553c6e0",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_kni_primary_lcore_missing.ini": {
+      "git_blob": "359b4bf0380688a66616d69dd60c35ae55d95c62",
+      "sha256": "e07cbab7f0b4cb4199b93531efeb8644e90add9c301447d608e543d91250fd04",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_lcore_all_blank.ini": {
+      "git_blob": "5511cd4dcfbf93fa95bdbc8b91323949ba925a18",
+      "sha256": "879ca5bf2a27e08f98cab69c604b65eb4d092c758894e0183573915691648f76",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_lcore_midhex.ini": {
+      "git_blob": "5ecc822a39713780cf86380282fe72e03bc0bb59",
+      "sha256": "b76046575711adb8c3055f69e631612259e8af12e6b6e4856666034f013f9ecd",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_lcore_no_bit.ini": {
+      "git_blob": "bcb8ba4ccf5fddeaf57ac62812b15500c34f8404",
+      "sha256": "9ca1b6c81cfd291dd7ff973ccbc2499a408bf69fbaeb420c66dbbe00122be8d1",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_mtu_bad_mode.ini": {
+      "git_blob": "b24196824392efda6a3a77b9263ec0156701bc0c",
+      "sha256": "fa9463b6a886411c90ee457da8e4221c480ddf6edc55d36d4931e51fd9e449ef",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_mtu_disabled_port_over_1500.ini": {
+      "git_blob": "f560c0ebcfcbf564d4d6bc5b4f7a35789fae1183",
+      "sha256": "75ea7fd7e5a672fe7f8c57012d669f15c01bb80c8282022a73f7bd3a0135928f",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_mtu_large_65535.ini": {
+      "git_blob": "4061dd3892548a0b601d201038033fe2bba51d32",
+      "sha256": "068ea3bedf3a06e367c3dcfa8ff3c3d526716344e3f7ca32182d2cb14029ec19",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_mtu_max_mtu_bad.ini": {
+      "git_blob": "c5c3f75de9b21f6da109b0be9e7609747c2142f9",
+      "sha256": "ba07d1e96a802d599239f81c338aff3bade30c7ae84fa667a21b25264742cfa2",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_mtu_port_over_max.ini": {
+      "git_blob": "148058601fa693cd77710696362ddf61dd546bec",
+      "sha256": "f46f1ac57490f52a81a6b83a58357828fdbcd524ca1ae7f0f9c7ba599dec123d",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_no_dpdk.ini": {
+      "git_blob": "a3ee34abbcaf28d5034386cd27d83948272f909e",
+      "sha256": "8c7916add6637a6704e7f585ffe2eebb5fead488b408401813f31600a58555e8",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_port_bad_section.ini": {
+      "git_blob": "2bdcf61193c036b75028bbfe3de670d4a405ed84",
+      "sha256": "b612d3ba4ee99b055ac92dc42b7075c01417cf145dd7ea5254d475ca91426376",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_portlist_nonint.ini": {
+      "git_blob": "7aea6b17e574f9e0de76a5dbb213c07fb980ca54",
+      "sha256": "17a0de294328d1c94ce615c66259b4c949a68b41e0395553d286c8784d6d21b3",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_rss_check_no_port.ini": {
+      "git_blob": "5f6b8c225717bebceaf3122ed91ad790d772484f",
+      "sha256": "0d829fe4c6073b9cdf4367edf628a1b9aed01fd4ebf3a9003dd2fdaa818fa077",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_rss_tbl_bad_tuple.ini": {
+      "git_blob": "47329006da83d9273b8b87dd4bd91722212e687e",
+      "sha256": "e2451cab3770be3c9ff8a43a6c4610852f7389a286a5b693e021ce861fd8620c",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_vdev_no_nb_vdev.ini": {
+      "git_blob": "ac2cb8fd748886140592d8698c427c07ea15d719",
+      "sha256": "424d3e08ff41c3f510083b0fe8f2593b3acc9b5d5fef0ea3c611c29253c4ff0b",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_vlan_bad_section.ini": {
+      "git_blob": "79cf2b10fdb32e73ef4f7cc0277642eafc355f71",
+      "sha256": "55a4a94db558db059368867e75c6ff2aade5ad559d47b325724b04c068a86590",
+      "executable": false
+    },
+    "tests/unit/fixtures/invalid_vlan_id_not_in_filter.ini": {
+      "git_blob": "11efd7d6447c5c7802936677a3ea0d7e8af4095c",
+      "sha256": "0985e828712ab082b91935ee6448c7f1d03b17f32d48da40f022fd0cb3865d02",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_all_sections.ini": {
+      "git_blob": "3b84ba05162a78651f16b4489d788b2c23fff3ad",
+      "sha256": "ba273adc65f77a6286d9f2e6f1d38d4918f1cd8dae0d13785a44f6704dd15f7c",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_bond.ini": {
+      "git_blob": "612786d8e41366de84f0e17eab3c63b27cdf93bf",
+      "sha256": "3b5e27b66635c174ee5f149608525b04676d2b23f597361529e6797cb42c3b86",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_bond_vdev_repeat.ini": {
+      "git_blob": "3f24d68f4d8467ab33e7bba7e761774df61df9f9",
+      "sha256": "b13f11940e948be55e4acb3d3060e48bec597de18a41690808ba75682b8a9d46",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_dpdk_extra_keys.ini": {
+      "git_blob": "546b7bd2c722e3e8d9bde1c78dc48d3d8afd6f56",
+      "sha256": "50625b250ce339f4f0db7e6aa539e5c0f61b322ca0e4ea2d029270ee0d29f499",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_dpdk_full.ini": {
+      "git_blob": "b2ef8012c76478dfd28fb58f5e13819f9cf537b5",
+      "sha256": "544b536cc85eda9e83bdc4bf1f87eddc4d905862e88680395e138f76a31c9118",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_drain_ring_size.ini": {
+      "git_blob": "d257988203fa3307e7b03018100ef889982caa5e",
+      "sha256": "d3492d8db78426e502c5401b2c41a020340fffd85a5ec86f8f7523d5d3728ba8",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_drain_ring_size_neg.ini": {
+      "git_blob": "09bdba11abca22c1c5430059c2d9f9a4715b0ca0",
+      "sha256": "06da1b23769e92ba2d8d32cac5c1aaeed858590318d74ff45457de966a285919",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_dual_vlan.ini": {
+      "git_blob": "76850492b6d572639e329178305526bb913a1f8b",
+      "sha256": "e2a77fe4cdfe4546067ce919e6680ae27c280e7ac6325bad55f97a0d7d3b7274",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_freebsd_boot.ini": {
+      "git_blob": "44b385a41a31107d4096cc867e4918881791df71",
+      "sha256": "fa72562b4427a1772c06163e2e918f79befd10dec50674029180bef0bc81d25c",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_graceful_reload.ini": {
+      "git_blob": "be3255724ec92c70b6c550196276fee4fb3ce658",
+      "sha256": "35f371e6664b028c8107546ffaeec039fc658c9da91ab9c1a77a54a3b25bed8a",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_greload_bad_value.ini": {
+      "git_blob": "8ee1fe6bff14e4f8335d526cee67c12ed27efdc3",
+      "sha256": "13d4b16bb1fc22e3b6f4688d92ed9d6611803337723c0efb5e03bf8933e05c22",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_greload_hb_negative.ini": {
+      "git_blob": "c992e876eb5cc68d6ca0bfca89ac7aaa74998c97",
+      "sha256": "c302902ac475e8e57fb63995d853e09912e86598456850d8bc15af715fd747cc",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_greload_hb_timeout.ini": {
+      "git_blob": "fbf6e149955ec14c65564ddf66ebada76ba5462d",
+      "sha256": "862471e0385293b083f0e496449a4650965d7c5e467e68a323509f2d36b9f23f",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_inet6.ini": {
+      "git_blob": "0d08772db9f81e180c89c11e44b441c2d1d7c23f",
+      "sha256": "30361d8c21631aacfb23b501e182bb6568c05678bd92b56568cd7fb9b9c19226",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_kni_method_reject.ini": {
+      "git_blob": "1cebe29320ae47518cad9f53f3296f83f81b42e4",
+      "sha256": "d125dac145ab323b90787f3727fb1ead6a8c80f0d5a377053b13aa62b1a95108",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_kni_primary_lcore_ok.ini": {
+      "git_blob": "f974606a4d768b4d163fecffc0dd3070e565d7d8",
+      "sha256": "4d4368997f57cf524097e19ae0d16b95110dbd746250871d227dd75241a25949",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_lcore_blank_multibit.ini": {
+      "git_blob": "16860bb0182f4339727ac1770a3117dcf2f56780",
+      "sha256": "6e998b717f93da5e983cfe109c288c89c722bc00decfea68982cfde3cc5c89a0",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_lcore_uppercase.ini": {
+      "git_blob": "45749d389e212fb1217d0a140805e5b2f602c150",
+      "sha256": "0f5ac4f512988d9eb90f8b352ac7b51269abd657d77556e0ef13a6e079706957",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_minimal.ini": {
+      "git_blob": "1c632e3e87bdcc88f6703a730e10380641c81e56",
+      "sha256": "41494ea6a7251d596f436426da3f6452228936d6a8ef7f1c198ee47d4ae2aef6",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_mtu_large_9000.ini": {
+      "git_blob": "1cc07b160bdb0b26bdd665ea04a4c37011754ded",
+      "sha256": "aac0ba9104148d664202daa8f6c422e134ac2b31c93ee1964d8fba3fcf2db8cf",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_mtu_scatter.ini": {
+      "git_blob": "674770f99152bae0d714632edaf7ba29e2097c77",
+      "sha256": "14f0b93d12cdd838cdc6afe433444cbee22caf4b53010f95442fde6f8b93654d",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_port_id_over_max.ini": {
+      "git_blob": "c75932eb964a89295913374326b2c4892e8e5d9d",
+      "sha256": "1fe187d2c5b32e8f0da57b37758b1b546540ee685c311243fdb1471270e3b228",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_repeat_keys.ini": {
+      "git_blob": "48acdeff3cdace2af425fab12becdefd5ae6b7d2",
+      "sha256": "f048609108071c966720978ad8188a255c5e06fa45a19dcdd9f2fa9a92399583",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_rss_check_thash_adjust_off.ini": {
+      "git_blob": "bca51ab231587aaec5aba3908f8a0a7615f6d817",
+      "sha256": "95e79b435d16e59352de07a151a53451a2aa369fd9dc17cf05ac245455fbc847",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_stack_garbage.ini": {
+      "git_blob": "faa8058e3e67015c09aac5dcccf2a85438cad755",
+      "sha256": "0e01585e2881ff1108dad73444c2c8ef901b65c9d2f64411fb02b6d6b88df63a",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_stack_kernel.ini": {
+      "git_blob": "357a171beec0779bb8e648a24f190f5fe8057019",
+      "sha256": "c7966b86d6c14e4792592d059038ea3179da87fd94d4c8c1b70d3d2532864c70",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_tcp_ecn.ini": {
+      "git_blob": "9d7c606bd9c1130c0c98512da18f8fd425c0fe5c",
+      "sha256": "b46d2b42a8b437a771d4d475f4a79e1306f3685d8f1291209ced91bca5011201",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_thread_mode.ini": {
+      "git_blob": "b56167e76b24aecf921cb47dcf56a32abc5e20c8",
+      "sha256": "28c52d4aba45c8411a69c5dca047e56ef5bccfa039b003d222dc9740a42d54bd",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_vdev.ini": {
+      "git_blob": "ebd4ddf88ba0137f953f6effc34e3a5df7f4da24",
+      "sha256": "bb8976bd418e87f5a8aa6dc0b8ded7d44e21a6e9e86d3ac4ac675dcf72ccb2f2",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_vlan_portid_overmax.ini": {
+      "git_blob": "3c3ec9c47f6b86b59a0be65c0096c27eca5068cd",
+      "sha256": "b44749efae8a03b2d9aed528a01ed0eb024e869a6142fa2e77c197b1815d052f",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_vlan_vip.ini": {
+      "git_blob": "7b1a212cf0ca7c7ba02386890ed7497798184c17",
+      "sha256": "b064a2c9a68a34577dbcbc82ba446954e6d2c7cb089457f97a4fc4ebc8cf09d1",
+      "executable": false
+    },
+    "tests/unit/fixtures/valid_with_unknown.ini": {
+      "git_blob": "4facaa5195ef6f7707f3f36c02d0d6a7297d8002",
+      "sha256": "96278003df81208d87132a9ad0994aec50d9f84ac7bd6859abacab38898d76ea",
+      "executable": false
+    },
+    "tests/unit/reload_process_fixture.c": {
+      "git_blob": "9cf0e3aade8ec6218f96ac6609b54871f7ab5ad8",
+      "sha256": "7179e41f9bc6f7641f4728b4f4383af9b9eb840b122e15dd064d62274d7c1add",
+      "executable": false
+    },
+    "tests/unit/run_coverage.sh": {
+      "git_blob": "8ed9edf7a550225b7963509a1a71a109ad111f40",
+      "sha256": "a52cb213db317fa77cfa7b22e4df5518d4b9ba3a7d6de314568106e19d265a9b",
+      "executable": true
+    },
+    "tests/unit/test_ff_callout.c": {
+      "git_blob": "db6e9073bf3ffeaa2c76b55dec344785cd2c011a",
+      "sha256": "7db0a6104a0e206d1b3cadb3e9314f10839cfdffb0aad40ce0c79a07c749fc71",
+      "executable": false
+    },
+    "tests/unit/test_ff_config.c": {
+      "git_blob": "9effe731bb50e1c7f53f32baf0b0ecb08ccdfb42",
+      "sha256": "936949c9abb5b15f2d0e7822fd6e591be2af4cccae951df7d9f2f4fe42e3b365",
+      "executable": false
+    },
+    "tests/unit/test_ff_config_pa.c": {
+      "git_blob": "1ceb6b359431fcb350abb0f0cdcb13caaef236f3",
+      "sha256": "22610a39b53a41c496b8d93ad66fb3b3ffb48d02e9454602373271469f9da36d",
+      "executable": false
+    },
+    "tests/unit/test_ff_dpdk_if.c": {
+      "git_blob": "229102ed5715b3c2dcf5f91e6b04746dfb1afa4a",
+      "sha256": "785ca7c734b1ec783a3b31b3e7b4d01cebf2f78393d2e09c20e958dbf0bbedfe",
+      "executable": false
+    },
+    "tests/unit/test_ff_dpdk_kni.c": {
+      "git_blob": "96d140b24c94246f75be7cb3963da315ffe2623c",
+      "sha256": "109a4dd1cc37efd674c322f948a4e1289b45ca328f585fb512df52a34c43b730",
+      "executable": false
+    },
+    "tests/unit/test_ff_dpdk_pcap.c": {
+      "git_blob": "6ceb34c52f8a31226f40a22f3aadd32b4818a72d",
+      "sha256": "c32a0a1bdf966b230745d6ac19d5a64cdf4a8d4682e58564dde8042d5c447c6b",
+      "executable": false
+    },
+    "tests/unit/test_ff_epoll.c": {
+      "git_blob": "31b382927fa4bdd5612167320b5fe90753611d2d",
+      "sha256": "25ee9d15ebc8bcc9827846030467a80681cdd0741876f01633fbe307ba1e43d7",
+      "executable": false
+    },
+    "tests/unit/test_ff_host_interface.c": {
+      "git_blob": "142dae02f245672b3197c5a138c272334ce7d5fe",
+      "sha256": "56387b9e0b870fe184e591de661fc23c21bf83e9163c7ff26436a088c1fe491b",
+      "executable": false
+    },
+    "tests/unit/test_ff_ini_parser.c": {
+      "git_blob": "7c6cd0c6b43079ef0bc0481f7c0072fa7057c0db",
+      "sha256": "89116f64b09ad87eefb50b48b71397d0fef7b8c42174e8b4de2f3e300a597da5",
+      "executable": false
+    },
+    "tests/unit/test_ff_init.c": {
+      "git_blob": "ca9f446b13b0e18af2e79b4368b05fc97fbeb24c",
+      "sha256": "c4893bdadbeb9f39299a5a37e93870ff0bc6e56011ab8e76ddf4bdb614c6382f",
+      "executable": false
+    },
+    "tests/unit/test_ff_ipc.c": {
+      "git_blob": "bd31fc314a96d4a7a0545fa9414f2bf6374a1cfe",
+      "sha256": "817c033c07c099b063688e45b089be623329b4b568314266a6c86652053e6831",
+      "executable": false
+    },
+    "tests/unit/test_ff_log.c": {
+      "git_blob": "fd76948381e1ba508b8a8fbea93ea0839b1bddac",
+      "sha256": "30c4dad2654cacdfa994f1945a561b9ccf55ae34f1e47b87dc60e4f4aa459b08",
+      "executable": false
+    },
+    "tests/unit/test_ff_thread.c": {
+      "git_blob": "b7a98f3a7b390907557ac90aa9ff3b11300db3fb",
+      "sha256": "9132f512f4f896ceee9dfc38a0b041df23ff21bf72ffaa84737e561e7a742365",
+      "executable": false
+    },
+    "tests/unit/test_ff_zc_send.c": {
+      "git_blob": "27583db48d0ede1a18b16fce2938cff3baf92462",
+      "sha256": "c5f1a31344c9c55d8c253fa1838694c1cd6976bc37ad9a39fd624d37b110946d",
+      "executable": false
+    },
+    "tests/unit/test_hello.c": {
+      "git_blob": "293d0456ea772a652fca4188e0070ec4b555dd9c",
+      "sha256": "b7793c282537c7c100a330a03667f25067480f10e508bdd3939bd5c3a235b605",
+      "executable": false
+    },
+    "tests/unit/test_reload_harness.py": {
+      "git_blob": "893c5d58d5a6855e323fbaa77f5a65dff46a0658",
+      "sha256": "8b847ac33ca8c5d6ddfc81c3e35f2cca1a275408a5753eae064b005b1fe9d791",
+      "executable": false
+    },
+    "tests/unit/valgrind.supp": {
+      "git_blob": "8d3dacb87b095eea93ebc62bfceb0bfc97900970",
+      "sha256": "89bd79245c92db48811174842def94374d47b1a75c9aaa940de9d832b1b1c7e5",
+      "executable": false
+    }
+  },
+  "cases": [
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_init_succeeded_with_one_port",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_eth_dev_socket_id_post_init",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_register_deregister_roundtrip",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "ethdev-rebind",
+          "provenance_case": "ethdev-rebind"
+        }
+      ],
+      "remaining": "Borrowed Ker ethdev rebind does not implement full F-Stack interface registration/deregistration."
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_get_tsc_ns_monotonic",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-clock-monotonic",
+          "provenance_case": "clock-monotonic"
+        }
+      ]
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_get_traffic_post_init",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_zero_total",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-empty-export",
+          "provenance_case": "empty-export"
+        }
+      ]
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_null_ctx_no_crash",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-null-context",
+          "provenance_case": "null-context"
+        }
+      ]
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_eal_process_type_primary",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_basic",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-export",
+          "provenance_case": "packet-export"
+        },
+        {
+          "ctest": "fstack-headroom-export",
+          "provenance_case": "headroom-export"
+        },
+        {
+          "ctest": "arp-responder",
+          "provenance_case": "arp-responder"
+        },
+        {
+          "ctest": "fstack-icmp-echo-service",
+          "provenance_case": "icmp-echo-service"
+        },
+        {
+          "ctest": "icmpv4-service",
+          "provenance_case": "icmpv4-service"
+        }
+      ]
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_multiseg",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-multiseg-boundary",
+          "provenance_case": "multiseg-boundary"
+        },
+        {
+          "ctest": "fstack-multiseg-copy",
+          "provenance_case": "multiseg-copy"
+        },
+        {
+          "ctest": "fstack-multiseg-ethernet-ingress",
+          "provenance_case": "multiseg-ethernet-ingress"
+        },
+        {
+          "ctest": "fstack-arp-chain-feedback",
+          "provenance_case": "arp-chain-feedback"
+        },
+        {
+          "ctest": "fstack-ipv4-ingress-validation",
+          "provenance_case": "ipv4-ingress-validation"
+        },
+        {
+          "ctest": "fstack-chain-export",
+          "provenance_case": "fstack-chain-export"
+        },
+        {
+          "ctest": "fstack-concurrent-ring",
+          "provenance_case": "fstack-concurrent-ring"
+        },
+        {
+          "ctest": "udp-ip-options",
+          "provenance_case": "udp-ip-options"
+        },
+        {
+          "ctest": "tcp-ip-options",
+          "provenance_case": "tcp-ip-options"
+        },
+        {
+          "ctest": "fstack-flow-receive",
+          "provenance_case": "flow-receive"
+        },
+        {
+          "ctest": "fstack-flow-concurrent-receive",
+          "provenance_case": "flow-concurrent-receive"
+        },
+        {
+          "ctest": "fstack-flow-owner-receive",
+          "provenance_case": "flow-owner-receive"
+        },
+        {
+          "ctest": "arp-responder",
+          "provenance_case": "arp-responder"
+        },
+        {
+          "ctest": "fstack-icmp-echo-service",
+          "provenance_case": "icmp-echo-service"
+        },
+        {
+          "ctest": "icmpv4-service",
+          "provenance_case": "icmpv4-service"
+        },
+        {
+          "ctest": "flow-icmpv4",
+          "provenance_case": "flow-icmpv4"
+        },
+        {
+          "ctest": "ethdev-rx-capacity",
+          "provenance_case": "ethdev-rx-capacity"
+        }
+      ],
+      "remaining": "Ker copy/chain/ownership paths cover related payload boundaries, not the complete FreeBSD mbuf-to-DPDK send contract."
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-offload-metadata-rejection",
+          "provenance_case": "offload-metadata-rejection"
+        },
+        {
+          "ctest": "fstack-software-checksum-completion",
+          "provenance_case": "software-checksum-completion"
+        },
+        {
+          "ctest": "fstack-ipv4-ingress-validation",
+          "provenance_case": "ipv4-ingress-validation"
+        }
+      ],
+      "remaining": "Software checksum/rejection coverage does not validate positive hardware IP checksum-offload metadata."
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tcp_csum",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "ethdev-tx",
+          "provenance_case": "ethdev-tx"
+        },
+        {
+          "ctest": "fstack-tcp-ingress-validation",
+          "provenance_case": "tcp-ingress-validation"
+        },
+        {
+          "ctest": "transport-receive",
+          "provenance_case": "transport-receive"
+        },
+        {
+          "ctest": "icmp-echo",
+          "provenance_case": "icmp-echo"
+        },
+        {
+          "ctest": "tcp-create",
+          "provenance_case": "tcp-create"
+        },
+        {
+          "ctest": "tcp-neighbor-create",
+          "provenance_case": "tcp-neighbor-create"
+        },
+        {
+          "ctest": "fstack-concurrent-ring",
+          "provenance_case": "fstack-concurrent-ring"
+        },
+        {
+          "ctest": "tcp-ip-options",
+          "provenance_case": "tcp-ip-options"
+        },
+        {
+          "ctest": "ethdev-duplex",
+          "provenance_case": "ethdev-duplex"
+        },
+        {
+          "ctest": "ethdev-rx-metadata",
+          "provenance_case": "ethdev-rx-metadata"
+        }
+      ],
+      "remaining": "Software TCP checksum and RX validation are not positive hardware TCP checksum-offload coverage."
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tso",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-offload-metadata-rejection",
+          "provenance_case": "offload-metadata-rejection"
+        }
+      ],
+      "remaining": "The adapter rejects unsupported TSO metadata; positive TSO behavior is not implemented or tested."
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_udp_csum",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "ethdev-tx",
+          "provenance_case": "ethdev-tx"
+        },
+        {
+          "ctest": "fstack-udp-ingress-validation",
+          "provenance_case": "udp-ingress-validation"
+        },
+        {
+          "ctest": "fstack-udp-minimal-boundaries",
+          "provenance_case": "udp-minimal-boundaries"
+        },
+        {
+          "ctest": "transport-receive",
+          "provenance_case": "transport-receive"
+        },
+        {
+          "ctest": "icmp-echo",
+          "provenance_case": "icmp-echo"
+        },
+        {
+          "ctest": "udp-create",
+          "provenance_case": "udp-create"
+        },
+        {
+          "ctest": "udp-neighbor-create",
+          "provenance_case": "udp-neighbor-create"
+        },
+        {
+          "ctest": "fstack-concurrent-ring",
+          "provenance_case": "fstack-concurrent-ring"
+        },
+        {
+          "ctest": "udp-ip-options",
+          "provenance_case": "udp-ip-options"
+        },
+        {
+          "ctest": "ethdev-duplex",
+          "provenance_case": "ethdev-duplex"
+        },
+        {
+          "ctest": "ethdev-rx-metadata",
+          "provenance_case": "ethdev-rx-metadata"
+        },
+        {
+          "ctest": "native-fstack-udp-interop",
+          "provenance_case": "native-fstack-udp-interop"
+        }
+      ],
+      "remaining": "Software UDP checksum and packet tests do not validate positive hardware UDP checksum-offload metadata."
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-export-exhaustion-retry",
+          "provenance_case": "export-exhaustion-retry"
+        }
+      ],
+      "remaining": "Pool exhaustion/retry tests do not inject a failure in the upstream FreeBSD m_copydata path."
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_raw_packet_send_basic",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "ethdev-tx",
+          "provenance_case": "ethdev-tx"
+        }
+      ]
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_raw_packet_send_multiseg",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "ethdev-tx",
+          "provenance_case": "ethdev-tx"
+        }
+      ]
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_pktmbuf_free_basic",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-mbuf-release",
+          "provenance_case": "mbuf-release"
+        },
+        {
+          "ctest": "ethdev-external-lifetime",
+          "provenance_case": "ethdev-external-lifetime"
+        },
+        {
+          "ctest": "ethdev-rx-fanout",
+          "provenance_case": "ethdev-rx-fanout"
+        }
+      ]
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_up_success",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "ethdev-rx",
+          "provenance_case": "ethdev-rx"
+        },
+        {
+          "ctest": "ethdev-duplex",
+          "provenance_case": "ethdev-duplex"
+        },
+        {
+          "ctest": "ethdev-rx-fanout",
+          "provenance_case": "ethdev-rx-fanout"
+        }
+      ],
+      "remaining": "Borrowed worker RX/budget tests do not implement the complete F-Stack run/stop callback lifecycle."
+    },
+    {
+      "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_secondary_looks_up_own_slot",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_chain_slot_recycle",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_basic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit_exceeded",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_partial_drop",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_forward",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_partial_drop",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_enqueue_full_ring_drops",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_kni_integration.c::test_kni_alloc_primary_happy_path",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Requires a KNI/virtio exception interface and F-Stack filters/rate limits absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_drain_ring_tx_watermark",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_send_burst_guard",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_dispatch",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_window_mechanism",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_main_loop_parked_pass",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_graceful_reload.sh::entrypoint",
+      "kind": "shell-e2e",
+      "status": "blocked",
+      "reason": "Requires F-Stack nginx reload generations, remote probes, manifests, process ownership and a configured test host; Ker has no equivalent graceful-reload service.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/integration/test_mtu.sh::entrypoint",
+      "kind": "manual-checklist",
+      "status": "blocked",
+      "reason": "The upstream MTU script prints manual instructions and an unconditional ALL PASS summary; executing it is not an MTU pass. Requires a configured jumbo/IPv6/native-interface test environment.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_callout.c::test_callout_when_relative_hardclock",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "FreeBSD sbintime/callout wheel and mirrored tcp_timer_next layout are architecture-specific. Original Linux timers must remain authoritative.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_callout.c::test_callout_when_absolute_precalc_passthrough",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "FreeBSD sbintime/callout wheel and mirrored tcp_timer_next layout are architecture-specific. Original Linux timers must remain authoritative.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_callout.c::test_callout_when_overflow_clamps_to_sbt_max",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "FreeBSD sbintime/callout wheel and mirrored tcp_timer_next layout are architecture-specific. Original Linux timers must remain authoritative.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_callout.c::test_callout_sbt_to_ticks_absolute",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "FreeBSD sbintime/callout wheel and mirrored tcp_timer_next layout are architecture-specific. Original Linux timers must remain authoritative.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_callout.c::test_callout_sbt_to_ticks_relative",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "FreeBSD sbintime/callout wheel and mirrored tcp_timer_next layout are architecture-specific. Original Linux timers must remain authoritative.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_callout.c::test_tcp_timer_activation_chain",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "FreeBSD sbintime/callout wheel and mirrored tcp_timer_next layout are architecture-specific. Original Linux timers must remain authoritative.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_no_dpdk_section",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_invalid_lcore_mask",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_dual_vlan",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_with_vip_addr",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_override",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_unknown_section",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_isolated",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_addr_parse",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_all_sections",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_lcore_mask_no_bits",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_portlist_nonint",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_bond_cfg_handler_no_nb_bond",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_bond_cfg_handler_bad_section",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_uppercase_0X_succeeds",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_id_not_in_filter_returns_one",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_bad_section_returns_zero",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_vdev_cfg_handler_no_nb_vdev_returns_zero",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_bad_section_returns_zero",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_repeat_keys_no_leak",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_blank_and_multibit",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_all_blank_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_mid_nonhex_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_vlan_vip_addr",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_portid_over_max_skips",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_in_range",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_reject_ok",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_invalid_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_present_ok",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_missing_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_bond_cfgs_calloc_oom_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_defaults_legacy",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_large_9000",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_scatter_mode",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_invalid_mode_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_max_mtu_non_numeric_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_port_over_max_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_mtu_large_65535_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_enabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_graceful_reload_default_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_graceful_reload_parse",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_graceful_reload_requires_slim",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_greload_thread_mode_mutex",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_greload_off_no_new_checks",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_greload_bad_value_atoi",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_all_legal_transitions",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_illegal_combinations_exhaustive",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_error_recovery_and_abort",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_22_heartbeat_and_rx_return",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_11_handover_barrier",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_gendir_arbitration",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_probe_epoch_fallback",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_handover_sequence",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_hw_user_proof",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_reclaim_needs_user_proof",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_absent_defaults_disabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_garbage_defaults_disabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_disabled_explicit",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack page-array/graceful-reload build configuration is not implemented in Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack page-array/graceful-reload build configuration is not implemented in Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_deregister_if_frees",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_get_traffic_zero_init",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_stop_smoke",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_pcblddr_fun_smoke",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_get_tsc_ns_basic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_no_callback",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet_dispatches",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_inverted_range",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_disabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_smoke",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_hit",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_rotation",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_miss",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_null",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_degraded",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_single_queue",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_equivalence_hitrate",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_landing",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_guard",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash6_equivalence_hitrate",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_on",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_on",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_microbench",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_thash_adjust_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_thash_adjust_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_ctx_init_thash_adjust_off",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_range_params",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_range_params",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_register_if_returns_ctx",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_safe",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-queue-isolation",
+          "provenance_case": "queue-isolation"
+        },
+        {
+          "ctest": "fstack-queue-full-ownership",
+          "provenance_case": "queue-full-ownership"
+        },
+        {
+          "ctest": "ethdev-multiqueue",
+          "provenance_case": "ethdev-multiqueue"
+        }
+      ],
+      "remaining": "Local FIFO/multiqueue isolation does not implement F-Stack generation-aware multiprocess drain rings."
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_f_m4_1_drain_ring_full_visible",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_queue_ownership",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_nonowner_tx",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_peer_tx",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_empty_qconf",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_full",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_missing",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_invalid",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_success",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_primary_slot_busy",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_window",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_exhausted",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_admission_rule",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_revoke",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p3_flow_map_bounded_growth",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_console_ratelimit_over",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_general_ratelimit_over",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_filter_classification",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_short",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_non_ip_frame",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_disabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_disabled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_oversized_ihl",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ipip_recurse",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_tcp_udp_port_bitmaps",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ospf_returns_ospf",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_null_port_lists",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_stats_oom",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_slot_oom",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_kni.c::test_p3_ndp_classification",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no F-Stack KNI/virtio exception bridge, filter/rate-limit or console path.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_basic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_null_dump_path",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_basic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_no_enable",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_nsec_precision",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_fopen_fails",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_seq_rotation_wraps",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_no_rotate_when_under_max",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_multiseg_truncated_at_snaplen",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_create_returns_fd",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_add_event",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_del_event",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_mod_event",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_event_translation",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_zero_timeout",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_invalid_args",
+      "kind": "cmocka",
+      "status": "partial",
+      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ],
+      "remaining": "Zero/negative maxevents are checked, but NULL output-buffer epoll_wait semantics are not yet ported; arbitrary bad-pointer recovery is outside existing native coverage."
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_null_event_non_del",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_invalid_op",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_epollet_sets_ev_clear",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_epolloneshot_sets_ev_oneshot",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_write_filter_to_epollout",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_ev_error_to_epollerr",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_ev_eof_read_to_hup_in",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_ev_eof_write_with_fflags",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_add_writeonly_only_epollout",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_unknown_filter_yields_zero_events",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "This case asserts private FreeBSD kqueue filter translation with stubs; Linux epoll has no such internal filter input.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_eof_unknown_filter_only_hup",
+      "kind": "cmocka",
+      "status": "architecture-specific",
+      "reason": "This case asserts private FreeBSD kqueue filter translation with stubs; Linux epoll has no such internal filter input.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_zero_maxevents_returns_einval",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-epoll"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-udp-interop",
+          "provenance_case": "native-fstack-udp-interop"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_malloc_normal",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_calloc_zeros_memory",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_grow",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_free_null",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_monotonic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_arc4rand_buf_filled",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_os_errno_mapping",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_ns_advances",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_arc4random_distribution",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_munmap_roundtrip",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_panic_aborts",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_realtime",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_prot_writeonly",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_prot_readonly",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_nsec",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_assert_fail_on_clock_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_kernel_fd_encode_roundtrip",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_native_fd_map",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_msg_name_shutdown_bridges",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-tcp-linger",
+          "provenance_case": "native-fstack-tcp-linger"
+        },
+        {
+          "ctest": "native-fstack-tcp-fd-modes",
+          "provenance_case": "native-fstack-tcp-fd-modes"
+        },
+        {
+          "ctest": "native-fstack-socket-contracts",
+          "provenance_case": "native-fstack-socket-contracts"
+        },
+        {
+          "ctest": "native-fstack-message-io",
+          "provenance_case": "native-fstack-message-io"
+        },
+        {
+          "ctest": "native-fstack-stream-io",
+          "provenance_case": "native-fstack-stream-io"
+        },
+        {
+          "ctest": "native-fstack-tcp-receive-timeouts",
+          "provenance_case": "native-fstack-tcp-receive-timeouts"
+        },
+        {
+          "ctest": "native-fstack-tcp-send-timeouts",
+          "provenance_case": "native-fstack-tcp-send-timeouts"
+        },
+        {
+          "ctest": "native-fstack-tcp-connect-lifecycle",
+          "provenance_case": "native-fstack-tcp-connect-lifecycle"
+        },
+        {
+          "ctest": "native-fstack-tcp-defer-accept",
+          "provenance_case": "native-fstack-tcp-defer-accept"
+        },
+        {
+          "ctest": "native-fstack-tcp-reuseport",
+          "provenance_case": "native-fstack-tcp-reuseport"
+        },
+        {
+          "ctest": "native-fstack-tcp-urgent",
+          "provenance_case": "native-fstack-tcp-urgent"
+        },
+        {
+          "ctest": "native-fstack-tcp-receive-queue",
+          "provenance_case": "native-fstack-tcp-receive-queue"
+        },
+        {
+          "ctest": "native-fstack-tcp-shutdown-write",
+          "provenance_case": "native-fstack-tcp-shutdown-write"
+        },
+        {
+          "ctest": "native-fstack-tcp-listener-restart",
+          "provenance_case": "native-fstack-tcp-listener-restart"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_set_v6only",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_poll",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-readiness",
+          "provenance_case": "native-fstack-readiness"
+        },
+        {
+          "ctest": "native-fstack-tcp-connect-lifecycle",
+          "provenance_case": "native-fstack-tcp-connect-lifecycle"
+        },
+        {
+          "ctest": "native-fstack-tcp-defer-accept",
+          "provenance_case": "native-fstack-tcp-defer-accept"
+        },
+        {
+          "ctest": "native-fstack-tcp-reuseport",
+          "provenance_case": "native-fstack-tcp-reuseport"
+        },
+        {
+          "ctest": "native-fstack-tcp-urgent",
+          "provenance_case": "native-fstack-tcp-urgent"
+        },
+        {
+          "ctest": "native-fstack-tcp-listener-restart",
+          "provenance_case": "native-fstack-tcp-listener-restart"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_add_idempotent",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_readv_writev",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-message-io",
+          "provenance_case": "native-fstack-message-io"
+        },
+        {
+          "ctest": "native-fstack-stream-io",
+          "provenance_case": "native-fstack-stream-io"
+        },
+        {
+          "ctest": "native-fstack-tcp-send-timeouts",
+          "provenance_case": "native-fstack-tcp-send-timeouts"
+        },
+        {
+          "ctest": "native-fstack-tcp-receive-queue",
+          "provenance_case": "native-fstack-tcp-receive-queue"
+        },
+        {
+          "ctest": "native-fstack-tcp-shutdown-write",
+          "provenance_case": "native-fstack-tcp-shutdown-write"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_ioctl_fionbio",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-tcp-fd-modes",
+          "provenance_case": "native-fstack-tcp-fd-modes"
+        },
+        {
+          "ctest": "native-fstack-socket-contracts",
+          "provenance_case": "native-fstack-socket-contracts"
+        },
+        {
+          "ctest": "native-fstack-readiness",
+          "provenance_case": "native-fstack-readiness"
+        },
+        {
+          "ctest": "native-fstack-message-io",
+          "provenance_case": "native-fstack-message-io"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_dup",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-tcp-linger",
+          "provenance_case": "native-fstack-tcp-linger"
+        },
+        {
+          "ctest": "native-fstack-tcp-fd-modes",
+          "provenance_case": "native-fstack-tcp-fd-modes"
+        },
+        {
+          "ctest": "native-fstack-socket-contracts",
+          "provenance_case": "native-fstack-socket-contracts"
+        },
+        {
+          "ctest": "native-fstack-message-io",
+          "provenance_case": "native-fstack-message-io"
+        },
+        {
+          "ctest": "native-fstack-tcp-receive-timeouts",
+          "provenance_case": "native-fstack-tcp-receive-timeouts"
+        },
+        {
+          "ctest": "native-fstack-tcp-send-timeouts",
+          "provenance_case": "native-fstack-tcp-send-timeouts"
+        },
+        {
+          "ctest": "native-fstack-tcp-connect-lifecycle",
+          "provenance_case": "native-fstack-tcp-connect-lifecycle"
+        },
+        {
+          "ctest": "native-fstack-tcp-receive-queue",
+          "provenance_case": "native-fstack-tcp-receive-queue"
+        },
+        {
+          "ctest": "native-fstack-tcp-shutdown-write",
+          "provenance_case": "native-fstack-tcp-shutdown-write"
+        },
+        {
+          "ctest": "native-fstack-tcp-listener-restart",
+          "provenance_case": "native-fstack-tcp-listener-restart"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_host_dup2",
+      "kind": "cmocka",
+      "status": "scenario-adapted",
+      "reason": "Existing Ker scenario adaptation; scope limits remain in the linked provenance entry. This is not source-level/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-message-io",
+          "provenance_case": "native-fstack-message-io"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_valid_basic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiple_sections",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_comment_lines",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_inline_comment",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_whitespace_strip",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_empty_value",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_invalid_syntax",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bom_utf8",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_normal",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_filename_not_exist",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_filename_normal",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_key_name",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_zero_byte_input",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_section_no_close_bracket",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_trailing_newline",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_colon_separator",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bare_line_no_separator",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_partial_bom_not_recognized",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bom_third_byte_mismatch",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_init.c::test_ff_init_happy_path",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_init.c::test_ff_init_fail_load_config",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_init",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_init.c::test_ff_run_and_stop_forward",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_init.c::test_ff_init_fail_freebsd_init",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_if_up",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen_epoch",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_full_coordinate",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_epoch",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_plain",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_rejects_malformed",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_own_reply",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_live_owner",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_without_send",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_orphan_dead_owner",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_probe_is_non_destructive",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_normal",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_dir_invalid",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_long_filename",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_close_when_open",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_close_when_null",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_reset_stream_normal",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_set_global_level",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_set_level_normal",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_set_level_returns_value",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_variadic_basic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_variadic_zero_args",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_vlog_normal",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_log.c::test_ff_log_returns_rte_vlog_value",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_basic",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_arg_passed",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_thread.c::test_ff_pthread_join_retval",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_malloc_failure",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_failfast",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_negative_len_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds",
+      "kind": "cmocka",
+      "status": "blocked",
+      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_hello.c::test_hello_world",
+      "kind": "cmocka",
+      "status": "harness-only",
+      "reason": "CMocka/toolchain smoke arithmetic and hello-world do not exercise Ker behavior.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_hello.c::test_basic_arithmetic",
+      "kind": "cmocka",
+      "status": "harness-only",
+      "reason": "CMocka/toolchain smoke arithmetic and hello-world do not exercise Ker behavior.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_ipv4_ipv6",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_injection_and_bad_hosts",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_invalid_counts_cases_and_paths",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_lc_exact_fields",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_stream_and_cps",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_partial_workers_cannot_hide_behind_total_samples",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_aggregate_requires_selected_cases_and_exit_codes",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ValidationTests.test_nonpass_and_exit_mismatch",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_identity_mismatch_refused",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_explicit_signal_does_not_escalate",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_bounded_exit_and_timeout",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_bounded_child_exit_and_startup_handoff",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_production_inventory_includes_new_and_generated_sources",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_wrong_case_cannot_be_renamed_to_pass",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_foreign_deleted_executable_is_not_inspected",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_reclaim_requires_unlocked_backing",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_wrapper_validation_before_signals",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_source_has_no_execution",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_cli_rejects_before_output_creation",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_build_identity_binding",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_foreign_process_not_collected",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_driver_result_and_cleanup_failure",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_remote_local_fixture_execution",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_http_response_integrity",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_resource_namespace_rejects_public_paths",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnedProcessTests.test_remote_stale_and_nonzero_results",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_stable_parent_is_checked_before_publication",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_parent_exits_before_publication_without_stop_authority",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_reused_parent_in_discovery_never_authorizes_candidate",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_exe_denied_while_exiting_is_tolerated",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_exe_denied_on_live_process_fails_closed",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_missing_parent_during_revalidation_releases_candidate",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_invalid_parent_does_not_reparent_existing_authority",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_exited_known_child_is_not_a_pid_reuse_failure",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_rejected_candidate_can_be_proven_by_direct_adoption",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_changed_child_parent_is_not_published",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_parent_exit_after_proof_keeps_valid_child_authority",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_01_03_erased_environment_and_double_fork",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_04_late_orphan_during_stop",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_permitted_exec",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_unpermitted_exec",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_wrong_identity_and_bystander",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_stale_control_authority",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_06_controller_exit",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_06_controller_disconnect",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_07_supervisor_loss_blocks_reclaim",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_08_exec_failure",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_08_persistence_failure",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_08_helper_deadline",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_reported_and_passed",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_reported_but_failed_is_not_no_data",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_absent_summary_is_no_data",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    },
+    {
+      "id": "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_timeout_is_no_data",
+      "kind": "python-unittest",
+      "status": "harness-only",
+      "reason": "Offline tests of the F-Stack reload orchestration/validation harness, not Ker networking. Retained unchanged; not executed or counted as Ker compatibility passes.",
+      "ker_tests": []
+    }
+  ]
+}
