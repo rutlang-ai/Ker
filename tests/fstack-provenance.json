@@ -539,6 +539,14 @@
         "test_ff_host_kqueue_ctl_poll"
       ],
       "adaptation": "Ker-specific Linux TCP_DEFER_ACCEPT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack deferred-accept test or support claim. Host reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A separate control connection coordinates two sequential data connections on the same nonblocking listener. With deferred accept enabled (31 seconds, permitting kernel rounding), completed client connect with checked peer tuple and SO_ERROR must not make the listener readable during a 100ms poll, an immediate epoll wait, or nonblocking accept (EAGAIN). Payload is withheld until an explicit control marker, then poll/epoll and accept must succeed. Clearing the option on that listener permits the second handshake to trigger readiness and accept before payload is sent. Both phases verify exact echo, half-close/EOF, drained listener readiness and a full 64-bit epoll tag. Each native instance requires at least three matching original-Linux TCP opens, positive DPDK TX/RX and zero outstanding buffers. No original protocol/runtime changes, mocks, deferred timer expiry, TCP Fast Open, host signal interruption or io_uring coverage is introduced."
+    },
+    "native-fstack-tcp-reuseport": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_kqueue_ctl_poll"
+      ],
+      "adaptation": "Ker-specific Linux SO_REUSEPORT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack reuseport test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Two nonblocking listeners enable and query SO_REUSEPORT before sharing an address/port; a third socket with SO_REUSEADDR alone must fail bind with EADDRINUSE. A separate control connection coordinates eight initial data connections and four later connections. Poll/epoll drive accepts; unique tokens verify every connection exactly once without requiring equal hash distribution or both listeners to receive initial connections. The test retains the token=1 accepted connection, closes precisely the listener that accepted it, and requires continued echo and half-close/EOF on the accepted connection. The remaining listener must accept all four later connections, with exact echo, EOF, full 64-bit epoll tags and cleared readiness after the queue drains. Each native instance requires thirteen matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, mocks, pending-connection migration, cross-process workers, UID isolation, BPF selection or io_uring coverage is introduced."
     }
   }
 }

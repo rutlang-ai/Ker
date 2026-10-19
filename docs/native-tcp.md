@@ -78,6 +78,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 阻塞发送超时 | 双向小缓冲区压力；send/writev/sendmsg 的部分进度及 EAGAIN；dup 共享 SO_SNDTIMEO，恢复后字节流完整且无重复 |
 | connect 生命周期 | 拒绝连接与 dup 共享 SO_ERROR 清除、AF_UNSPEC 跨端口重连、原注册 fd 关闭后别名仍能使用 epoll 与完成收发 |
 | 延迟接入 | TCP_DEFER_ACCEPT 开启时由数据触发 poll/epoll 与 accept；同一 listener 关闭选项后握手即可接入 |
+| 共享监听端口 | SO_REUSEPORT 双 listener、普通 bind 冲突；关闭接入 listener 后已接受连接仍可收发，剩余 listener 继续接入 |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -150,6 +151,22 @@ DPDK TX/RX 非零、outstanding=0。连接拒绝、RST 与重连完全来自导�
 每个原生实例至少要求三次对应的 TCP open、DPDK TX/RX 非零和 outstanding=0。
 这是 F-Stack host bridge 场景的 Ker/Linux 扩展，不是上游 F-Stack 对该选项的支持声明；
 仅新增测试，TCP 延迟接入行为仍由原始 Linux 执行。
+
+`native-fstack-tcp-reuseport` 在宿主参考、原生客户端和原生服务端三种模式下，
+通过独立 Linux 对端验证 SO_REUSEPORT。两个非阻塞 listener 在 bind 前启用选项并
+查询确认，共享同一地址和端口；仅设置 SO_REUSEADDR 的第三个 socket 必须绑定失败，
+返回 EADDRINUSE。独立 control 连接协调批次，不依赖固定 sleep。
+
+首批八条连接使用不同 token，poll/epoll 驱动接入并逐条验证 echo 与唯一性。
+保留 token=1 的已接受连接，关闭恰好接入它的 listener，再要求该连接继续完成
+收发和半关闭/EOF。下一批四条连接必须全部由另一个 listener 接入并完成精确 echo、
+半关闭和 EOF；队列排空后 epoll 不再就绪。测试保留完整 64 位事件标签，不要求哈希
+均匀分配，也不要求首批一定命中两个 listener。
+
+每个原生实例至少要求十三次对应 TCP open（control 加十二条 data 连接）、DPDK
+TX/RX 非零和 outstanding=0。本项是 F-Stack host bridge 场景的 Ker/Linux 扩展，
+不声明上游 F-Stack 的 SO_REUSEPORT 等价性；未覆盖跨进程 worker、不同 UID、BPF
+选择器或尚在队列中的连接迁移。端口分组、选择和 TCP 行为全部来自原始 Linux。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
