@@ -115,7 +115,7 @@ class CatalogTests(unittest.TestCase):
                                  '--root', str(self.root), '--require-complete'],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
-        self.assertIn('blocked + 10 partial cases', result.stderr)
+        self.assertIn('blocked + 9 partial cases', result.stderr)
 
 
 if __name__ == '__main__':

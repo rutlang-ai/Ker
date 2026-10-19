@@ -2636,15 +2636,14 @@
     {
       "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_invalid_args",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Public POSIX invalid maximum and NULL wait-buffer cases run against host Linux and the original Linux backend. Linux returns zero for an empty NULL-buffer wait and EFAULT when ready, unlike the upstream F-Stack wrapper EINVAL; ET/ONESHOT recovery and mixed host events are checked.",
       "ker_tests": [
         {
           "ctest": "native-fstack-epoll",
           "provenance_case": "native-fstack-epoll"
         }
-      ],
-      "remaining": "Zero/negative maxevents are checked, but NULL output-buffer epoll_wait semantics are not yet ported; arbitrary bad-pointer recovery is outside existing native coverage."
+      ]
     },
     {
       "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_ctl_null_event_non_del",
