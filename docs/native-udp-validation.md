@@ -270,3 +270,32 @@ ctest --test-dir build-native-tcp -R '^native-fstack-udp-reuseport$' --output-on
 DPDK TX/RX 非零和 outstanding=0。这是 F-Stack UDP/epoll 示例的 Ker/Linux 扩展，
 不是上游 reuseport 测试或等价性声明；仅增加验收，不修改 Linux 或 Ker 适配代码。
 未覆盖跨 UID、BPF 选择器、多进程 worker、排队报文迁移、广播或多播的组分发语义。
+
+
+## UDP MSG_MORE、UDP_CORK 与显式 flush
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-cork$' --output-on-failure
+```
+
+测试使用独立 TCP control 和 connected UDP data socket，先跑宿主参考，再运行
+原生客户端和原生服务端。UDP 两端显式绑定各自本地地址及不同端口，每端均通过
+同一 socket 和 dup alias 完成两种方式的双向发送与接收。
+
+- MSG_MORE：sendmsg 发送前 17 字节，sendto 追加 31 字节，两次带 MSG_MORE；此时
+  UDP_CORK 查询仍为零。接收端检查 EAGAIN、FIONREAD=0、无 epoll 就绪后确认，
+  发送端再以不带 MSG_MORE 的 send 写入最后 47 字节并 flush。
+- UDP_CORK：通过 alias 设置并查询为一，原 fd 查询也必须为一。send、两段 iovec
+  writev、sendmsg 分别写入 17、31、47 字节，均不带 MSG_MORE。接收端确认尚无报文
+  后，发送端通过 alias 将 UDP_CORK 清零，原 fd 必须同步查询到零并 flush。
+- 每次 flush 后只能收到一条完整 95 字节报文，逐字节验证合成内容、来源 tuple、
+  FIONREAD 长度、poll/epoll 就绪及完整 64 位 tag；队列随后必须清空。
+- 接收端确认已消费合成报文后，发送端再普通 send 五字节。该内容必须作为独立
+  datagram 送达，验证 cork 已清除，不能与上一条或下一轮拼接。双方通过控制连接
+  确认阶段完成，不依赖固定 sleep。
+
+每个原生实例要求 UDP InDatagrams/OutDatagrams 至少各 4、InErrors/NoPorts 为零，
+对应的 TCP control open 至少 1，DPDK TX/RX 非零且 outstanding=0。本项是 F-Stack
+UDP/epoll 示例的 Ker/Linux 扩展，不声明上游 UDP_CORK 或 MSG_MORE 等价性；没有
+修改 Linux 协议或 Ker 适配代码。未覆盖超大 cork 报文错误恢复、未 flush 就 close、
+更换目的地址、并发 writer、UDP_SEGMENT 或 TCP_CORK。
