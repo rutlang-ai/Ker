@@ -44,6 +44,10 @@ def main():
     parser.add_argument('--port', required=True, help='DPDK ethdev name')
     parser.add_argument('--all-multicast', action='store_true',
         help='receive all Ethernet multicast frames for native Linux membership filtering')
+    parser.add_argument('--pcap-dir', type=Path, help='existing private capture directory; rotates ten files per direction')
+    parser.add_argument('--pcap-snaplen', type=int, default=65535)
+    parser.add_argument('--pcap-max-bytes', type=int, default=16 * 1024 * 1024)
+    parser.add_argument('--pcap-nsec', action='store_true', help='write nanosecond PCAP timestamps')
     parser.add_argument('--eal', required=True, help='DPDK EAL arguments, parsed without a shell')
     parser.add_argument('--library', type=Path, default=Path(__file__).resolve().parent / LIB_FROM_BIN / 'libker-posix.so')
     parser.add_argument('--io-worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-worker')
@@ -57,6 +61,8 @@ def main():
         parser.error('an application command is required after --')
     if not 0 <= args.shutdown_timeout_ms <= 60000:
         parser.error("--shutdown-timeout-ms must be in 0..60000")
+    if not 1 <= args.pcap_snaplen <= 2147483647 or not 1 <= args.pcap_max_bytes <= 2147483647:
+        parser.error('PCAP snaplen and max-bytes must be in 1..2147483647')
     library = args.library.resolve(strict=True)
     worker_path = args.io_worker.resolve(strict=True)
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
@@ -71,8 +77,14 @@ def main():
     preserve_signal = False
     try:
         multicast_options = ['--all-multicast'] if args.all_multicast else []
+        capture_options = []
+        if args.pcap_dir is not None:
+            capture_options = ['--pcap-dir', str(args.pcap_dir.resolve()),
+                '--pcap-snaplen', str(args.pcap_snaplen), '--pcap-max-bytes', str(args.pcap_max_bytes)]
+            if args.pcap_nsec:
+                capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, *multicast_options, '--', *shlex.split(args.eal)],
+            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, '--', *shlex.split(args.eal)],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)
