@@ -39,7 +39,7 @@ foreach(artifact config library)
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/posix-poll.c src/posix/posix-stat.c
-    src/posix/lifecycle.c src/posix/diagnostics.c)
+    src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -91,6 +91,14 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-pcap COMMAND ker-pcap-test)
     set_tests_properties(native-fstack-pcap PROPERTIES LABELS "fstack" TIMEOUT 30
         ENVIRONMENT "LD_LIBRARY_PATH=${DPDK_LIBRARY_DIRS}:$ENV{LD_LIBRARY_PATH}")
+    add_executable(ker-host-runtime-test tests/posix/fstack-host-runtime.c src/posix/host-memory.c)
+    target_include_directories(ker-host-runtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-host-runtime-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-host-runtime-test PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-host-runtime-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-host-runtime COMMAND ker-host-runtime-test)
+    set_tests_properties(native-fstack-host-runtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-native-drain-test tests/posix/native-drain.c src/posix/lifecycle.c)
     target_include_directories(ker-native-drain-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-native-drain-test SYSTEM PRIVATE

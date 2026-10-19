@@ -29,6 +29,22 @@
     }
   },
   "cases": {
+    "native-fstack-host-runtime": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_malloc_normal",
+        "test_ff_free_null",
+        "test_ff_clock_gettime_monotonic",
+        "test_ff_clock_gettime_ns_advances",
+        "test_ff_mmap_munmap_roundtrip",
+        "test_ff_mmap_prot_writeonly",
+        "test_ff_mmap_prot_readonly"
+      ],
+      "ker_ctests": [
+        "native-fstack-host-runtime"
+      ],
+      "adaptation": "Seven pinned F-Stack host-interface scenarios adapted to the actual lkl_host_ops used by Ker: writable allocation and NULL free; nondecreasing monotonic nanoseconds with delayed advancement; anonymous read/write, write-only and read-only mappings with release. LKL mmap takes an exact unused address rather than the ff_mmap(NULL, ...) allocation interface. A Ker-only host callback preserves occupied mappings on failure, without modifying imported LKL. The test checks exact bytes, zero initialization, collision preservation, unmap via mincore, read-only write rejection in a pre-kernel child with core dumps disabled, and page allocator alignment/release. It then boots and halts the real pinned Linux kernel with counted forwarding callbacks to prove kernel memory/time use. The pinned non-MMU kernel uses page_alloc; fixed-address mmap is tested directly through the installed callback table, not claimed as exercised by kernel boot. Shared/file-backed mappings, calloc/realloc, realtime and random interfaces are not covered."
+    },
     "native-fstack-pcap": {
       "source_file": "tests/unit/test_ff_dpdk_pcap.c",
       "source_case": [
