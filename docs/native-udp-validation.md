@@ -1,6 +1,6 @@
 # 原生 Linux UDP socket 验证
 
-本批验证现有 POSIX 适配层中的 IPv4 UDP unicast 路径。socket、datagram 边界、
+本文记录现有 POSIX 适配层中的 IPv4 UDP 验证，基础测试从 unicast 开始。socket、datagram 边界、
 checksum、地址查询和事件就绪由完整导入的 Linux 6.12.113 实现；Ker 负责 API
 转换、fd、packet I/O 和诊断。源码 pin 与构建方式沿用 [原生后端](native-tcp.md)。
 不使用基础库的 UDP 报文构造器或 packet view 代替原生 socket。
@@ -153,3 +153,30 @@ Linux，由 Linux 执行成员过滤和协议处理，不在 Ker 内实现多播
 
 该验收是同一链路上的小报文 IPv4 ASM，不验证退组空窗期的非投递、多播路由器
 IGMP 互通、跨网段转发、source-specific multicast、IPv6 或物理 NIC 的过滤能力。
+
+
+## IPv4 子网广播与发送权限
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-broadcast$' --output-on-failure
+```
+
+测试先运行宿主参考，再运行原生客户端和原生服务端，与独立 Linux 对端经 DPDK
+net_tap/veth 互通。使用同链路的 198.18.0.255/24 子网广播地址；服务端绑定 wildcard，
+接收广播不需要设置 SO_BROADCAST，客户端显式绑定本地地址并核对 getsockname。
+
+- SO_BROADCAST 默认必须为零。sendto、sendmsg 和单条 sendmmsg 分别在关闭该选项时
+  返回 EACCES；开启并查询确认后，各发送一个 37 字节广播 datagram，并等待单播回复。
+- 每次回复后都关闭并查询确认 SO_BROADCAST；第三个广播之后再验证一次 EACCES，
+  随后同一 socket 在选项关闭时发送普通单播，必须正常收到回复。
+- 每个 datagram 核对完整 payload、源地址/端口、EPOLLIN 和 64 位事件 tag。
+  IP_PKTINFO 必须报告实际广播或单播目的地址、正确本地地址及正 interface index。
+  同类流量的 interface index 保持一致，但宿主参考的单播可走 loopback，因此不要求
+  广播与单播使用同一个 index。接收队列最后必须返回 EAGAIN。
+- 两个原生实例都要求 UDP InDatagrams/OutDatagrams 至少各 4、InErrors/NoPorts 为零、
+  DPDK TX/RX 非零和 outstanding=0。没有修改 Linux 协议、Ker 适配或 ethdev 模式。
+
+这是 F-Stack UDP/epoll 示例的 Ker/Linux 扩展，不是上游广播测试或 API 等价性声明。
+本项只验证同链路小报文子网广播，不覆盖 limited broadcast 255.255.255.255、多接口
+路由、广播转发、物理 NIC 过滤、广播分片或实际发现协议。socket 权限和目的地址
+分类均由原始 Linux 执行。
