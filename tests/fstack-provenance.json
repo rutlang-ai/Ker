@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/unit/test_ff_thread.c": {
+      "sha256": "9132f512f4f896ceee9dfc38a0b041df23ff21bf72ffaa84737e561e7a742365",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_thread.c"
+    },
     "tests/unit/test_ff_dpdk_pcap.c": {
       "sha256": "c32a0a1bdf966b230745d6ac19d5a64cdf4a8d4682e58564dde8042d5c447c6b",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_dpdk_pcap.c"
@@ -29,6 +33,19 @@
     }
   },
   "cases": {
+    "native-fstack-thread-runtime": {
+      "source_file": "tests/unit/test_ff_thread.c",
+      "source_case": [
+        "test_ff_pthread_create_arg_passed",
+        "test_ff_pthread_create_malloc_failure",
+        "test_ff_pthread_create_basic",
+        "test_ff_pthread_join_retval"
+      ],
+      "ker_ctests": [
+        "native-fstack-thread-runtime"
+      ],
+      "adaptation": "Actual LKL host thread callbacks validate argument propagation and wrapper-allocation failure (test-only linker --wrap=malloc fails one allocation, with real thread callbacks and no successful thread stubs). LKL returns a zero thread handle on failure rather than -ff_ENOMEM. Basic creation and join-result cases remain partial: FreeBSD pcurthread inheritance and F-Stack discarded-return-value assertions have no equivalent LKL callback interface. Ker extensions verify four real concurrent host threads, self/equal identity, join completion, empty child TLS, distinct per-thread values, destructor execution, parent isolation, key reuse, semaphore gating and mutex counter integrity. A Ker pthread TLS adapter handles NULL allocation before dereference; injected allocation failure and real pthread-key exhaustion check errors and allocation cleanup. Original Linux boots and halts with measured real host-thread creation. No FreeBSD context emulation, application pthread interposition, cancellation, detached-thread lifetime, TLS destructor repopulation or scheduler-equivalence claim."
+    },
     "native-fstack-host-runtime": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
