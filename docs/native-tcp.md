@@ -80,6 +80,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 延迟接入 | TCP_DEFER_ACCEPT 开启时由数据触发 poll/epoll 与 accept；同一 listener 关闭选项后握手即可接入 |
 | 共享监听端口 | SO_REUSEPORT 双 listener、普通 bind 冲突；关闭接入 listener 后已接受连接仍可收发，剩余 listener 继续接入 |
 | 独立对端 urgent data | 双向 MSG_OOB/MSG_PEEK、SO_OOBINLINE、sockatmark/SIOCATMARK 边界及 poll/epoll 优先事件；普通前后缀完整且无 urgent byte 混入 |
+| 独立对端接收队列 | 双向多段 MSG_PEEK/readv、FIONREAD、dup 共享队列，Linux TCP MSG_TRUNC 消费与 peek 保留，缓冲区哨兵及 EOF |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -187,6 +188,24 @@ urgent API 等价性。未覆盖 SIGURG、异步信号所有者、多个未消�
 相互覆盖。新增 sockatmark 导出入口复用 ioctl 适配，修复 libc 内部 ioctl 绕过
 原生 fd 分流的问题；同时核对非法 fd 的 EBADF、宿主 pipe 的 ENOTTY 及宿主 socket
 参考行为。未修改原始 Linux urgent 处理。
+
+`native-fstack-tcp-receive-queue` 验证协议解析器依赖的接收队列行为，运行宿主
+参考、原生客户端和原生服务端。每个方向发送 16 KiB + 37 字节的确定性数据并
+半关闭，独立 control 连接和 SO_RCVLOWAT 协调完整队列就绪，不依赖固定 sleep。
+在检查前将低水位恢复为 1，后续调用不依赖大低水位设置。
+
+先通过 dup alias 执行两段 iovec 的 recvmsg(MSG_PEEK|MSG_WAITALL)，再从原 fd
+peek 6001 字节；两次均逐字节核对，且原 fd 与 alias 的 FIONREAD 始终不变。
+随后 Linux TCP recv(MSG_TRUNC) 丢弃 257 字节，返回消费长度但不修改目标缓冲区，
+队列长度必须相应减少；recvmsg(MSG_PEEK|MSG_TRUNC) 查看 513 字节长度时，目标
+缓冲区和队列长度都必须保持不变。这是明确的 Linux TCP 扩展，不套用 UDP 的
+报文截断语义，也不声称是可移植 POSIX 行为。
+
+剩余字节通过 alias 的 readv 分段读取并逐字节校验，每次读取后核对原 fd 的
+队列长度；最终两个 fd 均看到 EOF，普通 peek 也返回零，FIONREAD 不把 FIN 算作
+数据。每个原生实例要求至少两次对应 TCP open、DPDK TX/RX 非零和 outstanding=0。
+本项是 F-Stack host message/vector 场景的 Ker/Linux 扩展；仅增加验收，不修改
+Linux 或适配实现，也未覆盖并发 reader、SO_PEEK_OFF 或 recvmsg 错误指针恢复。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
