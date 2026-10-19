@@ -36,6 +36,35 @@ DNS resolver 透明兼容、IPv6、fragmented UDP 尚未由基础测试验收；
 增加的是原生 UDP 路径验证和可追溯计数。
 
 
+## 消费式接收截断与批量返回长度
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-receive-truncation$' --output-on-failure
+```
+
+本项补充基础测试中「先短 peek、再完整读取」以外的消费式截断。宿主参考、原生
+客户端和原生服务端均使用独立 Linux 对端，经 DPDK net_tap/veth 运行相同断言。
+服务端按请求发送 0、1、33、257 字节报文，客户端接收容量仅 7 字节。
+
+- recvfrom 不带 MSG_TRUNC 时返回 min(报文长度, 7)，只保留相应前缀。
+- recvmsg 使用 3+4 字节两段 iovec，也只返回复制长度；输出 MSG_TRUNC 当且仅当
+  报文超过容量，MSG_CTRUNC 不得出现。
+- recvmmsg 使用相同短 iovec、输入 MSG_TRUNC|MSG_DONTWAIT：每条 msg_len 必须是
+  完整报文长度，缓冲区仍只复制前 7 字节，输出截断标志按各条报文分别校验。
+  每次请求触发两条不同记录的回复，批量返回 1 或 2 都允许，按实际消息数推进。
+- 所有接收均核对前缀及未写区域的 0xa5 哨兵、来源 tuple、EPOLLIN 与完整 64 位
+  tag；FIONREAD 在接收前必须返回队首完整报文长度。零长度报文仍占一个批量条目，
+  不视为 EOF，后续报文仍必须成功收取。
+- 服务端等待下一条请求才发送下一轮，因此每轮结束时 EAGAIN、FIONREAD=0 和无
+  epoll 就绪可验证截断尾部已丢弃，而不是留作下一条报文。最终确认交互完成后退出，
+  不使用固定 sleep。
+
+原生客户端 UDP OutDatagrams/InDatagrams 至少为 13/17，原生服务端至少为 17/13；
+两端 InErrors/NoPorts 为零，DPDK TX/RX 非零且 outstanding=0。这是 F-Stack UDP/
+epoll 示例的 Ker/Linux 扩展，不是上游截断测试或等价性声明。仅增加测试，不修改
+Linux 或 Ker 适配代码；未覆盖 recvmmsg timeout/MSG_WAITFORONE、错误指针或网络丢包。
+
+
 ## Linux 异步错误与恢复
 
 ```sh
