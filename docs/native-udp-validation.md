@@ -214,3 +214,30 @@ DPDK TX/RX 非零且 outstanding=0。本项中的 NoPorts 增长是来源过滤�
 按明确测试的 Linux 语义解释。非零端口 bind 是保留本地 tuple 的前提，本项不覆盖
 自动绑定或 port=0 时断开后的端口选择，也不覆盖多接口路由、并发重连、IPv6 或 DNS。
 仅增加测试，UDP 对端选择、过滤、ICMP 与断开行为全部由原始 Linux 执行。
+
+
+## UDP reuseport、连接成员与来源分流
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-reuseport$' --output-on-failure
+```
+
+先运行宿主参考，再运行原生客户端和服务端，与独立 Linux 对端经 DPDK net_tap/veth
+通信。服务端两个 socket 在 bind 前启用并查询 SO_REUSEPORT，共享同一明确的本地
+地址/端口；SO_REUSEADDR 始终为零，第三个普通 socket 的 bind 必须 EADDRINUSE。
+客户端使用两个绑定不同非零端口的 socket，精确控制 A、B 两种来源。
+
+- 服务端第一个成员 connect 到 A，getpeername 必须匹配 A；第二个保持未连接。
+  A 的首条请求必须由连接成员接收，未连接成员队列为空；连接成员使用默认目的地址
+  回复。B 的请求则必须由未连接成员接收，连接成员队列为空。
+- 服务端接收 B 的请求后关闭连接成员，检查无残留 epoll 就绪，再从未连接成员回复。
+  客户端收到该回复后才继续推进，因此 A 的下一条请求确定在关闭之后发出；A、B
+  后续请求都必须由剩余成员接收并正确回复。过程中不依赖固定 sleep。
+- 每条报文核对 token、来源 tuple、poll/epoll 就绪与成员对应的完整 64 位 tag。
+  最终剩余成员及两个客户端均保持未连接，接收队列为 EAGAIN，epoll 不残留可读事件。
+  测试按连接匹配规则验收，不要求未连接 reuseport 成员间的哈希均衡。
+
+两个原生实例均要求 UDP InDatagrams/OutDatagrams 至少各 4、InErrors/NoPorts 为零、
+DPDK TX/RX 非零和 outstanding=0。这是 F-Stack UDP/epoll 示例的 Ker/Linux 扩展，
+不是上游 reuseport 测试或等价性声明；仅增加验收，不修改 Linux 或 Ker 适配代码。
+未覆盖跨 UID、BPF 选择器、多进程 worker、排队报文迁移、广播或多播的组分发语义。
