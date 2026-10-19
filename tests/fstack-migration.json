@@ -2501,65 +2501,110 @@
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_basic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_null_dump_path",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_basic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_no_enable",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_nsec_precision",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_fopen_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_seq_rotation_wraps",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_no_rotate_when_under_max",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_dump_packets_multiseg_truncated_at_snaplen",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no pcap dump/rotation adapter; F-Stack stubs cannot validate one.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker packet-I/O PCAP adapter: real DPDK mbufs, independent file/record decoding, bounded rolling files and explicit I/O errors. F-Stack TLS/lcore names and fatal rte_exit are adapted to per-worker TX/RX streams and propagated failures.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-pcap",
+          "provenance_case": "native-fstack-pcap"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_create_returns_fd",

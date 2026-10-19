@@ -10,6 +10,7 @@ from pathlib import Path
 import selectors
 import re
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -953,6 +954,38 @@ def udp_compat(args, launcher, work, env, log):
             print('native F-Stack UDP ' + mode + ' ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def verify_capture(directory, stats):
+    for direction in ('tx', 'rx'):
+        paths = list(directory.glob('ker-' + direction + '-*.pcap'))
+        if not paths or len(paths) > 10:
+            raise RuntimeError('missing or unbounded capture files')
+        count = tcp = truncated = 0
+        for path in paths:
+            data = path.read_bytes()
+            if len(data) < 24:
+                raise RuntimeError('short PCAP header')
+            endian = '<' if data[:4] == b'\x4d\x3c\xb2\xa1' else '>'
+            magic, major, minor, zone, accuracy, snaplen, linktype = struct.unpack(endian + 'IHHIIII', data[:24])
+            if (magic, major, minor, zone, accuracy, snaplen, linktype) != (0xa1b23c4d, 2, 4, 0, 0, 96, 1):
+                raise RuntimeError('incorrect PCAP header')
+            offset = 24
+            while offset < len(data):
+                if offset + 16 > len(data):
+                    raise RuntimeError('truncated PCAP record header')
+                sec, fraction, captured, original = struct.unpack(endian + 'IIII', data[offset:offset + 16])
+                offset += 16
+                if not sec or fraction >= 1000000000 or captured != min(96, original) or offset + captured > len(data):
+                    raise RuntimeError('invalid PCAP timestamp or lengths')
+                frame = data[offset:offset + captured]
+                offset += captured
+                count += 1
+                truncated += original > captured
+                tcp += len(frame) >= 34 and frame[12:14] == b'\x08\x00' and frame[23] == 6
+        if count != stats[direction] or not tcp or not truncated:
+            raise RuntimeError(f'PCAP {direction} missed worker traffic: {count=} {tcp=} {truncated=} {stats[direction]=}')
+    print('PASS: native TX/RX PCAP record counts, Ethernet TCP bytes and snaplen', flush=True)
+
+
 def inside(args):
     with tempfile.TemporaryDirectory(prefix='ker-native-tcp-') as temporary:
         work = Path(temporary)
@@ -990,7 +1023,13 @@ def inside(args):
             try:
                 for native_server in [True, False]:
                     stats_path = work / ('passive.json' if native_server else 'active.json')
-                    native = [*launcher, '--stats', str(stats_path), '--']
+                    capture_options = []
+                    if args.capture:
+                        capture_dir = work / ('pcap-passive' if native_server else 'pcap-active')
+                        capture_dir.mkdir()
+                        capture_options = ['--pcap-dir', str(capture_dir), '--pcap-snaplen', '96',
+                            '--pcap-max-bytes', '1073741824', '--pcap-nsec']
+                    native = [*launcher, *capture_options, '--stats', str(stats_path), '--']
                     address = '198.18.0.2' if native_server else '198.18.0.1'
                     port = 25001 if native_server else 25002
                     listen = [app, 'slow-server' if args.zero_window and not native_server else 'server', address, str(port)]
@@ -1008,6 +1047,8 @@ def inside(args):
                     stats = json.loads(stats_path.read_text())
                     if not (stats['tx'] > 0 and stats['rx'] > 0 and stats['outstanding'] == 0):
                         raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
+                    if args.capture:
+                        verify_capture(capture_dir, stats)
                     native_stats = stats['native']
                     if not native_stats['passive_opens' if native_server else 'active_opens']:
                         raise RuntimeError('native kernel did not record the TCP open')
@@ -1016,6 +1057,17 @@ def inside(args):
                     if args.zero_window and not native_stats['zero_window_probes']:
                         raise RuntimeError('native zero-window probing was not exercised: ' + str(native_stats))
                     print(('native passive' if native_server else 'native active') + ': ' + json.dumps(stats), flush=True)
+                if args.capture:
+                    full = work / 'pcap-full'
+                    full.mkdir()
+                    for direction in ('tx', 'rx'):
+                        (full / ('ker-' + direction + '-0.pcap')).symlink_to('/dev/full')
+                    for directory in (work / 'missing-capture-directory', full):
+                        failure = subprocess.run([*launcher, '--pcap-dir', str(directory), '--', '/bin/true'],
+                            capture_output=True, text=True, env=env, timeout=30)
+                        if failure.returncode != 125 or 'capture' not in failure.stderr:
+                            raise RuntimeError(f'capture I/O failure was masked: {failure.returncode} {failure.stderr}')
+                    print('PASS: capture startup and buffered-close failures propagate status 125', flush=True)
                 if args.errors_app:
                     stats_path = work / 'errors.json'
                     with server([str(args.errors_app), 'peer'], 25008, log, env):
@@ -1101,6 +1153,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ['launcher', 'library', 'io-worker', 'app']:
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--capture', action='store_true')
     parser.add_argument('--faults', action='store_true')
     parser.add_argument('--zero-window', action='store_true')
     parser.add_argument('--udp-cork-app', type=Path)

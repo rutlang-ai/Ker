@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/unit/test_ff_dpdk_pcap.c": {
+      "sha256": "c32a0a1bdf966b230745d6ac19d5a64cdf4a8d4682e58564dde8042d5c447c6b",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_dpdk_pcap.c"
+    },
     "tests/unit/test_ff_dpdk_if.c": {
       "sha256": "785ca7c734b1ec783a3b31b3e7b4d01cebf2f78393d2e09c20e958dbf0bbedfe",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_dpdk_if.c"
@@ -25,6 +29,24 @@
     }
   },
   "cases": {
+    "native-fstack-pcap": {
+      "source_file": "tests/unit/test_ff_dpdk_pcap.c",
+      "source_case": [
+        "test_ff_enable_pcap_basic",
+        "test_ff_enable_pcap_null_dump_path",
+        "test_ff_dump_packets_basic",
+        "test_ff_dump_packets_no_enable",
+        "test_ff_enable_pcap_nsec_precision",
+        "test_ff_enable_pcap_fopen_fails",
+        "test_ff_dump_packets_seq_rotation_wraps",
+        "test_ff_dump_packets_no_rotate_when_under_max",
+        "test_ff_dump_packets_multiseg_truncated_at_snaplen"
+      ],
+      "ker_ctests": [
+        "native-fstack-pcap"
+      ],
+      "adaptation": "Nine pinned F-Stack PCAP scenarios adapted to the real Ker DPDK packet-I/O capture implementation. Actual EAL mempool mbufs and a two-segment chain are borrowed without ownership changes; native-endian PCAP 2.4 headers, Ethernet linktype, microsecond/nanosecond timestamps, captured/original lengths and exact bytes are independently decoded. Tests cover NULL directory fallback, enable/file creation, disabled writer, nonexistent-path failure, ten-slot wrap with exact retained records, under-limit append, mid-segment snaplen truncation, malformed-chain rejection, rotation-open and buffered-close errors, and zero outstanding buffers. Separate native-fstack-pcap-interop drives the same worker implementation with original-Linux TCP and an independent host peer in both roles. Worker TX is captured once before first PMD submission; RX is captured on burst acquisition before validation/delivery, including dropped frames. No retry duplicates. Unlike upstream fatal rte_exit, capture failures stop worker I/O and propagate launcher status 125; timestamps are supplied by CLOCK_REALTIME, names use ker-tx/ker-rx rather than lcore TLS, rotation occurs before the next record after a soft size threshold. No protocol implementation, upstream code, libpcap dependency or capture replay is added."
+    },
     "native-fstack-tcp-linger": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [

@@ -16,6 +16,7 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include "packet-channel.h"
+#include "pcap.h"
 
 /* This process transports Ethernet frames only. All socket/TCP behavior runs
  * in the separate imported Linux instance in the application process. */
@@ -50,19 +51,25 @@ static bool metadata_supported(const struct rte_mbuf *packet)
 int main(int argc, char **argv)
 {
     int packet_fd = -1, control_fd = -1, split = 0;
-    bool all_multicast = false;
+    bool all_multicast = false, pcap_nsec = false;
+    const char *pcap_dir = NULL;
+    int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
         if (!strcmp(argv[i], "--all-multicast")) { all_multicast = true; continue; }
+        if (!strcmp(argv[i], "--pcap-nsec")) { pcap_nsec = true; continue; }
         if (i + 1 >= argc) break;
         if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--port")) port_name = argv[++i];
+        else if (!strcmp(argv[i], "--pcap-dir")) pcap_dir = argv[++i];
+        else if (!strcmp(argv[i], "--pcap-snaplen")) pcap_snaplen = number(argv[++i]);
+        else if (!strcmp(argv[i], "--pcap-max-bytes")) pcap_maximum = number(argv[++i]);
         else break;
     }
-    if (packet_fd < 0 || control_fd < 0 || !port_name || !split) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--all-multicast] -- EAL_ARGS\n");
+    if (packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0) {
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--all-multicast] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -82,10 +89,11 @@ int main(int argc, char **argv)
     struct rte_mempool *pool = NULL;
     struct rte_mbuf *pending_tx = NULL, *rx[BURST] = {0};
     uint16_t rx_count = 0, rx_index = 0;
+    struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, dropped = 0, tx_retries = 0, rx_retries = 0;
     unsigned char tx_bytes[sizeof(struct ker_packet_header) + WIRE_MAX], rx_bytes[WIRE_MAX];
     size_t tx_length = 0;
-    int status = 1;
+    int status = 1, tx_capture_status, rx_capture_status;
     bool draining = false;
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
@@ -116,6 +124,11 @@ int main(int argc, char **argv)
             fprintf(stderr, "ker: ethdev did not enable --all-multicast\n");
             goto cleanup;
         }
+    }
+    if (pcap_dir && (ker_pcap_open(&tx_capture, pcap_dir, "ker-tx", pcap_snaplen,
+            pcap_maximum, pcap_nsec) || ker_pcap_open(&rx_capture, pcap_dir,
+            "ker-rx", pcap_snaplen, pcap_maximum, pcap_nsec))) {
+        perror("ker: open packet capture"); goto cleanup;
     }
     struct rte_ether_addr mac;
     if (rte_eth_macaddr_get(port, &mac)) goto device_error;
@@ -159,6 +172,14 @@ int main(int argc, char **argv)
                 void *bytes = rte_pktmbuf_append(pending_tx, tx_length);
                 if (!bytes) { status = 1; break; }
                 memcpy(bytes, tx_bytes + sizeof(struct ker_packet_header), tx_length);
+                /* Capture once before PMD ownership transfer, not on retries. */
+                if (pcap_dir) {
+                    struct timespec timestamp;
+                    if (clock_gettime(CLOCK_REALTIME, &timestamp) ||
+                        ker_pcap_write(&tx_capture, pending_tx, &timestamp)) {
+                        perror("ker: TX packet capture"); status = 1; break;
+                    }
+                }
             }
             if (rte_eth_tx_burst(port, 0, &pending_tx, 1) != 1) { tx_retries++; break; }
             pending_tx = NULL; /* PMD owns accepted mbufs, including deferred frees. */
@@ -179,6 +200,16 @@ int main(int argc, char **argv)
         if (rx_index == rx_count) {
             rx_count = rte_eth_rx_burst(port, 0, rx, BURST);
             rx_index = 0;
+            /* Each received frame is captured once, even if channel delivery
+             * later retries or metadata validation rejects it. */
+            if (pcap_dir) for (uint16_t i = 0; i < rx_count; ++i) {
+                struct timespec timestamp;
+                if (clock_gettime(CLOCK_REALTIME, &timestamp) ||
+                    ker_pcap_write(&rx_capture, rx[i], &timestamp)) {
+                    perror("ker: RX packet capture"); status = 1; break;
+                }
+            }
+            if (status) break;
         }
         while (rx_index < rx_count) {
             struct rte_mbuf *packet = rx[rx_index];
@@ -216,6 +247,9 @@ int main(int argc, char **argv)
 device_error:
     fprintf(stderr, "ker: ethdev initialization failed for %s\n", port_name);
 cleanup:
+    tx_capture_status = ker_pcap_close(&tx_capture);
+    rx_capture_status = ker_pcap_close(&rx_capture);
+    if (tx_capture_status || rx_capture_status) { perror("ker: close packet capture"); status = 1; }
     if (pending_tx) rte_pktmbuf_free(pending_tx);
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
     if (started && rte_eth_dev_stop(port)) status = 1;

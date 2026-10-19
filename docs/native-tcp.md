@@ -16,6 +16,9 @@ UDP 多播接收需显式给 `ker-run` 添加 `--all-multicast`，请求 DPDK et
 由原始 Linux 按 socket 成员关系过滤。设备无法启用该模式时启动失败；动态 MAC group
 订阅尚未跨 packet channel 传播。已验证的 net_tap 场景见 [UDP 验证](native-udp-validation.md)。
 
+可选 `--pcap-dir` 抓取 DPDK 收发帧；支持 snaplen、微秒/纳秒时间戳及十文件滚动，
+用法与抓包边界见 [PCAP 抓包](packet-capture.md)。
+
 ## 可复现构建
 
 验证平台为 x86_64 Linux、glibc、GCC。需要 Python 3、CMake ≥3.20、make、Git、Meson、Ninja、pkg-config、flex、bison、bc、libelf 和 OpenSSL 开发包，以及 DPDK 的构建依赖。以下路径为构建时选择，可改用工作目录以外的位置：
