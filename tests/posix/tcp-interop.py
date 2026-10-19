@@ -325,6 +325,36 @@ def tcp_receive_queue(args, launcher, work, env, log):
             print('native TCP receive queue ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_listener_restart(args, launcher, work, env, log):
+    if not args.listener_restart_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 26600 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.listener_restart_app), 'server', address, str(port)]
+        connect = [str(args.listener_restart_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-listener-restart-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP listener restart server did not verify old/new streams')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    3):
+                raise RuntimeError('TCP listener restart scenario missed native traffic: ' + str(stats))
+            print('native TCP listener restart ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_defer_accept(args, launcher, work, env, log):
     if not args.defer_accept_app:
         return
@@ -721,6 +751,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
                 tcp_urgent(args, launcher, work, env, log)
@@ -789,6 +820,7 @@ def main():
     parser.add_argument('--udp-multicast-app', type=Path)
     parser.add_argument('--receive-timeouts-app', type=Path)
     parser.add_argument('--send-timeouts-app', type=Path)
+    parser.add_argument('--listener-restart-app', type=Path)
     parser.add_argument('--shutdown-write-app', type=Path)
     parser.add_argument('--receive-queue-app', type=Path)
     parser.add_argument('--urgent-app', type=Path)
