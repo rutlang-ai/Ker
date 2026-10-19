@@ -65,6 +65,14 @@ epoll 示例的 Ker/Linux 扩展，不是上游截断测试或等价性声明。
 Linux 或 Ker 适配代码；未覆盖 recvmmsg timeout/MSG_WAITFORONE、错误指针或网络丢包。
 
 
+## UDP 接收超时与同一 socket 恢复
+
+`native-fstack-udp-timeouts` 在宿主参考、native 主动端和 native 监听端组合中双向验证 `recvfrom`、两段 iovec 的 `recvmsg` 和一项 `recvmmsg`（timeout 指针为 NULL）。通过 dup 设置 200 ms 的 `SO_RCVTIMEO`，两个 fd 查询同一值并允许内核 tick 向上取整。独立 TCP 控制连接在空队列接收返回前不提供 UDP 数据；接收须经过至少 100 ms 且小于四秒后以 EAGAIN 返回，目标缓冲区不变、SO_ERROR 为零、fd 仍保持阻塞。
+
+随后通过原 fd 清除超时并在 alias 查询为零，再用同一 socket 接收长度 0、17 或 33 的报文，核对源地址、内容与未写入区域；每次队列最终到 EAGAIN。native 每端须记录至少三个 UDP 入/出报文、一次匹配方向的 TCP 控制连接、DPDK 收发、零 UDP 错误和零未释放缓冲区。
+
+这是固定 F-Stack UDP 示例的 Ker/Linux 扩展，不是上游超时测试或等价声明。仅增加测试，不修改协议或适配代码。未覆盖 recvmmsg timeout 指针语义、信号中断、发送缓冲区压力、并发读者或 IPv6。
+
 ## Linux 异步错误与恢复
 
 ```sh

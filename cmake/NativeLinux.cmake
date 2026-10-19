@@ -190,6 +190,12 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-receive-truncation COMMAND ${ker_native_test_command}
         --udp-receive-truncation-app "$<TARGET_FILE:ker-posix-fstack-udp-receive-truncation-test>")
     set_tests_properties(native-fstack-udp-receive-truncation PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-posix-fstack-udp-timeouts-test tests/posix/fstack-udp-timeouts.c)
+    target_compile_options(ker-posix-fstack-udp-timeouts-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-udp-timeouts COMMAND ${ker_native_test_command}
+        --udp-receive-timeouts-app "$<TARGET_FILE:ker-posix-fstack-udp-timeouts-test>")
+    set_tests_properties(native-fstack-udp-timeouts PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+
     add_executable(ker-posix-fstack-udp-multicast-test tests/posix/fstack-udp-multicast.c)
     target_compile_options(ker-posix-fstack-udp-multicast-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-multicast COMMAND ${ker_native_test_command}
