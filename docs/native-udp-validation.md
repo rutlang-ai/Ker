@@ -180,3 +180,37 @@ net_tap/veth 互通。使用同链路的 198.18.0.255/24 子网广播地址；�
 本项只验证同链路小报文子网广播，不覆盖 limited broadcast 255.255.255.255、多接口
 路由、广播转发、物理 NIC 过滤、广播分片或实际发现协议。socket 权限和目的地址
 分类均由原始 Linux 执行。
+
+
+## UDP connect、来源过滤与断开
+
+```sh
+ctest --test-dir build-native-tcp -R '^native-fstack-udp-connect-lifecycle$' --output-on-failure
+```
+
+测试先跑宿主参考，再将原生 Linux 分别作为客户端和双端口服务端，与独立 Linux
+对端经 DPDK net_tap/veth 互通。客户端显式绑定本地地址和非零端口，再创建 dup alias；
+同一个 socket/epoll 注册在整个生命周期内保持，不依赖固定 sleep。
+
+- 通过 alias connect 到服务端 A，原 fd 的 getpeername 必须匹配 A；默认目的地址
+  发送的请求由 A 收到。B 随后发出错误来源报文，必须从 IP_RECVERR 队列收到真实
+  ICMP Port Unreachable，核对引用 payload、目的 tuple、错误 origin/type/code 和
+  offender。确认拒绝后 A 才发正常回复，客户端只收到正常回复，队列随后为 EAGAIN。
+- 原 fd 重连 B 后，alias 查询必须匹配 B，本地 tuple 不变，默认发送改由 B 接收。
+  客户端在仍连接 B 时显式 sendto A：A 必须收到该报文，但 A 的回复仍被来源过滤，
+  同样以 ICMP 错误确认；B 发出有效确认。原 fd 的对端仍是 B，后续默认发送也仍去 B。
+- alias 用 AF_UNSPEC 断开后，原 fd 的 getpeername 必须 ENOTCONN，两个 fd 的显式
+  绑定均保留，无目的地址的 send 必须 EDESTADDRREQ 且 SO_ERROR 仍为零。随后通过
+  sendto A 恢复普通收发，来自 A、B 的两条回复都必须收到，允许它们以任意顺序到达。
+- 所有 datagram 检查 token、来源地址/端口、EPOLLIN/EPOLLERR 与完整 64 位 tag。
+  错误队列完全排空后服务端 SO_ERROR 为零，所有普通接收队列末尾必须 EAGAIN。
+
+原生客户端 UDP OutDatagrams/InDatagrams 至少为 5/6，NoPorts 至少为 2，对应两次
+有意的错误来源拒绝；原生服务端至少为 8/5，NoPorts 为零。两端 InErrors 为零，
+DPDK TX/RX 非零且 outstanding=0。本项中的 NoPorts 增长是来源过滤的预期证据，
+区别于其他正常 UDP 场景的零错误要求。
+
+这是 F-Stack UDP/epoll 示例的 Ker/Linux 扩展；不声明上游 F-Stack 等价性，AF_UNSPEC
+按明确测试的 Linux 语义解释。非零端口 bind 是保留本地 tuple 的前提，本项不覆盖
+自动绑定或 port=0 时断开后的端口选择，也不覆盖多接口路由、并发重连、IPv6 或 DNS。
+仅增加测试，UDP 对端选择、过滤、ICMP 与断开行为全部由原始 Linux 执行。
