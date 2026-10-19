@@ -219,3 +219,11 @@ int ioctl(int fd, unsigned long request, ...)
     ker_fd_put(entry);
     return result(value);
 }
+
+int sockatmark(int fd)
+{
+    /* libc's internal ioctl bypasses interposition on native reservations. */
+    int value;
+    if (ioctl(fd, SIOCATMARK, &value) < 0) return -1;
+    return value;
+}

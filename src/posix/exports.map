@@ -2,7 +2,7 @@
     global:
         ker_posix_capabilities; ker_posix_kernel_release;
         socket; bind; connect; listen; accept; accept4; shutdown;
-        getsockname; getpeername; getsockopt; setsockopt;
+        getsockname; getpeername; getsockopt; setsockopt; sockatmark;
         send; recv; sendto; recvfrom; sendmsg; recvmsg; sendmmsg; recvmmsg;
         read; write; readv; writev; close; dup; dup2; dup3; fcntl; fcntl64; ioctl;
         poll; __poll; ppoll; select; pselect; epoll_create; epoll_create1; epoll_ctl; epoll_wait; epoll_pwait; epoll_pwait2;

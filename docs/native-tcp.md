@@ -79,6 +79,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | connect 生命周期 | 拒绝连接与 dup 共享 SO_ERROR 清除、AF_UNSPEC 跨端口重连、原注册 fd 关闭后别名仍能使用 epoll 与完成收发 |
 | 延迟接入 | TCP_DEFER_ACCEPT 开启时由数据触发 poll/epoll 与 accept；同一 listener 关闭选项后握手即可接入 |
 | 共享监听端口 | SO_REUSEPORT 双 listener、普通 bind 冲突；关闭接入 listener 后已接受连接仍可收发，剩余 listener 继续接入 |
+| 独立对端 urgent data | 双向 MSG_OOB/MSG_PEEK、SO_OOBINLINE、sockatmark/SIOCATMARK 边界及 poll/epoll 优先事件；普通前后缀完整且无 urgent byte 混入 |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -167,6 +168,25 @@ DPDK TX/RX 非零、outstanding=0。连接拒绝、RST 与重连完全来自导�
 TX/RX 非零和 outstanding=0。本项是 F-Stack host bridge 场景的 Ker/Linux 扩展，
 不声明上游 F-Stack 的 SO_REUSEPORT 等价性；未覆盖跨进程 worker、不同 UID、BPF
 选择器或尚在队列中的连接迁移。端口分组、选择和 TCP 行为全部来自原始 Linux。
+
+`native-fstack-tcp-urgent` 将既有 loopback 基础 OOB 验证扩展到独立 Linux
+对端，依次运行宿主参考、原生客户端和原生服务端。两条 data 连接分别关闭与开启
+SO_OOBINLINE，且每条连接双向执行：普通六字节前缀、单字节 MSG_OOB、普通五字节
+后缀。独立 control 连接确保接收方已设置选项并注册 EPOLLPRI，且在验证 urgent
+边界之前发送方不会发送后缀；测试不用固定 sleep。
+
+poll/epoll 必须报告 POLLPRI/EPOLLPRI 并保持 64 位 tag。读取前缀前 SIOCATMARK
+必须为零，读完前缀后必须为一；每次同时调用 POSIX sockatmark 并要求结果一致。非 inline 模式通过 MSG_OOB|MSG_PEEK 查看 urgent
+byte 后，再用 MSG_OOB 消费，普通流中不能重复出现该字节；inline 模式要求
+MSG_OOB 返回 EINVAL，然后通过普通 recv 读取该字节。完整后缀和 EOF 到达后，
+urgent mark 及 PRI 清除，同时允许 EOF/HUP 保留就绪。
+
+每个原生实例要求至少三次对应 TCP open、DPDK TX/RX 非零和 outstanding=0。
+本项是 F-Stack host bridge/readiness 场景的 Ker/Linux 扩展，不声明上游 F-Stack
+urgent API 等价性。未覆盖 SIGURG、异步信号所有者、多个未消费 urgent pointer
+相互覆盖。新增 sockatmark 导出入口复用 ioctl 适配，修复 libc 内部 ioctl 绕过
+原生 fd 分流的问题；同时核对非法 fd 的 EBADF、宿主 pipe 的 ENOTTY 及宿主 socket
+参考行为。未修改原始 Linux urgent 处理。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
