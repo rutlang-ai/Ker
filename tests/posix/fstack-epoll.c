@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -208,11 +209,57 @@ static void null_event_non_delete(void)
     CHECK(epoll_ctl(c.ep, EPOLL_CTL_DEL, c.receiver, NULL) == 0);
     empty(c); finish(c);
 }
+/* Call through a pointer to avoid libc's nonnull buffer diagnostics: NULL
+ * is intentional and Linux only accesses it when an event is ready. */
+static int null_wait(int ep, int variant, int maximum)
+{
+    int (*wait_fn)(int, struct epoll_event *, int, int) = epoll_wait;
+    int (*pwait_fn)(int, struct epoll_event *, int, int, const sigset_t *) = epoll_pwait;
+    int (*pwait2_fn)(int, struct epoll_event *, int, const struct timespec *, const sigset_t *) = epoll_pwait2;
+    struct timespec zero = {0};
+    if (variant == 0) return wait_fn(ep, NULL, maximum, 0);
+    if (variant == 1) return pwait_fn(ep, NULL, maximum, 0, NULL);
+    return pwait2_fn(ep, NULL, maximum, &zero, NULL);
+}
+static void null_wait_recovery(void)
+{
+    for (int variant = 0; variant < 3; ++variant) {
+        struct connection c = connection();
+        EXPECT_ERROR(null_wait(c.ep, variant, 0), EINVAL);
+        CHECK(null_wait(c.ep, variant, 1) == 0);
+        control(c, EPOLL_CTL_ADD, EPOLLIN | EPOLLET | EPOLLONESHOT,
+            UINT64_C(0xdeadbeef01234567));
+        put(c, "fault-recovery");
+        /* First establish readiness, without consuming the epoll event. */
+        struct pollfd ready = {.fd = c.ep, .events = POLLIN};
+        CHECK(poll(&ready, 1, 2000) == 1);
+        EXPECT_ERROR(null_wait(c.ep, variant, 1), EFAULT);
+        event(c, EPOLLIN, UINT64_C(0xdeadbeef01234567));
+        empty(c);
+        take(c, "fault-recovery");
+        CHECK(null_wait(c.ep, variant, 1) == 0);
+        finish(c);
+    }
+    /* A host event in a mixed-domain epoll must also survive copy failure. */
+    struct connection c = connection();
+    int pipefd[2];
+    CHECK(pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) == 0);
+    struct epoll_event ev = {.events = EPOLLIN | EPOLLONESHOT, .data.u64 = 42};
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_ADD, pipefd[0], &ev) == 0);
+    CHECK(write(pipefd[1], "h", 1) == 1);
+    EXPECT_ERROR(null_wait(c.ep, 0, 1), EFAULT);
+    event(c, EPOLLIN, 42);
+    empty(c);
+    CHECK(close(pipefd[0]) == 0);
+    CHECK(close(pipefd[1]) == 0);
+    finish(c);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"create-and-invalid-arguments", create_and_arguments},
         {"null-event-and-registration-recovery", null_event_non_delete},
+        {"null-wait-buffer-and-oneshot-recovery", null_wait_recovery},
         {"add-modify-delete-and-u64-data", add_modify_delete},
         {"level-triggered-unread-data", level_triggered},
         {"edge-triggered-drain-and-new-data", edge_triggered},

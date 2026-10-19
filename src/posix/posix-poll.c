@@ -219,9 +219,22 @@ static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum,
         for (unsigned int pass = 0; pass < 2 && result < maximum; ++pass) {
             bool native = pass == (native_first ? 0U : 1U);
             int host = native ? -1 : ker_fd_host_dup(entry);
-            long count = native ? lkl_sys_epoll_wait(entry->native,
-                (void *)(events + result), maximum - result, 0) : host < 0 ? -1 :
-                syscall(SYS_epoll_pwait, host, events + result, maximum - result, 0, NULL, 0);
+            long count;
+            if (native && !events) {
+                /* LKL user copies share our address space. Probe the epoll
+                 * file without delivering events: Linux faults only when it
+                 * tries to copy a ready event, and must retain ET/ONESHOT
+                 * readiness after that fault. Empty waits still time out. */
+                struct lkl_pollfd probe = {.fd = entry->native, .events = POLLIN};
+                count = lkl_sys_poll(&probe, 1, 0);
+                if (count > 0) count = -EFAULT;
+            } else if (native) {
+                count = lkl_sys_epoll_wait(entry->native,
+                    (void *)(events + result), maximum - result, 0);
+            } else {
+                count = host < 0 ? -1 : syscall(SYS_epoll_pwait, host,
+                    events ? events + result : NULL, maximum - result, 0, NULL, 0);
+            }
             if (!native && host >= 0) ker_fd_host_put(host);
             if (count < 0) { saved = native ? (int)-count : errno; result = -1; break; }
             result += (int)count;
