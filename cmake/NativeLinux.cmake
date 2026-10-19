@@ -224,6 +224,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-broadcast COMMAND ${ker_native_test_command}
         --udp-broadcast-app "$<TARGET_FILE:ker-posix-fstack-udp-broadcast-test>")
     set_tests_properties(native-fstack-udp-broadcast PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-posix-fstack-tcp-fd-modes-test tests/posix/fstack-tcp-fd-modes.c)
+    target_compile_options(ker-posix-fstack-tcp-fd-modes-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-fd-modes COMMAND ${ker_native_test_command}
+        --fd-modes-app "$<TARGET_FILE:ker-posix-fstack-tcp-fd-modes-test>")
+    set_tests_properties(native-fstack-tcp-fd-modes PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-udp-connect-test tests/posix/fstack-udp-connect.c)
     target_compile_options(ker-posix-fstack-udp-connect-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-connect-lifecycle COMMAND ${ker_native_test_command}
