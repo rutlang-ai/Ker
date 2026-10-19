@@ -12,9 +12,9 @@ static int64_t now_ns(void)
     clock_gettime(CLOCK_MONOTONIC, &value);
     return (int64_t)value.tv_sec * INT64_C(1000000000) + value.tv_nsec;
 }
-static int queued(void)
+static int queued(const char *path)
 {
-    long fd = lkl_sys_open("/proc/net/tcp", LKL_O_RDONLY, 0);
+    long fd = lkl_sys_open(path, LKL_O_RDONLY, 0);
     if (fd < 0) return (int)fd;
     char buffer[4096], line[512];
     size_t used = 0;
@@ -44,7 +44,11 @@ int ker_native_drain(unsigned int timeout_ms)
 {
     int64_t deadline = now_ns() + (int64_t)timeout_ms * INT64_C(1000000);
     for (;;) {
-        int pending = queued();
+        int pending = queued("/proc/net/tcp");
+        if (pending < 0) return pending;
+        int ipv6 = queued("/proc/net/tcp6");
+        if (ipv6 < 0) return ipv6;
+        pending |= ipv6;
         if (pending <= 0) return pending;
         if (now_ns() >= deadline) return -ETIMEDOUT;
         struct timespec delay = {.tv_nsec = 1000000};

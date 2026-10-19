@@ -3092,9 +3092,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_host_set_v6only",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Original Linux IPv6 enabled; real host/native POSIX sockets verify IPV6_V6ONLY, shared-port namespace separation, dual-stack conflicts, loopback IPv6, and independent-peer IPv4-mapped TCP over DPDK.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-dualstack",
+          "provenance_case": "native-fstack-dualstack"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_poll",

@@ -57,6 +57,45 @@ def client(command, env):
     return result.stdout
 
 
+def dualstack(args, launcher, work, env, log):
+    if not args.dualstack_app:
+        return
+    baseline = client([str(args.dualstack_app), 'loopback'], env)
+    stats_path = work / 'dualstack-loopback.json'
+    observed = client([*launcher, '--stats', str(stats_path), '--', str(args.dualstack_app), 'loopback'], env)
+    if observed != baseline:
+        raise RuntimeError('native IPv6 loopback differs from host reference')
+    stats = json.loads(stats_path.read_text())
+    if stats['outstanding'] or stats['native']['active_opens'] < 2 or stats['native']['passive_opens'] < 2:
+        raise RuntimeError('IPv6 loopback missed original Linux TCP opens')
+    for index, role in enumerate(('host-reference', 'client', 'server')):
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        peer = '198.18.0.1' if native_server else '198.18.0.2'
+        if role == 'host-reference':
+            address = peer = '127.0.0.1'
+        port = 27800 + index
+        stats_path = work / ('dualstack-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        listen = [str(args.dualstack_app), 'server', address, str(port), peer]
+        connect = [str(args.dualstack_app), 'client', address, str(port), peer]
+        if role == 'server':
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('dual-stack server did not validate traffic')
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            counter = 'passive_opens' if native_server else 'active_opens'
+            if not stats['tx'] or not stats['rx'] or stats['outstanding'] or not stats['native'][counter]:
+                raise RuntimeError('mapped IPv4 socket missed original Linux/DPDK traffic')
+        print('PASS: IPv4-mapped dual-stack ' + role, flush=True)
+
+
 def udp_cork(args, launcher, work, env, log):
     if not args.udp_cork_app:
         return
@@ -1090,6 +1129,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                dualstack(args, launcher, work, env, log)
                 tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
@@ -1158,6 +1198,7 @@ def main():
     parser.add_argument('--zero-window', action='store_true')
     parser.add_argument('--udp-cork-app', type=Path)
     parser.add_argument('--fd-app', type=Path)
+    parser.add_argument('--dualstack-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)
     parser.add_argument('--stream-app', type=Path)

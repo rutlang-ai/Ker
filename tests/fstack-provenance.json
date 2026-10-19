@@ -47,6 +47,14 @@
       ],
       "adaptation": "Nine pinned F-Stack PCAP scenarios adapted to the real Ker DPDK packet-I/O capture implementation. Actual EAL mempool mbufs and a two-segment chain are borrowed without ownership changes; native-endian PCAP 2.4 headers, Ethernet linktype, microsecond/nanosecond timestamps, captured/original lengths and exact bytes are independently decoded. Tests cover NULL directory fallback, enable/file creation, disabled writer, nonexistent-path failure, ten-slot wrap with exact retained records, under-limit append, mid-segment snaplen truncation, malformed-chain rejection, rotation-open and buffered-close errors, and zero outstanding buffers. Separate native-fstack-pcap-interop drives the same worker implementation with original-Linux TCP and an independent host peer in both roles. Worker TX is captured once before first PMD submission; RX is captured on burst acquisition before validation/delivery, including dropped frames. No retry duplicates. Unlike upstream fatal rte_exit, capture failures stop worker I/O and propagate launcher status 125; timestamps are supplied by CLOCK_REALTIME, names use ker-tx/ker-rx rather than lcore TLS, rotation occurs before the next record after a soft size threshold. No protocol implementation, upstream code, libpcap dependency or capture replay is added."
     },
+    "native-fstack-dualstack": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": "test_ff_host_set_v6only",
+      "ker_ctests": [
+        "native-fstack-dualstack"
+      ],
+      "adaptation": "The exact pinned host IPV6_V6ONLY scenario is adapted to public POSIX calls using the original Linux kernel. Host-reference and native loopback verify V6ONLY=1 through dup, query the effective option, and bind/listen AF_INET and AF_INET6 on the same port; V6ONLY=0 conflicts with IPv4 bind. IPv6 ::1 TCP under both option values checks inherited options, peer tuple, exact payload and half-close EOF. Independent host-reference/native-client/native-server modes then use AF_INET6 sockets and IPv4-mapped addresses over the IPv4 DPDK link, checking both endpoint tuples, full 64-bit epoll tags, exact bidirectional payload, SHUT_WR and EOF. Original Linux TCP active/passive opens and DPDK traffic plus zero outstanding buffers rule out host fallback. CONFIG_IPV6 enables upstream code without protocol source changes. Separate native-dualstack-drain boots the real kernel, fills IPv4 and IPv6 send queues to EAGAIN, requires immediate ETIMEDOUT, consumes/validates every byte and requires drain recovery; the adapter now checks both procfs tables. External IPv6 Ethernet addressing, routing, NDP filtering and IPv6 UDP delivery are not validated by this adaptation."
+    },
     "native-fstack-tcp-linger": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
