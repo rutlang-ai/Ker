@@ -111,6 +111,15 @@ def validate(root):
         for link in links:
             require(link['ctest'] in ctests, f'Missing CTest {link["ctest"]} for {item["id"]}')
             require(link['provenance_case'] in provenance['cases'], f'Missing provenance: {item["id"]}')
+            proof = provenance['cases'][link['provenance_case']]
+            source_file, source_case = item['id'].split('::', 1)
+            require(proof.get('source_file') == source_file,
+                    f'Provenance source file mismatch: {item["id"]} -> {link["provenance_case"]}')
+            cases = proof.get('source_case', [])
+            if isinstance(cases, str):
+                cases = [cases]
+            require(source_case in cases,
+                    f'Provenance source case mismatch: {item["id"]} -> {link["provenance_case"]}')
     return manifest, Counter(item['status'] for item in records)
 
 

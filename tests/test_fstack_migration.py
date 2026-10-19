@@ -61,6 +61,26 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing CTest'):
             audit.validate(self.root)
 
+    def test_unrelated_provenance_source_file_is_rejected(self):
+        item = next(v for v in self.manifest['cases']
+                    if v['id'].endswith('test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in'))
+        item['status'] = 'scenario-adapted'
+        item['ker_tests'] = [{'ctest': 'native-fstack-udp-interop',
+                              'provenance_case': 'native-fstack-udp-interop'}]
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'Provenance source file mismatch'):
+            audit.validate(self.root)
+
+    def test_unrelated_provenance_source_case_is_rejected(self):
+        item = next(v for v in self.manifest['cases']
+                    if v['id'].endswith('test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in'))
+        item['status'] = 'scenario-adapted'
+        item['ker_tests'] = [{'ctest': 'native-fstack-epoll',
+                              'provenance_case': 'native-fstack-epoll'}]
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'Provenance source case mismatch'):
+            audit.validate(self.root)
+
     def test_extra_snapshot_file_is_rejected(self):
         (self.root / 'tests/upstream/fstack/tests/unknown.c').write_text('test')
         with self.assertRaisesRegex(ValueError, 'Snapshot file mismatch'):
