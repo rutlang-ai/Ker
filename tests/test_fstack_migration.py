@@ -24,6 +24,7 @@ class CatalogTests(unittest.TestCase):
         shutil.copytree(ROOT / 'cmake', self.root / 'cmake')
         shutil.copytree(ROOT / 'tests/upstream', self.root / 'tests/upstream')
         self.path = self.root / 'tests/fstack-migration.json'
+        self.provenance_path = self.root / 'tests/fstack-provenance.json'
         self.manifest = json.loads(self.path.read_text())
 
     def save(self):
@@ -79,6 +80,29 @@ class CatalogTests(unittest.TestCase):
                               'provenance_case': 'native-fstack-epoll'}]
         self.save()
         with self.assertRaisesRegex(ValueError, 'Provenance source case mismatch'):
+            audit.validate(self.root)
+
+    def test_unrelated_existing_ctest_is_rejected_for_exact_provenance(self):
+        item = next(v for v in self.manifest['cases']
+                    if v['id'].endswith('test_ff_epoll_wait_ev_eof_read_to_hup_in'))
+        self.assertEqual(item['ker_tests'][0]['provenance_case'], 'native-fstack-epoll')
+        item['ker_tests'][0]['ctest'] = 'udp-ip-options'
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'CTest/provenance mismatch'):
+            audit.validate(self.root)
+
+    def test_missing_provenance_ctest_binding_is_rejected(self):
+        provenance = json.loads(self.provenance_path.read_text())
+        provenance['cases']['native-fstack-epoll'].pop('ker_ctests')
+        self.provenance_path.write_text(json.dumps(provenance))
+        with self.assertRaisesRegex(ValueError, 'Invalid provenance CTest binding'):
+            audit.validate(self.root)
+
+    def test_invalid_provenance_ctest_binding_type_is_rejected(self):
+        provenance = json.loads(self.provenance_path.read_text())
+        provenance['cases']['native-fstack-epoll']['ker_ctests'] = 'native-fstack-epoll'
+        self.provenance_path.write_text(json.dumps(provenance))
+        with self.assertRaisesRegex(ValueError, 'Invalid provenance CTest binding'):
             audit.validate(self.root)
 
     def test_extra_snapshot_file_is_rejected(self):

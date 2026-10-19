@@ -112,6 +112,15 @@ def validate(root):
             require(link['ctest'] in ctests, f'Missing CTest {link["ctest"]} for {item["id"]}')
             require(link['provenance_case'] in provenance['cases'], f'Missing provenance: {item["id"]}')
             proof = provenance['cases'][link['provenance_case']]
+            ker_ctests = proof.get('ker_ctests')
+            require(isinstance(ker_ctests, list) and ker_ctests
+                    and all(isinstance(test, str) for test in ker_ctests)
+                    and len(ker_ctests) == len(set(ker_ctests)),
+                    f'Invalid provenance CTest binding: {link["provenance_case"]}')
+            require(all(test in ctests for test in ker_ctests),
+                    f'Provenance binds missing CTest: {link["provenance_case"]}')
+            require(link['ctest'] in ker_ctests,
+                    f'CTest/provenance mismatch: {item["id"]} -> {link["ctest"]} not in {ker_ctests}')
             source_file, source_case = item['id'].split('::', 1)
             require(proof.get('source_file') == source_file,
                     f'Provenance source file mismatch: {item["id"]} -> {link["provenance_case"]}')

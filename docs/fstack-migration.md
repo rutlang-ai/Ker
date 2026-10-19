@@ -34,11 +34,11 @@ ctest --test-dir build -R '^fstack-migration-' --output-on-failure
 ctest --test-dir build -R '^native-fstack-epoll$' --output-on-failure
 ```
 
-默认检查只验证快照完整性、全部注册项没有遗漏、处置理由存在、适配项关联
-真实 CTest 和 provenance。它通过不代表 433 项行为通过。
+默认检查只验证快照完整性、全部注册项没有遗漏、处置理由存在，以及适配项关联真实
+CTest、精确源文件/用例 provenance 和 provenance 条目声明的 Ker CTest 绑定。它通过不代表
+433 项行为通过。
 `--require-complete` 在仍有 blocked 或 partial 项时返回 2，目前必须失败。
-9 个 mutation/门禁用例分别验证正常快照、遗漏用例、篡改原始文件、伪造无测试的
-“已适配”状态、不存在的 CTest、额外快照文件及完成度门禁拒绝未完成清单；CI 将清单校验标为 provenance。
+12 个 mutation/门禁用例验证快照与目录完整性、适配状态、存在且匹配来源的 CTest、源文件和源用例对应关系、provenance 到 Ker CTest 的显式绑定（包括拒绝无关现存 CTest、缺失绑定和无效绑定类型），以及未完成门禁；CI 将清单校验标为 provenance。
 
 ## 本批实际迁移与修复
 
