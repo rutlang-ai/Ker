@@ -194,4 +194,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-connect-lifecycle COMMAND ${ker_native_test_command}
         --connect-lifecycle-app "$<TARGET_FILE:ker-posix-fstack-tcp-connect-test>")
     set_tests_properties(native-fstack-tcp-connect-lifecycle PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-defer-accept-test tests/posix/fstack-tcp-defer-accept.c)
+    target_compile_options(ker-posix-fstack-tcp-defer-accept-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-defer-accept COMMAND ${ker_native_test_command}
+        --defer-accept-app "$<TARGET_FILE:ker-posix-fstack-tcp-defer-accept-test>")
+    set_tests_properties(native-fstack-tcp-defer-accept PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()

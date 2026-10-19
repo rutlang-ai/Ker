@@ -77,6 +77,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 阻塞接收超时 | 监听 accept 超时及继承；recv/recvmsg/readv 的 EAGAIN、部分 MSG_WAITALL、dup 共享选项、关闭超时后的 EOF 与恢复 |
 | 阻塞发送超时 | 双向小缓冲区压力；send/writev/sendmsg 的部分进度及 EAGAIN；dup 共享 SO_SNDTIMEO，恢复后字节流完整且无重复 |
 | connect 生命周期 | 拒绝连接与 dup 共享 SO_ERROR 清除、AF_UNSPEC 跨端口重连、原注册 fd 关闭后别名仍能使用 epoll 与完成收发 |
+| 延迟接入 | TCP_DEFER_ACCEPT 开启时由数据触发 poll/epoll 与 accept；同一 listener 关闭选项后握手即可接入 |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -135,6 +136,20 @@ connect 超时、宿主信号中断和 pthread cancellation。
 3 次 active open，原生服务端要求至少 2 次 passive open；两个端点均确认成功，且
 DPDK TX/RX 非零、outstanding=0。连接拒绝、RST 与重连完全来自导入 Linux；本项
 不新增协议或适配实现，也不覆盖并发 close 压力、宿主信号中断或 io_uring。
+
+`native-fstack-tcp-defer-accept` 通过独立 control/data TCP 连接协调两个阶段，
+先运行宿主参考，再分别运行原生客户端和服务端。监听端设置 TCP_DEFER_ACCEPT=31 秒，
+查询值允许 Linux 按重传次数向上舍入；客户端 connect 完成并确认对端与 SO_ERROR 后，
+通过 control 通知服务端，但等待明确许可才发送 data。此时 listener 的 100ms poll、
+即时 epoll 和非阻塞 accept 分别必须无事件、无事件及 EAGAIN；数据到达后，两种就绪
+接口与 accept 必须成功。此窗口只验证短期不就绪，不验收延迟定时器的到期行为。
+
+第一条 data 连接完成后，在同一 listener 将 TCP_DEFER_ACCEPT 清零。第二次连接
+必须在客户端尚未发送 payload 时就能触发 poll/epoll 并被 accept。两个阶段都核对
+完整 echo、双向半关闭和 EOF，接入队列排空后不再报告可读；64 位 epoll tag 保持。
+每个原生实例至少要求三次对应的 TCP open、DPDK TX/RX 非零和 outstanding=0。
+这是 F-Stack host bridge 场景的 Ker/Linux 扩展，不是上游 F-Stack 对该选项的支持声明；
+仅新增测试，TCP 延迟接入行为仍由原始 Linux 执行。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
