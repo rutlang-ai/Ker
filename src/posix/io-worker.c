@@ -17,6 +17,8 @@
 #include <rte_mbuf.h>
 #include "packet-channel.h"
 #include "pcap.h"
+#include "worker-log.h"
+#include <rte_log.h>
 
 /* This process transports Ethernet frames only. All socket/TCP behavior runs
  * in the separate imported Linux instance in the application process. */
@@ -51,8 +53,9 @@ static bool metadata_supported(const struct rte_mbuf *packet)
 int main(int argc, char **argv)
 {
     int packet_fd = -1, control_fd = -1, split = 0;
-    bool all_multicast = false, pcap_nsec = false;
-    const char *pcap_dir = NULL;
+    bool all_multicast = false, pcap_nsec = false, log_level_set = false;
+    const char *pcap_dir = NULL, *log_dir = NULL;
+    int log_level = -1;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL;
     for (int i = 1; i < argc; ++i) {
@@ -63,13 +66,16 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--port")) port_name = argv[++i];
+        else if (!strcmp(argv[i], "--log-dir")) log_dir = argv[++i];
+        else if (!strcmp(argv[i], "--log-level")) { log_level = number(argv[++i]); log_level_set = true; }
         else if (!strcmp(argv[i], "--pcap-dir")) pcap_dir = argv[++i];
         else if (!strcmp(argv[i], "--pcap-snaplen")) pcap_snaplen = number(argv[++i]);
         else if (!strcmp(argv[i], "--pcap-max-bytes")) pcap_maximum = number(argv[++i]);
         else break;
     }
-    if (packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--all-multicast] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+    if (packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
+        (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -80,9 +86,24 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGINT, &action, NULL);
     signal(SIGPIPE, SIG_IGN);
+    struct ker_worker_log log = {0};
+    if (log_dir && ker_worker_log_open(&log, log_dir, (unsigned int)getpid(),
+            log_level < 0 ? RTE_LOG_INFO : (uint32_t)log_level)) {
+        perror("ker: open worker log"); return 1;
+    }
     argv[split] = argv[0];
     if (rte_eal_init(argc - split, argv + split) < 0) {
-        fprintf(stderr, "ker EAL: %s\n", rte_strerror(rte_errno)); return 1;
+        fprintf(stderr, "ker EAL: %s\n", rte_strerror(rte_errno));
+        if (ker_worker_log_close(&log)) perror("ker: close worker log");
+        return 1;
+    }
+    if (log_level >= 0) {
+        ker_worker_log_global_level((uint32_t)log_level);
+        if (log_dir) ker_worker_log_level(log.type, (uint32_t)log_level);
+    }
+    if (log.file && ferror(log.file)) {
+        fprintf(stderr, "ker: write worker log failed during EAL startup\n");
+        rte_eal_cleanup(); ker_worker_log_close(&log); return 1;
     }
     uint16_t port = UINT16_MAX;
     bool started = false, configured = false;
@@ -132,6 +153,9 @@ int main(int argc, char **argv)
     }
     struct rte_ether_addr mac;
     if (rte_eth_macaddr_get(port, &mac)) goto device_error;
+    if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io ready port=%s\n", port_name) < 0) {
+        perror("ker: write worker log"); goto cleanup;
+    }
     printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], MTU);
@@ -264,7 +288,9 @@ cleanup:
         (unsigned long long)received, (unsigned long long)dropped,
         (unsigned long long)tx_retries, (unsigned long long)rx_retries, outstanding);
     fflush(stdout);
+    if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
     if (rte_eal_cleanup()) status = 1;
+    if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }
     close(packet_fd);
     close(control_fd);
     return status;
