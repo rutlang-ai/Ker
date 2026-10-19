@@ -476,6 +476,40 @@ def udp_multicast(args, launcher, work, env, log):
             print('native UDP multicast ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def udp_connect(args, launcher, work, env, log):
+    if not args.udp_connect_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 26500 + 4 * index
+        native_server = role == 'server'
+        server_address = '198.18.0.2' if native_server else '198.18.0.1'
+        client_address = '198.18.0.2' if role == 'client' else '198.18.0.1'
+        listen = [str(args.udp_connect_app), 'server', server_address, client_address, str(port)]
+        connect = [str(args.udp_connect_app), 'client', client_address, server_address, str(port)]
+        stats_path = work / ('udp-connect-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('UDP connect peer did not verify payload and metadata')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            udp = stats['native']
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    udp['udp_out_datagrams'] < (8 if native_server else 5) or
+                    udp['udp_in_datagrams'] < (5 if native_server else 6) or
+                    udp['udp_in_errors'] or
+                    (udp['udp_no_ports'] != 0 if native_server else udp['udp_no_ports'] < 2)):
+                raise RuntimeError('UDP connect scenarios missed native traffic: ' + str(stats))
+            print('native UDP connect ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def udp_broadcast(args, launcher, work, env, log):
     if not args.udp_broadcast_app:
         return
@@ -697,6 +731,7 @@ def inside(args):
                 tcp_send_timeouts(args, launcher, work, env, log)
                 udp_mtu(args, launcher, work, env, log)
                 udp_multicast(args, launcher, work, env, log)
+                udp_connect(args, launcher, work, env, log)
                 udp_broadcast(args, launcher, work, env, log)
                 udp_ancillary(args, launcher, work, env, log)
                 udp_errors(args, launcher, work, env, log)
@@ -749,6 +784,7 @@ def main():
     parser.add_argument('--udp-errors-app', type=Path)
     parser.add_argument('--udp-ancillary-app', type=Path)
     parser.add_argument('--udp-mtu-app', type=Path)
+    parser.add_argument('--udp-connect-app', type=Path)
     parser.add_argument('--udp-broadcast-app', type=Path)
     parser.add_argument('--udp-multicast-app', type=Path)
     parser.add_argument('--receive-timeouts-app', type=Path)
