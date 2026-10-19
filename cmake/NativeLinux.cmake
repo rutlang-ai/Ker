@@ -225,6 +225,12 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-urgent COMMAND ${ker_native_test_command}
         --urgent-app "$<TARGET_FILE:ker-posix-fstack-tcp-urgent-test>")
     set_tests_properties(native-fstack-tcp-urgent PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-linger-test tests/posix/fstack-tcp-linger.c)
+    target_compile_options(ker-posix-fstack-tcp-linger-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-linger COMMAND ${ker_native_test_command}
+        --linger-app "$<TARGET_FILE:ker-posix-fstack-tcp-linger-test>")
+    set_tests_properties(native-fstack-tcp-linger PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+
     add_executable(ker-posix-fstack-tcp-receive-queue-test tests/posix/fstack-tcp-receive-queue.c)
     target_compile_options(ker-posix-fstack-tcp-receive-queue-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-receive-queue COMMAND ${ker_native_test_command}
