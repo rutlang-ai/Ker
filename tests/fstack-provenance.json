@@ -25,6 +25,15 @@
     }
   },
   "cases": {
+    "native-fstack-tcp-fd-modes": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_ioctl_fionbio",
+        "test_ff_host_dup",
+        "test_ff_host_msg_name_shutdown_bridges"
+      ],
+      "adaptation": "Ker-specific independent-peer fd-mode extension of pinned host nonblocking/dup/message bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth with separate control/data connections. Each endpoint receives in turn. Before the sender is released, MSG_DONTWAIT on a blocking socket returns EAGAIN without changing F_GETFL; FIONBIO=1 through dup makes both descriptors nonblocking and ordinary read/recvmsg return EAGAIN; F_SETFL through the original clears shared O_NONBLOCK, another MSG_DONTWAIT leaves it clear, and F_SETFL through the alias enables it again. Poll/epoll with full 64-bit tag drive the first exact payload; FIONBIO=0 through the original restores blocking on both descriptors before a two-iovec MSG_WAITALL receives the exact 17-byte tail and both descriptors observe EOF. No-argument FIOCLEX/FIONCLEX plus F_SETFD separately verify that FD_CLOEXEC is descriptor-local, initially set on the original but absent on dup, and remains independent through mode changes and I/O. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, exec-inheritance support claim, concurrent F_SETFL, mode changes during blocked syscalls or general no-argument ioctl coverage is introduced."
+    },
     "native-fstack-socket-contracts": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [

@@ -235,6 +235,36 @@ def tcp_reuseport(args, launcher, work, env, log):
             print('native TCP reuseport ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_fd_modes(args, launcher, work, env, log):
+    if not args.fd_modes_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 26700 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.fd_modes_app), 'server', address, str(port)]
+        connect = [str(args.fd_modes_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-fd-modes-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP fd modes server did not verify both directions')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    2):
+                raise RuntimeError('TCP fd modes scenario missed native traffic: ' + str(stats))
+            print('native TCP fd modes ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_urgent(args, launcher, work, env, log):
     if not args.urgent_app:
         return
@@ -760,6 +790,7 @@ def inside(args):
                 tcp_connect_lifecycle(args, launcher, work, env, log)
                 tcp_receive_timeouts(args, launcher, work, env, log)
                 tcp_send_timeouts(args, launcher, work, env, log)
+                tcp_fd_modes(args, launcher, work, env, log)
                 udp_mtu(args, launcher, work, env, log)
                 udp_multicast(args, launcher, work, env, log)
                 udp_connect(args, launcher, work, env, log)
@@ -812,6 +843,7 @@ def main():
     parser.add_argument('--message-app', type=Path)
     parser.add_argument('--stream-app', type=Path)
     parser.add_argument('--udp-app', type=Path)
+    parser.add_argument('--fd-modes-app', type=Path)
     parser.add_argument('--udp-errors-app', type=Path)
     parser.add_argument('--udp-ancillary-app', type=Path)
     parser.add_argument('--udp-mtu-app', type=Path)

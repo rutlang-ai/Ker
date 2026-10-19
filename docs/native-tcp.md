@@ -89,6 +89,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 独立对端 message/vector stream | 三种 API（vector/message/batch）× 原生主动/被动角色；各方向 256 KiB + 13 字节、非阻塞短进度/重试、半关闭/EOF，逐实例检查原生 TCP 与 DPDK 计数 |
 | F-Stack message/vector 场景 | 6 个宿主/原生 Linux 对照场景：sendmsg/recvmsg、readv/writev、地址查询、半关闭、非阻塞 ioctl 与 dup/dup2；原生连接计数验证，UNIX socket 明确为宿主透传 |
 | fd 兼容 | 600 个宿主文件、高编号原生 fd、dup/fcntl/fstat、混合 poll/select/epoll、oneshot、多线程 churn |
+| 动态 fd 模式 | 独立对端双向 FIONBIO/fcntl 切换，dup 共享 O_NONBLOCK、MSG_DONTWAIT 不变更状态，FIOCLEX/FIONCLEX 标志独立 |
 | 信号等待 | ppoll/pselect/epoll_pwait/epoll_pwait2 原子解除阻塞、EINTR 与掩码恢复 |
 | 隔离与回收 | 宿主已占用的端口仍可在原生 loopback 使用；直接宿主 TCP syscall 被拒绝；worker mbuf outstanding=0 |
 | 现有应用（检测到程序时启用） | 原版 curl HTTP；原版 Redis/Valkey 无持久化、32 个连接、16 并发、1024 SET/GET 对及正常 SHUTDOWN |
@@ -171,6 +172,24 @@ DPDK TX/RX 非零、outstanding=0。连接拒绝、RST 与重连完全来自导�
 TX/RX 非零和 outstanding=0。本项是 F-Stack host bridge 场景的 Ker/Linux 扩展，
 不声明上游 F-Stack 的 SO_REUSEPORT 等价性；未覆盖跨进程 worker、不同 UID、BPF
 选择器或尚在队列中的连接迁移。端口分组、选择和 TCP 行为全部来自原始 Linux。
+
+`native-fstack-tcp-fd-modes` 使用独立 control/data TCP 连接，依次运行宿主参考、
+原生客户端和原生服务端。两个端点轮流作为接收者，在数据发送前完成所有空队列
+探测，不依赖固定 sleep：阻塞 fd 上的 MSG_DONTWAIT 必须 EAGAIN，但不能改变
+F_GETFL；alias 的 FIONBIO=1 必须使原 fd 和 alias 都带 O_NONBLOCK，普通 read 和
+recvmsg 随即返回 EAGAIN。原 fd 经 F_SETFL 清除非阻塞后两者恢复阻塞；alias 再经
+F_SETFL 开启非阻塞后，才能通知对端发送首段数据。
+
+poll/epoll 就绪及完整 64 位 tag 必须保持，alias 收到准确首段后，通过原 fd 的
+FIONBIO=0 再次恢复两者阻塞。通知对端发送后续数据，alias 上两段 iovec 的
+recvmsg(MSG_WAITALL) 必须返回完整 17 字节，两个 fd 最终均收到 EOF。
+
+FD_CLOEXEC 与上述共享文件状态分开验证：初始原 fd 带 CLOEXEC、dup 不带；无第三
+参数的 FIOCLEX/FIONCLEX 和 F_SETFD 必须只影响指定描述符，两者的标志在后续
+模式切换与收发后保持。每个原生实例要求至少两次对应 TCP open、DPDK TX/RX 非零
+和 outstanding=0。本项是 F-Stack host nonblocking/dup/message 场景的 Ker/Linux
+扩展；仅增加测试，不修改原始 Linux 或适配实现。标志位验收不表示已支持 exec
+继承；未覆盖并发 F_SETFL、阻塞调用期间切换模式或所有 no-argument ioctl。
 
 `native-fstack-tcp-urgent` 将既有 loopback 基础 OOB 验证扩展到独立 Linux
 对端，依次运行宿主参考、原生客户端和原生服务端。两条 data 连接分别关闭与开启
