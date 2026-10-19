@@ -204,4 +204,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-reuseport COMMAND ${ker_native_test_command}
         --reuseport-app "$<TARGET_FILE:ker-posix-fstack-tcp-reuseport-test>")
     set_tests_properties(native-fstack-tcp-reuseport PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-urgent-test tests/posix/fstack-tcp-urgent.c)
+    target_compile_options(ker-posix-fstack-tcp-urgent-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-urgent COMMAND ${ker_native_test_command}
+        --urgent-app "$<TARGET_FILE:ker-posix-fstack-tcp-urgent-test>")
+    set_tests_properties(native-fstack-tcp-urgent PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()
