@@ -199,4 +199,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-defer-accept COMMAND ${ker_native_test_command}
         --defer-accept-app "$<TARGET_FILE:ker-posix-fstack-tcp-defer-accept-test>")
     set_tests_properties(native-fstack-tcp-defer-accept PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-reuseport-test tests/posix/fstack-tcp-reuseport.c)
+    target_compile_options(ker-posix-fstack-tcp-reuseport-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-reuseport COMMAND ${ker_native_test_command}
+        --reuseport-app "$<TARGET_FILE:ker-posix-fstack-tcp-reuseport-test>")
+    set_tests_properties(native-fstack-tcp-reuseport PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()

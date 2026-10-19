@@ -205,6 +205,36 @@ def udp_mtu(args, launcher, work, env, log):
             print('native UDP MTU ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_reuseport(args, launcher, work, env, log):
+    if not args.reuseport_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 26000 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.reuseport_app), 'server', address, str(port)]
+        connect = [str(args.reuseport_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-reuseport-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP reuseport server did not verify listener retirement')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    13):
+                raise RuntimeError('TCP reuseport scenario missed native traffic: ' + str(stats))
+            print('native TCP reuseport ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_defer_accept(args, launcher, work, env, log):
     if not args.defer_accept_app:
         return
@@ -535,6 +565,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                tcp_reuseport(args, launcher, work, env, log)
                 tcp_defer_accept(args, launcher, work, env, log)
                 tcp_connect_lifecycle(args, launcher, work, env, log)
                 tcp_receive_timeouts(args, launcher, work, env, log)
@@ -595,6 +626,7 @@ def main():
     parser.add_argument('--udp-multicast-app', type=Path)
     parser.add_argument('--receive-timeouts-app', type=Path)
     parser.add_argument('--send-timeouts-app', type=Path)
+    parser.add_argument('--reuseport-app', type=Path)
     parser.add_argument('--defer-accept-app', type=Path)
     parser.add_argument('--connect-lifecycle-app', type=Path)
     parser.add_argument('--errors-app', type=Path)
