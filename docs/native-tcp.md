@@ -79,6 +79,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | connect 生命周期 | 拒绝连接与 dup 共享 SO_ERROR 清除、AF_UNSPEC 跨端口重连、原注册 fd 关闭后别名仍能使用 epoll 与完成收发 |
 | 延迟接入 | TCP_DEFER_ACCEPT 开启时由数据触发 poll/epoll 与 accept；同一 listener 关闭选项后握手即可接入 |
 | 共享监听端口 | SO_REUSEPORT 双 listener、普通 bind 冲突；关闭接入 listener 后已接受连接仍可收发，剩余 listener 继续接入 |
+| listener 重启 | dup 保留监听与绑定冲突；关闭最后一个监听 alias 后 SO_REUSEADDR 重新监听同一端口，新旧连接独立存活 |
 | 独立对端 urgent data | 双向 MSG_OOB/MSG_PEEK、SO_OOBINLINE、sockatmark/SIOCATMARK 边界及 poll/epoll 优先事件；普通前后缀完整且无 urgent byte 混入 |
 | 独立对端接收队列 | 双向多段 MSG_PEEK/readv、FIONREAD、dup 共享队列，Linux TCP MSG_TRUNC 消费与 peek 保留，缓冲区哨兵及 EOF |
 | 本地发送半关闭 | dup 共享 SHUT_WR，六种写入 API 的 EPIPE、四种 MSG_NOSIGNAL 抑制与逐调用 SIGPIPE；反向数据及 RDHUP/EOF 保持 |
@@ -226,6 +227,26 @@ POLLIN/EPOLLIN 与 POLLRDHUP/EPOLLRDHUP，并保持完整 64 位 tag。每个原
 host shutdown/message/vector/dup 场景的 Ker/Linux 扩展；未覆盖 SHUT_RD、阻塞或
 忽略 SIGPIPE、默认终止动作、异步信号所有者及部分成功 sendmmsg 的信号行为。
 仅增加验收，半关闭/EPIPE 仍来自原始 Linux，SIGPIPE 仍复用既有 Ker 适配。
+
+`native-fstack-tcp-listener-restart` 在宿主参考、原生客户端和原生服务端模式下，
+验证已有连接存活时替换 listener。监听 socket 启用并查询 SO_REUSEADDR，同时
+SO_REUSEPORT 必须为零，避免将重启与共享 listener group 混为一谈。
+
+服务端创建 listener 及 dup alias，通过 alias 接受第一条连接并完成 echo。
+此时带 SO_REUSEADDR 的候选 socket 仍必须 bind 失败（EADDRINUSE）。关闭原 fd 后，
+alias 的 SO_ACCEPTCONN 仍为一，绑定冲突仍存在；关闭最后一个 alias 后，已接受的
+旧连接仍保持打开，此时不带 SO_REUSEADDR 的候选也必须绑定失败，带该选项的新
+listener 则必须成功 bind/listen 同一端口。控制连接在新 listener ready 后才通知
+客户端推进，不依赖固定 sleep。
+
+旧连接在替换后继续完成 echo，新连接由同一 epoll 中带新 64 位 tag 的 listener
+接入。关闭第二代 listener 后，两条已接受的连接仍分别完成后续内容校验、半关闭
+和 EOF；epoll 不应残留监听就绪。每个原生实例要求至少三次对应 TCP open、DPDK
+TX/RX 非零和 outstanding=0。
+
+这是 F-Stack host fd/readiness 场景的 Ker/Linux 扩展，不是上游 F-Stack listener
+重启测试或等价性声明。仅增加验收，绑定和连接生命周期来自原始 Linux；未覆盖
+TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨 UID 端口策略。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
