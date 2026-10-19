@@ -286,3 +286,11 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 - 原生内核与宿主的 namespace、路由、loopback、sysctl、文件系统和 PID 不相同；应用访问宿主 `/proc` 不会自动重定向到原生内核。第一版只公开启动参数与诊断计数，不提供宿主网络管理工具的透明重定向。
 
 本次构建与验收环境见 [首版验收记录](native-tcp-validation.md)。此范围已覆盖前台运行的普通非阻塞 POSIX TCP 应用和上述现有程序。多进程透明兼容、零拷贝、多队列、IPv6 与物理网卡的交付验收属于后续扩展。
+
+## SO_LINGER、dup 与最后一次 close
+
+`native-fstack-tcp-linger` 在宿主参考、native 主动端和 native 监听端组合中验证共享 `SO_LINGER` 与最后一个 fd 引用的关闭行为。六条数据连接覆盖两种关闭方向和三种模式：启用零 linger 后通过副本禁用，正常结束为 EOF；保留零 linger，通过 recv 消费 ECONNRESET；或先通过 SO_ERROR 消费 ECONNRESET。
+
+独立 TCP 控制连接确认原 fd 已关闭后，接收方须在 100 ms poll 窗口内保持无可读事件，epoll 无事件且非阻塞读取到 EAGAIN；发送方随后仍能通过副本发送准确的 17 字节内容。接收方确认内容消费完成，才允许关闭最后一个副本。验证最终 poll/epoll RDHUP、完整 64 位 tag，以及复位时 ERR/HUP。两种错误消费者各自读取并清除共享错误，随后两个接收方 fd 都读到 EOF。native 每端须有七次匹配方向的原始 Linux TCP 打开、DPDK 收发和零未释放缓冲区。
+
+这是固定 F-Stack host shutdown/dup 桥接场景的 Ker/Linux 扩展，不是上游 linger 测试或等价声明。仅增加测试；不修改 Linux 或 Ker 适配代码。未覆盖正数 linger 等待期限、未读数据关闭、进程退出、并发 close/read 或跨进程 fd 传递。
