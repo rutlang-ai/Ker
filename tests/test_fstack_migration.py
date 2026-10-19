@@ -115,7 +115,8 @@ class CatalogTests(unittest.TestCase):
                                  '--root', str(self.root), '--require-complete'],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
-        self.assertIn('blocked + 9 partial cases', result.stderr)
+        partial_count = sum(item['status'] == 'partial' for item in self.manifest['cases'])
+        self.assertIn(f'blocked + {partial_count} partial cases', result.stderr)
 
 
 if __name__ == '__main__':

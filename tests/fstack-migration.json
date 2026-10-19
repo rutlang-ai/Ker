@@ -3682,30 +3682,52 @@
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_basic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Real host thread creation, identity and joining are verified, together with actual LKL pthread TLS isolation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-thread-runtime",
+          "provenance_case": "native-fstack-thread-runtime"
+        }
+      ],
+      "remaining": "F-Stack inherits the opaque FreeBSD pcurthread pointer; LKL does not expose that contract. Child pthread TLS is intentionally empty, so this is not equivalent context propagation."
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_arg_passed",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real LKL host threads receive distinct argument objects and preserve their values through join and synchronized concurrent work.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-thread-runtime",
+          "provenance_case": "native-fstack-thread-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_join_retval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Real LKL threads complete work and join successfully; joined results are observed through owned argument storage.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-thread-runtime",
+          "provenance_case": "native-fstack-thread-runtime"
+        }
+      ],
+      "remaining": "LKL takes a void start routine and thread_join has no result pointer. The F-Stack-specific assertion that a non-NULL routine return becomes NULL cannot be expressed through this callback API."
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_malloc_failure",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Fail the actual LKL thread-wrapper allocation: thread_create returns its zero failure sentinel, errno remains ENOMEM and the routine never runs; F-Stack uses -ff_ENOMEM instead.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-thread-runtime",
+          "provenance_case": "native-fstack-thread-runtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_failfast",

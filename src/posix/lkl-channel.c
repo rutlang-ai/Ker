@@ -3,6 +3,7 @@
 #include "diagnostics.h"
 #include "lifecycle.h"
 #include "host-memory.h"
+#include "host-thread.h"
 #include "packet-channel.h"
 #include "packet-device.h"
 #include <arpa/inet.h>
@@ -87,6 +88,7 @@ __attribute__((constructor)) static void initialize(void)
         fail("IPv4 address", -EINVAL);
     long prefix = parse_number(required("LKL_HIJACK_NET_NETMASK_LEN"), 32);
     ker_native_host_memory_init(&lkl_host_ops);
+    ker_native_host_thread_init(&lkl_host_ops);
     lkl_host_ops.print = NULL;
     int result = lkl_init(&lkl_host_ops);
     if (result) fail("kernel initialization", result);

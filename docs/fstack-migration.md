@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 48 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 9 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 313 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 50 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 11 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 309 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -82,7 +82,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 0 | 0 | 6 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 0 | 0 | 13 | 0 | 0 |
-| [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 0 | 0 | 5 | 0 | 0 |
+| [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 2 | 1 | 0 | 0 |
 | [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 13 | 0 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
@@ -128,3 +128,21 @@ Ker 在 `src/posix/host-memory.c` 安装安全回调：失败保持原映射；�
 
 这些是运行时适配证据，不增加 TCP/UDP 协议覆盖。共享或文件映射、calloc/realloc、
 随机数、实时时钟等剩余主机接口仍保留未迁移状态。
+
+## 主机线程与 TLS 回调
+
+`native-fstack-thread-runtime` 适配 `test_ff_thread.c` 的参数传递和分配失败场景。
+线程失败使用 LKL 的零 handle 表示，区别于 F-Stack 的负 errno 返回值；测试通过
+链接器只注入一次 malloc 失败，线程创建与同步始终使用真实 LKL 主机回调。
+四个真实线程验证参数、identity、join 完成、信号量阻塞、互斥计数、TLS 隔离、
+析构和 key 回收复用。随后真实 Linux 启停，并确认内核创建了主机线程。
+
+测试发现固定版本的 `tsd_alloc` 在 malloc 返回 NULL 后仍解引用，修复前触发
+SIGSEGV。Ker 在 `host-thread.c` 提供完整且私有的 pthread TLS key 适配，
+分配失败返回 NULL；pthread key 用尽时释放中间分配并报告 EAGAIN。
+真实 key 耗尽测试检查所有分配回收。上游 LKL 源码保持不变。
+
+`test_ff_pthread_create_basic` 和 `test_ff_pthread_join_retval` 只计部分覆盖：
+LKL 不继承 FreeBSD 的 pcurthread，且 void 线程入口和无返回值槽的 join 无法表达
+F-Stack 丢弃非 NULL 线程返回值的断言。本批不模拟 FreeBSD 上下文，也不对应用的
+pthread API 做拦截；cancel、detach 生命周期及析构重新设置 TLS 等仍未覆盖。
