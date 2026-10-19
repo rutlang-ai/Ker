@@ -680,3 +680,12 @@ if(KER_WITH_DPDK)
         "${KER_TCP_MSS_MANIFEST}" "${KER_TCP_MSS_IMPORT}"
         "${PROJECT_SOURCE_DIR}/tools/import-linux-tcp-mss.py")
 endif()
+
+# Inventory integrity is distinct from migrated networking behavior.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME fstack-migration-inventory
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack_migration.py")
+add_test(NAME fstack-migration-audit-guards
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_fstack_migration.py")
+set_tests_properties(fstack-migration-inventory fstack-migration-audit-guards
+    PROPERTIES TIMEOUT 30 LABELS "provenance")

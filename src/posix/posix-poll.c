@@ -170,7 +170,10 @@ int epoll_ctl(int fd, int operation, int target, struct epoll_event *event)
         result = -1;
     } else if (entry) {
         native_call = true;
-        result = lkl_sys_epoll_ctl(ep->native, operation, entry->native, (void *)event);
+        /* LKL shares this address space, so reject NULL before its user-copy
+         * path can dereference it. Linux does not read event for DEL. */
+        result = !event && operation != EPOLL_CTL_DEL ? -EFAULT :
+            lkl_sys_epoll_ctl(ep->native, operation, entry->native, (void *)event);
     } else if (ep) {
         int host = ker_fd_host_dup(ep);
         if (host < 0) result = -1;

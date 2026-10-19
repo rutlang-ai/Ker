@@ -1,0 +1,2 @@
+# Preserve the pinned upstream test snapshot byte-for-byte.
+tests/upstream/fstack/** -text -filter -ident

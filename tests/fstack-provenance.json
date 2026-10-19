@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/F-Stack/f-stack",
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
-  "mode": "scenario-adaptation; no upstream implementation or harness copied",
+  "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
     "tests/unit/test_ff_dpdk_if.c": {
       "sha256": "785ca7c734b1ec783a3b31b3e7b4d01cebf2f78393d2e09c20e958dbf0bbedfe",
@@ -31,7 +31,8 @@
         "test_ff_host_msg_name_shutdown_bridges",
         "test_ff_host_dup"
       ],
-      "adaptation": "Ker-specific Linux TCP SO_LINGER/last-reference-close extension of pinned host shutdown and dup bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server runs use independent Linux peers over DPDK net_tap/veth. Six data connections cover both closer directions and three modes: enable abortive linger then disable it through dup for graceful EOF; leave zero linger enabled and consume reset through recv; consume reset through SO_ERROR instead. Shared queried option values are checked. Closing the original descriptor must leave the alias usable: after a TCP control barrier, the peer observes no poll/epoll readiness for 100 ms and EAGAIN, then receives an exact 17-byte payload through the remaining alias. The final alias closes only after payload consumption acknowledgment. Terminal poll/epoll readiness includes RDHUP/full 64-bit tags and reset ERR/HUP; reset is observed exactly once by the selected consumer, cleared on both aliases, and subsequent reads return EOF. Native instances require seven matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No runtime/protocol changes, positive linger deadlines, unread-data close, process exit, concurrent close/read or cross-process descriptor transfer coverage is introduced."
+      "adaptation": "Ker-specific Linux TCP SO_LINGER/last-reference-close extension of pinned host shutdown and dup bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server runs use independent Linux peers over DPDK net_tap/veth. Six data connections cover both closer directions and three modes: enable abortive linger then disable it through dup for graceful EOF; leave zero linger enabled and consume reset through recv; consume reset through SO_ERROR instead. Shared queried option values are checked. Closing the original descriptor must leave the alias usable: after a TCP control barrier, the peer observes no poll/epoll readiness for 100 ms and EAGAIN, then receives an exact 17-byte payload through the remaining alias. The final alias closes only after payload consumption acknowledgment. Terminal poll/epoll readiness includes RDHUP/full 64-bit tags and reset ERR/HUP; reset is observed exactly once by the selected consumer, cleared on both aliases, and subsequent reads return EOF. Native instances require seven matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No runtime/protocol changes, positive linger deadlines, unread-data close, process exit, concurrent close/read or cross-process descriptor transfer coverage is introduced.",
+      "ker_ctests": ["native-fstack-tcp-linger"]
     },
     "native-fstack-udp-receive-truncation": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -48,7 +49,8 @@
         "test_ff_host_dup",
         "test_ff_host_msg_name_shutdown_bridges"
       ],
-      "adaptation": "Ker-specific independent-peer fd-mode extension of pinned host nonblocking/dup/message bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth with separate control/data connections. Each endpoint receives in turn. Before the sender is released, MSG_DONTWAIT on a blocking socket returns EAGAIN without changing F_GETFL; FIONBIO=1 through dup makes both descriptors nonblocking and ordinary read/recvmsg return EAGAIN; F_SETFL through the original clears shared O_NONBLOCK, another MSG_DONTWAIT leaves it clear, and F_SETFL through the alias enables it again. Poll/epoll with full 64-bit tag drive the first exact payload; FIONBIO=0 through the original restores blocking on both descriptors before a two-iovec MSG_WAITALL receives the exact 17-byte tail and both descriptors observe EOF. No-argument FIOCLEX/FIONCLEX plus F_SETFD separately verify that FD_CLOEXEC is descriptor-local, initially set on the original but absent on dup, and remains independent through mode changes and I/O. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, exec-inheritance support claim, concurrent F_SETFL, mode changes during blocked syscalls or general no-argument ioctl coverage is introduced."
+      "adaptation": "Ker-specific independent-peer fd-mode extension of pinned host nonblocking/dup/message bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth with separate control/data connections. Each endpoint receives in turn. Before the sender is released, MSG_DONTWAIT on a blocking socket returns EAGAIN without changing F_GETFL; FIONBIO=1 through dup makes both descriptors nonblocking and ordinary read/recvmsg return EAGAIN; F_SETFL through the original clears shared O_NONBLOCK, another MSG_DONTWAIT leaves it clear, and F_SETFL through the alias enables it again. Poll/epoll with full 64-bit tag drive the first exact payload; FIONBIO=0 through the original restores blocking on both descriptors before a two-iovec MSG_WAITALL receives the exact 17-byte tail and both descriptors observe EOF. No-argument FIOCLEX/FIONCLEX plus F_SETFD separately verify that FD_CLOEXEC is descriptor-local, initially set on the original but absent on dup, and remains independent through mode changes and I/O. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, exec-inheritance support claim, concurrent F_SETFL, mode changes during blocked syscalls or general no-argument ioctl coverage is introduced.",
+      "ker_ctests": ["native-fstack-tcp-fd-modes"]
     },
     "native-fstack-socket-contracts": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -57,7 +59,8 @@
         "test_ff_host_ioctl_fionbio",
         "test_ff_host_dup"
       ],
-      "adaptation": "Six Ker-specific public POSIX socket-contract extensions of pinned host bridge name/nonblocking/dup scenarios. Separate host-reference and imported-Linux CTests execute the same assertions: socket creation flags and SO_TYPE/SO_DOMAIN/SO_PROTOCOL; explicit accept/accept4 flags rather than listener flag inheritance; zero/short address buffers with untouched sentinels and full returned lengths; TCP/keepalive options, invalid-option errors and recovery; bind collision without disrupting the live listener; and F_DUPFD_CLOEXEC/fstat alias identity, self-duplication errors and surviving I/O after the original closes. The upstream host-only bridge tests do not cover these additional Linux socket contracts. Native fd scenario execution requires original-Linux TCP open counters, no outstanding packet buffers, and the existing independent-host TCP/DPDK interop. Contract cases themselves use loopback. No ff implementation, private API, mock, protocol change or new supported capability is introduced."
+      "adaptation": "Six Ker-specific public POSIX socket-contract extensions of pinned host bridge name/nonblocking/dup scenarios. Separate host-reference and imported-Linux CTests execute the same assertions: socket creation flags and SO_TYPE/SO_DOMAIN/SO_PROTOCOL; explicit accept/accept4 flags rather than listener flag inheritance; zero/short address buffers with untouched sentinels and full returned lengths; TCP/keepalive options, invalid-option errors and recovery; bind collision without disrupting the live listener; and F_DUPFD_CLOEXEC/fstat alias identity, self-duplication errors and surviving I/O after the original closes. The upstream host-only bridge tests do not cover these additional Linux socket contracts. Native fd scenario execution requires original-Linux TCP open counters, no outstanding packet buffers, and the existing independent-host TCP/DPDK interop. Contract cases themselves use loopback. No ff implementation, private API, mock, protocol change or new supported capability is introduced.",
+      "ker_ctests": ["native-fstack-socket-contracts"]
     },
     "native-fstack-readiness": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -65,32 +68,38 @@
         "test_ff_host_kqueue_ctl_poll",
         "test_ff_host_ioctl_fionbio"
       ],
-      "adaptation": "Ker-specific poll/select readiness extensions of the pinned FF_KERNEL_COEXIST host readiness and nonblocking bridge scenarios. Separate host-reference and native CTests execute the same eight public POSIX TCP cases: listener/accept transitions, read/write and duplicate-entry/set-bit counts, mixed host pipe/native TCP with pselect timeout preservation, invalid/negative fds, urgent-data POLLPRI/exceptfds, SO_RCVLOWAT, buffered EOF and zero/invalid timeouts. The upstream cases test host kqueue/epoll bridge registration and FIONBIO, not these poll/select or native TCP behaviors. Native CTest logs positive imported-kernel active/passive opens, verifies packet-buffer reclamation, runs independent host-peer TCP over DPDK, and rejects invalid preload/device startup. Local readiness cases use loopback rather than DPDK. No ff implementation, kqueue emulation, synthetic events, protocol state machine, performance claim, or io_uring support is added."
+      "adaptation": "Ker-specific poll/select readiness extensions of the pinned FF_KERNEL_COEXIST host readiness and nonblocking bridge scenarios. Separate host-reference and native CTests execute the same eight public POSIX TCP cases: listener/accept transitions, read/write and duplicate-entry/set-bit counts, mixed host pipe/native TCP with pselect timeout preservation, invalid/negative fds, urgent-data POLLPRI/exceptfds, SO_RCVLOWAT, buffered EOF and zero/invalid timeouts. The upstream cases test host kqueue/epoll bridge registration and FIONBIO, not these poll/select or native TCP behaviors. Native CTest logs positive imported-kernel active/passive opens, verifies packet-buffer reclamation, runs independent host-peer TCP over DPDK, and rejects invalid preload/device startup. Local readiness cases use loopback rather than DPDK. No ff implementation, kqueue emulation, synthetic events, protocol state machine, performance claim, or io_uring support is added.",
+      "ker_ctests": ["native-fstack-readiness"]
     },
     "mbuf-release": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_pktmbuf_free_basic",
-      "adaptation": "Use Ker pool; require restored availability instead of skip."
+      "adaptation": "Use Ker pool; require restored availability instead of skip.",
+      "ker_ctests": ["fstack-mbuf-release"]
     },
     "clock-monotonic": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_get_tsc_ns_monotonic",
-      "adaptation": "Use Ker monotonic nanosecond clock; no ff TSC implementation."
+      "adaptation": "Use Ker monotonic nanosecond clock; no ff TSC implementation.",
+      "ker_ctests": ["fstack-clock-monotonic"]
     },
     "empty-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_zero_total",
-      "adaptation": "Verify zero-length copy export and ownership, not NIC transmission."
+      "adaptation": "Verify zero-length copy export and ownership, not NIC transmission.",
+      "ker_ctests": ["fstack-empty-export"]
     },
     "null-context": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_null_ctx_no_crash",
-      "adaptation": "Ker allocation rejects null context; no upstream ff consumption rule."
+      "adaptation": "Ker allocation rejects null context; no upstream ff consumption rule.",
+      "ker_ctests": ["fstack-null-context"]
     },
     "packet-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_basic",
-      "adaptation": "Verify copied bytes and lifetime; no ethdev send claim."
+      "adaptation": "Verify copied bytes and lifetime; no ethdev send claim.",
+      "ker_ctests": ["fstack-packet-export"]
     },
     "ethdev-tx": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -100,27 +109,32 @@
         "test_ff_dpdk_if_send_tcp_csum",
         "test_ff_dpdk_if_send_udp_csum"
       ],
-      "adaptation": "The raw-send cases call ff_dpdk_raw_packet_send with 64 bytes and 4096 bytes, the latter forcing its multisegment allocation path. Ker adapts the bounded copied-packet exporter to a borrowed, caller-configured ethdev TX queue; the pinned DPDK net_ring PMD verifies exact bytes, FIFO/full-ring retry, pool exhaustion and driver TX packet statistics. A separate Ker extension, motivated by the upstream TCP/UDP checksum-offload cases, opt-in completes supported CHECKSUM_PARTIAL packets in software and verifies TCP/UDP wire checksums independently, including UDP folded-zero policy. It does not reproduce hardware offload and makes no NIC, F-Stack stack, or application-protocol claim."
+      "adaptation": "The raw-send cases call ff_dpdk_raw_packet_send with 64 bytes and 4096 bytes, the latter forcing its multisegment allocation path. Ker adapts the bounded copied-packet exporter to a borrowed, caller-configured ethdev TX queue; the pinned DPDK net_ring PMD verifies exact bytes, FIFO/full-ring retry, pool exhaustion and driver TX packet statistics. A separate Ker extension, motivated by the upstream TCP/UDP checksum-offload cases, opt-in completes supported CHECKSUM_PARTIAL packets in software and verifies TCP/UDP wire checksums independently, including UDP folded-zero policy. It does not reproduce hardware offload and makes no NIC, F-Stack stack, or application-protocol claim.",
+      "ker_ctests": ["ethdev-tx"]
     },
     "multiseg-boundary": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker currently rejects multi-segment adoption, preserving caller ownership; positive support deferred."
+      "adaptation": "Ker currently rejects multi-segment adoption, preserving caller ownership; positive support deferred.",
+      "ker_ctests": ["fstack-multiseg-boundary"]
     },
     "queue-isolation": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_ut_nr_19_drain_ring_sp_sc",
-      "adaptation": "Two owner-worker Linux skb FIFOs; no reload generations or SP/SC DPDK ring claim."
+      "adaptation": "Two owner-worker Linux skb FIFOs; no reload generations or SP/SC DPDK ring claim.",
+      "ker_ctests": ["fstack-queue-isolation"]
     },
     "queue-full-ownership": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_ut_nr_19_drain_ring_sp_sc",
-      "adaptation": "Full FIFO preserves caller reference and pool availability; no drain-ring statistics claim."
+      "adaptation": "Full FIFO preserves caller reference and pool availability; no drain-ring statistics claim.",
+      "ker_ctests": ["fstack-queue-full-ownership"]
     },
     "export-exhaustion-retry": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_copydata_fail",
-      "adaptation": "Exhaust the real Ker packet pool, assert failed copy-out preserves the caller's output slot and skb ownership, then release one mbuf and require a successful retry. No mocked copydata or NIC send claim."
+      "adaptation": "Exhaust the real Ker packet pool, assert failed copy-out preserves the caller's output slot and skb ownership, then release one mbuf and require a successful retry. No mocked copydata or NIC send claim.",
+      "ker_ctests": ["fstack-export-exhaustion-retry"]
     },
     "offload-metadata-rejection": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -128,32 +142,38 @@
         "test_ff_dpdk_if_send_ip_csum",
         "test_ff_dpdk_if_send_tso"
       ],
-      "adaptation": "Ker explicitly rejects checksum-partial and GSO metadata it cannot export, preserves the skb and output slot, then succeeds after metadata is cleared. No offload execution claim."
+      "adaptation": "Ker explicitly rejects checksum-partial and GSO metadata it cannot export, preserves the skb and output slot, then succeeds after metadata is cleared. No offload execution claim.",
+      "ker_ctests": ["fstack-offload-metadata-rejection"]
     },
     "software-checksum-completion": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_ip_csum",
-      "adaptation": "Ker-specific software completion extension motivated by this upstream checksum-offload case: copy a linear Internet-checksum CHECKSUM_PARTIAL skb and complete its seeded transport checksum using Linux checksum primitives before export. CRC32C is rejected when the imported skb layout exposes csum_not_inet; GSO and the existing ordinary CHECKSUM_PARTIAL export remain rejected, and the copy carries no DPDK TX offload flags. This does not claim F-Stack's NIC/hardware offload behavior."
+      "adaptation": "Ker-specific software completion extension motivated by this upstream checksum-offload case: copy a linear Internet-checksum CHECKSUM_PARTIAL skb and complete its seeded transport checksum using Linux checksum primitives before export. CRC32C is rejected when the imported skb layout exposes csum_not_inet; GSO and the existing ordinary CHECKSUM_PARTIAL export remain rejected, and the copy carries no DPDK TX offload flags. This does not claim F-Stack's NIC/hardware offload behavior.",
+      "ker_ctests": ["fstack-software-checksum-completion"]
     },
     "headroom-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_basic",
-      "adaptation": "Export a payload with explicit headroom, verify mbuf data_off and bytes, then free the skb and validate copy lifetime. No ethdev transmission claim."
+      "adaptation": "Export a payload with explicit headroom, verify mbuf data_off and bytes, then free the skb and validate copy lifetime. No ethdev transmission claim.",
+      "ker_ctests": ["fstack-headroom-export"]
     },
     "multiseg-copy": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Use a real three-segment DPDK chain with uneven and zero-length segments as input to Ker's explicit chain-to-linear-skb copy adapter; verify source links/refcounts remain caller-owned and the copy survives source-chain release. This does not implement upstream's segmented TX path or Linux nonlinear skb support."
+      "adaptation": "Use a real three-segment DPDK chain with uneven and zero-length segments as input to Ker's explicit chain-to-linear-skb copy adapter; verify source links/refcounts remain caller-owned and the copy survives source-chain release. This does not implement upstream's segmented TX path or Linux nonlinear skb support.",
+      "ker_ctests": ["fstack-multiseg-copy"]
     },
     "multiseg-ethernet-ingress": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Adapt the multisegment packet geometry intent in the ingress direction: split destination/source/type fields across real DPDK segments, copy to a linear skb, classify with unchanged Linux eth_type_trans and deliver one host packet through Ker's existing protocol runtime. Also verify broadcast/otherhost classification, ownership and failure boundaries. This is not F-Stack TX, NIC traffic, Ethernet offload or nonlinear Linux skb support."
+      "adaptation": "Adapt the multisegment packet geometry intent in the ingress direction: split destination/source/type fields across real DPDK segments, copy to a linear skb, classify with unchanged Linux eth_type_trans and deliver one host packet through Ker's existing protocol runtime. Also verify broadcast/otherhost classification, ownership and failure boundaries. This is not F-Stack TX, NIC traffic, Ethernet offload or nonlinear Linux skb support.",
+      "ker_ctests": ["fstack-multiseg-ethernet-ingress"]
     },
     "arp-chain-feedback": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker-specific integration extension of the upstream multisegment geometry scenario: split a valid Ethernet ARP reply across a real DPDK chain, linearize and classify it, then exercise the existing ARP decoder and scoped native neighbor feedback from an actual worker RX poll. Verify rejection boundaries, timer/reference preservation, source-chain release and pool recovery. The ARP feedback scenario is not an upstream F-Stack test and does not claim NIC traffic or general ARP learning. The opt-in known-peer resolver extension also tests INCOMPLETE reply admission, queued output, invalid broadcast reply retention, and consumed output on exporter pressure through the same actual worker RX path."
+      "adaptation": "Ker-specific integration extension of the upstream multisegment geometry scenario: split a valid Ethernet ARP reply across a real DPDK chain, linearize and classify it, then exercise the existing ARP decoder and scoped native neighbor feedback from an actual worker RX poll. Verify rejection boundaries, timer/reference preservation, source-chain release and pool recovery. The ARP feedback scenario is not an upstream F-Stack test and does not claim NIC traffic or general ARP learning. The opt-in known-peer resolver extension also tests INCOMPLETE reply admission, queued output, invalid broadcast reply retention, and consumed output on exporter pressure through the same actual worker RX path.",
+      "ker_ctests": ["fstack-arp-chain-feedback"]
     },
     "ipv4-ingress-validation": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -161,22 +181,26 @@
         "test_ff_dpdk_if_send_multiseg",
         "test_ff_dpdk_if_send_ip_csum"
       ],
-      "adaptation": "Ker-specific ingress/header-validation extension. At pinned F-Stack revision 646a641cfff77f4815e1e29829a09e1ed15a2999 both named cases exercise ff_dpdk_if_send, not IPv4 ingress. Ker uses real segmented DPDK input and its copy/classify path, then validates IPv4 header/options, length, padding and native ip_fast_csum. No ip_rcv, routing, fragment reassembly, transport/socket or NIC delivery claim."
+      "adaptation": "Ker-specific ingress/header-validation extension. At pinned F-Stack revision 646a641cfff77f4815e1e29829a09e1ed15a2999 both named cases exercise ff_dpdk_if_send, not IPv4 ingress. Ker uses real segmented DPDK input and its copy/classify path, then validates IPv4 header/options, length, padding and native ip_fast_csum. No ip_rcv, routing, fragment reassembly, transport/socket or NIC delivery claim.",
+      "ker_ctests": ["fstack-ipv4-ingress-validation"]
     },
     "udp-ingress-validation": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
-      "adaptation": "Ker-specific ingress extension motivated by the pinned UDP checksum TX case. The F-Stack source only sets UDP TX offload metadata and calls ff_dpdk_if_send; it does not test UDP ingress. Ker validates an unfragmented IPv4 UDP datagram using the original Linux pseudoheader checksum primitives. This does not claim socket delivery, routing, reassembly, ICMP, NIC or TX offload support."
+      "adaptation": "Ker-specific ingress extension motivated by the pinned UDP checksum TX case. The F-Stack source only sets UDP TX offload metadata and calls ff_dpdk_if_send; it does not test UDP ingress. Ker validates an unfragmented IPv4 UDP datagram using the original Linux pseudoheader checksum primitives. This does not claim socket delivery, routing, reassembly, ICMP, NIC or TX offload support.",
+      "ker_ctests": ["fstack-udp-ingress-validation"]
     },
     "udp-minimal-boundaries": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
-      "adaptation": "Additional Ker-specific UDP ingress regression for the minimum eight-byte header with zero and valid nonzero checksums, zero-valued ports, even payload length and Ethernet padding exclusion. The upstream case is still TX-only and does not cover these receive semantics."
+      "adaptation": "Additional Ker-specific UDP ingress regression for the minimum eight-byte header with zero and valid nonzero checksums, zero-valued ports, even payload length and Ethernet padding exclusion. The upstream case is still TX-only and does not cover these receive semantics.",
+      "ker_ctests": ["fstack-udp-minimal-boundaries"]
     },
     "tcp-ingress-validation": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_tcp_csum",
-      "adaptation": "Ker-specific ingress extension motivated by the pinned TCP checksum TX case. The upstream case enables TCP TX checksum offload and calls ff_dpdk_if_send; it is not a TCP receive test. Ker validates an unfragmented IPv4 TCP segment and its complete pseudoheader checksum, preserving options as opaque bytes. This does not claim TCP option interpretation, connection state, routing, reassembly, socket delivery, NIC or TX offload support."
+      "adaptation": "Ker-specific ingress extension motivated by the pinned TCP checksum TX case. The upstream case enables TCP TX checksum offload and calls ff_dpdk_if_send; it is not a TCP receive test. Ker validates an unfragmented IPv4 TCP segment and its complete pseudoheader checksum, preserving options as opaque bytes. This does not claim TCP option interpretation, connection state, routing, reassembly, socket delivery, NIC or TX offload support.",
+      "ker_ctests": ["fstack-tcp-ingress-validation"]
     },
     "transport-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -184,7 +208,8 @@
         "test_ff_dpdk_if_send_udp_csum",
         "test_ff_dpdk_if_send_tcp_csum"
       ],
-      "adaptation": "Ker-specific worker RX integration extension motivated by upstream UDP/TCP TX checksum-offload cases; neither upstream case tests ingress. A registered ETH_P_IP handler validates and synchronously exposes existing immutable UDP/TCP packet views, consumes its skb reference on every path, and fails closed when protocol fanout shares the skb descriptor reference. This is not socket delivery, routing, fragment reassembly, TCP state or NIC receive support."
+      "adaptation": "Ker-specific worker RX integration extension motivated by upstream UDP/TCP TX checksum-offload cases; neither upstream case tests ingress. A registered ETH_P_IP handler validates and synchronously exposes existing immutable UDP/TCP packet views, consumes its skb reference on every path, and fails closed when protocol fanout shares the skb descriptor reference. This is not socket delivery, routing, fragment reassembly, TCP state or NIC receive support.",
+      "ker_ctests": ["transport-receive"]
     },
     "icmp-echo": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -192,12 +217,14 @@
         "test_ff_dpdk_if_send_udp_csum",
         "test_ff_dpdk_if_send_tcp_csum"
       ],
-      "adaptation": "Ker-specific ICMPv4 echo constructor and worker-ingress extension. The pinned F-Stack cases cover UDP/TCP TX checksum offload, not ICMP. Ker constructs explicit-address echo request/reply frames with opaque IPv4 options and validates the complete ICMP checksum in an immutable worker callback view; it does not implement automatic replies, ICMP errors, routing, reassembly, sockets, ping or NIC support."
+      "adaptation": "Ker-specific ICMPv4 echo constructor and worker-ingress extension. The pinned F-Stack cases cover UDP/TCP TX checksum offload, not ICMP. Ker constructs explicit-address echo request/reply frames with opaque IPv4 options and validates the complete ICMP checksum in an immutable worker callback view; it does not implement automatic replies, ICMP errors, routing, reassembly, sockets, ping or NIC support.",
+      "ker_ctests": ["icmp-echo"]
     },
     "udp-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
-      "adaptation": "Ker-specific software packet-construction and receive-roundtrip extension motivated by the upstream UDP TX checksum-offload case, which is not an explicit-address UDP constructor or ingress scenario. Ker builds a fixed Ethernet/IPv4/UDP packet with Linux software checksum primitives, copies it through the existing export and segmented ingress adapters, then validates it in the worker-scoped transport receiver. No routing, address policy, socket, automatic TX offload or NIC transmission is claimed."
+      "adaptation": "Ker-specific software packet-construction and receive-roundtrip extension motivated by the upstream UDP TX checksum-offload case, which is not an explicit-address UDP constructor or ingress scenario. Ker builds a fixed Ethernet/IPv4/UDP packet with Linux software checksum primitives, copies it through the existing export and segmented ingress adapters, then validates it in the worker-scoped transport receiver. No routing, address policy, socket, automatic TX offload or NIC transmission is claimed.",
+      "ker_ctests": ["udp-create"]
     },
     "udp-configured-create": {
       "source_file": "tests/udp-configured-create.c",
@@ -217,7 +244,8 @@
     "udp-neighbor-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
-      "adaptation": "Ker-specific neighbor-backed packet-construction extension motivated by the pinned UDP TX checksum case. The upstream case does not perform neighbor selection or ARP resolution. Ker uses one configured local address/device and an existing permanent neighbor entry, releases the lookup reference before allocating the packet, then validates software checksum and worker RX copy/retry behavior. No unresolved queue, ARP resolution, FIB, route, socket or NIC transmission is claimed."
+      "adaptation": "Ker-specific neighbor-backed packet-construction extension motivated by the pinned UDP TX checksum case. The upstream case does not perform neighbor selection or ARP resolution. Ker uses one configured local address/device and an existing permanent neighbor entry, releases the lookup reference before allocating the packet, then validates software checksum and worker RX copy/retry behavior. No unresolved queue, ARP resolution, FIB, route, socket or NIC transmission is claimed.",
+      "ker_ctests": ["udp-neighbor-create"]
     },
     "tx-copy-export-retry": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -227,7 +255,8 @@
     "tcp-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_tcp_csum",
-      "adaptation": "Ker-specific explicit-address TCP/IPv4 packet-construction and worker receive-roundtrip extension motivated by the pinned TCP TX checksum-offload case, which is not a constructor or receive test. Ker writes fixed Ethernet/IPv4/TCP headers and software checksums; an application sink accepts a copy, then a real segmented chain is classified and validated by the existing TCP packet-view receiver. No socket, TCP state machine, route, NIC or hardware offload is claimed."
+      "adaptation": "Ker-specific explicit-address TCP/IPv4 packet-construction and worker receive-roundtrip extension motivated by the pinned TCP TX checksum-offload case, which is not a constructor or receive test. Ker writes fixed Ethernet/IPv4/TCP headers and software checksums; an application sink accepts a copy, then a real segmented chain is classified and validated by the existing TCP packet-view receiver. No socket, TCP state machine, route, NIC or hardware offload is claimed.",
+      "ker_ctests": ["tcp-create"]
     },
     "tcp-options-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -237,12 +266,14 @@
     "tcp-neighbor-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_tcp_csum",
-      "adaptation": "Ker-specific extension of the pinned TCP TX checksum case: derives the source IPv4/MAC from one configured address/device and the destination MAC from an existing NUD_PERMANENT neighbor, releases the lookup reference before allocation, then validates software checksums through TX retry and segmented worker RX. The upstream case does not test neighbor selection or ARP resolution. No unresolved queue, FIB, routing, source fallback, TCP state, socket or NIC transmission is claimed."
+      "adaptation": "Ker-specific extension of the pinned TCP TX checksum case: derives the source IPv4/MAC from one configured address/device and the destination MAC from an existing NUD_PERMANENT neighbor, releases the lookup reference before allocation, then validates software checksums through TX retry and segmented worker RX. The upstream case does not test neighbor selection or ARP resolution. No unresolved queue, FIB, routing, source fallback, TCP state, socket or NIC transmission is claimed.",
+      "ker_ctests": ["tcp-neighbor-create"]
     },
     "fstack-chain-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker-specific positive linear-skb-to-DPDK-chain copy extension motivated by the pinned multisegment TX case. Ker copies an existing supported linear UDP/TCP packet into independently owned direct mbufs, then validates the chain through its copy/classify worker RX path after releasing the source skb. The upstream case exercises F-Stack TX; this does not claim F-Stack/NIC transmission, Linux nonlinear skb support, or offload."
+      "adaptation": "Ker-specific positive linear-skb-to-DPDK-chain copy extension motivated by the pinned multisegment TX case. Ker copies an existing supported linear UDP/TCP packet into independently owned direct mbufs, then validates the chain through its copy/classify worker RX path after releasing the source skb. The upstream case exercises F-Stack TX; this does not claim F-Stack/NIC transmission, Linux nonlinear skb support, or offload.",
+      "ker_ctests": ["fstack-chain-export"]
     },
     "tx-chain-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -287,7 +318,8 @@
         "test_ff_dpdk_if_send_udp_csum",
         "test_ff_dpdk_if_send_tcp_csum"
       ],
-      "adaptation": "Ker-specific concurrent same-process SP/SC extension motivated by pinned F-Stack segmented TX and UDP/TCP checksum TX cases. A registered EAL producer and distinct registered EAL consumer overlap across 192 alternating UDP, TCP, and ICMP echo chains using a capacity-one DPDK ring; an independent wire-byte checksum oracle runs before enqueue and the actual consumer worker validates protocol dispatch order and payloads. IPv4 and TCP option lengths vary across the records. Initial backpressure is deterministic. This does not claim MPMC, multiprocess/RSS, NIC I/O, F-Stack RX, or upstream concurrency coverage."
+      "adaptation": "Ker-specific concurrent same-process SP/SC extension motivated by pinned F-Stack segmented TX and UDP/TCP checksum TX cases. A registered EAL producer and distinct registered EAL consumer overlap across 192 alternating UDP, TCP, and ICMP echo chains using a capacity-one DPDK ring; an independent wire-byte checksum oracle runs before enqueue and the actual consumer worker validates protocol dispatch order and payloads. IPv4 and TCP option lengths vary across the records. Initial backpressure is deterministic. This does not claim MPMC, multiprocess/RSS, NIC I/O, F-Stack RX, or upstream concurrency coverage.",
+      "ker_ctests": ["fstack-concurrent-ring"]
     },
     "udp-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -295,7 +327,8 @@
         "test_ff_dpdk_if_send_udp_csum",
         "test_ff_dpdk_if_send_multiseg"
       ],
-      "adaptation": "Ker-specific extension: construct explicit Ethernet/IPv4/UDP packets with opaque copied IPv4 options, validate the variable-IHL IPv4 and UDP checksums, then export a segmented copy through the actual worker receive path. The pinned cases motivate checksum and segmented-buffer coverage; they do not test IPv4 options semantics. No routing, source-route processing, socket delivery or NIC transmission is claimed."
+      "adaptation": "Ker-specific extension: construct explicit Ethernet/IPv4/UDP packets with opaque copied IPv4 options, validate the variable-IHL IPv4 and UDP checksums, then export a segmented copy through the actual worker receive path. The pinned cases motivate checksum and segmented-buffer coverage; they do not test IPv4 options semantics. No routing, source-route processing, socket delivery or NIC transmission is claimed.",
+      "ker_ctests": ["udp-ip-options"]
     },
     "tcp-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -303,7 +336,8 @@
         "test_ff_dpdk_if_send_tcp_csum",
         "test_ff_dpdk_if_send_multiseg"
       ],
-      "adaptation": "Ker-specific extension constructs Ethernet/IPv4/TCP packets with independently supplied opaque IPv4 and TCP option bytes, verifies both checksums with independent wire-byte oracles, and sends a segmented copy through the actual worker receive path. Existing constructors remain zero-IP-options wrappers. The pinned F-Stack cases motivate checksum and segmented-buffer coverage, not IPv4/TCP option semantics; no routing, source-route processing, TCP state, sockets or NIC transmission is claimed."
+      "adaptation": "Ker-specific extension constructs Ethernet/IPv4/TCP packets with independently supplied opaque IPv4 and TCP option bytes, verifies both checksums with independent wire-byte oracles, and sends a segmented copy through the actual worker receive path. Existing constructors remain zero-IP-options wrappers. The pinned F-Stack cases motivate checksum and segmented-buffer coverage, not IPv4/TCP option semantics; no routing, source-route processing, TCP state, sockets or NIC transmission is claimed.",
+      "ker_ctests": ["tcp-ip-options"]
     },
     "udp-neighbor-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -364,17 +398,20 @@
     "flow-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker-specific steering/ingress extension motivated by the pinned segmented TX scenario. Segmented IPv4 UDP/TCP chains pass through fixed owner selection and local or worker-poll handoff, then the owner uses its separate pool/context/device for Ethernet copy/classification and transport checksum validation. Includes capacity-one inbox retry, bad-checksum drops, and explicit callback-owned allocation-failure drop/recovery. Logical workers share one EAL thread. The upstream case does not test steering or ingress; this does not claim RSS, NIC I/O, sockets, TCP state, production retry buffering, or IPv6 transport reception. The companion flow-chain test covers IPv4/IPv6 segmented parsing and handoff ownership. Extended to every IPv4 option length from 0 through 40 bytes, validating copied option bytes, full header length, options-area checksum corruption and recovery; flow-ip-options separately checks variable-IHL steering bounds and fixed key/hash invariance. Options remain opaque, without source-route or other option interpretation. The input now enters through a real bounded ker_tx_ring and ker_flow_ring worker RX callback, which preserves a pending chain on full owner inbox and retries before reading later entries. This ingress ownership retry does not change the explicit owner-side allocation-drop policy."
+      "adaptation": "Ker-specific steering/ingress extension motivated by the pinned segmented TX scenario. Segmented IPv4 UDP/TCP chains pass through fixed owner selection and local or worker-poll handoff, then the owner uses its separate pool/context/device for Ethernet copy/classification and transport checksum validation. Includes capacity-one inbox retry, bad-checksum drops, and explicit callback-owned allocation-failure drop/recovery. Logical workers share one EAL thread. The upstream case does not test steering or ingress; this does not claim RSS, NIC I/O, sockets, TCP state, production retry buffering, or IPv6 transport reception. The companion flow-chain test covers IPv4/IPv6 segmented parsing and handoff ownership. Extended to every IPv4 option length from 0 through 40 bytes, validating copied option bytes, full header length, options-area checksum corruption and recovery; flow-ip-options separately checks variable-IHL steering bounds and fixed key/hash invariance. Options remain opaque, without source-route or other option interpretation. The input now enters through a real bounded ker_tx_ring and ker_flow_ring worker RX callback, which preserves a pending chain on full owner inbox and retries before reading later entries. This ingress ownership retry does not change the explicit owner-side allocation-drop policy.",
+      "ker_ctests": ["fstack-flow-receive"]
     },
     "flow-concurrent-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker-specific complete flow ingress/owner receive integration inspired by the pinned segmented TX case. Two distinct pinned CPUs run ingress ring steering and owner-local Ethernet/IPv4 TCP/UDP validation with separate pools and receive state. Immutable expected records verify packet/key bytes and callback placement, deterministic full-inbox pending/FIFO retry, checksum drops, owner-pool exhaustion/drop/recovery, and orderly drain/teardown. Skip only with fewer than two allowed CPUs; setup errors fail. This does not claim upstream F-Stack flow coverage, NIC/RSS, sockets, TCP state, or a production allocation-retry bridge."
+      "adaptation": "Ker-specific complete flow ingress/owner receive integration inspired by the pinned segmented TX case. Two distinct pinned CPUs run ingress ring steering and owner-local Ethernet/IPv4 TCP/UDP validation with separate pools and receive state. Immutable expected records verify packet/key bytes and callback placement, deterministic full-inbox pending/FIFO retry, checksum drops, owner-pool exhaustion/drop/recovery, and orderly drain/teardown. Skip only with fewer than two allowed CPUs; setup errors fail. This does not claim upstream F-Stack flow coverage, NIC/RSS, sockets, TCP state, or a production allocation-retry bridge.",
+      "ker_ctests": ["fstack-flow-concurrent-receive"]
     },
     "flow-owner-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker-specific owner receive adapter inspired by the pinned segmented TX scenario. A bounded owner-local packet ring queues chains after flow handoff; worker service polling reuses the Ethernet copy/classify receive path. Destination allocation failure retains one pending chain for FIFO retry; queue overflow explicitly consumes and drops the newest chain. Tests cover allocation recovery during RX pressure, lifecycle pins, cancellation and initialization rollback. This is not upstream F-Stack flow coverage, end-to-end lossless backpressure, NIC/RSS, sockets or TCP state."
+      "adaptation": "Ker-specific owner receive adapter inspired by the pinned segmented TX scenario. A bounded owner-local packet ring queues chains after flow handoff; worker service polling reuses the Ethernet copy/classify receive path. Destination allocation failure retains one pending chain for FIFO retry; queue overflow explicitly consumes and drops the newest chain. Tests cover allocation recovery during RX pressure, lifecycle pins, cancellation and initialization rollback. This is not upstream F-Stack flow coverage, end-to-end lossless backpressure, NIC/RSS, sockets or TCP state.",
+      "ker_ctests": ["fstack-flow-owner-receive"]
     },
     "neighbor-resolved-output": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -397,7 +434,8 @@
         "test_ff_dpdk_if_send_basic",
         "test_ff_dpdk_if_send_multiseg"
       ],
-      "adaptation": "Ker-specific responder and two-peer discovery integration extension: the production responder builds a local ARP reply with the native constructor, actual application rings/worker RX deliver it to the discovery peer, and native neighbor output releases queued UDP for transport validation. Tests bounded failures, reply selection and ownership. These upstream cases motivate packet output/segmentation, not an F-Stack ARP responder; full arp_process, general learning, routing and NIC transmission are not claimed."
+      "adaptation": "Ker-specific responder and two-peer discovery integration extension: the production responder builds a local ARP reply with the native constructor, actual application rings/worker RX deliver it to the discovery peer, and native neighbor output releases queued UDP for transport validation. Tests bounded failures, reply selection and ownership. These upstream cases motivate packet output/segmentation, not an F-Stack ARP responder; full arp_process, general learning, routing and NIC transmission are not claimed.",
+      "ker_ctests": ["arp-responder"]
     },
     "icmp-echo-service": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -405,7 +443,8 @@
         "test_ff_dpdk_if_send_basic",
         "test_ff_dpdk_if_send_multiseg"
       ],
-      "adaptation": "Ker-specific first-contact echo-service integration extension. Two independent skb pools and real SP/SC rings carry a validated echo request, native neighbor resolution emits an ARP probe through the existing responder and scoped feedback path, and the returned echo reply is checked by the peer transport callback. This is not the F-Stack socket, ping, full ICMP input/reply path, routing, or NIC delivery."
+      "adaptation": "Ker-specific first-contact echo-service integration extension. Two independent skb pools and real SP/SC rings carry a validated echo request, native neighbor resolution emits an ARP probe through the existing responder and scoped feedback path, and the returned echo reply is checked by the peer transport callback. This is not the F-Stack socket, ping, full ICMP input/reply path, routing, or NIC delivery.",
+      "ker_ctests": ["fstack-icmp-echo-service"]
     },
     "icmpv4-service": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -413,22 +452,26 @@
         "test_ff_dpdk_if_send_basic",
         "test_ff_dpdk_if_send_multiseg"
       ],
-      "adaptation": "Ker-specific ICMPv4 control extension: generic error events, bounded safe error emission, timestamp and opt-in extended echo, token-bucket limits and independent peer pools with actual RX/TX rings. The source cases motivate packet delivery only; no upstream ICMP suite, sockets, routing, IPv4 reassembly, IPv6 or NIC delivery is claimed. The same real-ring fixture also exercises an opt-in bounded Ker UDP endpoint table: validated local datagrams reach bound callbacks, while lookup misses automatically generate ICMP port-unreachable through the existing neighbor output. This is not native Linux socket lookup or a F-Stack UDP ingress test. Explicit immutable unavailable-protocol declarations additionally drive automatic ICMP protocol-unreachable for validated local IPv4 ingress, with competing-handler suppression. This is a Ker policy adapter, not Linux inet_protos/raw socket/XFRM integration. Connected endpoint regressions extend the Ker-specific UDP adapter with generation-scoped handles and exact peer filtering; these are not upstream F-Stack socket tests."
+      "adaptation": "Ker-specific ICMPv4 control extension: generic error events, bounded safe error emission, timestamp and opt-in extended echo, token-bucket limits and independent peer pools with actual RX/TX rings. The source cases motivate packet delivery only; no upstream ICMP suite, sockets, routing, IPv4 reassembly, IPv6 or NIC delivery is claimed. The same real-ring fixture also exercises an opt-in bounded Ker UDP endpoint table: validated local datagrams reach bound callbacks, while lookup misses automatically generate ICMP port-unreachable through the existing neighbor output. This is not native Linux socket lookup or a F-Stack UDP ingress test. Explicit immutable unavailable-protocol declarations additionally drive automatic ICMP protocol-unreachable for validated local IPv4 ingress, with competing-handler suppression. This is a Ker policy adapter, not Linux inet_protos/raw socket/XFRM integration. Connected endpoint regressions extend the Ker-specific UDP adapter with generation-scoped handles and exact peer filtering; these are not upstream F-Stack socket tests.",
+      "ker_ctests": ["icmpv4-service"]
     },
     "flow-icmpv4": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker-specific UDP control-flow steering extension: ICMPv4 errors quote an outbound UDP tuple which must resolve to the same flow owner as its response. Real segmented DPDK chains cover every header split, truncated quotes, declared lengths, Ethernet padding, unsupported options/fragments/protocols, wrong quoted local address and ingress-only direction. Steering does not authenticate ICMP or validate checksums; those remain the owner receiver and sent-evidence tracker responsibilities. This is not a F-Stack upstream ICMP test, NIC/RSS, TCP or IPv6 control-plane implementation."
+      "adaptation": "Ker-specific UDP control-flow steering extension: ICMPv4 errors quote an outbound UDP tuple which must resolve to the same flow owner as its response. Real segmented DPDK chains cover every header split, truncated quotes, declared lengths, Ethernet padding, unsupported options/fragments/protocols, wrong quoted local address and ingress-only direction. Steering does not authenticate ICMP or validate checksums; those remain the owner receiver and sent-evidence tracker responsibilities. This is not a F-Stack upstream ICMP test, NIC/RSS, TCP or IPv6 control-plane implementation.",
+      "ker_ctests": ["flow-icmpv4"]
     },
     "ethdev-rx": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_main_loop_one_iteration_then_stop",
-      "adaptation": "Ker-specific borrowed ethdev RX extension around the existing worker receive path. A real pinned DPDK net_ring PMD injects Ethernet frames and segmented mbuf chains; the test checks one-packet worker budgets, FIFO classification/dispatch, pool-pressure retry, cancellation, and RX binding exclusion. Opt-in immutable shared-reference profiles test direct shared segments, actual rte_pktmbuf_clone chains, and attached external-buffer chains, including caller/sibling lifetime, extbuf callbacks and allocation retry. The upstream case only motivates one worker-loop iteration and stop; pinned free/fanout scenarios do not test indirect-clone or external-buffer RX. No NIC, RSS, socket, or full-stack behavior is claimed."
+      "adaptation": "Ker-specific borrowed ethdev RX extension around the existing worker receive path. A real pinned DPDK net_ring PMD injects Ethernet frames and segmented mbuf chains; the test checks one-packet worker budgets, FIFO classification/dispatch, pool-pressure retry, cancellation, and RX binding exclusion. Opt-in immutable shared-reference profiles test direct shared segments, actual rte_pktmbuf_clone chains, and attached external-buffer chains, including caller/sibling lifetime, extbuf callbacks and allocation retry. The upstream case only motivates one worker-loop iteration and stop; pinned free/fanout scenarios do not test indirect-clone or external-buffer RX. No NIC, RSS, socket, or full-stack behavior is claimed.",
+      "ker_ctests": ["ethdev-rx"]
     },
     "ethdev-rebind": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_register_deregister_roundtrip",
-      "adaptation": "Ker-specific borrowed ethdev RX lifecycle extension. A real started net_ring port keeps a queued successor behind a pending frame across adapter/device/runtime teardown; a fresh callback generation rebinds the same queue and consumes it first. The test covers pending-packet cleanup exclusion, exact cancellation, invalid rebind rollback, FIFO delivery and pool reclamation. The upstream registration roundtrip motivates lifecycle testing only; PMD queues are caller-owned and are not implicitly flushed, and this does not implement full F-Stack device registration."
+      "adaptation": "Ker-specific borrowed ethdev RX lifecycle extension. A real started net_ring port keeps a queued successor behind a pending frame across adapter/device/runtime teardown; a fresh callback generation rebinds the same queue and consumes it first. The test covers pending-packet cleanup exclusion, exact cancellation, invalid rebind rollback, FIFO delivery and pool reclamation. The upstream registration roundtrip motivates lifecycle testing only; PMD queues are caller-owned and are not implicitly flushed, and this does not implement full F-Stack device registration.",
+      "ker_ctests": ["ethdev-rebind"]
     },
     "ethdev-duplex": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -437,12 +480,14 @@
         "test_ff_dpdk_if_send_tcp_csum",
         "test_ff_dpdk_if_send_udp_csum"
       ],
-      "adaptation": "Ker-specific composition test: two actual pinned DPDK net_ring ethdev ports cross-connect bounded TX/RX queues; each Ker worker polls the existing ethdev TX and RX adapters through its shared worker callback argument. Distinct source/destination pools carry multisegment software-checksummed TCP and UDP packets through the original Ethernet classifier and transport views. Independent checksum verification, FIFO, full-ring retry, destination-pool pressure retention, callback drop, ownership, and pool reclamation are checked. The F-Stack cases motivate the worker/send/checksum boundaries only; this is not an F-Stack stack, hardware-offload, NIC, or application-protocol test."
+      "adaptation": "Ker-specific composition test: two actual pinned DPDK net_ring ethdev ports cross-connect bounded TX/RX queues; each Ker worker polls the existing ethdev TX and RX adapters through its shared worker callback argument. Distinct source/destination pools carry multisegment software-checksummed TCP and UDP packets through the original Ethernet classifier and transport views. Independent checksum verification, FIFO, full-ring retry, destination-pool pressure retention, callback drop, ownership, and pool reclamation are checked. The F-Stack cases motivate the worker/send/checksum boundaries only; this is not an F-Stack stack, hardware-offload, NIC, or application-protocol test.",
+      "ker_ctests": ["ethdev-duplex"]
     },
     "ethdev-multiqueue": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_ut_nr_19_drain_ring_sp_sc",
-      "adaptation": "Ker-specific multi-EAL ethdev queue-isolation extension motivated by the upstream SP/SC drain scenario. Two owner workers on distinct EAL lcores use independent bounded net_ring ethdev queues, contexts, pools, and existing TX/RX adapters. The test checks real worker dispatch, queue-0 backpressure while queue 1 progresses, recovery, checksum/payload identity, and wrong-owner rejection. It does not test upstream ring reload, RSS, multiprocess operation, physical NICs, or full F-Stack."
+      "adaptation": "Ker-specific multi-EAL ethdev queue-isolation extension motivated by the upstream SP/SC drain scenario. Two owner workers on distinct EAL lcores use independent bounded net_ring ethdev queues, contexts, pools, and existing TX/RX adapters. The test checks real worker dispatch, queue-0 backpressure while queue 1 progresses, recovery, checksum/payload identity, and wrong-owner rejection. It does not test upstream ring reload, RSS, multiprocess operation, physical NICs, or full F-Stack.",
+      "ker_ctests": ["ethdev-multiqueue"]
     },
     "ethdev-rx-metadata": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -450,17 +495,20 @@
         "test_ff_dpdk_if_send_tcp_csum",
         "test_ff_dpdk_if_send_udp_csum"
       ],
-      "adaptation": "Ker-specific RX trust-boundary extension: a real net_ring PMD feeds TCP/UDP frames through ethdev RX, the worker, the original Ethernet classifier and existing transport packet views. GOOD/BAD/UNKNOWN checksum hints never bypass software wire validation; NONE and transformed metadata are rejected. The pinned F-Stack cases are TX checksum-offload scenarios and do not cover this RX path or hardware/NIC checksum behavior."
+      "adaptation": "Ker-specific RX trust-boundary extension: a real net_ring PMD feeds TCP/UDP frames through ethdev RX, the worker, the original Ethernet classifier and existing transport packet views. GOOD/BAD/UNKNOWN checksum hints never bypass software wire validation; NONE and transformed metadata are rejected. The pinned F-Stack cases are TX checksum-offload scenarios and do not cover this RX path or hardware/NIC checksum behavior.",
+      "ker_ctests": ["ethdev-rx-metadata"]
     },
     "ethdev-external-lifetime": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_pktmbuf_free_basic",
-      "adaptation": "Ker-specific final-reference RX lifetime extension motivated by the upstream basic mbuf release case. A real net_ring ethdev feeds mixed external/direct/external chains into the existing copy/classify/dispatch adapter. No parent or sibling reference is retained. Actual DPDK external-buffer callbacks poison and quarantine released storage; retained owned skbs are checked before and after physical source deallocation. Repeated allocation failure, partial-budget FIFO recovery, cancellation transfer, transformed-metadata drop, exact callback counts, PMD receive counts and full source/destination pool reclamation are verified. The pinned upstream case only frees one basic mbuf and does not test external-buffer RX, deferred skb ownership, NICs, hardware offload or protocol behavior."
+      "adaptation": "Ker-specific final-reference RX lifetime extension motivated by the upstream basic mbuf release case. A real net_ring ethdev feeds mixed external/direct/external chains into the existing copy/classify/dispatch adapter. No parent or sibling reference is retained. Actual DPDK external-buffer callbacks poison and quarantine released storage; retained owned skbs are checked before and after physical source deallocation. Repeated allocation failure, partial-budget FIFO recovery, cancellation transfer, transformed-metadata drop, exact callback counts, PMD receive counts and full source/destination pool reclamation are verified. The pinned upstream case only frees one basic mbuf and does not test external-buffer RX, deferred skb ownership, NICs, hardware offload or protocol behavior.",
+      "ker_ctests": ["ethdev-external-lifetime"]
     },
     "ethdev-rx-capacity": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
-      "adaptation": "Ker-specific RX linear-copy capacity extension motivated by the pinned multisegment TX case. Real net_ring RX carries small source-pool segments into an independently sized destination pool. Capacity-minus-one, exact capacity and capacity-plus-one are checked with three headrooms and a non-cache-line-aligned destination room size. With the destination pool exhausted, permanently oversized frames are consumed as ENOSPC drops before a fitting successor becomes ENOMEM pending; releasing one backing permits exact FIFO recovery. Direct allocation error precedence, byte preservation, Linux shared-info reservation, PMD packet counts and both pool baselines are verified. Payloads are opaque: no IPv4/TCP/UDP protocol processing, jumbo MTU negotiation, NIC, nonlinear skb or F-Stack RX support is claimed."
+      "adaptation": "Ker-specific RX linear-copy capacity extension motivated by the pinned multisegment TX case. Real net_ring RX carries small source-pool segments into an independently sized destination pool. Capacity-minus-one, exact capacity and capacity-plus-one are checked with three headrooms and a non-cache-line-aligned destination room size. With the destination pool exhausted, permanently oversized frames are consumed as ENOSPC drops before a fitting successor becomes ENOMEM pending; releasing one backing permits exact FIFO recovery. Direct allocation error precedence, byte preservation, Linux shared-info reservation, PMD packet counts and both pool baselines are verified. Payloads are opaque: no IPv4/TCP/UDP protocol processing, jumbo MTU negotiation, NIC, nonlinear skb or F-Stack RX support is claimed.",
+      "ker_ctests": ["ethdev-rx-capacity"]
     },
     "ethdev-rx-fanout": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -468,7 +516,8 @@
         "test_main_loop_one_iteration_then_stop",
         "test_ff_dpdk_pktmbuf_free_basic"
       ],
-      "adaptation": "Ker-specific Linux packet_type fanout and ownership extension. Real net_ring RX supplies segmented opaque Ethernet frames through the actual worker, original Ethernet classification and imported Linux ptype delivery. Global-before-device ordering, per-callback descriptor references, final-handler status, explicit invalid-status reporting, no-handler drop, retained skb lifetime, cloned backing, COW ENOMEM rollback/recovery, independent header/payload mutation, both release orders and full pool reclamation are checked. The pinned F-Stack cases motivate worker iteration and basic ownership only; they do not test Linux ptype fanout or COW. No F-Stack RX, NIC, IP/transport processing or application-protocol behavior is claimed."
+      "adaptation": "Ker-specific Linux packet_type fanout and ownership extension. Real net_ring RX supplies segmented opaque Ethernet frames through the actual worker, original Ethernet classification and imported Linux ptype delivery. Global-before-device ordering, per-callback descriptor references, final-handler status, explicit invalid-status reporting, no-handler drop, retained skb lifetime, cloned backing, COW ENOMEM rollback/recovery, independent header/payload mutation, both release orders and full pool reclamation are checked. The pinned F-Stack cases motivate worker iteration and basic ownership only; they do not test Linux ptype fanout or COW. No F-Stack RX, NIC, IP/transport processing or application-protocol behavior is claimed.",
+      "ker_ctests": ["ethdev-rx-fanout"]
     },
     "native-fstack-epoll": {
       "source_file": "tests/unit/test_ff_epoll.c",
@@ -486,9 +535,14 @@
         "test_ff_epoll_wait_write_filter_to_epollout",
         "test_ff_epoll_wait_ev_error_to_epollerr",
         "test_ff_epoll_wait_ev_eof_read_to_hup_in",
-        "test_ff_epoll_wait_ev_eof_write_with_fflags"
+        "test_ff_epoll_wait_ev_eof_write_with_fflags",
+        "test_ff_epoll_ctl_null_event_non_del",
+        "test_ff_epoll_ctl_add_writeonly_only_epollout",
+        "test_ff_epoll_wait_zero_maxevents_returns_einval",
+        "test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup"
       ],
-      "adaptation": "Eight public POSIX scenarios use real loopback TCP connections, first on the host Linux baseline and then through libker-posix with the complete pinned Linux kernel. Covers create/invalid values, ADD/MOD/DEL and full 64-bit event data, level readiness while partially unread, ET drain/new data, ONESHOT explicit rearm, write-only readiness, buffered EOF with reverse-direction data, and abortive-close ERR/HUP with SO_ERROR. Kernel open counters and empty outstanding DPDK allocation counts are required. The same CTest also retains independent host TCP/DPDK interop checks. No ff implementation, FreeBSD stack, kqueue translation, synthetic events or cmocka stubs are copied. Linux rejects epoll_create(0), unlike the upstream stub; half-close uses EPOLLRDHUP instead of assuming EV_EOF translates to EPOLLHUP. Invalid-pointer and synthetic unknown-kqueue-filter cases are not claimed."
+      "adaptation": "Eight public POSIX scenarios use real loopback TCP connections, first on the host Linux baseline and then through libker-posix with the complete pinned Linux kernel. Covers create/invalid values, ADD/MOD/DEL and full 64-bit event data, level readiness while partially unread, ET drain/new data, ONESHOT explicit rearm, write-only readiness, buffered EOF with reverse-direction data, and abortive-close ERR/HUP with SO_ERROR. Kernel open counters and empty outstanding DPDK allocation counts are required. The same CTest also retains independent host TCP/DPDK interop checks. No ff implementation, FreeBSD stack, kqueue translation, synthetic events or cmocka stubs are copied. Linux rejects epoll_create(0), unlike the upstream stub; half-close uses EPOLLRDHUP instead of assuming EV_EOF translates to EPOLLHUP. Invalid-pointer and synthetic unknown-kqueue-filter cases are not claimed. Full-suite inventory adds NULL ADD/MOD event recovery: Linux EFAULT replaces the upstream wrapper EINVAL; Ker must reject NULL before the LKL user-copy path dereferences it. DEL with NULL remains valid. Existing write-only, zero-maxevents and empty-FIN scenarios cover the corresponding additional upstream registrations. Unknown FreeBSD filter translation has no Linux equivalent and remains separately classified.",
+      "ker_ctests": ["native-fstack-epoll"]
     },
     "native-fstack-message-io": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -499,7 +553,8 @@
         "test_ff_host_dup",
         "test_ff_host_dup2"
       ],
-      "adaptation": "Six public POSIX behavioral scenarios run on host Linux and the complete imported Linux TCP stack, comparing successful scenario output and requiring at least six native active/passive opens plus zero outstanding DPDK buffers. Adapts the FF_KERNEL_COEXIST host bridge tests for sendmsg/recvmsg, address lookup, half-close, readv/writev, FIONBIO, dup and dup2. Unlike the upstream host-only bridge cases, the adapted AF_INET pairs must use native TCP under ker-run; the AF_UNIX vector roundtrip remains explicit host passthrough. Ker-specific extensions cover zero-length iovecs, stream short reads without MSG_TRUNC, MSG_PEEK/DONTWAIT, FIONREAD, shared O_NONBLOCK and independent descriptor CLOEXEC, and fixed-fd host/native replacement with post-replacement byte checks. No ff implementation, mock or FreeBSD protocol code is copied. Loopback scenarios do not exercise DPDK traffic; the same CTest separately runs existing independent-host-peer active/passive TCP interop and verifies DPDK counters. No new protocol implementation or zero-copy, ancillary-data, IPv6, fork, or io_uring support is claimed."
+      "adaptation": "Six public POSIX behavioral scenarios run on host Linux and the complete imported Linux TCP stack, comparing successful scenario output and requiring at least six native active/passive opens plus zero outstanding DPDK buffers. Adapts the FF_KERNEL_COEXIST host bridge tests for sendmsg/recvmsg, address lookup, half-close, readv/writev, FIONBIO, dup and dup2. Unlike the upstream host-only bridge cases, the adapted AF_INET pairs must use native TCP under ker-run; the AF_UNIX vector roundtrip remains explicit host passthrough. Ker-specific extensions cover zero-length iovecs, stream short reads without MSG_TRUNC, MSG_PEEK/DONTWAIT, FIONREAD, shared O_NONBLOCK and independent descriptor CLOEXEC, and fixed-fd host/native replacement with post-replacement byte checks. No ff implementation, mock or FreeBSD protocol code is copied. Loopback scenarios do not exercise DPDK traffic; the same CTest separately runs existing independent-host-peer active/passive TCP interop and verifies DPDK counters. No new protocol implementation or zero-copy, ancillary-data, IPv6, fork, or io_uring support is claimed.",
+      "ker_ctests": ["native-fstack-message-io"]
     },
     "native-fstack-stream-io": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -507,13 +562,15 @@
         "test_ff_host_msg_name_shutdown_bridges",
         "test_ff_host_readv_writev"
       ],
-      "adaptation": "Ker-specific independent-peer extension: public POSIX TCP programs run vector (writev/readv), message (sendmsg/recvmsg), and batched-message (sendmmsg/recvmmsg) modes against an independent host Linux endpoint over DPDK net_tap/veth. Each mode runs with Ker as client and as server, for six role/API combinations. Every direction validates 256 KiB + 13 bytes using direction-specific patterns, nonblocking progress/retry handling, zero-length vector entries where applicable, half-close and exact EOF. Batched TCP I/O is treated as a byte stream rather than preserving message boundaries. Small send buffers exercise backpressure; observed partial/retry counts are logged without imposing scheduler-dependent counts as performance requirements. Each native instance must show TX/RX, the matching native active/passive open, and zero outstanding packet buffers; both peer programs must report successful byte verification. Upstream covers small host-only bridge transfers, not this native TCP/DPDK or batched-message behavior. No ff implementation, FreeBSD stack, mock, new protocol path, zero-copy, ancillary-data, or io_uring support is added."
+      "adaptation": "Ker-specific independent-peer extension: public POSIX TCP programs run vector (writev/readv), message (sendmsg/recvmsg), and batched-message (sendmmsg/recvmmsg) modes against an independent host Linux endpoint over DPDK net_tap/veth. Each mode runs with Ker as client and as server, for six role/API combinations. Every direction validates 256 KiB + 13 bytes using direction-specific patterns, nonblocking progress/retry handling, zero-length vector entries where applicable, half-close and exact EOF. Batched TCP I/O is treated as a byte stream rather than preserving message boundaries. Small send buffers exercise backpressure; observed partial/retry counts are logged without imposing scheduler-dependent counts as performance requirements. Each native instance must show TX/RX, the matching native active/passive open, and zero outstanding packet buffers; both peer programs must report successful byte verification. Upstream covers small host-only bridge transfers, not this native TCP/DPDK or batched-message behavior. No ff implementation, FreeBSD stack, mock, new protocol path, zero-copy, ancillary-data, or io_uring support is added.",
+      "ker_ctests": ["native-fstack-stream-io"]
     },
     "native-fstack-udp-interop": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
       "source_example": "adapter/syscall/main_stack_udp.c",
-      "adaptation": "Ker-specific native UDP socket extension motivated by pinned UDP TX-checksum coverage and the public UDP/epoll example. The upstream checksum case tests TX offload metadata, not UDP socket semantics; the example is not an upstream automated test and ignores empty datagrams, unlike this validation. Three modes (sendto/recvfrom, sendmsg/recvmsg, sendmmsg/recvmmsg) run with Ker as both client and server against independent host Linux peers over DPDK net_tap/veth. Each direction verifies four distinct datagrams of lengths 0, 1, 33 and 257; checks peer tuples, epoll readiness, connected UDP in message mode, FIONREAD, MSG_PEEK/MSG_TRUNC, and empty-queue EAGAIN without interpreting zero payload as EOF. Every native instance requires positive DPDK TX/RX, at least four original-Linux UDP InDatagrams/OutDatagrams, zero UDP input/no-port errors and zero outstanding buffers. Protocol behavior is the complete imported Linux UDP implementation, not the basic Ker packet constructors/views. The change adds private native diagnostics fields; it does not change protocol sources, the TCP capability declaration, DNS, IPv6, multicast, fragmentation or error-queue coverage."
+      "adaptation": "Ker-specific native UDP socket extension motivated by pinned UDP TX-checksum coverage and the public UDP/epoll example. The upstream checksum case tests TX offload metadata, not UDP socket semantics; the example is not an upstream automated test and ignores empty datagrams, unlike this validation. Three modes (sendto/recvfrom, sendmsg/recvmsg, sendmmsg/recvmmsg) run with Ker as both client and server against independent host Linux peers over DPDK net_tap/veth. Each direction verifies four distinct datagrams of lengths 0, 1, 33 and 257; checks peer tuples, epoll readiness, connected UDP in message mode, FIONREAD, MSG_PEEK/MSG_TRUNC, and empty-queue EAGAIN without interpreting zero payload as EOF. Every native instance requires positive DPDK TX/RX, at least four original-Linux UDP InDatagrams/OutDatagrams, zero UDP input/no-port errors and zero outstanding buffers. Protocol behavior is the complete imported Linux UDP implementation, not the basic Ker packet constructors/views. The change adds private native diagnostics fields; it does not change protocol sources, the TCP capability declaration, DNS, IPv6, multicast, fragmentation or error-queue coverage.",
+      "ker_ctests": ["native-fstack-udp-interop"]
     },
     "native-fstack-udp-errors": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -537,7 +594,8 @@
         "test_ff_host_msg_name_shutdown_bridges",
         "test_ff_host_dup"
       ],
-      "adaptation": "Ker-specific blocking receive/half-close and duplicated-descriptor extension of the pinned host bridge scenarios, not an upstream F-Stack timeout test. The same public POSIX program runs as a host reference and with the complete imported Linux kernel as client and server over DPDK net_tap/veth. Before READY, a blocking listener must time out accept with EAGAIN; its accepted socket inherits SO_RCVTIMEO and remains blocking. The client checks recv/recvmsg/readv empty-queue EAGAIN after a configured 120ms timeout, invalid microseconds EDOM without changing the prior option, shared timeout state through dup, MSG_WAITALL returning five existing bytes when no suffix arrives before timeout, a following empty-read timeout, disabling timeout through the alias, and partial WAITALL completion at EOF with successful reverse-direction acknowledgement. Explicit application handshakes suppress peer data until requested, and poll establishes that the first five bytes are queued before partial-WAITALL timing. Timing checks allow tick/scheduler variation (50ms to 5s) and are not a precision/performance claim. Native client exercises the receive cases; native server exercises listener timeout/inheritance and peer progress. Each native instance requires matching original-Linux TCP open counts, DPDK TX/RX and no outstanding packet buffers. No protocol changes, mocks, signal interruption/cancellation, send timeout, TCP connect-timeout or general time64 ABI support is added."
+      "adaptation": "Ker-specific blocking receive/half-close and duplicated-descriptor extension of the pinned host bridge scenarios, not an upstream F-Stack timeout test. The same public POSIX program runs as a host reference and with the complete imported Linux kernel as client and server over DPDK net_tap/veth. Before READY, a blocking listener must time out accept with EAGAIN; its accepted socket inherits SO_RCVTIMEO and remains blocking. The client checks recv/recvmsg/readv empty-queue EAGAIN after a configured 120ms timeout, invalid microseconds EDOM without changing the prior option, shared timeout state through dup, MSG_WAITALL returning five existing bytes when no suffix arrives before timeout, a following empty-read timeout, disabling timeout through the alias, and partial WAITALL completion at EOF with successful reverse-direction acknowledgement. Explicit application handshakes suppress peer data until requested, and poll establishes that the first five bytes are queued before partial-WAITALL timing. Timing checks allow tick/scheduler variation (50ms to 5s) and are not a precision/performance claim. Native client exercises the receive cases; native server exercises listener timeout/inheritance and peer progress. Each native instance requires matching original-Linux TCP open counts, DPDK TX/RX and no outstanding packet buffers. No protocol changes, mocks, signal interruption/cancellation, send timeout, TCP connect-timeout or general time64 ABI support is added.",
+      "ker_ctests": ["native-fstack-tcp-receive-timeouts"]
     },
     "native-fstack-tcp-send-timeouts": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -546,7 +604,8 @@
         "test_ff_host_readv_writev",
         "test_ff_host_dup"
       ],
-      "adaptation": "Ker-specific blocking send/backpressure extension, not an upstream F-Stack timeout test. Host-reference and native client/server runs use a dedicated TCP control connection plus a small-buffer TCP data connection over DPDK net_tap/veth. Each endpoint takes a turn sending 512 KiB + 13 direction-specific bytes while its peer withholds application reads until a control marker. SO_SNDTIMEO=120ms must yield positive partial send progress, then no-progress EAGAIN via send, writev and sendmsg; all positive return lengths advance the source offset. Invalid microseconds return EDOM without replacing the prior value. Clearing the timeout through dup must affect the original fd. After an explicit resume marker, the peer enlarges its receive buffer, verifies the entire byte stream, acknowledges completion on the control connection, and the roles reverse. Both directions end at exact EOF without extra bytes. Elapsed checks allow 50ms..5s and option tick rounding, not precise timing. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol or runtime adapter changes, mocks, host signal interruption/cancellation, connect-timeout or general time64 ABI support is introduced."
+      "adaptation": "Ker-specific blocking send/backpressure extension, not an upstream F-Stack timeout test. Host-reference and native client/server runs use a dedicated TCP control connection plus a small-buffer TCP data connection over DPDK net_tap/veth. Each endpoint takes a turn sending 512 KiB + 13 direction-specific bytes while its peer withholds application reads until a control marker. SO_SNDTIMEO=120ms must yield positive partial send progress, then no-progress EAGAIN via send, writev and sendmsg; all positive return lengths advance the source offset. Invalid microseconds return EDOM without replacing the prior value. Clearing the timeout through dup must affect the original fd. After an explicit resume marker, the peer enlarges its receive buffer, verifies the entire byte stream, acknowledges completion on the control connection, and the roles reverse. Both directions end at exact EOF without extra bytes. Elapsed checks allow 50ms..5s and option tick rounding, not precise timing. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol or runtime adapter changes, mocks, host signal interruption/cancellation, connect-timeout or general time64 ABI support is introduced.",
+      "ker_ctests": ["native-fstack-tcp-send-timeouts"]
     },
     "native-fstack-tcp-connect-lifecycle": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -555,7 +614,8 @@
         "test_ff_host_dup",
         "test_ff_host_kqueue_ctl_poll"
       ],
-      "adaptation": "Ker-specific Linux TCP connect/error and epoll lifetime extension of the pinned host bridge scenarios, not an upstream F-Stack AF_UNSPEC reconnect test. Host-reference and native client/server runs use independent Linux peers over DPDK net_tap/veth. One nonblocking client socket plus its dup alias receives ECONNREFUSED from an unused port; poll/epoll report error readiness, reading SO_ERROR through the alias clears it for the original fd, and error readiness clears without assuming HUP/writable readiness disappears. AF_UNSPEC resets the socket; it connects to the first listener, verifies peer tuples and echo, then AF_UNSPEC aborts that live connection (the server must observe ECONNRESET). Any local reset error is cleared, and the same socket reconnects to a different listener port without replacing the epoll registration. Closing the originally registered fd must retain readiness and I/O through the live alias; the final exchange, half-close and EOF succeed with the full 64-bit event tag intact. Native client requires three active opens; native server requires two passive opens, plus positive DPDK TX/RX, both endpoint PASS results and zero outstanding buffers. Original Linux owns refusal, reset and reconnect semantics. No protocol/adapter changes, mocks, portable AF_UNSPEC guarantee, concurrent close stress, host signal interruption or io_uring coverage is introduced."
+      "adaptation": "Ker-specific Linux TCP connect/error and epoll lifetime extension of the pinned host bridge scenarios, not an upstream F-Stack AF_UNSPEC reconnect test. Host-reference and native client/server runs use independent Linux peers over DPDK net_tap/veth. One nonblocking client socket plus its dup alias receives ECONNREFUSED from an unused port; poll/epoll report error readiness, reading SO_ERROR through the alias clears it for the original fd, and error readiness clears without assuming HUP/writable readiness disappears. AF_UNSPEC resets the socket; it connects to the first listener, verifies peer tuples and echo, then AF_UNSPEC aborts that live connection (the server must observe ECONNRESET). Any local reset error is cleared, and the same socket reconnects to a different listener port without replacing the epoll registration. Closing the originally registered fd must retain readiness and I/O through the live alias; the final exchange, half-close and EOF succeed with the full 64-bit event tag intact. Native client requires three active opens; native server requires two passive opens, plus positive DPDK TX/RX, both endpoint PASS results and zero outstanding buffers. Original Linux owns refusal, reset and reconnect semantics. No protocol/adapter changes, mocks, portable AF_UNSPEC guarantee, concurrent close stress, host signal interruption or io_uring coverage is introduced.",
+      "ker_ctests": ["native-fstack-tcp-connect-lifecycle"]
     },
     "native-fstack-tcp-defer-accept": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -563,7 +623,8 @@
         "test_ff_host_msg_name_shutdown_bridges",
         "test_ff_host_kqueue_ctl_poll"
       ],
-      "adaptation": "Ker-specific Linux TCP_DEFER_ACCEPT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack deferred-accept test or support claim. Host reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A separate control connection coordinates two sequential data connections on the same nonblocking listener. With deferred accept enabled (31 seconds, permitting kernel rounding), completed client connect with checked peer tuple and SO_ERROR must not make the listener readable during a 100ms poll, an immediate epoll wait, or nonblocking accept (EAGAIN). Payload is withheld until an explicit control marker, then poll/epoll and accept must succeed. Clearing the option on that listener permits the second handshake to trigger readiness and accept before payload is sent. Both phases verify exact echo, half-close/EOF, drained listener readiness and a full 64-bit epoll tag. Each native instance requires at least three matching original-Linux TCP opens, positive DPDK TX/RX and zero outstanding buffers. No original protocol/runtime changes, mocks, deferred timer expiry, TCP Fast Open, host signal interruption or io_uring coverage is introduced."
+      "adaptation": "Ker-specific Linux TCP_DEFER_ACCEPT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack deferred-accept test or support claim. Host reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A separate control connection coordinates two sequential data connections on the same nonblocking listener. With deferred accept enabled (31 seconds, permitting kernel rounding), completed client connect with checked peer tuple and SO_ERROR must not make the listener readable during a 100ms poll, an immediate epoll wait, or nonblocking accept (EAGAIN). Payload is withheld until an explicit control marker, then poll/epoll and accept must succeed. Clearing the option on that listener permits the second handshake to trigger readiness and accept before payload is sent. Both phases verify exact echo, half-close/EOF, drained listener readiness and a full 64-bit epoll tag. Each native instance requires at least three matching original-Linux TCP opens, positive DPDK TX/RX and zero outstanding buffers. No original protocol/runtime changes, mocks, deferred timer expiry, TCP Fast Open, host signal interruption or io_uring coverage is introduced.",
+      "ker_ctests": ["native-fstack-tcp-defer-accept"]
     },
     "native-fstack-tcp-reuseport": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -571,7 +632,8 @@
         "test_ff_host_msg_name_shutdown_bridges",
         "test_ff_host_kqueue_ctl_poll"
       ],
-      "adaptation": "Ker-specific Linux SO_REUSEPORT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack reuseport test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Two nonblocking listeners enable and query SO_REUSEPORT before sharing an address/port; a third socket with SO_REUSEADDR alone must fail bind with EADDRINUSE. A separate control connection coordinates eight initial data connections and four later connections. Poll/epoll drive accepts; unique tokens verify every connection exactly once without requiring equal hash distribution or both listeners to receive initial connections. The test retains the token=1 accepted connection, closes precisely the listener that accepted it, and requires continued echo and half-close/EOF on the accepted connection. The remaining listener must accept all four later connections, with exact echo, EOF, full 64-bit epoll tags and cleared readiness after the queue drains. Each native instance requires thirteen matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, mocks, pending-connection migration, cross-process workers, UID isolation, BPF selection or io_uring coverage is introduced."
+      "adaptation": "Ker-specific Linux SO_REUSEPORT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack reuseport test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Two nonblocking listeners enable and query SO_REUSEPORT before sharing an address/port; a third socket with SO_REUSEADDR alone must fail bind with EADDRINUSE. A separate control connection coordinates eight initial data connections and four later connections. Poll/epoll drive accepts; unique tokens verify every connection exactly once without requiring equal hash distribution or both listeners to receive initial connections. The test retains the token=1 accepted connection, closes precisely the listener that accepted it, and requires continued echo and half-close/EOF on the accepted connection. The remaining listener must accept all four later connections, with exact echo, EOF, full 64-bit epoll tags and cleared readiness after the queue drains. Each native instance requires thirteen matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, mocks, pending-connection migration, cross-process workers, UID isolation, BPF selection or io_uring coverage is introduced.",
+      "ker_ctests": ["native-fstack-tcp-reuseport"]
     },
     "native-fstack-tcp-urgent": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -579,7 +641,8 @@
         "test_ff_host_msg_name_shutdown_bridges",
         "test_ff_host_kqueue_ctl_poll"
       ],
-      "adaptation": "Ker-specific Linux urgent-data extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack urgent-data test or equivalence claim. The existing Ker loopback OOB case is extended to independent host Linux peers over DPDK net_tap/veth, with host-reference and native client/server runs. Two data connections disable/enable SO_OOBINLINE and exercise both directions. A separate control connection orders receiver option setup and EPOLLPRI registration, six ordinary prefix bytes, one MSG_OOB byte, and five ordinary suffix bytes, without fixed sleeps. Poll/epoll must report priority readiness with full 64-bit tags. SIOCATMARK via public ioctl changes from false before prefix consumption to true at the urgent boundary; POSIX sockatmark must match each ioctl result. The new sockatmark adapter/export reuses existing ioctl dispatch because libc internal ioctl bypasses native fd routing. Invalid fd EBADF, host pipe ENOTTY and host socket reference behavior are checked. Out-of-line mode peeks then consumes MSG_OOB without duplicating the urgent byte in the ordinary stream; inline mode rejects MSG_OOB with EINVAL and consumes the urgent byte through ordinary recv. Exact suffix and half-close/EOF must clear urgent mark and PRI while allowing persistent EOF/HUP readiness. Native instances require three matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No original protocol changes, SIGURG/async ownership, overwriting multiple outstanding urgent pointers or io_uring coverage is introduced."
+      "adaptation": "Ker-specific Linux urgent-data extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack urgent-data test or equivalence claim. The existing Ker loopback OOB case is extended to independent host Linux peers over DPDK net_tap/veth, with host-reference and native client/server runs. Two data connections disable/enable SO_OOBINLINE and exercise both directions. A separate control connection orders receiver option setup and EPOLLPRI registration, six ordinary prefix bytes, one MSG_OOB byte, and five ordinary suffix bytes, without fixed sleeps. Poll/epoll must report priority readiness with full 64-bit tags. SIOCATMARK via public ioctl changes from false before prefix consumption to true at the urgent boundary; POSIX sockatmark must match each ioctl result. The new sockatmark adapter/export reuses existing ioctl dispatch because libc internal ioctl bypasses native fd routing. Invalid fd EBADF, host pipe ENOTTY and host socket reference behavior are checked. Out-of-line mode peeks then consumes MSG_OOB without duplicating the urgent byte in the ordinary stream; inline mode rejects MSG_OOB with EINVAL and consumes the urgent byte through ordinary recv. Exact suffix and half-close/EOF must clear urgent mark and PRI while allowing persistent EOF/HUP readiness. Native instances require three matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No original protocol changes, SIGURG/async ownership, overwriting multiple outstanding urgent pointers or io_uring coverage is introduced.",
+      "ker_ctests": ["native-fstack-tcp-urgent"]
     },
     "native-fstack-tcp-receive-queue": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -588,7 +651,8 @@
         "test_ff_host_readv_writev",
         "test_ff_host_dup"
       ],
-      "adaptation": "Ker-specific Linux TCP receive-queue extension of pinned host message/vector/dup bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Each direction sends 16 KiB + 37 deterministic bytes and half-closes; a separate control connection and SO_RCVLOWAT coordinate a complete queued payload without fixed sleeps, then restore the low-water mark to one. Two-iovec recvmsg(MSG_PEEK|MSG_WAITALL) through dup and a 6001-byte peek through the original fd verify bytes without changing FIONREAD on either alias. Linux TCP recv(MSG_TRUNC) consumes 257 bytes without modifying destination canaries; recvmsg(MSG_PEEK|MSG_TRUNC) reports 513 bytes without copying or consuming. Remaining bytes are verified through readv on the alias, with exact original-fd queue counts after each read; both aliases and ordinary peek observe EOF and zero FIONREAD, excluding FIN from payload counts. These Linux TCP flag semantics are distinct from UDP datagram truncation and are not a portable POSIX claim. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, concurrent-reader stress, SO_PEEK_OFF, invalid-pointer recovery or io_uring coverage is introduced."
+      "adaptation": "Ker-specific Linux TCP receive-queue extension of pinned host message/vector/dup bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Each direction sends 16 KiB + 37 deterministic bytes and half-closes; a separate control connection and SO_RCVLOWAT coordinate a complete queued payload without fixed sleeps, then restore the low-water mark to one. Two-iovec recvmsg(MSG_PEEK|MSG_WAITALL) through dup and a 6001-byte peek through the original fd verify bytes without changing FIONREAD on either alias. Linux TCP recv(MSG_TRUNC) consumes 257 bytes without modifying destination canaries; recvmsg(MSG_PEEK|MSG_TRUNC) reports 513 bytes without copying or consuming. Remaining bytes are verified through readv on the alias, with exact original-fd queue counts after each read; both aliases and ordinary peek observe EOF and zero FIONREAD, excluding FIN from payload counts. These Linux TCP flag semantics are distinct from UDP datagram truncation and are not a portable POSIX claim. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, concurrent-reader stress, SO_PEEK_OFF, invalid-pointer recovery or io_uring coverage is introduced.",
+      "ker_ctests": ["native-fstack-tcp-receive-queue"]
     },
     "native-fstack-tcp-shutdown-write": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -597,7 +661,8 @@
         "test_ff_host_readv_writev",
         "test_ff_host_dup"
       ],
-      "adaptation": "Ker-specific Linux local SHUT_WR extension of pinned host shutdown/message/vector/dup bridge scenarios, distinct from existing peer-RST validation and not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Invalid shutdown how=42 returns EINVAL without breaking later normal sends. SHUT_WR through dup shares send shutdown with the original fd. Repeated shutdown succeeds while the peer keeps its send direction open; once both FINs are ACKed Linux may return ENOTCONN instead. send/sendto/sendmsg/one-entry sendmmsg with MSG_NOSIGNAL must return EPIPE without SIGPIPE; the same APIs without the flag plus write/writev must each return EPIPE with exactly one handled SIGPIPE, six signals per endpoint and unchanged zero SO_ERROR. A separate control connection keeps the peer receive socket open until all probes finish, distinguishing local shutdown from peer-close errors without fixed sleeps. A client that has shut down writes must still receive the full reverse server reply through its alias; the server performs the same error matrix. Both endpoints verify EOF, poll/epoll IN plus RDHUP and full 64-bit tags. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, SHUT_RD, blocked/ignored/default-action SIGPIPE, async signal ownership or partial-success sendmmsg signal behavior is introduced."
+      "adaptation": "Ker-specific Linux local SHUT_WR extension of pinned host shutdown/message/vector/dup bridge scenarios, distinct from existing peer-RST validation and not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Invalid shutdown how=42 returns EINVAL without breaking later normal sends. SHUT_WR through dup shares send shutdown with the original fd. Repeated shutdown succeeds while the peer keeps its send direction open; once both FINs are ACKed Linux may return ENOTCONN instead. send/sendto/sendmsg/one-entry sendmmsg with MSG_NOSIGNAL must return EPIPE without SIGPIPE; the same APIs without the flag plus write/writev must each return EPIPE with exactly one handled SIGPIPE, six signals per endpoint and unchanged zero SO_ERROR. A separate control connection keeps the peer receive socket open until all probes finish, distinguishing local shutdown from peer-close errors without fixed sleeps. A client that has shut down writes must still receive the full reverse server reply through its alias; the server performs the same error matrix. Both endpoints verify EOF, poll/epoll IN plus RDHUP and full 64-bit tags. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, SHUT_RD, blocked/ignored/default-action SIGPIPE, async signal ownership or partial-success sendmmsg signal behavior is introduced.",
+      "ker_ctests": ["native-fstack-tcp-shutdown-write"]
     },
     "native-fstack-udp-broadcast": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -614,7 +679,8 @@
         "test_ff_host_dup",
         "test_ff_host_kqueue_ctl_poll"
       ],
-      "adaptation": "Ker-specific Linux listener-restart extension of pinned host fd/readiness bridge scenarios, not an upstream F-Stack restart test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A listener enables SO_REUSEADDR with SO_REUSEPORT verified disabled, has a dup alias, and accepts an initial connection through that alias. A REUSEADDR candidate must fail bind while both listener references exist and after the original fd closes, with the alias still reporting SO_ACCEPTCONN. After the final alias closes, the accepted connection stays alive: a candidate without REUSEADDR must still fail bind, while a REUSEADDR replacement must bind/listen the same endpoint. A separate control connection announces replacement readiness without fixed sleeps. The old accepted stream continues verified echo; a new stream is accepted using a distinct full 64-bit tag in the same epoll instance. Closing the replacement listener must clear listener readiness while both accepted streams independently finish exact content, half-close and EOF. Native instances require three matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, TIME_WAIT-state/duration assertions, cross-process takeover, pending-connection migration or cross-UID port policy is introduced."
+      "adaptation": "Ker-specific Linux listener-restart extension of pinned host fd/readiness bridge scenarios, not an upstream F-Stack restart test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A listener enables SO_REUSEADDR with SO_REUSEPORT verified disabled, has a dup alias, and accepts an initial connection through that alias. A REUSEADDR candidate must fail bind while both listener references exist and after the original fd closes, with the alias still reporting SO_ACCEPTCONN. After the final alias closes, the accepted connection stays alive: a candidate without REUSEADDR must still fail bind, while a REUSEADDR replacement must bind/listen the same endpoint. A separate control connection announces replacement readiness without fixed sleeps. The old accepted stream continues verified echo; a new stream is accepted using a distinct full 64-bit tag in the same epoll instance. Closing the replacement listener must clear listener readiness while both accepted streams independently finish exact content, half-close and EOF. Native instances require three matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, TIME_WAIT-state/duration assertions, cross-process takeover, pending-connection migration or cross-UID port policy is introduced.",
+      "ker_ctests": ["native-fstack-tcp-listener-restart"]
     },
     "native-fstack-udp-reuseport": {
       "source_example": "adapter/syscall/main_stack_udp.c",

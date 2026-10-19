@@ -1025,7 +1025,7 @@ def inside(args):
                         raise RuntimeError('native SYN timeout did not retransmit or I/O leaked: ' + str(stats))
                     print('native errors: ' + json.dumps(stats), flush=True)
                 for name, scenario_app, minimum_opens in [
-                        ('epoll', args.epoll_app, 8), ('message-io', args.message_app, 6)]:
+                        ('epoll', args.epoll_app, 9), ('message-io', args.message_app, 6)]:
                     if not scenario_app:
                         continue
                     baseline = client([str(scenario_app)], env)
