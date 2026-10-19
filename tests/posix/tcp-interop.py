@@ -56,6 +56,39 @@ def client(command, env):
     return result.stdout
 
 
+def udp_cork(args, launcher, work, env, log):
+    if not args.udp_cork_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 27000 + 4 * index
+        native_server = role == 'server'
+        server_address = '198.18.0.2' if native_server else '198.18.0.1'
+        client_address = '198.18.0.2' if role == 'client' else '198.18.0.1'
+        listen = [str(args.udp_cork_app), 'server', server_address, client_address, str(port)]
+        connect = [str(args.udp_cork_app), 'client', client_address, server_address, str(port)]
+        stats_path = work / ('udp-cork-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('UDP cork peer did not verify payload and metadata')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            udp = stats['native']
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    udp['udp_out_datagrams'] < 4 or udp['udp_in_datagrams'] < 4 or
+                    udp['udp_in_errors'] or udp['udp_no_ports'] or
+                    udp['passive_opens' if native_server else 'active_opens'] < 1):
+                raise RuntimeError('UDP cork scenarios missed native traffic: ' + str(stats))
+            print('native UDP cork ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def application_compat(args, launcher, work, env):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -833,6 +866,7 @@ def inside(args):
                 udp_compat(args, launcher, work, env, log)
                 stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
+                udp_cork(args, launcher, work, env, log)
                 if args.fd_app:
                     stats_path = work / 'fd-app.json'
                     client([*launcher, '--stats', str(stats_path), '--', str(args.fd_app)], env)
@@ -871,6 +905,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--faults', action='store_true')
     parser.add_argument('--zero-window', action='store_true')
+    parser.add_argument('--udp-cork-app', type=Path)
     parser.add_argument('--fd-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)
