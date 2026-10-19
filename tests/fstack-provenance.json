@@ -564,6 +564,15 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific Linux TCP receive-queue extension of pinned host message/vector/dup bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Each direction sends 16 KiB + 37 deterministic bytes and half-closes; a separate control connection and SO_RCVLOWAT coordinate a complete queued payload without fixed sleeps, then restore the low-water mark to one. Two-iovec recvmsg(MSG_PEEK|MSG_WAITALL) through dup and a 6001-byte peek through the original fd verify bytes without changing FIONREAD on either alias. Linux TCP recv(MSG_TRUNC) consumes 257 bytes without modifying destination canaries; recvmsg(MSG_PEEK|MSG_TRUNC) reports 513 bytes without copying or consuming. Remaining bytes are verified through readv on the alias, with exact original-fd queue counts after each read; both aliases and ordinary peek observe EOF and zero FIONREAD, excluding FIN from payload counts. These Linux TCP flag semantics are distinct from UDP datagram truncation and are not a portable POSIX claim. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, concurrent-reader stress, SO_PEEK_OFF, invalid-pointer recovery or io_uring coverage is introduced."
+    },
+    "native-fstack-tcp-shutdown-write": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_readv_writev",
+        "test_ff_host_dup"
+      ],
+      "adaptation": "Ker-specific Linux local SHUT_WR extension of pinned host shutdown/message/vector/dup bridge scenarios, distinct from existing peer-RST validation and not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Invalid shutdown how=42 returns EINVAL without breaking later normal sends. SHUT_WR through dup shares send shutdown with the original fd. Repeated shutdown succeeds while the peer keeps its send direction open; once both FINs are ACKed Linux may return ENOTCONN instead. send/sendto/sendmsg/one-entry sendmmsg with MSG_NOSIGNAL must return EPIPE without SIGPIPE; the same APIs without the flag plus write/writev must each return EPIPE with exactly one handled SIGPIPE, six signals per endpoint and unchanged zero SO_ERROR. A separate control connection keeps the peer receive socket open until all probes finish, distinguishing local shutdown from peer-close errors without fixed sleeps. A client that has shut down writes must still receive the full reverse server reply through its alias; the server performs the same error matrix. Both endpoints verify EOF, poll/epoll IN plus RDHUP and full 64-bit tags. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, SHUT_RD, blocked/ignored/default-action SIGPIPE, async signal ownership or partial-success sendmmsg signal behavior is introduced."
     }
   }
 }

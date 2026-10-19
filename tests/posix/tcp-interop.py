@@ -265,6 +265,36 @@ def tcp_urgent(args, launcher, work, env, log):
             print('native TCP urgent ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_shutdown_write(args, launcher, work, env, log):
+    if not args.shutdown_write_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 26300 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.shutdown_write_app), 'server', address, str(port)]
+        connect = [str(args.shutdown_write_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-shutdown-write-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP shutdown server did not verify EPIPE and reverse I/O')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    2):
+                raise RuntimeError('TCP shutdown scenario missed native traffic: ' + str(stats))
+            print('native TCP shutdown write ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_receive_queue(args, launcher, work, env, log):
     if not args.receive_queue_app:
         return
@@ -625,6 +655,7 @@ def inside(args):
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                tcp_shutdown_write(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
                 tcp_urgent(args, launcher, work, env, log)
                 tcp_reuseport(args, launcher, work, env, log)
@@ -688,6 +719,7 @@ def main():
     parser.add_argument('--udp-multicast-app', type=Path)
     parser.add_argument('--receive-timeouts-app', type=Path)
     parser.add_argument('--send-timeouts-app', type=Path)
+    parser.add_argument('--shutdown-write-app', type=Path)
     parser.add_argument('--receive-queue-app', type=Path)
     parser.add_argument('--urgent-app', type=Path)
     parser.add_argument('--reuseport-app', type=Path)

@@ -214,4 +214,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-receive-queue COMMAND ${ker_native_test_command}
         --receive-queue-app "$<TARGET_FILE:ker-posix-fstack-tcp-receive-queue-test>")
     set_tests_properties(native-fstack-tcp-receive-queue PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-shutdown-write-test tests/posix/fstack-tcp-shutdown-write.c)
+    target_compile_options(ker-posix-fstack-tcp-shutdown-write-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-shutdown-write COMMAND ${ker_native_test_command}
+        --shutdown-write-app "$<TARGET_FILE:ker-posix-fstack-tcp-shutdown-write-test>")
+    set_tests_properties(native-fstack-tcp-shutdown-write PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
 endif()

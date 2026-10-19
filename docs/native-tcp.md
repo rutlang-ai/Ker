@@ -81,6 +81,7 @@ ctest --test-dir build-native-tcp -L native-tcp --output-on-failure
 | 共享监听端口 | SO_REUSEPORT 双 listener、普通 bind 冲突；关闭接入 listener 后已接受连接仍可收发，剩余 listener 继续接入 |
 | 独立对端 urgent data | 双向 MSG_OOB/MSG_PEEK、SO_OOBINLINE、sockatmark/SIOCATMARK 边界及 poll/epoll 优先事件；普通前后缀完整且无 urgent byte 混入 |
 | 独立对端接收队列 | 双向多段 MSG_PEEK/readv、FIONREAD、dup 共享队列，Linux TCP MSG_TRUNC 消费与 peek 保留，缓冲区哨兵及 EOF |
+| 本地发送半关闭 | dup 共享 SHUT_WR，六种写入 API 的 EPIPE、四种 MSG_NOSIGNAL 抑制与逐调用 SIGPIPE；反向数据及 RDHUP/EOF 保持 |
 | socket 契约 | 6 个宿主/原生场景：创建与 accept 标志、地址长度截断、option 错误恢复、bind 冲突及 dup/fstat 身份 |
 | poll/select 就绪语义 | 8 个宿主/原生场景：监听、混合 pipe/TCP、重复条目与集合计数、失效 fd、OOB、SO_RCVLOWAT、EOF 和 timeout |
 | F-Stack epoll 场景 | 8 个真实 TCP 场景与宿主 Linux 对照：ADD/MOD/DEL、64 位 userdata、LT/ET、oneshot、仅写就绪、半关闭与 RST；原生 active/passive open 计数必须增长 |
@@ -206,6 +207,25 @@ peek 6001 字节；两次均逐字节核对，且原 fd 与 alias 的 FIONREAD �
 数据。每个原生实例要求至少两次对应 TCP open、DPDK TX/RX 非零和 outstanding=0。
 本项是 F-Stack host message/vector 场景的 Ker/Linux 扩展；仅增加验收，不修改
 Linux 或适配实现，也未覆盖并发 reader、SO_PEEK_OFF 或 recvmsg 错误指针恢复。
+
+`native-fstack-tcp-shutdown-write` 在宿主参考、原生客户端和原生服务端模式下，
+验证本地发送半关闭，与既有对端 RST 场景分开。原 fd 和 dup alias 共享连接；非法
+shutdown how=42 必须返回 EINVAL，随后正常发送仍可成功。通过 alias 执行 SHUT_WR，
+对端尚未发送 FIN 时，原 fd 重复 SHUT_WR 仍成功；双方 FIN 已被确认后允许 Linux
+返回 ENOTCONN。两个 fd 上的后续写入均受关闭状态约束。
+
+send/sendto/sendmsg/单条 sendmmsg 使用 MSG_NOSIGNAL 时必须 EPIPE 且不触发
+SIGPIPE；这四种 API 不带该标志以及 write/writev 各自必须 EPIPE，并使已安装的
+SIGPIPE handler 计数增加一次。每端共验证六次信号，SO_ERROR 保持零。
+独立 control 连接确保对端完成这些探测前，接收 socket 仍保持打开，不用固定 sleep。
+
+客户端发送正常请求并关闭发送方向后，仍必须通过 alias 完整接收服务端的反向回复。
+服务端随后同样执行半关闭和写入错误矩阵；两端 poll/epoll 必须报告 EOF 的
+POLLIN/EPOLLIN 与 POLLRDHUP/EPOLLRDHUP，并保持完整 64 位 tag。每个原生实例
+要求至少两次对应 TCP open、DPDK TX/RX 非零和 outstanding=0。本项是 F-Stack
+host shutdown/message/vector/dup 场景的 Ker/Linux 扩展；未覆盖 SHUT_RD、阻塞或
+忽略 SIGPIPE、默认终止动作、异步信号所有者及部分成功 sendmmsg 的信号行为。
+仅增加验收，半关闭/EPIPE 仍来自原始 Linux，SIGPIPE 仍复用既有 Ker 适配。
 
 独立的 [原生 UDP 验证](native-udp-validation.md) 另行检查 UDP socket，使用原生 UDP 计数证明路径。
 
