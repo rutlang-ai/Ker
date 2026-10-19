@@ -219,4 +219,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-shutdown-write COMMAND ${ker_native_test_command}
         --shutdown-write-app "$<TARGET_FILE:ker-posix-fstack-tcp-shutdown-write-test>")
     set_tests_properties(native-fstack-tcp-shutdown-write PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-udp-broadcast-test tests/posix/fstack-udp-broadcast.c)
+    target_compile_options(ker-posix-fstack-udp-broadcast-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-udp-broadcast COMMAND ${ker_native_test_command}
+        --udp-broadcast-app "$<TARGET_FILE:ker-posix-fstack-udp-broadcast-test>")
+    set_tests_properties(native-fstack-udp-broadcast PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
 endif()
