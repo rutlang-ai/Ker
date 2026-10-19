@@ -294,3 +294,11 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 独立 TCP 控制连接确认原 fd 已关闭后，接收方须在 100 ms poll 窗口内保持无可读事件，epoll 无事件且非阻塞读取到 EAGAIN；发送方随后仍能通过副本发送准确的 17 字节内容。接收方确认内容消费完成，才允许关闭最后一个副本。验证最终 poll/epoll RDHUP、完整 64 位 tag，以及复位时 ERR/HUP。两种错误消费者各自读取并清除共享错误，随后两个接收方 fd 都读到 EOF。native 每端须有七次匹配方向的原始 Linux TCP 打开、DPDK 收发和零未释放缓冲区。
 
 这是固定 F-Stack host shutdown/dup 桥接场景的 Ker/Linux 扩展，不是上游 linger 测试或等价声明。仅增加测试；不修改 Linux 或 Ker 适配代码。未覆盖正数 linger 等待期限、未读数据关闭、进程退出、并发 close/read 或跨进程 fd 传递。
+
+## TCP 接收低水位、现有数据就绪与 FIN
+
+`native-fstack-tcp-lowwater` 在宿主参考、native 主动端和 native 监听端组合中双向验证三个阶段。通过 dup 设置 `SO_RCVLOWAT=64` 并查询共享值；独立 TCP 控制连接协调发送 17 字节，再以最多五秒的 FIONREAD 条件检查确认数据确实排队（每轮让出一毫秒），避免把网络尚未到达误判为低水位抑制就绪。poll/select/epoll 此时均须无事件。
+
+第一阶段以 `MSG_DONTWAIT` 读出已有 17 字节，保持 fd 为阻塞模式。第二阶段通过副本将低水位降到 1，已有数据须立即可读，保留原 epoll 注册及完整 64 位 tag。第三阶段确认低于水位的数据排队后才允许对端半关闭；FIN 须使 poll/epoll 报告 IN/RDHUP，`MSG_WAITALL` 的 64 字节读取返回 17 字节尾部，之后两个 alias 都返回 EOF。各阶段核对内容、未写入区域和队列计数。native 每端须有两次匹配方向的原始 Linux TCP 打开、DPDK 收发及零未释放缓冲区。
+
+这是固定 F-Stack host shutdown/dup/readiness 桥接场景的 Ker/Linux 扩展，不是上游测试或等价声明。仅增加测试，不修改协议或适配代码。未覆盖并发读者、ET/ONESHOT rearm、信号中断或低水位性能；TCP 和 UDP 的低水位语义须分别验证。

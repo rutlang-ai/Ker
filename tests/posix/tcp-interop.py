@@ -607,6 +607,36 @@ def tcp_connect_lifecycle(args, launcher, work, env, log):
             print('native TCP connect lifecycle ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_lowwater(args, launcher, work, env, log):
+    if not args.tcp_lowwater_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 27500 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.tcp_lowwater_app), 'server', address, str(port)]
+        connect = [str(args.tcp_lowwater_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-lowwater-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP lowwater server did not verify both directions')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    2):
+                raise RuntimeError('TCP lowwater scenario missed native traffic: ' + str(stats))
+            print('native TCP lowwater ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_receive_timeouts(args, launcher, work, env, log):
     if not args.receive_timeouts_app:
         return
@@ -1016,6 +1046,7 @@ def inside(args):
                 tcp_reuseport(args, launcher, work, env, log)
                 tcp_defer_accept(args, launcher, work, env, log)
                 tcp_connect_lifecycle(args, launcher, work, env, log)
+                tcp_lowwater(args, launcher, work, env, log)
                 tcp_receive_timeouts(args, launcher, work, env, log)
                 tcp_send_timeouts(args, launcher, work, env, log)
                 tcp_fd_modes(args, launcher, work, env, log)
@@ -1087,6 +1118,7 @@ def main():
     parser.add_argument('--udp-reuseport-app', type=Path)
     parser.add_argument('--udp-receive-timeouts-app', type=Path)
     parser.add_argument('--udp-multicast-app', type=Path)
+    parser.add_argument('--tcp-lowwater-app', type=Path)
     parser.add_argument('--receive-timeouts-app', type=Path)
     parser.add_argument('--send-timeouts-app', type=Path)
     parser.add_argument('--listener-restart-app', type=Path)
