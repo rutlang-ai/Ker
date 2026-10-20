@@ -20,7 +20,7 @@ python3 tools/validate-udp.py --build-dir /path/to/native-build \
   --report /path/to/udp-validation-report.json
 ```
 
-报告保存每个 CTest 的实际结果、功能条目状态、JUnit 和日志路径，以及关键二进制 SHA-256。
+报告保存每个 CTest 的实际结果、功能条目状态、JUnit 和日志路径，以及选中 CTest 命令引用的本地脚本、二进制和库文件 SHA-256。
 只接受此命令在指定 build 目录中实际执行成功的测试；缺失、跳过、失败和基础设施错误均不能计为通过。
 单独的 JUnit 文件和退出码不能证明结果来自当前 build 的二进制，因此不接受导入 JUnit；
 保留的 `--from-junit` / `--ctest-returncode` 参数会明确报错。这样报告中的二进制哈希对应本次执行所用的 build。

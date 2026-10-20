@@ -1,9 +1,13 @@
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('udp_validation', Path(__file__).resolve().parents[1] / 'tools/validate-udp.py')
 validator = importlib.util.module_from_spec(spec)
@@ -69,6 +73,73 @@ class ReportGuards(unittest.TestCase):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn('cannot establish tested-binary provenance', result.stderr)
                     self.assertFalse(report.exists())
+
+    def test_test_artifact_hashes_cover_selected_command_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / 'build'
+            build.mkdir()
+            names = ('ker-posix-fstack-udp-test', 'ker-posix-fstack-jumbo-test',
+                     'ker-ipv6-interop-test', 'ker-ipv6-route-test')
+            paths = []
+            for name in names:
+                path = build / name
+                path.write_bytes(('artifact:' + name).encode())
+                path.chmod(0o755)
+                paths.append(str(path))
+            app_guard = build / 'ker-app'
+            app_guard.write_bytes(b'implicit ker-run guard')
+            registered = {'tests': [{'name': 'test-a', 'command': [
+                sys.executable, str(Path(__file__).resolve().parents[1] / 'tools/ker-run.py'),
+                '--app', *paths],
+                'properties': [{'name': 'LABELS', 'value': ['native-udp']}]}]}
+            hashes = validator.test_artifacts(build, registered, ['test-a'])
+            for name in names:
+                self.assertIn('build/' + name, hashes)
+                self.assertEqual(hashes['build/' + name], hashlib.sha256(
+                    (build / name).read_bytes()).hexdigest())
+            self.assertIn('source/tools/ker-run.py', hashes)
+            self.assertTrue(any(key.startswith('external/') for key in hashes))
+            self.assertIn('build/ker-app', hashes)
+            app_guard.unlink()
+            with self.assertRaisesRegex(ValueError, 'missing local test artifact used by ker-run.py'):
+                validator.test_artifacts(build, registered, ['test-a'])
+
+    def test_report_xml_and_log_suffixes_keep_three_valid_artifacts_distinct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / 'build'
+            build.mkdir()
+            matrix = root / 'matrix.json'
+            matrix.write_text(json.dumps({'scope': 'fixture', 'features': [
+                {'id': 'one', 'kind': 'functional', 'ctests': ['test-a'], 'note': 'fixture'}]}))
+            app = build / 'test-app'
+            app.write_text('fixture executable')
+            registered = {'tests': [{'name': 'test-a', 'command': [str(app)],
+                'properties': [{'name': 'LABELS', 'value': ['native-udp']}]}]}
+
+            def run_ctest(command, stdout, stderr):
+                junit = Path(command[command.index('--output-junit') + 1])
+                junit.write_text('<testsuite><testcase name="test-a"/></testsuite>')
+                stdout.write('fake ctest passed\n')
+                return SimpleNamespace(returncode=0)
+
+            for suffix in ('.xml', '.log'):
+                with self.subTest(suffix=suffix):
+                    report_path = root / ('report' + suffix)
+                    with mock.patch.object(sys, 'argv', [
+                            str(Path(validator.__file__)), '--build-dir', str(build),
+                            '--matrix', str(matrix), '--report', str(report_path)]), \
+                         mock.patch.object(validator.subprocess, 'check_output',
+                                           return_value=json.dumps(registered)), \
+                         mock.patch.object(validator.subprocess, 'run', side_effect=run_ctest):
+                        self.assertEqual(validator.main(), 0)
+                    report = json.loads(report_path.read_text())
+                    junit_path, log_path = Path(report['junit']), Path(report['log'])
+                    self.assertEqual(len({report_path.resolve(), junit_path.resolve(), log_path.resolve()}), 3)
+                    self.assertEqual(json.loads(report_path.read_text())['tests'], {'test-a': 'passed'})
+                    self.assertIn('<testcase name="test-a"/>', junit_path.read_text())
+                    self.assertIn('fake ctest passed', log_path.read_text())
+                    self.assertIn('build/test-app', report['test_artifacts_sha256'])
 
     def test_skips_missing_and_failures_do_not_pass(self):
         with tempfile.TemporaryDirectory() as directory:
