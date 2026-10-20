@@ -245,6 +245,13 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
             --probe "$<TARGET_FILE:ker-startup-failure-probe>")
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-vip-addresses-test tests/posix/fstack-vip-addresses.c)
+    target_compile_options(ker-vip-addresses-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-vip-addresses
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/vip-addresses.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-vip-addresses-test>")
+    set_tests_properties(native-fstack-vip-addresses PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-ecn-test tests/posix/fstack-tcp-ecn.c)
     target_compile_options(ker-posix-fstack-ecn-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-ecn COMMAND ${ker_native_test_command}

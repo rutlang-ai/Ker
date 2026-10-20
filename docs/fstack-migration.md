@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 114 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 116 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 16 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 240 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 238 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -71,7 +71,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 11 | 2 | 83 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 13 | 2 | 81 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 1 | 61 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -299,3 +299,13 @@ ENOMEM 与真实 EMFILE 回滚、64 次创建/释放后描述符余额。
 在 `/proc` 确认线程阻塞于实际 ppoll 后验证 EINTR 重试与重复停止唤醒，先 join 再释放。
 这些是适配层回调测试，不启动或验证原始 Linux 协议，不声明 FreeBSD softc/ifp、
 `lkl_netdev_add/remove` 注册或 NULL context mbuf 所有权兼容；对应后者用例仍保留缺口。
+
+### IPv4 VIP/附加地址
+
+`native-fstack-vip-addresses` 迁移 `test_ff_load_config_with_vip_addr` 和
+`test_port_cfg_handler_addr_parse`，通过 Ker 的 typed INI/CLI 配置安装主 IPv4 与 VIP。
+生产 constructor 调用未修改的 LKL 地址接口向原始 Linux 增加地址，主地址保留。
+真实 net_tap 下分别验证 INI 列表与 CLI 整体替换，读取实际地址/掩码并从独立宿主连接
+主地址及两个 VIP；反向连接显式绑定各 VIP，检查宿主观察的源地址、原生 TCP 计数和资源清理。
+配置检查覆盖重复/非法地址与 32 项上限；ambient VIP 设置不能改变 launcher 的配置。
+这是地址配置场景适配，F-Stack 结构布局、VLAN VIP、VRRP 和故障切换仍未实现或验证。
