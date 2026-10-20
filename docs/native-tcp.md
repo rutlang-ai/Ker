@@ -379,3 +379,10 @@ constructor 在私有内核启动后，将宿主 `CLOCK_REALTIME` 的 Unix epoch
 这一操作只设置私有内核的实时时钟；协议定时器继续使用单调 clocksource，不设置宿主时钟。
 宿主采样失败或原始 Linux 拒绝 settime 时，启动返回基础设施错误 125；不使用失败采样中的时间值。
 `native-fstack-realtime` 通过实际同步函数验证 epoch、前进、单调时钟隔离和错误后的恢复。
+
+### Worker 排空时钟错误
+
+worker 排空仍以宿主 `CLOCK_MONOTONIC` 纳秒计算 5ms 空闲窗口及 500ms 上限。
+采样失败或采样值无法表示为有符号纳秒时，打印 `ker: worker monotonic clock`，
+返回非零状态，并执行正常的 capture、mbuf、ethdev、日志及 EAL 清理；不使用失败读取中的时间值。
+这不改变原始 Linux 协议定时器，也不引入 TSC 频率换算或新的应用 API。

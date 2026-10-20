@@ -279,3 +279,6 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 直接运行真实 Linux RNG，覆盖宿主熵注入、非阻塞读取、失败和短读/EINTR、重复种子注入及私有临时节点清理；需 `KER_WITH_NATIVE_TCP=ON`。
 
 `native-fstack-realtime` 对应 `test_ff_clock_gettime_realtime`，使用真实 Linux 校验启动同步的 epoch、纳秒、前进和单调时钟隔离，并注入宿主/原生错误验证失败传播与恢复。
+
+`native-fstack-worker-clock` 对应 `test_ff_get_tsc_ns_basic` 的单调纳秒场景，测试实际 worker 适配器的真实时钟前进、换算边界和失败传播。
+`native-fstack-worker-clock-interop` 在真实 DPDK net_tap worker READY 后注入一次 EIO，检查失败退出及 mbuf/EAL 清理；不改变协议定时器，不声称 TSC API 等价。

@@ -49,6 +49,17 @@
     }
   },
   "cases": {
+    "native-fstack-worker-clock": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_get_tsc_ns_basic"
+      ],
+      "ker_ctests": [
+        "native-fstack-worker-clock",
+        "native-fstack-worker-clock-interop"
+      ],
+      "adaptation": "Use the production DPDK worker monotonic-nanosecond adapter. Unwrapped host CLOCK_MONOTONIC samples are positive and advance across a real sleep. Test-only wrapping additionally checks exact seconds/nanoseconds conversion, INT64_MAX bounds, invalid samples, EIO, unchanged output on failure and recovery. A real net_tap worker in a private namespace drains successfully with the host clock, then a second worker receives one injected CLOCK_MONOTONIC EIO after READY and before control-channel drain. It must report nonzero status with a clock diagnostic, emit exactly one DONE with zero outstanding mbufs and call actual rte_eal_cleanup successfully. This adapts the upstream positive/non-regressing nanosecond scenario; no CPU TSC/frequency conversion or ff_get_tsc_ns ABI equivalence is claimed. Kernel protocol clocks and upstream implementations are unchanged."
+    },
     "native-fstack-entropy": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [

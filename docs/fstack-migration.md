@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 110 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 111 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 15 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 245 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 244 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -73,7 +73,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 11 | 2 | 83 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
-| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 2 | 1 | 64 | 0 | 0 |
+| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 3 | 1 | 63 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
@@ -268,3 +268,13 @@ CPU 是否可用及 DPDK 构建允许的最大 lcore ID 仍由原始 EAL 校验�
 先把私有内核时间设为旧的 2000 年 epoch，再验证同步后处于宿主前后采样区间、秒/纳秒有效且延迟后前进。
 同步过程中原生单调时钟的前进量落在宿主单调时间前后采样窗口内，不随实时时钟跳变；宿主 EIO 和原生 EINVAL 均保持旧 epoch，仅返回错误。
 恢复及重复同步同样验证。所有 settime 仅作用于私有 Linux；FreeBSD 缓存时间和 NULL 输出参数场景仍保留缺口。
+
+### Worker 单调纳秒时钟
+
+`native-fstack-worker-clock` 迁移 `test_ff_get_tsc_ns_basic` 的正值、非回退纳秒合同，
+直接测试生产 worker 使用的宿主 `CLOCK_MONOTONIC` 适配器；额外验证精确换算、
+有符号纳秒上界、无效采样、EIO、失败不写输出及恢复。
+`native-fstack-worker-clock-interop` 运行真实 net_tap worker：正常控制通道停止能完成排空；
+READY 后注入一次单调时钟 EIO 时必须失败退出，并记录零 outstanding、成功 EAL cleanup。
+F-Stack 的 CPU TSC/频率换算和 `ff_get_tsc_ns` ABI 没有移植，不将此项当作实现等价。
+原始 Linux 的协议时钟不变；这里只修复 worker 排空超时读取失败后的资源清理。
