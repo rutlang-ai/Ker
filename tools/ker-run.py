@@ -46,7 +46,17 @@ def vip_addresses(text):
     return [ipaddress.IPv4Interface(item.strip()) for item in text.split(',')] if text.strip() else []
 
 
-CONFIG_DEFAULTS = dict(vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+def sysctl_setting(text):
+    key, separator, value = text.partition('=')
+    key, value = key.strip(), value.strip()
+    if not separator or len(key) > 128 or not re.fullmatch(r'net(?:\.[A-Za-z0-9_-]+){2,}', key):
+        raise ValueError('sysctl requires a dotted Linux net.* key and =VALUE')
+    if not value or len(value.encode('utf-8')) > 256 or any(c in value for c in '\r\n\0'):
+        raise ValueError('sysctl value must be 1..256 UTF-8 bytes without line breaks or NUL')
+    return key, value
+
+
+CONFIG_DEFAULTS = dict(sysctls=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -72,6 +82,10 @@ def read_configuration(stream, directory, source='<stream>'):
         raise ValueError('DEFAULT inheritance is unsupported')
     values = {}
     for section in ini.sections():
+        if section == 'sysctl':
+            values['sysctls'] = [sysctl_setting(name + '=' + text)
+                                 for name, text in ini.items(section, raw=True)]
+            continue
         if section not in CONFIG_SCHEMA:
             raise ValueError(f'unknown section [{section}]')
         for name, text in ini.items(section, raw=True):
@@ -104,6 +118,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
+    parser.add_argument('--sysctl', dest='sysctls', action='append', type=sysctl_setting,
+        help='Linux net.* KEY=VALUE; repeat up to 32 keys; overrides matching INI [sysctl] keys')
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--lcore-mask', help='nonzero hexadecimal DPDK lcore mask; conflicts with EAL -c/-l/--lcores')
     parser.add_argument('--port', help='DPDK ethdev name')
@@ -128,7 +144,10 @@ def parse_arguments(argv=None):
             values.update(load_configuration(supplied.config))
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
             parser.error(f'{supplied.config}: {error}')
+    sysctls = dict(values['sysctls'])
+    sysctls.update(getattr(supplied, 'sysctls', ()))
     values.update(vars(supplied))
+    values['sysctls'] = sysctls
     args = argparse.Namespace(**values)
     missing = [name for name in ('address', 'port', 'eal') if getattr(args, name) is None]
     if missing:
@@ -137,6 +156,10 @@ def parse_arguments(argv=None):
         args.command.pop(0)
     if not args.command:
         parser.error('an application command is required after --')
+    if len(args.sysctls) > 32:
+        parser.error('--sysctl supports at most 32 distinct keys')
+    if args.tcp_ecn is not None and 'net.ipv4.tcp_ecn' in args.sysctls:
+        parser.error('--tcp-ecn conflicts with sysctl net.ipv4.tcp_ecn')
     args.vip_addresses = list(args.vip_addresses)
     if len(args.vip_addresses) > 32:
         parser.error('--vip-address supports at most 32 additional addresses')
@@ -231,6 +254,9 @@ def main():
         env.pop('KER_NATIVE_VIP_ADDRESSES', None)
         if args.vip_addresses:
             env['KER_NATIVE_VIP_ADDRESSES'] = ','.join(map(str, args.vip_addresses))
+        env.pop('KER_NATIVE_SYSCTLS', None)
+        if args.sysctls:
+            env['KER_NATIVE_SYSCTLS'] = '\n'.join(key + '=' + value for key, value in args.sysctls.items())
         env.pop('KER_NATIVE_TCP_ECN', None)
         if args.tcp_ecn is not None:
             env['KER_NATIVE_TCP_ECN'] = str(TCP_ECN[args.tcp_ecn])

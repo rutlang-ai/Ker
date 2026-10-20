@@ -49,6 +49,17 @@
     }
   },
   "cases": {
+    "native-fstack-network-sysctl": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_freebsd_boot_multi_entries"
+      ],
+      "ker_ctests": [
+        "native-fstack-network-sysctl",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Partial adaptation only: Ker [sysctl] and repeatable --sysctl accept explicit Linux net.* names, merge CLI by key, bound entries/key/value sizes, reject malformed paths and conflicting tcp_ecn options before setup. Production constructor writes private original Linux procfs before native READY; Linux validates values, unknown keys and invalid values fail125 before main. Actual DPDK net_tap startup tests five socket defaults (IP_TTL, TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT, TCP_SYNCNT), CLI replacement retaining the other four, omission preserving pinned Linux defaults despite inherited KER_NATIVE_SYSCTLS, and unknown-key/invalid-value failure cleanup. Host namespace sysctl files remain unchanged; require actual successful EAL cleanup and zero outstanding buffers. The upstream fixture combines boot and five sysctl entries; this covers multiple effective Linux network settings, not its FreeBSD names, boot hz/physmem/fd_reserve/mem_size/panicstr or internal list layout. No upstream or protocol implementation changes."
+    },
     "native-fstack-vip-addresses": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
