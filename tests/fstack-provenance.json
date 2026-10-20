@@ -59,6 +59,16 @@
       ],
       "adaptation": "Real original Linux boot with actual Ker fd-table.c, no mocked native close. Establish, look up, replace and clear host-placeholder/native-socket mappings; verify real socket types, host close-on-exec flags, native descriptor release and host reservation release. Retained references preserve the replaced UDP object until put; a duplicated native TCP descriptor survives clearing its sibling. Host dup replacement clears the native association. Invalid lookups/closes are rejected safely; out-of-range fixed export reports EMFILE and consumes its native input. Ker uses NULL/errno and ownership-taking exports instead of F-Stack zero-sentinel/no-op setters; no FreeBSD offset encoding ABI claim."
     },
+    "native-fstack-errno": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_os_errno_mapping"
+      ],
+      "ker_ctests": [
+        "native-fstack-errno"
+      ],
+      "adaptation": "All 81 symbolic errors in the pinned source table are checked using original LKL Linux UAPI inputs and host errno expectations, plus unknown error99999 passthrough. The production inline conversion shared by POSIX socket wrappers and fd-table close is tested directly: negative Linux returns become -1/host errno, while zero, positive and LONG_MAX successes preserve errno and value. Real original Linux boot additionally checks EBADF, EINVAL, EAFNOSUPPORT and ENOTCONN from actual syscalls and a successful socket/getpid/close sequence. Linux values share the host ABI; this adapts the error-translation scenario without accepting FreeBSD numeric errno inputs or changing upstream code."
+    },
     "native-fstack-tcp-ecn": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

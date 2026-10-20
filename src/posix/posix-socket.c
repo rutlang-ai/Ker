@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "syscall-result.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -15,23 +16,18 @@
 #include <unistd.h>
 #include <lkl.h>
 
-static long result(long value)
-{
-    if (value < 0) { errno = (int)-value; return -1; }
-    return value;
-}
 static long sent(struct ker_fd *entry, long value, int flags)
 {
     ker_fd_put(entry);
     if (value == -EPIPE && !(flags & MSG_NOSIGNAL)) pthread_kill(pthread_self(), SIGPIPE);
-    return result(value);
+    return ker_native_result(value);
 }
 int socket(int domain, int type, int protocol)
 {
     if (domain != AF_INET && domain != AF_INET6) return syscall(SYS_socket, domain, type, protocol);
     if (!ker_native_ready()) { errno = ENETDOWN; return -1; }
     long fd = lkl_sys_socket(domain, type, protocol);
-    if (fd < 0) return result(fd);
+    if (fd < 0) return ker_native_result(fd);
     return ker_fd_export(fd, KER_FD_SOCKET, -1, type & SOCK_CLOEXEC, 0, -1);
 }
 int close(int fd) { return ker_fd_close(fd); }
@@ -44,7 +40,7 @@ int close(int fd) { return ker_fd_close(fd); }
         struct ker_fd *entry = ker_fd_get(fd); \
         if (!entry) return syscall(SYS_##name, ARGS host_args); \
         long call_result = lkl_sys_##name native_args; \
-        ker_fd_put(entry); return result(call_result); \
+        ker_fd_put(entry); return ker_native_result(call_result); \
     }
 FD_CALL(bind, (int fd, const struct sockaddr *address, socklen_t length),
     (fd, address, length), (entry->native, (void *)address, length))
@@ -67,7 +63,7 @@ int accept4(int fd, struct sockaddr *address, socklen_t *length, int flags)
     if (!entry) return syscall(SYS_accept4, fd, address, length, flags);
     long child = lkl_sys_accept4(entry->native, (void *)address, (void *)length, flags);
     ker_fd_put(entry);
-    if (child < 0) return result(child);
+    if (child < 0) return ker_native_result(child);
     return ker_fd_export(child, KER_FD_SOCKET, -1, flags & SOCK_CLOEXEC, 0, -1);
 }
 int accept(int fd, struct sockaddr *address, socklen_t *length)
@@ -122,16 +118,16 @@ int recvmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags, st
     if (!entry) return syscall(SYS_recvmmsg, fd, messages, count, flags, timeout);
     long value = lkl_sys_recvmmsg(entry->native, (void *)messages, count, flags, (void *)timeout);
     ker_fd_put(entry);
-    return result(value);
+    return ker_native_result(value);
 }
 static int duplicate(struct ker_fd *entry, int flags, int minimum, int fixed)
 {
     long native = lkl_sys_dup(entry->native);
     int host = -1;
-    if (native < 0) return result(native);
+    if (native < 0) return ker_native_result(native);
     if (flags & O_CLOEXEC) {
         long error = lkl_sys_fcntl(native, F_SETFD, FD_CLOEXEC);
-        if (error < 0) { lkl_sys_close(native); return result(error); }
+        if (error < 0) { lkl_sys_close(native); return ker_native_result(error); }
     }
     if (entry->kind == KER_FD_EPOLL) {
         host = ker_fd_host_dup(entry);
@@ -192,7 +188,7 @@ int fcntl(int fd, int command, ...)
     } else if (command == F_DUPFD || command == F_DUPFD_CLOEXEC) {
         if (argument >= KER_FD_LIMIT) { errno = EINVAL; value = -1; }
         else value = duplicate(entry, command == F_DUPFD_CLOEXEC ? O_CLOEXEC : 0, (int)argument, -1);
-    } else value = result(lkl_sys_fcntl(entry->native, command, argument));
+    } else value = ker_native_result(lkl_sys_fcntl(entry->native, command, argument));
     ker_fd_put(entry);
     return value;
 }
@@ -217,7 +213,7 @@ int ioctl(int fd, unsigned long request, ...)
     }
     long value = lkl_sys_ioctl(entry->native, request, argument);
     ker_fd_put(entry);
-    return result(value);
+    return ker_native_result(value);
 }
 
 int sockatmark(int fd)

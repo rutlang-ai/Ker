@@ -2993,9 +2993,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_os_errno_mapping",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All 81 symbolic errors in the pinned source table are checked using original LKL Linux UAPI inputs and host errno expectations, plus unknown error99999 passthrough. The production inline conversion shared by POSIX socket wrappers and fd-table close is tested directly: negative Linux returns become -1/host errno, while zero, positive and LONG_MAX successes preserve errno and value. Real original Linux boot additionally checks EBADF, EINVAL, EAFNOSUPPORT and ENOTCONN from actual syscalls and a successful socket/getpid/close sequence. Linux values share the host ABI; this adapts the error-translation scenario without accepting FreeBSD numeric errno inputs or changing upstream code.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-errno",
+          "provenance_case": "native-fstack-errno"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_ns_advances",
