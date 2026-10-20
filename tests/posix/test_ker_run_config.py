@@ -92,6 +92,23 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(args.all_multicast or args.pcap_nsec)
             self.assertEqual(args.command, ['/bin/program', '--config', 'application.ini'])
 
+    def test_eal_is_validated_after_cli_overrides_and_tokens_are_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.ini'
+            path.write_text('[network]\naddress=192.0.2.2/24\n[dpdk]\nport=file-port\n'
+                            'eal=--file-prefix="unterminated\n')
+            with self.assertRaises(SystemExit) as caught:
+                launcher.parse_arguments(['--config', str(path), '--', '/bin/true'])
+            self.assertEqual(caught.exception.code, 2)
+
+            args = launcher.parse_arguments(['--config', str(path),
+                '--eal=--file-prefix="prefix with spaces" --no-huge', '--', '/bin/true'])
+            self.assertEqual(args.eal_args, ['--file-prefix=prefix with spaces', '--no-huge'])
+
+            args = launcher.parse_arguments(['--address', '192.0.2.2/24', '--port', 'cli-port',
+                '--eal=--file-prefix="prefix with spaces"', '--', '/bin/true'])
+            self.assertEqual(args.eal_args, ['--file-prefix=prefix with spaces'])
+
     def test_bad_configuration_is_rejected_before_resolving_or_starting_workers(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bad.ini'
@@ -105,6 +122,27 @@ class ConfigTests(unittest.TestCase):
                     capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertNotIn('Traceback', result.stderr)
+
+            path.write_text('[network]\naddress=192.0.2.2/24\n[dpdk]\nport=net_tap0\n'
+                            'eal=--file-prefix="unterminated\n')
+            result = subprocess.run([sys.executable, str(SOURCE), '--config', str(path),
+                '--library', str(Path(directory) / 'nonexistent-library'), '--io-worker',
+                str(Path(directory) / 'nonexistent-worker'), '--', '/bin/true'],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn('--eal:', result.stderr)
+            self.assertNotIn('nonexistent-library', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
+            result = subprocess.run([sys.executable, str(SOURCE), '--address', '192.0.2.2/24',
+                '--port', 'net_tap0', '--eal=--file-prefix="unterminated', '--library',
+                str(Path(directory) / 'nonexistent-library'), '--io-worker',
+                str(Path(directory) / 'nonexistent-worker'), '--', '/bin/true'],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn('--eal:', result.stderr)
+            self.assertNotIn('nonexistent-library', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
 
 
 if __name__ == '__main__':

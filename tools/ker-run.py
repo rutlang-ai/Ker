@@ -127,6 +127,10 @@ def parse_arguments(argv=None):
         parser.error('PCAP snaplen and max-bytes must be in 1..2147483647')
     if args.log_level is not None and not 1 <= args.log_level <= 8:
         parser.error('--log-level must be in 1..8')
+    try:
+        args.eal_args = shlex.split(args.eal)
+    except ValueError as error:
+        parser.error(f'--eal: {error}')
     return args
 
 
@@ -159,7 +163,7 @@ def main():
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, *log_options, '--', *shlex.split(args.eal)],
+            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)
