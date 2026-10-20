@@ -252,3 +252,7 @@ F-Stack run/stop 回调 ABI、内核启动/接口激活的定点故障仍未覆�
 宿主失败路径：`ctest --test-dir build -R '^native-fstack-host-(failure-.*|runtime)$' --output-on-failure`。
 同一时钟/panic 适配器分别以断言开启和 `NDEBUG` 编译，真实时钟正常前进；注入时钟失败及 panic 均须 SIGABRT。
 原生内核启动/关闭测试确认使用安装后的实际时钟回调，上游源码保持不变。
+
+空 UDP 可读性：`ctest --test-dir build -R '^native-fstack-(epoll|udp-interop)$' --output-on-failure`。
+前者对照宿主/原生内核，覆盖 IPv4/IPv6 回环、LT/ET/ONESHOT 和三种 wait 接口；
+后者通过独立 IPv4 宿主验证包含空报文的流量均无 HUP/EOF。

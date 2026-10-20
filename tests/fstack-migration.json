@@ -2864,9 +2864,14 @@
     {
       "id": "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The upstream case asserts a synthetic FreeBSD EVFILT_READ translation branch (data=0, no EV_EOF). Ker's native epoll test exercises Linux epoll readiness and does not produce or validate this kqueue event; the UDP checksum test is unrelated. No exact Ker adaptation is established.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real IPv4/IPv6 empty UDP datagrams deliver EPOLLIN without HUP/EOF on host and imported Linux; FIONREAD zero, PEEK, consumption, subsequent datagrams, trigger modes and wait variants are verified.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-epoll",
+          "provenance_case": "native-fstack-empty-datagram-readiness"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_malloc_normal",

@@ -1,5 +1,5 @@
 /* Scenario adaptation of pinned F-Stack test_ff_epoll.c; see provenance.
- * No ff_*, kqueue, mocks, or private Ker interfaces: real POSIX TCP only. */
+ * No ff_*, kqueue, mocks, or private Ker interfaces: real POSIX TCP and UDP only. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -254,6 +255,87 @@ static void null_wait_recovery(void)
     CHECK(close(pipefd[1]) == 0);
     finish(c);
 }
+/* An empty datagram is readable even though FIONREAD is zero. It is not
+ * stream EOF: PEEK leaves it queued, receiving consumes it, and the socket
+ * must still receive the following nonempty datagram. */
+static int datagram_wait(int ep, struct epoll_event *out, int variant, int timeout)
+{
+    if (variant == 0) return epoll_wait(ep, out, 1, timeout);
+    if (variant == 1) return epoll_pwait(ep, out, 1, timeout, NULL);
+    struct timespec duration = {.tv_sec = timeout / 1000,
+        .tv_nsec = (timeout % 1000) * 1000000L};
+    return epoll_pwait2(ep, out, 1, &duration, NULL);
+}
+static void datagram_event(int ep, int variant, int timeout, uint64_t tag)
+{
+    struct epoll_event out = {0};
+    CHECK(datagram_wait(ep, &out, variant, timeout) == 1);
+    CHECK(out.events & EPOLLIN);
+    CHECK(!(out.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)));
+    CHECK(out.data.u64 == tag);
+}
+static void empty_datagram_readiness(void)
+{
+    const uint32_t modes[] = {0, EPOLLET, EPOLLONESHOT};
+    for (int family_index = 0; family_index < 2; ++family_index)
+    for (size_t mode = 0; mode < sizeof(modes) / sizeof(modes[0]); ++mode)
+    for (int variant = 0; variant < 3; ++variant) {
+        int family = family_index ? AF_INET6 : AF_INET;
+        int rx = socket(family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        int tx = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        CHECK(rx >= 0 && tx >= 0);
+        struct sockaddr_storage address = {0};
+        socklen_t length;
+        if (family == AF_INET) {
+            struct sockaddr_in value = {.sin_family = AF_INET,
+                .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+            memcpy(&address, &value, sizeof(value)); length = sizeof(value);
+        } else {
+            struct sockaddr_in6 value = {.sin6_family = AF_INET6,
+                .sin6_addr = IN6ADDR_LOOPBACK_INIT};
+            memcpy(&address, &value, sizeof(value)); length = sizeof(value);
+        }
+        CHECK(bind(rx, (void *)&address, length) == 0);
+        CHECK(getsockname(rx, (void *)&address, &length) == 0);
+        int ep = epoll_create1(EPOLL_CLOEXEC); CHECK(ep >= 0);
+        uint64_t tag = UINT64_C(0xfedcba9800000000) + family_index * 100 + mode * 10 + variant;
+        struct epoll_event registration = {.events = EPOLLIN | EPOLLRDHUP | modes[mode],
+            .data.u64 = tag};
+        CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, rx, &registration) == 0);
+        struct epoll_event out;
+        CHECK(datagram_wait(ep, &out, variant, 0) == 0);
+        char byte = 'z';
+        CHECK(sendto(tx, &byte, 0, 0, (void *)&address, length) == 0);
+        datagram_event(ep, variant, 2000, tag);
+        int available = -1;
+        CHECK(ioctl(rx, FIONREAD, &available) == 0 && available == 0);
+        CHECK(recv(rx, &byte, 1, MSG_PEEK | MSG_DONTWAIT) == 0);
+        if (mode == 0) datagram_event(ep, variant, 0, tag);
+        else CHECK(datagram_wait(ep, &out, variant, 0) == 0);
+        if (modes[mode] & EPOLLONESHOT) {
+            registration.data.u64 = ++tag;
+            CHECK(epoll_ctl(ep, EPOLL_CTL_MOD, rx, &registration) == 0);
+            datagram_event(ep, variant, 2000, tag);
+            CHECK(datagram_wait(ep, &out, variant, 0) == 0);
+        }
+        CHECK(recv(rx, &byte, 1, MSG_DONTWAIT) == 0);
+        EXPECT_ERROR(recv(rx, &byte, 1, MSG_DONTWAIT), EAGAIN);
+        CHECK(datagram_wait(ep, &out, variant, 0) == 0);
+        if (modes[mode] & EPOLLONESHOT) {
+            registration.data.u64 = ++tag;
+            CHECK(epoll_ctl(ep, EPOLL_CTL_MOD, rx, &registration) == 0);
+        }
+        byte = 'z';
+        CHECK(sendto(tx, &byte, 1, 0, (void *)&address, length) == 1);
+        datagram_event(ep, variant, 2000, tag);
+        CHECK(ioctl(rx, FIONREAD, &available) == 0 && available == 1);
+        byte = 0;
+        CHECK(recv(rx, &byte, 1, MSG_DONTWAIT) == 1 && byte == 'z');
+        EXPECT_ERROR(recv(rx, &byte, 1, MSG_DONTWAIT), EAGAIN);
+        CHECK(datagram_wait(ep, &out, variant, 0) == 0);
+        CHECK(close(ep) == 0 && close(rx) == 0 && close(tx) == 0);
+    }
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
@@ -267,6 +349,7 @@ int main(void)
         {"write-only-readiness-and-modify", write_only},
         {"half-close-buffered-data-and-eof", eof},
         {"reset-error-and-hangup", reset},
+        {"empty-UDP-datagram-IPv4-IPv6-LT-ET-ONESHOT-wait-variants", empty_datagram_readiness},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run();

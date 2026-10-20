@@ -42,6 +42,7 @@ static void ready(int ep)
     int result;
     do {result = epoll_wait(ep, &event, 1, 5000);} while (result < 0 && errno == EINTR);
     CHECK(result == 1 && (event.events & EPOLLIN) && event.data.u64 == 0x554450);
+    CHECK(!(event.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)));
 }
 static void writable(int fd)
 {
