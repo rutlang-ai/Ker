@@ -3805,16 +3805,27 @@
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_freebsd_init",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A host realtime EIO makes the actual original-Linux constructor fail initialization before native READY and application main. The real DPDK worker still drains and completes EAL cleanup. This adapts kernel-runtime initialization failure ordering, not the FreeBSD API or exit code.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-failures",
+          "provenance_case": "native-fstack-startup-failures"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_if_up",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Actual original Linux rejects an off-subnet gateway during native network bring-up; the application is not executed and the real DPDK worker cleans up. An unknown worker ethdev also fails before native startup and preserves its cleanup snapshot.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-failures",
+          "provenance_case": "native-fstack-startup-failures"
+        }
+      ],
+      "remaining": "The direct negative-return path from lkl_if_up is not injected or exercised. F-Stack ff_dpdk_if_up and its precise FreeBSD-to-DPDK stage ordering are not Ker APIs; route rejection is related bring-up coverage, not a full equivalent."
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",

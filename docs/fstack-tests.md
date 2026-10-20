@@ -282,3 +282,6 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 
 `native-fstack-worker-clock` 对应 `test_ff_get_tsc_ns_basic` 的单调纳秒场景，测试实际 worker 适配器的真实时钟前进、换算边界和失败传播。
 `native-fstack-worker-clock-interop` 在真实 DPDK net_tap worker READY 后注入一次 EIO，检查失败退出及 mbuf/EAL 清理；不改变协议定时器，不声称 TSC API 等价。
+
+`native-fstack-startup-failures` 验证正常启动、原生 realtime EIO、原始 Linux 网关拒绝和 worker ethdev 查找失败。
+所有失败均需返回 125、阻止应用 main、回收 worker mbuf 并完成真实 EAL cleanup；直接接口激活失败仍是未完整覆盖的边界。

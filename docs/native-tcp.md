@@ -386,3 +386,9 @@ worker 排空仍以宿主 `CLOCK_MONOTONIC` 纳秒计算 5ms 空闲窗口及 500
 采样失败或采样值无法表示为有符号纳秒时，打印 `ker: worker monotonic clock`，
 返回非零状态，并执行正常的 capture、mbuf、ethdev、日志及 EAL 清理；不使用失败读取中的时间值。
 这不改变原始 Linux 协议定时器，也不引入 TSC 频率换算或新的应用 API。
+
+### READY 前的 worker 失败统计
+
+若 worker 已完成 EAL 初始化但尚未 READY 就失败，仍可能输出 `KER_IO_DONE` 清理快照。
+launcher 保留这一首行供 `--stats` 输出（`io` 为 null，因为尚未收到 READY），避免在读取首行后丢失资源清理证据。
+启动仍返回基础设施错误 125，不执行应用；原生初始化/网络配置失败时也会停止并回收独立 worker。

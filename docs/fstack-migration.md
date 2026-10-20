@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 111 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 15 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 244 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 112 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 16 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 242 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -79,7 +79,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 20 | 0 | 14 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
-| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 3 | 1 | 2 | 0 | 0 |
+| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 2 | 1 | 0 | 0 |
@@ -278,3 +278,13 @@ CPU 是否可用及 DPDK 构建允许的最大 lcore ID 仍由原始 EAL 校验�
 READY 后注入一次单调时钟 EIO 时必须失败退出，并记录零 outstanding、成功 EAL cleanup。
 F-Stack 的 CPU TSC/频率换算和 `ff_get_tsc_ns` ABI 没有移植，不将此项当作实现等价。
 原始 Linux 的协议时钟不变；这里只修复 worker 排空超时读取失败后的资源清理。
+
+### 启动失败顺序与清理证据
+
+`native-fstack-startup-failures` 运行真实 launcher、原生 preload/guard 和 DPDK net_tap。
+原生内核启动后的宿主 realtime EIO 必须在 native READY 和应用 main 前终止初始化，
+迁移 `test_ff_init_fail_freebsd_init` 的初始化失败顺序场景；不是 FreeBSD 初始化 API 等价。
+原始 Linux 拒绝非本子网网关时也不能执行应用，但这只是 `test_ff_init_fail_dpdk_if_up`
+的部分覆盖，直接 `lkl_if_up` 错误及 F-Stack 精确阶段顺序仍未测试。
+另外测试未知 ethdev 的提前失败，保留其首行 DONE 快照供 `--stats` 使用。
+正常及失败路径均检查实际 EAL cleanup 成功、零 outstanding，以及应用执行标记。
