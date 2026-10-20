@@ -141,6 +141,7 @@ def main():
     worker = app = None
     exit_code = 125
     stats = None
+    info = None
     startup_status = b""
     infrastructure_failure = False
     preserve_signal = False
@@ -263,6 +264,7 @@ def main():
             if worker.returncode:
                 infrastructure_failure = True
             if stats is not None:
+                stats['io'] = info
                 for line in startup_status.splitlines():
                     if line.startswith(b'KER_NATIVE_STATS '):
                         stats['native'] = json.loads(line.removeprefix(b'KER_NATIVE_STATS '))

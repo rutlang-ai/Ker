@@ -1076,6 +1076,29 @@ def inside(args):
             launcher = [sys.executable, str(args.launcher), '--config', str(config_path), '--port', 'net_tap0']
         if not args.installed_defaults:
             launcher += ['--library', str(args.library), '--io-worker', str(args.io_worker)]
+        if args.startup_app:
+            marker = work / 'application-started'
+            startup_stats = work / 'startup.json'
+            observed = client([*launcher, '--stats', str(startup_stats), '--',
+                str(args.startup_app), str(marker)], env)
+            if not marker.exists() or 'native interfaces ready' not in observed:
+                raise RuntimeError('native startup probe did not execute')
+            marker.unlink()
+            stats = json.loads(startup_stats.read_text())
+            io = stats['io']
+            if (io['port_count'] != 1 or io['port_id'] != 0 or io['socket_id'] < -1
+                    or io['process_type'] != 'primary' or io['link_up'] is not True
+                    or io['mtu'] != 1500 or stats['outstanding'] != 0 or 'native' not in stats):
+                raise RuntimeError('invalid real startup diagnostics: ' + str(stats))
+            for options, expected, diagnostic in [
+                    (['--eal=--invalid-ker-eal-option'], 125, 'unknown argument --invalid-ker-eal-option'),
+                    (['--port', 'missing-ethdev'], 125, 'unknown ethdev'),
+                    (['--config', str(work / 'missing.ini')], 2, 'missing.ini')]:
+                rejected = subprocess.run([*launcher, *options, '--', str(args.startup_app), str(marker)],
+                    env=env, capture_output=True, text=True, timeout=30)
+                if rejected.returncode != expected or marker.exists() or diagnostic not in rejected.stderr:
+                    raise RuntimeError('startup failure reached app or wrong failure: ' + rejected.stderr)
+            print('native startup and pre-application failures verified', flush=True)
         app = str(args.app)
         with (work / 'server.log').open('w+') as log:
             try:
@@ -1110,6 +1133,8 @@ def inside(args):
                     stats = json.loads(stats_path.read_text())
                     if not (stats['tx'] > 0 and stats['rx'] > 0 and stats['outstanding'] == 0):
                         raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
+                    if args.startup_app and (stats['io']['port_count'] != 1 or stats['io']['process_type'] != 'primary'):
+                        raise RuntimeError('traffic worker startup diagnostics missing')
                     if args.capture:
                         verify_capture(capture_dir, stats)
                     if args.launcher_config:
@@ -1275,6 +1300,7 @@ def main():
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--worker-log', action='store_true')
     parser.add_argument('--launcher-config', action='store_true')
+    parser.add_argument('--startup-app', type=Path)
     parser.add_argument('--log-lifetime-probe', type=Path)
     parser.add_argument('--faults', action='store_true')
     parser.add_argument('--zero-window', action='store_true')

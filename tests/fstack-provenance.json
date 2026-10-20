@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/unit/test_ff_init.c": {
+      "sha256": "c4893bdadbeb9f39299a5a37e93870ff0bc6e56011ab8e76ddf4bdb614c6382f",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_init.c"
+    },
     "tests/unit/test_ff_ini_parser.c": {
       "sha256": "89116f64b09ad87eefb50b48b71397d0fef7b8c42174e8b4de2f3e300a597da5",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_ini_parser.c"
@@ -41,6 +45,33 @@
     }
   },
   "cases": {
+    "native-fstack-startup-lifecycle-device": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_init_succeeded_with_one_port",
+        "test_eth_dev_socket_id_post_init",
+        "test_ff_get_traffic_post_init",
+        "test_eal_process_type_primary",
+        "test_ff_dpdk_if_up_success"
+      ],
+      "ker_ctests": [
+        "native-fstack-startup-lifecycle"
+      ],
+      "adaptation": "Real net_tap EAL primary process and one available port; READY diagnostics query rte_eth_dev_socket_id and rte_eth_link_get_nowait. A socket in imported Linux queries SIOCGIFCONF/SIOCGIFFLAGS/SIOCGIFMTU, verifying loopback and configured IPv4 interface UP with MTU 1500. Launcher persists worker startup diagnostics and native/worker shutdown counters; active and passive TCP against independent host peers require TX/RX, native opens and zero outstanding mbufs. Traffic query is adapted to shutdown JSON rather than the F-Stack traffic struct/API; kernel protocol behavior comes from original Linux. No FreeBSD interface registration or hardware offload claim."
+    },
+    "native-fstack-startup-lifecycle-init": {
+      "source_file": "tests/unit/test_ff_init.c",
+      "source_case": [
+        "test_ff_init_happy_path",
+        "test_ff_init_fail_load_config",
+        "test_ff_init_fail_dpdk_init",
+        "test_ff_run_and_stop_forward"
+      ],
+      "ker_ctests": [
+        "native-fstack-startup-lifecycle"
+      ],
+      "adaptation": "Actual Ker launcher starts real DPDK worker and imported Linux before application main; app marker and native interface ioctls prove startup, native DONE plus zero outstanding prove shutdown. Missing configuration exits 2; real EAL argument rejection and missing selected ethdev exit 125 without executing the application, instead of F-Stack exit(1). No mocked successful startup, FreeBSD boot failure or native interface activation failure injection. Run/stop mapping remains partial: real worker control-channel stop and native teardown, without the ff_run callback/argument forwarding ABI."
+    },
     "native-fstack-launcher-config": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": [
