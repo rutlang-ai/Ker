@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "syscall-result.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
@@ -78,11 +79,6 @@ long ker_fd_put(struct ker_fd *entry)
     }
     return result;
 }
-static int error(long result)
-{
-    if (result < 0) { errno = (int)-result; return -1; }
-    return (int)result;
-}
 int ker_fd_export(int native, enum ker_fd_kind kind, int host, int flags,
     int minimum, int fixed)
 {
@@ -158,7 +154,7 @@ int ker_fd_close(int fd)
     pthread_mutex_unlock(&mutex);
     long native = ker_fd_put(entry);
     if (host < 0) { errno = saved; return -1; }
-    return error(native);
+    return (int)ker_native_result(native);
 }
 int ker_fd_dup_host(int oldfd, int newfd, int flags)
 {
