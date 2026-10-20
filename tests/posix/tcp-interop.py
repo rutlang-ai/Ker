@@ -993,6 +993,56 @@ def udp_compat(args, launcher, work, env, log):
             print('native F-Stack UDP ' + mode + ' ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def jumbo_mtu(args, launcher, work, env, log):
+    if not args.jumbo_app:
+        return
+    for index, role in enumerate(('host-reference', 'client', 'server')):
+        address = '127.0.0.1' if role == 'host-reference' else ('198.18.0.2' if role == 'server' else '198.18.0.1')
+        port = 27900 + index
+        command = [str(args.jumbo_app)]
+        listen = [*command, 'server', address, str(port)]
+        connect = [*command, 'client', address, str(port)]
+        stats_path = work / ('jumbo-' + role + '.json')
+        capture = work / ('jumbo-pcap-' + role); capture.mkdir()
+        native = [*launcher, '--stats', str(stats_path), '--pcap-dir', str(capture),
+            '--pcap-snaplen', '9014', '--', *command]
+        if role == 'server':
+            listen = [*native, 'server', address, str(port)]
+        elif role == 'client':
+            connect = [*native, 'client', address, str(port)]
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('jumbo peer did not confirm payload')
+        if role == 'host-reference':
+            continue
+        stats = json.loads(stats_path.read_text())
+        if (stats['io']['mtu'] != 9000 or stats['outstanding'] or
+                stats['native']['udp_out_datagrams'] < 4 or stats['native']['udp_in_datagrams'] < 4
+                or stats['native']['ip_frag_ok'] or stats['native']['ip_reasm_ok']):
+            raise RuntimeError('jumbo datagrams missed native path: ' + str(stats))
+        for direction in ('tx', 'rx'):
+            found = False
+            for path in capture.glob('ker-' + direction + '-*.pcap'):
+                data = path.read_bytes()
+                endian = '<' if data[:4] == b'\xd4\xc3\xb2\xa1' else '>'
+                offset = 24
+                while offset < len(data):
+                    _, _, length, original = struct.unpack_from(endian + 'IIII', data, offset)
+                    offset += 16
+                    frame = data[offset:offset + length]; offset += length
+                    if len(frame) >= 34 and frame[12:14] == b'\x08\x00' and frame[23] == 17:
+                        total, fragment = struct.unpack_from('!H2xH', frame, 16)
+                        if total == 9000:
+                            if original != 9014 or length != 9014 or fragment & 0x3fff:
+                                raise RuntimeError('jumbo capture was truncated or fragmented')
+                            found = True
+            if not found:
+                raise RuntimeError('missing actual 9014-byte jumbo frame: ' + direction)
+        print('PASS: actual jumbo Ethernet frames, native UDP and zero outstanding ' + role, flush=True)
+
+
 def verify_capture(directory, stats):
     for direction in ('tx', 'rx'):
         paths = list(directory.glob('ker-' + direction + '-*.pcap'))
@@ -1054,6 +1104,9 @@ def inside(args):
             for device in ['kerlink', 'kerhost']:
                 commands.append(['tc', 'qdisc', 'add', 'dev', device, 'root', 'netem',
                     'delay', '2ms', '1ms', 'loss', '2%', 'reorder', '20%', '50%', 'seed', '42'])
+        if args.jumbo_app:
+            for device in ('lo', 'kerpeer', 'kerhost', 'kerlink'):
+                commands.append(['ip', 'link', 'set', device, 'mtu', '9000'])
         for command in commands:
             subprocess.run(command, check=True, env=env)
         if args.errors_app:
@@ -1099,6 +1152,10 @@ def inside(args):
                 if rejected.returncode != expected or marker.exists() or diagnostic not in rejected.stderr:
                     raise RuntimeError('startup failure reached app or wrong failure: ' + rejected.stderr)
             print('native startup and pre-application failures verified', flush=True)
+        if args.jumbo_app:
+            jumbo_config = work / 'jumbo.ini'
+            jumbo_config.write_text('[network]\nmtu=9000\n')
+            launcher += ['--config', str(jumbo_config)]
         app = str(args.app)
         with (work / 'server.log').open('w+') as log:
             try:
@@ -1251,6 +1308,7 @@ def inside(args):
                 tcp_receive_timeouts(args, launcher, work, env, log)
                 tcp_send_timeouts(args, launcher, work, env, log)
                 tcp_fd_modes(args, launcher, work, env, log)
+                jumbo_mtu(args, launcher, work, env, log)
                 udp_mtu(args, launcher, work, env, log)
                 udp_receive_timeouts(args, launcher, work, env, log)
                 udp_multicast(args, launcher, work, env, log)
@@ -1320,6 +1378,7 @@ def main():
     parser.add_argument('--udp-errors-app', type=Path)
     parser.add_argument('--udp-ancillary-app', type=Path)
     parser.add_argument('--udp-mtu-app', type=Path)
+    parser.add_argument('--jumbo-app', type=Path)
     parser.add_argument('--udp-connect-app', type=Path)
     parser.add_argument('--udp-broadcast-app', type=Path)
     parser.add_argument('--udp-reuseport-app', type=Path)

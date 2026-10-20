@@ -23,8 +23,7 @@
 /* This process transports Ethernet frames only. All socket/TCP behavior runs
  * in the separate imported Linux instance in the application process. */
 #define BURST 32
-#define MTU 1500
-#define WIRE_MAX (MTU + RTE_ETHER_HDR_LEN)
+#define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN)
 static volatile sig_atomic_t stopping;
 static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
 static int64_t now_ns(void)
@@ -55,7 +54,7 @@ int main(int argc, char **argv)
     int packet_fd = -1, control_fd = -1, split = 0;
     bool all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
-    int log_level = -1;
+    int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL;
     for (int i = 1; i < argc; ++i) {
@@ -66,6 +65,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--port")) port_name = argv[++i];
+        else if (!strcmp(argv[i], "--mtu")) mtu = number(argv[++i]);
         else if (!strcmp(argv[i], "--log-dir")) log_dir = argv[++i];
         else if (!strcmp(argv[i], "--log-level")) { log_level = number(argv[++i]); log_level_set = true; }
         else if (!strcmp(argv[i], "--pcap-dir")) pcap_dir = argv[++i];
@@ -73,9 +73,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pcap-max-bytes")) pcap_maximum = number(argv[++i]);
         else break;
     }
-    if (packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
+    if (mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -129,11 +129,11 @@ int main(int argc, char **argv)
     struct rte_eth_conf conf = {0}; /* No checksum, VLAN, LRO, or TSO offloads. */
     if (rte_eth_dev_configure(port, 1, 1, &conf)) goto device_error;
     configured = true;
-    if (rte_eth_dev_set_mtu(port, MTU)) goto device_error;
+    if (rte_eth_dev_set_mtu(port, (uint16_t)mtu)) goto device_error;
     uint16_t rx_desc = 256, tx_desc = 256;
     if (rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) goto device_error;
     pool = rte_pktmbuf_pool_create("ker_native_packets", 4095, 0, 0,
-        RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+        (uint16_t)RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM), rte_socket_id());
     if (!pool) { fprintf(stderr, "ker packet pool: %s\n", rte_strerror(rte_errno)); goto cleanup; }
     if (rte_eth_rx_queue_setup(port, 0, rx_desc, rte_socket_id(), NULL, pool) ||
         rte_eth_tx_queue_setup(port, 0, tx_desc, rte_socket_id(), NULL) ||
@@ -168,7 +168,7 @@ int main(int argc, char **argv)
         "\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"link_up\":%s}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
-        mac.addr_bytes[4], mac.addr_bytes[5], MTU, port, rte_eth_dev_count_avail(),
+        mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, port, rte_eth_dev_count_avail(),
         rte_eth_dev_socket_id(port), link_status ? "null" : (link.link_status ? "true" : "false"));
     fflush(stdout);
     status = 0;
@@ -192,7 +192,7 @@ int main(int argc, char **argv)
                         break;
                     }
                     if (count < (ssize_t)(sizeof(struct ker_packet_header) + RTE_ETHER_HDR_LEN) ||
-                        count > (ssize_t)sizeof(tx_bytes)) { dropped++; continue; }
+                        count > (ssize_t)(sizeof(struct ker_packet_header) + mtu + RTE_ETHER_HDR_LEN)) { dropped++; continue; }
                     struct ker_packet_header header;
                     memcpy(&header, tx_bytes, sizeof(header));
                     if (header.flags || header.gso_type || header.header_length || header.gso_size ||
@@ -250,7 +250,7 @@ int main(int argc, char **argv)
             struct rte_mbuf *packet = rx[rx_index];
             uint32_t length = packet->pkt_len;
             const void *bytes = NULL;
-            if (length >= RTE_ETHER_HDR_LEN && length <= WIRE_MAX && metadata_supported(packet))
+            if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN && metadata_supported(packet))
                 bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
             if (bytes) {
                 struct ker_packet_header header = {0};

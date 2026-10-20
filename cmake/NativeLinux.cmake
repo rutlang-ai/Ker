@@ -251,6 +251,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-cork COMMAND ${ker_native_test_command}
         --udp-cork-app "$<TARGET_FILE:ker-posix-fstack-udp-cork-test>")
     set_tests_properties(native-fstack-udp-cork PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-posix-fstack-jumbo-test tests/posix/fstack-jumbo.c)
+    target_compile_options(ker-posix-fstack-jumbo-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-jumbo-mtu COMMAND ${ker_native_test_command}
+        --jumbo-app "$<TARGET_FILE:ker-posix-fstack-jumbo-test>")
+    set_tests_properties(native-fstack-jumbo-mtu PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
     add_executable(ker-posix-fstack-udp-mtu-test tests/posix/fstack-udp-mtu.c)
     target_compile_options(ker-posix-fstack-udp-mtu-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-mtu COMMAND ${ker_native_test_command}

@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/unit/test_ff_config.c": {
+      "sha256": "936949c9abb5b15f2d0e7822fd6e591be2af4cccae951df7d9f2f4fe42e3b365",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_config.c"
+    },
     "tests/unit/test_ff_init.c": {
       "sha256": "c4893bdadbeb9f39299a5a37e93870ff0bc6e56011ab8e76ddf4bdb614c6382f",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_init.c"
@@ -45,6 +49,40 @@
     }
   },
   "cases": {
+    "native-fstack-mtu-config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_mtu_defaults_legacy",
+        "test_mtu_large_9000",
+        "test_mtu_max_mtu_non_numeric_fails",
+        "test_mtu_large_65535_fails",
+        "test_mtu_port_over_max_fails"
+      ],
+      "ker_ctests": [
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Actual Ker launcher parser accepts [network] mtu or --mtu, defaults to 1500, accepts 9000 and minimum1280, and applies CLI precedence. Non-numeric input and out-of-range 1279/9001/65535 fail with argparse status2 before resolving nonexistent libraries. This is Ker single-port configuration: the fixed ceiling is9000 and contiguous DPDK mbufs grow to fit the frame plus CRC/headroom. It adapts F-Stack legacy/default, large9000, numeric and65535 rejection scenarios, without exposing mtu_enable/max_mtu/mbuf_mode ABI. Port-over-max remains partial because separately configured lower max_mtu/per-port comparison is absent. Scatter mode and disabled-mtu-enable rejection remain blocked."
+    },
+    "native-fstack-mtu-default": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_mtu_defaults_legacy"
+      ],
+      "ker_ctests": [
+        "native-fstack-startup-lifecycle"
+      ],
+      "adaptation": "Existing real startup probe checks original Linux interface MTU1500 and DPDK READY diagnostics MTU1500 when no new setting is supplied, plus real TCP and complete shutdown. F-Stack internal default flags are represented by Ker default behavior, fixed maximum9000 and contiguous packet buffers, not its config structs."
+    },
+    "native-fstack-jumbo-mtu": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_mtu_large_9000"
+      ],
+      "ker_ctests": [
+        "native-fstack-jumbo-mtu"
+      ],
+      "adaptation": "INI-provided MTU9000 configures actual DPDK port and original Linux interface. Real net_tap/veth links use9000; TCP transfers and UDP payloads0/1/1472/8972 run against independent host peers in both native roles plus host-reference UDP. IP_MTU must be9000; DF payload8973 fails with EMSGSIZE. Native UDP counters and zero fragmentation/reassembly plus PCAP in each direction require an actual complete9014-byte Ethernet frame containing an unfragmented9000-byte IPv4 UDP packet. Zero outstanding mbufs required. The Ker adapter negotiates original LKL virtio mergeable RX buffers for jumbo; checksum/segmentation offloads stay disabled. DPDK uses contiguous buffers sized with Ethernet/CRC/headroom. No modified upstream code, FreeBSD scatter API, DPDK scatter mode or external IPv6 jumbo claim."
+    },
     "native-fstack-empty-datagram-readiness": {
       "source_file": "tests/unit/test_ff_epoll.c",
       "source_case": [

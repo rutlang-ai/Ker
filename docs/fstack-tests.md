@@ -256,3 +256,7 @@ F-Stack run/stop 回调 ABI、内核启动/接口激活的定点故障仍未覆�
 空 UDP 可读性：`ctest --test-dir build -R '^native-fstack-(epoll|udp-interop)$' --output-on-failure`。
 前者对照宿主/原生内核，覆盖 IPv4/IPv6 回环、LT/ET/ONESHOT 和三种 wait 接口；
 后者通过独立 IPv4 宿主验证包含空报文的流量均无 HUP/EOF。
+
+Jumbo MTU：`ctest --test-dir build -R '^native-fstack-(jumbo-mtu|launcher-config|startup-lifecycle)$' --output-on-failure`。
+配置 `--mtu 9000` 或 `[network] mtu=9000`，对端及所有中间链路也需配置为 9000。
+测试通过实际双向 9014 字节以太网抓包验证 jumbo 收发，保持原始内核协议实现。
