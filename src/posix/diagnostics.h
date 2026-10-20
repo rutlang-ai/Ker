@@ -2,6 +2,7 @@
 #define KER_POSIX_DIAGNOSTICS_H
 #include <stdint.h>
 struct ker_native_counters {
+    uint64_t tcp_ecn;
     uint64_t active_opens, passive_opens, retransmitted_segments;
     uint64_t zero_window_probes, out_of_order_queued;
     uint64_t udp_in_datagrams, udp_out_datagrams, udp_in_errors, udp_no_ports;

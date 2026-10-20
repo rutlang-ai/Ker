@@ -39,6 +39,30 @@ class ConfigTests(unittest.TestCase):
                     launcher.parse_arguments(base + ['--mtu', text, '--', '/bin/true'])
                 self.assertEqual(caught.exception.code, 2)
 
+    def test_tcp_ecn_policy_and_cli_override(self):
+        base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).tcp_ecn)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'ecn.ini'
+            for mode, value in [('off', 0), ('passive', 2), ('on', 1)]:
+                path.write_text('[network]\ntcp_ecn=' + mode + '\n')
+                parsed = launcher.parse_arguments(base + ['--config', str(path), '--', '/bin/true'])
+                self.assertEqual(str(parsed.address), '192.0.2.2/24')
+                self.assertEqual(parsed.port, 'net_tap0')
+                self.assertEqual(parsed.eal_args, ['--no-huge'])
+                self.assertEqual(parsed.tcp_ecn, mode)
+                self.assertEqual(launcher.TCP_ECN[parsed.tcp_ecn], value)
+                self.assertEqual(launcher.parse_arguments(base + ['--config', str(path),
+                    '--tcp-ecn', 'off', '--', '/bin/true']).tcp_ecn, 'off')
+            for mode in ('1', 'garbage', ''):
+                path.write_text('[network]\ntcp_ecn=' + mode + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(path),
+                    '--library', str(Path(directory) / 'missing'), '--', '/bin/true'],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('tcp-ecn', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+
     def test_basic_and_multiple_sections(self):
         values = self.read('[network]\naddress=192.0.2.2/24\ngateway=192.0.2.1\n'
                            '[dpdk]\nport=net_tap0\neal=--no-huge\n'

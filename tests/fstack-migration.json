@@ -1650,16 +1650,35 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Ker ECN policy configuration and real original-Linux handshake scenarios; Linux numeric policy values and defaults differ from FreeBSD and are explicitly documented.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-tcp-ecn"
+        },
+        {
+          "ctest": "native-fstack-tcp-ecn",
+          "provenance_case": "native-fstack-tcp-ecn"
+        }
+      ],
+      "remaining": "Omission preserves original Linux tcp_ecn=2 (passive acceptance), whereas F-Stack defaults to0/off. Explicit off is supported and tested; the default-off source assertion is intentionally not matched."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_enabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker ECN policy configuration and real original-Linux handshake scenarios; Linux numeric policy values and defaults differ from FreeBSD and are explicitly documented.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-tcp-ecn"
+        },
+        {
+          "ctest": "native-fstack-tcp-ecn",
+          "provenance_case": "native-fstack-tcp-ecn"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_graceful_reload_default_off",

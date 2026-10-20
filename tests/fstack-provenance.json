@@ -49,6 +49,18 @@
     }
   },
   "cases": {
+    "native-fstack-tcp-ecn": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_tcp_ecn_enabled",
+        "test_ff_load_config_tcp_ecn_default_off"
+      ],
+      "ker_ctests": [
+        "native-fstack-launcher-config",
+        "native-fstack-tcp-ecn"
+      ],
+      "adaptation": "Typed Ker [network] tcp_ecn or --tcp-ecn accepts off/passive/on and CLI precedence, rejects unknown values before library resolution, and preserves the original Linux policy when omitted. Modes map to Linux sysctl0/2/1 respectively; F-Stack/FreeBSD tcp_ecn=1 means passive, so its intent maps to Ker passive/Linux2 rather than copying the integer. The explicit-enable scenario is adapted; default-off remains partial because native Linux defaults to2. Only private imported-kernel /proc/sys/net/ipv4/tcp_ecn is written, using original sysctl validation; startup fails on write errors. Real net_tap TCP runs eight mode/role combinations against an independently configured host peer, plus a host-reference handshake. Both peers check negotiated TCP_INFO ECN and payload. Native procfs diagnostics report the effective policy; counters and zero outstanding validate the original stack and cleanup. Actual SYN ECE/CWR and SYN-ACK ECE flags are checked from TX/RX captures. An inherited internal env override is removed so omission preserves Linux defaults. No F-Stack configuration-struct or sibling hz/mem_size ABI claim; no custom TCP implementation, CE-marked congestion response, external IPv6 or AccECN claim. ECN parser tests also require sibling address, port and parsed EAL tokens to remain unchanged."
+    },
     "native-fstack-mtu-config": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

@@ -176,6 +176,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-startup-lifecycle COMMAND ${ker_native_test_command}
         --startup-app "$<TARGET_FILE:ker-startup-interface-test>")
     set_tests_properties(native-fstack-startup-lifecycle PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-ecn-test tests/posix/fstack-tcp-ecn.c)
+    target_compile_options(ker-posix-fstack-ecn-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-ecn COMMAND ${ker_native_test_command}
+        --ecn-app "$<TARGET_FILE:ker-posix-fstack-ecn-test>")
+    set_tests_properties(native-fstack-tcp-ecn PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-launcher-config-interop COMMAND ${ker_native_test_command} --launcher-config)
     set_tests_properties(native-fstack-launcher-config-interop PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-worker-log-interop COMMAND ${ker_native_test_command}

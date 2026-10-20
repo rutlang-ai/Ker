@@ -1043,6 +1043,77 @@ def jumbo_mtu(args, launcher, work, env, log):
         print('PASS: actual jumbo Ethernet frames, native UDP and zero outstanding ' + role, flush=True)
 
 
+def tcp_ecn(args, launcher, work, env, log):
+    if not args.ecn_app:
+        return
+    # inside() is entered in the test's private user/network namespace.
+    Path('/proc/sys/net/ipv4/tcp_ecn').write_text('1\n')
+    app = str(args.ecn_app)
+    with server([app, 'server', '127.0.0.1', '28000', '1'], 28000, log, env):
+        client([app, 'client', '127.0.0.1', '28000', '1'], env)
+    for index, mode in enumerate(('default', 'off', 'passive', 'on')):
+        for native_server in (False, True):
+            role = 'server' if native_server else 'client'
+            address = '198.18.0.2' if native_server else '198.18.0.1'
+            port = 28010 + index * 2 + int(native_server)
+            negotiated = mode == 'on' or (native_server and mode in ('default', 'passive'))
+            expected = str(int(negotiated))
+            listen = [app, 'server', address, str(port), expected]
+            connect = [app, 'client', address, str(port), expected]
+            stats_path = work / ('ecn-' + mode + '-' + role + '.json')
+            capture = work / ('ecn-pcap-' + mode + '-' + role); capture.mkdir()
+            options = []
+            if mode != 'default':
+                config = work / ('ecn-' + mode + '.ini')
+                config.write_text('[network]\ntcp_ecn=' + mode + '\n')
+                options = ['--config', str(config)]
+            native = [*launcher, *options, '--stats', str(stats_path), '--pcap-dir', str(capture),
+                '--pcap-snaplen', '128', '--']
+            if native_server: listen = native + listen
+            else: connect = native + connect
+            # The launcher must not inherit an internal override when omitted.
+            case_env = dict(env, KER_NATIVE_TCP_ECN='0')
+            captured = []
+            with server(listen, port, log, case_env, captured=captured):
+                client(connect, case_env)
+            if 'PASS:' not in ''.join(captured):
+                raise RuntimeError('ECN peer did not verify negotiated state')
+            stats = json.loads(stats_path.read_text())
+            policy = {'default': 2, 'off': 0, 'passive': 2, 'on': 1}[mode]
+            if (stats['native']['tcp_ecn'] != policy or stats['outstanding'] or not stats['tx'] or not stats['rx']
+                    or not stats['native']['passive_opens' if native_server else 'active_opens']):
+                raise RuntimeError('native ECN policy/counters mismatch: ' + str(stats))
+            observed_syn = observed_ack = False
+            request_ecn = native_server or mode == 'on'
+            for path in capture.glob('*.pcap'):
+                data = path.read_bytes()
+                endian = '<' if data[:4] == b'\xd4\xc3\xb2\xa1' else '>'
+                offset = 24
+                while offset < len(data):
+                    _, _, length, _ = struct.unpack_from(endian + 'IIII', data, offset)
+                    offset += 16
+                    frame = data[offset:offset + length]; offset += length
+                    if len(frame) < 54 or frame[12:14] != b'\x08\x00' or frame[23] != 6:
+                        continue
+                    tcp = 14 + (frame[14] & 15) * 4
+                    if len(frame) < tcp + 20 or port not in struct.unpack_from('!HH', frame, tcp):
+                        continue
+                    flags = frame[tcp + 13]
+                    if not flags & 2:
+                        continue
+                    if flags & 16:
+                        if bool(flags & 64) != negotiated or flags & 128:
+                            raise RuntimeError('incorrect ECN SYN-ACK flags')
+                        observed_ack = True
+                    else:
+                        if flags & 192 != (192 if request_ecn else 0):
+                            raise RuntimeError('incorrect ECN SYN request flags')
+                        observed_syn = True
+            if not observed_syn or not observed_ack:
+                raise RuntimeError('missing actual SYN/SYN-ACK capture')
+            print('PASS: native ECN ' + mode + ' ' + role + ', TCP_INFO, SYN flags and cleanup', flush=True)
+
+
 def verify_capture(directory, stats):
     for direction in ('tx', 'rx'):
         paths = list(directory.glob('ker-' + direction + '-*.pcap'))
@@ -1295,6 +1366,7 @@ def inside(args):
                             stats['native']['udp_out_datagrams'] < 18):
                         raise RuntimeError('empty datagram scenarios missed native UDP: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                tcp_ecn(args, launcher, work, env, log)
                 dualstack(args, launcher, work, env, log)
                 tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
@@ -1360,6 +1432,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ['launcher', 'library', 'io-worker', 'app']:
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--ecn-app', type=Path)
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--worker-log', action='store_true')
     parser.add_argument('--launcher-config', action='store_true')
