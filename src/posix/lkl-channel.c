@@ -132,6 +132,18 @@ __attribute__((constructor)) static void initialize(void)
     if (result) fail("native descriptor budget", result);
     result = lkl_mount_fs("proc");
     if (result < 0) fail("native procfs diagnostics", result);
+    const char *ecn_text = getenv("KER_NATIVE_TCP_ECN");
+    if (ecn_text) {
+        long mode = parse_number(ecn_text, 2);
+        long fd = lkl_sys_open("/proc/sys/net/ipv4/tcp_ecn", LKL_O_WRONLY, 0);
+        if (fd < 0) fail("native TCP ECN sysctl open", (int)fd);
+        char setting[] = {(char)('0' + mode), '\n'};
+        long written = lkl_sys_write(fd, setting, sizeof(setting));
+        long closed = lkl_sys_close(fd);
+        if (written != (long)sizeof(setting)) fail("native TCP ECN sysctl write",
+            written < 0 ? (int)written : -EIO);
+        if (closed) fail("native TCP ECN sysctl close", (int)closed);
+    }
     result = lkl_if_up(1);
     if (result) fail("loopback activation", result);
     int index = lkl_netdev_get_ifindex(device->id);
@@ -177,14 +189,15 @@ __attribute__((destructor)) static void finalize(void)
         int length = snprintf(json, sizeof(json), "KER_NATIVE_STATS {\"active_opens\":%llu,\"passive_opens\":%llu,"
             "\"retransmitted_segments\":%llu,\"zero_window_probes\":%llu,\"out_of_order_queued\":%llu,"
             "\"udp_in_datagrams\":%llu,\"udp_out_datagrams\":%llu,\"udp_in_errors\":%llu,\"udp_no_ports\":%llu,"
-            "\"ip_frag_ok\":%llu,\"ip_frag_creates\":%llu,\"ip_reasm_ok\":%llu,\"ip_reasm_fails\":%llu}\n",
+            "\"ip_frag_ok\":%llu,\"ip_frag_creates\":%llu,\"ip_reasm_ok\":%llu,\"ip_reasm_fails\":%llu,\"tcp_ecn\":%llu}\n",
             (unsigned long long)counters.active_opens, (unsigned long long)counters.passive_opens,
             (unsigned long long)counters.retransmitted_segments, (unsigned long long)counters.zero_window_probes,
             (unsigned long long)counters.out_of_order_queued,
             (unsigned long long)counters.udp_in_datagrams, (unsigned long long)counters.udp_out_datagrams,
             (unsigned long long)counters.udp_in_errors, (unsigned long long)counters.udp_no_ports,
             (unsigned long long)counters.ip_frag_ok, (unsigned long long)counters.ip_frag_creates,
-            (unsigned long long)counters.ip_reasm_ok, (unsigned long long)counters.ip_reasm_fails);
+            (unsigned long long)counters.ip_reasm_ok, (unsigned long long)counters.ip_reasm_fails,
+            (unsigned long long)counters.tcp_ecn);
         if (length > 0 && (size_t)length < sizeof(json))
             (void)syscall(SYS_write, startup_fd, json, (size_t)length);
     }

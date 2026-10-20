@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 96 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 14 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 260 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 97 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 15 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 258 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -71,7 +71,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 4 | 1 | 91 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 5 | 2 | 89 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 0 | 1 | 66 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -228,3 +228,15 @@ IPv6 仅覆盖回环，不宣称外部 IPv6 部署完成。
 IPv6 jumbo 外部互通尚未验证；1280 下限保证默认双栈接口的配置范围。
 本批新增 4 项场景适配和 1 项部分覆盖。固定上限之外的“可配置 max_mtu 对比端口 mtu”仍未完成；
 F-Stack scatter 模式、mtu_enable 禁用分支及其内部配置 ABI 继续保留缺口。
+
+## TCP ECN 策略
+
+`[network] tcp_ecn` / `--tcp-ecn` 支持 `off`、`passive`、`on`，分别映射为原始 Linux 的 sysctl 值 0、2、1。
+配置只写入应用私有原生 Linux 的 `/proc/sys/net/ipv4/tcp_ecn`；写入失败则启动失败，协议行为仍由原始内核提供。
+未配置时不写 sysctl，保留固定 Linux 默认值 2（被动接受）。F-Stack/FreeBSD 的值 1 表示被动，
+默认值 0 表示关闭，不能照搬数字或将“默认关闭”计为通过；该源用例仍为 partial，显式 `off` 可选。
+`native-fstack-tcp-ecn` 覆盖默认及三种显式模式、两种原生角色，共 8 组独立 IPv4 宿主互通，另有宿主参考。
+双方核对 `TCP_INFO` 协商结果和负载，抓包核对 SYN 的 ECE/CWR、SYN-ACK 的 ECE，
+原生统计新增 `tcp_ecn` 有效策略，并检查连接计数和零 outstanding。
+尚未验证 CE 标记后的拥塞响应、外部 IPv6 ECN 或 AccECN。
+本批新增 1 项场景适配、1 项部分覆盖；FreeBSD 配置结构及 hz/mem_size 同级字段 ABI 不作等价声明。

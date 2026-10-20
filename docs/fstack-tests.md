@@ -260,3 +260,7 @@ F-Stack run/stop 回调 ABI、内核启动/接口激活的定点故障仍未覆�
 Jumbo MTU：`ctest --test-dir build -R '^native-fstack-(jumbo-mtu|launcher-config|startup-lifecycle)$' --output-on-failure`。
 配置 `--mtu 9000` 或 `[network] mtu=9000`，对端及所有中间链路也需配置为 9000。
 测试通过实际双向 9014 字节以太网抓包验证 jumbo 收发，保持原始内核协议实现。
+
+TCP ECN：`ctest --test-dir build -R '^native-fstack-(tcp-ecn|launcher-config)$' --output-on-failure`。
+`--tcp-ecn off|passive|on` 或 `[network] tcp_ecn` 控制私有原生内核；未配置保留 Linux 默认策略。
+测试比较实际宿主握手、TCP_INFO 及 SYN/SYN-ACK 抓包，CE 拥塞响应与外部 IPv6 ECN 尚未覆盖。

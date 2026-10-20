@@ -71,6 +71,12 @@ int ker_native_counters(struct ker_native_counters *out)
         {"ReasmOKs", &value.ip_reasm_ok}, {"ReasmFails", &value.ip_reasm_fails}};
     result = counters("/proc/net/snmp", "Ip:", ip, sizeof(ip) / sizeof(ip[0]));
     if (result) return result;
+    char policy[16];
+    result = read_file("/proc/sys/net/ipv4/tcp_ecn", policy, sizeof(policy));
+    if (result) return result;
+    if (strlen(policy) != 2 || policy[0] < '0' || policy[0] > '2' || policy[1] != '\n')
+        return -EINVAL;
+    value.tcp_ecn = (uint64_t)(policy[0] - '0');
     *out = value;
     return 0;
 }

@@ -38,12 +38,13 @@ if LIB_FROM_BIN.startswith('@'):
     LIB_FROM_BIN = '../lib64'
 
 
-CONFIG_DEFAULTS = dict(mtu=1500, address=None, gateway=None, port=None, eal=None,
+TCP_ECN = {'off': 0, 'passive': 2, 'on': 1}
+CONFIG_DEFAULTS = dict(tcp_ecn=None, mtu=1500, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
-    'network': {'mtu': ('mtu', int), 'address': ('address', ipaddress.IPv4Interface),
+    'network': {'tcp_ecn': ('tcp_ecn', str), 'mtu': ('mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
@@ -90,6 +91,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--config', type=Path, default=None, help='Ker INI configuration; explicit CLI options take precedence')
     parser.add_argument('--address', type=ipaddress.IPv4Interface)
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
+    parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
+        help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--port', help='DPDK ethdev name')
     parser.add_argument('--all-multicast', action=argparse.BooleanOptionalAction,
@@ -124,6 +127,8 @@ def parse_arguments(argv=None):
         parser.error('an application command is required after --')
     if not 1280 <= args.mtu <= 9000:
         parser.error('--mtu must be in 1280..9000')
+    if args.tcp_ecn is not None and args.tcp_ecn not in TCP_ECN:
+        parser.error('--tcp-ecn must be off, passive or on')
     if not 0 <= args.shutdown_timeout_ms <= 60000:
         parser.error("--shutdown-timeout-ms must be in 0..60000")
     if not 1 <= args.pcap_snaplen <= 2147483647 or not 1 <= args.pcap_max_bytes <= 2147483647:
@@ -185,6 +190,9 @@ def main():
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
+        env.pop('KER_NATIVE_TCP_ECN', None)
+        if args.tcp_ecn is not None:
+            env['KER_NATIVE_TCP_ECN'] = str(TCP_ECN[args.tcp_ecn])
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
         app_guard = worker_path.parent / 'ker-app'
