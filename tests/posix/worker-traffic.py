@@ -89,6 +89,8 @@ def run_worker(worker, work, traffic):
             require(len(lines) == 1, 'expected one DONE snapshot: ' + output)
             stats = json.loads(lines[0].split(' ', 1)[1])
             require(set(COUNTERS) <= stats.keys(), 'missing traffic counter')
+            require(stats['stop_requests'] == 2, 'worker did not consume both stop requests')
+            require(stats['control_eof'] is True, 'worker did not observe control EOF')
             expected = dict.fromkeys(COUNTERS, 0)
             if traffic:
                 expected.update(tx=3, rx=3, tx_bytes=1701, rx_bytes=1701, tx_dropped=2, dropped=2)

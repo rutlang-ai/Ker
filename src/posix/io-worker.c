@@ -125,6 +125,8 @@ int main(int argc, char **argv)
     size_t tx_length = 0;
     int status = 1, tx_capture_status, rx_capture_status;
     bool draining = false;
+    uint64_t stop_requests = 0;
+    bool control_eof = false;
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
         fprintf(stderr, "ker: unknown ethdev %s\n", port_name); goto cleanup;
@@ -176,9 +178,19 @@ int main(int argc, char **argv)
     fflush(stdout);
     status = 0;
     while (!stopping) {
-        char command;
-        ssize_t control = read(control_fd, &command, 1);
-        if ((!control || control > 0) && !draining) {
+        char commands[256];
+        ssize_t control;
+        size_t control_budget = 4096;
+        do {
+            size_t read_size = control_budget < sizeof(commands) ? control_budget : sizeof(commands);
+            control = read(control_fd, commands, read_size);
+            if (control > 0) {
+                stop_requests += (uint64_t)control;
+                control_budget -= (size_t)control;
+            }
+        } while (control > 0 && control_budget);
+        if (control == 0) control_eof = true;
+        if ((control == 0 || stop_requests) && !draining) {
             draining = true;
             drain_started = drain_progress = now_ns();
         }
@@ -231,7 +243,18 @@ int main(int argc, char **argv)
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
             if (progress) drain_progress = now_ns();
             int64_t now = now_ns();
-            if (!pending_tx && !tx_length && now - drain_progress >= INT64_C(5000000)) break;
+            if (!pending_tx && !tx_length && now - drain_progress >= INT64_C(5000000)) {
+                /* Observe a closed control pipe even if the worker was not
+                 * scheduled between the stop request and the drain deadline. */
+                if (!control_eof) {
+                    char final_commands[256];
+                    ssize_t final_control = read(control_fd, final_commands, sizeof(final_commands));
+                    if (final_control > 0) stop_requests += (uint64_t)final_control;
+                    else if (final_control == 0) control_eof = true;
+                    else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) status = 1;
+                }
+                if (!status) break;
+            }
             if (now - drain_started >= INT64_C(500000000)) { status = 1; break; }
             if (!progress) usleep(1000);
             continue;
@@ -300,11 +323,13 @@ cleanup:
         status = 1;
     } else if (pool) rte_mempool_free(pool);
     printf("KER_IO_DONE {\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
-        "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u}\n", (unsigned long long)transmitted,
+        "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
+        "\"stop_requests\":%llu,\"control_eof\":%s}\n", (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
-        (unsigned long long)tx_dropped, (unsigned long long)rx_dropped, outstanding);
+        (unsigned long long)tx_dropped, (unsigned long long)rx_dropped, outstanding,
+        (unsigned long long)stop_requests, control_eof ? "true" : "false");
     fflush(stdout);
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
     if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }
