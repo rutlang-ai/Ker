@@ -1029,6 +1029,15 @@ def inside(args):
     with tempfile.TemporaryDirectory(prefix='ker-native-tcp-') as temporary:
         work = Path(temporary)
         env = dict(os.environ, RUNTIME_DIRECTORY=str(work))
+        lifetime_violations = work / 'dpdk-log-lifetime-violations.txt'
+        if args.worker_log:
+            if not args.log_lifetime_probe:
+                raise RuntimeError('worker log lifetime probe was not configured')
+            preload = [str(args.log_lifetime_probe)]
+            if env.get('LD_PRELOAD'):
+                preload.append(env['LD_PRELOAD'])
+            env['LD_PRELOAD'] = ':'.join(preload)
+            env['KER_DPDK_LOG_LIFETIME_VIOLATION'] = str(lifetime_violations)
         commands = [
             ['ip', 'link', 'set', 'lo', 'up'],
             ['ip', 'tuntap', 'add', 'dev', 'kerpeer', 'mode', 'tap', 'multi_queue'],
@@ -1120,6 +1129,18 @@ def inside(args):
                             raise RuntimeError(f'capture I/O failure was masked: {failure.returncode} {failure.stderr}')
                     print('PASS: capture startup and buffered-close failures propagate status 125', flush=True)
                 if args.worker_log:
+                    startup_logs = work / 'startup-error-logs'
+                    startup_logs.mkdir()
+                    startup_launcher = list(launcher)
+                    eal_argument = startup_launcher.index('--eal') + 1
+                    startup_launcher[eal_argument] += ' --ker-invalid-eal-argument'
+                    failure = subprocess.run([*startup_launcher, '--log-dir', str(startup_logs),
+                        '--', '/bin/true'], capture_output=True, text=True,
+                        env=env, timeout=30)
+                    startup_files = list(startup_logs.glob('ker-io-*.log'))
+                    if failure.returncode != 125 or len(startup_files) != 1:
+                        raise RuntimeError('EAL startup failure did not close the worker log: '
+                            + f'{failure.returncode} {failure.stderr}')
                     failure = subprocess.run([*launcher, '--log-dir', str(work / 'missing-logs'), '--', '/bin/true'],
                         capture_output=True, text=True, env=env, timeout=30)
                     if failure.returncode != 125 or 'worker log' not in failure.stderr:
@@ -1136,8 +1157,14 @@ def inside(args):
                     full = work / 'full-logs'; full.mkdir()
                     failure = subprocess.run([*launcher, '--io-worker', str(wrapper), '--log-dir', str(full), '--', '/bin/true'],
                         capture_output=True, text=True, env=env, timeout=30)
-                    if failure.returncode != 125 or 'worker log' not in failure.stderr:
+                    if (failure.returncode != 125 or 'worker log' not in failure.stderr or
+                            'write worker log failed during EAL startup' not in failure.stderr):
                         raise RuntimeError('log write failure was masked: ' + failure.stderr)
+                    events = lifetime_violations.read_text() if lifetime_violations.exists() else ''
+                    if 'rte_eal_cleanup\n' not in events:
+                        raise RuntimeError('lifetime probe did not observe real rte_eal_cleanup calls')
+                    if 'rte_openlog_stream after rte_eal_cleanup\n' in events:
+                        raise RuntimeError('DPDK log stream was changed after EAL cleanup: ' + events)
                     print('PASS: actual worker logging with native TCP in both roles; log I/O errors return 125', flush=True)
                 if args.errors_app:
                     stats_path = work / 'errors.json'
@@ -1227,6 +1254,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--worker-log', action='store_true')
+    parser.add_argument('--log-lifetime-probe', type=Path)
     parser.add_argument('--faults', action='store_true')
     parser.add_argument('--zero-window', action='store_true')
     parser.add_argument('--udp-cork-app', type=Path)

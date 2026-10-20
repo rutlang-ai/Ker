@@ -103,7 +103,8 @@ int main(int argc, char **argv)
     }
     if (log.file && ferror(log.file)) {
         fprintf(stderr, "ker: write worker log failed during EAL startup\n");
-        rte_eal_cleanup(); ker_worker_log_close(&log); return 1;
+        if (ker_worker_log_close(&log)) perror("ker: close worker log");
+        rte_eal_cleanup(); return 1;
     }
     uint16_t port = UINT16_MAX;
     bool started = false, configured = false;
@@ -289,8 +290,8 @@ cleanup:
         (unsigned long long)tx_retries, (unsigned long long)rx_retries, outstanding);
     fflush(stdout);
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
-    if (rte_eal_cleanup()) status = 1;
     if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }
+    if (rte_eal_cleanup()) status = 1;
     close(packet_fd);
     close(control_fd);
     return status;
