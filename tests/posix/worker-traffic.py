@@ -27,7 +27,7 @@ def frame(destination, source, ethertype, length, seed):
             bytes((seed + i) % 256 for i in range(length - 14)))
 
 
-def run_worker(worker, work, traffic):
+def run_worker(worker, work, traffic, clock_probe=None):
     app, channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     app.settimeout(5)
     control_read, control_write = os.pipe()
@@ -37,12 +37,18 @@ def run_worker(worker, work, traffic):
            '--vdev=net_tap0,iface=kerpeer,remote=kerlink']
     process = None
     worker_paused = False
-    with (work / ('traffic.log' if traffic else 'idle.log')).open('w+') as log:
+    environment = os.environ.copy()
+    marker, cleanup = work / 'clock-fail', work / 'eal-cleanup'
+    if clock_probe:
+        environment['LD_PRELOAD'] = str(clock_probe) + ' ' + environment.get('LD_PRELOAD', '')
+        environment['KER_TEST_WORKER_CLOCK_FAIL'] = str(marker)
+        environment['KER_TEST_WORKER_CLEANUP'] = str(cleanup)
+    with (work / ('fault.log' if clock_probe else ('traffic.log' if traffic else 'idle.log'))).open('w+') as log:
         try:
             process = subprocess.Popen([str(worker), '--packet-fd', str(channel.fileno()),
                 '--control-fd', str(control_read), '--port', 'net_tap0', '--', *eal],
                 pass_fds=(channel.fileno(), control_read), stdout=subprocess.PIPE,
-                stderr=log, text=True)
+                stderr=log, text=True, env=environment)
             channel.close(); os.close(control_read); control_read = -1
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ)
@@ -87,13 +93,20 @@ def run_worker(worker, work, traffic):
             stopped_pid, stopped_status = os.waitpid(process.pid, os.WUNTRACED)
             require(stopped_pid == process.pid and os.WIFSTOPPED(stopped_status),
                     'worker did not stop for control-channel synchronization')
+            if clock_probe:
+                marker.touch()
             os.write(control_write, b'xx')
             os.close(control_write); control_write = -1
             os.kill(process.pid, signal.SIGCONT)
             worker_paused = False
             output, _ = process.communicate(timeout=10)
             log.flush(); log.seek(0); errors = log.read()
-            require(process.returncode == 0, f'worker status={process.returncode}: {errors}')
+            require(process.returncode == (1 if clock_probe else 0),
+                    f'worker status={process.returncode}: {errors}')
+            if clock_probe:
+                require('ker: worker monotonic clock:' in errors, 'missing clock failure diagnostic')
+                require(cleanup.is_file() and cleanup.read_text().strip() == '0',
+                        'EAL cleanup did not complete successfully after clock failure')
             lines = [line for line in output.splitlines() if line.startswith('KER_IO_DONE ')]
             require(len(lines) == 1, 'expected one DONE snapshot: ' + output)
             stats = json.loads(lines[0].split(' ', 1)[1])
@@ -109,7 +122,7 @@ def run_worker(worker, work, traffic):
                     require(isinstance(stats[name], int) and stats[name] >= 0, 'invalid retry counter')
                 else:
                     require(stats[name] == value, f'{name}: {stats[name]} != {value}; {stats}')
-            print(('traffic' if traffic else 'idle') + ': ' + json.dumps(stats), flush=True)
+            print(('clock-fault' if clock_probe else ('traffic' if traffic else 'idle')) + ': ' + json.dumps(stats), flush=True)
         finally:
             if worker_paused and process is not None and process.poll() is None:
                 try:
@@ -133,10 +146,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--clock-probe', type=Path)
     args = parser.parse_args()
     if not args.inside:
-        return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
-            '--inside', '--worker', str(args.worker.resolve())]).returncode
+        command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
+                   '--inside', '--worker', str(args.worker.resolve())]
+        if args.clock_probe:
+            command += ['--clock-probe', str(args.clock_probe.resolve())]
+        return subprocess.run(command).returncode
     # Private test namespace only: eliminate unsolicited IPv6 link traffic.
     for scope in ('all', 'default'):
         Path('/proc/sys/net/ipv6/conf/' + scope + '/disable_ipv6').write_text('1\n')
@@ -146,8 +163,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ker-worker-traffic-') as directory:
         work = Path(directory)
         run_worker(args.worker, work, False)
-        run_worker(args.worker, work, True)
-    print('PASS: actual DPDK idle/traffic snapshots, frame bytes, directional drops and repeated stop', flush=True)
+        if args.clock_probe:
+            run_worker(args.worker, work, False, args.clock_probe)
+        else:
+            run_worker(args.worker, work, True)
+    print('PASS: actual DPDK ' + ('monotonic drain and clock-failure cleanup' if args.clock_probe
+          else 'idle/traffic snapshots, frame bytes, directional drops and repeated stop'), flush=True)
     return 0
 
 

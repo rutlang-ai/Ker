@@ -19,6 +19,7 @@
 #include "packet-channel.h"
 #include "pcap.h"
 #include "worker-log.h"
+#include "worker-clock.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
 
@@ -28,12 +29,6 @@
 #define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN)
 static volatile sig_atomic_t stopping;
 static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
-static int64_t now_ns(void)
-{
-    struct timespec value;
-    clock_gettime(CLOCK_MONOTONIC, &value);
-    return (int64_t)value.tv_sec * INT64_C(1000000000) + value.tv_nsec;
-}
 static int number(const char *text)
 {
     char *end;
@@ -189,12 +184,13 @@ int main(int argc, char **argv)
                 control_budget -= (size_t)control;
             }
         } while (control > 0 && control_budget);
+        if (control < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { status = 1; break; }
         if (control == 0) control_eof = true;
         if ((control == 0 || stop_requests) && !draining) {
             draining = true;
-            drain_started = drain_progress = now_ns();
+            if (ker_worker_now_ns(&drain_started)) goto clock_error;
+            drain_progress = drain_started;
         }
-        if (control < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { status = 1; break; }
         bool progress = false;
         int reclaimed = rte_eth_tx_done_cleanup(port, 0, 0);
         if (reclaimed < 0 && reclaimed != -ENOTSUP) { status = 1; break; }
@@ -241,8 +237,9 @@ int main(int argc, char **argv)
         if (status) break;
         if (draining) {
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
-            if (progress) drain_progress = now_ns();
-            int64_t now = now_ns();
+            int64_t now;
+            if (ker_worker_now_ns(&now)) goto clock_error;
+            if (progress) drain_progress = now;
             if (!pending_tx && !tx_length && now - drain_progress >= INT64_C(5000000)) break;
             if (now - drain_started >= INT64_C(500000000)) { status = 1; break; }
             if (!progress) usleep(1000);
@@ -278,7 +275,8 @@ int main(int argc, char **argv)
                 }
                 if (count < 0 && (errno == ECONNREFUSED || errno == EPIPE || errno == ENOTCONN)) {
                     draining = true;
-                    drain_started = drain_progress = now_ns();
+                    if (ker_worker_now_ns(&drain_started)) goto clock_error;
+                    drain_progress = drain_started;
                     break;
                 }
                 if (count != (ssize_t)(length + sizeof(header))) { status = 1; break; }
@@ -295,6 +293,10 @@ int main(int argc, char **argv)
             (void)poll(fds, 2, 1); /* Bounded idle wait; protocol timers live in Linux. */
         }
     }
+    goto cleanup;
+clock_error:
+    perror("ker: worker monotonic clock");
+    status = 1;
     goto cleanup;
 device_error:
     fprintf(stderr, "ker: ethdev initialization failed for %s\n", port_name);

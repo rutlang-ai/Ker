@@ -2027,9 +2027,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_get_tsc_ns_basic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production worker CLOCK_MONOTONIC nanoseconds are positive and advance across real sleep; exact conversion and failure paths are tested. This adapts the monotonic-nanosecond contract, not the F-Stack TSC API or frequency conversion.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-clock",
+          "provenance_case": "native-fstack-worker-clock"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_no_callback",
