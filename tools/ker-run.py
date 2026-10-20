@@ -195,6 +195,11 @@ def main():
                 raise RuntimeError('DPDK worker startup timed out')
             ready = worker.stdout.readline().strip()
         if not ready.startswith('KER_IO_READY '):
+            # A worker that fails after EAL initialization can emit its cleanup
+            # snapshot as the first line. Preserve it for --stats: communicate()
+            # below cannot read this already-consumed line again.
+            if ready.startswith('KER_IO_DONE '):
+                stats = json.loads(ready.removeprefix('KER_IO_DONE '))
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
         info = json.loads(ready.removeprefix('KER_IO_READY '))
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}

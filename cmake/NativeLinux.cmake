@@ -227,6 +227,15 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-startup-lifecycle COMMAND ${ker_native_test_command}
         --startup-app "$<TARGET_FILE:ker-startup-interface-test>")
     set_tests_properties(native-fstack-startup-lifecycle PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_library(ker-startup-failure-probe SHARED tests/posix/startup-failure-probe.c)
+    target_compile_options(ker-startup-failure-probe PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-startup-failure-probe PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME native-fstack-startup-failures
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/startup-failures.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
+            --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+    set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-ecn-test tests/posix/fstack-tcp-ecn.c)
     target_compile_options(ker-posix-fstack-ecn-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-ecn COMMAND ${ker_native_test_command}

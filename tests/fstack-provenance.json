@@ -49,6 +49,17 @@
     }
   },
   "cases": {
+    "native-fstack-startup-failures": {
+      "source_file": "tests/unit/test_ff_init.c",
+      "source_case": [
+        "test_ff_init_fail_freebsd_init",
+        "test_ff_init_fail_dpdk_if_up"
+      ],
+      "ker_ctests": [
+        "native-fstack-startup-failures"
+      ],
+      "adaptation": "Run the actual Ker launcher, production preload/guard and original DPDK net_tap worker in a private network namespace. A successful control must execute the interface probe and publish native statistics. Test-only host CLOCK_REALTIME EIO is restricted to the application preload by its startup/packet environment: original Linux boots, then the production realtime adapter fails before native READY and main. A real off-subnet gateway is rejected by original Linux during network bring-up; this is only partial coverage for ff_dpdk_if_up, whose direct interface-up failure and stage ordering remain untested. Unknown ethdev lookup fails in the worker before native startup; retain its already-consumed DONE snapshot in launcher --stats. Every case requires actual successful rte_eal_cleanup and zero outstanding mbufs; failures return125 and leave no application marker/native success statistics. Monotonic host clocks and upstream sources are unchanged. No FreeBSD initialization ABI or exit1 equivalence is claimed."
+    },
     "native-fstack-worker-clock": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": [
