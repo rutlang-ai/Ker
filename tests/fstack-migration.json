@@ -1196,9 +1196,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_invalid_lcore_mask",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "native-fstack-lcore-mask",
+          "provenance_case": "native-fstack-lcore-mask"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dual_vlan",
@@ -1273,9 +1282,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_lcore_mask_no_bits",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "native-fstack-lcore-mask",
+          "provenance_case": "native-fstack-lcore-mask"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_portlist_nonint",
@@ -1329,9 +1347,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_uppercase_0X_succeeds",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "native-fstack-lcore-mask",
+          "provenance_case": "native-fstack-lcore-mask"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_id_not_in_filter_returns_one",
@@ -1413,23 +1440,50 @@
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_blank_and_multibit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "native-fstack-lcore-mask",
+          "provenance_case": "native-fstack-lcore-mask"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_all_blank_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "native-fstack-lcore-mask",
+          "provenance_case": "native-fstack-lcore-mask"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_mid_nonhex_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "native-fstack-lcore-mask",
+          "provenance_case": "native-fstack-lcore-mask"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_vlan_vip_addr",

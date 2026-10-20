@@ -1188,6 +1188,18 @@ def inside(args):
         eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --iova-mode=va --no-telemetry -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink'
         launcher = [sys.executable, str(args.launcher), '--address', '198.18.0.2/24',
             '--port', 'net_tap0', '--eal', eal]
+        if args.lcore_config:
+            # The pinned DPDK build supports lcore IDs below 128. Require two
+            # available physical CPUs for a genuine multi-bit EAL run.
+            selected_cpus = sorted(cpu for cpu in os.sched_getaffinity(0) if cpu < 128)[:2]
+            if len(selected_cpus) != 2:
+                raise RuntimeError('lcore-mask integration needs two available CPUs below 128')
+            selected_mask = sum(1 << cpu for cpu in selected_cpus)
+            eal = eal.replace(f'--lcores=0@{cpu} ', '', 1)
+            core_config = work / 'lcores.ini'
+            core_config.write_text('[dpdk]\nlcore_mask= 0X' + format(selected_mask, 'X') + '  \n')
+            launcher = [sys.executable, str(args.launcher), '--address', '198.18.0.2/24',
+                '--port', 'net_tap0', '--eal', eal, '--config', str(core_config)]
         if args.launcher_config:
             config_path = work / 'launcher.ini'
             config_logs = work / 'configured-logs'; config_logs.mkdir()
@@ -1243,7 +1255,10 @@ def inside(args):
                         log_dir = work / ('logs-passive' if native_server else 'logs-active')
                         log_dir.mkdir()
                         log_options = ['--log-dir', str(log_dir), '--log-level', '7']
-                    native = [*launcher, *capture_options, *log_options, '--stats', str(stats_path), '--']
+                    core_options = []
+                    if args.lcore_config and not native_server:
+                        core_options = ['--lcore-mask', format(1 << selected_cpus[1], 'x')]
+                    native = [*launcher, *capture_options, *log_options, *core_options, '--stats', str(stats_path), '--']
                     address = '198.18.0.2' if native_server else '198.18.0.1'
                     port = 25001 if native_server else 25002
                     listen = [app, 'slow-server' if args.zero_window and not native_server else 'server', address, str(port)]
@@ -1261,6 +1276,14 @@ def inside(args):
                     stats = json.loads(stats_path.read_text())
                     if not (stats['tx'] > 0 and stats['rx'] > 0 and stats['outstanding'] == 0):
                         raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
+                    if args.lcore_config:
+                        expected_count = 2 if native_server else 1
+                        expected_main = selected_cpus[0] if native_server else selected_cpus[1]
+                        if (stats['io']['lcore_count'] != expected_count or
+                                stats['io']['main_lcore'] != expected_main or
+                                stats['io']['main_cpu'] != expected_main):
+                            raise RuntimeError('EAL did not apply INI mask/CLI precedence: ' + str(stats))
+                        print('PASS: actual EAL lcore count/main match configured mask and CLI override', flush=True)
                     if args.startup_app and (stats['io']['port_count'] != 1 or stats['io']['process_type'] != 'primary'):
                         raise RuntimeError('traffic worker startup diagnostics missing')
                     if args.capture:
@@ -1436,6 +1459,7 @@ def main():
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--worker-log', action='store_true')
     parser.add_argument('--launcher-config', action='store_true')
+    parser.add_argument('--lcore-config', action='store_true')
     parser.add_argument('--startup-app', type=Path)
     parser.add_argument('--log-lifetime-probe', type=Path)
     parser.add_argument('--faults', action='store_true')

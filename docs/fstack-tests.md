@@ -267,3 +267,6 @@ TCP ECN：`ctest --test-dir build -R '^native-fstack-(tcp-ecn|launcher-config)$'
 
 `native-fstack-fd-map` 对应 `test_ff_native_fd_map`，使用真实 Linux socket 和实际 Ker fd 表验证映射生命周期、固定位置替换、引用及边界。无需网络设备，需 `KER_WITH_NATIVE_TCP=ON`。
 `native-fstack-errno` 对应 `test_ff_os_errno_mapping`，覆盖 81 项 Linux/LKL 到宿主 errno 的符号映射、未知错误及成功值，使用生产转换函数和真实内核调用。需 `KER_WITH_NATIVE_TCP=ON`。
+
+`native-fstack-lcore-mask` 对应六个 lcore mask 源场景，结合 `native-fstack-launcher-config` 验证提前拒绝、CLI 优先级及真实 EAL 选核。
+INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_count、main_lcore、main_cpu 和资源回收；需要两个可用且 ID 小于 128 的 CPU。

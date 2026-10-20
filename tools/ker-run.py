@@ -5,6 +5,7 @@ import configparser
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import selectors
 import shlex
@@ -39,14 +40,14 @@ if LIB_FROM_BIN.startswith('@'):
 
 
 TCP_ECN = {'off': 0, 'passive': 2, 'on': 1}
-CONFIG_DEFAULTS = dict(tcp_ecn=None, mtu=1500, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(lcore_mask=None, tcp_ecn=None, mtu=1500, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
     'network': {'tcp_ecn': ('tcp_ecn', str), 'mtu': ('mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -94,6 +95,7 @@ def parse_arguments(argv=None):
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
+    parser.add_argument('--lcore-mask', help='nonzero hexadecimal DPDK lcore mask; conflicts with EAL -c/-l/--lcores')
     parser.add_argument('--port', help='DPDK ethdev name')
     parser.add_argument('--all-multicast', action=argparse.BooleanOptionalAction,
         help='receive all Ethernet multicast frames for native Linux membership filtering')
@@ -139,6 +141,17 @@ def parse_arguments(argv=None):
         args.eal_args = shlex.split(args.eal)
     except ValueError as error:
         parser.error(f'--eal: {error}')
+    if args.lcore_mask is not None:
+        mask = args.lcore_mask.strip()
+        if not re.fullmatch(r'(?:0[xX])?[0-9a-fA-F]+', mask) or int(mask, 16) == 0:
+            parser.error('--lcore-mask must be a nonzero hexadecimal mask')
+        # Keep one source of EAL CPU selection. Do not silently override or
+        # remove caller-provided CPU mapping, especially --lcores remapping.
+        if any(token in ('--lcores', '-c', '-l') or token.startswith(('--lcores=', '-c', '-l'))
+                for token in args.eal_args):
+            parser.error('--lcore-mask conflicts with EAL -c, -l or --lcores')
+        args.lcore_mask = format(int(mask, 16), 'x')
+        args.eal_args += ['-c', args.lcore_mask]
     return args
 
 
