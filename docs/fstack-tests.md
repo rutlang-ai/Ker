@@ -291,3 +291,6 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 
 `native-fstack-vip-addresses` 验证真实主地址/VIP 安装、掩码、未配置地址拒绝、三个目的地址入站 TCP 和两个 VIP 源地址出站 TCP。
 结合 `native-fstack-launcher-config` 验证 `[network] vip_addresses`、重复 `--vip-address`、CLI 替换、32 项上限及非法输入在启动前返回 2。
+
+`native-fstack-launcher-config` 验证独立 `max_mtu`、相等边界、9000/2000 拒绝和 CLI 覆盖。
+`native-fstack-jumbo-mtu` 先验证低上限在启动前拒绝，再覆盖到 9000 执行真实 jumbo TCP/UDP、DF 和抓包检查，补齐 `test_mtu_port_over_max_fails`。

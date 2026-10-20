@@ -46,13 +46,13 @@ def vip_addresses(text):
     return [ipaddress.IPv4Interface(item.strip()) for item in text.split(',')] if text.strip() else []
 
 
-CONFIG_DEFAULTS = dict(vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
     'network': {'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
-                'mtu': ('mtu', int), 'address': ('address', ipaddress.IPv4Interface),
+                'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
@@ -101,6 +101,7 @@ def parse_arguments(argv=None):
     parser.add_argument('--vip-address', dest='vip_addresses', action='append', type=ipaddress.IPv4Interface,
         help='additional IPv4 address/prefix; repeat up to 32 times; replaces INI vip_addresses')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
+    parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
@@ -144,6 +145,10 @@ def parse_arguments(argv=None):
         parser.error('--vip-address must not duplicate the primary or another VIP address')
     if not 1280 <= args.mtu <= 9000:
         parser.error('--mtu must be in 1280..9000')
+    if not 1280 <= args.max_mtu <= 9000:
+        parser.error('--max-mtu must be in 1280..9000')
+    if args.mtu > args.max_mtu:
+        parser.error('--mtu must not exceed --max-mtu')
     if args.tcp_ecn is not None and args.tcp_ecn not in TCP_ECN:
         parser.error('--tcp-ecn must be off, passive or on')
     if not 0 <= args.shutdown_timeout_ms <= 60000:

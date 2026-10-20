@@ -1661,15 +1661,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_port_over_max_fails",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker single-port MTU configuration adapts the F-Stack scenario with typed INI/CLI validation and original Linux/DPDK runtime; source-API differences are documented in provenance.",
+      "status": "scenario-adapted",
+      "reason": "An independently configured max_mtu rejects requested MTU9000 against ceiling2000 before launch; CLI override to9000 passes actual original Linux/DPDK jumbo traffic. Typed bounds and configuration precedence are tested.",
       "ker_tests": [
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-mtu-config"
+        },
+        {
+          "ctest": "native-fstack-jumbo-mtu",
+          "provenance_case": "native-fstack-mtu-config"
         }
-      ],
-      "remaining": "Ker rejects MTU above its fixed ceiling 9000; no separately configurable max_mtu or per-port override exists, so a requested port MTU 9000 against a custom ceiling 2000 is not covered."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
