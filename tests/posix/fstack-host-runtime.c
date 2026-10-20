@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "host-memory.h"
+#include "host-clock.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -118,6 +119,7 @@ static void memory_and_time(void)
 int main(void)
 {
     ker_native_host_memory_init(&lkl_host_ops);
+    ker_native_host_clock_init(&lkl_host_ops);
     original = lkl_host_ops;
     CHECK(original.mem_alloc && original.mem_free && original.time);
     CHECK(original.mmap && original.munmap && original.page_alloc && original.page_free);

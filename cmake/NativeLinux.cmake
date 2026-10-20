@@ -39,7 +39,7 @@ foreach(artifact config library)
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/posix-poll.c src/posix/posix-stat.c
-    src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c)
+    src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -111,7 +111,21 @@ if(BUILD_TESTING)
     target_compile_options(ker-thread-runtime-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-thread-runtime COMMAND ker-thread-runtime-test)
     set_tests_properties(native-fstack-thread-runtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
-    add_executable(ker-host-runtime-test tests/posix/fstack-host-runtime.c src/posix/host-memory.c)
+    foreach(mode debug release)
+        add_executable(ker-host-failure-${mode}-test tests/posix/fstack-host-failure.c src/posix/host-clock.c)
+        target_include_directories(ker-host-failure-${mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+        target_include_directories(ker-host-failure-${mode}-test SYSTEM PRIVATE
+            "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+        target_compile_options(ker-host-failure-${mode}-test PRIVATE -Wall -Wextra -Werror)
+        target_link_options(ker-host-failure-${mode}-test PRIVATE -Wl,--wrap=clock_gettime)
+    endforeach()
+    target_compile_options(ker-host-failure-debug-test PRIVATE -UNDEBUG)
+    target_compile_definitions(ker-host-failure-release-test PRIVATE NDEBUG)
+    add_test(NAME native-fstack-host-failure-debug COMMAND ker-host-failure-debug-test)
+    add_test(NAME native-fstack-host-failure-release COMMAND ker-host-failure-release-test)
+    set_tests_properties(native-fstack-host-failure-debug native-fstack-host-failure-release
+        PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_executable(ker-host-runtime-test tests/posix/fstack-host-runtime.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-host-runtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-host-runtime-test SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")

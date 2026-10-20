@@ -45,6 +45,18 @@
     }
   },
   "cases": {
+    "native-fstack-host-failure": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_clock_gettime_assert_fail_on_clock_error",
+        "test_panic_aborts"
+      ],
+      "ker_ctests": [
+        "native-fstack-host-failure-debug",
+        "native-fstack-host-failure-release"
+      ],
+      "adaptation": "Pinned F-Stack clock-error assertion and panic-abort scenarios adapted to Ker-installed lkl_host_ops.time/panic callbacks. Test-only linker wrapping fails only CLOCK_MONOTONIC with EIO in a forked child; valid clock calls forward to the real host clock, with nanosecond bounds, monotonicity and advancement checks. Both failed clock and panic must terminate with SIGABRT, not return. The same actual adapter and test are compiled with assertions enabled and with NDEBUG; checks do not use assert. No kernel boot failure or realtime-cache failure injection claim. Separate native-fstack-host-runtime installs this same clock adapter, then boots/halts original Linux with measured real time callbacks. No imported source modification or network protocol implementation."
+    },
     "native-fstack-startup-lifecycle-device": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": [
