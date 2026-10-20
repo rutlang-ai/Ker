@@ -44,6 +44,8 @@ def main():
     parser.add_argument('--port', required=True, help='DPDK ethdev name')
     parser.add_argument('--all-multicast', action='store_true',
         help='receive all Ethernet multicast frames for native Linux membership filtering')
+    parser.add_argument('--log-dir', type=Path, help='existing directory for append-only DPDK worker logs')
+    parser.add_argument('--log-level', type=int, choices=range(1, 9), help='DPDK global and ker.io level (1=emergency, 8=debug); overrides EAL level after startup')
     parser.add_argument('--pcap-dir', type=Path, help='existing private capture directory; rotates ten files per direction')
     parser.add_argument('--pcap-snaplen', type=int, default=65535)
     parser.add_argument('--pcap-max-bytes', type=int, default=16 * 1024 * 1024)
@@ -77,6 +79,11 @@ def main():
     preserve_signal = False
     try:
         multicast_options = ['--all-multicast'] if args.all_multicast else []
+        log_options = []
+        if args.log_dir is not None:
+            log_options += ['--log-dir', str(args.log_dir.resolve())]
+        if args.log_level is not None:
+            log_options += ['--log-level', str(args.log_level)]
         capture_options = []
         if args.pcap_dir is not None:
             capture_options = ['--pcap-dir', str(args.pcap_dir.resolve()),
@@ -84,7 +91,7 @@ def main():
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, '--', *shlex.split(args.eal)],
+            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, *log_options, '--', *shlex.split(args.eal)],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)

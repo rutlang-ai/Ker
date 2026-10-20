@@ -317,3 +317,11 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 第一阶段以 `MSG_DONTWAIT` 读出已有 17 字节，保持 fd 为阻塞模式。第二阶段通过副本将低水位降到 1，已有数据须立即可读，保留原 epoll 注册及完整 64 位 tag。第三阶段确认低于水位的数据排队后才允许对端半关闭；FIN 须使 poll/epoll 报告 IN/RDHUP，`MSG_WAITALL` 的 64 字节读取返回 17 字节尾部，之后两个 alias 都返回 EOF。各阶段核对内容、未写入区域和队列计数。native 每端须有两次匹配方向的原始 Linux TCP 打开、DPDK 收发及零未释放缓冲区。
 
 这是固定 F-Stack host shutdown/dup/readiness 桥接场景的 Ker/Linux 扩展，不是上游测试或等价声明。仅增加测试，不修改协议或适配代码。未覆盖并发读者、ET/ONESHOT rearm、信号中断或低水位性能；TCP 和 UDP 的低水位语义须分别验证。
+
+## Worker 日志文件
+
+可传入 `--log-dir DIR`，在现存目录中追加 `ker-io-<worker-PID>.log`。
+该文件接收 DPDK 日志及 `ker.io` 生命周期消息；应用输出与显式 stderr 错误保持原通道。
+`--log-level 1..8`（emergency 到 debug）在 EAL 启动后覆盖全局与 Ker 分类级别；
+启动期 EAL 消息仍由 `--eal` 内日志选项控制。日志 I/O 失败最终返回 125。
+未启用日志目录时保留既有输出行为；本功能没有文件轮转。

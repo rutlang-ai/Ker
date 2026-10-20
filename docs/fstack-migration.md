@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 50 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 63 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 11 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 309 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 296 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -81,7 +81,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 0 | 0 | 6 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
-| [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 0 | 0 | 13 | 0 | 0 |
+| [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 2 | 1 | 0 | 0 |
 | [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 13 | 0 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
@@ -146,3 +146,21 @@ SIGSEGV。Ker 在 `host-thread.c` 提供完整且私有的 pthread TLS key 适�
 LKL 不继承 FreeBSD 的 pcurthread，且 void 线程入口和无返回值槽的 join 无法表达
 F-Stack 丢弃非 NULL 线程返回值的断言。本批不模拟 FreeBSD 上下文，也不对应用的
 pthread API 做拦截；cancel、detach 生命周期及析构重新设置 TLS 等仍未覆盖。
+
+## DPDK worker 日志
+
+`native-fstack-worker-log` 用真实、未 wrap 的 DPDK 日志 API 适配 `test_ff_log.c`
+的 13 项场景：文件打开/追加、无效目录、非零实例文件名、打开和空状态关闭、
+输出流切换、全局/分类级别、分类错误、可变参数与 va_list，以及实际输出字节数。
+不复制上游任意 mock 返回值，也不创建虚假的 FreeBSD 日志分类。
+Ker 使用 `ker.io` 分类及 `ker-io-<instance>.log`，worker 实例为其 PID。
+
+`ker-run --log-dir DIR` 在现存目录中追加 worker 的 DPDK 日志；未启用时保持既有行为。
+`--log-level 1..8` 在 EAL 启动后覆盖 DPDK 全局与 Ker 分类级别；启动期 EAL 消息
+仍由 `--eal` 中的级别选项控制。只修改诊断输出，不修改包或协议处理。
+DPDK 日志进入文件；应用输出和 worker 显式 stderr 错误仍在各自原有通道。
+
+真实 `/dev/full` 测试验证 fflush 和缓冲关闭失败；Ker 会检查 DPDK 未传播的流错误，
+关闭前把 DPDK 输出流恢复到 stderr。独立 Linux 对端的 TCP 主动和被动连接验证
+文件内容、DPDK TX/RX、原生连接计数与零 outstanding，并确认实际 worker 日志
+打开/写入失败最终返回 launcher 状态 125。文件为追加模式，本批不提供轮转或多进程共享 sink。

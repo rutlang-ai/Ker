@@ -16,6 +16,7 @@ FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存�
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| native-fstack-worker-log / native-fstack-worker-log-interop | test_ff_log.c 的 13 项场景 | 真实 DPDK 日志文件、追加、实例文件名、流切换、级别过滤、格式与返回值；检查 flush/close 失败。Ker 使用自身分类，不模拟 FreeBSD 分类；独立 Linux TCP 对端验证实际 worker 和 launcher 错误传播。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-thread-runtime | test_ff_pthread_create_arg_passed / test_ff_pthread_create_malloc_failure；basic / join_retval 部分覆盖 | LKL 真实线程、参数和分配失败，扩展验证 TLS/析构/回收、信号量和互斥；真实 Linux 启停确认线程回调被调用。FreeBSD pcurthread 继承和返回值槽仍未迁移。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-host-runtime | test_ff_malloc_normal / test_ff_free_null / test_ff_clock_gettime_monotonic / test_ff_clock_gettime_ns_advances / test_ff_mmap_munmap_roundtrip / test_ff_mmap_prot_writeonly / test_ff_mmap_prot_readonly | 直接验证原生 LKL 主机回调的内存、单调时钟和映射权限；碰撞不得破坏原有映射。LKL 使用精确地址，区别于 F-Stack 的 NULL 地址分配接口。真实 Linux 启停确认内存/时钟回调被使用；固定地址 mmap 由回调测试覆盖，当前非 MMU 内核启动不走该路径。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-message-io | test_ff_host_msg_name_shutdown_bridges / test_ff_host_readv_writev / test_ff_host_ioctl_fionbio / test_ff_host_dup / test_ff_host_dup2 | 6 个公共 POSIX 场景分别在宿主 Linux 与完整导入内核运行：message/vector I/O、地址查询、半关闭、FIONBIO、dup/dup2；Ker 扩展覆盖零长度 iovec、短读、PEEK/DONTWAIT、FIONREAD、共享状态与跨后端 fd 替换。原生连接计数必须增长；UNIX socket 明确走宿主透传。上游场景只测试 FF_KERNEL_COEXIST 宿主桥接，本适配不声称上游已验证用户态 TCP。需 KER_WITH_NATIVE_TCP=ON |

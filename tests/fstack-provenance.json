@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/unit/test_ff_log.c": {
+      "sha256": "30c4dad2654cacdfa994f1945a561b9ccf55ae34f1e47b87dc60e4f4aa459b08",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_log.c"
+    },
     "tests/unit/test_ff_thread.c": {
       "sha256": "9132f512f4f896ceee9dfc38a0b041df23ff21bf72ffaa84737e561e7a742365",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_thread.c"
@@ -33,6 +37,28 @@
     }
   },
   "cases": {
+    "native-fstack-worker-log": {
+      "source_file": "tests/unit/test_ff_log.c",
+      "source_case": [
+        "test_ff_log_open_set_normal",
+        "test_ff_log_open_set_dir_invalid",
+        "test_ff_log_open_set_long_filename",
+        "test_ff_log_close_when_open",
+        "test_ff_log_close_when_null",
+        "test_ff_log_reset_stream_normal",
+        "test_ff_log_set_global_level",
+        "test_ff_log_set_level_normal",
+        "test_ff_log_set_level_returns_value",
+        "test_ff_log_variadic_basic",
+        "test_ff_log_variadic_zero_args",
+        "test_ff_vlog_normal",
+        "test_ff_log_returns_rte_vlog_value"
+      ],
+      "ker_ctests": [
+        "native-fstack-worker-log"
+      ],
+      "adaptation": "Thirteen pinned F-Stack logging scenarios adapted to real, unwrapped DPDK log APIs and the actual worker log helper: file creation and append, invalid-directory failure, nonzero instance ID in filename, closing open/empty state, stream reset, global/type filtering, invalid-category error, variadic/literal/va_list formatting and actual DPDK byte-count returns. The unit test reads exact output and checks descriptor closure and a valid restored stderr stream. Ker uses one ker.io category and ker-io-<instance>.log instead of FreeBSD/library category pairs and F-Stack global configuration; runtime instance is the real worker PID. Mocked arbitrary rte_vlog returns are replaced with actual output counts and invalid-category errors. Ker additionally checks ferror because pinned DPDK ignores fflush errors, and reports existing stream errors and buffered-close failures with /dev/full. Separate native-fstack-worker-log-interop validates both original-Linux TCP roles over real DPDK, lifecycle log files and launcher status 125 on real worker log I/O errors. No FreeBSD logging API, application stderr redirection, rotation, or cross-process shared log sink is claimed."
+    },
     "native-fstack-thread-runtime": {
       "source_file": "tests/unit/test_ff_thread.c",
       "source_case": [

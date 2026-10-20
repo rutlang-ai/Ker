@@ -1029,6 +1029,15 @@ def inside(args):
     with tempfile.TemporaryDirectory(prefix='ker-native-tcp-') as temporary:
         work = Path(temporary)
         env = dict(os.environ, RUNTIME_DIRECTORY=str(work))
+        lifetime_violations = work / 'dpdk-log-lifetime-violations.txt'
+        if args.worker_log:
+            if not args.log_lifetime_probe:
+                raise RuntimeError('worker log lifetime probe was not configured')
+            preload = [str(args.log_lifetime_probe)]
+            if env.get('LD_PRELOAD'):
+                preload.append(env['LD_PRELOAD'])
+            env['LD_PRELOAD'] = ':'.join(preload)
+            env['KER_DPDK_LOG_LIFETIME_VIOLATION'] = str(lifetime_violations)
         commands = [
             ['ip', 'link', 'set', 'lo', 'up'],
             ['ip', 'tuntap', 'add', 'dev', 'kerpeer', 'mode', 'tap', 'multi_queue'],
@@ -1068,7 +1077,12 @@ def inside(args):
                         capture_dir.mkdir()
                         capture_options = ['--pcap-dir', str(capture_dir), '--pcap-snaplen', '96',
                             '--pcap-max-bytes', '1073741824', '--pcap-nsec']
-                    native = [*launcher, *capture_options, '--stats', str(stats_path), '--']
+                    log_options = []
+                    if args.worker_log:
+                        log_dir = work / ('logs-passive' if native_server else 'logs-active')
+                        log_dir.mkdir()
+                        log_options = ['--log-dir', str(log_dir), '--log-level', '7']
+                    native = [*launcher, *capture_options, *log_options, '--stats', str(stats_path), '--']
                     address = '198.18.0.2' if native_server else '198.18.0.1'
                     port = 25001 if native_server else 25002
                     listen = [app, 'slow-server' if args.zero_window and not native_server else 'server', address, str(port)]
@@ -1088,6 +1102,13 @@ def inside(args):
                         raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
                     if args.capture:
                         verify_capture(capture_dir, stats)
+                    if args.worker_log:
+                        files = list(log_dir.glob('ker-io-*.log'))
+                        if len(files) != 1 or not re.fullmatch(r'ker-io-[0-9]+\.log', files[0].name):
+                            raise RuntimeError('worker log filename or count is invalid')
+                        text = files[0].read_text()
+                        if 'ker.io ready port=net_tap0' not in text or 'ker.io stopped status=0' not in text:
+                            raise RuntimeError('worker lifecycle log is missing: ' + text)
                     native_stats = stats['native']
                     if not native_stats['passive_opens' if native_server else 'active_opens']:
                         raise RuntimeError('native kernel did not record the TCP open')
@@ -1107,6 +1128,44 @@ def inside(args):
                         if failure.returncode != 125 or 'capture' not in failure.stderr:
                             raise RuntimeError(f'capture I/O failure was masked: {failure.returncode} {failure.stderr}')
                     print('PASS: capture startup and buffered-close failures propagate status 125', flush=True)
+                if args.worker_log:
+                    startup_logs = work / 'startup-error-logs'
+                    startup_logs.mkdir()
+                    startup_launcher = list(launcher)
+                    eal_argument = startup_launcher.index('--eal') + 1
+                    startup_launcher[eal_argument] += ' --ker-invalid-eal-argument'
+                    failure = subprocess.run([*startup_launcher, '--log-dir', str(startup_logs),
+                        '--', '/bin/true'], capture_output=True, text=True,
+                        env=env, timeout=30)
+                    startup_files = list(startup_logs.glob('ker-io-*.log'))
+                    if failure.returncode != 125 or len(startup_files) != 1:
+                        raise RuntimeError('EAL startup failure did not close the worker log: '
+                            + f'{failure.returncode} {failure.stderr}')
+                    failure = subprocess.run([*launcher, '--log-dir', str(work / 'missing-logs'), '--', '/bin/true'],
+                        capture_output=True, text=True, env=env, timeout=30)
+                    if failure.returncode != 125 or 'worker log' not in failure.stderr:
+                        raise RuntimeError('log open failure was masked: ' + failure.stderr)
+                    # This wrapper only prepares an erroring file for the actual
+                    # worker PID, then execs the real binary with unchanged args.
+                    wrapper = work / 'full-log-worker'
+                    wrapper.write_text('#!' + sys.executable + '\nimport os, sys\nfrom pathlib import Path\n'
+                        + 'directory = Path(sys.argv[sys.argv.index("--log-dir") + 1])\n'
+                        + 'os.symlink("/dev/full", directory / ("ker-io-%d.log" % os.getpid()))\n'
+                        + 'os.execv(' + repr(str(args.io_worker.resolve())) + ', sys.argv)\n')
+                    wrapper.chmod(0o700)
+                    (work / 'ker-app').symlink_to(args.io_worker.resolve().parent / 'ker-app')
+                    full = work / 'full-logs'; full.mkdir()
+                    failure = subprocess.run([*launcher, '--io-worker', str(wrapper), '--log-dir', str(full), '--', '/bin/true'],
+                        capture_output=True, text=True, env=env, timeout=30)
+                    if (failure.returncode != 125 or 'worker log' not in failure.stderr or
+                            'write worker log failed during EAL startup' not in failure.stderr):
+                        raise RuntimeError('log write failure was masked: ' + failure.stderr)
+                    events = lifetime_violations.read_text() if lifetime_violations.exists() else ''
+                    if 'rte_eal_cleanup\n' not in events:
+                        raise RuntimeError('lifetime probe did not observe real rte_eal_cleanup calls')
+                    if 'rte_openlog_stream after rte_eal_cleanup\n' in events:
+                        raise RuntimeError('DPDK log stream was changed after EAL cleanup: ' + events)
+                    print('PASS: actual worker logging with native TCP in both roles; log I/O errors return 125', flush=True)
                 if args.errors_app:
                     stats_path = work / 'errors.json'
                     with server([str(args.errors_app), 'peer'], 25008, log, env):
@@ -1194,6 +1253,8 @@ def main():
     for name in ['launcher', 'library', 'io-worker', 'app']:
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--capture', action='store_true')
+    parser.add_argument('--worker-log', action='store_true')
+    parser.add_argument('--log-lifetime-probe', type=Path)
     parser.add_argument('--faults', action='store_true')
     parser.add_argument('--zero-window', action='store_true')
     parser.add_argument('--udp-cork-app', type=Path)

@@ -3591,93 +3591,158 @@
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_normal",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_dir_invalid",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_long_filename",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_close_when_open",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_close_when_null",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_reset_stream_normal",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_set_global_level",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_set_level_normal",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_set_level_returns_value",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_variadic_basic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_variadic_zero_args",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_vlog_normal",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_returns_rte_vlog_value",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack log-open/rotation and rte_log wrapping are not Ker APIs.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker worker logging and unwrapped DPDK APIs cover file lifecycle, instance filename, stream selection, filtering, formatting and return/error propagation. Ker uses its own category and PID/instance filename rather than F-Stack global configuration or FreeBSD categories.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-worker-log",
+          "provenance_case": "native-fstack-worker-log"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_basic",
