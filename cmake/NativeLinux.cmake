@@ -253,6 +253,13 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-network-sysctl-test>"
             --probe "$<TARGET_FILE:ker-startup-failure-probe>")
     set_tests_properties(native-fstack-network-sysctl PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-ipv6-interop-test tests/posix/ipv6-interop.c)
+    target_compile_options(ker-ipv6-interop-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-ipv6-interop
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/ipv6-interop.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ipv6-interop-test>")
+    set_tests_properties(native-fstack-ipv6-interop PROPERTIES TIMEOUT 90 LABELS "native-tcp;native-udp;fstack")
     add_executable(ker-vip-addresses-test tests/posix/fstack-vip-addresses.c)
     target_compile_options(ker-vip-addresses-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-vip-addresses

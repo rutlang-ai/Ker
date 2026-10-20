@@ -60,6 +60,17 @@
       ],
       "adaptation": "Partial adaptation only: Ker [sysctl] and repeatable --sysctl accept explicit Linux net.* names, merge CLI by key, bound entries/key/value sizes, reject malformed paths and conflicting tcp_ecn options before setup. Production constructor writes private original Linux procfs before native READY; Linux validates values, unknown keys and invalid values fail125 before main. Actual DPDK net_tap startup tests five socket defaults (IP_TTL, TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT, TCP_SYNCNT), CLI replacement retaining the other four, omission preserving pinned Linux defaults despite inherited KER_NATIVE_SYSCTLS, and unknown-key/invalid-value failure cleanup. Host namespace sysctl files remain unchanged; require actual successful EAL cleanup and zero outstanding buffers. The upstream fixture combines boot and five sysctl entries; this covers multiple effective Linux network settings, not its FreeBSD names, boot hz/physmem/fd_reserve/mem_size/panicstr or internal list layout. No upstream or protocol implementation changes."
     },
+    "native-fstack-ipv6-interop": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_inet6_fixture_ignored"
+      ],
+      "ker_ctests": [
+        "native-fstack-ipv6-interop",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Related feature evidence only; the catalog source case remains blocked and is not counted as adapted/partial. The pinned valid_inet6.ini fixture supplies IPv6 addresses/prefixes, gateways, VIPs and VLAN configuration, but its registered test asserts INET6-disabled ignore semantics. Ker adds explicit Linux [network] address6/--address6 with syntax/precedence validation and inherited override removal, enables DPDK multicast reception for NDP, and uses unchanged original LKL lkl_if_set_ipv6 after interface-up, including original Linux DAD. Real net_tap tests inbound/outbound IPv6 TCP and UDP, explicit native source binds, unconfigured-address bind rejection, independent-host NDP resolving the worker MAC, IPv4 TCP alongside IPv6, native TCP counters and zero outstanding buffers. Two runs cover INI and CLI replacement; actual host-owned duplicate address fails125 before native READY/main and cleans up worker. No FreeBSD INET6-disabled behavior, gateway, IPv6 VIP/VLAN, RA/SLAAC, cross-subnet or physical NIC coverage is claimed. No upstream/protocol source modifications."
+    },
     "native-fstack-vip-addresses": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
