@@ -3157,9 +3157,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_native_fd_map",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real original Linux boot with actual Ker fd-table.c, no mocked native close. Establish, look up, replace and clear host-placeholder/native-socket mappings; verify real socket types, host close-on-exec flags, native descriptor release and host reservation release. Retained references preserve the replaced UDP object until put; a duplicated native TCP descriptor survives clearing its sibling. Host dup replacement clears the native association. Invalid lookups/closes are rejected safely; out-of-range fixed export reports EMFILE and consumes its native input. Ker uses NULL/errno and ownership-taking exports instead of F-Stack zero-sentinel/no-op setters; no FreeBSD offset encoding ABI claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-fd-map",
+          "provenance_case": "native-fstack-fd-map"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_host_msg_name_shutdown_bridges",
