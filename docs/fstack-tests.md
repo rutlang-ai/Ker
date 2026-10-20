@@ -248,3 +248,7 @@ checksum 场景仅提供 UDP 动机；额外记录的 UDP/epoll 示例也不是�
 原生启动与设备集成：`ctest --test-dir build -R '^native-fstack-startup-lifecycle$' --output-on-failure`。
 使用真实 DPDK/net_tap 和原始 Linux，检查启动诊断、接口地址/状态/MTU、双角色流量、清理及启动失败不执行应用。
 F-Stack run/stop 回调 ABI、内核启动/接口激活的定点故障仍未覆盖。
+
+宿主失败路径：`ctest --test-dir build -R '^native-fstack-host-(failure-.*|runtime)$' --output-on-failure`。
+同一时钟/panic 适配器分别以断言开启和 `NDEBUG` 编译，真实时钟正常前进；注入时钟失败及 panic 均须 SIGABRT。
+原生内核启动/关闭测试确认使用安装后的实际时钟回调，上游源码保持不变。

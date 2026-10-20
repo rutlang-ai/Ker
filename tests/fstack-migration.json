@@ -2994,9 +2994,18 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_panic_aborts",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker host callbacks fail with SIGABRT on host clock error and kernel panic, including NDEBUG builds; exact scope and fault injection are recorded in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-failure-debug",
+          "provenance_case": "native-fstack-host-failure"
+        },
+        {
+          "ctest": "native-fstack-host-failure-release",
+          "provenance_case": "native-fstack-host-failure"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_realtime",
@@ -3060,9 +3069,18 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_assert_fail_on_clock_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker host callbacks fail with SIGABRT on host clock error and kernel panic, including NDEBUG builds; exact scope and fault injection are recorded in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-failure-debug",
+          "provenance_case": "native-fstack-host-failure"
+        },
+        {
+          "ctest": "native-fstack-host-failure-release",
+          "provenance_case": "native-fstack-host-failure"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
