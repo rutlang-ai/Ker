@@ -16,6 +16,7 @@ FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存�
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| native-fstack-launcher-config / native-fstack-launcher-config-interop | test_ff_ini_parser.c：18 项场景适配，1 项多行部分覆盖 | 实际 launcher 的标准库 INI 解析、类型校验、CLI 覆盖和配置文件相对路径；真实 DPDK/原始 Linux TCP 双角色及日志/capture 验证。不是 F-Stack config schema/callback ABI 兼容层。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-worker-log / native-fstack-worker-log-interop | test_ff_log.c 的 13 项场景 | 真实 DPDK 日志文件、追加、实例文件名、流切换、级别过滤、格式与返回值；检查 flush/close 失败。Ker 使用自身分类，不模拟 FreeBSD 分类；独立 Linux TCP 对端验证实际 worker 和 launcher 错误传播。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-thread-runtime | test_ff_pthread_create_arg_passed / test_ff_pthread_create_malloc_failure；basic / join_retval 部分覆盖 | LKL 真实线程、参数和分配失败，扩展验证 TLS/析构/回收、信号量和互斥；真实 Linux 启停确认线程回调被调用。FreeBSD pcurthread 继承和返回值槽仍未迁移。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-host-runtime | test_ff_malloc_normal / test_ff_free_null / test_ff_clock_gettime_monotonic / test_ff_clock_gettime_ns_advances / test_ff_mmap_munmap_roundtrip / test_ff_mmap_prot_writeonly / test_ff_mmap_prot_readonly | 直接验证原生 LKL 主机回调的内存、单调时钟和映射权限；碰撞不得破坏原有映射。LKL 使用精确地址，区别于 F-Stack 的 NULL 地址分配接口。真实 Linux 启停确认内存/时钟回调被使用；固定地址 mmap 由回调测试覆盖，当前非 MMU 内核启动不走该路径。需 KER_WITH_NATIVE_TCP=ON |
@@ -243,3 +244,7 @@ checksum 场景仅提供 UDP 动机；额外记录的 UDP/epoll 示例也不是�
 必须接收并回复，随后同一 socket 继续处理非空报文。原生计数来自 Linux 的
 `/proc/net/snmp`，不能用宿主 socket 或 DPDK 包计数代替原生 UDP 收发证据。
 详细断言与边界见 [UDP 验证说明](native-udp-validation.md)。
+
+原生启动与设备集成：`ctest --test-dir build -R '^native-fstack-startup-lifecycle$' --output-on-failure`。
+使用真实 DPDK/net_tap 和原始 Linux，检查启动诊断、接口地址/状态/MTU、双角色流量、清理及启动失败不执行应用。
+F-Stack run/stop 回调 ABI、内核启动/接口激活的定点故障仍未覆盖。

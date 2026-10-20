@@ -540,16 +540,26 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_init_succeeded_with_one_port",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-device"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_eth_dev_socket_id_post_init",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-device"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_register_deregister_roundtrip",
@@ -579,9 +589,14 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_get_traffic_post_init",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-device"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_zero_total",
@@ -610,9 +625,14 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_eal_process_type_primary",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-device"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_basic",
@@ -919,9 +939,14 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_up_success",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack EAL/FreeBSD device scenario is recorded; borrowed Ker ethdev and copy-export tests must not stand in for unimplemented registration/offload features.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-device"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
@@ -3290,205 +3315,322 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_valid_basic",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiple_sections",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_comment_lines",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_inline_comment",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_whitespace_strip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_empty_value",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "reason": "Ker requires known named sections; F-Stack sectionless key callbacks are not implemented.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_invalid_syntax",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "reason": "Ker validates its typed settings directly; arbitrary caller handlers and handler-return-zero semantics are not exposed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bom_utf8",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_normal",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "reason": "Ker opens configuration paths and reads valid text streams; no F-Stack C NULL FILE-pointer entrypoint is provided.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_filename_not_exist",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_filename_normal",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "reason": "Ker rejects unknown section names instead of silently truncating names to the F-Stack fixed buffer size.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_key_name",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "reason": "Ker rejects unknown option names instead of silently truncating names to the F-Stack fixed buffer size.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
+      "reason": "The Ker configuration schema has no opaque caller handler/userdata callback interface.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_zero_byte_input",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_section_no_close_bracket",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_trailing_newline",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ],
+      "remaining": "Ker combines continuation lines into one EAL string. F-Stack invokes the handler separately for the initial value and every continuation line; that callback sequence is not implemented."
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_colon_separator",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bare_line_no_separator",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_partial_bom_not_recognized",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bom_third_byte_mismatch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack inih parser is not used by Ker; migrating it would test a different product rather than Ker configuration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-launcher-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_happy_path",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-init"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_load_config",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-init"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_init",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-init"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_run_and_stop_forward",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack config/DPDK/FreeBSD init stages and ff_run/ff_stop hooks differ from Ker Linux/LKL startup; these mocks cannot validate Ker startup.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-startup-lifecycle-init"
+        }
+      ],
+      "remaining": "Worker control-channel stop and clean native teardown are exercised; F-Stack ff_run callback/argument forwarding and ff_stop_run ABI are not implemented."
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_freebsd_init",

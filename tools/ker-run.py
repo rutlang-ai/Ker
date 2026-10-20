@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a POSIX application against imported Linux, with DPDK Ethernet I/O."""
 import argparse
+import configparser
 import ipaddress
 import json
 import os
@@ -37,26 +38,85 @@ if LIB_FROM_BIN.startswith('@'):
     LIB_FROM_BIN = '../lib64'
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--address', required=True, type=ipaddress.IPv4Interface)
+CONFIG_DEFAULTS = dict(address=None, gateway=None, port=None, eal=None,
+    all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
+    pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
+    shutdown_timeout_ms=5000, stats=None, command=[])
+CONFIG_SCHEMA = {
+    'network': {'address': ('address', ipaddress.IPv4Interface),
+                'gateway': ('gateway', ipaddress.IPv4Address)},
+    'dpdk': {'port': ('port', str), 'eal': ('eal', str),
+             'all_multicast': ('all_multicast', bool)},
+    'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
+    'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
+                'max_bytes': ('pcap_max_bytes', int), 'nsec': ('pcap_nsec', bool)},
+    'runtime': {'shutdown_timeout_ms': ('shutdown_timeout_ms', int), 'stats': ('stats', Path)},
+}
+
+
+def read_configuration(stream, directory, source='<stream>'):
+    ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
+        empty_lines_in_values=False)
+    ini.optionxform = str
+    ini.read_string(stream.read().removeprefix('\ufeff'), source=str(source))
+    if ini.defaults():
+        raise ValueError('DEFAULT inheritance is unsupported')
+    values = {}
+    for section in ini.sections():
+        if section not in CONFIG_SCHEMA:
+            raise ValueError(f'unknown section [{section}]')
+        for name, text in ini.items(section, raw=True):
+            if name not in CONFIG_SCHEMA[section]:
+                raise ValueError(f'unknown option [{section}] {name}')
+            field, convert = CONFIG_SCHEMA[section][name]
+            try:
+                value = ini.getboolean(section, name) if convert is bool else convert(text)
+            except ValueError as error:
+                raise ValueError(f'[{section}] {name}: {error}') from error
+            if convert is Path and not value.is_absolute():
+                value = directory / value
+            values[field] = value
+    return values
+
+
+def load_configuration(path):
+    path = path.resolve()
+    with path.open(encoding='utf-8') as stream:
+        return read_configuration(stream, path.parent, path)
+
+
+def parse_arguments(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, argument_default=argparse.SUPPRESS)
+    parser.add_argument('--config', type=Path, default=None, help='Ker INI configuration; explicit CLI options take precedence')
+    parser.add_argument('--address', type=ipaddress.IPv4Interface)
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
-    parser.add_argument('--port', required=True, help='DPDK ethdev name')
-    parser.add_argument('--all-multicast', action='store_true',
+    parser.add_argument('--port', help='DPDK ethdev name')
+    parser.add_argument('--all-multicast', action=argparse.BooleanOptionalAction,
         help='receive all Ethernet multicast frames for native Linux membership filtering')
     parser.add_argument('--log-dir', type=Path, help='existing directory for append-only DPDK worker logs')
     parser.add_argument('--log-level', type=int, choices=range(1, 9), help='DPDK global and ker.io level (1=emergency, 8=debug); overrides EAL level after startup')
     parser.add_argument('--pcap-dir', type=Path, help='existing private capture directory; rotates ten files per direction')
-    parser.add_argument('--pcap-snaplen', type=int, default=65535)
-    parser.add_argument('--pcap-max-bytes', type=int, default=16 * 1024 * 1024)
-    parser.add_argument('--pcap-nsec', action='store_true', help='write nanosecond PCAP timestamps')
-    parser.add_argument('--eal', required=True, help='DPDK EAL arguments, parsed without a shell')
+    parser.add_argument('--pcap-snaplen', type=int)
+    parser.add_argument('--pcap-max-bytes', type=int)
+    parser.add_argument('--pcap-nsec', action=argparse.BooleanOptionalAction, help='write nanosecond PCAP timestamps')
+    parser.add_argument('--eal', help='DPDK EAL arguments, parsed without a shell')
     parser.add_argument('--library', type=Path, default=Path(__file__).resolve().parent / LIB_FROM_BIN / 'libker-posix.so')
     parser.add_argument('--io-worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-worker')
-    parser.add_argument('--shutdown-timeout-ms', type=int, default=5000)
+    parser.add_argument('--shutdown-timeout-ms', type=int)
     parser.add_argument('--stats', type=Path, help='write Ethernet I/O counters at shutdown')
     parser.add_argument('command', nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    supplied = parser.parse_args(argv)
+    values = dict(CONFIG_DEFAULTS)
+    if supplied.config is not None:
+        try:
+            values.update(load_configuration(supplied.config))
+        except (OSError, UnicodeError, configparser.Error, ValueError) as error:
+            parser.error(f'{supplied.config}: {error}')
+    values.update(vars(supplied))
+    args = argparse.Namespace(**values)
+    missing = [name for name in ('address', 'port', 'eal') if getattr(args, name) is None]
+    if missing:
+        parser.error('required via CLI or --config: ' + ', '.join('--' + name for name in missing))
     if args.command[:1] == ['--']:
         args.command.pop(0)
     if not args.command:
@@ -65,6 +125,17 @@ def main():
         parser.error("--shutdown-timeout-ms must be in 0..60000")
     if not 1 <= args.pcap_snaplen <= 2147483647 or not 1 <= args.pcap_max_bytes <= 2147483647:
         parser.error('PCAP snaplen and max-bytes must be in 1..2147483647')
+    if args.log_level is not None and not 1 <= args.log_level <= 8:
+        parser.error('--log-level must be in 1..8')
+    try:
+        args.eal_args = shlex.split(args.eal)
+    except ValueError as error:
+        parser.error(f'--eal: {error}')
+    return args
+
+
+def main():
+    args = parse_arguments()
     library = args.library.resolve(strict=True)
     worker_path = args.io_worker.resolve(strict=True)
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
@@ -74,6 +145,7 @@ def main():
     worker = app = None
     exit_code = 125
     stats = None
+    info = None
     startup_status = b""
     infrastructure_failure = False
     preserve_signal = False
@@ -91,7 +163,7 @@ def main():
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, *log_options, '--', *shlex.split(args.eal)],
+            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)
@@ -196,6 +268,7 @@ def main():
             if worker.returncode:
                 infrastructure_failure = True
             if stats is not None:
+                stats['io'] = info
                 for line in startup_status.splitlines():
                     if line.startswith(b'KER_NATIVE_STATS '):
                         stats['native'] = json.loads(line.removeprefix(b'KER_NATIVE_STATS '))
