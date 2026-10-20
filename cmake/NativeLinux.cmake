@@ -37,7 +37,7 @@ foreach(artifact config library)
         message(FATAL_ERROR "Native Linux ${artifact} differs from the build proof; rerun tools/build-native-linux.py")
     endif()
 endforeach()
-add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/packet-device.c
+add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/posix-poll.c src/posix/posix-stat.c
     src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-entropy.c src/posix/realtime-clock.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
@@ -253,6 +253,61 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-network-sysctl-test>"
             --probe "$<TARGET_FILE:ker-startup-failure-probe>")
     set_tests_properties(native-fstack-network-sysctl PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME udp-validation-report-guards
+        COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover -s "${PROJECT_SOURCE_DIR}/tests" -p test_udp_validation.py)
+    set_tests_properties(udp-validation-report-guards PROPERTIES TIMEOUT 30 LABELS provenance)
+    add_executable(ker-udp-signal-boundary tests/posix/udp-signal-boundary.c)
+    target_compile_options(ker-udp-signal-boundary PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-udp-signal-boundary PRIVATE Threads::Threads)
+    add_test(NAME host-udp-signal-reference
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-validation.py"
+            --app "$<TARGET_FILE:ker-udp-signal-boundary>" --signal-boundary --host-only)
+    add_test(NAME native-udp-signal-boundary
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-validation.py"
+            --app "$<TARGET_FILE:ker-udp-signal-boundary>" --signal-boundary
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(host-udp-signal-reference native-udp-signal-boundary
+        PROPERTIES TIMEOUT 30 LABELS "native-udp;compatibility-boundary")
+    add_executable(ker-udp-wire-errors tests/posix/udp-wire-errors.c)
+    target_compile_options(ker-udp-wire-errors PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-udp-wire-errors
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-wire-errors.py"
+            --app "$<TARGET_FILE:ker-udp-wire-errors>" --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(native-udp-wire-errors PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-udp-path-mtu tests/posix/udp-path-mtu.c)
+    target_compile_options(ker-udp-path-mtu PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-udp-path-mtu
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-path-mtu.py"
+            --app "$<TARGET_FILE:ker-udp-path-mtu>" --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(native-udp-path-mtu PROPERTIES TIMEOUT 100 LABELS "native-udp;fstack")
+    add_executable(ker-udp-network6 tests/posix/udp-network6.c)
+    target_compile_options(ker-udp-network6 PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-udp-network6
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-network6.py"
+            --app "$<TARGET_FILE:ker-udp-network6>" --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(native-udp-network6 PROPERTIES TIMEOUT 180 LABELS "native-udp;fstack")
+    add_executable(ker-udp-contract-matrix tests/posix/udp-contract-matrix.c)
+    target_compile_options(ker-udp-contract-matrix PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME host-udp-contract-matrix
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-validation.py"
+            --app "$<TARGET_FILE:ker-udp-contract-matrix>" --host-only)
+    set_tests_properties(host-udp-contract-matrix PROPERTIES TIMEOUT 30 LABELS "native-udp;fstack")
+    add_test(NAME native-udp-contract-matrix
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-validation.py"
+            --app "$<TARGET_FILE:ker-udp-contract-matrix>" --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(native-udp-contract-matrix PROPERTIES TIMEOUT 45 LABELS "native-udp;fstack")
+    add_executable(ker-ipv6-route-test tests/posix/ipv6-route.c)
+    target_compile_options(ker-ipv6-route-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-ipv6-route
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/ipv6-route.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ipv6-route-test>")
+    set_tests_properties(native-fstack-ipv6-route PROPERTIES TIMEOUT 120 LABELS "native-tcp;native-udp;fstack")
     add_executable(ker-ipv6-interop-test tests/posix/ipv6-interop.c)
     target_compile_options(ker-ipv6-interop-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-ipv6-interop
@@ -387,6 +442,12 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-multicast COMMAND ${ker_native_test_command}
         --udp-multicast-app "$<TARGET_FILE:ker-posix-fstack-udp-multicast-test>")
     set_tests_properties(native-fstack-udp-multicast PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_test(NAME native-udp-source-multicast4
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-network6.py"
+            --app "$<TARGET_FILE:ker-posix-fstack-udp-multicast-test>" --ssm4
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(native-udp-source-multicast4 PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
     add_executable(ker-posix-fstack-tcp-lowwater-test tests/posix/fstack-tcp-lowwater.c)
     target_compile_options(ker-posix-fstack-tcp-lowwater-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-lowwater COMMAND ${ker_native_test_command}
@@ -449,6 +510,12 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-broadcast COMMAND ${ker_native_test_command}
         --udp-broadcast-app "$<TARGET_FILE:ker-posix-fstack-udp-broadcast-test>")
     set_tests_properties(native-fstack-udp-broadcast PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_test(NAME native-udp-limited-broadcast
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/udp-network6.py"
+            --app "$<TARGET_FILE:ker-posix-fstack-udp-broadcast-test>" --broadcast4
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(native-udp-limited-broadcast PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
     add_executable(ker-posix-fstack-tcp-fd-modes-test tests/posix/fstack-tcp-fd-modes.c)
     target_compile_options(ker-posix-fstack-tcp-fd-modes-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-fd-modes COMMAND ${ker_native_test_command}

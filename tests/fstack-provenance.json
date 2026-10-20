@@ -49,6 +49,48 @@
     }
   },
   "cases": {
+    "native-udp-functional-matrix": {
+      "source_example": "adapter/syscall/main_stack_udp.c",
+      "ker_ctests": [
+        "host-udp-contract-matrix",
+        "host-udp-signal-reference",
+        "native-fstack-ipv6-interop",
+        "native-fstack-ipv6-route",
+        "native-fstack-jumbo-mtu",
+        "native-fstack-udp-ancillary",
+        "native-fstack-udp-broadcast",
+        "native-fstack-udp-connect-lifecycle",
+        "native-fstack-udp-cork",
+        "native-fstack-udp-errors",
+        "native-fstack-udp-interop",
+        "native-fstack-udp-lowwater",
+        "native-fstack-udp-mtu",
+        "native-fstack-udp-multicast",
+        "native-fstack-udp-receive-truncation",
+        "native-fstack-udp-reuseport",
+        "native-fstack-udp-timeouts",
+        "native-fstack-udp-waitforone",
+        "native-udp-contract-matrix",
+        "native-udp-limited-broadcast",
+        "native-udp-network6",
+        "native-udp-path-mtu",
+        "native-udp-signal-boundary",
+        "native-udp-source-multicast4",
+        "native-udp-wire-errors"
+      ],
+      "adaptation": "Batch Linux-specific UDP functional validation, not additional migrated upstream test cases. Identical host/native IPv4/IPv6 public-API contract matrix; independent-host IPv6 client/server ancillary/error-queue/fragmentation/software-segmentation/ASM/SSM tests; IPv4 SSM third-source rejection and limited broadcast; actual independent-router IPv4/IPv6 PMTU1280 errors/cache/local rejection/recovery; raw independent checksum/reverse-fragment/reassembly-expiry/reorder/duplicate vectors. Require complete wire IPv6 fragment reassembly/checksums, native per-family UDP/reassembly counters and zero outstanding worker buffers. The host-signal interruption probe confirms an unsupported boundary and never counts as a functional pass. Machine report binds actual CTest outcomes, rejects omitted/skipped/missing cases and preserves physical-NIC/endurance/extended-runtime gaps. Original Linux owns all protocol behavior. No upstream edits or F-Stack API/full-fixture equivalence claim."
+    },
+    "native-fstack-ipv6-route": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_inet6_fixture_ignored"
+      ],
+      "ker_ctests": [
+        "native-fstack-ipv6-route",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Related gateway feature evidence only; the catalog source case remains blocked because it asserts INET6-disabled ignore semantics, and the fixture IPv6 VIP/VLAN remains unimplemented. Add explicit Linux [network] gateway6/--gateway6, require address6, support global and link-local next hops through a Ker rtnetlink request to the original Linux main route table with RTA_OIF, and honor original Linux gateway checks without ONLINK. Validate CLI/INI syntax and precedence before setup, remove inherited internal gateway overrides, fail125 on invalid off-link next hop before application readiness and clean up worker. Actual DPDK net_tap connects the native private kernel to an independent Linux router and a third remote Linux namespace across two /64 subnets. Test INI global gateway and CLI replacement by link-local gateway, TCP/UDP both directions, exact bytes and explicit native source addresses, UDP send hop limit64/receive63 at both endpoints, router Ip6OutForwDatagrams increase, native TCP counters and zero outstanding buffers. Omission with a conflicting ambient override must leave TCP/UDP off-subnet connect returning ENETUNREACH. No dynamic routing/failover, RA/SLAAC, physical NIC or complete FreeBSD fixture equivalence claim; upstream sources remain unchanged."
+    },
     "native-fstack-network-sysctl": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

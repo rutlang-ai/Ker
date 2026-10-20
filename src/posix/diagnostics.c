@@ -52,6 +52,31 @@ static int counters(const char *path, const char *prefix, struct field *fields, 
     }
     return found == count ? 0 : -ENOENT;
 }
+/* /proc/net/snmp6 uses one name/value per line, unlike paired IPv4 tables. */
+static int counters6(struct field *fields, size_t count)
+{
+    char buffer[16384];
+    int result = read_file("/proc/net/snmp6", buffer, sizeof(buffer));
+    if (result) return result;
+    size_t found = 0;
+    char *state = NULL;
+    for (char *line = strtok_r(buffer, "\n", &state); line; line = strtok_r(NULL, "\n", &state)) {
+        char *columns = NULL;
+        char *name = strtok_r(line, " \t", &columns);
+        char *text = strtok_r(NULL, " \t", &columns);
+        if (!name) continue;
+        for (size_t i = 0; i < count; i++) if (!strcmp(name, fields[i].name)) {
+            if (!text) return -EINVAL;
+            char *end;
+            errno = 0;
+            unsigned long long value = strtoull(text, &end, 10);
+            if (errno || *end || !*text) return -EINVAL;
+            *fields[i].value = value;
+            found++;
+        }
+    }
+    return found == count ? 0 : -ENOENT;
+}
 int ker_native_counters(struct ker_native_counters *out)
 {
     struct ker_native_counters value = {0};
@@ -70,6 +95,13 @@ int ker_native_counters(struct ker_native_counters *out)
     struct field ip[] = {{"FragOKs", &value.ip_frag_ok}, {"FragCreates", &value.ip_frag_creates},
         {"ReasmOKs", &value.ip_reasm_ok}, {"ReasmFails", &value.ip_reasm_fails}};
     result = counters("/proc/net/snmp", "Ip:", ip, sizeof(ip) / sizeof(ip[0]));
+    if (result) return result;
+    struct field ipv6[] = {{"Udp6InDatagrams", &value.udp6_in_datagrams},
+        {"Udp6OutDatagrams", &value.udp6_out_datagrams}, {"Udp6InErrors", &value.udp6_in_errors},
+        {"Udp6NoPorts", &value.udp6_no_ports}, {"Ip6FragOKs", &value.ip6_frag_ok},
+        {"Ip6FragCreates", &value.ip6_frag_creates}, {"Ip6ReasmOKs", &value.ip6_reasm_ok},
+        {"Ip6ReasmFails", &value.ip6_reasm_fails}, {"Ip6ReasmTimeout", &value.ip6_reasm_timeouts}};
+    result = counters6(ipv6, sizeof(ipv6) / sizeof(ipv6[0]));
     if (result) return result;
     char policy[16];
     result = read_file("/proc/sys/net/ipv4/tcp_ecn", policy, sizeof(policy));

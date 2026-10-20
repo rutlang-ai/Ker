@@ -91,9 +91,20 @@ static void transmit(int fd, struct sockaddr_in peer, int record)
     while (count < 0 && errno == EINTR);
     CHECK(count == (ssize_t)lengths[record]);
 }
+static void member(int fd, struct ip_mreq membership, struct in_addr source, int ssm, int join)
+{
+    if (ssm) {
+        struct ip_mreq_source request = {.imr_multiaddr = membership.imr_multiaddr,
+            .imr_interface = membership.imr_interface, .imr_sourceaddr = source};
+        CHECK(setsockopt(fd, IPPROTO_IP, join ? IP_ADD_SOURCE_MEMBERSHIP : IP_DROP_SOURCE_MEMBERSHIP,
+            &request, sizeof(request)) == 0);
+    } else CHECK(setsockopt(fd, IPPROTO_IP, join ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP,
+        &membership, sizeof(membership)) == 0);
+}
 int main(int argc, char **argv)
 {
-    CHECK(argc == 5);
+    CHECK(argc == 5 || (argc == 6 && !strcmp(argv[5], "ssm")));
+    int ssm = argc == 6;
     int receiver = !strcmp(argv[1], "server");
     CHECK(receiver || !strcmp(argv[1], "client"));
     struct in_addr local, group;
@@ -112,24 +123,24 @@ int main(int argc, char **argv)
             option(fds[i], IP_MULTICAST_ALL, 0);
             option(fds[i], IP_PKTINFO, 1);
             option(fds[i], IP_RECVTTL, 1);
-            CHECK(setsockopt(fds[i], IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership, sizeof(membership)) == 0);
+            member(fds[i], membership, peer.sin_addr, ssm, 1);
             errno = 0;
-            CHECK(setsockopt(fds[i], IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership, sizeof(membership)) == -1 && errno == EADDRINUSE);
+            if (!ssm) CHECK(setsockopt(fds[i], IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership, sizeof(membership)) == -1 && errno == EADDRINUSE);
         }
         printf("READY %ld\n", port); fflush(stdout);
         receive(fds[0], ep, &peer, local, group, 0, 1);
         receive(fds[1], ep, &peer, local, group, 0, 1);
-        CHECK(setsockopt(fds[0], IPPROTO_IP, IP_DROP_MEMBERSHIP, &membership, sizeof(membership)) == 0);
+        member(fds[0], membership, peer.sin_addr, ssm, 0);
         CHECK(close(fds[0]) == 0);
-        CHECK(setsockopt(fds[1], IPPROTO_IP, IP_DROP_MEMBERSHIP, &membership, sizeof(membership)) == 0);
+        member(fds[1], membership, peer.sin_addr, ssm, 0);
         errno = 0;
-        CHECK(setsockopt(fds[1], IPPROTO_IP, IP_DROP_MEMBERSHIP, &membership, sizeof(membership)) == -1 && errno == EADDRNOTAVAIL);
-        CHECK(setsockopt(fds[1], IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership, sizeof(membership)) == 0);
+        if (!ssm) CHECK(setsockopt(fds[1], IPPROTO_IP, IP_DROP_MEMBERSHIP, &membership, sizeof(membership)) == -1 && errno == EADDRNOTAVAIL);
+        member(fds[1], membership, peer.sin_addr, ssm, 1);
         /* Ack only after rejoin: the sender cannot race the next packet. */
         transmit(fds[1], peer, 0);
         receive(fds[1], ep, &peer, local, group, 1, 1);
         transmit(fds[1], peer, 1);
-        CHECK(setsockopt(fds[1], IPPROTO_IP, IP_DROP_MEMBERSHIP, &membership, sizeof(membership)) == 0);
+        member(fds[1], membership, peer.sin_addr, ssm, 0);
         CHECK(close(fds[1]) == 0);
     } else {
         int fd = create(ep, local, 0, 0);

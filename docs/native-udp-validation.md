@@ -1,5 +1,8 @@
 # 原生 Linux UDP socket 验证
 
+当前批量验收入口、IPv4/IPv6 完整矩阵、实际结果与限制见 [UDP 功能验收矩阵](udp-acceptance.md)。
+以下各节保留分批验收时的具体范围；新矩阵补充了 IPv6、动态 PMTU、SSM 和错包验证。
+
 本文记录现有 POSIX 适配层中的 IPv4 UDP 验证，基础测试从 unicast 开始。socket、datagram 边界、
 checksum、地址查询和事件就绪由完整导入的 Linux 6.12.113 实现；Ker 负责 API
 转换、fd、packet I/O 和诊断。源码 pin 与构建方式沿用 [原生后端](native-tcp.md)。
@@ -321,3 +324,13 @@ UDP/epoll 示例的 Ker/Linux 扩展，不声明上游 UDP_CORK 或 MSG_MORE 等
 使用 dup 查询共享低水位，并通过 alias 的两段 iovec 调用 `recvmsg(MSG_WAITALL)`，64 字节容量仍只返回当前报文；检查源地址、内容和未写入区域。独立 TCP 控制连接在当前接收完成之前不发送下一报文；接收须在四秒内完成，低于五秒接收超时。每次接收后队列到 EAGAIN 且 epoll 无事件，文件状态保持阻塞，最终通过原 fd 恢复低水位并在 alias 验证。
 
 这是固定 F-Stack UDP 示例的 Ker/Linux 扩展，测试原始 Linux 的报文语义，不声明上游测试等价或 TCP 低水位行为等价；未覆盖信号中断、并发读者、IPv6 或 timeout 指针语义。
+
+## IPv6 跨网段默认路由
+
+`native-fstack-ipv6-route` 在真实 DPDK net_tap、独立 Linux 路由器、远端网络命名空间
+之间，验证原始 Linux IPv6 UDP 的双向收发。发送端显式设置 hop limit 64，
+接收端通过 `IPV6_RECVHOPLIMIT` / `recvmsg` 验证值 63，检查消息和源地址一致；
+路由器 IPv6 转发计数必须增加。INI global 网关和 CLI link-local 网关均执行完整测试。
+无网关时跨网段 UDP connect 返回 ENETUNREACH；off-link 网关由原始内核拒绝并终止启动。
+同一场景也覆盖 IPv6 TCP。原生地址、NDP 和 DAD 的前置验收见 `native-fstack-ipv6-interop`。
+这不覆盖 IPv6 分片/PMTU、多播、路由变更或物理 NIC。
