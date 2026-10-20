@@ -3043,9 +3043,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_arc4rand_buf_filled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Seed original Linux RNG from32 actual host SYS_getrandom syscall (flags0) bytes after private kernel boot and before application sockets are exposed. Original Linux RNDADDENTROPY mixes the seed and credits256 bits, followed by RNDRESEEDCRNG to rekey immediately even when already initialized; a private rootfs random-device node is unlinked immediately after open, descriptors close, and seed storage is explicitly wiped on every return. Actual original-kernel getrandom(GRND_NONBLOCK) fills64 bytes with the pinned >=50 nonzero threshold and yields >=12 changes across16 words. A test-only syscall wrapper injects EIO/zero/EINTR, failure after a real short read, and caps real successful reads at7 bytes; a deterministic getrandom symbol shim confirms seeding bypasses interposition, while successful entropy always comes from the real host RNG, never test constants. Both retry and ordinary/reseed paths use real original Linux ioctl/getrandom; host seeding invokes SYS_getrandom directly. A real private-path collision propagates EEXIST and preserves marker contents. This is a Linux RNG scenario adaptation, not FreeBSD arc4random API or algorithm equivalence; output sanity tests are not a cryptographic-strength proof. No custom PRNG, deterministic fallback, GRND_INSECURE, upstream modification or host random-device write.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-entropy",
+          "provenance_case": "native-fstack-entropy"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
@@ -3081,9 +3086,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_arc4random_distribution",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Seed original Linux RNG from32 actual host SYS_getrandom syscall (flags0) bytes after private kernel boot and before application sockets are exposed. Original Linux RNDADDENTROPY mixes the seed and credits256 bits, followed by RNDRESEEDCRNG to rekey immediately even when already initialized; a private rootfs random-device node is unlinked immediately after open, descriptors close, and seed storage is explicitly wiped on every return. Actual original-kernel getrandom(GRND_NONBLOCK) fills64 bytes with the pinned >=50 nonzero threshold and yields >=12 changes across16 words. A test-only syscall wrapper injects EIO/zero/EINTR, failure after a real short read, and caps real successful reads at7 bytes; a deterministic getrandom symbol shim confirms seeding bypasses interposition, while successful entropy always comes from the real host RNG, never test constants. Both retry and ordinary/reseed paths use real original Linux ioctl/getrandom; host seeding invokes SYS_getrandom directly. A real private-path collision propagates EEXIST and preserves marker contents. This is a Linux RNG scenario adaptation, not FreeBSD arc4random API or algorithm equivalence; output sanity tests are not a cryptographic-strength proof. No custom PRNG, deterministic fallback, GRND_INSECURE, upstream modification or host random-device write.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-entropy",
+          "provenance_case": "native-fstack-entropy"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",

@@ -5,6 +5,7 @@
 #include "host-memory.h"
 #include "host-thread.h"
 #include "host-clock.h"
+#include "host-entropy.h"
 #include "packet-channel.h"
 #include "packet-device.h"
 #include <arpa/inet.h>
@@ -110,6 +111,8 @@ __attribute__((constructor)) static void initialize(void)
     device->id = result;
     result = lkl_start_kernel("%s", "mem=64M");
     if (result) fail("kernel boot", result);
+    result = ker_native_seed_entropy();
+    if (result) fail("native entropy initialization", result);
     /* LKL's POSIX host clock is monotonic, including its persistent-clock
      * seed. Give Linux realtime its wall-clock epoch without changing the
      * monotonic clocksource used by protocol timers. Only this private kernel

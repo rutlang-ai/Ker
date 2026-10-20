@@ -364,3 +364,11 @@ READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采�
 字节数包含 Ethernet 头和负载，不含 virtio channel 头或 Ethernet FCS。
 分方向 dropped 只统计适配层拒绝的帧长度/元数据，聚合 `dropped=tx_dropped+rx_dropped`；不包含硬件丢包或关闭时丢弃的排队 RX 帧。
 `outstanding` 继续表示 ethdev 关闭后仍被占用的 mbuf 数，成功关闭必须为零。
+
+
+### 原生内核熵初始化
+
+应用启动前，Ker 从宿主 `SYS_getrandom(..., 0)` 系统调用获取 32 字节；直接系统调用避免应用或 preload 对 `getrandom` 符号的替换，并通过原始 Linux `RNDADDENTROPY` 向私有内核 RNG 注入 256 位熵，再调用 `RNDRESEEDCRNG`，保证已就绪的 RNG 也立即重新派生输出状态。
+临时字符设备节点只存在于 LKL 私有 rootfs，打开后立即 unlink；不写入宿主 `/dev/random`，不修改原始 Linux RNG 实现。
+EINTR/短读继续获取剩余字节；读取、私有设备初始化或 ioctl 失败会中止启动。没有时间戳、PID 或固定字节替代路径。
+临时 fd 随即关闭，包含种子的缓存在所有返回路径显式清除。POSIX 应用原有宿主随机数接口保持不变。

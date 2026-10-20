@@ -77,7 +77,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 18 | 0 | 16 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 20 | 0 | 14 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 3 | 1 | 2 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -256,3 +256,10 @@ CPU 是否可用及 DPDK 构建允许的最大 lcore ID 仍由原始 EAL 校验�
 空闲快照所有计数为零；实际主机 AF_PACKET 与 packet channel 双向转发三帧，逐字节验证，计数各为 3 帧/1701 字节。
 两条非法 TX 长度只增加 tx_dropped，聚合 dropped 保持一致；重复控制请求与 EOF 只产生一个成功 DONE，ethdev 关闭后零 outstanding。
 不宣称 F-Stack 结构体/getter ABI，也不把这项裸 Ethernet 测试计为 Linux 协议覆盖。
+
+
+`native-fstack-entropy` 迁移随机缓冲区填充和连续随机字变化两个场景。
+运行时在原始 Linux 启动后、应用 socket 可用前，通过宿主 SYS_getrandom 系统调用（flags=0）获取 32 字节，交给原始 Linux RNG 并记入 256 位熵，再通过原始 reseed ioctl 立即更新已就绪 RNG。
+测试启动真实 Linux，验证非阻塞随机读取、64 字节填充和 16 个字变化；EINTR/短读仍只使用真实宿主随机字节，读取失败/零读必须返回错误。
+私有 random 节点即时 unlink，已有对象冲突保持不变，fd 关闭且所有返回路径显式清除种子缓存。
+不实现自己的 PRNG，不声明 FreeBSD arc4random ABI/算法等价；输出变化阈值只作场景检查，不作密码学强度证明。

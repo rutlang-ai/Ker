@@ -273,3 +273,7 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 `native-fstack-worker-traffic` 对应 `test_ff_get_traffic_zero_init` 和 `test_ff_dpdk_stop_smoke`。
 在私有 namespace 中通过实际 net_tap/AF_PACKET 验证空闲零统计、双向精确帧/字节计数、非法 TX 长度方向计数、重复停止和 mbuf 回收。
 测试用 SIGSTOP/SIGCONT 作为排程屏障，在 worker 读取前写入两个控制字节并关闭管道；实际停止仍由控制通道和 EOF 驱动。
+
+
+`native-fstack-entropy` 对应 `test_ff_arc4rand_buf_filled` 和 `test_ff_arc4random_distribution`。
+直接运行真实 Linux RNG，覆盖宿主熵注入、非阻塞读取、失败和短读/EINTR、重复种子注入及私有临时节点清理；需 `KER_WITH_NATIVE_TCP=ON`。
