@@ -19,6 +19,45 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_max_mtu_policy_and_cli_override(self):
+        base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        args = launcher.parse_arguments(base + ['--', '/bin/true'])
+        self.assertEqual((args.mtu, args.max_mtu), (1500, 9000))
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'mtu.ini'
+            for mtu, ceiling in ((1280, 1280), (1500, 2000), (2000, 2000), (9000, 9000)):
+                config.write_text(f'[network]\nmtu={mtu}\nmax_mtu={ceiling}\n')
+                args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertEqual((args.mtu, args.max_mtu), (mtu, ceiling))
+            config.write_text('[network]\nmtu=9000\nmax_mtu=2000\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--max-mtu', '9000', '--', '/bin/true'])
+            self.assertEqual((args.mtu, args.max_mtu), (9000, 9000))
+            args = launcher.parse_arguments(base + ['--config', str(config), '--mtu', '2000', '--', '/bin/true'])
+            self.assertEqual((args.mtu, args.max_mtu), (2000, 2000))
+
+    def test_max_mtu_rejection_precedes_launch_setup(self):
+        base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'mtu.ini'
+            for mtu, ceiling in ((9000, '2000'), (2001, '2000'), (1500, 'bad'),
+                                 (1500, '1279'), (1500, '9001'), (1500, '65535')):
+                config.write_text(f'[network]\nmtu={mtu}\nmax_mtu={ceiling}\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    '--library', str(Path(directory) / 'missing'), '--', '/bin/true'],
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                diagnostic = result.stderr.strip().splitlines()[-1]
+                self.assertIn('max_mtu' if ceiling == 'bad' else '--max-mtu', diagnostic)
+                if ceiling == '2000':
+                    self.assertIn('must not exceed', diagnostic)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertNotIn('No such file or directory', result.stderr)
+            result = subprocess.run([sys.executable, str(SOURCE), *base, '--mtu', '9000',
+                '--max-mtu', '2000', '--library', str(Path(directory) / 'missing'), '--', '/bin/true'],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn('--max-mtu', result.stderr)
+
     def test_vip_addresses_and_cli_replacement(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).vip_addresses, [])

@@ -400,3 +400,9 @@ CLI 提供的列表整体替换 INI 列表，不与它合并；省略 prefix 使
 重复主地址或 VIP、非法 IPv4/prefix 在启动前返回 2；原始 Linux 拒绝地址安装时返回基础设施错误 125。
 launcher 清除 ambient `KER_NATIVE_VIP_ADDRESSES`，仅传递最终验证过的配置。
 地址添加沿用原始 LKL netlink 接口和 Linux ARP/TCP，不替换主地址，不实现 VLAN、VRRP 或动态故障切换。
+
+### MTU 部署上限
+
+`--max-mtu 2000` 或 `[network] max_mtu=2000` 将当前 launcher 的 MTU 上限限制为 2000；默认 9000，合法范围 1280–9000。
+`mtu` 大于 `max_mtu` 在设备/库初始化前返回 2；CLI 可分别覆盖 INI 中的请求值或上限。
+此值仅是启动配置策略。实际 MTU 仍传给原始 Linux 与 DPDK，设备能力不足仍由运行时报告；不按 max_mtu 额外扩大缓冲池。

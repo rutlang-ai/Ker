@@ -1238,8 +1238,14 @@ def inside(args):
             print('native startup and pre-application failures verified', flush=True)
         if args.jumbo_app:
             jumbo_config = work / 'jumbo.ini'
-            jumbo_config.write_text('[network]\nmtu=9000\n')
-            launcher += ['--config', str(jumbo_config)]
+            jumbo_config.write_text('[network]\nmtu=9000\nmax_mtu=2000\n')
+            rejected = subprocess.run([*launcher, '--config', str(jumbo_config),
+                '--library', str(work / 'must-not-resolve-library'), '--', '/bin/true'],
+                env=env, capture_output=True, text=True, timeout=10)
+            if (rejected.returncode != 2 or '--mtu must not exceed --max-mtu' not in rejected.stderr
+                    or 'Traceback' in rejected.stderr):
+                raise RuntimeError('custom MTU ceiling did not reject before launch: ' + rejected.stderr)
+            launcher += ['--config', str(jumbo_config), '--max-mtu', '9000']
         app = str(args.app)
         with (work / 'server.log').open('w+') as log:
             try:
