@@ -15,8 +15,8 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 117 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 15 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 238 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 16 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 237 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -71,7 +71,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 14 | 1 | 81 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 14 | 2 | 80 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 1 | 61 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -311,3 +311,30 @@ ENOMEM 与真实 EMFILE 回滚、64 次创建/释放后描述符余额。
 主地址及两个 VIP；反向连接显式绑定各 VIP，检查宿主观察的源地址、原生 TCP 计数和资源清理。
 配置检查覆盖重复/非法地址与 32 项上限；ambient VIP 设置不能改变 launcher 的配置。
 这是地址配置场景适配，F-Stack 结构布局、VLAN VIP、VRRP 和故障切换仍未实现或验证。
+
+## Linux 网络 sysctl 配置（部分适配）
+
+`[sysctl]` 接受显式的 Linux `net.*` 名称；重复 `--sysctl KEY=VALUE` 按键覆盖 INI，
+最后一个同名 CLI 值生效，其他 INI 键保留。最多 32 个不同键，键不超过 128 字节、
+值不超过 256 UTF-8 字节；拒绝路径分隔符、空路径段、多行值和空值。
+与 `[network] tcp_ecn` / `--tcp-ecn` 同时指定 `net.ipv4.tcp_ecn` 会报配置冲突。
+
+```ini
+[sysctl]
+net.ipv4.ip_default_ttl=65
+net.ipv4.tcp_keepalive_time=42
+net.ipv4.tcp_keepalive_intvl=7
+net.ipv4.tcp_keepalive_probes=4
+net.ipv4.tcp_syn_retries=3
+```
+
+启动适配层在接口激活及 native READY 前写入私有原始 Linux 的 `/proc/sys/net/`，
+内核负责值域校验；未知键或非法内核值返回 125，应用 main 不执行。
+语法错误在创建 worker 前返回 2。配置不写宿主 sysctl；省略时保留 Linux 默认值，
+并清除继承的内部环境配置。没有自动翻译 FreeBSD sysctl 名称。
+
+`native-fstack-network-sysctl` 启动真实 DPDK net_tap，以 socket 选项读取上述五项实际默认值，
+验证 INI、单键 CLI 覆盖、配置省略、未知键与非法 TTL，检查宿主参数不变、
+应用启动顺序、实际 EAL 清理和零未释放 mbuf。
+`test_ff_load_config_freebsd_boot_multi_entries` 从 blocked 调整为 partial：
+多项网络配置已有运行证据，FreeBSD boot 参数和 boot/sysctl 内部链表仍未迁移，不计完整通过。

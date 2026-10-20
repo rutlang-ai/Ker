@@ -1429,9 +1429,19 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Ker supports multiple Linux network sysctl settings through INI/CLI and verifies five effective socket defaults in the original kernel.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-network-sysctl",
+          "provenance_case": "native-fstack-network-sysctl"
+        },
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-network-sysctl"
+        }
+      ],
+      "remaining": "FreeBSD boot hz/physmem/fd_reserve/mem_size/panicstr, FreeBSD sysctl names and boot/sysctl linked-list layout are not implemented; Linux settings are explicit names, not automatic FreeBSD translations."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",

@@ -58,6 +58,42 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn('--max-mtu', result.stderr)
 
+    def test_network_sysctl_merge_and_bounds(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).sysctls, {})
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'sysctl.ini'
+            config.write_text('[sysctl]\nnet.ipv4.ip_default_ttl=65\nnet.ipv4.tcp_rmem=4096 87380 6291456\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--sysctl',
+                'net.ipv4.ip_default_ttl=66', '--sysctl', 'net.ipv4.ip_default_ttl=67', '--', '/bin/true'])
+            self.assertEqual(args.sysctls, {'net.ipv4.ip_default_ttl': '67',
+                'net.ipv4.tcp_rmem': '4096 87380 6291456'})
+            config.write_text('[sysctl]\n' + ''.join(f'net.ipv4.key{i}=1\n' for i in range(32)))
+            self.assertEqual(len(launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true']).sysctls), 32)
+
+    def test_network_sysctl_rejection_before_setup(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        bad = ['net.ipv4.ttl', 'net.ipv4.ttl=', 'kernel.hostname=x', 'net/ipv4/ttl=1',
+            'net..ttl=1', 'net.ipv4.=1', 'net.ipv4.ttl=1\n2', 'net.ipv4.' + 'x' * 128 + '=1',
+            'net.ipv4.ttl=' + 'x' * 257]
+        for value in bad:
+            result = subprocess.run([sys.executable, str(SOURCE), *base, '--sysctl', value,
+                '--library', '/missing-ker-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+        for options in ([item for i in range(33) for item in ('--sysctl', f'net.ipv4.key{i}=1')],
+                        ['--tcp-ecn', 'on', '--sysctl', 'net.ipv4.tcp_ecn=1']):
+            with self.assertRaises(SystemExit) as error:
+                launcher.parse_arguments(base + options + ['--', '/bin/true'])
+            self.assertEqual(error.exception.code, 2)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'bad.ini'
+            for text in ('[sysctl]\nnet.ipv4.ttl=1\n  2\n', '[sysctl]\nkernel.hostname=x\n'):
+                config.write_text(text)
+                with self.assertRaises(SystemExit) as error:
+                    launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertEqual(error.exception.code, 2)
+
     def test_vip_addresses_and_cli_replacement(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).vip_addresses, [])

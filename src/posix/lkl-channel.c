@@ -128,6 +128,44 @@ __attribute__((constructor)) static void initialize(void)
     if (result) fail("native descriptor budget", result);
     result = lkl_mount_fs("proc");
     if (result < 0) fail("native procfs diagnostics", result);
+    /* Apply validated Linux names in this private kernel before interfaces
+     * become ready. Keep value validation and protocol policy in Linux. */
+    const char *sysctls = getenv("KER_NATIVE_SYSCTLS");
+    if (sysctls && *sysctls) {
+        if (strlen(sysctls) > 32 * (128 + 1 + 256 + 1))
+            fail("network sysctl configuration length", -EINVAL);
+        char *copy = strdup(sysctls);
+        if (!copy) fail("network sysctl allocation", -ENOMEM);
+        char *rest = copy, *entry;
+        unsigned int count = 0;
+        while ((entry = strsep(&rest, "\n"))) {
+            char *value = strchr(entry, '=');
+            if (++count > 32 || !value) fail("network sysctl setting", -EINVAL);
+            *value++ = 0;
+            size_t key_length = strlen(entry), length = strlen(value);
+            if (strncmp(entry, "net.", 4) || !strchr(entry + 4, '.') ||
+                key_length > 128 || !length || length > 256 || strchr(value, '\r'))
+                fail("network sysctl key/value", -EINVAL);
+            char path[sizeof("/proc/sys/") + 128];
+            memcpy(path, "/proc/sys/", 10);
+            for (size_t i = 0; i < key_length; i++) {
+                unsigned char ch = (unsigned char)entry[i];
+                if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                      (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' ||
+                      (ch == '.' && i && entry[i - 1] != '.' && i + 1 < key_length)))
+                    fail("network sysctl path", -EINVAL);
+                path[10 + i] = ch == '.' ? '/' : (char)ch;
+            }
+            path[10 + key_length] = 0;
+            long sysfd = lkl_sys_open(path, LKL_O_WRONLY, 0);
+            if (sysfd < 0) fail(path, (int)sysfd);
+            long written = lkl_sys_write(sysfd, value, length);
+            long closed = lkl_sys_close(sysfd);
+            if (written != (long)length) fail(path, written < 0 ? (int)written : -EIO);
+            if (closed) fail(path, (int)closed);
+        }
+        free(copy);
+    }
     const char *ecn_text = getenv("KER_NATIVE_TCP_ECN");
     if (ecn_text) {
         long mode = parse_number(ecn_text, 2);
