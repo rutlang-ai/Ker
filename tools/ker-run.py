@@ -40,12 +40,19 @@ if LIB_FROM_BIN.startswith('@'):
 
 
 TCP_ECN = {'off': 0, 'passive': 2, 'on': 1}
-CONFIG_DEFAULTS = dict(lcore_mask=None, tcp_ecn=None, mtu=1500, address=None, gateway=None, port=None, eal=None,
+
+
+def vip_addresses(text):
+    return [ipaddress.IPv4Interface(item.strip()) for item in text.split(',')] if text.strip() else []
+
+
+CONFIG_DEFAULTS = dict(vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
-    'network': {'tcp_ecn': ('tcp_ecn', str), 'mtu': ('mtu', int), 'address': ('address', ipaddress.IPv4Interface),
+    'network': {'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
+                'mtu': ('mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
@@ -91,6 +98,8 @@ def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, argument_default=argparse.SUPPRESS)
     parser.add_argument('--config', type=Path, default=None, help='Ker INI configuration; explicit CLI options take precedence')
     parser.add_argument('--address', type=ipaddress.IPv4Interface)
+    parser.add_argument('--vip-address', dest='vip_addresses', action='append', type=ipaddress.IPv4Interface,
+        help='additional IPv4 address/prefix; repeat up to 32 times; replaces INI vip_addresses')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
@@ -127,6 +136,12 @@ def parse_arguments(argv=None):
         args.command.pop(0)
     if not args.command:
         parser.error('an application command is required after --')
+    args.vip_addresses = list(args.vip_addresses)
+    if len(args.vip_addresses) > 32:
+        parser.error('--vip-address supports at most 32 additional addresses')
+    addresses = [args.address.ip] + [value.ip for value in args.vip_addresses]
+    if len(set(addresses)) != len(addresses):
+        parser.error('--vip-address must not duplicate the primary or another VIP address')
     if not 1280 <= args.mtu <= 9000:
         parser.error('--mtu must be in 1280..9000')
     if args.tcp_ecn is not None and args.tcp_ecn not in TCP_ECN:
@@ -208,6 +223,9 @@ def main():
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
+        env.pop('KER_NATIVE_VIP_ADDRESSES', None)
+        if args.vip_addresses:
+            env['KER_NATIVE_VIP_ADDRESSES'] = ','.join(map(str, args.vip_addresses))
         env.pop('KER_NATIVE_TCP_ECN', None)
         if args.tcp_ecn is not None:
             env['KER_NATIVE_TCP_ECN'] = str(TCP_ECN[args.tcp_ecn])

@@ -146,6 +146,24 @@ __attribute__((constructor)) static void initialize(void)
     if (index <= 0) fail("network interface lookup", index);
     result = lkl_if_set_ipv4(index, address.s_addr, prefix);
     if (result) fail("IPv4 interface configuration", result);
+    const char *vip_text = getenv("KER_NATIVE_VIP_ADDRESSES");
+    if (vip_text && *vip_text) {
+        char *copy = strdup(vip_text);
+        if (!copy) fail("VIP address allocation", -ENOMEM);
+        char *rest = copy, *entry;
+        unsigned int count = 0;
+        while ((entry = strsep(&rest, ","))) {
+            char *slash = strchr(entry, '/');
+            if (++count > 32 || !slash) fail("VIP address/prefix", -EINVAL);
+            *slash++ = 0;
+            struct in_addr vip;
+            if (inet_pton(AF_INET, entry, &vip) != 1) fail("VIP IPv4 address", -EINVAL);
+            long vip_prefix = parse_number(slash, 32);
+            result = lkl_if_set_ipv4(index, vip.s_addr, (unsigned int)vip_prefix);
+            if (result) fail("VIP IPv4 configuration", result);
+        }
+        free(copy);
+    }
     result = lkl_if_set_mtu(index, (int)mtu);
     if (result) fail("interface MTU", result);
     result = lkl_if_up(index);

@@ -1219,9 +1219,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_with_vip_addr",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Typed primary IPv4/prefix and additional VIP configuration reach actual original Linux address installation. Inspect actual addresses/netmasks and exercise independent host TCP to primary and VIPs plus explicitly bound VIP source connections; distinct Ker schema is documented.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-vip-addresses",
+          "provenance_case": "native-fstack-vip-addresses"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_override",
@@ -1261,9 +1266,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_addr_parse",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Typed primary IPv4/prefix and additional VIP configuration reach actual original Linux address installation. Inspect actual addresses/netmasks and exercise independent host TCP to primary and VIPs plus explicitly bound VIP source connections; distinct Ker schema is documented.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-vip-addresses",
+          "provenance_case": "native-fstack-vip-addresses"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_all_sections",

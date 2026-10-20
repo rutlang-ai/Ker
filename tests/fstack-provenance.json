@@ -49,6 +49,18 @@
     }
   },
   "cases": {
+    "native-fstack-vip-addresses": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_with_vip_addr",
+        "test_port_cfg_handler_addr_parse"
+      ],
+      "ker_ctests": [
+        "native-fstack-vip-addresses",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Ker [network] address and comma-separated vip_addresses, or repeatable --vip-address CLI options, install primary and additional IPv4 addresses through unchanged original LKL lkl_if_set_ipv4 (RTM_NEWADDR CREATE|EXCL). CLI entries replace the INI list; omitted entries install none. Validate typed addresses, prefixes, duplicate primary/VIPs, empty lists and a32-entry limit before library/worker resolution. Real DPDK net_tap and original Linux in two runs (INI and CLI override) expose exactly the primary198.18.0.2/24 plusVIPs198.18.0.3/24 and198.18.0.4/24. The app checks actual SIOCGIFCONF addresses, UP flags and masks; an unconfigured198.18.0.99 bind must fail EADDRNOTAVAIL despite conflicting ambient/overridden values. Independent host TCP connects to all3 addresses; explicit VIP source binds make2 outbound connections whose host-observed peers match. Original native TCP counters and zero outstanding worker buffers are required. This adapts address/VIP configuration scenarios, not F-Stack port_cfgs layout, FreeBSD APIs, VLAN VIPs, failover or VRRP. Protocol/ARP behavior remains original Linux; no upstream changes."
+    },
     "native-fstack-startup-failures": {
       "source_file": "tests/unit/test_ff_init.c",
       "source_case": [

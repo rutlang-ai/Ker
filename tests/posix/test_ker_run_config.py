@@ -19,6 +19,40 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_vip_addresses_and_cli_replacement(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).vip_addresses, [])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'vip.ini'
+            config.write_text('[network]\nvip_addresses = 198.18.0.3/24, 198.18.0.4/24\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+            self.assertEqual(list(map(str, args.vip_addresses)), ['198.18.0.3/24', '198.18.0.4/24'])
+            args = launcher.parse_arguments(base + ['--config', str(config), '--vip-address', '198.18.0.5',
+                '--vip-address', '198.18.0.6/25', '--', '/bin/true'])
+            self.assertEqual(list(map(str, args.vip_addresses)), ['198.18.0.5/32', '198.18.0.6/25'])
+            config.write_text('[network]\nvip_addresses=' + ','.join(
+                '198.18.0.' + str(i) + '/24' for i in range(3, 35)) + '\n')
+            self.assertEqual(len(launcher.parse_arguments(base + ['--config', str(config),
+                '--', '/bin/true']).vip_addresses), 32)
+            config.write_text('[network]\nvip_addresses=\n')
+            self.assertEqual(launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true']).vip_addresses, [])
+
+    def test_vip_rejection_precedes_library_resolution(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'vip.ini'
+            cases = ['198.18.0.2/24', '198.18.0.3/24,198.18.0.3/25', '::1/128',
+                     'bad', '198.18.0.3/33', '198.18.0.3/24,,198.18.0.4/24',
+                     ','.join('198.18.0.' + str(i) + '/24' for i in range(3, 36))]
+            for value in cases:
+                config.write_text('[network]\nvip_addresses=' + value + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    '--library', str(Path(directory) / 'missing'), '--', '/bin/true'],
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('vip', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+
     def test_lcore_mask_syntax_precedence_and_actual_eal_tokens(self):
         base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).lcore_mask)

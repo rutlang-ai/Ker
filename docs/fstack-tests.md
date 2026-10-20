@@ -288,3 +288,6 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 
 `native-fstack-packet-device` 对应设备上下文创建/释放两个源场景，连接生产 packet-device 回调，检查真实 fd/eventfd 生命周期、内存失败回滚、scatter/gather、背压、截断及停止唤醒。
 不依赖 DPDK 设备或运行内核；需原生构建提供的 LKL 头文件，以及可读取自身线程 syscall 状态的 Linux `/proc`。
+
+`native-fstack-vip-addresses` 验证真实主地址/VIP 安装、掩码、未配置地址拒绝、三个目的地址入站 TCP 和两个 VIP 源地址出站 TCP。
+结合 `native-fstack-launcher-config` 验证 `[network] vip_addresses`、重复 `--vip-address`、CLI 替换、32 项上限及非法输入在启动前返回 2。

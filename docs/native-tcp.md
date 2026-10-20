@@ -392,3 +392,11 @@ worker 排空仍以宿主 `CLOCK_MONOTONIC` 纳秒计算 5ms 空闲窗口及 500
 若 worker 已完成 EAL 初始化但尚未 READY 就失败，仍可能输出 `KER_IO_DONE` 清理快照。
 launcher 保留这一首行供 `--stats` 输出（`io` 为 null，因为尚未收到 READY），避免在读取首行后丢失资源清理证据。
 启动仍返回基础设施错误 125，不执行应用；原生初始化/网络配置失败时也会停止并回收独立 worker。
+
+### IPv4 VIP/附加地址
+
+`--vip-address 198.18.0.3/24 --vip-address 198.18.0.4/24` 或 INI `[network] vip_addresses=198.18.0.3/24,198.18.0.4/24` 向同一原生接口添加地址。
+CLI 提供的列表整体替换 INI 列表，不与它合并；省略 prefix 使用 `/32`，最多 32 项，空 INI 列表表示不添加。
+重复主地址或 VIP、非法 IPv4/prefix 在启动前返回 2；原始 Linux 拒绝地址安装时返回基础设施错误 125。
+launcher 清除 ambient `KER_NATIVE_VIP_ADDRESSES`，仅传递最终验证过的配置。
+地址添加沿用原始 LKL netlink 接口和 Linux ARP/TCP，不替换主地址，不实现 VLAN、VRRP 或动态故障切换。
