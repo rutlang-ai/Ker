@@ -3147,9 +3147,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_realtime",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Boot original Linux and invoke the same private realtime synchronization adapter used by the production constructor. Reset only native realtime to an obsolete2000 epoch, synchronize from real host CLOCK_REALTIME, and require native seconds/nanoseconds to lie within host bracketing reads and exceed the pinned2020 threshold. Native realtime advances after a real sleep; native monotonic advancement tracks host monotonic across the epoch change. Test-only clock_gettime wrapping forwards all monotonic reads to the real host clock. Host realtime EIO propagates without setting native time; a successful host read with invalid nanoseconds reaches original Linux clock_settime and returns EINVAL without mutating the old epoch. Recovery and repeated synchronization succeed. No host clock is set, upstream kernel code changed, or FreeBSD cached-time/NULL-output API equivalence claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realtime",
+          "provenance_case": "native-fstack-realtime"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_prot_writeonly",
