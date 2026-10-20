@@ -285,3 +285,6 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 
 `native-fstack-startup-failures` 验证正常启动、原生 realtime EIO、原始 Linux 网关拒绝和 worker ethdev 查找失败。
 所有失败均需返回 125、阻止应用 main、回收 worker mbuf 并完成真实 EAL cleanup；直接接口激活失败仍是未完整覆盖的边界。
+
+`native-fstack-packet-device` 对应设备上下文创建/释放两个源场景，连接生产 packet-device 回调，检查真实 fd/eventfd 生命周期、内存失败回滚、scatter/gather、背压、截断及停止唤醒。
+不依赖 DPDK 设备或运行内核；需原生构建提供的 LKL 头文件，以及可读取自身线程 syscall 状态的 Linux `/proc`。
