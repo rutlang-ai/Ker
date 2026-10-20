@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +20,7 @@
 #include "pcap.h"
 #include "worker-log.h"
 #include <rte_log.h>
+#include <rte_lcore.h>
 
 /* This process transports Ethernet frames only. All socket/TCP behavior runs
  * in the separate imported Linux instance in the application process. */
@@ -166,10 +168,10 @@ int main(int argc, char **argv)
     int link_status = rte_eth_link_get_nowait(port, &link);
     printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
-        "\"process_type\":\"primary\",\"link_up\":%s}\n",
+        "\"process_type\":\"primary\",\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, port, rte_eth_dev_count_avail(),
-        rte_eth_dev_socket_id(port), link_status ? "null" : (link.link_status ? "true" : "false"));
+        rte_eth_dev_socket_id(port), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"));
     fflush(stdout);
     status = 0;
     while (!stopping) {

@@ -347,3 +347,12 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 `--no-all-multicast`、`--no-pcap-nsec` 可覆盖文件中的 true 值。
 应用命令仍由 CLI 给出，`--` 后的 `--config` 等选项属于应用，不会被 launcher 消费。
 该格式是 Ker 运行时配置，不是 F-Stack 配置文件/API 的直接兼容层。
+
+### DPDK lcore mask
+
+`--lcore-mask 0x5` 或 INI `[dpdk] lcore_mask=0x5` 将十六进制位图传给原始 EAL `-c`，每个位对应同编号 CPU/lcore。
+接受 `0x`/`0X` 前缀、大小写十六进制及首尾空白；命令行覆盖 INI。空值、零和非十六进制在启动前返回配置错误 2。
+使用该设置时，`--eal` 中不得同时出现 `-c`、`-l` 或 `--lcores`；需要逻辑核到物理核映射时继续直接使用 `--eal` 的 `--lcores`。
+实际可用 CPU、主核是否在位图中及 DPDK 构建的 lcore 上限由 EAL 校验，失败保持基础设施错误 125。
+多个选中 lcore 不会增加 Ker 的 RX/TX 队列或创建多进程数据面；目前仍由 worker 主线程处理报文。
+READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采样时主线程实际所在的 `main_cpu`。

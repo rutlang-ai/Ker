@@ -19,6 +19,43 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_lcore_mask_syntax_precedence_and_actual_eal_tokens(self):
+        base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).lcore_mask)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cores.ini'
+            for value, expected in [('0X5', '5'), ('  0x5  ', '5'), ('A0', 'a0'), ('0001', '1')]:
+                path.write_text('[dpdk]\nlcore_mask=' + value + '\n')
+                args = launcher.parse_arguments(base + ['--config', str(path), '--', '/bin/true'])
+                self.assertEqual(args.lcore_mask, expected)
+                self.assertEqual(args.eal_args, ['--no-huge', '-c', expected])
+                self.assertEqual(int(args.lcore_mask, 16).bit_count(), int(value, 16).bit_count())
+                self.assertEqual(str(args.address), '192.0.2.2/24')
+                self.assertEqual(args.port, 'net_tap0')
+                override = launcher.parse_arguments(base + ['--config', str(path), '--lcore-mask', '2', '--', '/bin/true'])
+                self.assertEqual(override.eal_args, ['--no-huge', '-c', '2'])
+            for value in ('ZZZ_NOT_HEX', '0x1Z', '', '   ', '0', '0x0000', '-1', '+1', '1 2', '0x'):
+                path.write_text('[dpdk]\nlcore_mask=' + value + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(path),
+                    '--library', str(Path(directory) / 'missing'), '--io-worker', str(Path(directory) / 'missing-worker'),
+                    '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('nonzero hexadecimal', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+            # Validate only the winning value after CLI precedence.
+            path.write_text('[dpdk]\nlcore_mask=invalid\n')
+            self.assertEqual(launcher.parse_arguments(base + ['--config', str(path), '--lcore-mask', '2',
+                '--', '/bin/true']).eal_args[-2:], ['-c', '2'])
+
+    def test_lcore_mask_rejects_competing_eal_cpu_selection(self):
+        base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--lcore-mask', '1']
+        for selection in ('-c 2', '-c2', '-l 1', '-l1', '--lcores=0@1', '--lcores 0@1'):
+            with self.subTest(selection=selection), self.assertRaises(SystemExit) as caught:
+                launcher.parse_arguments(base + ['--eal=' + selection, '--', '/bin/true'])
+            self.assertEqual(caught.exception.code, 2)
+        args = launcher.parse_arguments(base + ['--eal=--log-level=7 --main-lcore=0', '--', '/bin/true'])
+        self.assertEqual(args.eal_args, ['--log-level=7', '--main-lcore=0', '-c', '1'])
+
     def test_mtu_defaults_ranges_and_cli_precedence(self):
         base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).mtu, 1500)

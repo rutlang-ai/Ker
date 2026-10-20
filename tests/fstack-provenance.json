@@ -49,6 +49,22 @@
     }
   },
   "cases": {
+    "native-fstack-lcore-mask": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_invalid_lcore_mask",
+        "test_ff_load_config_lcore_mask_no_bits",
+        "test_parse_lcore_mask_uppercase_0X_succeeds",
+        "test_parse_lcore_mask_blank_and_multibit",
+        "test_parse_lcore_mask_all_blank_returns_error",
+        "test_parse_lcore_mask_mid_nonhex_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-launcher-config",
+        "native-fstack-lcore-mask"
+      ],
+      "adaptation": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent."
+    },
     "native-fstack-fd-map": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
