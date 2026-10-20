@@ -19,6 +19,29 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_ipv6_address_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).address6)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'ipv6.ini'
+            config.write_text('[network]\naddress6=2001:db8:1::99/64\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+            self.assertEqual(str(args.address6), '2001:db8:1::99/64')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--address6',
+                '2001:db8:1::2/96', '--', '/bin/true'])
+            self.assertEqual(str(args.address6), '2001:db8:1::2/96')
+            self.assertEqual(str(args.address), '198.18.0.2/24')
+        for address in ('fe80::100/64', '2001:db8::2/128'):
+            self.assertEqual(str(launcher.parse_arguments(base + ['--address6', address,
+                '--', '/bin/true']).address6), address)
+        for address in ('198.18.0.2/24', '::/64', '::1/128', 'ff02::1/64',
+                        '::ffff:192.0.2.1/128', 'fe80::2%eth0/64', '2001:db8::2/129'):
+            result = subprocess.run([sys.executable, str(SOURCE), *base, '--address6', address,
+                '--library', '/missing-ker-library', '--', '/bin/true'],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
     def test_max_mtu_policy_and_cli_override(self):
         base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         args = launcher.parse_arguments(base + ['--', '/bin/true'])

@@ -338,3 +338,22 @@ net.ipv4.tcp_syn_retries=3
 应用启动顺序、实际 EAL 清理和零未释放 mbuf。
 `test_ff_load_config_freebsd_boot_multi_entries` 从 blocked 调整为 partial：
 多项网络配置已有运行证据，FreeBSD boot 参数和 boot/sysctl 内部链表仍未迁移，不计完整通过。
+
+## IPv6 接口与同链路互通扩展
+
+Ker 现在支持 `[network] address6` / `--address6 ADDRESS/PREFIX`，CLI 覆盖 INI，
+与既有 IPv4 `address` 并存。IPv6 配置触发 DPDK all-multicast 接收以支持 NDP；
+没有自行实现邻居发现或 TCP/UDP 协议。原始 LKL helper 经 rtnetlink 添加 IPv6 地址，
+并等待原始 Linux 重复地址检测完成。配置省略时不添加显式 IPv6 地址，继承的内部变量会清除。
+
+`native-fstack-ipv6-interop` 使用真实 net_tap，在 INI 和 CLI 覆盖两次启动中，
+验证 IPv6 TCP/UDP 的双向字节一致、源/目的地址、未配置地址的 bind 拒绝、
+宿主 NDP 解析到 worker MAC、IPv4 TCP 同时工作，以及原生 TCP 计数和零未释放 mbuf。
+另以宿主已占用的 IPv6 地址验证 Linux DAD 拒绝，应用 main 不执行、worker 正常清理。
+IPv6 默认网关、跨网段路由、VIP/VLAN 与 RA/SLAAC 部署尚未验收。
+
+固定上游 `valid_inet6.ini` 包含 IPv6 地址、前缀、网关、VIP 和 VLAN；
+但 `test_ff_load_config_inet6_fixture_ignored` 测试的是 **未启用 INET6 时忽略配置**，
+不能用上述启用 IPv6 的互通测试替代。因此该源项仍为 blocked，当前 117 项 adapted、
+16 项 partial、237 项 blocked 的计数不变。新运行测试是相关 IPv6 功能证据，
+不声明已迁移 FreeBSD 条件编译语义或完整 fixture。

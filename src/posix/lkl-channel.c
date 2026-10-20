@@ -206,6 +206,24 @@ __attribute__((constructor)) static void initialize(void)
     if (result) fail("interface MTU", result);
     result = lkl_if_up(index);
     if (result) fail("interface activation", result);
+    const char *address6_text = getenv("KER_NATIVE_ADDRESS6");
+    if (address6_text) {
+        char text[INET6_ADDRSTRLEN + 5];
+        if (strlen(address6_text) >= sizeof(text)) fail("IPv6 address length", -EINVAL);
+        strcpy(text, address6_text);
+        char *slash = strchr(text, '/');
+        if (!slash) fail("IPv6 address/prefix", -EINVAL);
+        *slash++ = 0;
+        struct in6_addr address6;
+        if (inet_pton(AF_INET6, text, &address6) != 1 || IN6_IS_ADDR_UNSPECIFIED(&address6) ||
+            IN6_IS_ADDR_MULTICAST(&address6) || IN6_IS_ADDR_LOOPBACK(&address6) ||
+            IN6_IS_ADDR_V4MAPPED(&address6)) fail("IPv6 unicast address", -EINVAL);
+        unsigned int prefix6 = (unsigned int)parse_number(slash, 128);
+        /* Original LKL adds the address through rtnetlink and waits for Linux
+         * duplicate-address detection. The device must already be up. */
+        result = lkl_if_set_ipv6(index, &address6, prefix6);
+        if (result) fail("IPv6 interface configuration/DAD", result);
+    }
     const char *gateway = getenv("LKL_HIJACK_NET_GATEWAY");
     if (gateway) {
         if (inet_pton(AF_INET, gateway, &address) != 1) fail("gateway address", -EINVAL);

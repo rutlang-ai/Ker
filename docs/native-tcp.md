@@ -1,6 +1,6 @@
 # 原生 Linux POSIX TCP
 
-此组件将原始 Linux TCP 接入现有 POSIX socket 应用，支持 IPv4、IPv6 loopback 与通过 IPv4 DPDK 链路互通的 IPv4-mapped 双栈连接。应用调用普通 `socket`、`connect`、`listen`、`accept`、`read/write`、`send/recv` 与事件接口；`ker-run` 加载 API 适配库并启动 DPDK Ethernet worker。握手、ACK、窗口、重传、拥塞控制、重组与关闭全部由原始 Linux 执行。
+此组件将原始 Linux TCP 接入现有 POSIX socket 应用，支持 IPv4、IPv6 loopback、配置 IPv6 地址后的同链路 TCP/UDP，以及通过 IPv4 DPDK 链路互通的 IPv4-mapped 双栈连接。应用调用普通 `socket`、`connect`、`listen`、`accept`、`read/write`、`send/recv` 与事件接口；`ker-run` 加载 API 适配库并启动 DPDK Ethernet worker。握手、ACK、窗口、重传、拥塞控制、重组与关闭全部由原始 Linux 执行。
 
 ## 源码与架构
 
@@ -28,8 +28,17 @@ DPDK 链路互通。IPv6 loopback `::1` 也已验证。内核配置变化后须�
 
 关闭排空同时读取 `/proc/net/tcp` 和 `/proc/net/tcp6`，包括 IPv4-mapped 连接。
 IPv6 协议由上游 Linux 实现，Ker 只适配其配置、API 和排空设施。
-`ker-run --address` 仍配置 IPv4；本批不提供外部 IPv6 地址/路由设置及 NDP 多播
-过滤的部署验收，能力查询位也不扩大为外部 IPv6 网络可用性声明。
+`ker-run --address` 配置 IPv4；可选 `--address6 2001:db8:1::2/64` 或 `[network] address6`
+同时安装 IPv6 地址。配置 IPv6 时，worker 自动启用 all-multicast 接收以允许 NDP；
+即使指定 `--no-all-multicast` 也保留这一必需条件，原始 Linux 负责实际协议过滤。
+设备无法启用接收模式会导致启动失败。LKL 在接口启用后经原始 rtnetlink 添加地址，
+等待 Linux 重复地址检测完成才发布 native READY；重复地址会使启动失败。
+CLI 覆盖 INI；拒绝带 scope 的地址、未指定地址、多播、loopback 与 IPv4-mapped 地址。
+
+`native-fstack-ipv6-interop` 用真实 DPDK net_tap 与独立宿主 peer 验证 IPv6 TCP/UDP
+双向收发、显式源地址绑定、NDP 得到的 MAC、同次运行中的 IPv4 TCP，以及重复地址拒绝。
+只覆盖同链路单个 IPv6 地址；IPv4 `--address` 仍必需。IPv6 默认网关、跨网段路由、
+IPv6 VIP/VLAN、RA/SLAAC 部署及物理网卡过滤尚未验收，能力查询位保持既有定义。
 
 ## 可复现构建
 
@@ -290,7 +299,7 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 
 ## 首版兼容范围
 
-支持 x86_64 Linux/glibc 的动态链接应用，IPv4 TCP、常用 socket option、普通及 vectored/message I/O、dup/fcntl/ioctl/fstat、poll/select/epoll 及上述信号掩码等待接口。宿主文件等非网络 fd 继续走宿主。其他网络协议未作为本次交付验收范围，内核已启用 IPv6，用于已验证的 IPv6 loopback 和 IPv4-mapped 双栈 TCP socket。外部 IPv6 Ethernet 地址、路由及 NDP 接收部署尚未验收。
+支持 x86_64 Linux/glibc 的动态链接应用，IPv4 TCP、常用 socket option、普通及 vectored/message I/O、dup/fcntl/ioctl/fstat、poll/select/epoll 及上述信号掩码等待接口。宿主文件等非网络 fd 继续走宿主。其他网络协议未作为本次交付验收范围，内核已启用 IPv6，用于已验证的 IPv6 loopback 和 IPv4-mapped 双栈 TCP socket。同链路 IPv6 Ethernet 地址和 NDP 接收现已通过上面的 net_tap 验收；IPv6 默认路由及跨网段部署尚未验收。
 
 以下边界尚未兼容，迁移应用时必须核对：
 
@@ -300,7 +309,7 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 - 不支持嵌套的混合域 epoll，明确返回 EOPNOTSUPP。select 受宿主 FD_SETSIZE 限制，原生应用 fd 上限 65536（同时受宿主 RLIMIT_NOFILE 限制）。混合等待采用轮询桥接，不承诺亚毫秒唤醒。
 - 原生内核与宿主的 namespace、路由、loopback、sysctl、文件系统和 PID 不相同；应用访问宿主 `/proc` 不会自动重定向到原生内核。第一版只公开启动参数与诊断计数，不提供宿主网络管理工具的透明重定向。
 
-本次构建与验收环境见 [首版验收记录](native-tcp-validation.md)。此范围已覆盖前台运行的普通非阻塞 POSIX TCP 应用和上述现有程序。多进程透明兼容、零拷贝、多队列、外部 IPv6 网络与物理网卡的交付验收属于后续扩展。
+本次构建与验收环境见 [首版验收记录](native-tcp-validation.md)。此范围已覆盖前台运行的普通非阻塞 POSIX TCP 应用和上述现有程序。多进程透明兼容、零拷贝、多队列、IPv6 路由扩展与物理网卡的交付验收属于后续扩展。
 
 ## SO_LINGER、dup 与最后一次 close
 

@@ -56,12 +56,12 @@ def sysctl_setting(text):
     return key, value
 
 
-CONFIG_DEFAULTS = dict(sysctls=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(sysctls=(), address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
-    'network': {'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
+    'network': {'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
@@ -112,6 +112,8 @@ def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, argument_default=argparse.SUPPRESS)
     parser.add_argument('--config', type=Path, default=None, help='Ker INI configuration; explicit CLI options take precedence')
     parser.add_argument('--address', type=ipaddress.IPv4Interface)
+    parser.add_argument('--address6', type=ipaddress.IPv6Interface,
+        help='additional native IPv6 address/prefix; enables multicast reception for neighbor discovery')
     parser.add_argument('--vip-address', dest='vip_addresses', action='append', type=ipaddress.IPv4Interface,
         help='additional IPv4 address/prefix; repeat up to 32 times; replaces INI vip_addresses')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
@@ -160,6 +162,10 @@ def parse_arguments(argv=None):
         parser.error('--sysctl supports at most 32 distinct keys')
     if args.tcp_ecn is not None and 'net.ipv4.tcp_ecn' in args.sysctls:
         parser.error('--tcp-ecn conflicts with sysctl net.ipv4.tcp_ecn')
+    if args.address6 is not None and ('%' in str(args.address6) or
+            args.address6.ip.is_unspecified or args.address6.ip.is_multicast or
+            args.address6.ip.is_loopback or args.address6.ip.ipv4_mapped is not None):
+        parser.error('--address6 requires an unscoped native unicast IPv6 interface address')
     args.vip_addresses = list(args.vip_addresses)
     if len(args.vip_addresses) > 32:
         parser.error('--vip-address supports at most 32 additional addresses')
@@ -214,7 +220,7 @@ def main():
     infrastructure_failure = False
     preserve_signal = False
     try:
-        multicast_options = ['--all-multicast'] if args.all_multicast else []
+        multicast_options = ['--all-multicast'] if args.all_multicast or args.address6 is not None else []
         log_options = []
         if args.log_dir is not None:
             log_options += ['--log-dir', str(args.log_dir.resolve())]
@@ -251,6 +257,9 @@ def main():
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
+        env.pop('KER_NATIVE_ADDRESS6', None)
+        if args.address6 is not None:
+            env['KER_NATIVE_ADDRESS6'] = str(args.address6)
         env.pop('KER_NATIVE_VIP_ADDRESSES', None)
         if args.vip_addresses:
             env['KER_NATIVE_VIP_ADDRESSES'] = ','.join(map(str, args.vip_addresses))
