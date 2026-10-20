@@ -60,6 +60,17 @@
       ],
       "adaptation": "Run the actual Ker launcher, production preload/guard and original DPDK net_tap worker in a private network namespace. A successful control must execute the interface probe and publish native statistics. Test-only host CLOCK_REALTIME EIO is restricted to the application preload by its startup/packet environment: original Linux boots, then the production realtime adapter fails before native READY and main. A real off-subnet gateway is rejected by original Linux during network bring-up; this is only partial coverage for ff_dpdk_if_up, whose direct interface-up failure and stage ordering remain untested. Unknown ethdev lookup fails in the worker before native startup; retain its already-consumed DONE snapshot in launcher --stats. Every case requires actual successful rte_eal_cleanup and zero outstanding mbufs; failures return125 and leave no application marker/native success statistics. Monotonic host clocks and upstream sources are unchanged. No FreeBSD initialization ABI or exit1 equivalence is claimed."
     },
+    "native-fstack-packet-device": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_dpdk_deregister_if_frees",
+        "test_ff_dpdk_register_if_returns_ctx"
+      ],
+      "ker_ctests": [
+        "native-fstack-packet-device"
+      ],
+      "adaptation": "Link production packet-device.c and invoke its actual lkl_dev_net_ops callbacks over nonblocking AF_UNIX datagrams and a real eventfd. Verify context allocation/ops/vnet-header capability, exact free counts and descriptor balance across repeated lifetimes. A test-only calloc wrapper injects ENOMEM but forwards all successful allocations and every free to libc; actual RLIMIT_NOFILE exhaustion makes eventfd fail with EMFILE, preserving caller fd ownership. Additional Ker adapter checks exercise byte-exact scatter/gather TX/RX, empty RX and TX backpressure readiness, oversize RX truncation rejection/consumption, invalid vector counts, interrupted ppoll retry and repeated stop. Observe the polling thread in actual SYS_ppoll via /proc before signaling and stopping; join before freeing, require ESHUTDOWN/HUP afterward and close both owned fds while preserving the peer. This adapts only F-Stack context construction/destruction scenarios, not FreeBSD softc/ifp, lkl_netdev_add/remove registration or protocol behavior. Upstream source is unchanged; null-context mbuf ownership remains unsupported and uncounted."
+    },
     "native-fstack-worker-clock": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": [

@@ -1975,9 +1975,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_deregister_if_frees",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Exercise actual Ker packet-device context allocation and free callbacks, with real descriptor ownership, allocation/eventfd failure rollback and exact free counts. This adapts the context-lifetime scenario, not F-Stack/FreeBSD registration ABI or native-kernel registry behavior.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-packet-device",
+          "provenance_case": "native-fstack-packet-device"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_get_traffic_zero_init",
@@ -2256,9 +2261,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_register_if_returns_ctx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Exercise actual Ker packet-device context allocation and free callbacks, with real descriptor ownership, allocation/eventfd failure rollback and exact free counts. This adapts the context-lifetime scenario, not F-Stack/FreeBSD registration ABI or native-kernel registry behavior.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-packet-device",
+          "provenance_case": "native-fstack-packet-device"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_safe",
