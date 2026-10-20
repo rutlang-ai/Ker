@@ -75,6 +75,7 @@ configure_file(tools/ker-run.py "${PROJECT_BINARY_DIR}/ker-run" @ONLY)
 install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES "${ker_native_manifest}"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME build.json)
+install(FILES config/native-launcher.example.ini DESTINATION ${CMAKE_INSTALL_DATADIR}/ker)
 install(FILES config/native-linux.json
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME sources.json)
 if(KER_BUILD_EXAMPLES)
@@ -138,6 +139,9 @@ if(BUILD_TESTING)
     add_executable(ker-posix-fstack-message-io-test tests/posix/fstack-message-io.c)
     target_compile_options(ker-posix-fstack-message-io-test PRIVATE -Wall -Wextra -Werror)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME native-fstack-launcher-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_config.py")
+    set_tests_properties(native-fstack-launcher-config PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
     add_test(NAME native-linux-fingerprint-stale-inputs
@@ -153,6 +157,8 @@ if(BUILD_TESTING)
         --app "$<TARGET_FILE:ker-posix-tcp-echo-test>")
     add_test(NAME native-posix-tcp-interop COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-fd-compat-test>")
+    add_test(NAME native-fstack-launcher-config-interop COMMAND ${ker_native_test_command} --launcher-config)
+    set_tests_properties(native-fstack-launcher-config-interop PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-worker-log-interop COMMAND ${ker_native_test_command}
         --worker-log --log-lifetime-probe "$<TARGET_FILE:ker-dpdk-log-lifetime-probe>")
     set_tests_properties(native-fstack-worker-log-interop PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")

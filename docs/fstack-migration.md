@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 63 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 11 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 296 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 81 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 277 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -78,7 +78,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 18 | 0 | 1 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 14 | 0 | 20 | 0 | 0 |
-| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 0 | 0 | 25 | 0 | 0 |
+| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 0 | 0 | 6 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
@@ -164,3 +164,20 @@ DPDK 日志进入文件；应用输出和 worker 显式 stderr 错误仍在各�
 关闭前把 DPDK 输出流恢复到 stderr。独立 Linux 对端的 TCP 主动和被动连接验证
 文件内容、DPDK TX/RX、原生连接计数与零 outstanding，并确认实际 worker 日志
 打开/写入失败最终返回 launcher 状态 125。文件为追加模式，本批不提供轮转或多进程共享 sink。
+
+## Launcher INI 配置
+
+`native-fstack-launcher-config` 适配 INI 基本语法、文件输入、注释/空白、空值、
+UTF-8 BOM、无结尾换行、冒号分隔及错误拒绝等 18 项。生产 `ker-run --config` 和
+测试使用同一个 Python 标准库解析路径；错误以异常/CLI 状态 2 表达，不复制
+F-Stack 的 callback ABI 或整数返回码。无效配置在创建 packet channel 或子进程前拒绝。
+
+多行值支持用于 EAL 参数，但合并为一个字符串；上游逐行 handler 调用序列尚未迁移，
+该项只计 partial。另 6 项仍 blocked：无 section 的全局键、任意 handler 返回零与
+userdata 传递、NULL FILE 指针入口，以及长 section/key 的固定长度截断。
+Ker 使用自己的已知 section/option 配置 schema，不能直接读取任意 F-Stack 配置；
+`test_ff_config.c` 的其他功能不会因此计为通过。
+
+真实互通测试从文件加载 IPv4/EAL、相对日志与 capture 路径，验证主动/被动 TCP、
+原始 Linux 连接计数、DPDK TX/RX、零 outstanding，以及命令行 port/stats 覆盖。
+使用说明见 [原生运行文档](native-tcp.md)，示例见 [launcher INI](../config/native-launcher.example.ini)。

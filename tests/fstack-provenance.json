@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/unit/test_ff_ini_parser.c": {
+      "sha256": "89116f64b09ad87eefb50b48b71397d0fef7b8c42174e8b4de2f3e300a597da5",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_ini_parser.c"
+    },
     "tests/unit/test_ff_log.c": {
       "sha256": "30c4dad2654cacdfa994f1945a561b9ccf55ae34f1e47b87dc60e4f4aa459b08",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_log.c"
@@ -37,6 +41,34 @@
     }
   },
   "cases": {
+    "native-fstack-launcher-config": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": [
+        "test_ini_parse_stream_valid_basic",
+        "test_ini_parse_stream_multiple_sections",
+        "test_ini_parse_stream_comment_lines",
+        "test_ini_parse_stream_inline_comment",
+        "test_ini_parse_stream_whitespace_strip",
+        "test_ini_parse_stream_empty_value",
+        "test_ini_parse_stream_invalid_syntax",
+        "test_ini_parse_stream_bom_utf8",
+        "test_ini_parse_file_normal",
+        "test_ini_parse_filename_not_exist",
+        "test_ini_parse_filename_normal",
+        "test_ini_parse_stream_zero_byte_input",
+        "test_ini_parse_stream_section_no_close_bracket",
+        "test_ini_parse_stream_no_trailing_newline",
+        "test_ini_parse_stream_colon_separator",
+        "test_ini_parse_stream_bare_line_no_separator",
+        "test_ini_parse_stream_partial_bom_not_recognized",
+        "test_ini_parse_stream_bom_third_byte_mismatch",
+        "test_ini_parse_stream_multiline_value_continuation"
+      ],
+      "ker_ctests": [
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Eighteen pinned F-Stack INI scenarios adapted to the actual Ker launcher configuration reader: known sections/options, multiple sections, comments and whitespace, empty text/value, missing final newline, colon delimiter, valid UTF-8 BOM, malformed syntax, missing bracket, bare lines, real open-file/filename input, missing file and malformed BOM byte rejection. Python configparser exceptions and UTF-8 decode errors replace F-Stack integer return codes and callback records; typed Ker configuration, not direct F-Stack config-file/API compatibility. One multiline scenario remains partial because Ker joins lines into an EAL string instead of invoking a handler per line. No sectionless globals, arbitrary handler rejection/userdata, NULL FILE C ABI or name-truncation claim. Ker extensions test strict unknown/duplicate/default rejection, interpolation disabled, CLI and negative-boolean overrides, config-relative paths, app argument isolation and pre-launch configuration rejection. Separate native-fstack-launcher-config-interop starts real DPDK/native Linux TCP workers in both roles using file-provided network/EAL/log/capture settings; validates kernel opens, TX/RX, zero outstanding, capture/log files and explicit CLI port/stats overrides."
+    },
     "native-fstack-worker-log": {
       "source_file": "tests/unit/test_ff_log.c",
       "source_case": [

@@ -1064,6 +1064,16 @@ def inside(args):
         eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --iova-mode=va --no-telemetry -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink'
         launcher = [sys.executable, str(args.launcher), '--address', '198.18.0.2/24',
             '--port', 'net_tap0', '--eal', eal]
+        if args.launcher_config:
+            config_path = work / 'launcher.ini'
+            config_logs = work / 'configured-logs'; config_logs.mkdir()
+            config_capture = work / 'configured-capture'; config_capture.mkdir()
+            config_path.write_text('[network]\naddress=198.18.0.2/24\n'
+                '[dpdk]\nport=must-be-overridden\neal=' + eal.replace(' --vdev=', '\n  --vdev=') + '\n'
+                '[logging]\ndirectory=configured-logs\nlevel=7\n'
+                '[capture]\ndirectory=configured-capture\nsnaplen=96\nmax_bytes=1073741824\nnsec=yes\n'
+                '[runtime]\nstats=unused-default.json\nshutdown_timeout_ms=5000\n')
+            launcher = [sys.executable, str(args.launcher), '--config', str(config_path), '--port', 'net_tap0']
         if not args.installed_defaults:
             launcher += ['--library', str(args.library), '--io-worker', str(args.io_worker)]
         app = str(args.app)
@@ -1102,6 +1112,8 @@ def inside(args):
                         raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
                     if args.capture:
                         verify_capture(capture_dir, stats)
+                    if args.launcher_config:
+                        verify_capture(config_capture, stats)
                     if args.worker_log:
                         files = list(log_dir.glob('ker-io-*.log'))
                         if len(files) != 1 or not re.fullmatch(r'ker-io-[0-9]+\.log', files[0].name):
@@ -1117,6 +1129,14 @@ def inside(args):
                     if args.zero_window and not native_stats['zero_window_probes']:
                         raise RuntimeError('native zero-window probing was not exercised: ' + str(native_stats))
                     print(('native passive' if native_server else 'native active') + ': ' + json.dumps(stats), flush=True)
+                if args.launcher_config:
+                    files = list(config_logs.glob('ker-io-*.log'))
+                    if len(files) != 2 or any('ker.io ready port=net_tap0' not in f.read_text()
+                            or 'ker.io stopped status=0' not in f.read_text() for f in files):
+                        raise RuntimeError('configuration did not reach both actual workers')
+                    if (work / 'unused-default.json').exists():
+                        raise RuntimeError('CLI stats option did not override configuration')
+                    print('PASS: INI configured real DPDK/native TCP in both roles, relative paths and CLI overrides', flush=True)
                 if args.capture:
                     full = work / 'pcap-full'
                     full.mkdir()
@@ -1254,6 +1274,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--worker-log', action='store_true')
+    parser.add_argument('--launcher-config', action='store_true')
     parser.add_argument('--log-lifetime-probe', type=Path)
     parser.add_argument('--faults', action='store_true')
     parser.add_argument('--zero-window', action='store_true')

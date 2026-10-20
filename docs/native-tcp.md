@@ -325,3 +325,25 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 `--log-level 1..8`（emergency 到 debug）在 EAL 启动后覆盖全局与 Ker 分类级别；
 启动期 EAL 消息仍由 `--eal` 内日志选项控制。日志 I/O 失败最终返回 125。
 未启用日志目录时保留既有输出行为；本功能没有文件轮转。
+
+## Launcher INI 配置
+
+`ker-run --config /path/to/launcher.ini -- PROGRAM ARGS...` 可读取
+[示例配置](../config/native-launcher.example.ini)。网络和 DPDK 必需参数可以来自
+文件或命令行；显式 CLI 选项优先。相对 `directory` 和 `stats` 路径以配置文件的
+实际目录为基准，CLI 路径仍以当前工作目录为准。目录必须事先存在。
+
+| Section | 支持的键 |
+|---|---|
+| network | address、gateway（IPv4） |
+| dpdk | port、eal、all_multicast |
+| logging | directory、level |
+| capture | directory、snaplen、max_bytes、nsec |
+| runtime | shutdown_timeout_ms、stats |
+
+支持 `=`/`:`、`#`/`;` 整行注释、空白前的 `;` 行内注释、UTF-8 BOM 和缩进续行；
+续行合并成字符串，EAL 再由 shlex 分词，不执行 shell。`%` 不插值。
+键和 section 区分大小写，重复项、未知项、默认项继承及无 section 的全局项会拒绝。
+`--no-all-multicast`、`--no-pcap-nsec` 可覆盖文件中的 true 值。
+应用命令仍由 CLI 给出，`--` 后的 `--config` 等选项属于应用，不会被 launcher 消费。
+该格式是 Ker 运行时配置，不是 F-Stack 配置文件/API 的直接兼容层。
