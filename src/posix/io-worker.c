@@ -243,18 +243,7 @@ int main(int argc, char **argv)
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
             if (progress) drain_progress = now_ns();
             int64_t now = now_ns();
-            if (!pending_tx && !tx_length && now - drain_progress >= INT64_C(5000000)) {
-                /* Observe a closed control pipe even if the worker was not
-                 * scheduled between the stop request and the drain deadline. */
-                if (!control_eof) {
-                    char final_commands[256];
-                    ssize_t final_control = read(control_fd, final_commands, sizeof(final_commands));
-                    if (final_control > 0) stop_requests += (uint64_t)final_control;
-                    else if (final_control == 0) control_eof = true;
-                    else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) status = 1;
-                }
-                if (!status) break;
-            }
+            if (!pending_tx && !tx_length && now - drain_progress >= INT64_C(5000000)) break;
             if (now - drain_started >= INT64_C(500000000)) { status = 1; break; }
             if (!progress) usleep(1000);
             continue;

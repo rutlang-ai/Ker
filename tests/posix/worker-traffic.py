@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import signal
 import socket
 import subprocess
 import sys
@@ -35,6 +36,7 @@ def run_worker(worker, work, traffic):
            '--no-telemetry', '--iova-mode=va', '-m', '64',
            '--vdev=net_tap0,iface=kerpeer,remote=kerlink']
     process = None
+    worker_paused = False
     with (work / ('traffic.log' if traffic else 'idle.log')).open('w+') as log:
         try:
             process = subprocess.Popen([str(worker), '--packet-fd', str(channel.fileno()),
@@ -78,10 +80,17 @@ def run_worker(worker, work, traffic):
             else:
                 # No native producer, no host addresses, IPv6 disabled in this namespace.
                 time.sleep(0.02)
-            # Repeated stop requests use the real control channel. Closing it
-            # also exercises EOF during the drain, without sending any signals.
+            # Pause only for scheduling: queue both real control requests and
+            # EOF before allowing the worker to observe its drain deadline.
+            os.kill(process.pid, signal.SIGSTOP)
+            worker_paused = True
+            stopped_pid, stopped_status = os.waitpid(process.pid, os.WUNTRACED)
+            require(stopped_pid == process.pid and os.WIFSTOPPED(stopped_status),
+                    'worker did not stop for control-channel synchronization')
             os.write(control_write, b'xx')
             os.close(control_write); control_write = -1
+            os.kill(process.pid, signal.SIGCONT)
+            worker_paused = False
             output, _ = process.communicate(timeout=10)
             log.flush(); log.seek(0); errors = log.read()
             require(process.returncode == 0, f'worker status={process.returncode}: {errors}')
@@ -102,6 +111,11 @@ def run_worker(worker, work, traffic):
                     require(stats[name] == value, f'{name}: {stats[name]} != {value}; {stats}')
             print(('traffic' if traffic else 'idle') + ': ' + json.dumps(stats), flush=True)
         finally:
+            if worker_paused and process is not None and process.poll() is None:
+                try:
+                    os.kill(process.pid, signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:

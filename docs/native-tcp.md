@@ -359,6 +359,7 @@ READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采�
 ### Worker 流量快照
 
 关闭统计新增 `tx_bytes`、`rx_bytes`、`tx_dropped`、`rx_dropped`，原有 `tx`、`rx`、`dropped` 字段保留。
+`KER_IO_DONE` 还报告 `stop_requests`（已读取的控制字节数）和 `control_eof`（控制通道是否已观察到 EOF）。
 `tx`/`tx_bytes` 在 PMD 接受完整帧后增加；`rx`/`rx_bytes` 在完整帧成功送入原生 packet channel 后增加，重试不会重复计数。
 字节数包含 Ethernet 头和负载，不含 virtio channel 头或 Ethernet FCS。
 分方向 dropped 只统计适配层拒绝的帧长度/元数据，聚合 `dropped=tx_dropped+rx_dropped`；不包含硬件丢包或关闭时丢弃的排队 RX 帧。
