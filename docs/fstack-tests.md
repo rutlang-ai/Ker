@@ -264,3 +264,5 @@ Jumbo MTU：`ctest --test-dir build -R '^native-fstack-(jumbo-mtu|launcher-confi
 TCP ECN：`ctest --test-dir build -R '^native-fstack-(tcp-ecn|launcher-config)$' --output-on-failure`。
 `--tcp-ecn off|passive|on` 或 `[network] tcp_ecn` 控制私有原生内核；未配置保留 Linux 默认策略。
 测试比较实际宿主握手、TCP_INFO 及 SYN/SYN-ACK 抓包，CE 拥塞响应与外部 IPv6 ECN 尚未覆盖。
+
+`native-fstack-fd-map` 对应 `test_ff_native_fd_map`，使用真实 Linux socket 和实际 Ker fd 表验证映射生命周期、固定位置替换、引用及边界。无需网络设备，需 `KER_WITH_NATIVE_TCP=ON`。

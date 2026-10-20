@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 97 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 98 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 15 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 258 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 257 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -77,7 +77,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 16 | 0 | 18 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 17 | 0 | 17 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 3 | 1 | 2 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -240,3 +240,7 @@ F-Stack scatter 模式、mtu_enable 禁用分支及其内部配置 ABI 继续保
 原生统计新增 `tcp_ecn` 有效策略，并检查连接计数和零 outstanding。
 尚未验证 CE 标记后的拥塞响应、外部 IPv6 ECN 或 AccECN。
 本批新增 1 项场景适配、1 项部分覆盖；FreeBSD 配置结构及 hz/mem_size 同级字段 ABI 不作等价声明。
+
+`native-fstack-fd-map` 迁移原生 fd 映射场景，直接链接实际 Ker fd 表并启动原始 Linux。
+验证建立、替换、清除、越界拒绝、失败时所有权释放、旧引用存活、重复 fd 独立关闭及 host 替换。
+以真实 socket 类型和宿主/原生 fd 关闭结果作证据；不宣称兼容 FreeBSD fd 偏移编码或静默越界 setter。

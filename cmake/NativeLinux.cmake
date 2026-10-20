@@ -125,6 +125,14 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-host-failure-release COMMAND ker-host-failure-release-test)
     set_tests_properties(native-fstack-host-failure-debug native-fstack-host-failure-release
         PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_executable(ker-fd-map-test tests/posix/fstack-fd-map.c src/posix/fd-table.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-fd-map-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-fd-map-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-fd-map-test PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-fd-map-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-fd-map COMMAND ker-fd-map-test)
+    set_tests_properties(native-fstack-fd-map PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-host-runtime-test tests/posix/fstack-host-runtime.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-host-runtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-host-runtime-test SYSTEM PRIVATE
