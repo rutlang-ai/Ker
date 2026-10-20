@@ -157,6 +157,11 @@ if(BUILD_TESTING)
         --app "$<TARGET_FILE:ker-posix-tcp-echo-test>")
     add_test(NAME native-posix-tcp-interop COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-fd-compat-test>")
+    add_executable(ker-startup-interface-test tests/posix/startup-interface.c)
+    target_compile_options(ker-startup-interface-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME native-fstack-startup-lifecycle COMMAND ${ker_native_test_command}
+        --startup-app "$<TARGET_FILE:ker-startup-interface-test>")
+    set_tests_properties(native-fstack-startup-lifecycle PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-launcher-config-interop COMMAND ${ker_native_test_command} --launcher-config)
     set_tests_properties(native-fstack-launcher-config-interop PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-worker-log-interop COMMAND ${ker_native_test_command}

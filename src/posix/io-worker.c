@@ -97,6 +97,11 @@ int main(int argc, char **argv)
         if (ker_worker_log_close(&log)) perror("ker: close worker log");
         return 1;
     }
+    if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+        fprintf(stderr, "ker: secondary EAL processes are unsupported\n");
+        if (ker_worker_log_close(&log)) perror("ker: close worker log");
+        rte_eal_cleanup(); return 1;
+    }
     if (log_level >= 0) {
         ker_worker_log_global_level((uint32_t)log_level);
         if (log_dir) ker_worker_log_level(log.type, (uint32_t)log_level);
@@ -157,9 +162,14 @@ int main(int argc, char **argv)
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io ready port=%s\n", port_name) < 0) {
         perror("ker: write worker log"); goto cleanup;
     }
-    printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u}\n",
+    struct rte_eth_link link = {0};
+    int link_status = rte_eth_link_get_nowait(port, &link);
+    printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+        "\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
+        "\"process_type\":\"primary\",\"link_up\":%s}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
-        mac.addr_bytes[4], mac.addr_bytes[5], MTU);
+        mac.addr_bytes[4], mac.addr_bytes[5], MTU, port, rte_eth_dev_count_avail(),
+        rte_eth_dev_socket_id(port), link_status ? "null" : (link.link_status ? "true" : "false"));
     fflush(stdout);
     status = 0;
     while (!stopping) {
