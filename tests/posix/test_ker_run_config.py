@@ -19,6 +19,26 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_mtu_defaults_ranges_and_cli_precedence(self):
+        base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).mtu, 1500)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'mtu.ini'
+            config.write_text('[network]\nmtu=9000\n')
+            self.assertEqual(launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true']).mtu, 9000)
+            self.assertEqual(launcher.parse_arguments(base + ['--config', str(config), '--mtu', '1280', '--', '/bin/true']).mtu, 1280)
+            for text in ('not-a-number', '1279', '9001', '65535'):
+                config.write_text('[network]\nmtu=' + text + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    '--library', str(Path(directory) / 'missing'), '--', '/bin/true'], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertIn('mtu', result.stderr)
+            for text in ('0', '9001', '65535'):
+                with self.assertRaises(SystemExit) as caught:
+                    launcher.parse_arguments(base + ['--mtu', text, '--', '/bin/true'])
+                self.assertEqual(caught.exception.code, 2)
+
     def test_basic_and_multiple_sections(self):
         values = self.read('[network]\naddress=192.0.2.2/24\ngateway=192.0.2.1\n'
                            '[dpdk]\nport=net_tap0\neal=--no-huge\n'

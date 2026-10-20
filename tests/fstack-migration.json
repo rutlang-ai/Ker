@@ -1539,16 +1539,34 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_defaults_legacy",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker single-port MTU configuration adapts the F-Stack scenario with typed INI/CLI validation and original Linux/DPDK runtime; source-API differences are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-mtu-config"
+        },
+        {
+          "ctest": "native-fstack-startup-lifecycle",
+          "provenance_case": "native-fstack-mtu-default"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_large_9000",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker single-port MTU configuration adapts the F-Stack scenario with typed INI/CLI validation and original Linux/DPDK runtime; source-API differences are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-mtu-config"
+        },
+        {
+          "ctest": "native-fstack-jumbo-mtu",
+          "provenance_case": "native-fstack-jumbo-mtu"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_scatter_mode",
@@ -1567,16 +1585,27 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_max_mtu_non_numeric_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker single-port MTU configuration adapts the F-Stack scenario with typed INI/CLI validation and original Linux/DPDK runtime; source-API differences are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-mtu-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_port_over_max_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Ker single-port MTU configuration adapts the F-Stack scenario with typed INI/CLI validation and original Linux/DPDK runtime; source-API differences are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-mtu-config"
+        }
+      ],
+      "remaining": "Ker rejects MTU above its fixed ceiling 9000; no separately configurable max_mtu or per-port override exists, so a requested port MTU 9000 against a custom ceiling 2000 is not covered."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
@@ -1588,9 +1617,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_large_65535_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker single-port MTU configuration adapts the F-Stack scenario with typed INI/CLI validation and original Linux/DPDK runtime; source-API differences are documented in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-mtu-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",

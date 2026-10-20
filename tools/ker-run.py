@@ -38,12 +38,12 @@ if LIB_FROM_BIN.startswith('@'):
     LIB_FROM_BIN = '../lib64'
 
 
-CONFIG_DEFAULTS = dict(address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(mtu=1500, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
-    'network': {'address': ('address', ipaddress.IPv4Interface),
+    'network': {'mtu': ('mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
@@ -89,6 +89,7 @@ def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, argument_default=argparse.SUPPRESS)
     parser.add_argument('--config', type=Path, default=None, help='Ker INI configuration; explicit CLI options take precedence')
     parser.add_argument('--address', type=ipaddress.IPv4Interface)
+    parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--port', help='DPDK ethdev name')
     parser.add_argument('--all-multicast', action=argparse.BooleanOptionalAction,
@@ -121,6 +122,8 @@ def parse_arguments(argv=None):
         args.command.pop(0)
     if not args.command:
         parser.error('an application command is required after --')
+    if not 1280 <= args.mtu <= 9000:
+        parser.error('--mtu must be in 1280..9000')
     if not 0 <= args.shutdown_timeout_ms <= 60000:
         parser.error("--shutdown-timeout-ms must be in 0..60000")
     if not 1 <= args.pcap_snaplen <= 2147483647 or not 1 <= args.pcap_max_bytes <= 2147483647:
@@ -163,7 +166,7 @@ def main():
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
+            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)
@@ -179,7 +182,7 @@ def main():
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
-            KER_PACKET_FD=str(channel_app.fileno()), LKL_HIJACK_NET_IFTYPE='ker-channel',
+            KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
         if args.gateway:
