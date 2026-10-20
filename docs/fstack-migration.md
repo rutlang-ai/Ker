@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 91 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 92 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 13 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 266 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 265 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -76,7 +76,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 0 | 1 | 66 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
-| [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 18 | 0 | 1 | 2 | 0 |
+| [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 16 | 0 | 18 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 3 | 1 | 2 | 0 | 0 |
@@ -205,3 +205,14 @@ Ker 在 `src/posix/host-clock.c` 安装检查时钟返回值并无条件 abort �
 验证时钟失败及 panic 均产生 SIGABRT；正常时钟调用真实宿主并验证纳秒范围和前进。
 原有 host-runtime 测试安装同一适配器，真实启动/关闭 Linux 并测量内核时钟调用。
 这不包含实时时钟缓存失败、内核启动定点失败或新的网络协议覆盖。
+
+## 空 UDP 数据报的可读性
+
+`native-fstack-epoll` 新适配 `test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in`：
+用真实空 UDP 数据报验证零字节可读事件，不复制合成 kqueue 事件或转换逻辑。
+IPv4/IPv6 回环 × LT/ET/ONESHOT × 三种 epoll wait 接口共 18 个组合，均比较宿主 Linux 和原生 Linux。
+验证 FIONREAD 为 0 时仍有 EPOLLIN，且无 HUP/RDHUP/ERR；PEEK 不消费；按触发模式重复或重装；
+接收后 EAGAIN；后续普通数据报仍可接收。原生 IPv4 UDP 计数及零 outstanding 验证实际内核和清理。
+`native-fstack-udp-interop` 同时强化独立 IPv4 宿主互通的无 HUP/EOF 断言，包含空报文。
+IPv6 仅覆盖回环，不宣称外部 IPv6 部署完成。
+此后 epoll 清单的 19 个可移植场景均有适配，剩余 2 项仍为 FreeBSD 内部结构专属，不能算 Ker 通过。

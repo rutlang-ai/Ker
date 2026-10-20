@@ -1232,6 +1232,11 @@ def inside(args):
                     if (stats['outstanding'] or stats['native']['active_opens'] < minimum_opens or
                             stats['native']['passive_opens'] < minimum_opens):
                         raise RuntimeError(name + ' scenarios did not use native TCP or leaked: ' + str(stats))
+                    # Nine IPv4 combinations each send an empty and a one-byte datagram.
+                    # IPv6 loopback scenarios share the app but use separate kernel counters.
+                    if name == 'epoll' and (stats['native']['udp_in_datagrams'] < 18 or
+                            stats['native']['udp_out_datagrams'] < 18):
+                        raise RuntimeError('empty datagram scenarios missed native UDP: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
                 dualstack(args, launcher, work, env, log)
                 tcp_listener_restart(args, launcher, work, env, log)

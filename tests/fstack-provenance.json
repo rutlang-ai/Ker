@@ -45,6 +45,16 @@
     }
   },
   "cases": {
+    "native-fstack-empty-datagram-readiness": {
+      "source_file": "tests/unit/test_ff_epoll.c",
+      "source_case": [
+        "test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in"
+      ],
+      "ker_ctests": [
+        "native-fstack-epoll"
+      ],
+      "adaptation": "The zero-data/no-EOF read-readiness scenario is exercised with actual zero-length UDP datagrams instead of synthetic FreeBSD kqueue events. Eighteen combinations cover IPv4/IPv6 loopback, LT/ET/ONESHOT and epoll_wait/epoll_pwait/epoll_pwait2. Require EPOLLIN with the full 64-bit event tag and no HUP/RDHUP/ERR while FIONREAD reports zero; MSG_PEEK preserves the empty datagram; LT repeats readiness, ET/ONESHOT do not repeat, and ONESHOT explicitly rearms the unread datagram. Normal recv consumes it, the next recv yields EAGAIN, and a later one-byte datagram delivers readiness and data. The same program runs on independent host Linux and through libker-posix/original Linux; output must match. Native IPv4 UDP counters require at least 18 sent/received datagrams and zero outstanding worker mbufs; IPv6 coverage is native loopback, not external IPv6 deployment. Separate existing native-fstack-udp-interop now explicitly rejects UDP HUP/RDHUP/ERR across independent IPv4 host peers including empty payloads; this extension is not an additional upstream case. No upstream source edits or protocol implementation."
+    },
     "native-fstack-host-failure": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
