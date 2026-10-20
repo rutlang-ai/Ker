@@ -1119,7 +1119,7 @@ def verify_capture(directory, stats):
         paths = list(directory.glob('ker-' + direction + '-*.pcap'))
         if not paths or len(paths) > 10:
             raise RuntimeError('missing or unbounded capture files')
-        count = tcp = truncated = 0
+        count = tcp = truncated = total_bytes = 0
         for path in paths:
             data = path.read_bytes()
             if len(data) < 24:
@@ -1139,9 +1139,10 @@ def verify_capture(directory, stats):
                 frame = data[offset:offset + captured]
                 offset += captured
                 count += 1
+                total_bytes += original
                 truncated += original > captured
                 tcp += len(frame) >= 34 and frame[12:14] == b'\x08\x00' and frame[23] == 6
-        if count != stats[direction] or not tcp or not truncated:
+        if count != stats[direction] or total_bytes != stats[direction + '_bytes'] or not tcp or not truncated:
             raise RuntimeError(f'PCAP {direction} missed worker traffic: {count=} {tcp=} {truncated=} {stats[direction]=}')
     print('PASS: native TX/RX PCAP record counts, Ethernet TCP bytes and snaplen', flush=True)
 

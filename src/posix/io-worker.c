@@ -119,7 +119,8 @@ int main(int argc, char **argv)
     struct rte_mbuf *pending_tx = NULL, *rx[BURST] = {0};
     uint16_t rx_count = 0, rx_index = 0;
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
-    uint64_t transmitted = 0, received = 0, dropped = 0, tx_retries = 0, rx_retries = 0;
+    uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
+    uint64_t transmitted_bytes = 0, received_bytes = 0;
     unsigned char tx_bytes[sizeof(struct ker_packet_header) + WIRE_MAX], rx_bytes[WIRE_MAX];
     size_t tx_length = 0;
     int status = 1, tx_capture_status, rx_capture_status;
@@ -194,7 +195,7 @@ int main(int argc, char **argv)
                         break;
                     }
                     if (count < (ssize_t)(sizeof(struct ker_packet_header) + RTE_ETHER_HDR_LEN) ||
-                        count > (ssize_t)(sizeof(struct ker_packet_header) + mtu + RTE_ETHER_HDR_LEN)) { dropped++; continue; }
+                        count > (ssize_t)(sizeof(struct ker_packet_header) + mtu + RTE_ETHER_HDR_LEN)) { tx_dropped++; continue; }
                     struct ker_packet_header header;
                     memcpy(&header, tx_bytes, sizeof(header));
                     if (header.flags || header.gso_type || header.header_length || header.gso_size ||
@@ -220,6 +221,7 @@ int main(int argc, char **argv)
             }
             if (rte_eth_tx_burst(port, 0, &pending_tx, 1) != 1) { tx_retries++; break; }
             pending_tx = NULL; /* PMD owns accepted mbufs, including deferred frees. */
+            transmitted_bytes += tx_length;
             tx_length = 0;
             transmitted++;
             progress = true;
@@ -269,7 +271,8 @@ int main(int argc, char **argv)
                 }
                 if (count != (ssize_t)(length + sizeof(header))) { status = 1; break; }
                 received++;
-            } else dropped++;
+                received_bytes += length;
+            } else rx_dropped++;
             rte_pktmbuf_free(packet);
             rx[rx_index++] = NULL;
             progress = true;
@@ -297,9 +300,11 @@ cleanup:
         status = 1;
     } else if (pool) rte_mempool_free(pool);
     printf("KER_IO_DONE {\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
-        "\"rx_retries\":%llu,\"outstanding\":%u}\n", (unsigned long long)transmitted,
-        (unsigned long long)received, (unsigned long long)dropped,
-        (unsigned long long)tx_retries, (unsigned long long)rx_retries, outstanding);
+        "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u}\n", (unsigned long long)transmitted,
+        (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
+        (unsigned long long)tx_retries, (unsigned long long)rx_retries,
+        (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
+        (unsigned long long)tx_dropped, (unsigned long long)rx_dropped, outstanding);
     fflush(stdout);
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
     if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }

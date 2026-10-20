@@ -356,3 +356,10 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 实际可用 CPU、主核是否在位图中及 DPDK 构建的 lcore 上限由 EAL 校验，失败保持基础设施错误 125。
 多个选中 lcore 不会增加 Ker 的 RX/TX 队列或创建多进程数据面；目前仍由 worker 主线程处理报文。
 READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采样时主线程实际所在的 `main_cpu`。
+### Worker 流量快照
+
+关闭统计新增 `tx_bytes`、`rx_bytes`、`tx_dropped`、`rx_dropped`，原有 `tx`、`rx`、`dropped` 字段保留。
+`tx`/`tx_bytes` 在 PMD 接受完整帧后增加；`rx`/`rx_bytes` 在完整帧成功送入原生 packet channel 后增加，重试不会重复计数。
+字节数包含 Ethernet 头和负载，不含 virtio channel 头或 Ethernet FCS。
+分方向 dropped 只统计适配层拒绝的帧长度/元数据，聚合 `dropped=tx_dropped+rx_dropped`；不包含硬件丢包或关闭时丢弃的排队 RX 帧。
+`outstanding` 继续表示 ethdev 关闭后仍被占用的 mbuf 数，成功关闭必须为零。

@@ -169,6 +169,10 @@ if(BUILD_TESTING)
     add_executable(ker-posix-fstack-message-io-test tests/posix/fstack-message-io.c)
     target_compile_options(ker-posix-fstack-message-io-test PRIVATE -Wall -Wextra -Werror)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME native-fstack-worker-traffic
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-traffic.py"
+            --worker "$<TARGET_FILE:ker-io-worker>")
+    set_tests_properties(native-fstack-worker-traffic PROPERTIES TIMEOUT 60 LABELS "fstack;dpdk")
     add_test(NAME native-fstack-launcher-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_config.py")
     set_tests_properties(native-fstack-launcher-config PROPERTIES TIMEOUT 30 LABELS fstack)

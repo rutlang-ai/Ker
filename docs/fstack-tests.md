@@ -270,3 +270,5 @@ TCP ECN：`ctest --test-dir build -R '^native-fstack-(tcp-ecn|launcher-config)$'
 
 `native-fstack-lcore-mask` 对应六个 lcore mask 源场景，结合 `native-fstack-launcher-config` 验证提前拒绝、CLI 优先级及真实 EAL 选核。
 INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_count、main_lcore、main_cpu 和资源回收；需要两个可用且 ID 小于 128 的 CPU。
+`native-fstack-worker-traffic` 对应 `test_ff_get_traffic_zero_init` 和 `test_ff_dpdk_stop_smoke`。
+在私有 namespace 中通过实际 net_tap/AF_PACKET 验证空闲零统计、双向精确帧/字节计数、非法 TX 长度方向计数、重复停止和 mbuf 回收。

@@ -65,6 +65,17 @@
       ],
       "adaptation": "Ker --lcore-mask / [dpdk] lcore_mask accepts nonzero hex with optional0x/0X and surrounding whitespace, preserves multi-bit selection, and rejects blank/zero/non-hex before library or worker setup. CLI overrides INI before mask validation. Competing EAL -c/-l/--lcores selections are rejected rather than silently rewritten; original DPDK validates CPU availability and hardware/build limits. Real net_tap TCP in both roles uses two allowed physical CPUs in the INI mask, then CLI override to one of them. Actual DPDK lcore_count/main_lcore and host sched_getcpu are checked, plus original Linux TCP open counters, bidirectional Ethernet traffic and zero outstanding buffers. This adapts parsing/core-selection scenarios; F-Stack nb_procs/proc_lcore memory layout, process-per-core behavior, process-id selection, secondary processes and OOM paths are not implemented or claimed. Existing raw EAL mapping works unchanged when mask is absent."
     },
+    "native-fstack-worker-traffic": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_get_traffic_zero_init",
+        "test_ff_dpdk_stop_smoke"
+      ],
+      "ker_ctests": [
+        "native-fstack-worker-traffic"
+      ],
+      "adaptation": "Actual ker-io-worker with original DPDK net_tap in a private user/network namespace, no mocked EAL or counters. Idle start followed by repeated real control-channel stop requests and EOF must emit exactly one successful DONE with zero packets/bytes/directional validation drops/retries/outstanding. A second real worker forwards three exact Ethernet frames of60/127/1514 bytes each direction between independent host AF_PACKET and the native packet channel; expected counts are3 packets/1701 bytes each way. Two malformed channel frame lengths increment only TX validation drops; aggregate dropped remains2. Channel framing and complete received bytes are checked. Both stops close the ethdev and report zero in-use mbufs. This adapts zero-init traffic and idempotent stop scenarios, without F-Stack ff_traffic_args/getter/stop ABI or Linux networking coverage claims. Byte counts exclude the12-byte channel header and FCS; TX counts PMD acceptance and RX counts successful channel delivery, once per frame rather than retry. Drops are adapter validation drops, not NIC hardware or shutdown-discard counters."
+    },
     "native-fstack-fd-map": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
