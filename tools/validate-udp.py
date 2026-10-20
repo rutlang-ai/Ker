@@ -40,12 +40,10 @@ def selected_tests(matrix, registered):
     return sorted(required)
 
 
-def junit_results(path, expected, allow_extra=False):
+def junit_results(path, expected):
     results = {}
     for test in ET.parse(path).getroot().iter('testcase'):
         name = test.attrib['name']
-        if name not in expected and allow_extra:
-            continue
         if name in results or name not in expected:
             raise ValueError('duplicate or unexpected JUnit testcase: ' + name)
         results[name] = 'passed' if (test.find('failure') is None and test.find('error') is None
@@ -80,36 +78,32 @@ def main():
     parser.add_argument('--matrix', type=Path, default=Path(__file__).resolve().parents[1] / 'tests/udp-validation.json')
     parser.add_argument('--report', type=Path)
     parser.add_argument('--require-complete', action='store_true')
-    parser.add_argument('--from-junit', type=Path, help='reuse a completed broader CTest run')
-    parser.add_argument('--ctest-returncode', type=int, help='actual CTest status for --from-junit')
+    parser.add_argument('--from-junit', type=Path,
+        help='deprecated; imported JUnit is not accepted as tested-binary evidence')
+    parser.add_argument('--ctest-returncode', type=int,
+        help='deprecated; imported JUnit is not accepted as tested-binary evidence')
     args = parser.parse_args()
-    if (args.from_junit is None) != (args.ctest_returncode is None):
-        parser.error('--from-junit and --ctest-returncode must be supplied together')
+    if args.from_junit is not None or args.ctest_returncode is not None:
+        parser.error('imported JUnit cannot establish tested-binary provenance; run the selected CTests with this tool')
     build = args.build_dir.resolve()
     output = (args.report or build / 'udp-validation-report.json').resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     matrix = json.loads(args.matrix.read_text())
     registered = json.loads(subprocess.check_output(['ctest', '--test-dir', str(build), '--show-only=json-v1'], text=True))
     names = selected_tests(matrix, registered)
-    if args.from_junit is not None:
-        junit = args.from_junit.resolve()
-        returncode = args.ctest_returncode
-        results = junit_results(junit, names, allow_extra=True)
-        log_path = None
-    else:
-        junit = output.with_suffix('.xml')
-        command = ['ctest', '--test-dir', str(build), '--output-on-failure', '--no-tests=error',
-                   '--output-junit', str(junit), '-R', '^(' + '|'.join(re.escape(name) for name in names) + ')$']
-        log_path = output.with_suffix('.log')
-        with log_path.open('w') as log:
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
-        returncode = result.returncode
-        results = junit_results(junit, names)
+    junit = output.with_suffix('.xml')
+    command = ['ctest', '--test-dir', str(build), '--output-on-failure', '--no-tests=error',
+               '--output-junit', str(junit), '-R', '^(' + '|'.join(re.escape(name) for name in names) + ')$']
+    log_path = output.with_suffix('.log')
+    with log_path.open('w') as log:
+        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+    returncode = result.returncode
+    results = junit_results(junit, names)
     summary = report(matrix, results, returncode)
     binaries = [build / 'libker-posix.so', build / 'ker-io-worker', build / 'ker-app',
                 *build.glob('ker-udp-*'), *build.glob('ker-posix-fstack-udp-*-test')]
     summary.update(build_dir=str(build),junit=str(junit),log=str(log_path) if log_path else None,
-        execution_mode='imported-junit' if args.from_junit else 'executed-ctest',
+        execution_mode='executed-ctest',
         matrix_sha256=hashlib.sha256(args.matrix.read_bytes()).hexdigest(),
         binaries_sha256={path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                          for path in binaries if path.is_file()})

@@ -1,5 +1,7 @@
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -46,13 +48,27 @@ class ReportGuards(unittest.TestCase):
         self.assertFalse(report['automated_checks_passed'])
         self.assertFalse(report['all_features_supported_and_validated'])
 
-    def test_full_suite_import_still_requires_each_udp_test(self):
+    def test_foreign_or_stale_junit_cannot_be_imported_as_tested_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'full.xml'
-            path.write_text('<testsuite><testcase name="unrelated"/><testcase name="test-a"/></testsuite>')
-            self.assertEqual(validator.junit_results(path, ['test-a'], allow_extra=True), {'test-a': 'passed'})
-            path.write_text('<testsuite><testcase name="unrelated"/></testsuite>')
-            self.assertEqual(validator.junit_results(path, ['test-a'], allow_extra=True), {'test-a': 'missing'})
+            root = Path(directory)
+            build = root / 'build'
+            build.mkdir()
+            report = root / 'report.json'
+            for name, xml in (
+                ('foreign', '<testsuite><testcase name="unrelated"/><testcase name="test-a"/></testsuite>'),
+                ('stale', '<testsuite><testcase name="test-a"/></testsuite>'),
+            ):
+                with self.subTest(name=name):
+                    path = root / (name + '.xml')
+                    path.write_text(xml)
+                    result = subprocess.run([
+                        sys.executable, str(Path(validator.__file__)),
+                        '--build-dir', str(build), '--report', str(report),
+                        '--from-junit', str(path), '--ctest-returncode', '0',
+                    ], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn('cannot establish tested-binary provenance', result.stderr)
+                    self.assertFalse(report.exists())
 
     def test_skips_missing_and_failures_do_not_pass(self):
         with tempfile.TemporaryDirectory() as directory:
