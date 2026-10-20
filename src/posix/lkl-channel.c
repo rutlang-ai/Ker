@@ -6,6 +6,7 @@
 #include "host-thread.h"
 #include "host-clock.h"
 #include "host-entropy.h"
+#include "realtime-clock.h"
 #include "packet-channel.h"
 #include "packet-device.h"
 #include <arpa/inet.h>
@@ -113,15 +114,7 @@ __attribute__((constructor)) static void initialize(void)
     if (result) fail("kernel boot", result);
     result = ker_native_seed_entropy();
     if (result) fail("native entropy initialization", result);
-    /* LKL's POSIX host clock is monotonic, including its persistent-clock
-     * seed. Give Linux realtime its wall-clock epoch without changing the
-     * monotonic clocksource used by protocol timers. Only this private kernel
-     * is changed; the host clock is never set. */
-    struct timespec host_time;
-    if (clock_gettime(CLOCK_REALTIME, &host_time)) fail("host realtime clock", -errno);
-    struct __lkl__kernel_timespec native_time = {
-        .tv_sec = host_time.tv_sec, .tv_nsec = host_time.tv_nsec};
-    result = (int)lkl_sys_clock_settime(LKL_CLOCK_REALTIME, &native_time);
+    result = ker_native_sync_realtime();
     if (result) fail("native realtime clock initialization", result);
     /* Linux UAPI new_utsname is six 65-byte fields on both ABI domains. */
     _Static_assert(sizeof(struct utsname) == 6 * 65, "uname ABI");

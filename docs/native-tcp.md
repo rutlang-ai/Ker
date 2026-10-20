@@ -356,6 +356,7 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 实际可用 CPU、主核是否在位图中及 DPDK 构建的 lcore 上限由 EAL 校验，失败保持基础设施错误 125。
 多个选中 lcore 不会增加 Ker 的 RX/TX 队列或创建多进程数据面；目前仍由 worker 主线程处理报文。
 READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采样时主线程实际所在的 `main_cpu`。
+
 ### Worker 流量快照
 
 关闭统计新增 `tx_bytes`、`rx_bytes`、`tx_dropped`、`rx_dropped`，原有 `tx`、`rx`、`dropped` 字段保留。
@@ -365,10 +366,16 @@ READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采�
 分方向 dropped 只统计适配层拒绝的帧长度/元数据，聚合 `dropped=tx_dropped+rx_dropped`；不包含硬件丢包或关闭时丢弃的排队 RX 帧。
 `outstanding` 继续表示 ethdev 关闭后仍被占用的 mbuf 数，成功关闭必须为零。
 
-
 ### 原生内核熵初始化
 
 应用启动前，Ker 从宿主 `SYS_getrandom(..., 0)` 系统调用获取 32 字节；直接系统调用避免应用或 preload 对 `getrandom` 符号的替换，并通过原始 Linux `RNDADDENTROPY` 向私有内核 RNG 注入 256 位熵，再调用 `RNDRESEEDCRNG`，保证已就绪的 RNG 也立即重新派生输出状态。
 临时字符设备节点只存在于 LKL 私有 rootfs，打开后立即 unlink；不写入宿主 `/dev/random`，不修改原始 Linux RNG 实现。
 EINTR/短读继续获取剩余字节；读取、私有设备初始化或 ioctl 失败会中止启动。没有时间戳、PID 或固定字节替代路径。
 临时 fd 随即关闭，包含种子的缓存在所有返回路径显式清除。POSIX 应用原有宿主随机数接口保持不变。
+
+### 原生实时时钟同步
+
+constructor 在私有内核启动后，将宿主 `CLOCK_REALTIME` 的 Unix epoch 同步给原始 Linux，供 socket 时间戳等功能使用。
+这一操作只设置私有内核的实时时钟；协议定时器继续使用单调 clocksource，不设置宿主时钟。
+宿主采样失败或原始 Linux 拒绝 settime 时，启动返回基础设施错误 125；不使用失败采样中的时间值。
+`native-fstack-realtime` 通过实际同步函数验证 epoch、前进、单调时钟隔离和错误后的恢复。

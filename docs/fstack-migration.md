@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 107 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 110 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 15 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 248 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 245 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -252,14 +252,19 @@ F-Stack scatter 模式、mtu_enable 禁用分支及其内部配置 ABI 继续保
 实际 DPDK 双核配置和单核 CLI 覆盖分别运行双向 TCP，检查 lcore 数量、主 lcore、宿主 CPU、原始 Linux 连接统计和零 outstanding。
 这是 Ker/EAL 的核选择适配；不迁移 FreeBSD/F-Stack 的 nb_procs/proc_lcore ABI、多进程或 proc_id 语义。
 CPU 是否可用及 DPDK 构建允许的最大 lcore ID 仍由原始 EAL 校验。互操作测试要求两个可用且 ID 小于 128 的 CPU。
+
 `native-fstack-worker-traffic` 迁移流量零初始化和重复停止两个场景，使用真实 DPDK net_tap worker。
 空闲快照所有计数为零；实际主机 AF_PACKET 与 packet channel 双向转发三帧，逐字节验证，计数各为 3 帧/1701 字节。
 两条非法 TX 长度只增加 tx_dropped，聚合 dropped 保持一致；重复控制请求与 EOF 只产生一个成功 DONE，ethdev 关闭后零 outstanding。
 不宣称 F-Stack 结构体/getter ABI，也不把这项裸 Ethernet 测试计为 Linux 协议覆盖。
-
 
 `native-fstack-entropy` 迁移随机缓冲区填充和连续随机字变化两个场景。
 运行时在原始 Linux 启动后、应用 socket 可用前，通过宿主 SYS_getrandom 系统调用（flags=0）获取 32 字节，交给原始 Linux RNG 并记入 256 位熵，再通过原始 reseed ioctl 立即更新已就绪 RNG。
 测试启动真实 Linux，验证非阻塞随机读取、64 字节填充和 16 个字变化；EINTR/短读仍只使用真实宿主随机字节，读取失败/零读必须返回错误。
 私有 random 节点即时 unlink，已有对象冲突保持不变，fd 关闭且所有返回路径显式清除种子缓存。
 不实现自己的 PRNG，不声明 FreeBSD arc4random ABI/算法等价；输出变化阈值只作场景检查，不作密码学强度证明。
+
+`native-fstack-realtime` 迁移实时时钟场景，复用 constructor 的实际同步适配器并启动真实 Linux。
+先把私有内核时间设为旧的 2000 年 epoch，再验证同步后处于宿主前后采样区间、秒/纳秒有效且延迟后前进。
+同步过程中原生单调时钟的前进量落在宿主单调时间前后采样窗口内，不随实时时钟跳变；宿主 EIO 和原生 EINVAL 均保持旧 epoch，仅返回错误。
+恢复及重复同步同样验证。所有 settime 仅作用于私有 Linux；FreeBSD 缓存时间和 NULL 输出参数场景仍保留缺口。
