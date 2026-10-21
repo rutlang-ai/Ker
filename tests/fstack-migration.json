@@ -2094,9 +2094,19 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_inverted_range",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Ker rejects inverted automatic local-port ranges before launch. Valid ranges reach original Linux ip_local_port_range and are verified through actual TCP/UDP IPv4/IPv6 allocation, exhaustion/reuse and independent DPDK traffic.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-ephemeral-ports"
+        },
+        {
+          "ctest": "native-fstack-ephemeral-ports",
+          "provenance_case": "native-fstack-ephemeral-ports"
+        }
+      ],
+      "remaining": "F-Stack RSS tables, queue-specific port selection and ff_rss_tbl_set_portrange return-code/API semantics are not implemented. This covers range validation and native allocation policy only."
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",

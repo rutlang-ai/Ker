@@ -15,8 +15,8 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 125 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 227 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 226 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -450,3 +450,19 @@ DPDK VLAN stripping/filter offload 保持关闭，tag/demux 属于原始 Linux�
 F-Stack 的完整 DPDK 字段、KNI/FreeBSD/bond/RSS/reload 配置未因此变为支持。
 重复键测试明确验证 Ker 拒绝重复键；上游的 last-value-wins 用例仍 blocked。
 多次加载不串状态不等同于 allocator 泄漏检测或热重载能力。
+
+## 原始 Linux 临时端口策略
+
+`native-fstack-ephemeral-ports` 验证 INI `[network] ephemeral_ports=40000-40007`
+及 CLI `--ephemeral-ports 41000-41007` 对私有 Linux `ip_local_port_range` 的
+实际作用。配置在应用启动前安装；未配置时保留 Linux 默认范围。与通用
+`--sysctl net.ipv4.ip_local_port_range=...` 同时指定时拒绝，避免双重配置来源。
+
+真实 IPv4/IPv6 TCP/UDP socket 验证自动分配、唯一性、范围耗尽、释放及单一空闲
+端口复用，并验证 Linux reserved-port 排除。独立宿主 TCP/UDP 对端确认实际
+IPv4 源端口和负载，原始内核计数、DPDK 收发与回收均检查。宿主 sysctl 不变。
+IPv6 部分为本地 socket 分配验证，不是 IPv6 线缆互通验证。
+
+`test_ff_rss_tbl_set_portrange_inverted_range` 从 blocked 变为 partial：
+倒置范围的拒绝及有效范围的原生分配已有证据；RSS 表、Toeplitz/RETA 与队列专属
+端口选择仍未实现，不将原始 Linux 的端口范围误称为 F-Stack RSS 等价支持。

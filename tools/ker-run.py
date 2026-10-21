@@ -70,12 +70,21 @@ def sysctl_setting(text):
     return key, value
 
 
-CONFIG_DEFAULTS = dict(vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+def ephemeral_ports(text):
+    if not re.fullmatch(r'[0-9]{1,5}-[0-9]{1,5}', text):
+        raise ValueError('ephemeral ports require FIRST-LAST in 1..65535')
+    first, last = map(int, text.split('-'))
+    if not 1 <= first <= last <= 65535:
+        raise ValueError('ephemeral ports require 1 <= FIRST <= LAST <= 65535')
+    return first, last
+
+
+CONFIG_DEFAULTS = dict(ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
-    'network': {'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
+    'network': {'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
@@ -146,6 +155,8 @@ def parse_arguments(argv=None):
         help='Linux net.* KEY=VALUE; repeat up to 32 keys; overrides matching INI [sysctl] keys')
     parser.add_argument('--gateway6', type=ipaddress.IPv6Address,
         help='native IPv6 default gateway on this interface; requires --address6')
+    parser.add_argument('--ephemeral-ports', type=ephemeral_ports, metavar='FIRST-LAST',
+        help='native Linux automatic local port range for TCP/UDP and IPv4/IPv6')
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--lcore-mask', help='nonzero hexadecimal DPDK lcore mask; conflicts with EAL -c/-l/--lcores')
     parser.add_argument('--port', help='DPDK ethdev name')
@@ -182,6 +193,11 @@ def parse_arguments(argv=None):
         args.command.pop(0)
     if not args.command:
         parser.error('an application command is required after --')
+    if args.ephemeral_ports is not None:
+        key = 'net.ipv4.ip_local_port_range'
+        if key in args.sysctls:
+            parser.error('--ephemeral-ports conflicts with sysctl ' + key)
+        args.sysctls[key] = ' '.join(map(str, args.ephemeral_ports))
     if len(args.sysctls) > 32:
         parser.error('--sysctl supports at most 32 distinct keys')
     if args.tcp_ecn is not None and 'net.ipv4.tcp_ecn' in args.sysctls:

@@ -441,3 +441,12 @@ INI 使用 `[vlan.ID] addresses=...`；CLI 整体替换 INI VLAN 列表。父接
 原始 Linux 创建 `ker.ID` 子接口，负责标签和地址语义；应用可用 `SO_BINDTODEVICE` 绑定它。
 需要以当前 defconfig 重新构建 native Linux 产物（启用 `CONFIG_VLAN_8021Q`）。
 已验证 net_tap、IPv4、MTU1500、两个 VLAN 和 VLAN VIP；其它部署边界见 `docs/fstack-migration.md`。
+
+### 自动本地端口范围
+
+`[network] ephemeral_ports=40000-40007` 或 `--ephemeral-ports 40000-40007`
+设置应用私有 Linux 的 `net.ipv4.ip_local_port_range`，同时作用于 TCP/UDP 和
+IPv4/IPv6 自动端口分配。格式为 `FIRST-LAST`，端点在 1..65535 且不得倒置。
+CLI 覆盖 INI；不指定则保留内核默认。不能同时通过 `[sysctl]`/`--sysctl` 指定
+同一 key。该设置和其他网络 sysctl 一样只作用于本实例，受原始 Linux 的端口
+保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。

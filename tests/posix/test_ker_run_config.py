@@ -19,6 +19,34 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_ephemeral_port_range_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertNotIn('net.ipv4.ip_local_port_range', launcher.parse_arguments(base + ['--', '/bin/true']).sysctls)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'ports.ini'
+            config.write_text('[network]\nephemeral_ports=40000-40007\n')
+            args = launcher.parse_arguments([*base, '--config', str(config), '--', '/bin/true'])
+            self.assertEqual(args.sysctls['net.ipv4.ip_local_port_range'], '40000 40007')
+            args = launcher.parse_arguments([*base, '--config', str(config), '--ephemeral-ports',
+                '41000-41007', '--', '/bin/true'])
+            self.assertEqual(args.sysctls['net.ipv4.ip_local_port_range'], '41000 41007')
+        for text, expected in [('1-1', (1, 1)), ('1-65535', (1, 65535)), ('65535-65535', (65535, 65535))]:
+            self.assertEqual(launcher.ephemeral_ports(text), expected)
+        for value in ('0-4', '4-3', '1-65536', '-1-3', '1', '1:3', '1-2-3', 'x-y', ' 1-2', '1-2\n'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                launcher.ephemeral_ports(value)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'ports.ini'
+            for text, options in [('[network]\nephemeral_ports=4-3\n', []),
+                    ('', ['--ephemeral-ports', '4-3']),
+                    ('[network]\nephemeral_ports=40000-40007\n[sysctl]\nnet.ipv4.ip_local_port_range=41000 41007\n', []),
+                    ('', ['--ephemeral-ports', '40000-40007', '--sysctl', 'net.ipv4.ip_local_port_range=41000 41007'])]:
+                config.write_text(text)
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    *options, '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+
     def test_vlan_configuration_and_cli_replacement(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments([*base, '--', '/bin/true']).vlans, ())
