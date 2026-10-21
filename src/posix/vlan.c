@@ -159,3 +159,22 @@ int ker_native_configure_vlan_gateway6(const char *settings)
     if (index <= 0) return index ? index : -LKL_ENODEV;
     return ker_native_set_ipv6_gateway(index, &gateway);
 }
+
+int ker_native_configure_vlan_gateway(const char *settings)
+{
+    if (!settings || !*settings) return 0;
+    if (strlen(settings) >= 32) return -LKL_EINVAL;
+    char *end;
+    errno = 0;
+    long tag = strtol(settings, &end, 10);
+    if (errno || end == settings || *end != '=' || tag < 1 || tag > 4094) return -LKL_EINVAL;
+    struct in_addr gateway;
+    if (inet_pton(AF_INET, end + 1, &gateway) != 1 || !gateway.s_addr ||
+        IN_MULTICAST(ntohl(gateway.s_addr)) || (ntohl(gateway.s_addr) >> 24) == 127 ||
+        gateway.s_addr == INADDR_BROADCAST) return -LKL_EINVAL;
+    char name[16];
+    snprintf(name, sizeof(name), "ker.%ld", tag);
+    int index = lkl_ifname_to_ifindex(name);
+    if (index <= 0) return index ? index : -LKL_ENODEV;
+    return ker_native_set_ipv4_gateway(index, &gateway);
+}

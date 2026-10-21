@@ -31,6 +31,11 @@ Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 `test_ff_load_config_inet6_fixture_ignored` 断言的是 INET6-disabled ignore，
 仍保持 blocked；新增功能证据不改变上表计数，也不声称完整 fixture 等价。
 
+另补齐 `valid_vlan_vip.ini` 中 VLAN IPv4 gateway 的相关运行能力，
+`native-fstack-ipv4-vlan-route` 验证原始 Linux 主表默认路由、ARP 下一跳和
+路由器后的双向 TCP/UDP。它扩展已适配配置场景的运行证据，未将白盒 config
+合同或完整 F-Stack 多接口路由语义记为完成，计数保持不变。
+
 ## 自动检查
 
 ```sh

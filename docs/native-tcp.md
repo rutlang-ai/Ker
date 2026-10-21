@@ -495,10 +495,31 @@ untagged 探测不能交给设备绑定 socket。另验证 16×8 地址上限及
 网关并用；这避免隐式 ECMP/策略路由。不能使用本实例配置的本地 IP 作为网关。
 下一跳可达性由原始 Linux 检查；off-link 网关在应用 main 前失败并回收 worker。
 未指定网关会清除继承的配置环境，保留无默认路由的行为。
-IPv4 VLAN 网关、多个路由表/多个默认网关和 RA/SLAAC 尚未实现。
+IPv4 VLAN 网关见下节；多个路由表/同一地址族多个默认网关和 RA/SLAAC 尚未实现。
 
 `native-fstack-ipv6-vlan-route` 运行四个真实 native 实例：省略网关、off-link 拒绝、
 INI 全局网关、CLI link-local 网关覆盖。独立宿主路由器连接另一网络命名空间中的
 远端，双向 TCP/UDP 必须跨网段并保持源地址和载荷；UDP hop limit 必须由 64 减为
 63，转发计数增加。PCAP 还必须证明 VLAN100 标签、下一跳 NDP、路由器 MAC 和
 远端 IPv6 UDP 地址。没有上游协议源码修改或 Ker 自有路由/协议算法。
+
+
+## IPv4 VLAN 默认网关
+
+`[vlan.100] gateway=198.19.100.1` 或 `--vlan-gateway 100=198.19.100.1`
+为配置了 IPv4 地址的 VLAN 安装原始 Linux 主表默认路由。路由明确指定
+`ker.100` 输出接口；TCP/UDP、ARP 和转发语义均来自原始 Linux。
+CLI 整体替换 INI IPv4 VLAN 网关列表，IPv6 VLAN 网关列表独立保留。
+每个地址族只允许一个显式默认网关；IPv4 VLAN 网关不能与父接口 `gateway`
+或另一个 VLAN IPv4 默认网关并用，但可以与一个 IPv6 默认网关共存。
+
+配置拒绝无 IPv4 的 VLAN、不存在的 VLAN ID、配置的本地地址、零/组播/loopback/
+有限广播和所选 VLAN 子网广播下一跳。`/31` 不按传统子网广播地址规则拒绝其对端。
+是否 on-link 由原始 Linux 路由安装检查，off-link 网关在 main 前失败并回收 worker。
+省略该选项会清除继承的 `KER_NATIVE_VLAN_GATEWAY`；不隐式创建默认路由。
+
+`native-fstack-ipv4-vlan-route` 的四个实际 native 实例覆盖省略网关、off-link 拒绝、
+INI 网关和 CLI 更换网关。独立宿主路由器连接另一个网络命名空间，验证双方主动连接的
+TCP/UDP、精确源地址/载荷、UDP TTL 64→63、宿主转发和原始内核计数及零 outstanding
+mbuf。PCAP 必须证明 VLAN100 标签、ARP 查询配置的网关而非远端地址、路由器 MAC
+和跨网段 IPv4 UDP。多路由表、每 VLAN 独立默认路由/策略规则仍未实现。

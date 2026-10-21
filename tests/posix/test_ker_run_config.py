@@ -19,6 +19,42 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_vlan_ipv4_gateway(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        vlan = ['--vlan', '100=198.19.100.2/24']
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'gateway.ini'
+            config.write_text('[vlan.100]\naddresses=198.19.100.2/24,2001:db8:100::2/64\ngateway=198.19.100.1\ngateway6=fe80::1\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+            self.assertEqual([(tag, str(ip)) for tag, ip in args.vlan_gateways], [(100, '198.19.100.1')])
+            self.assertEqual([(tag, str(ip)) for tag, ip in args.vlan_gateways6], [(100, 'fe80::1')])
+            args = launcher.parse_arguments(base + ['--config', str(config), '--vlan-gateway', '100=198.19.100.3', '--', '/bin/true'])
+            self.assertEqual([(tag, str(ip)) for tag, ip in args.vlan_gateways], [(100, '198.19.100.3')])
+            for value in ('0.0.0.0', '127.0.0.1', '224.0.0.1', '255.255.255.255', '198.19.100.255',
+                          '198.19.100.2', 'fe80::1', 'invalid'):
+                for mode in ('ini', 'cli'):
+                    config.write_text('[vlan.100]\naddresses=198.19.100.2/24\n' +
+                        ('gateway=' + value + '\n' if mode == 'ini' else ''))
+                    options = [] if mode == 'ini' else ['--vlan-gateway', '100=' + value]
+                    result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                        *options, '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+            for extra in (
+                    ['--vlan-gateway', '200=198.19.100.1'],
+                    ['--vlan-gateway', '4095=198.19.100.1'],
+                    ['--vlan-gateway', '100=198.19.100.1', '--vlan-gateway', '100=198.19.100.3'],
+                    ['--gateway', '198.18.0.1', '--vlan-gateway', '100=198.19.100.1']):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + vlan + extra + ['--', '/bin/true'])
+            for extra in ([], ['--vlan', '100=2001:db8::2/64']):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + extra + ['--vlan-gateway', '100=198.19.100.1', '--', '/bin/true'])
+            # /31 has no subnet broadcast: the other point-to-point endpoint is a valid next hop.
+            args = launcher.parse_arguments(base + ['--vlan', '100=198.19.100.0/31',
+                '--vlan-gateway', '100=198.19.100.1', '--', '/bin/true'])
+            self.assertEqual(str(args.vlan_gateways[0][1]), '198.19.100.1')
+
     def test_vlan_ipv6_gateway(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         vlan = ['--vlan', '100=2001:db8:1::2/64']
