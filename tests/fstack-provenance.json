@@ -1168,6 +1168,17 @@
       ],
       "adaptation": "Ker-specific source-port policy extension: network.ephemeral_ports/--ephemeral-ports validates FIRST-LAST and translates it into the private original-Linux ip_local_port_range sysctl before application startup. Reject inverted/out-of-bounds/malformed ranges and duplicate generic sysctl authority before library resolution. Seven real-kernel instances cover omitted defaults, INI, CLI replacement, reserved-port exclusion, the minimum 1024 singleton, maximum 65535 singleton, and generic ordered range/boundary sysctls (50000-50007 then 50000). The final profile starts from INI with the boundary before the range and overrides both via CLI in valid order; parser tests also verify repeated CLI A-B-A overrides apply in last-occurrence order while untouched INI keys retain their relative order. The dedicated range option rejects ports below the default Linux privileged-port boundary before setup. Each verifies IPv4/IPv6 TCP/UDP automatic bind uniqueness; configured small ranges also prove exhaustion (EADDRINUSE), release and exact single-free-port reuse. Independent host TCP/UDP peers verify actual native source ports and exact echoed payload over DPDK net_tap, positive original-kernel TCP/UDP counters and zero outstanding buffers. Host namespace sysctls remain unchanged and inherited internal overrides are discarded. IPv6 qualification here is local socket allocation, not IPv6 wire interop. F-Stack RSS/Toeplitz/RETA/queue-specific port sets are not implemented and the source record remains partial. Linux owns allocation and reservation semantics; no Ker port-selection or protocol substitute is added."
     },
+    "native-fstack-socket-port-range": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_range_params",
+        "test_ff_rss_adjust_sport6_range_params"
+      ],
+      "ker_ctests": [
+        "native-fstack-socket-port-range"
+      ],
+      "adaptation": "Ker-specific Linux per-socket port-range qualification, inspired by the IPv4/IPv6 RSS range-parameter guards. Real public setsockopt/getsockopt(IPPROTO_IP, IP_LOCAL_PORT_RANGE) on IPv4/IPv6 TCP/UDP validates host-order low/high halves, reversed bounds and wrong optlen (EINVAL with old policy intact), four-port allocation uniqueness/exhaustion, release/sole-free-port reuse, dup-shared options and recovery of a failed bind through reset. A sibling socket retains default policy. Zero endpoints narrow to each namespace boundary; a broad 1024..65535 socket range is clamped to the configured 16-port namespace range and exhausts after exactly16 binds. Two private original-Linux instances test INI and CLI-overridden namespace ranges. Actual independent host TCP/UDP peers observe the narrower socket source range and exact echo payload through DPDK; positive original-kernel TCP/UDP counters, zero outstanding buffers and unchanged host policy are required. IPv6 evidence covers local allocation, not wire interop. No original Linux/DPDK/F-Stack source changes. RSS/Toeplitz/RETA steering, minimum RETA block semantics and F-Stack API equivalence remain unimplemented, so both source cases stay partial."
+    },
     "native-fstack-ipv6-vip": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

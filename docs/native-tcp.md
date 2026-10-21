@@ -462,3 +462,18 @@ Linux 要求非特权端口边界不高于 `ip_local_port_range` 的下界；若
 再设 `ip_unprivileged_port_start=50000`。CLI `--sysctl` 覆盖 INI 同名项时，该项按 CLI
 出现顺序重新应用；未覆盖的 INI 项仍保持文件顺序。专用选项固定采用 1024 下限。所有设置
 只作用于本实例，受原始 Linux 的端口保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。
+
+### 每 socket 自动端口范围
+
+原始 Linux `IP_LOCAL_PORT_RANGE` 可在 TCP/UDP、IPv4/IPv6 socket 上通过
+`IPPROTO_IP` 设置。32 位参数采用宿主字节序，低 16 位为下界，高 16 位为上界：
+
+```c
+uint32_t range = (uint32_t)40008 | ((uint32_t)40011 << 16);
+setsockopt(fd, IPPROTO_IP, IP_LOCAL_PORT_RANGE, &range, sizeof(range));
+```
+
+范围仅能缩小命名空间自动分配策略，不能扩展它。零值端点保留对应全局端点，
+两个端点均为零时重置；dup 共享同一个 socket 的选项。窄范围耗尽时由原始
+Linux 返回错误；`native-fstack-socket-port-range` 对自动 bind 的 EADDRINUSE、
+释放复用、错误后状态和 reset 恢复进行了验证。

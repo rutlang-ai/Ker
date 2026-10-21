@@ -492,3 +492,17 @@ TCP/UDP 字节和地址校验，检查宿主 NDP 的 worker MAC、原始 TCP/UDP
 固定 F-Stack `valid_inet6.ini` 中的 `vip_addr6`/`vip_prefix_len` 是功能来源，
 但 Ker 不复刻 `vip_ifname` 的独立 FreeBSD 接口；也不把“INET6 未启用时忽略配置”
 测试标为通过。该源项仍 blocked，迁移计数不变。IPv6 VLAN 和 RA/SLAAC 仍未验收。
+
+## 每 socket 临时端口范围
+
+`native-fstack-socket-port-range` 在实际原始 Linux 上验证公开的
+`IP_LOCAL_PORT_RANGE` socket option，覆盖 IPv4/IPv6 TCP/UDP 的窄范围、
+EINVAL 后保留旧策略、耗尽/释放复用、dup 共享、重置恢复和兄弟 socket 隔离。
+超出命名空间的范围不会扩展全局策略：测试使用宽范围 socket 填满全部 16 个
+全局端口，确认下一次分配失败。零值端点和上下边界的单端口选择也验证。
+独立宿主 TCP/UDP 对端检查实际 IPv4 源端口被进一步限制在 socket 范围内；
+内核计数、DPDK 收发和回收分别检查。IPv6 部分仅验证本地分配。
+
+两个上游 IPv4/IPv6 `test_ff_rss_adjust_sport*_range_params` 用例从 blocked
+变为 partial。F-Stack 拒绝小于 RETA 块的范围，Linux 则支持很小的范围；
+本批保留原始 Linux 语义，不声称已实现 RSS/Toeplitz/RETA 或队列端口调整。

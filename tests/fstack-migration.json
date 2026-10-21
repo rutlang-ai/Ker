@@ -2272,16 +2272,28 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_range_params",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Original Linux IP_LOCAL_PORT_RANGE is exercised on IPv4/IPv6 TCP/UDP sockets: invalid range/length rejection preserves state; narrow ranges exhaust/reuse, dup shares policy, reset restores namespace policy and independent host peers verify narrow source ports over DPDK.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-socket-port-range",
+          "provenance_case": "native-fstack-socket-port-range"
+        }
+      ],
+      "remaining": "F-Stack RSS/Toeplitz/RETA queue-specific source-port adjustment is not implemented. Linux accepts small per-socket ranges including singletons, whereas the upstream RSS path rejects ranges smaller than a RETA block; the full source-case contract remains unmet."
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_range_params",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Original Linux IP_LOCAL_PORT_RANGE is exercised on IPv4/IPv6 TCP/UDP sockets: invalid range/length rejection preserves state; narrow ranges exhaust/reuse, dup shares policy, reset restores namespace policy and independent host peers verify narrow source ports over DPDK.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-socket-port-range",
+          "provenance_case": "native-fstack-socket-port-range"
+        }
+      ],
+      "remaining": "F-Stack RSS/Toeplitz/RETA queue-specific source-port adjustment is not implemented. Linux accepts small per-socket ranges including singletons, whereas the upstream RSS path rejects ranges smaller than a RETA block; the full source-case contract remains unmet."
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_register_if_returns_ctx",
