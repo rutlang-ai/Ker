@@ -38,7 +38,7 @@ Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 
 新增 `dpdk.promiscuous` / CLI 开关及真实 PMD/native 验证，补齐最小配置用例中
 promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-Stack fixture 的
-显式开启值。pkt_tx_delay 和完整 config 布局仍
+显式开启值。完整 config ABI/布局仍
 未实现，该源用例继续 partial，计数不变。
 
 `dpdk.idle_sleep` / `--idle-sleep-us` 进一步补齐该最小配置场景的空闲等待子集，
@@ -539,7 +539,7 @@ RA/SLAAC 和完整 fixture 等价性仍未迁移。
 `dpdk.channel` / `--memory-channels` 进一步适配最小配置的 `nb_channel` 子集，
 直接交给原始 EAL，并从 `rte_memory_get_nchannel()` 回读配置。五次真实 native 启动
 验证省略、INI、CLI 覆盖及原始 EAL 长短参数，同时要求独立宿主 TCP/UDP 与清理证据。
-仅验证 no-huge 模式下配置生效，不认证物理拓扑或性能；TX-delay/global layout
+仅验证 no-huge 模式下配置生效，不认证物理拓扑或性能；global layout
 仍未覆盖，因此源案例保持 partial，迁移计数不变。
 
 
@@ -547,7 +547,7 @@ RA/SLAAC 和完整 fixture 等价性仍未迁移。
 启用按 lcore socket 分配，关闭统一 socket 0。五次真实 worker 启动覆盖默认、INI 与
 CLI 双向覆盖，同时检查 pool 元数据、原始 Linux TCP/UDP 和清理。
 单节点环境不证明跨节点物理放置或性能，队列目标也不等同于驱动内存回读；
-TX-delay/global layout 仍未覆盖，源案例保持 partial，迁移计数不变。
+global layout 仍未覆盖，源案例保持 partial，迁移计数不变。
 
 
 接口激活失败扩展使用不安装的 `ker-posix-startup-failure` 库：与生产库编译相同 Ker
@@ -572,3 +572,11 @@ FreeBSD 到 DPDK 的完整阶段/ABI，迁移计数不变。
 再允许对端补齐47字节，恰好达到64字节后 poll/select/LT epoll 才就绪，消费后清除。
 额外检查非阻塞 peek 的内容、队列及 readiness 不变。复用原宿主参考和 native 双角色
 双向互通，不增加重复测试或上游案例计数，不修改 Linux 协议或 Ker 适配器代码。
+
+
+`dpdk.pkt_tx_delay` / `--tx-delay-us` 将最小配置的 TX 等待适配为 Ker 的有界32包批次。
+0表示不主动等待，支持到100微秒；首包期限、满批、停止刷新与 PMD 部分接受后缀的所有权
+均有聚焦验证。五组真实 native TCP/UDP 要求实际定时刷新，另有真实待发三帧stop/EOF
+场景证明按序交付与零mbuf。受控部分接受测试与真实PMD背压证据明确区分。
+不声称 F-Stack 周期TSC/多进程 ABI 或微秒调度/性能等价；完整配置布局仍缺失，源案例
+保持partial，迁移计数不变，上游源码未修改。

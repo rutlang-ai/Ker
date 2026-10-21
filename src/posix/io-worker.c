@@ -22,6 +22,7 @@
 #include "worker-clock.h"
 #include "worker-mbuf.h"
 #include "worker-wait.h"
+#include "worker-tx.h"
 #include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include <rte_log.h>
@@ -76,12 +77,17 @@ static bool metadata_supported(const struct rte_mbuf *packet)
         (packet->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) != RTE_MBUF_F_RX_L4_CKSUM_NONE;
 }
 
+static uint16_t tx_burst(void *context, struct rte_mbuf **packets, uint16_t count)
+{
+    return rte_eth_tx_burst(*(uint16_t *)context, 0, packets, count);
+}
+
 int main(int argc, char **argv)
 {
     int packet_fd = -1, control_fd = -1, split = 0;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
-    int idle_sleep_us = 1000;
+    int idle_sleep_us = 1000, tx_delay_us = 0;
     int promiscuous = -1;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
@@ -95,7 +101,8 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--all-multicast")) { all_multicast = true; continue; }
         if (!strcmp(argv[i], "--pcap-nsec")) { pcap_nsec = true; continue; }
         if (i + 1 >= argc) break;
-        if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
+        if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
+        else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--port")) port_name = argv[++i];
@@ -108,9 +115,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pcap-max-bytes")) pcap_maximum = number(argv[++i]);
         else break;
     }
-    if (idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
+    if (tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--tx-delay-us 0..100] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -156,6 +163,8 @@ int main(int argc, char **argv)
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
     uint64_t rx_startup_discarded = 0, idle_waits = 0, idle_timeouts = 0;
     unsigned char tx_bytes[sizeof(struct ker_packet_header) + WIRE_MAX], rx_bytes[WIRE_MAX];
+    struct ker_worker_tx batch = {0};
+    uint64_t tx_flushes = 0, tx_timer_flushes = 0, tx_full_flushes = 0, tx_drain_flushes = 0;
     size_t tx_length = 0;
     int status = 1, tx_capture_status, rx_capture_status;
     bool draining = false;
@@ -264,11 +273,11 @@ int main(int argc, char **argv)
     int link_status = rte_eth_link_get_nowait(port, &link);
     printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
-        "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d}\n",
+        "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
         rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, rte_memory_get_nchannel(), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"),
-        promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"), idle_sleep_us);
+        promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"), idle_sleep_us, tx_delay_us);
     fflush(stdout);
     status = 0;
     while (!stopping) {
@@ -293,7 +302,7 @@ int main(int argc, char **argv)
         bool progress = false;
         int reclaimed = rte_eth_tx_done_cleanup(port, 0, 0);
         if (reclaimed < 0 && reclaimed != -ENOTSUP) { status = 1; break; }
-        for (unsigned int budget = 0; budget < BURST; ++budget) {
+        for (unsigned int budget = 0; budget < BURST && batch.count < KER_WORKER_TX_CAPACITY && !batch.retrying; ++budget) {
             if (!pending_tx) {
                 if (!tx_length) {
                     ssize_t count = recv(packet_fd, tx_bytes, sizeof(tx_bytes), MSG_DONTWAIT | MSG_TRUNC);
@@ -326,22 +335,34 @@ int main(int argc, char **argv)
                     }
                 }
             }
-            bool tx_is_multiseg = pending_tx->nb_segs > 1;
-            if (rte_eth_tx_burst(port, 0, &pending_tx, 1) != 1) { tx_retries++; break; }
-            if (tx_is_multiseg) tx_multiseg++;
-            pending_tx = NULL; /* PMD owns accepted mbufs, including deferred frees. */
-            transmitted_bytes += tx_length;
+            int64_t queued_at = 0;
+            if (tx_delay_us && !batch.count && ker_worker_now_ns(&queued_at)) goto clock_error;
+            if (!ker_worker_tx_append(&batch, pending_tx, queued_at)) { status = 1; break; }
+            pending_tx = NULL;
             tx_length = 0;
-            transmitted++;
             progress = true;
         }
         if (status) break;
+        int64_t tx_now = 0;
+        if (batch.count && tx_delay_us && ker_worker_now_ns(&tx_now)) goto clock_error;
+        if (batch.count && (draining || !ker_worker_tx_wait_us(&batch, tx_delay_us, tx_now))) {
+            tx_flushes++;
+            if (draining) tx_drain_flushes++;
+            if (batch.count == KER_WORKER_TX_CAPACITY) tx_full_flushes++;
+            else if (!draining && !batch.retrying && tx_delay_us) tx_timer_flushes++;
+            struct ker_worker_tx_result sent = ker_worker_tx_flush(&batch, tx_burst, &port);
+            transmitted += sent.packets;
+            transmitted_bytes += sent.bytes;
+            tx_multiseg += sent.multiseg;
+            if (batch.count) tx_retries++;
+            if (sent.packets) progress = true;
+        }
         if (draining) {
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
             int64_t now;
             if (ker_worker_now_ns(&now)) goto clock_error;
             if (progress) drain_progress = now;
-            if (!pending_tx && !tx_length && now - drain_progress >= INT64_C(5000000)) break;
+            if (!pending_tx && !tx_length && !batch.count && now - drain_progress >= INT64_C(5000000)) break;
             if (now - drain_started >= INT64_C(500000000)) { status = 1; break; }
             if (!progress) usleep(1000);
             continue;
@@ -394,8 +415,13 @@ int main(int argc, char **argv)
             short packet_events;
             int wait_us;
             ker_worker_wait_plan(idle_sleep_us,
-                pending_tx != NULL || tx_length != 0, rx_index < rx_count,
+                pending_tx != NULL || tx_length != 0 || batch.retrying, rx_index < rx_count,
                 &packet_events, &wait_us);
+            if (batch.count && !batch.retrying) {
+                if (ker_worker_now_ns(&tx_now)) goto clock_error;
+                int remaining_us = ker_worker_tx_wait_us(&batch, tx_delay_us, tx_now);
+                if (wait_us > remaining_us) wait_us = remaining_us;
+            }
             struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}};
             /* Ethernet PMD RX has no channel readiness notification. Idle
              * channel TX and control wake ppoll; retained work uses bounded
@@ -420,6 +446,7 @@ cleanup:
     rx_capture_status = ker_pcap_close(&rx_capture);
     if (tx_capture_status || rx_capture_status) { perror("ker: close packet capture"); status = 1; }
     if (pending_tx) rte_pktmbuf_free(pending_tx);
+    ker_worker_tx_discard(&batch);
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
     if (started && rte_eth_dev_stop(port)) status = 1;
     if (configured && rte_eth_dev_close(port)) status = 1;
@@ -430,7 +457,7 @@ cleanup:
     } else if (pool) rte_mempool_free(pool);
     printf("KER_IO_DONE {\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu}\n", (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
@@ -438,7 +465,9 @@ cleanup:
         (unsigned long long)stop_requests, control_eof ? "true" : "false",
         (unsigned long long)tx_multiseg, (unsigned long long)rx_multiseg,
         (unsigned long long)rx_startup_discarded, (unsigned long long)idle_waits,
-        (unsigned long long)idle_timeouts);
+        (unsigned long long)idle_timeouts, (unsigned long long)tx_flushes,
+        (unsigned long long)tx_timer_flushes, (unsigned long long)tx_full_flushes,
+        (unsigned long long)tx_drain_flushes);
     fflush(stdout);
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
     if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }

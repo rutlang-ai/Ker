@@ -19,6 +19,24 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_tx_delay_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).tx_delay_us, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'tx.ini'
+            for value in (0, 1, 100):
+                config.write_text('[dpdk]\npkt_tx_delay=' + str(value) + '\n')
+                self.assertEqual(launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true']).tx_delay_us, value)
+                self.assertEqual(launcher.parse_arguments(base + ['--config', str(config), '--tx-delay-us', '10', '--', '/bin/true']).tx_delay_us, 10)
+            for value in ('-1', '101', '1.5', 'true', 'invalid', '999999999999999999999999999'):
+                for mode in ('ini', 'cli'):
+                    config.write_text('[dpdk]\npkt_tx_delay=' + value + '\n' if mode == 'ini' else '')
+                    options = [] if mode == 'ini' else ['--tx-delay-us', value]
+                    result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                        *options, '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+
     def test_numa_configuration_and_cli_override(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertTrue(launcher.parse_arguments(base + ['--', '/bin/true']).numa)
