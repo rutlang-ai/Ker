@@ -44,8 +44,16 @@ Ker 只向私有原始 Linux 的 main 路由表发送带明确出接口的 rtnet
 `native-fstack-ipv6-route` 在原生内核、独立 Linux 路由器、远端 Linux 网络命名空间
 之间验证跨网段 TCP/UDP 双向收发。UDP 两端检查 hop limit 从 64 减为 63，路由器
 转发计数必须增加；另验证省略网关不自动安装默认路由、非法 off-link 网关阻止应用启动。
-IPv6 VIP/VLAN、RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤尚未验收，
+IPv6 VLAN、RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤尚未验收，
 能力查询位保持既有定义。
+
+多个 IPv6 地址可用 `[network] vip_addresses6=2001:db8:1::3/128,2001:db8:1::4/128`
+或重复 `--vip-address6 2001:db8:1::3/128 --vip-address6 2001:db8:1::4/128`。
+要求主地址 `address6`，最多 32 个 VIP；CLI 替换整个 INI 列表，省略时不继承环境中的内部配置。
+地址必须为不重复的原生单播 IPv6 地址/前缀。VIP 与主地址共用同一个 Linux 接口，
+由原始 rtnetlink 和 DAD helper 添加并确认；不创建 FreeBSD `vip_ifname` 接口。
+`native-fstack-ipv6-vip` 验证主地址及两个 /128 VIP 的双向 TCP/UDP、NDP、
+源地址、内核计数、完整清理，以及全部 32 个 VIP 的绑定和宿主冲突地址拒绝。
 
 ## 可复现构建
 

@@ -66,6 +66,25 @@ static long parse_number(const char *text, long maximum)
     if (errno || !*text || *end || value < 0 || value > maximum) fail("invalid numeric configuration", -EINVAL);
     return value;
 }
+static struct in6_addr add_ipv6_address(int index, const char *configuration)
+{
+    char text[INET6_ADDRSTRLEN + 5];
+    if (strlen(configuration) >= sizeof(text)) fail("IPv6 address length", -EINVAL);
+    strcpy(text, configuration);
+    char *slash = strchr(text, '/');
+    if (!slash) fail("IPv6 address/prefix", -EINVAL);
+    *slash++ = 0;
+    struct in6_addr address6;
+    if (inet_pton(AF_INET6, text, &address6) != 1 || IN6_IS_ADDR_UNSPECIFIED(&address6) ||
+        IN6_IS_ADDR_MULTICAST(&address6) || IN6_IS_ADDR_LOOPBACK(&address6) ||
+        IN6_IS_ADDR_V4MAPPED(&address6)) fail("IPv6 unicast address", -EINVAL);
+    unsigned int prefix6 = (unsigned int)parse_number(slash, 128);
+    /* Queue original Linux DAD for all addresses before waiting. Serial
+     * add-and-wait would exceed the launch deadline at the 32-VIP limit. */
+    int result = lkl_if_add_ip(index, LKL_AF_INET6, &address6, prefix6);
+    if (result) fail("IPv6 interface configuration", result);
+    return address6;
+}
 static void fork_child(void)
 {
     static const char error[] = "ker: fork after native kernel initialization is unsupported; launch each process with ker-run\n";
@@ -211,21 +230,24 @@ __attribute__((constructor)) static void initialize(void)
     result = ker_native_configure_vlans(index, (int)mtu, getenv("KER_NATIVE_VLANS"));
     if (result) fail("VLAN configuration", result);
     const char *address6_text = getenv("KER_NATIVE_ADDRESS6");
-    if (address6_text) {
-        char text[INET6_ADDRSTRLEN + 5];
-        if (strlen(address6_text) >= sizeof(text)) fail("IPv6 address length", -EINVAL);
-        strcpy(text, address6_text);
-        char *slash = strchr(text, '/');
-        if (!slash) fail("IPv6 address/prefix", -EINVAL);
-        *slash++ = 0;
-        struct in6_addr address6;
-        if (inet_pton(AF_INET6, text, &address6) != 1 || IN6_IS_ADDR_UNSPECIFIED(&address6) ||
-            IN6_IS_ADDR_MULTICAST(&address6) || IN6_IS_ADDR_LOOPBACK(&address6) ||
-            IN6_IS_ADDR_V4MAPPED(&address6)) fail("IPv6 unicast address", -EINVAL);
-        unsigned int prefix6 = (unsigned int)parse_number(slash, 128);
-        /* Original LKL adds the address through rtnetlink and waits for Linux
-         * duplicate-address detection. The device must already be up. */
-        result = lkl_if_set_ipv6(index, &address6, prefix6);
+    struct in6_addr dad_addresses[33];
+    unsigned int dad_count = 0;
+    if (address6_text) dad_addresses[dad_count++] = add_ipv6_address(index, address6_text);
+    const char *vip6_text = getenv("KER_NATIVE_VIP_ADDRESSES6");
+    if (vip6_text && *vip6_text) {
+        if (!address6_text) fail("IPv6 VIP requires primary IPv6 address", -EINVAL);
+        char *copy = strdup(vip6_text);
+        if (!copy) fail("IPv6 VIP allocation", -ENOMEM);
+        char *save = NULL;
+        unsigned int count = 0;
+        for (char *entry = strtok_r(copy, ",", &save); entry; entry = strtok_r(NULL, ",", &save)) {
+            if (++count > 32) fail("IPv6 VIP address count", -EINVAL);
+            dad_addresses[dad_count++] = add_ipv6_address(index, entry);
+        }
+        free(copy);
+    }
+    for (unsigned int i = 0; i < dad_count; ++i) {
+        result = lkl_if_wait_ipv6_dad(index, &dad_addresses[i]);
         if (result) fail("IPv6 interface configuration/DAD", result);
     }
     const char *gateway6_text = getenv("KER_NATIVE_GATEWAY6");

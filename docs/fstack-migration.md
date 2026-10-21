@@ -350,7 +350,7 @@ Ker 现在支持 `[network] address6` / `--address6 ADDRESS/PREFIX`，CLI 覆盖
 验证 IPv6 TCP/UDP 的双向字节一致、源/目的地址、未配置地址的 bind 拒绝、
 宿主 NDP 解析到 worker MAC、IPv4 TCP 同时工作，以及原生 TCP 计数和零未释放 mbuf。
 另以宿主已占用的 IPv6 地址验证 Linux DAD 拒绝，应用 main 不执行、worker 正常清理。
-IPv6 VIP/VLAN 与 RA/SLAAC 部署尚未验收；默认网关和跨网段验证见下文。
+IPv6 VIP 见后续扩展；IPv6 VLAN 与 RA/SLAAC 部署尚未验收；默认网关和跨网段验证见下文。
 
 固定上游 `valid_inet6.ini` 包含 IPv6 地址、前缀、网关、VIP 和 VLAN；
 但 `test_ff_load_config_inet6_fixture_ignored` 测试的是 **未启用 INET6 时忽略配置**，
@@ -375,8 +375,8 @@ IPv6 VIP/VLAN 与 RA/SLAAC 部署尚未验收；默认网关和跨网段验证�
 
 固定 F-Stack IPv6 fixture 的网关功能已有上述相关证据；
 `test_ff_load_config_inet6_fixture_ignored` 仍保留 blocked，因为它的条件编译忽略语义、
-IPv6 VIP/VLAN 等未迁移。清单计数仍为 117 adapted、16 partial、237 blocked。
-尚未验收路由更新/故障切换、RA/SLAAC、IPv6 VIP/VLAN 和真实物理网卡。
+IPv6 VLAN 及独立 FreeBSD VIP 接口等未迁移；原生 IPv6 VIP 见后续扩展。
+尚未验收路由更新/故障切换、RA/SLAAC、IPv6 VLAN 和真实物理网卡。
 
 ## UDP 批量功能验收
 
@@ -471,3 +471,24 @@ IPv6 部分为本地 socket 分配验证，不是 IPv6 线缆互通验证。
 `test_ff_rss_tbl_set_portrange_inverted_range` 从 blocked 变为 partial：
 倒置范围的拒绝及有效范围的原生分配已有证据；RSS 表、Toeplitz/RETA 与队列专属
 端口选择仍未实现，不将原始 Linux 的端口范围误称为 F-Stack RSS 等价支持。
+
+
+## IPv6 VIP 配置与互通
+
+`[network] vip_addresses6` 接受逗号分隔的 IPv6 地址/前缀；可重复的
+`--vip-address6` 替换整个 INI 列表。要求 `address6`，最多 32 个额外地址，
+拒绝重复 IP（含主地址）、作用域后缀、未指定、多播、回环、IPv4-mapped 和非法前缀。
+省略配置时清除继承的内部 VIP 环境变量。所有 VIP 加在既有原始 Linux 接口上，
+通过未修改的 LKL rtnetlink helper 先添加全部地址，再通过原始 DAD helper 等待每个地址验证完成；
+避免串行 DAD 在 32 个 VIP 时超出既有启动时限，不跳过重复地址检测。
+
+`native-fstack-ipv6-vip` 使用实际 net_tap/veth 和独立宿主 Linux 对端，
+分别验证 INI、CLI 列表替换、省略配置和 32 个 VIP 的实际启动与绑定。
+主地址及两个 /128 VIP 均完成双向
+TCP/UDP 字节和地址校验，检查宿主 NDP 的 worker MAC、原始 TCP/UDP6 计数和零未释放 mbuf。
+额外的宿主占用 VIP 场景必须由原始 Linux DAD 拒绝，应用 main 不执行，worker 清理完成。
+配置测试验证边界及错误在加载库或启动 worker 前被拒绝。
+
+固定 F-Stack `valid_inet6.ini` 中的 `vip_addr6`/`vip_prefix_len` 是功能来源，
+但 Ker 不复刻 `vip_ifname` 的独立 FreeBSD 接口；也不把“INET6 未启用时忽略配置”
+测试标为通过。该源项仍 blocked，迁移计数不变。IPv6 VLAN 和 RA/SLAAC 仍未验收。

@@ -19,6 +19,52 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_ipv6_vip_configuration_and_prelaunch_rejection(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).vip_addresses6, [])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'vip6.ini'
+            config.write_text('[network]\naddress6=2001:db8:1::2/64\nvip_addresses6=2001:db8:1::3/64,2001:db8:1::4/96\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+            self.assertEqual(list(map(str, args.vip_addresses6)), ['2001:db8:1::3/64', '2001:db8:1::4/96'])
+            args = launcher.parse_arguments(base + ['--config', str(config), '--vip-address6',
+                '2001:db8:2::5/128', '--', '/bin/true'])
+            self.assertEqual(list(map(str, args.vip_addresses6)), ['2001:db8:2::5/128'])
+            for count in (32, 33):
+                config.write_text('[network]\naddress6=2001:db8:1::2/64\nvip_addresses6=' +
+                    ','.join(f'2001:db8:1::{i:x}/64' for i in range(16, 16 + count)) + '\n')
+                if count == 32:
+                    self.assertEqual(len(launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true']).vip_addresses6), 32)
+                else:
+                    result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                        '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+            for value in ('::/64', '::1/128', 'ff02::1/64', '::ffff:198.18.0.3/128',
+                          'fe80::3%eth0/64', '198.18.0.3/24', '2001:db8::3/129',
+                          '2001:db8:1::2/96', '2001:db8:1::3/64,2001:db8:1::3/96'):
+                for mode in ('ini', 'cli'):
+                    config.write_text('[network]\naddress6=2001:db8:1::2/64\n' +
+                        ('vip_addresses6=' + value + '\n' if mode == 'ini' else ''))
+                    options = [] if mode == 'ini' else ['--vip-address6', value]
+                    result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                        *options, '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+            config.write_text('[network]\naddress6=2001:db8:1::2/64\n')
+            for options in (
+                    ['--vip-address6', '2001:db8:1::3/64', '--vip-address6', '2001:db8:1::3/96'],
+                    ['--vip-address6', '2001:db8:1::2/128'],
+                    [item for i in range(16, 49) for item in ('--vip-address6', f'2001:db8:1::{i:x}/128')]):
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    *options, '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('--vip-address6', result.stderr)
+            config.write_text('[network]\nvip_addresses6=2001:db8::3/64\n')
+            result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn('requires --address6', result.stderr)
+
     def test_ephemeral_port_range_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertNotIn('net.ipv4.ip_local_port_range', launcher.parse_arguments(base + ['--', '/bin/true']).sysctls)

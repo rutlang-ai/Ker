@@ -1424,7 +1424,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker now supports explicit native Linux IPv6 address/prefix configuration and on-link and routed TCP/UDP/NDP with global/link-local default gateways, but this F-Stack case asserts that IPv6 directives are ignored in an INET6-disabled build. That conditional-build behavior, plus IPv6 VIP/VLAN fixture handling, is not adapted; enabled-stack IPv6 interop is not evidence for this case.",
+      "reason": "Ker supports explicit native Linux IPv6 addresses, gateways and VIPs with original-kernel TCP/UDP/NDP and DAD evidence. This source case asserts INET6-disabled ignore semantics, so it remains blocked; IPv6 VLAN, separate FreeBSD VIP interfaces and full fixture equivalence remain unsupported.",
       "ker_tests": []
     },
     {
