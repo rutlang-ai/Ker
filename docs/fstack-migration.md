@@ -25,6 +25,12 @@
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 
+本批补齐 `valid_inet6.ini` 中 VLAN IPv6 网关的相关功能，通过
+`native-fstack-ipv6-vlan-route` 验证单一默认网关、全局/link-local 下一跳、
+原始 Linux 路由失败边界及独立路由器后的双向 TCP/UDP。来源注册用例
+`test_ff_load_config_inet6_fixture_ignored` 断言的是 INET6-disabled ignore，
+仍保持 blocked；新增功能证据不改变上表计数，也不声称完整 fixture 等价。
+
 ## 自动检查
 
 ```sh

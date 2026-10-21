@@ -229,6 +229,8 @@ __attribute__((constructor)) static void initialize(void)
     if (result) fail("interface activation", result);
     result = ker_native_configure_vlans(index, (int)mtu, getenv("KER_NATIVE_VLANS"));
     if (result) fail("VLAN configuration", result);
+    result = ker_native_configure_vlan_gateway6(getenv("KER_NATIVE_VLAN_GATEWAY6"));
+    if (result < 0) fail("VLAN IPv6 default route", result);
     const char *address6_text = getenv("KER_NATIVE_ADDRESS6");
     struct in6_addr dad_addresses[33];
     unsigned int dad_count = 0;
