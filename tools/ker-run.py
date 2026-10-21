@@ -67,6 +67,16 @@ def vlan_setting(text):
     return int(tag), values
 
 
+def vlan_gateway(text):
+    tag, separator, address = text.partition('=')
+    if not separator or not tag.isascii() or not tag.isdecimal() or not 1 <= int(tag) <= 4094:
+        raise ValueError('VLAN gateway requires ID=IPv4 with ID 1..4094')
+    gateway = ipaddress.IPv4Address(address)
+    if gateway.is_unspecified or gateway.is_multicast or gateway.is_loopback or int(gateway) == 0xffffffff:
+        raise ValueError('VLAN gateway requires a nonzero unicast IPv4 address')
+    return int(tag), gateway
+
+
 def vlan_gateway6(text):
     tag, separator, address = text.partition('=')
     if not separator or not tag.isascii() or not tag.isdecimal() or not 1 <= int(tag) <= 4094:
@@ -97,7 +107,7 @@ def ephemeral_ports(text):
     return first, last
 
 
-CONFIG_DEFAULTS = dict(vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -124,8 +134,10 @@ def read_configuration(stream, directory, source='<stream>'):
     values = {}
     for section in ini.sections():
         if section.startswith('vlan.'):
-            if 'addresses' not in ini[section] or set(ini[section]) - {'addresses', 'gateway6'}:
-                raise ValueError('VLAN section requires addresses and optional gateway6')
+            if 'addresses' not in ini[section] or set(ini[section]) - {'addresses', 'gateway', 'gateway6'}:
+                raise ValueError('VLAN section requires addresses and optional gateway/gateway6')
+            if 'gateway' in ini[section]:
+                values.setdefault('vlan_gateways', []).append(vlan_gateway(section[5:] + '=' + ini[section]['gateway']))
             if 'gateway6' in ini[section]:
                 values.setdefault('vlan_gateways6', []).append(vlan_gateway6(section[5:] + '=' + ini[section]['gateway6']))
             values.setdefault('vlans', []).append(vlan_setting(section[5:] + '=' + ini[section]['addresses']))
@@ -168,6 +180,8 @@ def parse_arguments(argv=None):
         help='additional IPv6 address/prefix; requires --address6; repeat up to 32 times; replaces INI vip_addresses6')
     parser.add_argument('--vlan', dest='vlans', action='append', type=vlan_setting,
         help='802.1Q ID=IP/PREFIX[,IP/PREFIX...]; repeat up to 16 VLANs; replaces INI VLAN sections')
+    parser.add_argument('--vlan-gateway', dest='vlan_gateways', action='append', type=vlan_gateway,
+        help='ID=IPv4 default gateway on a configured VLAN; replaces INI VLAN IPv4 gateways; one default allowed')
     parser.add_argument('--vlan-gateway6', dest='vlan_gateways6', action='append', type=vlan_gateway6,
         help='ID=IPv6 default gateway on a configured VLAN; replaces INI VLAN gateways; one default allowed')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
@@ -264,6 +278,16 @@ def parse_arguments(argv=None):
     all_ips = addresses + addresses6 + vlan_ips
     if len(set(all_ips)) != len(all_ips):
         parser.error('--vlan addresses must not duplicate primary, VIP, or other VLAN addresses')
+    if len(args.vlan_gateways) > 1 or (args.vlan_gateways and args.gateway is not None):
+        parser.error('only one IPv4 default gateway is supported across parent and VLAN interfaces')
+    for tag, gateway in args.vlan_gateways:
+        entries = [value for value in dict(args.vlans).get(tag, []) if value.version == 4]
+        if not entries:
+            parser.error('--vlan-gateway requires IPv4 addresses on the selected VLAN')
+        if gateway in all_ips:
+            parser.error('--vlan-gateway must not equal a local address')
+        if any(value.network.prefixlen < 31 and gateway == value.network.broadcast_address for value in entries):
+            parser.error('--vlan-gateway must not be a VLAN subnet broadcast address')
     if len(args.vlan_gateways6) > 1 or (args.vlan_gateways6 and args.gateway6 is not None):
         parser.error('only one IPv6 default gateway is supported across parent and VLAN interfaces')
     for tag, gateway in args.vlan_gateways6:
@@ -364,6 +388,10 @@ def main():
         if args.vlans:
             env['KER_NATIVE_VLANS'] = ';'.join(str(tag) + '=' + ','.join(map(str, addresses))
                                                for tag, addresses in args.vlans)
+        env.pop('KER_NATIVE_VLAN_GATEWAY', None)
+        if args.vlan_gateways:
+            tag, gateway = args.vlan_gateways[0]
+            env['KER_NATIVE_VLAN_GATEWAY'] = f'{tag}={gateway}'
         env.pop('KER_NATIVE_VLAN_GATEWAY6', None)
         if args.vlan_gateways6:
             tag, gateway = args.vlan_gateways6[0]

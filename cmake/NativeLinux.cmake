@@ -318,6 +318,13 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ipv6-route-test>")
     set_tests_properties(native-fstack-ipv6-route PROPERTIES TIMEOUT 120 LABELS "native-tcp;native-udp;fstack")
+    add_executable(ker-ipv4-vlan-route-test tests/posix/ipv4-vlan-route.c)
+    target_compile_options(ker-ipv4-vlan-route-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-ipv4-vlan-route
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/ipv4-vlan-route.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ipv4-vlan-route-test>")
+    set_tests_properties(native-fstack-ipv4-vlan-route PROPERTIES TIMEOUT 120 LABELS "native-tcp;native-udp;fstack")
     add_test(NAME native-fstack-ipv6-vlan-route
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/ipv6-route.py" --vlan6
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
