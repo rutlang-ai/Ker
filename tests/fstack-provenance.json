@@ -251,7 +251,7 @@
         "native-fstack-launcher-config",
         "native-fstack-jumbo-mtu"
       ],
-      "adaptation": "Actual Ker launcher parser accepts [network] mtu/max_mtu or --mtu/--max-mtu, defaults to1500/9000 and applies CLI precedence. Both are bounded1280..9000 and mtu must not exceed max_mtu. Reject actual9000 against an independently configured2000 ceiling, non-numeric max_mtu and out-of-range1279/9001/65535 with argparse status2 before resolving nonexistent libraries. Equal bounds1280/2000/9000 and overrides of either MTU or ceiling are tested. Real net_tap jumbo interop first rejects9000/2000 before launch, then overrides max_mtu to9000 and runs original Linux TCP/UDP in both roles, DF payload/EMSGSIZE checks, full9014-byte captures and zero outstanding. This single-port deployment ceiling controls validation, not hardware capability discovery or mbuf pool sizing; actual MTU still configures original Linux/DPDK and contiguous mbufs grow to the requested frame size. No F-Stack mtu_enable/mbuf_mode or per-port array ABI equivalence is claimed; scatter and disabled-mtu-enable scenarios remain blocked."
+      "adaptation": "Actual Ker launcher parser accepts [network] mtu/max_mtu or --mtu/--max-mtu, defaults to1500/9000 and applies CLI precedence. Both are bounded1280..9000 and mtu must not exceed max_mtu. Reject actual9000 against an independently configured2000 ceiling, non-numeric max_mtu and out-of-range1279/9001/65535 with argparse status2 before resolving nonexistent libraries. Equal bounds1280/2000/9000 and overrides of either MTU or ceiling are tested. Real net_tap jumbo interop first rejects9000/2000 before launch, then overrides max_mtu to9000 and runs original Linux TCP/UDP in both roles, DF payload/EMSGSIZE checks, full9014-byte captures and zero outstanding. This single-port deployment ceiling controls validation, not hardware capability discovery or mbuf pool sizing; actual MTU still configures original Linux/DPDK and contiguous mbufs grow to the requested frame size. Ker mode=large keeps contiguous buffers sized for the configured MTU, while mode=scatter uses standard-size segments with real 9000-byte TX/RX coverage in native-fstack-mbuf-scatter. These Ker runtime paths do not claim F-Stack mtu_enable/mbuf_mode or per-port array ABI equivalence; the F-Stack disabled-mtu-enable scenario remains blocked."
     },
     "native-fstack-mtu-default": {
       "source_file": "tests/unit/test_ff_config.c",
@@ -1108,6 +1108,29 @@
         "test_ff_host_kqueue_ctl_poll"
       ],
       "adaptation": "Ker-specific Linux TCP receive-low-water extension of pinned host shutdown/dup/readiness bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A separate TCP control connection orders three 17-byte transfers in each direction. SO_RCVLOWAT=64 set through dup is shared; bounded FIONREAD checks with one-ms yields confirm the exact queued payload before checking suppressed poll/select/epoll readiness. MSG_DONTWAIT then reads the queued 17 bytes without setting O_NONBLOCK. In the next phase lowering the option through dup to one makes existing data ready with the original epoll registration and full 64-bit tag. Finally the peer half-closes only after a control marker confirms subthreshold data is queued and not ready; FIN must expose IN/RDHUP readiness despite the high low-water value, and MSG_WAITALL returns the 17-byte tail followed by EOF through both aliases. Exact bytes, canaries, empty queue counts and blocking fd flags are checked. Native instances require two matching original-Linux TCP opens, DPDK traffic and no outstanding buffers. No runtime/protocol changes, UDP low-water equivalence, concurrent readers, edge/oneshot rearm, signal interruption or low-water performance claims are introduced."
+    },
+    "native-fstack-mbuf-mode": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_mtu_scatter_mode",
+        "test_mtu_invalid_mode_fails"
+      ],
+      "ker_ctests": [
+        "native-fstack-mbuf-scatter",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Ker [dpdk] mbuf_mode=scatter / --mbuf-mode scatter selects original DPDK RX scatter and TX multi-segment capabilities with standard-size pool buffers; default large keeps MTU-sized contiguous buffers. Unknown modes fail before library/device setup; CLI overrides INI. Real net_tap jumbo UDP in both native roles requires complete 9014-byte PCAP frames, positive RX/TX multi-segment counters, original Linux UDP counters and zero outstanding mbufs. This adapts storage-mode configuration rather than the F-Stack loader ABI. No checksum/TSO/VLAN offload is enabled."
+    },
+    "native-fstack-send-multiseg": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_multiseg"
+      ],
+      "ker_ctests": [
+        "worker-mbuf",
+        "native-fstack-mbuf-scatter"
+      ],
+      "adaptation": "Original source exercises ff_dpdk_if_send(total=4096) with real DPDK and synthetic FreeBSD copydata input. Ker adapts the multisegment transmit scenario at its Ethernet packet-channel boundary: actual original DPDK pool/chain APIs preserve complete 4096- and 9014-byte inputs; exhausted-pool partial allocation is reclaimed. Real net_tap/native Linux jumbo UDP traffic proves the transmitted multisegment packet reaches an independent host peer in both native roles, and received chains are flattened intact. No FreeBSD mbuf ABI, checksum/TSO offload or upstream send implementation is claimed."
     }
   }
 }

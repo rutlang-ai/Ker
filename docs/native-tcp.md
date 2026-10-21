@@ -422,3 +422,13 @@ launcher 清除 ambient `KER_NATIVE_VIP_ADDRESSES`，仅传递最终验证过的
 `--max-mtu 2000` 或 `[network] max_mtu=2000` 将当前 launcher 的 MTU 上限限制为 2000；默认 9000，合法范围 1280–9000。
 `mtu` 大于 `max_mtu` 在设备/库初始化前返回 2；CLI 可分别覆盖 INI 中的请求值或上限。
 此值仅是启动配置策略。实际 MTU 仍传给原始 Linux 与 DPDK，设备能力不足仍由运行时报告；不按 max_mtu 额外扩大缓冲池。
+
+
+### DPDK mbuf 存储模式
+
+默认 `--mbuf-mode large` 为每个 DPDK mbuf 预留完整 MTU 帧空间。
+`--mbuf-mode scatter`（INI：`[dpdk] mbuf_mode=scatter`）使用标准大小 pool 和链式大帧；
+PMD 必须同时支持 RX scatter 和 TX multi-segment，否则启动失败。
+可与 `--mtu 9000` 一起使用，对端链路也必须设置对应 MTU。
+该设置仅改变 Ethernet 缓冲表示，不启用协议 offload。
+验收运行 `ctest --test-dir BUILD -R '^(worker-mbuf|native-fstack-mbuf-scatter|native-fstack-jumbo-mtu)$' --output-on-failure`。

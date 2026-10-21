@@ -229,7 +229,7 @@ IPv6 jumbo 外部互通尚未验证；1280 下限保证默认双栈接口的配�
 `[network] max_mtu` / `--max-mtu` 提供独立部署上限（默认 9000，范围 1280–9000），请求 MTU 不得超过它。
 9000 请求对 2000 上限在启动前拒绝；CLI 覆盖上限到 9000 后执行同一真实 jumbo 互通测试。
 `test_mtu_port_over_max_fails` 已从部分覆盖转为场景适配；此上限不是硬件能力探测或 mbuf pool 大小设置。
-F-Stack scatter 模式、mtu_enable 禁用分支及其内部配置 ABI 继续保留缺口。
+F-Stack mtu_enable 禁用分支及其内部配置 ABI 继续保留缺口。
 
 ## TCP ECN 策略
 
@@ -387,3 +387,22 @@ IPv4 SSM 和 limited broadcast、真实路由器 PMTU、原始错包/倒序分�
 宿主信号中断 native 阻塞 recvfrom 仍不兼容，专用边界检查不得算为兼容通过。
 原始 Linux 的 IPv6 UDP/分片/重组计数补入诊断，作为真实数据路径的证据。
 这些是 Linux 扩展验收，不增加固定 F-Stack 的 adapted 计数。
+
+
+## DPDK scatter / multi-segment 存储模式
+
+`ker-run --mbuf-mode scatter` 或 `[dpdk] mbuf_mode=scatter` 使用标准大小 mbuf pool，
+启用原始 DPDK 的 RX scatter 与 TX multi-segment 能力；PMD 缺少任一能力时在 READY 前失败，
+不静默回退。默认 `large` 继续使用可容纳 MTU 帧的连续缓冲，CLI 覆盖 INI。
+其他 checksum、TSO、VLAN stripping 和 LRO offload 均保持关闭；协议仍由原始 Linux 处理。
+
+发送适配器用真实 `rte_pktmbuf_chain` 构造完整帧；部分分配失败时回收整条链并保留 channel 中已读帧供重试。
+PMD 只获得成功发送的链，RX 链通过已有 `rte_pktmbuf_read` 路径完整交给 Linux。
+`tx_multiseg` 记录已交给 PMD 的链式帧，`rx_multiseg` 记录已成功交给 native channel 的链式帧。
+
+`worker-mbuf` 验证真实 DPDK pool 的 14/2047/2048/2049/4096/9014 字节帧、跨段字节完整性、
+pool 耗尽时部分链回收及最终可用数恢复。`native-fstack-mbuf-scatter` 在 net_tap 与独立宿主间执行
+双角色 TCP/UDP；UDP 包含 8972 字节 DF 载荷、8973 字节 EMSGSIZE 边界、双向完整 9014 字节抓包，
+要求双向多段计数、原始 Linux 计数及零 outstanding。large 模式对照要求多段计数为零。
+这迁移了两项 MTU mode 配置场景及 multisegment send 场景；硬件 PMD、scatter 性能和跨进程共享不在本批验收范围。
+清单现为 120 adapted / 15 partial / 235 blocked / 8 architecture-specific / 55 harness-only，共 433 项。

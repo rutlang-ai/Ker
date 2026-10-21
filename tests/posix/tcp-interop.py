@@ -1022,6 +1022,13 @@ def jumbo_mtu(args, launcher, work, env, log):
                 stats['native']['udp_out_datagrams'] < 4 or stats['native']['udp_in_datagrams'] < 4
                 or stats['native']['ip_frag_ok'] or stats['native']['ip_reasm_ok']):
             raise RuntimeError('jumbo datagrams missed native path: ' + str(stats))
+        expected_mode = 'scatter' if args.mbuf_scatter else 'large'
+        if stats['io']['mbuf_mode'] != expected_mode:
+            raise RuntimeError('worker ignored configured mbuf mode: ' + str(stats))
+        if args.mbuf_scatter and (stats['tx_multiseg'] < 1 or stats['rx_multiseg'] < 1):
+            raise RuntimeError('jumbo traffic did not exercise both mbuf chain directions: ' + str(stats))
+        if not args.mbuf_scatter and (stats['tx_multiseg'] or stats['rx_multiseg']):
+            raise RuntimeError('large mode unexpectedly used mbuf chains: ' + str(stats))
         for direction in ('tx', 'rx'):
             found = False
             for path in capture.glob('ker-' + direction + '-*.pcap'):
@@ -1245,6 +1252,9 @@ def inside(args):
             if (rejected.returncode != 2 or '--mtu must not exceed --max-mtu' not in rejected.stderr
                     or 'Traceback' in rejected.stderr):
                 raise RuntimeError('custom MTU ceiling did not reject before launch: ' + rejected.stderr)
+            if args.mbuf_scatter:
+                with jumbo_config.open('a') as configuration:
+                    configuration.write('[dpdk]\nmbuf_mode=scatter\n')
             launcher += ['--config', str(jumbo_config), '--max-mtu', '9000']
         app = str(args.app)
         with (work / 'server.log').open('w+') as log:
@@ -1483,6 +1493,7 @@ def main():
     parser.add_argument('--udp-ancillary-app', type=Path)
     parser.add_argument('--udp-mtu-app', type=Path)
     parser.add_argument('--jumbo-app', type=Path)
+    parser.add_argument('--mbuf-scatter', action='store_true')
     parser.add_argument('--udp-connect-app', type=Path)
     parser.add_argument('--udp-broadcast-app', type=Path)
     parser.add_argument('--udp-reuseport-app', type=Path)
