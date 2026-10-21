@@ -159,7 +159,7 @@ int main(int argc, char **argv)
         uint16_t required_segments = ker_worker_scatter_required_segments((uint32_t)mtu);
         if (!ker_worker_scatter_limits_support(required_segments,
                 info.tx_desc_lim.nb_seg_max, info.tx_desc_lim.nb_mtu_seg_max)) {
-            fprintf(stderr, "ker: scatter MTU %d requires %u TX segments, ethdev limits are nb_seg_max=%u nb_mtu_seg_max=%u\n",
+            fprintf(stderr, "ker: scatter MTU %d with VLAN header requires %u TX segments, ethdev limits are nb_seg_max=%u nb_mtu_seg_max=%u\n",
                 mtu, required_segments, info.tx_desc_lim.nb_seg_max,
                 info.tx_desc_lim.nb_mtu_seg_max);
             goto cleanup;
