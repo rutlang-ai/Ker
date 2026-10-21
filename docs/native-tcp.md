@@ -589,3 +589,24 @@ CLI 覆盖 INI；允许 1..2147483647（正 signed-int 范围），非法值在�
 每次都验证独立宿主 TCP/UDP 回显、原始 Linux 计数、控制停止与零 outstanding mbuf。
 该参数是 EAL 内存分布配置，数值不代表检测到的物理通道数；此处 no-huge 测试不声称
 物理拓扑、NUMA 放置、hugepage 分布或性能认证，上游源码保持不变。
+
+
+## DPDK NUMA 分配策略
+
+`[dpdk] numa_on=yes` 或 `--numa` 将 worker mbuf pool 和 RX/TX 队列分配目标设为
+当前 lcore 的 DPDK socket；`numa_on=no` 或 `--no-numa` 统一使用 socket 0。
+默认开启以保持 Ker 已有行为，CLI 覆盖 INI。布尔语法与其他 INI 开关一致，非法值在
+库加载前返回 2。此映射遵循固定 F-Stack
+[`ff_dpdk_if.c`](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_dpdk_if.c)
+的 `numa_on` 分配选择，不改变原始 Linux 的内存分配策略。
+
+`io.numa` 显示开关，`io.lcore_socket_id` 显示实际 lcore socket，
+`io.allocation_socket_id` 是传给 pool 和两个队列 setup 的共同分配目标，
+`io.pool_socket_id` 读取返回 pool 的 socket 元数据。这些字段不是物理页放置证明，
+队列字段也不是驱动内部内存分布的回读。原有 `io.socket_id` 仍表示 ethdev 的节点。
+无法分配或 setup 失败时沿现有失败路径退出，不降级成成功。
+
+`native-fstack-numa-policy` 启动五个真实 net_tap/native 实例，覆盖默认、INI 开/关及
+CLI 双向覆盖，核对策略、分配目标和 pool 元数据，并要求独立宿主 TCP/UDP 回显、
+原始 Linux 计数、控制停止与零 outstanding mbuf。测试环境只有一个 DPDK NUMA 节点，
+未认证跨节点放置、内存回退或性能；不修改 Linux/LKL/DPDK/F-Stack 上游代码。

@@ -1122,7 +1122,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Ker minimal typed network/DPDK configuration loads with verified defaults and normalized lcore selection. Explicit promiscuous mode reaches a real PMD with readback, RX capture and original-Linux MAC/socket admission checks; omission preserves PMD state. The idle_sleep subset configures actual bounded worker ppoll waits, with timeout counters, native host TCP/UDP traffic and control shutdown validation; the existing Ker 1ms default is preserved. The channel subset translates into original DPDK EAL -n and verifies actual EAL readback alongside real native TCP/UDP traffic.",
+      "reason": "Ker minimal typed network/DPDK configuration loads with verified defaults and normalized lcore selection. Explicit promiscuous mode reaches a real PMD with readback, RX capture and original-Linux MAC/socket admission checks; omission preserves PMD state. The idle_sleep subset configures actual bounded worker ppoll waits, with timeout counters, native host TCP/UDP traffic and control shutdown validation; the existing Ker 1ms default is preserved. The channel subset translates into original DPDK EAL -n and verifies actual EAL readback alongside real native TCP/UDP traffic. The numa_on subset selects lcore-local or socket0 pool/queue allocation, with real worker policy and pool metadata checks plus native host TCP/UDP traffic.",
       "ker_tests": [
         {
           "ctest": "native-fstack-config-lifecycle",
@@ -1139,9 +1139,13 @@
         {
           "ctest": "native-fstack-memory-channels",
           "provenance_case": "native-fstack-memory-channels"
+        },
+        {
+          "ctest": "native-fstack-numa-policy",
+          "provenance_case": "native-fstack-numa-policy"
         }
       ],
-      "remaining": "F-Stack numa_on, pkt_tx_delay and global config layout are not exposed by this Ker loader."
+      "remaining": "F-Stack pkt_tx_delay and global config layout are not exposed by this Ker loader; physical multi-node NUMA placement is not qualified."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_no_dpdk_section",
