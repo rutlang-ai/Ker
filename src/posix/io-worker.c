@@ -21,6 +21,7 @@
 #include "worker-log.h"
 #include "worker-clock.h"
 #include "worker-mbuf.h"
+#include "worker-wait.h"
 #include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include <rte_log.h>
@@ -385,11 +386,16 @@ int main(int argc, char **argv)
         }
         if (status) break;
         if (!progress) {
-            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, POLLIN, 0}};
-            /* Ethernet PMD RX has no channel readiness notification. The
-             * finite timeout bounds its idle receive latency; channel TX and
-             * control messages wake ppoll immediately. Linux owns timers. */
-            int wait_us = draining && idle_sleep_us > 1000 ? 1000 : idle_sleep_us;
+            short packet_events;
+            int wait_us;
+            ker_worker_wait_plan(idle_sleep_us,
+                pending_tx != NULL || tx_length != 0, rx_index < rx_count,
+                &packet_events, &wait_us);
+            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}};
+            /* Ethernet PMD RX has no channel readiness notification. Idle
+             * channel TX and control wake ppoll; retained work uses bounded
+             * retries and RX suffixes watch channel writability. Linux owns
+             * protocol timers. */
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
             int result = ppoll(fds, 2, &timeout, NULL);
