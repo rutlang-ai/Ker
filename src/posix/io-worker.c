@@ -21,6 +21,7 @@
 #include "worker-log.h"
 #include "worker-clock.h"
 #include "worker-mbuf.h"
+#include "worker-scatter.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
 
@@ -136,6 +137,14 @@ int main(int argc, char **argv)
         if (result || !(info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_SCATTER) ||
             !(info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS)) {
             fprintf(stderr, "ker: ethdev cannot support scatter RX and multi-segment TX\n");
+            goto cleanup;
+        }
+        uint16_t required_segments = ker_worker_scatter_required_segments((uint32_t)mtu);
+        if (!ker_worker_scatter_limits_support(required_segments,
+                info.tx_desc_lim.nb_seg_max, info.tx_desc_lim.nb_mtu_seg_max)) {
+            fprintf(stderr, "ker: scatter MTU %d requires %u TX segments, ethdev limits are nb_seg_max=%u nb_mtu_seg_max=%u\n",
+                mtu, required_segments, info.tx_desc_lim.nb_seg_max,
+                info.tx_desc_lim.nb_mtu_seg_max);
             goto cleanup;
         }
         conf.rxmode.offloads = RTE_ETH_RX_OFFLOAD_SCATTER;

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "worker-mbuf.h"
+#include "worker-scatter.h"
 #include <errno.h>
 #include <rte_eal.h>
 #include <sched.h>
@@ -7,8 +8,26 @@
 #include <stdlib.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
+static void test_scatter_segment_limits(void)
+{
+    const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
+    CHECK(ker_worker_scatter_required_segments(payload - RTE_ETHER_HDR_LEN) == 1);
+    CHECK(ker_worker_scatter_required_segments(payload - RTE_ETHER_HDR_LEN + 1) == 2);
+    uint16_t required = ker_worker_scatter_required_segments(9000);
+    CHECK(required == (9014 / payload + (9014 % payload != 0)));
+    CHECK(ker_worker_scatter_limits_support(required, required, required));
+    CHECK(ker_worker_scatter_limits_support(required, 0, required));
+    CHECK(ker_worker_scatter_limits_support(required, required, 0));
+    CHECK(ker_worker_scatter_limits_support(required, 0, 0));
+    CHECK(!ker_worker_scatter_limits_support(required, required - 1, 0));
+    CHECK(!ker_worker_scatter_limits_support(required, 0, required - 1));
+    CHECK(!ker_worker_scatter_limits_support(required, required - 1, required));
+    CHECK(!ker_worker_scatter_limits_support(required, required, required - 1));
+}
+
 int main(void)
 {
+    test_scatter_segment_limits();
     cpu_set_t cpus;
     CHECK(!sched_getaffinity(0, sizeof(cpus), &cpus));
     int cpu = 0;
