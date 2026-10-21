@@ -19,6 +19,24 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_promiscuous_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).promiscuous)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'promiscuous.ini'
+            for text, expected in (('yes', True), ('1', True), ('off', False), ('0', False)):
+                config.write_text('[dpdk]\npromiscuous=' + text + '\n')
+                args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertIs(args.promiscuous, expected)
+                option = '--no-promiscuous' if expected else '--promiscuous'
+                args = launcher.parse_arguments(base + ['--config', str(config), option, '--', '/bin/true'])
+                self.assertIs(args.promiscuous, not expected)
+            config.write_text('[dpdk]\npromiscuous=perhaps\n')
+            result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
     def test_vlan_ipv4_gateway(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         vlan = ['--vlan', '100=198.19.100.2/24']

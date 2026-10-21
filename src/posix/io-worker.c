@@ -60,11 +60,14 @@ int main(int argc, char **argv)
     int packet_fd = -1, control_fd = -1, split = 0;
     bool all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
+    int promiscuous = -1;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL, *mbuf_mode = "large";
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
+        if (!strcmp(argv[i], "--promiscuous")) { promiscuous = 1; continue; }
+        if (!strcmp(argv[i], "--no-promiscuous")) { promiscuous = 0; continue; }
         if (!strcmp(argv[i], "--all-multicast")) { all_multicast = true; continue; }
         if (!strcmp(argv[i], "--pcap-nsec")) { pcap_nsec = true; continue; }
         if (i + 1 >= argc) break;
@@ -82,7 +85,7 @@ int main(int argc, char **argv)
     }
     if ((strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mbuf-mode large|scatter] [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mbuf-mode large|scatter] [--all-multicast] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -179,6 +182,20 @@ int main(int argc, char **argv)
         rte_eth_tx_queue_setup(port, 0, tx_desc, rte_socket_id(), NULL) ||
         rte_eth_dev_start(port)) goto device_error;
     started = true;
+    if (promiscuous >= 0) {
+        int result = promiscuous ? rte_eth_promiscuous_enable(port) : rte_eth_promiscuous_disable(port);
+        if (result) {
+            fprintf(stderr, "ker: ethdev cannot configure promiscuous mode: %s\n", rte_strerror(-result));
+            goto cleanup;
+        }
+        result = rte_eth_promiscuous_get(port);
+        if (result != promiscuous) {
+            fprintf(stderr, "ker: ethdev did not apply promiscuous mode (requested %d, observed %d)\n",
+                promiscuous, result);
+            goto cleanup;
+        }
+    }
+    int promiscuous_state = rte_eth_promiscuous_get(port);
     /* Membership filtering belongs to Linux. Until its receive-mode updates
      * cross the packet channel, opt in to PMD all-multicast reception. */
     if (all_multicast) {
@@ -206,10 +223,11 @@ int main(int argc, char **argv)
     int link_status = rte_eth_link_get_nowait(port, &link);
     printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
-        "\"process_type\":\"primary\",\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s}\n",
+        "\"process_type\":\"primary\",\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
-        rte_eth_dev_socket_id(port), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"));
+        rte_eth_dev_socket_id(port), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"),
+        promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"));
     fflush(stdout);
     status = 0;
     while (!stopping) {

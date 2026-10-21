@@ -1212,6 +1212,17 @@
         "native-fstack-launcher-config"
       ],
       "adaptation": "Related runtime feature extension from valid_vlan_vip.ini gateway settings, beyond the original configuration-only assertions. INI VLAN gateway and CLI --vlan-gateway select one explicit main-table IPv4 default across parent/VLANs, independently of the IPv6 default. Require a configured IPv4 VLAN, reject local/zero/multicast/loopback/limited or subnet broadcast next hops, preserve /31 endpoint parsing, replace the INI IPv4 gateway list on CLI, and scrub ambient settings when omitted. A shared Ker rtnetlink adapter supplies correctly sized IPv4/IPv6 RTA_GATEWAY and explicit RTA_OIF to original Linux; no upstream or protocol source changes. Four actual DPDK/native instances verify omission with ENETUNREACH, original-kernel off-link rejection before main with worker cleanup, INI next hop and CLI replacement with a different real router address. Independent Linux router/remote netns verify TCP/UDP both directions, exact source/payload, UDP TTL63, forwarding/native counters and zero outstanding mbufs. Tagged PCAP verifies VLAN100, ARP for the configured gateway rather than the remote endpoint, router MAC and remote IPv4 datagrams. Multiple defaults within one family, per-interface policy routing, complete F-Stack config ABI and hardware qualification remain unsupported."
+    },
+    "native-fstack-promiscuous": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_valid_minimal_ini"
+      ],
+      "ker_ctests": [
+        "native-fstack-promiscuous",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Promiscuous configuration subset only; the source minimal config contract remains partial for channel/NUMA/idle/TX-delay/global layout. INI dpdk.promiscuous and CLI positive/negative boolean flags explicitly configure the actual DPDK ethdev, verify readback before readiness and expose the observed state in io.promiscuous. Omission preserves initial PMD policy instead of claiming a universal default. Five real net_tap/native instances cover omission, INI on/off and CLI overrides in both directions. Valid foreign-unicast UDP probes appear in PMD RX capture only when enabled, precede valid socket traffic, and never reach a normal original-Linux UDP socket. Capture checks foreign probe IP/UDP checksums; an otherwise equivalent raw native-MAC control from the same packet builder must reach UDP and be echoed. Independent host TCP echo, exact payloads, PMD state, native passive opens/UDP counters and zero outstanding mbufs are required. Linux Ethernet/IP/socket admission remains unchanged; this does not configure Linux IFF_PROMISC, implement raw sockets or qualify physical NIC/RSS/hardware filters. Original Linux/LKL/DPDK/F-Stack sources are unchanged."
     }
   }
 }

@@ -36,6 +36,11 @@ Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 路由器后的双向 TCP/UDP。它扩展已适配配置场景的运行证据，未将白盒 config
 合同或完整 F-Stack 多接口路由语义记为完成，计数保持不变。
 
+新增 `dpdk.promiscuous` / CLI 开关及真实 PMD/native 验证，补齐最小配置用例中
+promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-Stack fixture 的
+显式开启值。nb_channel、numa_on、idle_sleep、pkt_tx_delay 和完整 config 布局仍
+未实现，该源用例继续 partial，计数不变。
+
 ## 自动检查
 
 ```sh
