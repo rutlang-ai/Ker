@@ -448,8 +448,8 @@ INI 使用 `[vlan.ID] addresses=...`；CLI 整体替换 INI VLAN 列表。父接
 设置应用私有 Linux 的 `net.ipv4.ip_local_port_range`，同时作用于 TCP/UDP 和
 IPv4/IPv6 自动端口分配。格式为 `FIRST-LAST`，端点在 1024..65535 且不得倒置。
 CLI 覆盖 INI；不指定则保留内核默认。不能同时通过 `[sysctl]`/`--sysctl` 指定
-同一 key。该设置和其他网络 sysctl 一样只作用于本实例，受原始 Linux 的端口
-保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。
-
-专用范围选项采用默认非特权端口下限 1024，即使手动降低 `ip_unprivileged_port_start`
-也不扩展专用选项范围；更复杂的低端口策略应直接按内核要求配置通用 sysctl。
+同一 key，也不能将专用选项与 `net.ipv4.ip_unprivileged_port_start` sysctl 组合。
+Linux 要求非特权端口边界不高于 `ip_local_port_range` 的下界；若需同时提高两项，
+只用通用 sysctl，并先写端口范围、再写边界。例如先设 `ip_local_port_range=50000 50007`，
+再设 `ip_unprivileged_port_start=50000`。专用选项固定采用 1024 下限。所有设置只作用于
+本实例，受原始 Linux 的端口保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。

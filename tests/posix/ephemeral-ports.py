@@ -42,7 +42,7 @@ def main():
                     ['ip', 'link', 'set', 'kerhost', 'up'], ['ip', 'link', 'set', 'kerlink', 'up']):
         subprocess.run(command, check=True)
     host_files = [Path('/proc/sys/net/ipv4') / name for name in
-                  ('ip_local_port_range', 'ip_local_reserved_ports')]
+                  ('ip_local_port_range', 'ip_local_reserved_ports', 'ip_unprivileged_port_start')]
     original = [p.read_text() for p in host_files]
     cpu = min(os.sched_getaffinity(0))
     eal = (f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry '
@@ -56,7 +56,10 @@ def main():
         ('reserved', '[network]\nephemeral_ports=40000-40007\n',
          ['--sysctl', 'net.ipv4.ip_local_reserved_ports=40000'], 40000, 40007, 40000),
         ('minimum', '', ['--ephemeral-ports', '1024-1024'], 1024, 1024, 0),
-        ('maximum', '', ['--ephemeral-ports', '65535-65535'], 65535, 65535, 0)]
+        ('maximum', '', ['--ephemeral-ports', '65535-65535'], 65535, 65535, 0),
+        ('generic-raised-boundary', '',
+         ['--sysctl', 'net.ipv4.ip_local_port_range=50000 50007',
+          '--sysctl', 'net.ipv4.ip_unprivileged_port_start=50000'], 50000, 50007, 0)]
     with tempfile.TemporaryDirectory(prefix='ker-ephemeral-') as directory:
         root = Path(directory)
         for index, (name, text, options, low, high, reserved) in enumerate(cases):

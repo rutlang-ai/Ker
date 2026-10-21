@@ -49,6 +49,45 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertNotIn('Traceback', result.stderr)
 
+    def test_ephemeral_range_conflicts_with_unprivileged_port_start_sysctl(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        generic = launcher.parse_arguments(base + ['--sysctl',
+            'net.ipv4.ip_unprivileged_port_start=2000', '--', '/bin/true'])
+        self.assertEqual(generic.sysctls['net.ipv4.ip_unprivileged_port_start'], '2000')
+        range_key = 'net.ipv4.ip_local_port_range'
+        boundary_key = 'net.ipv4.ip_unprivileged_port_start'
+        generic_pair = ['--sysctl', range_key + '=50000 50007',
+                        '--sysctl', boundary_key + '=50000']
+        cli_order = launcher.parse_arguments(base + generic_pair + ['--', '/bin/true'])
+        self.assertEqual(list(cli_order.sysctls), [range_key, boundary_key])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'ports.ini'
+            config.write_text('[sysctl]\n' + range_key + '=50000 50007\n' +
+                boundary_key + '=50000\n')
+            ini_order = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+            self.assertEqual(list(ini_order.sysctls), [range_key, boundary_key])
+            conflicts = [
+                ('[network]\nephemeral_ports=1024-1024\n',
+                 ['--sysctl', 'net.ipv4.ip_unprivileged_port_start=2000']),
+                ('[sysctl]\nnet.ipv4.ip_unprivileged_port_start=2000\n',
+                 ['--ephemeral-ports', '1024-1024']),
+                ('[network]\nephemeral_ports=1024-1024\n[sysctl]\n'
+                 'net.ipv4.ip_unprivileged_port_start=2000\n', []),
+                ('', ['--ephemeral-ports', '1024-1024', '--sysctl',
+                      'net.ipv4.ip_unprivileged_port_start=2000']),
+            ]
+            for text, options in conflicts:
+                with self.subTest(config=text, options=options):
+                    config.write_text(text)
+                    result = subprocess.run([sys.executable, str(SOURCE), *base,
+                        '--config', str(config), *options, '--library', '/missing-library',
+                        '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn('--ephemeral-ports conflicts with sysctl '
+                        'net.ipv4.ip_unprivileged_port_start', result.stderr)
+                    self.assertNotIn('/missing-library', result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+
     def test_vlan_configuration_and_cli_replacement(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments([*base, '--', '/bin/true']).vlans, ())

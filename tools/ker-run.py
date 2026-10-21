@@ -197,6 +197,10 @@ def parse_arguments(argv=None):
         key = 'net.ipv4.ip_local_port_range'
         if key in args.sysctls:
             parser.error('--ephemeral-ports conflicts with sysctl ' + key)
+        unprivileged_port_key = 'net.ipv4.ip_unprivileged_port_start'
+        if unprivileged_port_key in args.sysctls:
+            parser.error('--ephemeral-ports conflicts with sysctl ' + unprivileged_port_key +
+                '; use generic sysctl settings for explicit kernel ordering')
         args.sysctls[key] = ' '.join(map(str, args.ephemeral_ports))
     if len(args.sysctls) > 32:
         parser.error('--sysctl supports at most 32 distinct keys')
