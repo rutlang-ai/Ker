@@ -3857,7 +3857,7 @@
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_freebsd_init",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "A host realtime EIO makes the actual original-Linux constructor fail initialization before native READY and application main. The real DPDK worker still drains and completes EAL cleanup. This adapts kernel-runtime initialization failure ordering, not the FreeBSD API or exit code.",
+      "reason": "A non-installed preload built from the same production Ker sources and original liblkl injects EIO at lkl_init and lkl_start_kernel. Exact traces prove real prerequisites and absence of later startup stages. Failures return125 before native READY/main, preserve worker statistics and complete actual EAL cleanup with zero outstanding mbufs. The successful wrapped control forwards real init/registration/boot/activation. Host realtime EIO remains covered separately. This adapts initialization-failure ordering, not FreeBSD ABI, organic internal kernel faults or exit1.",
       "ker_tests": [
         {
           "ctest": "native-fstack-startup-failures",
