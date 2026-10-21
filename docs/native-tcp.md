@@ -571,3 +571,21 @@ CLI 零等待、INI 上限和 CLI 上限覆盖。应用先保持静默，再与�
 outstanding mbuf。`worker-mbuf` 中的确定性等待计划用例验证空闲、待 TX、待 RX、TX/RX
 同时待处理时的事件和超时选择；没有声称真实 PMD 背压场景的端到端计时证据。未迁移
 F-Stack 的 generation、primary-slim 或 TX batching 调度。
+
+
+## DPDK 内存通道参数
+
+`[dpdk] channel=4` 或 `--memory-channels 4` 转为原始 EAL `-n 4`。
+CLI 覆盖 INI；允许 1..2147483647（正 signed-int 范围），非法值在加载库前拒绝。
+省略时不添加 EAL 参数，保留 DPDK 策略。显式设置与 `--eal` 内的 `-n`、
+`-n4`、`--memory-channels`、`--memory-channels=4` 冲突时拒绝启动，避免多重配置权威。
+只使用原始 EAL 参数而省略 typed 配置仍然允许。固定 DPDK 的 `--no-shconf` 与
+`--in-memory` 会跳过通道初始化，因此与 typed 配置一起使用时也提前拒绝；不会将
+返回 0 的未知通道状态当作成功生效。
+
+`--stats` 的 `io.memory_channels` 来自实际 `rte_memory_get_nchannel()`，不只是回显 CLI。
+`native-fstack-memory-channels` 的五次真实 net_tap/native 启动验证省略（本固定 EAL
+的值为 0）、INI4、CLI2 覆盖 INI4、原始 EAL 短参数3及长参数1。
+每次都验证独立宿主 TCP/UDP 回显、原始 Linux 计数、控制停止与零 outstanding mbuf。
+该参数是 EAL 内存分布配置，数值不代表检测到的物理通道数；此处 no-huge 测试不声称
+物理拓扑、NUMA 放置、hugepage 分布或性能认证，上游源码保持不变。
