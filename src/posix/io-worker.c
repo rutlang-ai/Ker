@@ -21,6 +21,7 @@
 #include "worker-log.h"
 #include "worker-clock.h"
 #include "worker-mbuf.h"
+#include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
@@ -31,6 +32,24 @@
 #define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)
 static volatile sig_atomic_t stopping;
 static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
+
+struct ker_worker_rx_queue {
+    uint16_t port;
+    uint16_t queue;
+};
+
+static uint16_t worker_rx_burst(void *context, struct rte_mbuf **packets,
+    uint16_t capacity)
+{
+    const struct ker_worker_rx_queue *queue = context;
+    return rte_eth_rx_burst(queue->port, queue->queue, packets, capacity);
+}
+
+static void worker_rx_free(void *context, struct rte_mbuf *packet)
+{
+    (void)context;
+    rte_pktmbuf_free(packet);
+}
 static int number(const char *text)
 {
     char *end;
@@ -129,6 +148,7 @@ int main(int argc, char **argv)
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
+    uint64_t rx_startup_discarded = 0;
     unsigned char tx_bytes[sizeof(struct ker_packet_header) + WIRE_MAX], rx_bytes[WIRE_MAX];
     size_t tx_length = 0;
     int status = 1, tx_capture_status, rx_capture_status;
@@ -192,6 +212,19 @@ int main(int argc, char **argv)
         if (result != promiscuous) {
             fprintf(stderr, "ker: ethdev did not apply promiscuous mode (requested %d, observed %d)\n",
                 promiscuous, result);
+            goto cleanup;
+        }
+    }
+    if (promiscuous == 0) {
+        /* Device start precedes the explicit mode switch and can queue frames
+         * while the PMD is promiscuous. Do not expose that backlog after READY. */
+        struct ker_worker_rx_queue queue = {.port = port, .queue = 0};
+        int result = ker_worker_rx_drain(worker_rx_burst, worker_rx_free,
+            &queue, rx_desc, &rx_startup_discarded);
+        rx_dropped += rx_startup_discarded;
+        if (result) {
+            fprintf(stderr, "ker: ethdev RX queue could not be proven empty after the %u-packet startup budget: %s\n",
+                rx_desc, rte_strerror(-result));
             goto cleanup;
         }
     }
@@ -376,13 +409,14 @@ cleanup:
     } else if (pool) rte_mempool_free(pool);
     printf("KER_IO_DONE {\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu}\n", (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu}\n", (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
         (unsigned long long)tx_dropped, (unsigned long long)rx_dropped, outstanding,
         (unsigned long long)stop_requests, control_eof ? "true" : "false",
-        (unsigned long long)tx_multiseg, (unsigned long long)rx_multiseg);
+        (unsigned long long)tx_multiseg, (unsigned long long)rx_multiseg,
+        (unsigned long long)rx_startup_discarded);
     fflush(stdout);
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
     if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "worker-mbuf.h"
+#include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include <errno.h>
 #include <rte_eal.h>
@@ -8,6 +9,59 @@
 #include <stdlib.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
+
+struct rx_mock {
+    const uint16_t *bursts;
+    size_t burst_count;
+    size_t calls;
+    uint64_t freed;
+};
+static uint16_t mock_rx_burst(void *context, struct rte_mbuf **packets,
+    uint16_t capacity)
+{
+    struct rx_mock *mock = context;
+    if (mock->calls == mock->burst_count) return 0;
+    uint16_t count = mock->bursts[mock->calls++];
+    if (count > capacity) count = capacity;
+    for (uint16_t i = 0; i < count; ++i)
+        packets[i] = (struct rte_mbuf *)(uintptr_t)(mock->freed + i + 1);
+    return count;
+}
+
+static void mock_rx_free(void *context, struct rte_mbuf *packet)
+{
+    CHECK(packet != NULL);
+    struct rx_mock *mock = context;
+    mock->freed++;
+}
+
+static void test_rx_startup_drain(void)
+{
+    uint64_t discarded;
+    const uint16_t empty[] = {0};
+    struct rx_mock mock = {.bursts = empty, .burst_count = 1};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4,
+        &discarded) == 0);
+    CHECK(discarded == 0 && mock.freed == 0 && mock.calls == 1);
+
+    const uint16_t queued[] = {2, 1, 0};
+    mock = (struct rx_mock){.bursts = queued, .burst_count = 3};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4,
+        &discarded) == 0);
+    CHECK(discarded == 3 && mock.freed == 3 && mock.calls == 3);
+
+    const uint16_t exact_budget[] = {2, 2, 0};
+    mock = (struct rx_mock){.bursts = exact_budget, .burst_count = 3};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4,
+        &discarded) == 0);
+    CHECK(discarded == 4 && mock.freed == 4 && mock.calls == 3);
+
+    const uint16_t continuous[] = {2, 2, 2};
+    mock = (struct rx_mock){.bursts = continuous, .burst_count = 3};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4,
+        &discarded) == -EAGAIN);
+    CHECK(discarded == 5 && mock.freed == 5 && mock.calls == 3);
+}
 static void test_scatter_rx_limits(void)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
@@ -65,6 +119,7 @@ static void test_scatter_segment_limits(void)
 
 int main(void)
 {
+    test_rx_startup_drain();
     test_scatter_rx_limits();
     test_scatter_segment_limits();
     cpu_set_t cpus;
