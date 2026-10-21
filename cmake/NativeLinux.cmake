@@ -248,6 +248,13 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
             --probe "$<TARGET_FILE:ker-startup-failure-probe>")
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-ephemeral-ports-test tests/posix/ephemeral-ports.c)
+    target_compile_options(ker-ephemeral-ports-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-ephemeral-ports
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/ephemeral-ports.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ephemeral-ports-test>")
+    set_tests_properties(native-fstack-ephemeral-ports PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-network-sysctl-test tests/posix/network-sysctl.c)
     target_compile_options(ker-network-sysctl-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-network-sysctl

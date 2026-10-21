@@ -1158,6 +1158,15 @@
         "native-fstack-config-lifecycle"
       ],
       "adaptation": "Eight production-loader checks cover minimal typed settings/defaults, empty/network-only INI, CLI precedence with quoted EAL, missing-file subprocess rejection before library setup, strict unknown-section rejection/recovery, the supported Ker section subset, repeated successful/failed load isolation, and strict duplicate-key rejection. No mocks or upstream edits. No worker or kernel is started by this CTest: these are configuration parser/lifecycle observations, not networking passes, allocator leak proofs, F-Stack global-struct ABI, secondary-process support or reload generations. Minimal/all-section/unknown-section source cases remain partial with explicit remaining fields; duplicate-key last-value-wins is not migrated and its source record remains blocked."
+    },
+    "native-fstack-ephemeral-ports": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": "test_ff_rss_tbl_set_portrange_inverted_range",
+      "ker_ctests": [
+        "native-fstack-launcher-config",
+        "native-fstack-ephemeral-ports"
+      ],
+      "adaptation": "Ker-specific source-port policy extension: network.ephemeral_ports/--ephemeral-ports validates FIRST-LAST and translates it into the private original-Linux ip_local_port_range sysctl before application startup. Reject inverted/out-of-bounds/malformed ranges and duplicate generic sysctl authority before library resolution. Seven real-kernel instances cover omitted defaults, INI, CLI replacement, reserved-port exclusion, the minimum 1024 singleton, maximum 65535 singleton, and generic ordered range/boundary sysctls (50000-50007 then 50000). The final profile starts from INI with the boundary before the range and overrides both via CLI in valid order; parser tests also verify repeated CLI A-B-A overrides apply in last-occurrence order while untouched INI keys retain their relative order. The dedicated range option rejects ports below the default Linux privileged-port boundary before setup. Each verifies IPv4/IPv6 TCP/UDP automatic bind uniqueness; configured small ranges also prove exhaustion (EADDRINUSE), release and exact single-free-port reuse. Independent host TCP/UDP peers verify actual native source ports and exact echoed payload over DPDK net_tap, positive original-kernel TCP/UDP counters and zero outstanding buffers. Host namespace sysctls remain unchanged and inherited internal overrides are discarded. IPv6 qualification here is local socket allocation, not IPv6 wire interop. F-Stack RSS/Toeplitz/RETA/queue-specific port sets are not implemented and the source record remains partial. Linux owns allocation and reservation semantics; no Ker port-selection or protocol substitute is added."
     }
   }
 }
