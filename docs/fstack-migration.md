@@ -38,7 +38,7 @@ Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 
 新增 `dpdk.promiscuous` / CLI 开关及真实 PMD/native 验证，补齐最小配置用例中
 promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-Stack fixture 的
-显式开启值。nb_channel、numa_on、pkt_tx_delay 和完整 config 布局仍
+显式开启值。numa_on、pkt_tx_delay 和完整 config 布局仍
 未实现，该源用例继续 partial，计数不变。
 
 `dpdk.idle_sleep` / `--idle-sleep-us` 进一步补齐该最小配置场景的空闲等待子集，
@@ -533,3 +533,10 @@ VLAN 200/300/untagged 错误探测先经过 worker RX，不能交给绑定 VLAN 
 相关 F-Stack IPv6 fixture 测试仍为 blocked：它验证的是 INET6-disabled 忽略语义，
 不是启用 IPv6 后的互通。计数不变；per-VLAN gateway、FreeBSD 独立 VIP 接口、
 RA/SLAAC 和完整 fixture 等价性仍未迁移。
+
+
+`dpdk.channel` / `--memory-channels` 进一步适配最小配置的 `nb_channel` 子集，
+直接交给原始 EAL，并从 `rte_memory_get_nchannel()` 回读配置。五次真实 native 启动
+验证省略、INI、CLI 覆盖及原始 EAL 长短参数，同时要求独立宿主 TCP/UDP 与清理证据。
+仅验证 no-huge 模式下配置生效，不认证物理拓扑或性能；NUMA/TX-delay/global layout
+仍未覆盖，因此源案例保持 partial，迁移计数不变。

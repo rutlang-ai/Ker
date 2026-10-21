@@ -19,6 +19,34 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_memory_channels_configuration_and_conflicts(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).memory_channels)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'channel.ini'
+            for value in (1, 4, 2147483647):
+                config.write_text('[dpdk]\nchannel=' + str(value) + '\n')
+                args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertEqual(args.eal_args, ['--no-huge', '-n', str(value)])
+                args = launcher.parse_arguments(base + ['--config', str(config), '--memory-channels', '2', '--', '/bin/true'])
+                self.assertEqual(args.eal_args, ['--no-huge', '-n', '2'])
+            for value in ('0', '-1', '2147483648', '1.5', 'true', 'invalid'):
+                for mode in ('ini', 'cli'):
+                    config.write_text('[dpdk]\nchannel=' + value + '\n' if mode == 'ini' else '')
+                    options = [] if mode == 'ini' else ['--memory-channels', value]
+                    result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                        *options, '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+        for option in ('--no-shconf', '--in-memory'):
+            with self.subTest(option=option), self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--eal=' + option, '--memory-channels', '4', '--', '/bin/true'])
+        for selection in ('-n 4', '-n4', '--memory-channels 4', '--memory-channels=4'):
+            with self.subTest(selection=selection), self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--eal=' + selection, '--memory-channels', '2', '--', '/bin/true'])
+            args = launcher.parse_arguments(base + ['--eal=' + selection, '--', '/bin/true'])
+            self.assertIsNone(args.memory_channels)
+
     def test_idle_wait_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).idle_sleep_us, 1000)
