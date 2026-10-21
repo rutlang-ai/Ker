@@ -182,7 +182,9 @@ def parse_arguments(argv=None):
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
             parser.error(f'{supplied.config}: {error}')
     sysctls = dict(values['sysctls'])
-    sysctls.update(getattr(supplied, 'sysctls', ()))
+    for key, value in getattr(supplied, 'sysctls', ()):
+        sysctls.pop(key, None)
+        sysctls[key] = value
     values.update(vars(supplied))
     values['sysctls'] = sysctls
     args = argparse.Namespace(**values)

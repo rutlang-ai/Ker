@@ -62,10 +62,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(list(cli_order.sysctls), [range_key, boundary_key])
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / 'ports.ini'
-            config.write_text('[sysctl]\n' + range_key + '=50000 50007\n' +
-                boundary_key + '=50000\n')
+            ttl_key = 'net.ipv4.ip_default_ttl'
+            syncookies_key = 'net.ipv4.tcp_syncookies'
+            config.write_text('[sysctl]\n' + ttl_key + '=65\n' + boundary_key + '=1024\n' +
+                range_key + '=40000 40007\n' + syncookies_key + '=1\n')
             ini_order = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
-            self.assertEqual(list(ini_order.sysctls), [range_key, boundary_key])
+            self.assertEqual(list(ini_order.sysctls), [ttl_key, boundary_key, range_key, syncookies_key])
+            cli_override_order = launcher.parse_arguments(base + ['--config', str(config),
+                '--sysctl', range_key + '=50000 50007', '--sysctl', boundary_key + '=50000',
+                '--', '/bin/true'])
+            self.assertEqual(list(cli_override_order.sysctls),
+                [ttl_key, syncookies_key, range_key, boundary_key])
+            self.assertEqual(cli_override_order.sysctls[range_key], '50000 50007')
+            self.assertEqual(cli_override_order.sysctls[boundary_key], '50000')
+            cli_aba_order = launcher.parse_arguments(base + ['--config', str(config),
+                '--sysctl', range_key + '=50000 50007', '--sysctl', boundary_key + '=50000',
+                '--sysctl', range_key + '=51000 51007', '--', '/bin/true'])
+            self.assertEqual(list(cli_aba_order.sysctls),
+                [ttl_key, syncookies_key, boundary_key, range_key])
+            self.assertEqual(cli_aba_order.sysctls[range_key], '51000 51007')
             conflicts = [
                 ('[network]\nephemeral_ports=1024-1024\n',
                  ['--sysctl', 'net.ipv4.ip_unprivileged_port_start=2000']),

@@ -57,7 +57,9 @@ def main():
          ['--sysctl', 'net.ipv4.ip_local_reserved_ports=40000'], 40000, 40007, 40000),
         ('minimum', '', ['--ephemeral-ports', '1024-1024'], 1024, 1024, 0),
         ('maximum', '', ['--ephemeral-ports', '65535-65535'], 65535, 65535, 0),
-        ('generic-raised-boundary', '',
+        ('generic-raised-boundary',
+         '[sysctl]\nnet.ipv4.ip_unprivileged_port_start=1024\n'
+         'net.ipv4.ip_local_port_range=40000 40007\n',
          ['--sysctl', 'net.ipv4.ip_local_port_range=50000 50007',
           '--sysctl', 'net.ipv4.ip_unprivileged_port_start=50000'], 50000, 50007, 0)]
     with tempfile.TemporaryDirectory(prefix='ker-ephemeral-') as directory:

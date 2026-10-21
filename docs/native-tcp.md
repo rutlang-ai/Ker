@@ -451,5 +451,6 @@ CLI 覆盖 INI；不指定则保留内核默认。不能同时通过 `[sysctl]`/
 同一 key，也不能将专用选项与 `net.ipv4.ip_unprivileged_port_start` sysctl 组合。
 Linux 要求非特权端口边界不高于 `ip_local_port_range` 的下界；若需同时提高两项，
 只用通用 sysctl，并先写端口范围、再写边界。例如先设 `ip_local_port_range=50000 50007`，
-再设 `ip_unprivileged_port_start=50000`。专用选项固定采用 1024 下限。所有设置只作用于
-本实例，受原始 Linux 的端口保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。
+再设 `ip_unprivileged_port_start=50000`。CLI `--sysctl` 覆盖 INI 同名项时，该项按 CLI
+出现顺序重新应用；未覆盖的 INI 项仍保持文件顺序。专用选项固定采用 1024 下限。所有设置
+只作用于本实例，受原始 Linux 的端口保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。

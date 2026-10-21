@@ -459,7 +459,9 @@ F-Stack 的完整 DPDK 字段、KNI/FreeBSD/bond/RSS/reload 配置未因此变�
 `--sysctl net.ipv4.ip_local_port_range=...` 同时指定时拒绝，避免双重配置来源；专用
 选项也不能与 `net.ipv4.ip_unprivileged_port_start` 组合。Linux 要求非特权端口边界
 不高于端口范围下界。若需同时提高两者，只通过通用 sysctl，先写 `ip_local_port_range`
-再写 `ip_unprivileged_port_start`；真实测试覆盖范围50000-50007与边界50000。
+再写 `ip_unprivileged_port_start`；CLI 覆盖 INI 同名项时按 CLI 出现顺序重新应用，
+其它 INI 项保持原顺序。真实测试使用边界优先的 INI 再以 CLI 按有效顺序覆盖两项，
+覆盖范围50000-50007与边界50000。
 
 真实 IPv4/IPv6 TCP/UDP socket 验证自动分配、唯一性、范围耗尽、释放及单一空闲
 端口复用，并验证 Linux reserved-port 排除。独立宿主 TCP/UDP 对端确认实际
