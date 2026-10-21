@@ -613,8 +613,8 @@ CLI 双向覆盖，核对策略、分配目标和 pool 元数据，并要求独�
 
 
 `native-fstack-startup-failures` 还覆盖直接接口激活错误。测试专用、不安装的
-`ker-posix-if-up-failure` 与生产库使用相同适配器源代码和原始 liblkl，额外链接
-`--wrap=lkl_if_up`；成功控制仍调用真实函数。loopback 失败必须阻止设备激活，设备失败
+`ker-posix-startup-failure` 与生产库使用相同适配器源代码和原始 liblkl，额外链接
+LKL 初始化、设备注册、内核启动和接口激活入口的 `--wrap` 包装；成功控制仍调用真实函数。loopback 失败必须阻止设备激活，设备失败
 必须紧随真实 loopback 成功，且均在 native READY/main 前退出 125。每个实例验证实际
 worker/EAL 清理与零 outstanding。生产 `libker-posix` 没有测试环境变量或故障入口。
 该证据是测试注入返回错误，不认证自然硬件失败或 F-Stack 初始化 ABI。

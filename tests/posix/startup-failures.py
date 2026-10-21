@@ -43,6 +43,9 @@ def main():
         cases = [
             ('success', [], None, 0, 'PASS: native interfaces ready'),
             ('native-clock', [], 'realtime', 125, 'native realtime clock initialization'),
+            ('kernel-init', [], None, 125, 'kernel initialization (-5)'),
+            ('device-register', [], None, 125, 'packet device registration (-5)'),
+            ('kernel-boot', [], None, 125, 'kernel boot (-5)'),
             ('wrapped-success', [], None, 0, 'PASS: native interfaces ready'),
             ('loopback-up', [], None, 125, 'loopback activation (-5)'),
             ('interface-up', [], None, 125, 'interface activation (-5)'),
@@ -54,16 +57,19 @@ def main():
             env = environment.copy()
             env['KER_TEST_STARTUP_CLEANUP'] = str(cleanup)
             env.pop('KER_TEST_STARTUP_FAILURE', None)
-            env.pop('KER_TEST_IF_UP_FAILURE', None)
-            env.pop('KER_TEST_IF_UP_TRACE', None)
+            env.pop('KER_TEST_NATIVE_STAGE_FAILURE', None)
+            env.pop('KER_TEST_NATIVE_STAGE_TRACE', None)
             selected_launcher = list(launcher)
-            wrapped = name in ('wrapped-success', 'loopback-up', 'interface-up')
+            wrapped = name in ('wrapped-success', 'loopback-up', 'interface-up',
+                'kernel-init', 'device-register', 'kernel-boot')
             trace = root / (name + '.trace')
             if wrapped:
                 selected_launcher[selected_launcher.index('--library') + 1] = str(args.failure_library)
-                env['KER_TEST_IF_UP_TRACE'] = str(trace)
+                env['KER_TEST_NATIVE_STAGE_TRACE'] = str(trace)
                 if name != 'wrapped-success':
-                    env['KER_TEST_IF_UP_FAILURE'] = 'loopback' if name == 'loopback-up' else 'interface'
+                    env['KER_TEST_NATIVE_STAGE_FAILURE'] = {'loopback-up': 'loopback',
+                        'interface-up': 'interface', 'kernel-init': 'init',
+                        'device-register': 'register', 'kernel-boot': 'boot'}[name]
             if failure:
                 env['KER_TEST_STARTUP_FAILURE'] = failure
             result = subprocess.run([*selected_launcher, *options, '--stats', str(stats), '--',
@@ -77,7 +83,8 @@ def main():
             require(stats.is_file(), f'{name}: worker cleanup snapshot lost')
             record = json.loads(stats.read_text())
             require(record['outstanding'] == 0, f'{name}: worker leaked mbufs: {record}')
-            if name in ('native-clock', 'native-route', 'loopback-up', 'interface-up'):
+            if name in ('native-clock', 'native-route', 'loopback-up', 'interface-up',
+                        'kernel-init', 'device-register', 'kernel-boot'):
                 require('application did not initialize the native Linux backend' in result.stderr,
                         f'{name}: failed native startup unexpectedly sent READY')
             if name == 'worker-port':
@@ -88,11 +95,19 @@ def main():
                 require(('native' in record) == (expected == 0),
                         f'{name}: failed native initialization was acknowledged as ready')
             if wrapped:
-                expected_trace = {'wrapped-success': 'loopback real 0\ninterface real 0\n',
-                    'loopback-up': 'loopback injected -5\n',
-                    'interface-up': 'loopback real 0\ninterface injected -5\n'}[name]
-                require(trace.is_file() and trace.read_text() == expected_trace,
-                        f'{name}: interface activation stage trace mismatch')
+                lines = trace.read_text().splitlines() if trace.is_file() else []
+                stages = ['init', 'register', 'boot', 'loopback', 'interface']
+                stop = env.get('KER_TEST_NATIVE_STAGE_FAILURE')
+                expected_stages = stages[:stages.index(stop) + 1] if stop else stages
+                require(len(lines) == len(expected_stages), f'{name}: unexpected later startup stages: {lines}')
+                for line, stage in zip(lines, expected_stages):
+                    fields = line.split()
+                    require(len(fields) == 3 and fields[:2] == [stage, 'injected' if stage == stop else 'real'],
+                            f'{name}: startup trace mismatch: {lines}')
+                    result_code = int(fields[2])
+                    require(result_code == -5 if stage == stop else
+                            (result_code >= 0 if stage == 'register' else result_code == 0),
+                            f'{name}: stage result mismatch: {lines}')
             print('PASS: ' + name + ' startup order, application marker and worker/EAL cleanup', flush=True)
     return 0
 

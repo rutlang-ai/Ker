@@ -253,7 +253,7 @@ checksum 场景仅提供 UDP 动机；额外记录的 UDP/epoll 示例也不是�
 
 原生启动与设备集成：`ctest --test-dir build -R '^native-fstack-startup-lifecycle$' --output-on-failure`。
 使用真实 DPDK/net_tap 和原始 Linux，检查启动诊断、接口地址/状态/MTU、双角色流量、清理及启动失败不执行应用。
-F-Stack run/stop 回调 ABI 和原始内核启动定点故障仍未覆盖；接口激活注入见 startup-failures。
+F-Stack run/stop 回调 ABI 和自然内核内部故障仍未覆盖；初始化/启动/接口错误注入见 startup-failures。
 
 宿主失败路径：`ctest --test-dir build -R '^native-fstack-host-(failure-.*|runtime)$' --output-on-failure`。
 同一时钟/panic 适配器分别以断言开启和 `NDEBUG` 编译，真实时钟正常前进；注入时钟失败及 panic 均须 SIGABRT。
@@ -291,7 +291,8 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 
 `native-fstack-startup-failures` 验证正常启动、原生 realtime EIO、原始 Linux 网关拒绝和 worker ethdev 查找失败。
 所有失败均需返回 125、阻止应用 main、回收 worker mbuf 并完成真实 EAL cleanup。
-新增测试专用链接库包装 `lkl_if_up`，注入 loopback/device EIO 并以精确阶段记录验证先后顺序；
+测试专用链接库包装 LKL init、netdev add、kernel start 和 if up，分别注入 EIO，
+以精确阶段记录验证真实前置调用、失败位置以及后续阶段未执行；
 成功控制调用真实激活函数，生产库无 hook。这不是自然硬件故障或完整 F-Stack ABI 等价。
 
 `native-fstack-packet-device` 对应设备上下文创建/释放两个源场景，连接生产 packet-device 回调，检查真实 fd/eventfd 生命周期、内存失败回滚、scatter/gather、背压、截断及停止唤醒。
