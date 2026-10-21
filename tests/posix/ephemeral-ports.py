@@ -25,6 +25,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--per-socket', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     for name in ('launcher', 'library', 'worker', 'app'):
@@ -33,6 +34,8 @@ def main():
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
         for name in ('launcher', 'library', 'worker', 'app'):
             command += ['--' + name, str(getattr(args, name).resolve())]
+        if args.per_socket:
+            command.append('--per-socket')
         return subprocess.run(command).returncode
     # Host IPv6 is unnecessary: native IPv6 allocation uses its own loopback.
     for scope in ('all', 'default'):
@@ -62,6 +65,10 @@ def main():
          'net.ipv4.ip_local_port_range=40000 40007\n',
          ['--sysctl', 'net.ipv4.ip_local_port_range=50000 50007',
           '--sysctl', 'net.ipv4.ip_unprivileged_port_start=50000'], 50000, 50007, 0)]
+    if args.per_socket:
+        cases = [('socket-ini', '[network]\nephemeral_ports=40000-40015\n', [], 40000, 40015, 0),
+            ('socket-override', '[network]\nephemeral_ports=40000-40015\n',
+             ['--ephemeral-ports', '41000-41015'], 41000, 41015, 0)]
     with tempfile.TemporaryDirectory(prefix='ker-ephemeral-') as directory:
         root = Path(directory)
         for index, (name, text, options, low, high, reserved) in enumerate(cases):
@@ -74,11 +81,12 @@ def main():
                 # An inherited internal environment value must never override the CLI/INI.
                 environment = dict(os.environ, KER_NATIVE_SYSCTLS='net.ipv4.ip_local_port_range=43000 43007')
                 process = subprocess.Popen([*command, '--config', str(config), *options,
-                    '--stats', str(stats), '--', str(args.app), str(low), str(high), str(reserved), str(port)],
+                    '--stats', str(stats), '--', str(args.app), str(low), str(high), str(reserved), str(port),
+                    *(["socket-ranges"] if args.per_socket else [])],
                     env=environment, stdout=log, stderr=log, text=True)
                 try:
                     peer, address = listener.accept()
-                    source_port(address, low, high, reserved)
+                    source_port(address, low + 8 if args.per_socket else low, low + 11 if args.per_socket else high, reserved)
                     with peer:
                         peer.settimeout(8)
                         payload = b''
@@ -88,7 +96,7 @@ def main():
                         require(payload == b'ephemeral-ports\0', 'TCP payload differs')
                         peer.sendall(payload)
                     payload, address = udp.recvfrom(1024)
-                    source_port(address, low, high, reserved)
+                    source_port(address, low + 8 if args.per_socket else low, low + 11 if args.per_socket else high, reserved)
                     require(payload == b'ephemeral-ports\0', 'UDP payload differs')
                     require(udp.sendto(payload, address) == len(payload), 'UDP echo short')
                     require(process.wait(timeout=20) == 0, name + ': application failed')
