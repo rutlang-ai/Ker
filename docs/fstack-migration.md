@@ -212,7 +212,8 @@ Ker 使用自己的已知 section/option 配置 schema，不能直接读取任�
 双向 TCP 互通验证 TX/RX、内核连接计数和零 outstanding；配置文件缺失、EAL 参数错误及设备不存在均验证应用未执行。
 配置错误退出 2，基础设施失败退出 125，区别于 F-Stack 的退出码 1。
 新增 8 项场景适配，run/stop 仅部分覆盖实际 worker 停止与原生清理，未提供 F-Stack 回调 ABI。
-内核启动失败和接口激活失败的定点注入仍未完成，继续保留 blocked。
+接口激活返回错误已由 `native-fstack-startup-failures` 的测试专用链接包装覆盖；
+原始内核启动定点失败与完整 F-Stack 初始化 ABI 仍未覆盖。
 worker 明确拒绝 EAL secondary 进程；不宣称支持共享端口多进程。
 
 ## 主机时钟故障与 panic
@@ -547,3 +548,12 @@ RA/SLAAC 和完整 fixture 等价性仍未迁移。
 CLI 双向覆盖，同时检查 pool 元数据、原始 Linux TCP/UDP 和清理。
 单节点环境不证明跨节点物理放置或性能，队列目标也不等同于驱动内存回读；
 TX-delay/global layout 仍未覆盖，源案例保持 partial，迁移计数不变。
+
+
+接口激活失败扩展使用不安装的 `ker-posix-if-up-failure` 库：与生产库编译相同 Ker
+适配源文件和原始 liblkl，仅在链接时包装 `lkl_if_up`。成功控制必须真实激活 loopback
+和设备；loopback 注入 EIO 后不得激活设备；设备 EIO 必须发生在真实 loopback 成功后。
+宿主侧精确阶段记录、应用 marker 缺失、native READY 缺失、退出 125、实际 EAL cleanup
+成功和零 outstanding mbuf 共同验证失败传播与资源回收。生产库不包含测试 hook。
+源案例保持 partial：这里验证 Ker 适配器的注入错误，不等同于真实硬件故障或 F-Stack
+FreeBSD 到 DPDK 的完整阶段/ABI，迁移计数不变。
