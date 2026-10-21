@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "worker-mbuf.h"
+#include "worker-wait.h"
 #include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include <errno.h>
@@ -98,6 +99,22 @@ static void test_scatter_rx_limits(void)
     CHECK(!ker_worker_rx_limits_support(jumbo, 4));
 }
 
+static void test_worker_wait_plan(void)
+{
+    short events;
+    int wait_us;
+    ker_worker_wait_plan(100000, false, false, &events, &wait_us);
+    CHECK(events == POLLIN && wait_us == 100000);
+    ker_worker_wait_plan(100000, true, false, &events, &wait_us);
+    CHECK(events == 0 && wait_us == 1000);
+    ker_worker_wait_plan(100000, false, true, &events, &wait_us);
+    CHECK(events == POLLOUT && wait_us == 1000);
+    ker_worker_wait_plan(100000, true, true, &events, &wait_us);
+    CHECK(events == POLLOUT && wait_us == 1000);
+    ker_worker_wait_plan(0, true, false, &events, &wait_us);
+    CHECK(events == 0 && wait_us == 0);
+}
+
 static void test_scatter_segment_limits(void)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
@@ -119,6 +136,7 @@ static void test_scatter_segment_limits(void)
 
 int main(void)
 {
+    test_worker_wait_plan();
     test_rx_startup_drain();
     test_scatter_rx_limits();
     test_scatter_segment_limits();

@@ -24,12 +24,17 @@ static int endpoint(int type, int port)
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
     int port = atoi(argv[1]);
     int udp = endpoint(SOCK_DGRAM, port), listener = endpoint(SOCK_STREAM, port);
     CHECK(listen(listener, 1) == 0);
     const char *mac = getenv("LKL_HIJACK_NET_MAC");
     CHECK(mac != NULL);
+    if (argc == 3) {
+        int idle_ms = atoi(argv[2]);
+        CHECK(idle_ms >= 0 && idle_ms <= 1000);
+        CHECK(usleep((useconds_t)idle_ms * 1000) == 0);
+    }
     printf("READY %s\n", mac); fflush(stdout);
     struct sockaddr_in peer;
     socklen_t length = sizeof(peer);

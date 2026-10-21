@@ -107,7 +107,7 @@ def ephemeral_ports(text):
     return first, last
 
 
-CONFIG_DEFAULTS = dict(promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -116,7 +116,7 @@ CONFIG_SCHEMA = {
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
-             'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
+             'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
                 'max_bytes': ('pcap_max_bytes', int), 'nsec': ('pcap_nsec', bool)},
@@ -198,6 +198,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--lcore-mask', help='nonzero hexadecimal DPDK lcore mask; conflicts with EAL -c/-l/--lcores')
     parser.add_argument('--port', help='DPDK ethdev name')
+    parser.add_argument('--idle-sleep-us', type=int,
+        help='worker idle wait in microseconds, 0..100000 (default 1000; 0 polls without sleeping)')
     parser.add_argument('--promiscuous', action=argparse.BooleanOptionalAction,
         help='enable or disable PMD promiscuous reception; omitted preserves the PMD state')
     parser.add_argument('--all-multicast', action=argparse.BooleanOptionalAction,
@@ -298,6 +300,8 @@ def parse_arguments(argv=None):
             parser.error('--vlan-gateway6 requires IPv6 addresses on the selected VLAN')
         if gateway in all_ips:
             parser.error('--vlan-gateway6 must not equal a local address')
+    if not 0 <= args.idle_sleep_us <= 100000:
+        parser.error('--idle-sleep-us must be in 0..100000 microseconds')
     if args.mbuf_mode not in ('large', 'scatter'):
         parser.error('--mbuf-mode must be large or scatter')
     if not 1280 <= args.mtu <= 9000:
@@ -364,7 +368,7 @@ def main():
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *multicast_options, *promiscuous_options, *capture_options, *log_options, '--', *args.eal_args],
+            '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *multicast_options, *promiscuous_options, *capture_options, *log_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)

@@ -38,8 +38,13 @@ Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 
 新增 `dpdk.promiscuous` / CLI 开关及真实 PMD/native 验证，补齐最小配置用例中
 promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-Stack fixture 的
-显式开启值。nb_channel、numa_on、idle_sleep、pkt_tx_delay 和完整 config 布局仍
+显式开启值。nb_channel、numa_on、pkt_tx_delay 和完整 config 布局仍
 未实现，该源用例继续 partial，计数不变。
+
+`dpdk.idle_sleep` / `--idle-sleep-us` 进一步补齐该最小配置场景的空闲等待子集，
+以宿主 `ppoll` 实现 Ker I/O 等待，保持 Linux 协议定时器独立。五个真实实例验证
+默认、20 微秒、零等待和上限配置下的实际超时及 TCP/UDP/控制关闭。该源用例的
+其他缺口继续保留，计数不变。
 
 ## 自动检查
 
