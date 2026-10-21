@@ -53,7 +53,7 @@ set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
-add_executable(ker-io-worker src/posix/io-worker.c src/posix/worker-mbuf.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+add_executable(ker-io-worker src/posix/io-worker.c src/posix/worker-mbuf.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
     target_compile_options(${native_target} PRIVATE -Wall -Wextra -Werror)
@@ -318,6 +318,13 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ipv6-route-test>")
     set_tests_properties(native-fstack-ipv6-route PROPERTIES TIMEOUT 120 LABELS "native-tcp;native-udp;fstack")
+    add_executable(ker-promiscuous-test tests/posix/promiscuous.c)
+    target_compile_options(ker-promiscuous-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-promiscuous
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/promiscuous.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-promiscuous-test>")
+    set_tests_properties(native-fstack-promiscuous PROPERTIES TIMEOUT 120 LABELS "native-tcp;native-udp;fstack")
     add_executable(ker-ipv4-vlan-route-test tests/posix/ipv4-vlan-route.c)
     target_compile_options(ker-ipv4-vlan-route-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-ipv4-vlan-route
@@ -454,7 +461,7 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-mbuf-scatter COMMAND ${ker_native_test_command}
         --jumbo-app "$<TARGET_FILE:ker-posix-fstack-jumbo-test>" --mbuf-scatter)
     set_tests_properties(native-fstack-mbuf-scatter PROPERTIES TIMEOUT 90 LABELS "native-dpdk;fstack")
-    add_executable(ker-worker-mbuf-test tests/posix/worker-mbuf.c src/posix/worker-mbuf.c)
+    add_executable(ker-worker-mbuf-test tests/posix/worker-mbuf.c src/posix/worker-mbuf.c src/posix/worker-rx-drain.c)
     target_include_directories(ker-worker-mbuf-test PRIVATE src/posix)
     target_compile_options(ker-worker-mbuf-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     target_link_libraries(ker-worker-mbuf-test PRIVATE PkgConfig::DPDK)

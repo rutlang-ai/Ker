@@ -1122,14 +1122,18 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Ker minimal typed network/DPDK configuration loads with verified defaults and normalized lcore selection.",
+      "reason": "Ker minimal typed network/DPDK configuration loads with verified defaults and normalized lcore selection. Explicit promiscuous mode reaches a real PMD with readback, RX capture and original-Linux MAC/socket admission checks; omission preserves PMD state.",
       "ker_tests": [
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-config-lifecycle"
+        },
+        {
+          "ctest": "native-fstack-promiscuous",
+          "provenance_case": "native-fstack-promiscuous"
         }
       ],
-      "remaining": "F-Stack nb_channel, promiscuous, numa_on, idle_sleep, pkt_tx_delay and global config layout are not exposed by this Ker loader."
+      "remaining": "F-Stack nb_channel, numa_on, idle_sleep, pkt_tx_delay and global config layout are not exposed by this Ker loader."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_no_dpdk_section",

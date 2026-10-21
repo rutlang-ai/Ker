@@ -165,7 +165,7 @@ def main():
         root = Path(directory)
         common = [sys.executable, str(args.launcher), '--library', str(args.library),
             '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
-            '--port', 'net_tap0', '--eal', eal]
+            '--port', 'net_tap0', '--eal', eal, '--no-promiscuous']
         common += ['--vlan', '100=2001:db8:1::2/64'] if args.vlan6 else ['--address6', '2001:db8:1::2/64']
         gateway_option = '--vlan-gateway6' if args.vlan6 else '--gateway6'
         gateway_value = lambda address: '100=' + address if args.vlan6 else address

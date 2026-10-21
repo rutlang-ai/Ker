@@ -384,10 +384,10 @@ READY/关闭统计的 `io` 对象包含 `lcore_count`、`main_lcore` 以及采�
 ### Worker 流量快照
 
 关闭统计新增 `tx_bytes`、`rx_bytes`、`tx_dropped`、`rx_dropped`，原有 `tx`、`rx`、`dropped` 字段保留。
-`KER_IO_DONE` 还报告 `stop_requests`（已读取的控制字节数）和 `control_eof`（控制通道是否已观察到 EOF）。
+`KER_IO_DONE` 还报告 `stop_requests`（已读取的控制字节数）、`control_eof`（控制通道是否已观察到 EOF）和 `rx_startup_discarded`（显式关闭混杂模式后、READY 前为证明 RX 队列为空而丢弃的帧数）。
 `tx`/`tx_bytes` 在 PMD 接受完整帧后增加；`rx`/`rx_bytes` 在完整帧成功送入原生 packet channel 后增加，重试不会重复计数。
 字节数包含 Ethernet 头和负载，不含 virtio channel 头或 Ethernet FCS。
-分方向 dropped 只统计适配层拒绝的帧长度/元数据，聚合 `dropped=tx_dropped+rx_dropped`；不包含硬件丢包或关闭时丢弃的排队 RX 帧。
+`tx_dropped` 统计适配层拒绝的帧长度/元数据；`rx_dropped` 还包括 `rx_startup_discarded`，即显式关闭混杂模式时在 READY 前清理的 RX 帧。聚合值仍为 `dropped=tx_dropped+rx_dropped`，不包含硬件丢包或设备关闭时丢弃的排队 RX 帧。
 `outstanding` 继续表示 ethdev 关闭后仍被占用的 mbuf 数，成功关闭必须为零。
 
 ### 原生内核熵初始化
@@ -523,3 +523,24 @@ INI 网关和 CLI 更换网关。独立宿主路由器连接另一个网络命�
 TCP/UDP、精确源地址/载荷、UDP TTL 64→63、宿主转发和原始内核计数及零 outstanding
 mbuf。PCAP 必须证明 VLAN100 标签、ARP 查询配置的网关而非远端地址、路由器 MAC
 和跨网段 IPv4 UDP。多路由表、每 VLAN 独立默认路由/策略规则仍未实现。
+
+
+## PMD 混杂模式
+
+`[dpdk] promiscuous=true/false` 或 `--promiscuous` / `--no-promiscuous`
+显式选择 DPDK ethdev 的混杂接收模式。CLI 覆盖 INI，省略时保留 PMD 初始状态，
+不改变现有默认策略。显式设置调用 DPDK enable/disable 后回读确认；失败或回读
+不一致会在应用启动前报错并清理设备。`--stats` 的 `io.promiscuous` 记录实际回读
+布尔值；未显式配置且 DPDK 查询返回错误时为 null。
+
+这只决定哪些 Ethernet 帧可进入 worker。它不会将 Linux 接口设为混杂模式，也
+不会绕过原始 Linux 的 MAC/IP/socket 接收检查。IPv6 所需的 all-multicast 配置
+仍独立生效，不被显式关闭 promiscuous 所覆盖。
+
+`native-fstack-promiscuous` 使用真实 net_tap 和独立宿主接口运行五个 native
+实例：省略、INI 开/关以及两个方向的 CLI 覆盖。混杂开启时三个目的 MAC 不匹配的
+有效 UDP 帧必须进入 PMD RX 抓包，关闭时不得出现；开启时 Linux UDP socket 也
+不能收到这些载荷。相同 raw packet builder 构造的本机目的 MAC 控制帧必须成功
+进入 UDP socket 并得到回复，避免把坏包丢弃误记为 MAC 过滤。另验证宿主 TCP
+互通、PMD 状态回读、原始内核 TCP/UDP 计数和零 outstanding mbuf。
+这些是软件 PMD 证据，不等同于物理 NIC、RSS 或硬件过滤验收。

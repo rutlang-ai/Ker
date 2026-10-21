@@ -21,6 +21,7 @@
 #include "worker-log.h"
 #include "worker-clock.h"
 #include "worker-mbuf.h"
+#include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
@@ -31,6 +32,24 @@
 #define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)
 static volatile sig_atomic_t stopping;
 static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
+
+struct ker_worker_rx_queue {
+    uint16_t port;
+    uint16_t queue;
+};
+
+static uint16_t worker_rx_burst(void *context, struct rte_mbuf **packets,
+    uint16_t capacity)
+{
+    const struct ker_worker_rx_queue *queue = context;
+    return rte_eth_rx_burst(queue->port, queue->queue, packets, capacity);
+}
+
+static void worker_rx_free(void *context, struct rte_mbuf *packet)
+{
+    (void)context;
+    rte_pktmbuf_free(packet);
+}
 static int number(const char *text)
 {
     char *end;
@@ -60,11 +79,14 @@ int main(int argc, char **argv)
     int packet_fd = -1, control_fd = -1, split = 0;
     bool all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
+    int promiscuous = -1;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL, *mbuf_mode = "large";
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
+        if (!strcmp(argv[i], "--promiscuous")) { promiscuous = 1; continue; }
+        if (!strcmp(argv[i], "--no-promiscuous")) { promiscuous = 0; continue; }
         if (!strcmp(argv[i], "--all-multicast")) { all_multicast = true; continue; }
         if (!strcmp(argv[i], "--pcap-nsec")) { pcap_nsec = true; continue; }
         if (i + 1 >= argc) break;
@@ -82,7 +104,7 @@ int main(int argc, char **argv)
     }
     if ((strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mbuf-mode large|scatter] [--all-multicast] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu 1280..9000] [--mbuf-mode large|scatter] [--all-multicast] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -126,6 +148,7 @@ int main(int argc, char **argv)
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
+    uint64_t rx_startup_discarded = 0;
     unsigned char tx_bytes[sizeof(struct ker_packet_header) + WIRE_MAX], rx_bytes[WIRE_MAX];
     size_t tx_length = 0;
     int status = 1, tx_capture_status, rx_capture_status;
@@ -179,6 +202,33 @@ int main(int argc, char **argv)
         rte_eth_tx_queue_setup(port, 0, tx_desc, rte_socket_id(), NULL) ||
         rte_eth_dev_start(port)) goto device_error;
     started = true;
+    if (promiscuous >= 0) {
+        int result = promiscuous ? rte_eth_promiscuous_enable(port) : rte_eth_promiscuous_disable(port);
+        if (result) {
+            fprintf(stderr, "ker: ethdev cannot configure promiscuous mode: %s\n", rte_strerror(-result));
+            goto cleanup;
+        }
+        result = rte_eth_promiscuous_get(port);
+        if (result != promiscuous) {
+            fprintf(stderr, "ker: ethdev did not apply promiscuous mode (requested %d, observed %d)\n",
+                promiscuous, result);
+            goto cleanup;
+        }
+    }
+    if (promiscuous == 0) {
+        /* Device start precedes the explicit mode switch and can queue frames
+         * while the PMD is promiscuous. Do not expose that backlog after READY. */
+        struct ker_worker_rx_queue queue = {.port = port, .queue = 0};
+        int result = ker_worker_rx_drain(worker_rx_burst, worker_rx_free,
+            &queue, rx_desc, &rx_startup_discarded);
+        rx_dropped += rx_startup_discarded;
+        if (result) {
+            fprintf(stderr, "ker: ethdev RX queue could not be proven empty after the %u-packet startup budget: %s\n",
+                rx_desc, rte_strerror(-result));
+            goto cleanup;
+        }
+    }
+    int promiscuous_state = rte_eth_promiscuous_get(port);
     /* Membership filtering belongs to Linux. Until its receive-mode updates
      * cross the packet channel, opt in to PMD all-multicast reception. */
     if (all_multicast) {
@@ -206,10 +256,11 @@ int main(int argc, char **argv)
     int link_status = rte_eth_link_get_nowait(port, &link);
     printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
-        "\"process_type\":\"primary\",\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s}\n",
+        "\"process_type\":\"primary\",\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
-        rte_eth_dev_socket_id(port), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"));
+        rte_eth_dev_socket_id(port), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"),
+        promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"));
     fflush(stdout);
     status = 0;
     while (!stopping) {
@@ -358,13 +409,14 @@ cleanup:
     } else if (pool) rte_mempool_free(pool);
     printf("KER_IO_DONE {\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu}\n", (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu}\n", (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
         (unsigned long long)tx_dropped, (unsigned long long)rx_dropped, outstanding,
         (unsigned long long)stop_requests, control_eof ? "true" : "false",
-        (unsigned long long)tx_multiseg, (unsigned long long)rx_multiseg);
+        (unsigned long long)tx_multiseg, (unsigned long long)rx_multiseg,
+        (unsigned long long)rx_startup_discarded);
     fflush(stdout);
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
     if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }
