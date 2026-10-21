@@ -645,3 +645,24 @@ FIFO、字节/scatter计数、期限边界、满批与清理；不将受控回�
 `native-fstack-worker-batched-stop` 在暂停的真实 worker 通道中放入三帧及stop/EOF后恢复，
 要求三帧按序到达独立宿主、精确计数、实际停止刷新及资源回收。
 微秒值控制等待策略，不保证宿主调度延迟或吞吐；也不等价于 F-Stack 周期TSC刷新或多进程模型。
+
+
+## EAL 内存大小和页模式
+
+`[dpdk] memory=128` 或 `--memory-mb 128` 请求初始 EAL 内存，单位 MiB，转为原始
+EAL `-m 128`。范围1..2147483647是正 signed-int 表示边界，不代表宿主一定有足够容量；
+实际不足仍由 EAL 明确失败。省略时不添加分配参数。显式配置与 raw EAL 的 `-m`、
+`--memory-size`、`--numa-mem`、`--socket-mem` 冲突时，加载库前返回2。
+
+`[dpdk] no_huge=yes` 或 `--no-huge` 选择普通页；`no_huge=no` 或 `--hugepages`
+要求 EAL 的 hugepage 模式。CLI 覆盖 INI；省略保留 EAL 参数。typed 页模式与 raw
+`--no-huge` 同时出现时拒绝，普通页与 raw `--in-memory` 组合也提前拒绝。
+不对宿主 hugepages 进行配置，不在资源不足时静默退回普通页。
+
+`io.memory_bytes` 从 `rte_eal_get_physmem_size()` 读取 EAL 实际分配字节，
+`io.hugepages` 从 `rte_eal_has_hugepages()` 读取 EAL 页模式。前者不是 CLI 回显，
+也不包括独立原生 Linux 实例的内存；这些字段不证明具体 NUMA 放置或性能。
+`native-fstack-eal-memory` 使用五次真实 net_tap/native 启动，覆盖32/64/128MiB、
+INI、CLI覆盖及原始EAL长短参数，每次要求实际字节数、普通页模式、独立宿主TCP/UDP、
+原始内核计数和零mbuf。额外以私有非hugetlbfs目录验证 required-hugepages 返回125，
+不发布READY或成功统计，不静默回退。当前环境未验证 hugepage 分配成功。

@@ -19,6 +19,44 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_eal_memory_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci']
+        args = launcher.parse_arguments(base + ['--', '/bin/true'])
+        self.assertIsNone(args.memory_mb); self.assertIsNone(args.no_huge)
+        self.assertEqual(args.eal_args, ['--no-pci'])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'memory.ini'
+            for text, huge_disabled in (('yes', True), ('1', True), ('off', False), ('0', False)):
+                config.write_text('[dpdk]\nmemory=128\nno_huge=' + text + '\n')
+                args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertEqual(args.memory_mb, 128); self.assertIs(args.no_huge, huge_disabled)
+                self.assertEqual(args.eal_args, ['--no-pci', '-m', '128'] + (['--no-huge'] if huge_disabled else []))
+                option = '--hugepages' if huge_disabled else '--no-huge'
+                args = launcher.parse_arguments(base + ['--config', str(config), '--memory-mb', '64', option, '--', '/bin/true'])
+                self.assertEqual(args.memory_mb, 64); self.assertIs(args.no_huge, not huge_disabled)
+            for field, values in (('memory', ('0', '-1', '2147483648', '1.5', 'invalid')),
+                                  ('no_huge', ('perhaps',))):
+                for value in values:
+                    config.write_text('[dpdk]\n' + field + '=' + value + '\n')
+                    result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                        '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+        for value in ('0', '-1', '2147483648', '1.5', 'invalid'):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--memory-mb', value, '--', '/bin/true'])
+        for selection in ('-m 64', '-m64', '--memory-size 64', '--memory-size=64',
+                          '--numa-mem 64', '--socket-mem=64'):
+            with self.subTest(selection=selection), self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--eal=' + selection, '--memory-mb', '128', '--', '/bin/true'])
+        for option in ('--no-huge', '--hugepages'):
+            with self.subTest(option=option), self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--eal=--no-huge', option, '--', '/bin/true'])
+        with self.assertRaises(SystemExit):
+            launcher.parse_arguments(base + ['--eal=--in-memory', '--no-huge', '--', '/bin/true'])
+        with self.assertRaises(SystemExit):
+            launcher.parse_arguments(base + ['--no-huge', '--hugepages', '--', '/bin/true'])
+
     def test_tx_delay_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).tx_delay_us, 0)
