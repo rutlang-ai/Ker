@@ -56,7 +56,7 @@ def sysctl_setting(text):
     return key, value
 
 
-CONFIG_DEFAULTS = dict(sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -64,7 +64,7 @@ CONFIG_SCHEMA = {
     'network': {'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'all_multicast': ('all_multicast', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -116,6 +116,7 @@ def parse_arguments(argv=None):
         help='additional native IPv6 address/prefix; enables multicast reception for neighbor discovery')
     parser.add_argument('--vip-address', dest='vip_addresses', action='append', type=ipaddress.IPv4Interface,
         help='additional IPv4 address/prefix; repeat up to 32 times; replaces INI vip_addresses')
+    parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
     parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
@@ -178,6 +179,8 @@ def parse_arguments(argv=None):
     addresses = [args.address.ip] + [value.ip for value in args.vip_addresses]
     if len(set(addresses)) != len(addresses):
         parser.error('--vip-address must not duplicate the primary or another VIP address')
+    if args.mbuf_mode not in ('large', 'scatter'):
+        parser.error('--mbuf-mode must be large or scatter')
     if not 1280 <= args.mtu <= 9000:
         parser.error('--mtu must be in 1280..9000')
     if not 1280 <= args.max_mtu <= 9000:
@@ -239,7 +242,7 @@ def main():
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
+            '--control-fd', str(control_read), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, *multicast_options, *capture_options, *log_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         os.close(control_read)

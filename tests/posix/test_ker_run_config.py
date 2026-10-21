@@ -19,6 +19,23 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_mbuf_mode_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertEqual(launcher.parse_arguments([*base, "--", "/bin/true"]).mbuf_mode, 'large')
+        self.assertEqual(launcher.parse_arguments([*base, '--mbuf-mode', 'scatter', '--', '/bin/true']).mbuf_mode, 'scatter')
+        self.assertEqual(self.read('[dpdk]\nmbuf_mode=scatter\n')['mbuf_mode'], 'scatter')
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'mode.ini'
+            config.write_text('[dpdk]\nmbuf_mode=scatter\n')
+            self.assertEqual(launcher.parse_arguments([*base, '--config', str(config), '--mbuf-mode', 'large', '--', '/bin/true']).mbuf_mode, 'large')
+            config.write_text('[dpdk]\nmbuf_mode=invalid\n')
+            result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                                     '--library', '/must-not-resolve', '--', '/bin/true'],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('--mbuf-mode', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
     def test_ipv6_gateway_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).gateway6)

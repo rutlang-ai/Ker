@@ -665,79 +665,18 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_multiseg",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Real DPDK chain allocation/copy/reclamation plus independent peer jumbo transfer validate the multisegment Ethernet transmit scenario through the production worker adapter; no FreeBSD mbuf ABI claim.",
       "ker_tests": [
         {
-          "ctest": "fstack-multiseg-boundary",
-          "provenance_case": "multiseg-boundary"
+          "ctest": "worker-mbuf",
+          "provenance_case": "native-fstack-send-multiseg"
         },
         {
-          "ctest": "fstack-multiseg-copy",
-          "provenance_case": "multiseg-copy"
-        },
-        {
-          "ctest": "fstack-multiseg-ethernet-ingress",
-          "provenance_case": "multiseg-ethernet-ingress"
-        },
-        {
-          "ctest": "fstack-arp-chain-feedback",
-          "provenance_case": "arp-chain-feedback"
-        },
-        {
-          "ctest": "fstack-ipv4-ingress-validation",
-          "provenance_case": "ipv4-ingress-validation"
-        },
-        {
-          "ctest": "fstack-chain-export",
-          "provenance_case": "fstack-chain-export"
-        },
-        {
-          "ctest": "fstack-concurrent-ring",
-          "provenance_case": "fstack-concurrent-ring"
-        },
-        {
-          "ctest": "udp-ip-options",
-          "provenance_case": "udp-ip-options"
-        },
-        {
-          "ctest": "tcp-ip-options",
-          "provenance_case": "tcp-ip-options"
-        },
-        {
-          "ctest": "fstack-flow-receive",
-          "provenance_case": "flow-receive"
-        },
-        {
-          "ctest": "fstack-flow-concurrent-receive",
-          "provenance_case": "flow-concurrent-receive"
-        },
-        {
-          "ctest": "fstack-flow-owner-receive",
-          "provenance_case": "flow-owner-receive"
-        },
-        {
-          "ctest": "arp-responder",
-          "provenance_case": "arp-responder"
-        },
-        {
-          "ctest": "fstack-icmp-echo-service",
-          "provenance_case": "icmp-echo-service"
-        },
-        {
-          "ctest": "icmpv4-service",
-          "provenance_case": "icmpv4-service"
-        },
-        {
-          "ctest": "flow-icmpv4",
-          "provenance_case": "flow-icmpv4"
-        },
-        {
-          "ctest": "ethdev-rx-capacity",
-          "provenance_case": "ethdev-rx-capacity"
+          "ctest": "native-fstack-mbuf-scatter",
+          "provenance_case": "native-fstack-send-multiseg"
         }
-      ],
-      "remaining": "Ker copy/chain/ownership paths cover related payload boundaries, not the complete FreeBSD mbuf-to-DPDK send contract."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
@@ -1645,16 +1584,26 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_scatter_mode",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker CLI/INI storage-mode parsing, capability negotiation and dual-role jumbo net_tap traffic exercise original DPDK scatter RX/multi-segment TX; exact source and CTest links are in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-mbuf-scatter",
+          "provenance_case": "native-fstack-mbuf-mode"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_invalid_mode_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real Ker CLI/INI storage-mode parsing, capability negotiation and dual-role jumbo net_tap traffic exercise original DPDK scatter RX/multi-segment TX; exact source and CTest links are in provenance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-mbuf-mode"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_max_mtu_non_numeric_fails",
