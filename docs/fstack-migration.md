@@ -406,3 +406,34 @@ pool 耗尽时部分链回收及最终可用数恢复。`native-fstack-mbuf-scat
 要求双向多段计数、原始 Linux 计数及零 outstanding。large 模式对照要求多段计数为零。
 这迁移了两项 MTU mode 配置场景及 multisegment send 场景；硬件 PMD、scatter 性能和跨进程共享不在本批验收范围。
 清单现为 120 adapted / 15 partial / 235 blocked / 8 architecture-specific / 55 harness-only，共 433 项。
+
+
+## 原始 Linux 802.1Q VLAN 与 VLAN VIP
+
+内核构建配置启用 `CONFIG_VLAN_8021Q`，Linux/LKL/DPDK/F-Stack 上游源保持原样。
+Ker 仅通过 rtnetlink 创建 `ker.ID` 子接口，再用原始 Linux 地址/链路 API 安装 IPv4 地址和 MTU。
+配置示例：
+
+```ini
+[vlan.100]
+addresses=198.19.100.2/24,198.19.100.3/24,198.19.100.4/24,198.19.100.5/24
+[vlan.200]
+addresses=198.19.200.2/24
+```
+
+也可重复 `--vlan 100=198.19.100.2/24,198.19.100.3/24`；CLI VLAN 列表整体替换 INI VLAN 列表。
+最多 16 个 VLAN，ID 1–4094；每个最多 8 个 IPv4 地址，首地址为主地址，其余为 VIP。
+重复 ID、重复 IP、非法/空地址和未知字段在库/设备准备前拒绝。未显式配置时不继承宿主的 VLAN 环境变量。
+Ethernet channel 为单层 802.1Q 标签保留额外 4 字节，未标记帧仍受原 MTU 限制。
+DPDK VLAN stripping/filter offload 保持关闭，tag/demux 属于原始 Linux。
+
+`native-fstack-vlan` 使用真实 net_tap、独立宿主 VLAN100/200、三个 VLAN100 VIP，
+分别验证 INI + large 和 CLI 替换 + scatter。TCP/UDP 显式绑定 Linux VLAN 设备；IP_PKTINFO 检查接收设备与本地地址。
+每个地址传输完整 1472 字节 UDP 载荷，抓包要求双向完整 1518 字节帧、正确标签/IPv4/UDP 校验和且无分片。
+错误 VLAN200、未配置 VLAN300 和无标签探针须先经过实际 RX 抓包，且不能交给绑定 VLAN100 的 socket。
+这依赖 Linux 的 SO_BINDTODEVICE 语义，不宣称把 Linux weak-host 行为改成 strong-host 防火墙。
+每次要求 5 个原始 Linux passive opens、5 个 UDP input/output，以及零 outstanding。
+
+迁移 `test_ff_load_config_dual_vlan` 与 `test_ff_load_config_vlan_vip_addr` 两个场景，
+当前清单 122 adapted / 15 partial / 233 blocked / 8 architecture-specific / 55 harness-only。
+本批仅验收 IPv4 单层 802.1Q，未实现每 VLAN 独立网关、QinQ、IPv6 VLAN、热变更或硬件 VLAN offload。

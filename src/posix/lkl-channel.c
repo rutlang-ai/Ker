@@ -8,6 +8,7 @@
 #include "host-entropy.h"
 #include "realtime-clock.h"
 #include "ipv6-route.h"
+#include "vlan.h"
 #include "packet-channel.h"
 #include "packet-device.h"
 #include <arpa/inet.h>
@@ -207,6 +208,8 @@ __attribute__((constructor)) static void initialize(void)
     if (result) fail("interface MTU", result);
     result = lkl_if_up(index);
     if (result) fail("interface activation", result);
+    result = ker_native_configure_vlans(index, (int)mtu, getenv("KER_NATIVE_VLANS"));
+    if (result) fail("VLAN configuration", result);
     const char *address6_text = getenv("KER_NATIVE_ADDRESS6");
     if (address6_text) {
         char text[INET6_ADDRSTRLEN + 5];
