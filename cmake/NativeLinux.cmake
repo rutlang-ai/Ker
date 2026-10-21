@@ -216,6 +216,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-launcher-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_config.py")
     set_tests_properties(native-fstack-launcher-config PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-config-lifecycle
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_lifecycle.py")
+    set_tests_properties(native-fstack-config-lifecycle PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
     add_test(NAME native-linux-fingerprint-stale-inputs

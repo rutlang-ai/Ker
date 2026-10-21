@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 117 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 16 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 237 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 125 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 227 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -437,3 +437,16 @@ DPDK VLAN stripping/filter offload 保持关闭，tag/demux 属于原始 Linux�
 迁移 `test_ff_load_config_dual_vlan` 与 `test_ff_load_config_vlan_vip_addr` 两个场景，
 当前清单 122 adapted / 15 partial / 233 blocked / 8 architecture-specific / 55 harness-only。
 本批仅验收 IPv4 单层 802.1Q，未实现每 VLAN 独立网关、QinQ、IPv6 VLAN、热变更或硬件 VLAN offload。
+
+## 配置加载边界与恢复
+
+`native-fstack-config-lifecycle` 通过实际 Ker loader 验证最小配置、空文件/无 DPDK
+节、CLI 覆盖与 EAL 引号、缺失文件在库解析前拒绝、全部受支持配置节，以及
+成功/失败交替加载后的状态隔离。8 个测试均为配置层证据，不运行 NIC 或内核。
+
+本批新增 3 项场景适配和 3 项部分覆盖。固定源中名为
+`test_vlan_cfg_handler_isolated` 的用例实际验证不存在的配置文件路径，
+映射按函数体而非名称建立。F-Stack 忽略未知节；Ker 严格拒绝，故仍为 partial。
+F-Stack 的完整 DPDK 字段、KNI/FreeBSD/bond/RSS/reload 配置未因此变为支持。
+重复键测试明确验证 Ker 拒绝重复键；上游的 last-value-wins 用例仍 blocked。
+多次加载不串状态不等同于 allocator 泄漏检测或热重载能力。

@@ -16,6 +16,7 @@ FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存�
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| native-fstack-config-lifecycle | test_ff_config.c 的 6 项配置加载场景 | 8 个独立检查验证 CLI/INI、缺失文件和加载隔离；3 项适配、3 项部分覆盖，未知节/完整 schema 差异保留。仅配置层证据，不计 NIC/内核互通 |
 | native-fstack-launcher-config / native-fstack-launcher-config-interop | test_ff_ini_parser.c：18 项场景适配，1 项多行部分覆盖 | 实际 launcher 的标准库 INI 解析、类型校验、CLI 覆盖和配置文件相对路径；真实 DPDK/原始 Linux TCP 双角色及日志/capture 验证。不是 F-Stack config schema/callback ABI 兼容层。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-worker-log / native-fstack-worker-log-interop | test_ff_log.c 的 13 项场景 | 真实 DPDK 日志文件、追加、实例文件名、流切换、级别过滤、格式与返回值；检查 flush/close 失败。Ker 使用自身分类，不模拟 FreeBSD 分类；独立 Linux TCP 对端验证实际 worker 和 launcher 错误传播。需 KER_WITH_NATIVE_TCP=ON |
 | native-fstack-thread-runtime | test_ff_pthread_create_arg_passed / test_ff_pthread_create_malloc_failure；basic / join_retval 部分覆盖 | LKL 真实线程、参数和分配失败，扩展验证 TLS/析构/回收、信号量和互斥；真实 Linux 启停确认线程回调被调用。FreeBSD pcurthread 继承和返回值槽仍未迁移。需 KER_WITH_NATIVE_TCP=ON |

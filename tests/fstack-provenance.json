@@ -1143,6 +1143,21 @@
         "native-fstack-launcher-config"
       ],
       "adaptation": "Ker [vlan.ID] addresses / --vlan ID=IPv4/PREFIX,... configure original Linux 802.1Q children via rtnetlink, not F-Stack vlan_cfgs or DPDK VLAN stripping/filter offloads. Real DPDK net_tap and independent host VLAN interfaces exercise VLAN100/200 and three additional VIPs on VLAN100 using device-bound TCP/UDP sockets. Full 1518-byte captures verify both tags, IPv4/UDP checksums, no fragmentation and negative VLAN200/300/untagged probes before valid UDP; IP_PKTINFO verifies the Linux child interface and local destination. CLI replacement, strict invalid configuration, ambient environment scrubbing, kernel counters and zero outstanding mbufs are checked. Linux owns VLAN tagging/demultiplexing and weak-host semantics; no QinQ, VLAN-specific gateway, IPv6 VLAN, VLAN hardware-offload or hardware qualification claim."
+    },
+    "native-fstack-config-lifecycle": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_valid_minimal_ini",
+        "test_ff_load_config_no_dpdk_section",
+        "test_ff_load_config_argv_override",
+        "test_vlan_cfg_handler_isolated",
+        "test_ff_load_config_unknown_section",
+        "test_ff_load_config_all_sections"
+      ],
+      "ker_ctests": [
+        "native-fstack-config-lifecycle"
+      ],
+      "adaptation": "Eight production-loader checks cover minimal typed settings/defaults, empty/network-only INI, CLI precedence with quoted EAL, missing-file subprocess rejection before library setup, strict unknown-section rejection/recovery, the supported Ker section subset, repeated successful/failed load isolation, and strict duplicate-key rejection. No mocks or upstream edits. No worker or kernel is started by this CTest: these are configuration parser/lifecycle observations, not networking passes, allocator leak proofs, F-Stack global-struct ABI, secondary-process support or reload generations. Minimal/all-section/unknown-section source cases remain partial with explicit remaining fields; duplicate-key last-value-wins is not migrated and its source record remains blocked."
     }
   }
 }
