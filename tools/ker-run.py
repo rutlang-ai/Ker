@@ -46,6 +46,20 @@ def vip_addresses(text):
     return [ipaddress.IPv4Interface(item.strip()) for item in text.split(',')] if text.strip() else []
 
 
+def vlan_setting(text):
+    tag, separator, addresses = text.partition('=')
+    if not separator or not tag.isascii() or not tag.isdecimal() or not 1 <= int(tag) <= 4094:
+        raise ValueError('VLAN requires ID=IPv4/PREFIX[,IPv4/PREFIX...] with ID 1..4094')
+    values = vip_addresses(addresses)
+    if not 1 <= len(values) <= 8:
+        raise ValueError('VLAN requires 1..8 IPv4 addresses')
+    if any(value.ip.is_unspecified or value.ip.is_multicast for value in values):
+        raise ValueError('VLAN addresses must be unicast and nonzero')
+    if len({value.ip for value in values}) != len(values):
+        raise ValueError('duplicate VLAN address')
+    return int(tag), values
+
+
 def sysctl_setting(text):
     key, separator, value = text.partition('=')
     key, value = key.strip(), value.strip()
@@ -56,7 +70,7 @@ def sysctl_setting(text):
     return key, value
 
 
-CONFIG_DEFAULTS = dict(mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -82,6 +96,11 @@ def read_configuration(stream, directory, source='<stream>'):
         raise ValueError('DEFAULT inheritance is unsupported')
     values = {}
     for section in ini.sections():
+        if section.startswith('vlan.'):
+            if set(ini[section]) != {'addresses'}:
+                raise ValueError('VLAN section requires only addresses')
+            values.setdefault('vlans', []).append(vlan_setting(section[5:] + '=' + ini[section]['addresses']))
+            continue
         if section == 'sysctl':
             values['sysctls'] = [sysctl_setting(name + '=' + text)
                                  for name, text in ini.items(section, raw=True)]
@@ -116,6 +135,8 @@ def parse_arguments(argv=None):
         help='additional native IPv6 address/prefix; enables multicast reception for neighbor discovery')
     parser.add_argument('--vip-address', dest='vip_addresses', action='append', type=ipaddress.IPv4Interface,
         help='additional IPv4 address/prefix; repeat up to 32 times; replaces INI vip_addresses')
+    parser.add_argument('--vlan', dest='vlans', action='append', type=vlan_setting,
+        help='802.1Q ID=IPv4/PREFIX[,IPv4/PREFIX...]; repeat up to 16 VLANs; replaces INI VLAN sections')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
     parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
@@ -179,6 +200,11 @@ def parse_arguments(argv=None):
     addresses = [args.address.ip] + [value.ip for value in args.vip_addresses]
     if len(set(addresses)) != len(addresses):
         parser.error('--vip-address must not duplicate the primary or another VIP address')
+    if len(args.vlans) > 16 or len({tag for tag, _ in args.vlans}) != len(args.vlans):
+        parser.error('--vlan requires at most 16 unique VLAN IDs')
+    vlan_ips = [value.ip for _, entries in args.vlans for value in entries]
+    if len(set(addresses + vlan_ips)) != len(addresses + vlan_ips):
+        parser.error('--vlan addresses must not duplicate primary, VIP, or other VLAN addresses')
     if args.mbuf_mode not in ('large', 'scatter'):
         parser.error('--mbuf-mode must be large or scatter')
     if not 1280 <= args.mtu <= 9000:
@@ -266,6 +292,10 @@ def main():
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
+        env.pop('KER_NATIVE_VLANS', None)
+        if args.vlans:
+            env['KER_NATIVE_VLANS'] = ';'.join(str(tag) + '=' + ','.join(map(str, addresses))
+                                               for tag, addresses in args.vlans)
         env.pop('KER_NATIVE_GATEWAY6', None)
         if args.gateway6 is not None:
             env['KER_NATIVE_GATEWAY6'] = str(args.gateway6)

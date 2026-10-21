@@ -1131,6 +1131,18 @@
         "native-fstack-mbuf-scatter"
       ],
       "adaptation": "Original source exercises ff_dpdk_if_send(total=4096) with real DPDK and synthetic FreeBSD copydata input. Ker adapts the multisegment transmit scenario at its Ethernet packet-channel boundary: actual original DPDK pool/chain APIs preserve complete 4096- and 9014-byte inputs; exhausted-pool partial allocation is reclaimed. Real net_tap/native Linux jumbo UDP traffic proves the transmitted multisegment packet reaches an independent host peer in both native roles, and received chains are flattened intact. No FreeBSD mbuf ABI, checksum/TSO offload or upstream send implementation is claimed."
+    },
+    "native-fstack-vlan": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dual_vlan",
+        "test_ff_load_config_vlan_vip_addr"
+      ],
+      "ker_ctests": [
+        "native-fstack-vlan",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Ker [vlan.ID] addresses / --vlan ID=IPv4/PREFIX,... configure original Linux 802.1Q children via rtnetlink, not F-Stack vlan_cfgs or DPDK VLAN stripping/filter offloads. Real DPDK net_tap and independent host VLAN interfaces exercise VLAN100/200 and three additional VIPs on VLAN100 using device-bound TCP/UDP sockets. Full 1518-byte captures verify both tags, IPv4/UDP checksums, no fragmentation and negative VLAN200/300/untagged probes before valid UDP; IP_PKTINFO verifies the Linux child interface and local destination. CLI replacement, strict invalid configuration, ambient environment scrubbing, kernel counters and zero outstanding mbufs are checked. Linux owns VLAN tagging/demultiplexing and weak-host semantics; no QinQ, VLAN-specific gateway, IPv6 VLAN, VLAN hardware-offload or hardware qualification claim."
     }
   }
 }

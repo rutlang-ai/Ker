@@ -28,7 +28,7 @@
 /* This process transports Ethernet frames only. All socket/TCP behavior runs
  * in the separate imported Linux instance in the application process. */
 #define BURST 32
-#define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN)
+#define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)
 static volatile sig_atomic_t stopping;
 static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
 static int number(const char *text)
@@ -38,6 +38,13 @@ static int number(const char *text)
     long value = strtol(text, &end, 10);
     if (errno || *end || value < 0 || value > INT32_MAX) return -1;
     return (int)value;
+}
+static bool frame_size_supported(const unsigned char *bytes, size_t length, int mtu)
+{
+    if (length < RTE_ETHER_HDR_LEN) return false;
+    bool tagged = bytes[12] == 0x81 && bytes[13] == 0x00;
+    size_t header = RTE_ETHER_HDR_LEN + (tagged ? RTE_VLAN_HLEN : 0);
+    return length >= header && length <= (size_t)mtu + header;
 }
 static bool metadata_supported(const struct rte_mbuf *packet)
 {
@@ -152,7 +159,7 @@ int main(int argc, char **argv)
         uint16_t required_segments = ker_worker_scatter_required_segments((uint32_t)mtu);
         if (!ker_worker_scatter_limits_support(required_segments,
                 info.tx_desc_lim.nb_seg_max, info.tx_desc_lim.nb_mtu_seg_max)) {
-            fprintf(stderr, "ker: scatter MTU %d requires %u TX segments, ethdev limits are nb_seg_max=%u nb_mtu_seg_max=%u\n",
+            fprintf(stderr, "ker: scatter MTU %d with VLAN header requires %u TX segments, ethdev limits are nb_seg_max=%u nb_mtu_seg_max=%u\n",
                 mtu, required_segments, info.tx_desc_lim.nb_seg_max,
                 info.tx_desc_lim.nb_mtu_seg_max);
             goto cleanup;
@@ -166,7 +173,7 @@ int main(int argc, char **argv)
     uint16_t rx_desc = 256, tx_desc = 256;
     if (rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) goto device_error;
     pool = rte_pktmbuf_pool_create("ker_native_packets", 4095, 0, 0,
-        (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE : RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM)), rte_socket_id());
+        (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE : RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM)), rte_socket_id());
     if (!pool) { fprintf(stderr, "ker packet pool: %s\n", rte_strerror(rte_errno)); goto cleanup; }
     if (rte_eth_rx_queue_setup(port, 0, rx_desc, rte_socket_id(), NULL, pool) ||
         rte_eth_tx_queue_setup(port, 0, tx_desc, rte_socket_id(), NULL) ||
@@ -236,7 +243,7 @@ int main(int argc, char **argv)
                         break;
                     }
                     if (count < (ssize_t)(sizeof(struct ker_packet_header) + RTE_ETHER_HDR_LEN) ||
-                        count > (ssize_t)(sizeof(struct ker_packet_header) + mtu + RTE_ETHER_HDR_LEN)) { tx_dropped++; continue; }
+                        count > (ssize_t)(sizeof(struct ker_packet_header) + mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)) { tx_dropped++; continue; }
                     struct ker_packet_header header;
                     memcpy(&header, tx_bytes, sizeof(header));
                     if (header.flags || header.gso_type || header.header_length || header.gso_size ||
@@ -245,6 +252,9 @@ int main(int argc, char **argv)
                         status = 1; break;
                     }
                     tx_length = (size_t)count - sizeof(header);
+                    if (!frame_size_supported(tx_bytes + sizeof(header), tx_length, mtu)) {
+                        tx_length = 0; tx_dropped++; continue;
+                    }
                 }
                 pending_tx = ker_worker_mbuf_from_bytes(pool, tx_bytes + sizeof(struct ker_packet_header), tx_length);
                 if (!pending_tx) { tx_retries++; break; }
@@ -295,9 +305,9 @@ int main(int argc, char **argv)
             struct rte_mbuf *packet = rx[rx_index];
             uint32_t length = packet->pkt_len;
             const void *bytes = NULL;
-            if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN && metadata_supported(packet))
+            if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && metadata_supported(packet))
                 bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
-            if (bytes) {
+            if (bytes && frame_size_supported(bytes, length, mtu)) {
                 struct ker_packet_header header = {0};
                 struct iovec vectors[] = {{&header, sizeof(header)}, {(void *)bytes, length}};
                 struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};

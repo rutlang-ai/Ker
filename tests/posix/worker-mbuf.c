@@ -16,19 +16,25 @@ static void test_scatter_rx_limits(void)
     info.max_rx_pktlen = 9022;
     CHECK(ker_worker_rx_eth_overhead(&info) == 22);
     info.max_rx_pktlen = 9018;
-    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN);
     info.max_rx_pktlen = 9010;
-    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN);
+    info.max_rx_pktlen = 9024;
+    CHECK(ker_worker_rx_eth_overhead(&info) == 24);
     info.max_rx_pktlen = 3;
-    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN);
     info.max_mtu = UINT16_MAX;
     info.max_rx_pktlen = UINT32_MAX;
-    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN);
 
-    uint32_t overhead = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+    uint32_t overhead = RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN;
     CHECK(ker_worker_rx_required_segments(payload - overhead, overhead) == 1);
+    CHECK(ker_worker_rx_required_segments(2026, overhead) == 1);
     uint64_t required = ker_worker_rx_required_segments(payload - overhead + 1, overhead);
+    CHECK(ker_worker_rx_required_segments(2027, overhead) == 2);
     CHECK(required == 2);
+    CHECK(ker_worker_rx_required_segments(2034, overhead) == 2);
+    CHECK(ker_worker_scatter_required_segments(2034) == 2);
     CHECK(ker_worker_rx_limits_support(required, 2));
     CHECK(ker_worker_rx_limits_support(required, 0));
     CHECK(ker_worker_rx_limits_support(required, UINT16_MAX));
@@ -41,10 +47,12 @@ static void test_scatter_rx_limits(void)
 static void test_scatter_segment_limits(void)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
-    CHECK(ker_worker_scatter_required_segments(payload - RTE_ETHER_HDR_LEN) == 1);
-    CHECK(ker_worker_scatter_required_segments(payload - RTE_ETHER_HDR_LEN + 1) == 2);
+    CHECK(ker_worker_scatter_required_segments(payload - RTE_ETHER_HDR_LEN - RTE_VLAN_HLEN) == 1);
+    CHECK(ker_worker_scatter_required_segments(payload - RTE_ETHER_HDR_LEN - RTE_VLAN_HLEN + 1) == 2);
+    CHECK(ker_worker_scatter_required_segments(2034) == 2);
     uint16_t required = ker_worker_scatter_required_segments(9000);
-    CHECK(required == (9014 / payload + (9014 % payload != 0)));
+    CHECK(required == 5);
+    CHECK(required == (9018 / payload + (9018 % payload != 0)));
     CHECK(ker_worker_scatter_limits_support(required, required, required));
     CHECK(ker_worker_scatter_limits_support(required, 0, required));
     CHECK(ker_worker_scatter_limits_support(required, required, 0));
