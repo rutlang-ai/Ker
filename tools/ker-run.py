@@ -72,10 +72,10 @@ def sysctl_setting(text):
 
 def ephemeral_ports(text):
     if not re.fullmatch(r'[0-9]{1,5}-[0-9]{1,5}', text):
-        raise ValueError('ephemeral ports require FIRST-LAST in 1..65535')
+        raise ValueError('ephemeral ports require FIRST-LAST in 1024..65535')
     first, last = map(int, text.split('-'))
-    if not 1 <= first <= last <= 65535:
-        raise ValueError('ephemeral ports require 1 <= FIRST <= LAST <= 65535')
+    if not 1024 <= first <= last <= 65535:
+        raise ValueError('ephemeral ports require 1024 <= FIRST <= LAST <= 65535')
     return first, last
 
 

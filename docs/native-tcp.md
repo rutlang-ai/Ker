@@ -446,7 +446,10 @@ INI 使用 `[vlan.ID] addresses=...`；CLI 整体替换 INI VLAN 列表。父接
 
 `[network] ephemeral_ports=40000-40007` 或 `--ephemeral-ports 40000-40007`
 设置应用私有 Linux 的 `net.ipv4.ip_local_port_range`，同时作用于 TCP/UDP 和
-IPv4/IPv6 自动端口分配。格式为 `FIRST-LAST`，端点在 1..65535 且不得倒置。
+IPv4/IPv6 自动端口分配。格式为 `FIRST-LAST`，端点在 1024..65535 且不得倒置。
 CLI 覆盖 INI；不指定则保留内核默认。不能同时通过 `[sysctl]`/`--sysctl` 指定
 同一 key。该设置和其他网络 sysctl 一样只作用于本实例，受原始 Linux 的端口
 保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。
+
+专用范围选项采用默认非特权端口下限 1024，即使手动降低 `ip_unprivileged_port_start`
+也不扩展专用选项范围；更复杂的低端口策略应直接按内核要求配置通用 sysctl。

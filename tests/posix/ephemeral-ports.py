@@ -54,7 +54,9 @@ def main():
         ('override', '[network]\nephemeral_ports=40000-40007\n',
          ['--ephemeral-ports', '41000-41007'], 41000, 41007, 0),
         ('reserved', '[network]\nephemeral_ports=40000-40007\n',
-         ['--sysctl', 'net.ipv4.ip_local_reserved_ports=40000'], 40000, 40007, 40000)]
+         ['--sysctl', 'net.ipv4.ip_local_reserved_ports=40000'], 40000, 40007, 40000),
+        ('minimum', '', ['--ephemeral-ports', '1024-1024'], 1024, 1024, 0),
+        ('maximum', '', ['--ephemeral-ports', '65535-65535'], 65535, 65535, 0)]
     with tempfile.TemporaryDirectory(prefix='ker-ephemeral-') as directory:
         root = Path(directory)
         for index, (name, text, options, low, high, reserved) in enumerate(cases):

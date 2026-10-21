@@ -30,14 +30,16 @@ class ConfigTests(unittest.TestCase):
             args = launcher.parse_arguments([*base, '--config', str(config), '--ephemeral-ports',
                 '41000-41007', '--', '/bin/true'])
             self.assertEqual(args.sysctls['net.ipv4.ip_local_port_range'], '41000 41007')
-        for text, expected in [('1-1', (1, 1)), ('1-65535', (1, 65535)), ('65535-65535', (65535, 65535))]:
+        for text, expected in [('1024-1024', (1024, 1024)), ('1024-65535', (1024, 65535)), ('65535-65535', (65535, 65535))]:
             self.assertEqual(launcher.ephemeral_ports(text), expected)
-        for value in ('0-4', '4-3', '1-65536', '-1-3', '1', '1:3', '1-2-3', 'x-y', ' 1-2', '1-2\n'):
+        for value in ('0-4', '1-1', '1023-1024', '4-3', '1-65536', '-1-3', '1', '1:3', '1-2-3', 'x-y', ' 1-2', '1-2\n'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 launcher.ephemeral_ports(value)
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / 'ports.ini'
             for text, options in [('[network]\nephemeral_ports=4-3\n', []),
+                    ('[network]\nephemeral_ports=1-1\n', []),
+                    ('', ['--ephemeral-ports', '1-1']),
                     ('', ['--ephemeral-ports', '4-3']),
                     ('[network]\nephemeral_ports=40000-40007\n[sysctl]\nnet.ipv4.ip_local_port_range=41000 41007\n', []),
                     ('', ['--ephemeral-ports', '40000-40007', '--sysctl', 'net.ipv4.ip_local_port_range=41000 41007'])]:
