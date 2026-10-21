@@ -610,3 +610,11 @@ CLI 覆盖 INI；允许 1..2147483647（正 signed-int 范围），非法值在�
 CLI 双向覆盖，核对策略、分配目标和 pool 元数据，并要求独立宿主 TCP/UDP 回显、
 原始 Linux 计数、控制停止与零 outstanding mbuf。测试环境只有一个 DPDK NUMA 节点，
 未认证跨节点放置、内存回退或性能；不修改 Linux/LKL/DPDK/F-Stack 上游代码。
+
+
+`native-fstack-startup-failures` 还覆盖直接接口激活错误。测试专用、不安装的
+`ker-posix-if-up-failure` 与生产库使用相同适配器源代码和原始 liblkl，额外链接
+`--wrap=lkl_if_up`；成功控制仍调用真实函数。loopback 失败必须阻止设备激活，设备失败
+必须紧随真实 loopback 成功，且均在 native READY/main 前退出 125。每个实例验证实际
+worker/EAL 清理与零 outstanding。生产 `libker-posix` 没有测试环境变量或故障入口。
+该证据是测试注入返回错误，不认证自然硬件失败或 F-Stack 初始化 ABI。

@@ -242,11 +242,26 @@ if(BUILD_TESTING)
     add_library(ker-startup-failure-probe SHARED tests/posix/startup-failure-probe.c)
     target_compile_options(ker-startup-failure-probe PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-startup-failure-probe PRIVATE ${CMAKE_DL_LIBS})
+    # Build the same adaptation layer with a link-time failure wrapper. This
+    # target is test-only and is never installed or used by the production CLI.
+    get_target_property(ker_posix_sources ker-posix SOURCES)
+    add_library(ker-posix-if-up-failure SHARED ${ker_posix_sources} tests/posix/interface-up-failure.c)
+    target_include_directories(ker-posix-if-up-failure PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-posix-if-up-failure SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_definitions(ker-posix-if-up-failure PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+    target_compile_features(ker-posix-if-up-failure PRIVATE c_std_11)
+    target_compile_options(ker-posix-if-up-failure PRIVATE -Wall -Wextra -Werror)
+    target_link_options(ker-posix-if-up-failure PRIVATE -Wl,--no-undefined -Wl,--wrap=lkl_if_up
+        "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    set_property(TARGET ker-posix-if-up-failure APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    target_link_libraries(ker-posix-if-up-failure PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
     add_test(NAME native-fstack-startup-failures
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/startup-failures.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-startup-interface-test>"
-            --probe "$<TARGET_FILE:ker-startup-failure-probe>")
+            --probe "$<TARGET_FILE:ker-startup-failure-probe>"
+            --failure-library "$<TARGET_FILE:ker-posix-if-up-failure>")
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-ephemeral-ports-test tests/posix/ephemeral-ports.c)
     target_compile_options(ker-ephemeral-ports-test PRIVATE -Wall -Wextra -Werror)
