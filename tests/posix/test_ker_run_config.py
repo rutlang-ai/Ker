@@ -19,6 +19,25 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_ipv6_gateway_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).gateway6)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'gateway.ini'
+            path.write_text('[network]\naddress6=2001:db8:1::2/64\ngateway6=2001:db8:1::1\n')
+            args = launcher.parse_arguments(base + ['--config', str(path), '--', '/bin/true'])
+            self.assertEqual(str(args.gateway6), '2001:db8:1::1')
+            args = launcher.parse_arguments(base + ['--config', str(path), '--gateway6', 'fe80::1', '--', '/bin/true'])
+            self.assertEqual(str(args.gateway6), 'fe80::1')
+        for options in (['--gateway6', '2001:db8::1'], *(
+                ['--address6', '2001:db8::2/64', '--gateway6', address]
+                for address in ('192.0.2.1', '::', '::1', 'ff02::1', '::ffff:192.0.2.1', 'fe80::1%eth0'))):
+            result = subprocess.run([sys.executable, str(SOURCE), *base, *options,
+                '--library', '/missing-ker-library', '--', '/bin/true'],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
     def test_ipv6_address_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).address6)

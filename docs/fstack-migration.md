@@ -350,10 +350,40 @@ Ker 现在支持 `[network] address6` / `--address6 ADDRESS/PREFIX`，CLI 覆盖
 验证 IPv6 TCP/UDP 的双向字节一致、源/目的地址、未配置地址的 bind 拒绝、
 宿主 NDP 解析到 worker MAC、IPv4 TCP 同时工作，以及原生 TCP 计数和零未释放 mbuf。
 另以宿主已占用的 IPv6 地址验证 Linux DAD 拒绝，应用 main 不执行、worker 正常清理。
-IPv6 默认网关、跨网段路由、VIP/VLAN 与 RA/SLAAC 部署尚未验收。
+IPv6 VIP/VLAN 与 RA/SLAAC 部署尚未验收；默认网关和跨网段验证见下文。
 
 固定上游 `valid_inet6.ini` 包含 IPv6 地址、前缀、网关、VIP 和 VLAN；
 但 `test_ff_load_config_inet6_fixture_ignored` 测试的是 **未启用 INET6 时忽略配置**，
 不能用上述启用 IPv6 的互通测试替代。因此该源项仍为 blocked，当前 117 项 adapted、
 16 项 partial、237 项 blocked 的计数不变。新运行测试是相关 IPv6 功能证据，
 不声明已迁移 FreeBSD 条件编译语义或完整 fixture。
+
+## IPv6 默认网关与跨网段互通
+
+`[network] gateway6` / `--gateway6` 支持 global 或 link-local IPv6 下一跳，
+要求配置 `address6`，CLI 覆盖 INI。省略时不创建默认路由，并清除继承的内部网关变量。
+地址语法及前置条件错误在启动前返回 2；网关不在链路等内核路由校验错误返回 125，
+应用 main 不执行。Ker 的 rtnetlink 适配层指定原生接口索引并等待 Linux ACK，
+不使用 ONLINK 绕过内核规则、不建立自有协议实现，也不修改上游代码。
+
+`native-fstack-ipv6-route` 使用原生 Linux、独立宿主 Linux 路由器和第三个远端
+网络命名空间；两个子网分别为 `2001:db8:1::/64` 和 `2001:db8:2::/64`。
+真实 DPDK net_tap 链路分别测试 INI global 网关与 CLI 覆盖成 link-local 网关。
+双方验证 TCP/UDP 字节和源地址；UDP 接收端检查 hop limit 63（发送端设置 64），
+同时要求路由器 IPv6 转发计数增加、原生 TCP 计数有效、worker 未释放 mbuf 为零。
+额外验证无默认网关时 TCP/UDP 返回 ENETUNREACH，以及 off-link 网关的启动清理。
+
+固定 F-Stack IPv6 fixture 的网关功能已有上述相关证据；
+`test_ff_load_config_inet6_fixture_ignored` 仍保留 blocked，因为它的条件编译忽略语义、
+IPv6 VIP/VLAN 等未迁移。清单计数仍为 117 adapted、16 partial、237 blocked。
+尚未验收路由更新/故障切换、RA/SLAAC、IPv6 VIP/VLAN 和真实物理网卡。
+
+## UDP 批量功能验收
+
+公开 socket 的 IPv4/IPv6 合同、外部 IPv6 ancillary/错误队列/分片/分段/ASM/SSM、
+IPv4 SSM 和 limited broadcast、真实路由器 PMTU、原始错包/倒序分片/重组超时，
+现集中在 [UDP 验收矩阵](udp-acceptance.md) 和 `tools/validate-udp.py`。
+25 个 UDP CTest 必须全部登记并实际执行；机器报告区分功能通过、已确认不支持与未验收。
+宿主信号中断 native 阻塞 recvfrom 仍不兼容，专用边界检查不得算为兼容通过。
+原始 Linux 的 IPv6 UDP/分片/重组计数补入诊断，作为真实数据路径的证据。
+这些是 Linux 扩展验收，不增加固定 F-Stack 的 adapted 计数。

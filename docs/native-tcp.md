@@ -37,8 +37,15 @@ CLI 覆盖 INI；拒绝带 scope 的地址、未指定地址、多播、loopback
 
 `native-fstack-ipv6-interop` 用真实 DPDK net_tap 与独立宿主 peer 验证 IPv6 TCP/UDP
 双向收发、显式源地址绑定、NDP 得到的 MAC、同次运行中的 IPv4 TCP，以及重复地址拒绝。
-只覆盖同链路单个 IPv6 地址；IPv4 `--address` 仍必需。IPv6 默认网关、跨网段路由、
-IPv6 VIP/VLAN、RA/SLAAC 部署及物理网卡过滤尚未验收，能力查询位保持既有定义。
+IPv4 `--address` 仍必需。可选 `[network] gateway6` / `--gateway6` 配置默认网关，
+要求同时配置 `address6`；支持 global 和不带 scope 的 link-local 下一跳。CLI 覆盖 INI。
+Ker 只向私有原始 Linux 的 main 路由表发送带明确出接口的 rtnetlink 请求，内核验证
+网关可达性；非法下一跳导致启动失败，不使用 ONLINK 标志绕过校验。宿主路由不变。
+`native-fstack-ipv6-route` 在原生内核、独立 Linux 路由器、远端 Linux 网络命名空间
+之间验证跨网段 TCP/UDP 双向收发。UDP 两端检查 hop limit 从 64 减为 63，路由器
+转发计数必须增加；另验证省略网关不自动安装默认路由、非法 off-link 网关阻止应用启动。
+IPv6 VIP/VLAN、RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤尚未验收，
+能力查询位保持既有定义。
 
 ## 可复现构建
 
@@ -299,7 +306,7 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 
 ## 首版兼容范围
 
-支持 x86_64 Linux/glibc 的动态链接应用，IPv4 TCP、常用 socket option、普通及 vectored/message I/O、dup/fcntl/ioctl/fstat、poll/select/epoll 及上述信号掩码等待接口。宿主文件等非网络 fd 继续走宿主。其他网络协议未作为本次交付验收范围，内核已启用 IPv6，用于已验证的 IPv6 loopback 和 IPv4-mapped 双栈 TCP socket。同链路 IPv6 Ethernet 地址和 NDP 接收现已通过上面的 net_tap 验收；IPv6 默认路由及跨网段部署尚未验收。
+支持 x86_64 Linux/glibc 的动态链接应用，IPv4 TCP、常用 socket option、普通及 vectored/message I/O、dup/fcntl/ioctl/fstat、poll/select/epoll 及上述信号掩码等待接口。宿主文件等非网络 fd 继续走宿主。其他网络协议未作为本次交付验收范围，内核已启用 IPv6，用于已验证的 IPv6 loopback 和 IPv4-mapped 双栈 TCP socket。同链路 IPv6 Ethernet 地址和 NDP 接收现已通过上面的 net_tap 验收；IPv6 默认路由与单跳跨网段转发已通过上述独立路由器验收；路由更新/故障切换等扩展仍未验收。
 
 以下边界尚未兼容，迁移应用时必须核对：
 

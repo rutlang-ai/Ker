@@ -63,11 +63,11 @@ static struct sockaddr_in receive(int fd, int ep, struct sockaddr_in expected_pe
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 5);
+    CHECK(argc == 5 || (argc == 6 && !strcmp(argv[5], "limited")));
     int server = !strcmp(argv[1], "server"); CHECK(server || !strcmp(argv[1], "client"));
     struct in_addr local, broadcast;
     CHECK(inet_pton(AF_INET, argv[2], &local) == 1);
-    CHECK(inet_pton(AF_INET, "198.18.0.255", &broadcast) == 1);
+    CHECK(inet_pton(AF_INET, argc == 6 ? "255.255.255.255" : "198.18.0.255", &broadcast) == 1);
     struct sockaddr_in peer = {.sin_family = AF_INET};
     CHECK(inet_pton(AF_INET, argv[3], &peer.sin_addr) == 1);
     char *end; long port = strtol(argv[4], &end, 10); CHECK(!*end && port > 0 && port <= 65535);

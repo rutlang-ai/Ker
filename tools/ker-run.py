@@ -56,12 +56,12 @@ def sysctl_setting(text):
     return key, value
 
 
-CONFIG_DEFAULTS = dict(sysctls=(), address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
-    'network': {'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
+    'network': {'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
@@ -122,6 +122,8 @@ def parse_arguments(argv=None):
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
     parser.add_argument('--sysctl', dest='sysctls', action='append', type=sysctl_setting,
         help='Linux net.* KEY=VALUE; repeat up to 32 keys; overrides matching INI [sysctl] keys')
+    parser.add_argument('--gateway6', type=ipaddress.IPv6Address,
+        help='native IPv6 default gateway on this interface; requires --address6')
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--lcore-mask', help='nonzero hexadecimal DPDK lcore mask; conflicts with EAL -c/-l/--lcores')
     parser.add_argument('--port', help='DPDK ethdev name')
@@ -166,6 +168,10 @@ def parse_arguments(argv=None):
             args.address6.ip.is_unspecified or args.address6.ip.is_multicast or
             args.address6.ip.is_loopback or args.address6.ip.ipv4_mapped is not None):
         parser.error('--address6 requires an unscoped native unicast IPv6 interface address')
+    if args.gateway6 is not None and (args.address6 is None or '%' in str(args.gateway6) or
+            args.gateway6.is_unspecified or args.gateway6.is_multicast or args.gateway6.is_loopback or
+            args.gateway6.ipv4_mapped is not None):
+        parser.error('--gateway6 requires --address6 and an unscoped unicast IPv6 gateway')
     args.vip_addresses = list(args.vip_addresses)
     if len(args.vip_addresses) > 32:
         parser.error('--vip-address supports at most 32 additional addresses')
@@ -257,6 +263,9 @@ def main():
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
+        env.pop('KER_NATIVE_GATEWAY6', None)
+        if args.gateway6 is not None:
+            env['KER_NATIVE_GATEWAY6'] = str(args.gateway6)
         env.pop('KER_NATIVE_ADDRESS6', None)
         if args.address6 is not None:
             env['KER_NATIVE_ADDRESS6'] = str(args.address6)

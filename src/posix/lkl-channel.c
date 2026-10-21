@@ -7,6 +7,7 @@
 #include "host-clock.h"
 #include "host-entropy.h"
 #include "realtime-clock.h"
+#include "ipv6-route.h"
 #include "packet-channel.h"
 #include "packet-device.h"
 #include <arpa/inet.h>
@@ -224,6 +225,16 @@ __attribute__((constructor)) static void initialize(void)
         result = lkl_if_set_ipv6(index, &address6, prefix6);
         if (result) fail("IPv6 interface configuration/DAD", result);
     }
+    const char *gateway6_text = getenv("KER_NATIVE_GATEWAY6");
+    if (gateway6_text) {
+        struct in6_addr gateway6;
+        if (!address6_text || inet_pton(AF_INET6, gateway6_text, &gateway6) != 1 ||
+            IN6_IS_ADDR_UNSPECIFIED(&gateway6) || IN6_IS_ADDR_MULTICAST(&gateway6) ||
+            IN6_IS_ADDR_LOOPBACK(&gateway6) || IN6_IS_ADDR_V4MAPPED(&gateway6))
+            fail("IPv6 gateway address", -EINVAL);
+        result = ker_native_set_ipv6_gateway(index, &gateway6);
+        if (result) fail("IPv6 default route", result);
+    }
     const char *gateway = getenv("LKL_HIJACK_NET_GATEWAY");
     if (gateway) {
         if (inet_pton(AF_INET, gateway, &address) != 1) fail("gateway address", -EINVAL);
@@ -255,16 +266,23 @@ __attribute__((destructor)) static void finalize(void)
     struct ker_native_counters counters;
     int diagnosed = ker_native_counters(&counters);
     if (!diagnosed) {
-        char json[1024];
+        char json[2048];
         int length = snprintf(json, sizeof(json), "KER_NATIVE_STATS {\"active_opens\":%llu,\"passive_opens\":%llu,"
             "\"retransmitted_segments\":%llu,\"zero_window_probes\":%llu,\"out_of_order_queued\":%llu,"
             "\"udp_in_datagrams\":%llu,\"udp_out_datagrams\":%llu,\"udp_in_errors\":%llu,\"udp_no_ports\":%llu,"
+            "\"udp6_in_datagrams\":%llu,\"udp6_out_datagrams\":%llu,\"udp6_in_errors\":%llu,\"udp6_no_ports\":%llu,"
+            "\"ip6_frag_ok\":%llu,\"ip6_frag_creates\":%llu,\"ip6_reasm_ok\":%llu,\"ip6_reasm_fails\":%llu,\"ip6_reasm_timeouts\":%llu,"
             "\"ip_frag_ok\":%llu,\"ip_frag_creates\":%llu,\"ip_reasm_ok\":%llu,\"ip_reasm_fails\":%llu,\"tcp_ecn\":%llu}\n",
             (unsigned long long)counters.active_opens, (unsigned long long)counters.passive_opens,
             (unsigned long long)counters.retransmitted_segments, (unsigned long long)counters.zero_window_probes,
             (unsigned long long)counters.out_of_order_queued,
             (unsigned long long)counters.udp_in_datagrams, (unsigned long long)counters.udp_out_datagrams,
             (unsigned long long)counters.udp_in_errors, (unsigned long long)counters.udp_no_ports,
+            (unsigned long long)counters.udp6_in_datagrams, (unsigned long long)counters.udp6_out_datagrams,
+            (unsigned long long)counters.udp6_in_errors, (unsigned long long)counters.udp6_no_ports,
+            (unsigned long long)counters.ip6_frag_ok, (unsigned long long)counters.ip6_frag_creates,
+            (unsigned long long)counters.ip6_reasm_ok, (unsigned long long)counters.ip6_reasm_fails,
+            (unsigned long long)counters.ip6_reasm_timeouts,
             (unsigned long long)counters.ip_frag_ok, (unsigned long long)counters.ip_frag_creates,
             (unsigned long long)counters.ip_reasm_ok, (unsigned long long)counters.ip_reasm_fails,
             (unsigned long long)counters.tcp_ecn);
