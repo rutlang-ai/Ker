@@ -73,6 +73,13 @@ def report(matrix, results, returncode):
                 feature_totals=dict(Counter(feature['status'] for feature in features)))
 
 
+def selected_test_records(registered, names):
+    selected = set(names)
+    records = {test['name']: {'command': test.get('command'), 'properties': test.get('properties', [])}
+               for test in registered['tests'] if test['name'] in selected}
+    return json.dumps(records, sort_keys=True, separators=(',', ':'))
+
+
 def test_artifacts(build, registered, names):
     """Hash every existing local file named by selected CTest commands."""
     build = build.resolve()
@@ -135,9 +142,16 @@ def main():
     build = args.build_dir.resolve()
     output = (args.report or build / 'udp-validation-report.json').resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    matrix = json.loads(args.matrix.read_text())
-    registered = json.loads(subprocess.check_output(['ctest', '--test-dir', str(build), '--show-only=json-v1'], text=True))
+    matrix_bytes = args.matrix.read_bytes()
+    matrix = json.loads(matrix_bytes)
+    show_only = ['ctest', '--test-dir', str(build), '--show-only=json-v1']
+    registered = json.loads(subprocess.check_output(show_only, text=True))
     names = selected_tests(matrix, registered)
+    test_records_before = selected_test_records(registered, names)
+    matrix_digest = hashlib.sha256(matrix_bytes).hexdigest()
+    artifacts_before = test_artifacts(build, registered, names)
+    # A failed rerun must not leave prior success evidence at this destination.
+    output.unlink(missing_ok=True)
     junit = Path(str(output) + '.junit.xml')
     command = ['ctest', '--test-dir', str(build), '--output-on-failure', '--no-tests=error',
                '--output-junit', str(junit), '-R', '^(' + '|'.join(re.escape(name) for name in names) + ')$']
@@ -145,12 +159,21 @@ def main():
     with log_path.open('w') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
     returncode = result.returncode
+    if args.matrix.read_bytes() != matrix_bytes:
+        raise RuntimeError('UDP validation matrix changed while selected CTests were running; refusing report')
+    registered_after = json.loads(subprocess.check_output(show_only, text=True))
+    names_after = selected_tests(matrix, registered_after)
+    if names_after != names or selected_test_records(registered_after, names) != test_records_before:
+        raise RuntimeError('selected CTest registration changed while tests were running; refusing report')
+    artifacts_after = test_artifacts(build, registered_after, names)
+    if artifacts_after != artifacts_before:
+        raise RuntimeError('selected test artifacts changed while CTests were running; refusing report')
     results = junit_results(junit, names)
     summary = report(matrix, results, returncode)
     summary.update(build_dir=str(build),junit=str(junit),log=str(log_path) if log_path else None,
         execution_mode='executed-ctest',
-        matrix_sha256=hashlib.sha256(args.matrix.read_bytes()).hexdigest(),
-        test_artifacts_sha256=test_artifacts(build, registered, names))
+        matrix_sha256=matrix_digest,
+        test_artifacts_sha256=artifacts_before)
     output.write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps({'ctests': dict(Counter(results.values())), 'features': summary['feature_totals'],
                       'automated_checks_passed': summary['automated_checks_passed'],

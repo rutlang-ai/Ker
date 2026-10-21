@@ -141,6 +141,75 @@ class ReportGuards(unittest.TestCase):
                     self.assertIn('fake ctest passed', log_path.read_text())
                     self.assertIn('build/test-app', report['test_artifacts_sha256'])
 
+    def test_matrix_or_binary_drift_during_ctest_rejects_report_and_clears_old_success(self):
+        for drift in ('matrix', 'binary'):
+            with self.subTest(drift=drift), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                build = root / 'build'
+                build.mkdir()
+                matrix = root / 'matrix.json'
+                original_matrix = json.dumps({'scope': 'fixture', 'features': [
+                    {'id': 'one', 'kind': 'functional', 'ctests': ['test-a'], 'note': 'fixture'}]})
+                matrix.write_text(original_matrix)
+                app = build / 'test-app'
+                app.write_text('before')
+                registered = {'tests': [{'name': 'test-a', 'command': [str(app)],
+                    'properties': [{'name': 'LABELS', 'value': ['native-udp']}]}]}
+                report_path = root / 'report.json'
+                report_path.write_text('{"automated_checks_passed": true}')
+
+                def mutate_during_ctest(command, stdout, stderr):
+                    junit = Path(command[command.index('--output-junit') + 1])
+                    junit.write_text('<testsuite><testcase name="test-a"/></testsuite>')
+                    if drift == 'matrix':
+                        matrix.write_text(original_matrix + '\n')
+                    else:
+                        app.write_text('after')
+                    return SimpleNamespace(returncode=0)
+
+                with mock.patch.object(sys, 'argv', [
+                        str(Path(validator.__file__)), '--build-dir', str(build),
+                        '--matrix', str(matrix), '--report', str(report_path)]), \
+                     mock.patch.object(validator.subprocess, 'check_output',
+                                       return_value=json.dumps(registered)), \
+                     mock.patch.object(validator.subprocess, 'run', side_effect=mutate_during_ctest):
+                    with self.assertRaisesRegex(RuntimeError, 'changed while'):
+                        validator.main()
+                self.assertFalse(report_path.exists())
+
+
+    def test_ctest_registration_drift_rejects_report_and_clears_old_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / 'build'
+            build.mkdir()
+            matrix = root / 'matrix.json'
+            matrix.write_text(json.dumps({'scope': 'fixture', 'features': [
+                {'id': 'one', 'kind': 'functional', 'ctests': ['test-a'], 'note': 'fixture'}]}))
+            first, second = build / 'first-app', build / 'second-app'
+            first.write_text('first')
+            second.write_text('second')
+            registered = lambda app: {'tests': [{'name': 'test-a', 'command': [str(app)],
+                'properties': [{'name': 'LABELS', 'value': ['native-udp']},
+                               {'name': 'WORKING_DIRECTORY', 'value': str(build)}]}]}
+            report_path = root / 'report.json'
+            report_path.write_text('{"automated_checks_passed": true}')
+
+            def run_ctest(command, stdout, stderr):
+                junit = Path(command[command.index('--output-junit') + 1])
+                junit.write_text('<testsuite><testcase name="test-a"/></testsuite>')
+                return SimpleNamespace(returncode=0)
+
+            with mock.patch.object(sys, 'argv', [
+                    str(Path(validator.__file__)), '--build-dir', str(build),
+                    '--matrix', str(matrix), '--report', str(report_path)]), \
+                 mock.patch.object(validator.subprocess, 'check_output', side_effect=[
+                     json.dumps(registered(first)), json.dumps(registered(second))]), \
+                 mock.patch.object(validator.subprocess, 'run', side_effect=run_ctest):
+                with self.assertRaisesRegex(RuntimeError, 'registration changed'):
+                    validator.main()
+            self.assertFalse(report_path.exists())
+
     def test_skips_missing_and_failures_do_not_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'results.xml'
