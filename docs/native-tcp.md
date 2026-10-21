@@ -475,9 +475,30 @@ CLI 替换整个 INI VLAN 列表，IP 不能与主接口、VIP 或其他 VLAN �
 
 例如 `[vlan.100] addresses=198.19.100.2/24,2001:db8:100::2/64,2001:db8:100::3/128`。
 Ker 使用原始 LKL rtnetlink helper 配置地址、MTU 和 UP 状态，先启动所有 VLAN 的
-Linux DAD 再逐个确认，应用启动前必须全部成功。没有 IPv6 VLAN 专属默认网关配置。
+Linux DAD 再逐个确认，应用启动前必须全部成功。IPv6 VLAN 默认网关见下文。
 
 `native-fstack-ipv6-vlan` 验证 VLAN 100/200 的双向 IPv6 TCP/UDP、VIP、
 同一 VLAN 的 IPv4 UDP、设备绑定、IPV6_PKTINFO、NDP 和内核计数。
 PCAP 必须具有完整的 1518 字节 tagged IPv6 UDP 帧及有效校验和；错误 VLAN 和
 untagged 探测不能交给设备绑定 socket。另验证 16×8 地址上限及宿主占用地址的 DAD 拒绝。
+
+
+## IPv6 VLAN 默认网关
+
+`[vlan.100] gateway6=fe80::1` 或 `--vlan-gateway6 100=fe80::1` 在原始 Linux
+主路由表安装带显式输出接口 `ker.100` 的 IPv6 默认路由。对应 VLAN 必须配置 IPv6
+地址；不要求父接口 `address6`。全局与 link-local 下一跳均可，scope 由 VLAN ID
+确定，配置值不能包含 `%interface`。CLI 整体替换 INI 的 VLAN 网关列表；VLAN 地址
+列表仍由 `--vlan` 独立替换，覆盖后必须保留网关引用的 IPv6 VLAN。
+
+本接口只允许一个显式 IPv6 默认网关，不能与父接口 `gateway6` 或其他 VLAN 默认
+网关并用；这避免隐式 ECMP/策略路由。不能使用本实例配置的本地 IP 作为网关。
+下一跳可达性由原始 Linux 检查；off-link 网关在应用 main 前失败并回收 worker。
+未指定网关会清除继承的配置环境，保留无默认路由的行为。
+IPv4 VLAN 网关、多个路由表/多个默认网关和 RA/SLAAC 尚未实现。
+
+`native-fstack-ipv6-vlan-route` 运行四个真实 native 实例：省略网关、off-link 拒绝、
+INI 全局网关、CLI link-local 网关覆盖。独立宿主路由器连接另一网络命名空间中的
+远端，双向 TCP/UDP 必须跨网段并保持源地址和载荷；UDP hop limit 必须由 64 减为
+63，转发计数增加。PCAP 还必须证明 VLAN100 标签、下一跳 NDP、路由器 MAC 和
+远端 IPv6 UDP 地址。没有上游协议源码修改或 Ker 自有路由/协议算法。

@@ -97,26 +97,67 @@ def stop(process):
             process.kill(); process.wait()
 
 
+def check_vlan_capture(directory, router_mac):
+    # Require actual tagged remote UDP in both directions, and NDP for the
+    # router next hop on that VLAN. A successful local-only echo is insufficient.
+    gateway_seen = False
+    for direction in ('tx', 'rx'):
+        routed = False
+        for path in directory.glob('ker-' + direction + '-*.pcap'):
+            data = path.read_bytes()
+            endian = '<' if data[:4] == b'\xd4\xc3\xb2\xa1' else '>'
+            offset = 24
+            while offset < len(data):
+                _, _, count, original = struct.unpack_from(endian + 'IIII', data, offset)
+                offset += 16
+                frame = data[offset:offset + count]; offset += count
+                require(len(frame) == count == original, 'truncated routed VLAN evidence')
+                if frame[12:14] != b'\x81\x00' or frame[16:18] != b'\x86\xdd':
+                    continue
+                require(struct.unpack('!H', frame[14:16])[0] & 4095 == 100, 'wrong routed VLAN tag')
+                if frame[24] == 17 and PAYLOAD in frame[58:]:
+                    remote = frame[42:58] if direction == 'tx' else frame[26:42]
+                    require(remote == socket.inet_pton(socket.AF_INET6, '2001:db8:2::2'), 'not a routed remote datagram')
+                    require(frame[:6] == router_mac if direction == 'tx' else frame[6:12] == router_mac,
+                            'routed Ethernet peer is not the independent router')
+                    routed = True
+                if direction == 'tx' and frame[24] == 58 and len(frame) >= 82 and frame[58] == 135:
+                    target = frame[66:82]
+                    require(target != socket.inet_pton(socket.AF_INET6, '2001:db8:2::2'), 'NDP used remote endpoint instead of gateway')
+                    gateway_seen |= target in [socket.inet_pton(socket.AF_INET6, address)
+                                              for address in ('fe80::1', '2001:db8:1::1')]
+        require(routed, direction + ': no tagged routed remote UDP')
+    require(gateway_seen, 'missing tagged gateway neighbor solicitation')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app'):
         parser.add_argument('--' + name, type=Path)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--vlan6', action='store_true')
     parser.add_argument('--peer', type=int)
     args = parser.parse_args()
     if args.peer is not None:
         return peer_main(args.peer)
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
+        if args.vlan6:
+            command += ['--vlan6']
         for name in ('launcher', 'library', 'worker', 'app'):
             command += ['--' + name, str(getattr(args, name).resolve())]
         return subprocess.run(command).returncode
     ip('link', 'set', 'lo', 'up')
     ip('link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink')
     ip('addr', 'add', '198.18.0.1/24', 'dev', 'kerhost')
-    ip('-6', 'addr', 'add', '2001:db8:1::1/64', 'dev', 'kerhost', 'nodad')
-    ip('-6', 'addr', 'add', 'fe80::1/64', 'dev', 'kerhost', 'nodad')
     ip('link', 'set', 'kerhost', 'up'); ip('link', 'set', 'kerlink', 'up')
+    router_interface = 'kerhost'
+    if args.vlan6:
+        router_interface = 'kerhost.100'
+        ip('link', 'add', 'link', 'kerhost', 'name', router_interface, 'type', 'vlan', 'id', '100')
+        ip('link', 'set', router_interface, 'up')
+    ip('-6', 'addr', 'add', '2001:db8:1::1/64', 'dev', router_interface, 'nodad')
+    ip('-6', 'addr', 'add', 'fe80::1/64', 'dev', router_interface, 'nodad')
     cpu = min(os.sched_getaffinity(0))
     eal = (f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry '
            '--iova-mode=va -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink')
@@ -124,11 +165,14 @@ def main():
         root = Path(directory)
         common = [sys.executable, str(args.launcher), '--library', str(args.library),
             '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
-            '--address6', '2001:db8:1::2/64', '--port', 'net_tap0', '--eal', eal]
-        env = dict(os.environ, KER_NATIVE_GATEWAY6='2001:db8:1::1')
+            '--port', 'net_tap0', '--eal', eal]
+        common += ['--vlan', '100=2001:db8:1::2/64'] if args.vlan6 else ['--address6', '2001:db8:1::2/64']
+        gateway_option = '--vlan-gateway6' if args.vlan6 else '--gateway6'
+        gateway_value = lambda address: '100=' + address if args.vlan6 else address
+        env = dict(os.environ, KER_NATIVE_GATEWAY6='2001:db8:1::1', KER_NATIVE_VLAN_GATEWAY6='100=fe80::1')
         for name, options, expected, diagnostic in (
             ('omitted', [], 0, 'PASS: no implicit IPv6 default route'),
-            ('offlink', ['--gateway6', '2001:db8:3::1'], 125, 'IPv6 default route')):
+            ('offlink', [gateway_option, gateway_value('2001:db8:3::1')], 125, 'IPv6 default route')):
             stats = root / (name + '.json')
             result = subprocess.run([*common, *options, '--stats', str(stats), '--',
                 str(args.app), '28500', 'unrouted'], env=env, capture_output=True, text=True, timeout=25)
@@ -144,10 +188,11 @@ def main():
         for index, mode in enumerate(('ini-global', 'cli-link-local')):
             port = 28510 + index * 2
             config, stats = root / (mode + '.ini'), root / (mode + '.json')
-            config.write_text('[network]\ngateway6=' + ('2001:db8:1::1' if index == 0 else '2001:db8:3::1') + '\n')
+            config.write_text(('[vlan.100]\naddresses=2001:db8:1::2/64\ngateway6=' if args.vlan6 else '[network]\ngateway6=') +
+                ('2001:db8:1::1' if index == 0 else '2001:db8:3::1') + '\n')
             options = ['--config', str(config)]
             if index:
-                options += ['--gateway6', 'fe80::1']
+                options += [gateway_option, gateway_value('fe80::1')]
             peer = app = None
             with (root / (mode + '.peer.log')).open('w+') as peer_log, (root / (mode + '.app.log')).open('w+') as app_log:
                 try:
@@ -163,7 +208,9 @@ def main():
                     peer.stdin.write('CONFIGURE\n'); peer.stdin.flush()
                     require(line(peer) == 'PEER_READY', 'remote listeners not ready')
                     before = forwarded()
-                    app = subprocess.Popen([*common, *options, '--stats', str(stats), '--',
+                    capture = root / (mode + '-capture')
+                    capture.mkdir()
+                    app = subprocess.Popen([*common, *options, '--pcap-dir', str(capture), '--stats', str(stats), '--',
                         str(args.app), str(port), 'routed'], env=env, stdout=subprocess.PIPE,
                         stderr=app_log, text=True)
                     require(line(app) == 'READY', 'native routed startup failed')
@@ -174,8 +221,12 @@ def main():
                     require(forwarded() > before, 'independent router forwarded no IPv6 packets')
                     record = json.loads(stats.read_text())
                     require(record['outstanding'] == 0 and record['tx'] and record['rx'] and
-                            record['native']['active_opens'] >= 1 and record['native']['passive_opens'] >= 1,
+                            record['native']['active_opens'] >= 1 and record['native']['passive_opens'] >= 1 and
+                            record['native']['udp6_in_datagrams'] == 2 and record['native']['udp6_out_datagrams'] == 2,
                             'native routed traffic/cleanup evidence missing')
+                    if args.vlan6:
+                        check_vlan_capture(capture, bytes.fromhex(json.loads(subprocess.check_output(
+                            ['ip', '-j', 'link', 'show', 'kerhost']))[0]['address'].replace(':', '')))
                     print('PASS: ' + mode + ' routed IPv6 TCP/UDP both directions and forwarding counters', flush=True)
                 except Exception:
                     for log in (peer_log, app_log):

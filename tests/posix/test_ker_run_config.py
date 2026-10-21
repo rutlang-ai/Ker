@@ -19,6 +19,41 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_vlan_ipv6_gateway(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        vlan = ['--vlan', '100=2001:db8:1::2/64']
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'gateway.ini'
+            config.write_text('[vlan.100]\naddresses=2001:db8:1::2/64\ngateway6=2001:db8:1::1\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+            self.assertEqual([(tag, str(ip)) for tag, ip in args.vlan_gateways6], [(100, '2001:db8:1::1')])
+            args = launcher.parse_arguments(base + ['--config', str(config), '--vlan-gateway6', '100=fe80::1', '--', '/bin/true'])
+            self.assertEqual([(tag, str(ip)) for tag, ip in args.vlan_gateways6], [(100, 'fe80::1')])
+            for value in ('100=::', '100=::1', '100=ff02::1', '100=fe80::1%ker.100',
+                          '100=::ffff:198.18.0.1', '100=198.18.0.1', '4095=fe80::1', 'x=fe80::1'):
+                result = subprocess.run([sys.executable, str(SOURCE), *base, *vlan,
+                    '--vlan-gateway6', value, '--library', '/missing-library', '--', '/bin/true'],
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                config.write_text('[vlan.100]\naddresses=2001:db8:1::2/64\ngateway6=' + value.split('=', 1)[1] + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                # The final two values have invalid tags only; their IP itself is valid in INI vlan.100.
+                if value.split('=', 1)[0] == '100':
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+            for extra in (
+                    ['--vlan-gateway6', '200=fe80::1'],
+                    ['--vlan-gateway6', '100=2001:db8:1::2'],
+                    ['--vlan-gateway6', '100=fe80::1', '--vlan-gateway6', '100=fe80::2'],
+                    ['--address6', '2001:db8:3::2/64', '--gateway6', '2001:db8:3::1', '--vlan-gateway6', '100=fe80::1']):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + vlan + extra + ['--', '/bin/true'])
+            for extra in ([], ['--vlan', '100=198.19.0.2/24']):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + extra + ['--vlan-gateway6', '100=fe80::1', '--', '/bin/true'])
+
     def test_ipv6_and_mixed_vlan_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         mixed = '100=198.19.100.2/24,2001:db8:100::2/64,2001:db8:100::3/128'

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _GNU_SOURCE
 #include "vlan.h"
+#include "ipv6-route.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stdint.h>
@@ -136,4 +137,25 @@ int ker_native_configure_vlans(int parent, int mtu, const char *settings)
         result = lkl_if_wait_ipv6_dad(dad[i].index, &dad[i].address);
     free(copy);
     return result;
+}
+
+/* The launcher admits one explicit IPv6 default, shared with the parent
+ * gateway option. Linux validates reachability and owns route selection. */
+int ker_native_configure_vlan_gateway6(const char *settings)
+{
+    if (!settings || !*settings) return 0;
+    if (strlen(settings) >= 64) return -LKL_EINVAL;
+    char *end;
+    errno = 0;
+    long tag = strtol(settings, &end, 10);
+    if (errno || end == settings || *end != '=' || tag < 1 || tag > 4094) return -LKL_EINVAL;
+    struct in6_addr gateway;
+    if (inet_pton(AF_INET6, end + 1, &gateway) != 1 ||
+        IN6_IS_ADDR_UNSPECIFIED(&gateway) || IN6_IS_ADDR_MULTICAST(&gateway) ||
+        IN6_IS_ADDR_LOOPBACK(&gateway) || IN6_IS_ADDR_V4MAPPED(&gateway)) return -LKL_EINVAL;
+    char name[16];
+    snprintf(name, sizeof(name), "ker.%ld", tag);
+    int index = lkl_ifname_to_ifindex(name);
+    if (index <= 0) return index ? index : -LKL_ENODEV;
+    return ker_native_set_ipv6_gateway(index, &gateway);
 }

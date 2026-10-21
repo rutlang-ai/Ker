@@ -1424,7 +1424,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker supports explicit native Linux IPv6 addresses, gateways, VIPs and VLAN addresses with original-kernel TCP/UDP/NDP/DAD evidence. This source case asserts INET6-disabled ignore semantics and remains blocked; per-VLAN gateways, separate FreeBSD VIP interfaces and complete fixture equivalence remain unsupported.",
+      "reason": "Ker supports explicit native Linux IPv6 addresses, parent/VLAN IPv6 gateways, VIPs and VLAN addresses with original-kernel TCP/UDP/NDP/DAD evidence. This source case asserts INET6-disabled ignore semantics and remains blocked; IPv4 VLAN gateways, multiple defaults, separate FreeBSD VIP interfaces and complete fixture equivalence remain unsupported.",
       "ker_tests": []
     },
     {

@@ -16,6 +16,7 @@ FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存�
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| native-fstack-ipv6-vlan-route | valid_inet6.ini 的 VLAN gateway6（相关扩展） | 原始 Linux VLAN IPv6 默认路由；独立路由器与远端 TCP/UDP、hop limit、tagged PCAP/NDP、INI/CLI 和启动失败回收。源 INET6-disabled ignore 用例仍 blocked |
 | native-fstack-ephemeral-ports | test_ff_rss_tbl_set_portrange_inverted_range（partial） | 配置通过原始 Linux sysctl 生效；IPv4/IPv6 TCP/UDP 分配、耗尽/复用、保留端口和独立 IPv4 对端验证。RSS 队列专属端口表仍未迁移 |
 | native-fstack-config-lifecycle | test_ff_config.c 的 6 项配置加载场景 | 8 个独立检查验证 CLI/INI、缺失文件和加载隔离；3 项适配、3 项部分覆盖，未知节/完整 schema 差异保留。仅配置层证据，不计 NIC/内核互通 |
 | native-fstack-launcher-config / native-fstack-launcher-config-interop | test_ff_ini_parser.c：18 项场景适配，1 项多行部分覆盖 | 实际 launcher 的标准库 INI 解析、类型校验、CLI 覆盖和配置文件相对路径；真实 DPDK/原始 Linux TCP 双角色及日志/capture 验证。不是 F-Stack config schema/callback ABI 兼容层。需 KER_WITH_NATIVE_TCP=ON |
