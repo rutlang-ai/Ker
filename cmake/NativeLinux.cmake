@@ -325,6 +325,13 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ipv6-interop-test>")
     set_tests_properties(native-fstack-ipv6-interop PROPERTIES TIMEOUT 90 LABELS "native-tcp;native-udp;fstack")
+    add_executable(ker-ipv6-vlan-test tests/posix/ipv6-vlan.c)
+    target_compile_options(ker-ipv6-vlan-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-ipv6-vlan
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/ipv6-vlan.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-ipv6-vlan-test>")
+    set_tests_properties(native-fstack-ipv6-vlan PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-ipv6-vip-test tests/posix/ipv6-vip.c)
     target_compile_options(ker-ipv6-vip-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-ipv6-vip

@@ -44,7 +44,7 @@ Ker 只向私有原始 Linux 的 main 路由表发送带明确出接口的 rtnet
 `native-fstack-ipv6-route` 在原生内核、独立 Linux 路由器、远端 Linux 网络命名空间
 之间验证跨网段 TCP/UDP 双向收发。UDP 两端检查 hop limit 从 64 减为 63，路由器
 转发计数必须增加；另验证省略网关不自动安装默认路由、非法 off-link 网关阻止应用启动。
-IPv6 VLAN、RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤尚未验收，
+RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤尚未验收，
 能力查询位保持既有定义。
 
 多个 IPv6 地址可用 `[network] vip_addresses6=2001:db8:1::3/128,2001:db8:1::4/128`
@@ -444,11 +444,11 @@ PMD 必须同时支持 RX scatter 和 TX multi-segment，否则启动失败。
 
 ### 802.1Q VLAN
 
-`--vlan ID=IPv4/PREFIX[,IPv4/PREFIX...]` 可重复指定最多 16 个 VLAN，每个最多 8 个地址。
+`--vlan ID=IP/PREFIX[,IP/PREFIX...]` 可重复指定最多 16 个 VLAN，每个最多 8 个地址。
 INI 使用 `[vlan.ID] addresses=...`；CLI 整体替换 INI VLAN 列表。父接口仍由 `--address` 配置。
 原始 Linux 创建 `ker.ID` 子接口，负责标签和地址语义；应用可用 `SO_BINDTODEVICE` 绑定它。
 需要以当前 defconfig 重新构建 native Linux 产物（启用 `CONFIG_VLAN_8021Q`）。
-已验证 net_tap、IPv4、MTU1500、两个 VLAN 和 VLAN VIP；其它部署边界见 `docs/fstack-migration.md`。
+已验证 net_tap、IPv4/IPv6、MTU1500、两个 VLAN 和 VLAN VIP；IPv6 及混合地址验证见下文，其它部署边界见 `docs/fstack-migration.md`。
 
 ### 自动本地端口范围
 
@@ -462,3 +462,22 @@ Linux 要求非特权端口边界不高于 `ip_local_port_range` 的下界；若
 再设 `ip_unprivileged_port_start=50000`。CLI `--sysctl` 覆盖 INI 同名项时，该项按 CLI
 出现顺序重新应用；未覆盖的 INI 项仍保持文件顺序。专用选项固定采用 1024 下限。所有设置
 只作用于本实例，受原始 Linux 的端口保留、冲突和分配规则约束；显式 bind 的固定端口不受自动范围限制。
+
+
+
+## IPv6 VLAN 地址
+
+既有 `--vlan ID=IP/PREFIX,...` 与 `[vlan.ID] addresses` 现在可使用 IPv4、
+原生单播 IPv6 或混合列表。每个 VLAN 最多八个地址，总共最多 16 个 VLAN；
+CLI 替换整个 INI VLAN 列表，IP 不能与主接口、VIP 或其他 VLAN 重复。
+无需配置主接口 `address6`，IPv6 VLAN 本身会触发必需的 multicast 接收；
+不带 scope 的接口地址由配置中的 VLAN ID 确定作用接口。
+
+例如 `[vlan.100] addresses=198.19.100.2/24,2001:db8:100::2/64,2001:db8:100::3/128`。
+Ker 使用原始 LKL rtnetlink helper 配置地址、MTU 和 UP 状态，先启动所有 VLAN 的
+Linux DAD 再逐个确认，应用启动前必须全部成功。没有 IPv6 VLAN 专属默认网关配置。
+
+`native-fstack-ipv6-vlan` 验证 VLAN 100/200 的双向 IPv6 TCP/UDP、VIP、
+同一 VLAN 的 IPv4 UDP、设备绑定、IPV6_PKTINFO、NDP 和内核计数。
+PCAP 必须具有完整的 1518 字节 tagged IPv6 UDP 帧及有效校验和；错误 VLAN 和
+untagged 探测不能交给设备绑定 socket。另验证 16×8 地址上限及宿主占用地址的 DAD 拒绝。

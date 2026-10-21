@@ -350,7 +350,7 @@ Ker 现在支持 `[network] address6` / `--address6 ADDRESS/PREFIX`，CLI 覆盖
 验证 IPv6 TCP/UDP 的双向字节一致、源/目的地址、未配置地址的 bind 拒绝、
 宿主 NDP 解析到 worker MAC、IPv4 TCP 同时工作，以及原生 TCP 计数和零未释放 mbuf。
 另以宿主已占用的 IPv6 地址验证 Linux DAD 拒绝，应用 main 不执行、worker 正常清理。
-IPv6 VIP 见后续扩展；IPv6 VLAN 与 RA/SLAAC 部署尚未验收；默认网关和跨网段验证见下文。
+IPv6 VIP 见后续扩展；IPv6 VLAN 见后续扩展；RA/SLAAC 部署尚未验收；默认网关和跨网段验证见下文。
 
 固定上游 `valid_inet6.ini` 包含 IPv6 地址、前缀、网关、VIP 和 VLAN；
 但 `test_ff_load_config_inet6_fixture_ignored` 测试的是 **未启用 INET6 时忽略配置**，
@@ -375,8 +375,8 @@ IPv6 VIP 见后续扩展；IPv6 VLAN 与 RA/SLAAC 部署尚未验收；默认网
 
 固定 F-Stack IPv6 fixture 的网关功能已有上述相关证据；
 `test_ff_load_config_inet6_fixture_ignored` 仍保留 blocked，因为它的条件编译忽略语义、
-IPv6 VLAN 及独立 FreeBSD VIP 接口等未迁移；原生 IPv6 VIP 见后续扩展。
-尚未验收路由更新/故障切换、RA/SLAAC、IPv6 VLAN 和真实物理网卡。
+独立 FreeBSD VIP 接口等未迁移；原生 IPv6 VIP 和 VLAN 地址见后续扩展。
+尚未验收路由更新/故障切换、RA/SLAAC 和真实物理网卡。
 
 ## UDP 批量功能验收
 
@@ -422,7 +422,7 @@ addresses=198.19.200.2/24
 ```
 
 也可重复 `--vlan 100=198.19.100.2/24,198.19.100.3/24`；CLI VLAN 列表整体替换 INI VLAN 列表。
-最多 16 个 VLAN，ID 1–4094；每个最多 8 个 IPv4 地址，首地址为主地址，其余为 VIP。
+最多 16 个 VLAN，ID 1–4094；每个最多 8 个地址，支持 IPv4/IPv6 混合；此处 IPv4 场景的首地址为主地址，其余为 VIP。
 重复 ID、重复 IP、非法/空地址和未知字段在库/设备准备前拒绝。未显式配置时不继承宿主的 VLAN 环境变量。
 Ethernet channel 为单层 802.1Q 标签保留额外 4 字节，未标记帧仍受原 MTU 限制。
 DPDK VLAN stripping/filter offload 保持关闭，tag/demux 属于原始 Linux。
@@ -491,4 +491,24 @@ TCP/UDP 字节和地址校验，检查宿主 NDP 的 worker MAC、原始 TCP/UDP
 
 固定 F-Stack `valid_inet6.ini` 中的 `vip_addr6`/`vip_prefix_len` 是功能来源，
 但 Ker 不复刻 `vip_ifname` 的独立 FreeBSD 接口；也不把“INET6 未启用时忽略配置”
-测试标为通过。该源项仍 blocked，迁移计数不变。IPv6 VLAN 和 RA/SLAAC 仍未验收。
+测试标为通过。该源项仍 blocked，迁移计数不变。IPv6 VLAN 见后续扩展；RA/SLAAC 仍未验收。
+
+
+## IPv6 VLAN 与混合地址
+
+`[vlan.ID] addresses` / `--vlan` 扩展为 IPv4/IPv6 混合列表，保持 16 个 VLAN、
+每 VLAN 八个地址的界限。原始 LKL 负责 rtnetlink 地址安装和 VLAN UP，
+等待全部 Linux DAD 完成后应用才可启动；不修改 Linux/DPDK 上游源码。
+VLAN 上存在 IPv6 时，即使主接口没有 `address6` 也自动启用 NDP 所需 multicast 接收。
+
+`native-fstack-ipv6-vlan` 运行 INI/large 和 CLI 替换/scatter 两组真实 net_tap 互通：
+VLAN 100 带 IPv4/IPv6 主地址与 /128 VIP，VLAN 200 为 IPv6-only。
+独立宿主 VLAN peer 验证每个 IPv6 地址双向 TCP/UDP、1452 字节完整 UDP 载荷、
+VLAN 设备绑定和 IPV6_PKTINFO，另检查 IPv4 共存、宿主 NDP、原始内核计数和零未释放 mbuf。
+PCAP 两个方向都必须包含 VLAN 100/200 的完整 1518 字节帧与有效 IPv6 UDP 校验和。
+VLAN 200/300/untagged 错误探测先经过 worker RX，不能交给绑定 VLAN 100 的 socket。
+另两次启动验证 16×8 长 IPv6 地址（序列化超过原 4096 字节限制）以及宿主重复地址被 DAD 拒绝。
+
+相关 F-Stack IPv6 fixture 测试仍为 blocked：它验证的是 INET6-disabled 忽略语义，
+不是启用 IPv6 后的互通。计数不变；per-VLAN gateway、FreeBSD 独立 VIP 接口、
+RA/SLAAC 和完整 fixture 等价性仍未迁移。

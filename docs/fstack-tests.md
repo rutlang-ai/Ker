@@ -303,4 +303,12 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 32 个 VIP 上限，以及由 Linux DAD 拒绝宿主已占用 VIP。
 主地址和两个 /128 VIP 均验证双向 TCP/UDP、显式源地址、宿主 NDP、内核计数及 mbuf 清理。
 `test_ff_load_config_inet6_fixture_ignored` 仍 blocked，因为其 INET6-disabled 语义与此不同；
-不增加 adapted/partial 计数。IPv6 VLAN、RA/SLAAC 和独立 FreeBSD VIP 接口仍未迁移。
+不增加 adapted/partial 计数。IPv6 VLAN 另见后续测试；RA/SLAAC 和独立 FreeBSD VIP 接口仍未迁移。
+
+
+`native-fstack-ipv6-vlan` 以真实 original Linux VLAN 100/200 和独立宿主 peer 验证
+双向 IPv6 TCP/UDP、VLAN VIP、混合 IPv4、设备绑定与 IPv6 packet metadata。
+INI/large、CLI/scatter、16×8 地址上限和重复地址拒绝共四次原生启动，
+含完整帧、标签、UDP checksum、NDP、原始内核计数及 mbuf 清理证据。
+错误 VLAN/untagged UDP 先通过 worker RX，再以实际 socket 收包验证未被交付。
+固定 `test_ff_load_config_inet6_fixture_ignored` 仍 blocked，不增加迁移通过计数。

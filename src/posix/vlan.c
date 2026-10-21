@@ -75,11 +75,12 @@ static int create_vlan(int parent, uint16_t tag, const char *name)
 int ker_native_configure_vlans(int parent, int mtu, const char *settings)
 {
     if (!settings || !*settings) return 0;
-    if (parent <= 0 || mtu < 1280 || mtu > 9000 || strlen(settings) > 4096) return -LKL_EINVAL;
+    if (parent <= 0 || mtu < 1280 || mtu > 9000 || strlen(settings) > 8192) return -LKL_EINVAL;
     char *copy = strdup(settings);
     if (!copy) return -LKL_ENOMEM;
     int result = 0;
-    unsigned int count = 0;
+    unsigned int count = 0, dad_count = 0;
+    struct { int index; struct in6_addr address; } dad[16 * 8];
     char *state, *entry = strtok_r(copy, ";", &state);
     while (entry && !result) {
         char *addresses = strchr(entry, '=');
@@ -100,12 +101,28 @@ int ker_native_configure_vlans(int parent, int mtu, const char *settings)
             char *prefix = strchr(address, '/');
             if (!prefix || ++address_count > 8) { result = -LKL_EINVAL; break; }
             *prefix++ = 0;
-            struct in_addr ipv4;
+            errno = 0;
             long bits = strtol(prefix, &end, 10);
-            if (!*prefix || *end || bits < 0 || bits > 32 || inet_pton(AF_INET, address, &ipv4) != 1) {
-                result = -LKL_EINVAL; break;
+            if (errno || !*prefix || *end || bits < 0) { result = -LKL_EINVAL; break; }
+            if (strchr(address, ':')) {
+                struct in6_addr ipv6;
+                if (bits > 128 || inet_pton(AF_INET6, address, &ipv6) != 1 ||
+                    IN6_IS_ADDR_UNSPECIFIED(&ipv6) || IN6_IS_ADDR_MULTICAST(&ipv6) ||
+                    IN6_IS_ADDR_LOOPBACK(&ipv6) || IN6_IS_ADDR_V4MAPPED(&ipv6)) {
+                    result = -LKL_EINVAL; break;
+                }
+                result = lkl_if_add_ip(index, LKL_AF_INET6, &ipv6, (unsigned int)bits);
+                if (!result) {
+                    dad[dad_count].index = index;
+                    dad[dad_count++].address = ipv6;
+                }
+            } else {
+                struct in_addr ipv4;
+                if (bits > 32 || inet_pton(AF_INET, address, &ipv4) != 1) {
+                    result = -LKL_EINVAL; break;
+                }
+                result = lkl_if_set_ipv4(index, ipv4.s_addr, (unsigned int)bits);
             }
-            result = lkl_if_set_ipv4(index, ipv4.s_addr, (unsigned int)bits);
             address = strtok_r(NULL, ",", &address_state);
         }
         if (!result && !address_count) result = -LKL_EINVAL;
@@ -113,6 +130,10 @@ int ker_native_configure_vlans(int parent, int mtu, const char *settings)
         if (!result) result = lkl_if_up(index);
         entry = strtok_r(NULL, ";", &state);
     }
+    /* Start DAD on every activated VLAN before waiting, so the full 16x8
+     * configuration fits the native startup deadline. Linux owns DAD. */
+    for (unsigned int i = 0; i < dad_count && !result; ++i)
+        result = lkl_if_wait_ipv6_dad(dad[i].index, &dad[i].address);
     free(copy);
     return result;
 }
