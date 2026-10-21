@@ -544,3 +544,24 @@ mbuf。PCAP 必须证明 VLAN100 标签、ARP 查询配置的网关而非远端�
 进入 UDP socket 并得到回复，避免把坏包丢弃误记为 MAC 过滤。另验证宿主 TCP
 互通、PMD 状态回读、原始内核 TCP/UDP 计数和零 outstanding mbuf。
 这些是软件 PMD 证据，不等同于物理 NIC、RSS 或硬件过滤验收。
+
+
+## Worker 空闲等待
+
+`[dpdk] idle_sleep=20` 或 `--idle-sleep-us 20` 设置 Ethernet worker 无进展时的
+等待时间，单位微秒，范围 0..100000。默认 1000 保留既有 1 毫秒行为；CLI 覆盖
+INI，0 使用不休眠的轮询。它只调整 Ker 的 I/O 调度，不改变原始 Linux 的协议定时器。
+
+等待使用宿主 `ppoll`，监听 native→worker 数据通道及控制通道，通道数据或关闭请求
+可唤醒等待。PMD RX 没有该通道通知，因此新的网卡输入可能等到下一次超时；较长设置
+可降低空闲轮询频率，也会增加收包等待。微秒配置不保证宿主调度精度或端到端时延。
+关闭清理阶段仍将等待上限收紧到 1000 微秒，保留原有 drain 检查节奏。
+
+`--stats` 中 `io.idle_sleep_us` 记录配置值，`idle_waits` 记录实际等待调用次数，
+`idle_timeouts` 记录其超时返回次数；0 等待的立即返回也计入超时。两项均为 worker
+调度统计，不是内核协议计数。计数在每次进程启动时从零开始。
+
+`native-fstack-idle-wait` 启动五个真实 DPDK/native 实例，覆盖省略默认、INI 20 微秒、
+CLI 零等待、INI 上限和 CLI 上限覆盖。应用先保持静默，再与独立宿主完成 TCP/UDP，
+必须观察实际 idle timeout、正确配置值、原始 Linux socket 计数、控制关闭信号及零
+outstanding mbuf。未迁移 F-Stack 的 generation、primary-slim 或 TX batching 调度。
