@@ -296,3 +296,11 @@ INI 双核/CLI 单核均运行原始 Linux 对独立宿主 TCP，检查 lcore_co
 
 `native-fstack-launcher-config` 验证独立 `max_mtu`、相等边界、9000/2000 拒绝和 CLI 覆盖。
 `native-fstack-jumbo-mtu` 先验证低上限在启动前拒绝，再覆盖到 9000 执行真实 jumbo TCP/UDP、DF 和抓包检查，补齐 `test_mtu_port_over_max_fails`。
+
+
+`native-fstack-ipv6-vip` 将固定 IPv6 fixture 的 VIP 功能需求适配为同一原生 Linux
+接口上的多地址配置。五次真实 net_tap 启动验证 INI、CLI 替换、省略/继承值清理、
+32 个 VIP 上限，以及由 Linux DAD 拒绝宿主已占用 VIP。
+主地址和两个 /128 VIP 均验证双向 TCP/UDP、显式源地址、宿主 NDP、内核计数及 mbuf 清理。
+`test_ff_load_config_inet6_fixture_ignored` 仍 blocked，因为其 INET6-disabled 语义与此不同；
+不增加 adapted/partial 计数。IPv6 VLAN、RA/SLAAC 和独立 FreeBSD VIP 接口仍未迁移。

@@ -46,6 +46,10 @@ def vip_addresses(text):
     return [ipaddress.IPv4Interface(item.strip()) for item in text.split(',')] if text.strip() else []
 
 
+def vip_addresses6(text):
+    return [ipaddress.IPv6Interface(item.strip()) for item in text.split(',')] if text.strip() else []
+
+
 def vlan_setting(text):
     tag, separator, addresses = text.partition('=')
     if not separator or not tag.isascii() or not tag.isdecimal() or not 1 <= int(tag) <= 4094:
@@ -79,12 +83,12 @@ def ephemeral_ports(text):
     return first, last
 
 
-CONFIG_DEFAULTS = dict(ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
 CONFIG_SCHEMA = {
-    'network': {'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
+    'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
     'dpdk': {'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
@@ -144,6 +148,8 @@ def parse_arguments(argv=None):
         help='additional native IPv6 address/prefix; enables multicast reception for neighbor discovery')
     parser.add_argument('--vip-address', dest='vip_addresses', action='append', type=ipaddress.IPv4Interface,
         help='additional IPv4 address/prefix; repeat up to 32 times; replaces INI vip_addresses')
+    parser.add_argument('--vip-address6', dest='vip_addresses6', action='append', type=ipaddress.IPv6Interface,
+        help='additional IPv6 address/prefix; requires --address6; repeat up to 32 times; replaces INI vip_addresses6')
     parser.add_argument('--vlan', dest='vlans', action='append', type=vlan_setting,
         help='802.1Q ID=IPv4/PREFIX[,IPv4/PREFIX...]; repeat up to 16 VLANs; replaces INI VLAN sections')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
@@ -212,6 +218,18 @@ def parse_arguments(argv=None):
             args.address6.ip.is_unspecified or args.address6.ip.is_multicast or
             args.address6.ip.is_loopback or args.address6.ip.ipv4_mapped is not None):
         parser.error('--address6 requires an unscoped native unicast IPv6 interface address')
+    args.vip_addresses6 = list(args.vip_addresses6)
+    if args.vip_addresses6 and args.address6 is None:
+        parser.error('--vip-address6 requires --address6')
+    if len(args.vip_addresses6) > 32:
+        parser.error('--vip-address6 supports at most 32 additional addresses')
+    for value in args.vip_addresses6:
+        if ('%' in str(value) or value.ip.is_unspecified or value.ip.is_multicast or
+                value.ip.is_loopback or value.ip.ipv4_mapped is not None):
+            parser.error('--vip-address6 requires unscoped native unicast IPv6 interface addresses')
+    addresses6 = ([args.address6.ip] if args.address6 is not None else []) + [value.ip for value in args.vip_addresses6]
+    if len(set(addresses6)) != len(addresses6):
+        parser.error('--vip-address6 must not duplicate the primary or another VIP address')
     if args.gateway6 is not None and (args.address6 is None or '%' in str(args.gateway6) or
             args.gateway6.is_unspecified or args.gateway6.is_multicast or args.gateway6.is_loopback or
             args.gateway6.ipv4_mapped is not None):
@@ -324,6 +342,9 @@ def main():
         env.pop('KER_NATIVE_ADDRESS6', None)
         if args.address6 is not None:
             env['KER_NATIVE_ADDRESS6'] = str(args.address6)
+        env.pop('KER_NATIVE_VIP_ADDRESSES6', None)
+        if args.vip_addresses6:
+            env['KER_NATIVE_VIP_ADDRESSES6'] = ','.join(map(str, args.vip_addresses6))
         env.pop('KER_NATIVE_VIP_ADDRESSES', None)
         if args.vip_addresses:
             env['KER_NATIVE_VIP_ADDRESSES'] = ','.join(map(str, args.vip_addresses))
