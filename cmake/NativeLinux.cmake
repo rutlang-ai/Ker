@@ -417,7 +417,9 @@ if(BUILD_TESTING)
     target_compile_options(ker-worker-mbuf-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     target_link_libraries(ker-worker-mbuf-test PRIVATE PkgConfig::DPDK)
     add_test(NAME worker-mbuf COMMAND ker-worker-mbuf-test)
-    set_tests_properties(worker-mbuf PROPERTIES TIMEOUT 30 LABELS "native-dpdk;fstack")
+    string(JOIN ":" ker_worker_mbuf_library_path ${DPDK_LIBRARY_DIRS})
+    set_tests_properties(worker-mbuf PROPERTIES TIMEOUT 30 LABELS "native-dpdk;fstack"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_worker_mbuf_library_path}:$ENV{LD_LIBRARY_PATH}")
     add_executable(ker-posix-fstack-udp-mtu-test tests/posix/fstack-udp-mtu.c)
     target_compile_options(ker-posix-fstack-udp-mtu-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-mtu COMMAND ${ker_native_test_command}
