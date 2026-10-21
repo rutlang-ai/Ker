@@ -53,12 +53,15 @@ def vip_addresses6(text):
 def vlan_setting(text):
     tag, separator, addresses = text.partition('=')
     if not separator or not tag.isascii() or not tag.isdecimal() or not 1 <= int(tag) <= 4094:
-        raise ValueError('VLAN requires ID=IPv4/PREFIX[,IPv4/PREFIX...] with ID 1..4094')
-    values = vip_addresses(addresses)
+        raise ValueError('VLAN requires ID=IP/PREFIX[,IP/PREFIX...] with ID 1..4094')
+    values = [ipaddress.ip_interface(item.strip()) for item in addresses.split(',')] if addresses.strip() else []
     if not 1 <= len(values) <= 8:
-        raise ValueError('VLAN requires 1..8 IPv4 addresses')
+        raise ValueError('VLAN requires 1..8 IPv4/IPv6 addresses')
     if any(value.ip.is_unspecified or value.ip.is_multicast for value in values):
         raise ValueError('VLAN addresses must be unicast and nonzero')
+    if any(value.version == 6 and ('%' in str(value) or value.ip.is_loopback or
+            value.ip.ipv4_mapped is not None) for value in values):
+        raise ValueError('VLAN IPv6 addresses must be unscoped native unicast addresses')
     if len({value.ip for value in values}) != len(values):
         raise ValueError('duplicate VLAN address')
     return int(tag), values
@@ -151,7 +154,7 @@ def parse_arguments(argv=None):
     parser.add_argument('--vip-address6', dest='vip_addresses6', action='append', type=ipaddress.IPv6Interface,
         help='additional IPv6 address/prefix; requires --address6; repeat up to 32 times; replaces INI vip_addresses6')
     parser.add_argument('--vlan', dest='vlans', action='append', type=vlan_setting,
-        help='802.1Q ID=IPv4/PREFIX[,IPv4/PREFIX...]; repeat up to 16 VLANs; replaces INI VLAN sections')
+        help='802.1Q ID=IP/PREFIX[,IP/PREFIX...]; repeat up to 16 VLANs; replaces INI VLAN sections')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
     parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
@@ -243,7 +246,8 @@ def parse_arguments(argv=None):
     if len(args.vlans) > 16 or len({tag for tag, _ in args.vlans}) != len(args.vlans):
         parser.error('--vlan requires at most 16 unique VLAN IDs')
     vlan_ips = [value.ip for _, entries in args.vlans for value in entries]
-    if len(set(addresses + vlan_ips)) != len(addresses + vlan_ips):
+    all_ips = addresses + addresses6 + vlan_ips
+    if len(set(all_ips)) != len(all_ips):
         parser.error('--vlan addresses must not duplicate primary, VIP, or other VLAN addresses')
     if args.mbuf_mode not in ('large', 'scatter'):
         parser.error('--mbuf-mode must be large or scatter')
@@ -295,7 +299,8 @@ def main():
     infrastructure_failure = False
     preserve_signal = False
     try:
-        multicast_options = ['--all-multicast'] if args.all_multicast or args.address6 is not None else []
+        vlan_ipv6 = any(value.version == 6 for _, entries in args.vlans for value in entries)
+        multicast_options = ['--all-multicast'] if args.all_multicast or args.address6 is not None or vlan_ipv6 else []
         log_options = []
         if args.log_dir is not None:
             log_options += ['--log-dir', str(args.log_dir.resolve())]

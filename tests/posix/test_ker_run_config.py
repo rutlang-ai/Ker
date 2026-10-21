@@ -19,6 +19,41 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_ipv6_and_mixed_vlan_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        mixed = '100=198.19.100.2/24,2001:db8:100::2/64,2001:db8:100::3/128'
+        args = launcher.parse_arguments(base + ['--vlan', mixed, '--vlan', '200=2001:db8:200::2/64', '--', '/bin/true'])
+        self.assertIsNone(args.address6)
+        self.assertEqual([v.version for v in args.vlans[0][1]], [4, 6, 6])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'vlan.ini'
+            config.write_text('[vlan.100]\naddresses=2001:db8:100::2/64\n')
+            args = launcher.parse_arguments(base + ['--config', str(config), '--vlan', mixed, '--', '/bin/true'])
+            self.assertEqual(len(args.vlans[0][1]), 3)
+            for addresses in ('::/64', '::1/128', 'ff02::1/64', 'fe80::2%eth0/64',
+                              '::ffff:198.18.0.3/128', '2001:db8::2/129',
+                              '2001:db8::2/64,2001:db8::2/128',
+                              ','.join(f'2001:db8::{i}/64' for i in range(2, 11))):
+                for mode in ('ini', 'cli'):
+                    config.write_text('[vlan.100]\naddresses=' + addresses + '\n' if mode == 'ini' else '')
+                    options = [] if mode == 'ini' else ['--vlan', '100=' + addresses]
+                    result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                        *options, '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+            config.write_text('')
+            for options in (
+                    ['--address6', '2001:db8::2/64', '--vlan', '100=2001:db8::2/128'],
+                    ['--address6', '2001:db8::2/64', '--vip-address6', '2001:db8::3/64', '--vlan', '100=2001:db8::3/128'],
+                    ['--vlan', '100=2001:db8::2/64', '--vlan', '200=2001:db8::2/128']):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + options + ['--', '/bin/true'])
+            maximum = [item for tag in range(100, 116) for item in ('--vlan', f'{tag}=' +
+                ','.join(f'2001:db8:1234:5678:9abc:def0:{tag:x}:{i:x}/128' for i in range(2, 10)))]
+            args = launcher.parse_arguments(base + maximum + ['--', '/bin/true'])
+            self.assertEqual(len(args.vlans), 16)
+            self.assertTrue(all(len(values) == 8 for _, values in args.vlans))
+
     def test_ipv6_vip_configuration_and_prelaunch_rejection(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments(base + ['--', '/bin/true']).vip_addresses6, [])
