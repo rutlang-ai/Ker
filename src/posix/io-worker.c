@@ -139,6 +139,16 @@ int main(int argc, char **argv)
             fprintf(stderr, "ker: ethdev cannot support scatter RX and multi-segment TX\n");
             goto cleanup;
         }
+        uint32_t rx_overhead = ker_worker_rx_eth_overhead(&info);
+        uint64_t required_rx_segments = ker_worker_rx_required_segments((uint32_t)mtu,
+            rx_overhead);
+        uint16_t rx_segment_limit = info.rx_desc_lim.nb_mtu_seg_max;
+        if (!ker_worker_rx_limits_support(required_rx_segments, rx_segment_limit)) {
+            fprintf(stderr, "ker: scatter MTU %d requires %llu RX segments with %u-byte device overhead, ethdev rx_desc_lim.nb_mtu_seg_max=%u\n",
+                mtu, (unsigned long long)required_rx_segments, rx_overhead,
+                rx_segment_limit);
+            goto cleanup;
+        }
         uint16_t required_segments = ker_worker_scatter_required_segments((uint32_t)mtu);
         if (!ker_worker_scatter_limits_support(required_segments,
                 info.tx_desc_lim.nb_seg_max, info.tx_desc_lim.nb_mtu_seg_max)) {

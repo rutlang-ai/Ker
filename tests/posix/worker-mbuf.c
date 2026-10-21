@@ -8,6 +8,36 @@
 #include <stdlib.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
+static void test_scatter_rx_limits(void)
+{
+    const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
+    struct rte_eth_dev_info info = {0};
+    info.max_mtu = 9000;
+    info.max_rx_pktlen = 9022;
+    CHECK(ker_worker_rx_eth_overhead(&info) == 22);
+    info.max_rx_pktlen = 9018;
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+    info.max_rx_pktlen = 9010;
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+    info.max_rx_pktlen = 3;
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+    info.max_mtu = UINT16_MAX;
+    info.max_rx_pktlen = UINT32_MAX;
+    CHECK(ker_worker_rx_eth_overhead(&info) == RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+
+    uint32_t overhead = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+    CHECK(ker_worker_rx_required_segments(payload - overhead, overhead) == 1);
+    uint64_t required = ker_worker_rx_required_segments(payload - overhead + 1, overhead);
+    CHECK(required == 2);
+    CHECK(ker_worker_rx_limits_support(required, 2));
+    CHECK(ker_worker_rx_limits_support(required, 0));
+    CHECK(ker_worker_rx_limits_support(required, UINT16_MAX));
+    CHECK(!ker_worker_rx_limits_support(required, 1));
+    uint64_t jumbo = ker_worker_rx_required_segments(9000, overhead);
+    CHECK(jumbo == 5);
+    CHECK(!ker_worker_rx_limits_support(jumbo, 4));
+}
+
 static void test_scatter_segment_limits(void)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
@@ -27,6 +57,7 @@ static void test_scatter_segment_limits(void)
 
 int main(void)
 {
+    test_scatter_rx_limits();
     test_scatter_segment_limits();
     cpu_set_t cpus;
     CHECK(!sched_getaffinity(0, sizeof(cpus), &cpus));

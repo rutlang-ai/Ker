@@ -21,4 +21,26 @@ static inline bool ker_worker_scatter_limits_support(uint16_t required,
     return required && (!total_limit || total_limit >= required) &&
         (!mtu_limit || mtu_limit >= required);
 }
+
+static inline uint32_t ker_worker_rx_eth_overhead(const struct rte_eth_dev_info *info)
+{
+    const uint32_t minimum = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+    if (info->max_mtu != UINT16_MAX && info->max_rx_pktlen > info->max_mtu) {
+        uint32_t reported = info->max_rx_pktlen - info->max_mtu;
+        return reported < minimum ? minimum : reported;
+    }
+    return minimum;
+}
+
+static inline uint64_t ker_worker_rx_required_segments(uint32_t mtu, uint32_t overhead)
+{
+    const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
+    uint64_t frame_length = (uint64_t)mtu + overhead;
+    return frame_length / payload + (frame_length % payload != 0);
+}
+
+static inline bool ker_worker_rx_limits_support(uint64_t required, uint16_t mtu_limit)
+{
+    return required && (!mtu_limit || mtu_limit == UINT16_MAX || required <= mtu_limit);
+}
 #endif
