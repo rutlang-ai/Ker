@@ -37,7 +37,7 @@ foreach(artifact config library)
         message(FATAL_ERROR "Native Linux ${artifact} differs from the build proof; rerun tools/build-native-linux.py")
     endif()
 endforeach()
-add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/packet-device.c
+add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/posix-poll.c src/posix/posix-stat.c
     src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-entropy.c src/posix/realtime-clock.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
@@ -216,6 +216,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-launcher-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_config.py")
     set_tests_properties(native-fstack-launcher-config PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-config-lifecycle
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_lifecycle.py")
+    set_tests_properties(native-fstack-config-lifecycle PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
     add_test(NAME native-linux-fingerprint-stale-inputs
@@ -404,6 +407,12 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-udp-cork COMMAND ${ker_native_test_command}
         --udp-cork-app "$<TARGET_FILE:ker-posix-fstack-udp-cork-test>")
     set_tests_properties(native-fstack-udp-cork PROPERTIES TIMEOUT 90 LABELS "native-udp;fstack")
+    add_executable(ker-vlan-test tests/posix/vlan.c)
+    target_compile_options(ker-vlan-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME native-fstack-vlan COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/vlan.py"
+        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+        --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-vlan-test>")
+    set_tests_properties(native-fstack-vlan PROPERTIES TIMEOUT 120 LABELS "native-dpdk;fstack")
     add_executable(ker-posix-fstack-jumbo-test tests/posix/fstack-jumbo.c)
     target_compile_options(ker-posix-fstack-jumbo-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-jumbo-mtu COMMAND ${ker_native_test_command}

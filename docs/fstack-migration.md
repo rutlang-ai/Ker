@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 117 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 16 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 237 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 125 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 227 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -406,3 +406,47 @@ pool 耗尽时部分链回收及最终可用数恢复。`native-fstack-mbuf-scat
 要求双向多段计数、原始 Linux 计数及零 outstanding。large 模式对照要求多段计数为零。
 这迁移了两项 MTU mode 配置场景及 multisegment send 场景；硬件 PMD、scatter 性能和跨进程共享不在本批验收范围。
 清单现为 120 adapted / 15 partial / 235 blocked / 8 architecture-specific / 55 harness-only，共 433 项。
+
+
+## 原始 Linux 802.1Q VLAN 与 VLAN VIP
+
+内核构建配置启用 `CONFIG_VLAN_8021Q`，Linux/LKL/DPDK/F-Stack 上游源保持原样。
+Ker 仅通过 rtnetlink 创建 `ker.ID` 子接口，再用原始 Linux 地址/链路 API 安装 IPv4 地址和 MTU。
+配置示例：
+
+```ini
+[vlan.100]
+addresses=198.19.100.2/24,198.19.100.3/24,198.19.100.4/24,198.19.100.5/24
+[vlan.200]
+addresses=198.19.200.2/24
+```
+
+也可重复 `--vlan 100=198.19.100.2/24,198.19.100.3/24`；CLI VLAN 列表整体替换 INI VLAN 列表。
+最多 16 个 VLAN，ID 1–4094；每个最多 8 个 IPv4 地址，首地址为主地址，其余为 VIP。
+重复 ID、重复 IP、非法/空地址和未知字段在库/设备准备前拒绝。未显式配置时不继承宿主的 VLAN 环境变量。
+Ethernet channel 为单层 802.1Q 标签保留额外 4 字节，未标记帧仍受原 MTU 限制。
+DPDK VLAN stripping/filter offload 保持关闭，tag/demux 属于原始 Linux。
+
+`native-fstack-vlan` 使用真实 net_tap、独立宿主 VLAN100/200、三个 VLAN100 VIP，
+分别验证 INI + large 和 CLI 替换 + scatter。TCP/UDP 显式绑定 Linux VLAN 设备；IP_PKTINFO 检查接收设备与本地地址。
+每个地址传输完整 1472 字节 UDP 载荷，抓包要求双向完整 1518 字节帧、正确标签/IPv4/UDP 校验和且无分片。
+错误 VLAN200、未配置 VLAN300 和无标签探针须先经过实际 RX 抓包，且不能交给绑定 VLAN100 的 socket。
+这依赖 Linux 的 SO_BINDTODEVICE 语义，不宣称把 Linux weak-host 行为改成 strong-host 防火墙。
+每次要求 5 个原始 Linux passive opens、5 个 UDP input/output，以及零 outstanding。
+
+迁移 `test_ff_load_config_dual_vlan` 与 `test_ff_load_config_vlan_vip_addr` 两个场景，
+当前清单 122 adapted / 15 partial / 233 blocked / 8 architecture-specific / 55 harness-only。
+本批仅验收 IPv4 单层 802.1Q，未实现每 VLAN 独立网关、QinQ、IPv6 VLAN、热变更或硬件 VLAN offload。
+
+## 配置加载边界与恢复
+
+`native-fstack-config-lifecycle` 通过实际 Ker loader 验证最小配置、空文件/无 DPDK
+节、CLI 覆盖与 EAL 引号、缺失文件在库解析前拒绝、全部受支持配置节，以及
+成功/失败交替加载后的状态隔离。8 个测试均为配置层证据，不运行 NIC 或内核。
+
+本批新增 3 项场景适配和 3 项部分覆盖。固定源中名为
+`test_vlan_cfg_handler_isolated` 的用例实际验证不存在的配置文件路径，
+映射按函数体而非名称建立。F-Stack 忽略未知节；Ker 严格拒绝，故仍为 partial。
+F-Stack 的完整 DPDK 字段、KNI/FreeBSD/bond/RSS/reload 配置未因此变为支持。
+重复键测试明确验证 Ker 拒绝重复键；上游的 last-value-wins 用例仍 blocked。
+多次加载不串状态不等同于 allocator 泄漏检测或热重载能力。

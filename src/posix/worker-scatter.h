@@ -10,7 +10,7 @@
 static inline uint16_t ker_worker_scatter_required_segments(uint32_t mtu)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
-    uint64_t frame_length = (uint64_t)mtu + RTE_ETHER_HDR_LEN;
+    uint64_t frame_length = (uint64_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN;
     uint64_t segments = frame_length / payload + (frame_length % payload != 0);
     return segments <= UINT16_MAX ? (uint16_t)segments : 0;
 }
@@ -24,7 +24,7 @@ static inline bool ker_worker_scatter_limits_support(uint16_t required,
 
 static inline uint32_t ker_worker_rx_eth_overhead(const struct rte_eth_dev_info *info)
 {
-    const uint32_t minimum = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+    const uint32_t minimum = RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN;
     if (info->max_mtu != UINT16_MAX && info->max_rx_pktlen > info->max_mtu) {
         uint32_t reported = info->max_rx_pktlen - info->max_mtu;
         return reported < minimum ? minimum : reported;

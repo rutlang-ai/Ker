@@ -1121,16 +1121,27 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Ker minimal typed network/DPDK configuration loads with verified defaults and normalized lcore selection.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-config-lifecycle"
+        }
+      ],
+      "remaining": "F-Stack nb_channel, promiscuous, numa_on, idle_sleep, pkt_tx_delay and global config layout are not exposed by this Ker loader."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_no_dpdk_section",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Empty and network-only configurations preserve absent DPDK settings; explicit CLI options supply launch requirements without stale prior-file state.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-config-lifecycle"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_invalid_lcore_mask",
@@ -1151,9 +1162,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dual_vlan",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Dual original-Linux VLAN children and three VLAN VIPs are configured through the real Ker launcher, then verified by device-bound TCP/UDP and independent tagged Ethernet traffic; F-Stack config ABI and hardware VLAN stripping are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-vlan",
+          "provenance_case": "native-fstack-vlan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_with_vip_addr",
@@ -1170,16 +1186,27 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_override",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Explicit CLI address, port, MTU, lcore mask and quoted EAL tokens override file values through the production loader; Ker remains primary-only.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-config-lifecycle"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_unknown_section",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Unknown sections before or after valid settings fail with status2 before launch setup; a subsequent valid load succeeds with no leaked state.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-config-lifecycle"
+        }
+      ],
+      "remaining": "F-Stack ignores unknown sections and continues; Ker deliberately rejects them. This validates a strict boundary, not equivalent permissive behavior."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
@@ -1191,9 +1218,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_isolated",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Despite its historical name, the pinned upstream case tests a nonexistent configuration path. The actual Ker launcher rejects that path with status2 before library resolution.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-config-lifecycle"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
@@ -1217,9 +1249,15 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_all_sections",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "All currently supported Ker schema families load together, preserving relative paths, typed scalars, sysctl settings and VLAN address lists.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-config-lifecycle"
+        }
+      ],
+      "remaining": "F-Stack KNI, FreeBSD boot, bond, RSS, vdev, reload and other unsupported schema sections remain unimplemented; this is only the supported Ker subset."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
@@ -1447,9 +1485,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_vlan_vip_addr",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Dual original-Linux VLAN children and three VLAN VIPs are configured through the real Ker launcher, then verified by device-bound TCP/UDP and independent tagged Ethernet traffic; F-Stack config ABI and hardware VLAN stripping are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-vlan",
+          "provenance_case": "native-fstack-vlan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_portid_over_max_skips",

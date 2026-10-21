@@ -432,3 +432,12 @@ PMD 必须同时支持 RX scatter 和 TX multi-segment，否则启动失败。
 可与 `--mtu 9000` 一起使用，对端链路也必须设置对应 MTU。
 该设置仅改变 Ethernet 缓冲表示，不启用协议 offload。
 验收运行 `ctest --test-dir BUILD -R '^(worker-mbuf|native-fstack-mbuf-scatter|native-fstack-jumbo-mtu)$' --output-on-failure`。
+
+
+### 802.1Q VLAN
+
+`--vlan ID=IPv4/PREFIX[,IPv4/PREFIX...]` 可重复指定最多 16 个 VLAN，每个最多 8 个地址。
+INI 使用 `[vlan.ID] addresses=...`；CLI 整体替换 INI VLAN 列表。父接口仍由 `--address` 配置。
+原始 Linux 创建 `ker.ID` 子接口，负责标签和地址语义；应用可用 `SO_BINDTODEVICE` 绑定它。
+需要以当前 defconfig 重新构建 native Linux 产物（启用 `CONFIG_VLAN_8021Q`）。
+已验证 net_tap、IPv4、MTU1500、两个 VLAN 和 VLAN VIP；其它部署边界见 `docs/fstack-migration.md`。
