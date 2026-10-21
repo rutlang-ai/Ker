@@ -1151,9 +1151,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dual_vlan",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Dual original-Linux VLAN children and three VLAN VIPs are configured through the real Ker launcher, then verified by device-bound TCP/UDP and independent tagged Ethernet traffic; F-Stack config ABI and hardware VLAN stripping are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-vlan",
+          "provenance_case": "native-fstack-vlan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_with_vip_addr",
@@ -1447,9 +1452,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_vlan_vip_addr",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Dual original-Linux VLAN children and three VLAN VIPs are configured through the real Ker launcher, then verified by device-bound TCP/UDP and independent tagged Ethernet traffic; F-Stack config ABI and hardware VLAN stripping are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-vlan",
+          "provenance_case": "native-fstack-vlan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_portid_over_max_skips",

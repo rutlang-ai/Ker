@@ -19,6 +19,31 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_vlan_configuration_and_cli_replacement(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        self.assertEqual(launcher.parse_arguments([*base, '--', '/bin/true']).vlans, ())
+        values = self.read('[vlan.100]\naddresses=198.19.100.2/24,198.19.100.3/24\n[vlan.200]\naddresses=198.19.200.2/24\n')
+        self.assertEqual([tag for tag, _ in values['vlans']], [100, 200])
+        self.assertEqual(len(values['vlans'][0][1]), 2)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'vlan.ini'
+            config.write_text('[vlan.100]\naddresses=198.19.100.2/24\n')
+            args = launcher.parse_arguments([*base, '--config', str(config), '--vlan', '200=198.19.200.2/24', '--', '/bin/true'])
+            self.assertEqual([tag for tag, _ in args.vlans], [200])
+        for value in ('0=198.19.1.2/24', '4095=198.19.1.2/24', 'x=198.19.1.2/24',
+                      '100=', '100=::1/64', '100=224.0.0.1/24', '100=0.0.0.0/24',
+                      '100=198.19.1.2/24,198.19.1.2/24'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                launcher.vlan_setting(value)
+        for options in (['--vlan', '100=198.18.0.2/24'],
+                        ['--vlan', '100=198.19.1.2/24', '--vlan', '100=198.19.2.2/24'],
+                        ['--vlan', '100=198.19.1.2/24', '--vlan', '200=198.19.1.2/24']):
+            with self.subTest(options=options), self.assertRaises(SystemExit):
+                launcher.parse_arguments([*base, *options, '--', '/bin/true'])
+        for text in ('[vlan.100]\nunknown=1\n', '[vlan.4095]\naddresses=198.19.1.2/24\n'):
+            with self.assertRaises(ValueError):
+                self.read(text)
+
     def test_mbuf_mode_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
         self.assertEqual(launcher.parse_arguments([*base, "--", "/bin/true"]).mbuf_mode, 'large')
