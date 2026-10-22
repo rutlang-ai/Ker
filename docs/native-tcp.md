@@ -731,5 +731,18 @@ CLI 覆盖 INI；省略保留原始 EAL。Typed prefix 插入首个 raw EAL `--`
 本批只补齐覆盖，不新增 Ker 协议实现或修改上游代码。
 
 这是 pinned F-Stack message/name/shutdown bridge 场景的 Linux 扩展，不是上游已注册
-TFO 用例的完整迁移。不验证 cookie 协商/缓存、默认策略、非阻塞 EINPROGRESS 回退、
+TFO 用例的完整迁移。该无 cookie CTest 不验证 cookie 协商/缓存、默认策略、非阻塞 EINPROGRESS 回退、
 丢包重传、TCP_FASTOPEN_CONNECT、IPv6 或性能。
+
+
+`native-fstack-tcp-fastopen-cookies` 单独覆盖 cookie 协商和复用，同样运行宿主参考、
+native 客户端和 native 服务端。只在私有测试命名空间设置 `tcp_fastopen=3`，
+启用客户端/服务端而不启用无 cookie 标志。每个角色走三条独立连接：首次
+MSG_FASTOPEN、再次 MSG_FASTOPEN、普通 connect/send，均验证精确回显、peer、
+双向半关闭和 EOF。native 角色要求至少三次原始 Linux TCP opens 及零mbuf。
+
+独立 AF_PACKET 抓包解析实际 TCP options，必须观察首次空 SYN 的 option34
+cookie 请求、对应 SYN-ACK 返回的4..16字节 cookie、另一客户端端口的新 SYN
+复用完全相同 cookie 并携带完整请求，以及不带 TFO option 的普通空 SYN 对照。
+这验证原始 Linux 实际协商/复用，不以 socket 选项或普通握手成功代替线路证据。
+无效 cookie、密钥轮换、缓存过期、非阻塞回退、丢包重传、IPv6 和性能仍未验证。
