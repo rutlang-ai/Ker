@@ -2,6 +2,7 @@
 #include "host-thread.h"
 #include <errno.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -18,10 +19,28 @@
 void *__real_malloc(size_t size);
 static _Thread_local int fail_next_allocation, count_allocations;
 static _Thread_local long allocation_balance;
+static _Thread_local int fail_next_thread_error, track_thread_start;
+static atomic_uintptr_t observed_start;
+static atomic_uint start_frees;
+int __real_pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
+                          void *(*routine)(void *), void *argument);
+int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
+                          void *(*routine)(void *), void *argument)
+{
+    if (fail_next_thread_error) {
+        int error = fail_next_thread_error;
+        fail_next_thread_error = 0;
+        return error; /* Test failure only; successful starts always use real pthreads. */
+    }
+    return __real_pthread_create(thread, attributes, routine, argument);
+}
 void __real_free(void *pointer);
 void __wrap_free(void *pointer)
 {
     if (count_allocations && pointer) --allocation_balance;
+    uintptr_t expected = (uintptr_t)pointer;
+    if (pointer && atomic_compare_exchange_strong(&observed_start, &expected, 0))
+        atomic_fetch_add(&start_frees, 1);
     __real_free(pointer);
 }
 void *__wrap_malloc(size_t size)
@@ -33,6 +52,7 @@ void *__wrap_malloc(size_t size)
     }
     void *pointer = __real_malloc(size);
     if (count_allocations && pointer) ++allocation_balance;
+    if (track_thread_start && pointer) atomic_store(&observed_start, (uintptr_t)pointer);
     return pointer;
 }
 /* These wrappers affect only the calling test thread while tracking is on.
@@ -134,6 +154,36 @@ static lkl_thread_t count_create(void (*routine)(void *), void *arg)
     if (thread) atomic_fetch_add(&kernel_threads, 1);
     return thread;
 }
+static void recovered_thread(void *argument)
+{
+    unsigned int *value = argument;
+    CHECK(*value == 0x1234 && atomic_load(&start_frees) == 1);
+    CHECK(atomic_load(&observed_start) == 0);
+    *value = 0xabcd;
+}
+static void thread_creation_failures(void)
+{
+    const int errors[] = {EAGAIN, EPERM};
+    for (unsigned int i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        count_allocations = 1;
+        fail_next_thread_error = errors[i];
+        errno = EINVAL; /* pthread_create returns an error number, not errno. */
+        CHECK(ops.thread_create(must_not_run, NULL) == 0);
+        CHECK(!fail_next_thread_error && errno == errors[i]);
+        CHECK(allocation_balance == 0 && atomic_load(&unexpected_runs) == 0);
+        count_allocations = 0;
+        unsigned int value = 0x1234;
+        atomic_store(&start_frees, 0);
+        track_thread_start = 1;
+        lkl_thread_t thread = ops.thread_create(recovered_thread, &value);
+        track_thread_start = 0;
+        CHECK(thread && ops.thread_join(thread) == 0);
+        CHECK(value == 0xabcd && atomic_load(&start_frees) == 1);
+        CHECK(atomic_load(&observed_start) == 0);
+    }
+    puts("PASS: pthread EAGAIN/EPERM return zero with errno, free start storage and never run the failed callback");
+    puts("PASS: real create/join recovers after each failure and frees start storage before callback entry");
+}
 static void mutex_initialization(void)
 {
     count_allocations = track_mutex = 1;
@@ -199,6 +249,7 @@ int main(void)
     CHECK(!fail_next_allocation && errno == ENOMEM);
     CHECK(atomic_load(&unexpected_runs) == 0);
     puts("PASS: thread allocation failure returns zero without running the callback");
+    thread_creation_failures();
 
     fail_next_allocation = 1;
     errno = 0;

@@ -837,3 +837,14 @@ DPDK worker 的单核收发不代表 LKL 宿主运行时单线程：原始 LKL `
 此处保留同步，不进行锁消除，也不宣称单 lcore 独占协议栈调度或性能结论。
 这是 F-Stack thread 场景的 Ker 适配扩展，FreeBSD 线程上下文 ABI 缺口仍保留，
 来源案例计数不变，无 TCP/UDP 协议实现修改。
+
+宿主线程创建失败清理：`native-fstack-thread-runtime` 进一步覆盖 pthread_create
+本身失败后的启动参数所有权。Ker 在 host-thread 适配层持有启动 wrapper，
+pthread_create 返回错误时释放它，返回 LKL 的0句柄并把 pthread 错误号写入 errno；
+成功时由真实子线程在执行用户回调之前释放 wrapper，再传递原始参数。
+仅测试线程启用的链接器故障注入分别返回 EAGAIN/EPERM，要求未调用失败回调、
+分配余额归零，且 errno 从不同的哨兵值变为预期错误。每次失败后都运行真实
+create/join，检查参数、结果及回调入口之前恰好一次 wrapper 释放。
+默认、DEBUG、NDEBUG 三个变体及原始 Linux 启动/关闭都验证实际适配器。
+未修改上游源码、协议或调度实现，不进行应用 pthread 拦截；这不等同于真实
+宿主线程资源耗尽或调度策略测试，FreeBSD 上下文 ABI 缺口和来源案例计数不变。
