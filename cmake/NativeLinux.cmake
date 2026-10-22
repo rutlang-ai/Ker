@@ -717,6 +717,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-peek-offset COMMAND ${ker_native_test_command}
         --peek-offset-app "$<TARGET_FILE:ker-posix-fstack-tcp-peek-offset-test>")
     set_tests_properties(native-fstack-tcp-peek-offset PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-tcp-peek-offset-policy
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/posix/test_tcp_peek_offset_policy.py)
+    set_tests_properties(native-fstack-tcp-peek-offset-policy PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-tcp-keepalive-test tests/posix/fstack-tcp-keepalive.c)
     target_compile_options(ker-posix-fstack-tcp-keepalive-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-keepalive COMMAND ${ker_native_test_command}

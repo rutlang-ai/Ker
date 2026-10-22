@@ -497,15 +497,30 @@ def tcp_shutdown_write(args, launcher, work, env, log):
             print('native TCP shutdown write ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_peek_offset_plan(probe_status):
+    if probe_status == 0:
+        return [('host-reference', True, True), ('client', False, True), ('server', True, False)]
+    if probe_status == 77:
+        return [('client', False, True), ('server', True, False)]
+    raise RuntimeError(f'SO_PEEK_OFF capability probe failed unexpectedly with status {probe_status}')
+
+
 def tcp_peek_offset(args, launcher, work, env, log):
     if not args.peek_offset_app:
         return
-    for index, role in enumerate(['host-reference', 'client', 'server']):
+    probe = subprocess.run([str(args.peek_offset_app), 'probe'], capture_output=True,
+        text=True, env=env, timeout=5)
+    plan = tcp_peek_offset_plan(probe.returncode)
+    if probe.returncode == 77:
+        print('SKIP host-reference SO_PEEK_OFF: ' + probe.stdout.strip(), flush=True)
+    for index, (role, server_peek, client_peek) in enumerate(plan):
         port = 27900 + 4 * index
         native_server = role == 'server'
         address = '198.18.0.2' if native_server else '198.18.0.1'
-        listen = [str(args.peek_offset_app), 'server', address, str(port)]
-        connect = [str(args.peek_offset_app), 'client', address, str(port)]
+        listen = [str(args.peek_offset_app), 'server', address, str(port),
+                  'peek' if server_peek else 'ordinary']
+        connect = [str(args.peek_offset_app), 'client', address, str(port),
+                   'peek' if client_peek else 'ordinary']
         stats_path = work / ('tcp-peek-offset-' + role + '.json')
         native = [*launcher, '--stats', str(stats_path), '--']
         if native_server:
@@ -514,10 +529,20 @@ def tcp_peek_offset(args, launcher, work, env, log):
             connect = native + connect
         captured = []
         with server(listen, port, log, env, captured=captured):
-            client(connect, env)
-        if 'PASS:' not in ''.join(captured):
+            client_output = client(connect, env)
+        server_output = ''.join(captured)
+        if 'PASS:' not in server_output:
             raise RuntimeError('TCP peek offset server did not verify both directions')
-        print(''.join(captured).strip(), flush=True)
+        native_output = server_output if native_server else client_output
+        peer_output = client_output if native_server else server_output
+        if role != 'host-reference' and 'SO_PEEK_OFF cursor' not in native_output:
+            raise RuntimeError('native TCP peek offset role did not execute cursor assertions')
+        if role != 'host-reference' and 'ordinary peek' not in peer_output:
+            raise RuntimeError('host TCP peek offset peer did not execute ordinary receive checks')
+        if role == 'host-reference' and ('SO_PEEK_OFF cursor' not in server_output or
+                                         'SO_PEEK_OFF cursor' not in client_output):
+            raise RuntimeError('host-reference SO_PEEK_OFF assertions were not executed')
+        print(server_output.strip(), flush=True)
         if role != 'host-reference':
             stats = json.loads(stats_path.read_text())
             if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
