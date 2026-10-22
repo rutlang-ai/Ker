@@ -19,6 +19,45 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_eal_log_level_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci']
+        args = launcher.parse_arguments(base + ['--', '/bin/true'])
+        self.assertIsNone(args.eal_log_level)
+        self.assertEqual(args.eal_args, ['--no-pci'])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'log.ini'
+            for value in (1, 4, 7, 8):
+                config.write_text('[dpdk]\nlog_level=' + str(value) + '\n')
+                args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertEqual(args.eal_args, ['--no-pci', '--log-level=' + str(value)])
+                args = launcher.parse_arguments(base + ['--config', str(config), '--eal-log-level', '5',
+                    '--log-level', '7', '--', '/bin/true'])
+                self.assertEqual(args.eal_log_level, 5)
+                self.assertEqual(args.log_level, 7)
+                self.assertEqual(args.eal_args, ['--no-pci', '--log-level=5'])
+            for value in ('0', '-1', '9', '1.5', 'invalid'):
+                config.write_text('[dpdk]\nlog_level=' + value + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + ['--eal-log-level', value, '--', '/bin/true'])
+        for raw in ('--log-level 7', '--log-level=7', '--log-level debug', '--log-level=debug'):
+            args = launcher.parse_arguments(base + ['--eal=' + raw, '--', '/bin/true'])
+            self.assertIsNone(args.eal_log_level)
+            with self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--eal=' + raw, '--eal-log-level', '4', '--', '/bin/true'])
+        for raw in ('--log-level=lib.eal:debug', '--log-level lib.eal:debug',
+                    '--log-level=lib[.]eal,debug'):
+            args = launcher.parse_arguments(base + ['--eal=' + raw, '--eal-log-level', '7', '--', '/bin/true'])
+            self.assertEqual(args.eal_args, raw.split() + ['--log-level=7'])
+        raw_suffix = ['--address', '198.18.0.2/24', '--port', 'net_tap0',
+            '--eal=--no-pci -- --log-level=debug -- --log-level 7']
+        args = launcher.parse_arguments(raw_suffix + ['--eal-log-level', '4', '--', '/bin/true'])
+        self.assertEqual(args.eal_args,
+            ['--no-pci', '--log-level=4', '--', '--log-level=debug', '--', '--log-level', '7'])
+
     def test_eal_memory_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci']
         args = launcher.parse_arguments(base + ['--', '/bin/true'])

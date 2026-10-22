@@ -107,7 +107,7 @@ def ephemeral_ports(text):
     return first, last
 
 
-CONFIG_DEFAULTS = dict(memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -115,7 +115,7 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -198,6 +198,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--numa', action=argparse.BooleanOptionalAction,
         help='use worker lcore NUMA socket for pool/queues (default); --no-numa uses socket 0')
+    parser.add_argument('--eal-log-level', type=int, choices=range(1, 9),
+        help='EAL startup global log level, 1..8; dpdk.log_level; later --log-level still overrides after initialization')
     parser.add_argument('--memory-mb', type=int, help='initial EAL memory in MiB, 1..2147483647; actual allocation remains subject to host capacity')
     huge_policy = parser.add_mutually_exclusive_group()
     huge_policy.add_argument('--no-huge', action='store_true', help='use regular pages for DPDK EAL memory')
@@ -340,6 +342,28 @@ def parse_arguments(argv=None):
     raw_eal_options = list(eal_prefix)
     if not 0 <= args.tx_delay_us <= 100:
         parser.error('--tx-delay-us must be in 0..100')
+    if args.eal_log_level is not None:
+        if not 1 <= args.eal_log_level <= 8:
+            parser.error('--eal-log-level must be in 1..8')
+        raw_global_log_level = False
+        index = 0
+        while index < len(raw_eal_options):
+            token = raw_eal_options[index]
+            if token.startswith('--log-level='):
+                value = token.split('=', 1)[1]
+            elif token == '--log-level':
+                value = raw_eal_options[index + 1] if index + 1 < len(raw_eal_options) else ''
+                index += 1
+            else:
+                index += 1
+                continue
+            if ':' not in value and ',' not in value:
+                raw_global_log_level = True
+                break
+            index += 1
+        if raw_global_log_level:
+            parser.error('--eal-log-level conflicts with EAL --log-level')
+        eal_prefix += ['--log-level=' + str(args.eal_log_level)]
     if args.memory_mb is not None:
         if not 1 <= args.memory_mb <= 2147483647:
             parser.error('--memory-mb must be in 1..2147483647')
