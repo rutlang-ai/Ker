@@ -345,3 +345,8 @@ abort，不能静默释放仍有效的 handle。0 纳秒解除定时，interval 
 动机，本批是 Ker 适配扩展，不增加迁移来源案例数，也不修改上游源码。
 不宣称 timer_delete 等待已经执行中的 SIGEV_THREAD 回调结束；墙钟调整、周期
 定时器、回调静止保证、精确延迟和性能仍未验证。
+
+宿主页内存扩展：`native-fstack-host-pages-debug/release` 在现有 host-interface
+映射场景上覆盖分配失败恢复、固定地址回退清理与 page_free 失败边界；
+成功操作始终执行真实 mmap/munmap，失败的 void 释放回调明确终止。
+两项扩展不增加来源案例计数，具体边界见 native-tcp.md。

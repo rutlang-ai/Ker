@@ -904,3 +904,17 @@ void thread_detach 针对当前宿主线程调用真实 pthread_detach；失败�
 默认、DEBUG、NDEBUG 均验证这些边界，原始 Linux 启停和 TCP/UDP 互通继续回归。
 这扩展 F-Stack thread 场景的 Ker 适配覆盖，不增加来源案例计数；不宣称取消、
 detached worker 的并发回收或 FreeBSD pcurthread 继承合同。
+
+
+宿主页分配与释放边界：Ker 安装真实匿名 mmap 的 page_alloc/page_free 回调，
+保留页对齐、零填充和读写权限。分配失败返回 NULL 并保留宿主 errno；
+void page_free 无法报告 munmap 失败，因此明确 abort，避免继续假定页已释放。
+固定地址 mmap 在宿主忽略 MAP_FIXED_NOREPLACE、返回不同地址时，只释放新返回的
+映射并以 EEXIST 返回失败；这一步清理失败也必须 abort，原有映射不得被解除。
+
+`native-fstack-host-pages-debug/release` 注入 ENOMEM/EAGAIN 后验证真实两页
+分配恢复、对齐、零填充、全部字节写入和 mincore 释放证据；验证真实零长度
+EINVAL、固定地址冲突和旧宿主回退清理。失败释放在未创建线程的独立子进程
+中注入 EINVAL，必须收到 SIGABRT。已有 host-runtime 的原始 Linux 启停及
+TCP/UDP 互通继续验证安装后的适配层。来源案例计数不变，不宣称 hugepage、
+共享/文件映射、MMU 内核或并发地址预留语义。
