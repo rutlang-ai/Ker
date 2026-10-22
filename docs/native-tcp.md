@@ -784,3 +784,15 @@ B 源地址随后须用已缓存的 B cookie 携数据发 SYN并获得完整确�
 对照。native opens、DPDK TX/RX 与零遗留 mbuf 同样必须通过。这是 F-Stack host
 bridge 场景的原始 Linux 扩展，不改变来源案例计数或运行时/上游协议代码。缓存
 过期、丢包重传、IPv6 与性能仍未验证。
+
+`native-fstack-tcp-fastopen-connect` 覆盖原始 Linux TCP_FASTOPEN_CONNECT。
+宿主参考、native 客户端和 native 服务端均先用未缓存 cookie 的选项式 connect
+协商 cookie，再用带缓存的新连接检查延迟 SYN，最后走普通 connect 对照。
+两条选项式连接均设置并读回选项；缓存连接的 connect 必须返回0，TCP_INFO
+必须仍为 SYN_SENT。客户端报告本地端口后等待协调器通过 stdin 放行首次写入。
+协调器在这一屏障处排空独立抓包，要求该连接尚无 SYN；放行后必须观察同一
+端口携已协商 cookie 和完整请求的 SYN。既有 cookie 请求/返回/复用、普通空 SYN、
+精确流、peer、半关闭、EOF、native opens 与零遗留 mbuf 检查同时保留。
+此测试不依赖睡眠，验证明确的写入前屏障，不宣称任意时长的空闲行为。
+不修改运行时或上游协议实现，来源案例计数不变；非阻塞延迟 connect、写前取消、
+缓存过期、丢包重传、IPv6 和性能仍未验证。

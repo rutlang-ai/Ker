@@ -152,6 +152,30 @@ def verify_backup_key(records, port):
         for r in replies for v in new), 'refreshed B-cookie SYN data was not accepted after backup retirement')
 
 
+def run_deferred(connect, environment, capture, port):
+    # The client has returned from connect and verified SYN_SENT, but cannot write
+    # until this coordinator releases stdin. Preserve warm-up packets for verification.
+    with subprocess.Popen(connect, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, env=environment) as client:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(client.stdout, selectors.EVENT_READ)
+                require(selector.select(20), 'deferred connect barrier timeout')
+            fields = client.stdout.readline().split()
+            require(len(fields) == 2 and fields[0] == 'DEFERRED', 'missing deferred connect barrier')
+            source = int(fields[1])
+            require(0 < source < 65536, 'invalid deferred local port')
+            before = tcp_records(capture, port)
+            require(not any(v['source'] == source and v['destination'] == port and v['syn'] for v in before),
+                    'cached-cookie connect sent SYN before the first write')
+            output, error = client.communicate(input='W', timeout=25)
+            require(client.returncode == 0 and 'PASS:' in output, error)
+            return subprocess.CompletedProcess(connect, client.returncode, output, error), before, source
+        finally:
+            if client.poll() is None:
+                client.kill(); client.wait()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app'):
@@ -160,9 +184,10 @@ def main():
     parser.add_argument('--nonblocking', action='store_true', help='validate nonblocking Fast Open initiation and no-cookie resend')
     parser.add_argument('--key-rotation', action='store_true', help='rotate the listener key and require stale-cookie fallback and recovery')
     parser.add_argument('--backup-key', action='store_true', help='accept the old cookie with a backup key, refresh, then retire the backup')
+    parser.add_argument('--deferred-connect', action='store_true', help='require cached-cookie connect to defer SYN until the first write')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
-    args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation or args.backup_key
+    args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation or args.backup_key or args.deferred_connect
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
             '--inside', *sys.argv[1:]]).returncode
@@ -195,6 +220,8 @@ def main():
             connect = [str(args.app), 'client', address, str(port)]
             if args.cookie_exchange:
                 mode = 'backup' if args.backup_key else ('rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies'))
+                if args.deferred_connect:
+                    mode = 'deferred'
                 listen += [mode]; connect += [mode]
             if role == 'server':
                 listen = native + listen
@@ -209,15 +236,25 @@ def main():
                             selector.register(process.stdout, selectors.EVENT_READ)
                             require(selector.select(20), 'Fast Open server startup timeout')
                         require(process.stdout.readline() == f'READY {port}\n', 'Fast Open server not ready')
-                        result = subprocess.run(connect, capture_output=True, text=True, timeout=25, env=environment)
+                        before = []; deferred_source = None
+                        if args.deferred_connect:
+                            result, before, deferred_source = run_deferred(connect, environment, capture, port)
+                        else:
+                            result = subprocess.run(connect, capture_output=True, text=True, timeout=25, env=environment)
                         require(result.returncode == 0 and 'PASS:' in result.stdout, result.stderr)
                         if args.nonblocking:
                             require('no-cookie EINPROGRESS' in result.stdout and 'cached-cookie send accepted' in result.stdout,
                                     'missing nonblocking return/readiness evidence')
                         output = process.communicate(timeout=20)[0]
                         require(process.returncode == 0 and 'PASS:' in output, output)
-                        records = tcp_records(capture, port)
+                        records = before + tcp_records(capture, port)
                         verify_syns(records, port, args.cookie_exchange)
+                        if args.deferred_connect:
+                            deferred_syns = [v for v in records if v['source'] == deferred_source and
+                                v['destination'] == port and v['syn'] and not v['ack']]
+                            require(deferred_syns and all(v['cookie'] and v['payload'] == PAYLOAD
+                                for v in deferred_syns), 'deferred flow emitted an empty or invalid data SYN')
+                            print('PASS: connect returned in SYN_SENT without SYN; first write sent cookie and exact SYN data', flush=True)
                         if args.key_rotation:
                             verify_rotation(records, port)
                             print('PASS: stale cookie rejected, payload resent, replacement cookie accepted', flush=True)
