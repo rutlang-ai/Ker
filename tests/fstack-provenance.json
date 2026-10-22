@@ -1327,6 +1327,16 @@
         "native-fstack-tcp-fastopen"
       ],
       "adaptation": "Ker-specific Linux TCP Fast Open extension of the pinned message/name/shutdown bridge scenario, not an upstream F-Stack TFO test or FreeBSD ABI-equivalence claim. Same unmodified C application runs host reference and independent native-client/native-server modes over net_tap/veth. In private host/native network namespaces, explicitly set original Linux tcp_fastopen=519 (client/server plus send/accept SYN data without cookies); this does not change production defaults or global host policy. The listener sets and reads back TCP_FASTOPEN backlog4. First blocking client socket uses sendto(MSG_FASTOPEN|MSG_NOSIGNAL) without connect, handling a short positive write; second socket uses ordinary connect/send as control. Both validate exact request/echo, peer address/port, graceful half-close and EOF. An independent host AF_PACKET capture observes both directions and requires the entire exact request in a SYN without ACK plus an empty ordinary SYN, so ordinary handshakes cannot masquerade as Fast Open. Each native role requires at least two matching original-Linux TCP opens, positive DPDK traffic and zero outstanding packet buffers. No Ker protocol/runtime code or upstream sources are changed. Cookie negotiation/cache, normal default policy, nonblocking EINPROGRESS/fallback, retransmission/loss, Fast Open connect option, IPv6 and performance remain unqualified. Source inventory counts are unchanged."
+    },
+    "native-fstack-tcp-fastopen-cookies": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-fastopen-cookies"
+      ],
+      "adaptation": "Ker-specific original-Linux TCP Fast Open cookie extension of pinned message/name/shutdown bridge scenarios, not a registered upstream F-Stack cookie test or FreeBSD equivalence claim. Reuses the same C/Python harness as the separate no-cookie CTest. Private host/native network namespaces explicitly use tcp_fastopen=3 (client/server enabled without no-cookie flags); production defaults and global host settings are untouched. Host reference and independent native client/server each make three exact request/echo/peer/half-close/EOF connections: initial blocking MSG_FASTOPEN, a fresh MSG_FASTOPEN connection, then ordinary connect/send control. Independent AF_PACKET capture parses real IPv4/TCP option boundaries, requiring initial empty SYN with option34 cookie request, corresponding SYN-ACK with nonempty4..16-byte cookie, and exact cookie reuse on a different client source port together with the complete precise payload in SYN. An empty ordinary SYN without a Fast Open option is also required. Each native role requires at least three original-Linux TCP opens, positive DPDK TX/RX and zero outstanding buffers. All protocol, cookie generation and cache behavior come from original Linux with no upstream/runtime edits. This qualifies observed cookie request/issue/reuse only; invalid-cookie handling, key rotation, cache expiry, nonblocking EINPROGRESS/fallback, loss/retransmission, IPv6 and performance remain unqualified. Source-case migration counts are unchanged."
     }
   }
 }

@@ -345,6 +345,11 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-tcp-fastopen-test>")
     set_tests_properties(native-fstack-tcp-fastopen PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-tcp-fastopen-cookies
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/tcp-fastopen.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-tcp-fastopen-test>" --cookie-exchange)
+    set_tests_properties(native-fstack-tcp-fastopen-cookies PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-promiscuous-test tests/posix/promiscuous.c)
     target_compile_options(ker-promiscuous-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-numa-policy

@@ -29,7 +29,8 @@ static void transfer(int fd, void *buffer, size_t length, int sending)
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 4);
+    CHECK(argc == 4 || (argc == 5 && !strcmp(argv[4], "cookies")));
+    int connections = argc == 5 ? 3 : 2;
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(atoi(argv[3]))};
     CHECK(inet_pton(AF_INET, argv[2], &address.sin_addr) == 1);
     if (!strcmp(argv[1], "server")) {
@@ -41,7 +42,7 @@ int main(int argc, char **argv)
         CHECK(getsockopt(listener, IPPROTO_TCP, TCP_FASTOPEN, &actual, &length) == 0 && actual == queue);
         CHECK(bind(listener, (void *)&address, sizeof(address)) == 0 && listen(listener, 4) == 0);
         printf("READY %s\n", argv[3]); fflush(stdout);
-        for (int phase = 0; phase < 2; ++phase) {
+        for (int phase = 0; phase < connections; ++phase) {
             int fd = accept4(listener, NULL, NULL, SOCK_CLOEXEC); CHECK(fd >= 0); timeout(fd);
             char data[sizeof(request)]; transfer(fd, data, sizeof(data), 0);
             CHECK(!memcmp(data, request, sizeof(data)));
@@ -52,9 +53,9 @@ int main(int argc, char **argv)
         CHECK(close(listener) == 0);
     } else {
         CHECK(!strcmp(argv[1], "client"));
-        for (int phase = 0; phase < 2; ++phase) {
+        for (int phase = 0; phase < connections; ++phase) {
             int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0); timeout(fd);
-            if (!phase) {
+            if (phase < connections - 1) {
                 ssize_t sent = sendto(fd, request, sizeof(request), MSG_FASTOPEN | MSG_NOSIGNAL,
                                      (void *)&address, sizeof(address));
                 CHECK(sent > 0 && sent <= (ssize_t)sizeof(request));

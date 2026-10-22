@@ -615,3 +615,10 @@ bond down_delay 与配置 ABI 缺口保持 partial，清单计数不变。
 观察到完整 SYN 数据。私有命名空间显式启用无 cookie 策略；不改变部署默认值。
 这是 host message/name/shutdown 桥接场景的 Ker/Linux 扩展，非上游注册 TFO 用例，
 不增加源用例迁移计数，不替代 cookie、重传或性能资格验证。
+
+
+`native-fstack-tcp-fastopen-cookies` 补齐上一批保留的 cookie 协商/复用边界：
+私有测试命名空间用原始 Linux 策略3，抓包关联初次 SYN cookie 请求、SYN-ACK
+发放值及另一连接 SYN 对同一 cookie 的携数据复用，另有普通连接对照。
+宿主参考与 native 双角色验证完全相同的流/EOF合同。该 Linux 扩展仍不计为
+新增源注册用例迁移；无效 cookie、轮换、过期和非阻塞/丢包场景仍明确保留。
