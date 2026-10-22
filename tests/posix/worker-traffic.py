@@ -27,7 +27,8 @@ def frame(destination, source, ethertype, length, seed):
             bytes((seed + i) % 256 for i in range(length - 14)))
 
 
-def run_worker(worker, work, traffic, clock_probe=None, batched_stop=False):
+def run_worker(worker, work, traffic, clock_probe=None, batched_stop=False,
+               signal_batched_stop=None):
     app, channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     app.settimeout(5)
     control_read, control_write = os.pipe()
@@ -49,7 +50,7 @@ def run_worker(worker, work, traffic, clock_probe=None, batched_stop=False):
         try:
             process = subprocess.Popen([str(worker), '--packet-fd', str(channel.fileno()),
                 '--control-fd', str(control_read), '--port', 'net_tap0',
-                '--tx-delay-us', '100' if batched_stop else '0', '--', *eal],
+                '--tx-delay-us', '100' if (batched_stop or signal_batched_stop) else '0', '--', *eal],
                 pass_fds=(channel.fileno(), control_read), stdout=subprocess.PIPE,
                 stderr=log, text=True, env=environment)
             channel.close(); os.close(control_read); control_read = -1
@@ -96,7 +97,7 @@ def run_worker(worker, work, traffic, clock_probe=None, batched_stop=False):
             stopped_pid, stopped_status = os.waitpid(process.pid, os.WUNTRACED)
             require(stopped_pid == process.pid and os.WIFSTOPPED(stopped_status),
                     'worker did not stop for control-channel synchronization')
-            if batched_stop and traffic:
+            if (batched_stop or signal_batched_stop) and traffic:
                 drain_peer = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
                 drain_peer.bind(('kerhost', 0)); drain_peer.settimeout(5)
                 for index, length in enumerate((60, 127, 1514)):
@@ -105,8 +106,11 @@ def run_worker(worker, work, traffic, clock_probe=None, batched_stop=False):
                     require(app.send(HEADER + packet) == 12 + length, 'short queued drain send')
             if clock_probe:
                 marker.touch()
-            os.write(control_write, b'xx')
-            os.close(control_write); control_write = -1
+            if signal_batched_stop:
+                os.kill(process.pid, getattr(signal, 'SIG' + signal_batched_stop))
+            else:
+                os.write(control_write, b'xx')
+                os.close(control_write); control_write = -1
             os.kill(process.pid, signal.SIGCONT)
             worker_paused = False
             output, _ = process.communicate(timeout=10)
@@ -124,15 +128,19 @@ def run_worker(worker, work, traffic, clock_probe=None, batched_stop=False):
             require(len(lines) == 1, 'expected one DONE snapshot: ' + output)
             stats = json.loads(lines[0].split(' ', 1)[1])
             require(set(COUNTERS) <= stats.keys(), 'missing traffic counter')
-            require(stats['stop_requests'] == 2, 'worker did not consume both stop requests')
-            require(stats['control_eof'] is True, 'worker did not observe control EOF')
+            if signal_batched_stop:
+                require(stats['stop_requests'] == 0 and stats['control_eof'] is False,
+                        'signal shutdown changed control-channel state')
+            else:
+                require(stats['stop_requests'] == 2, 'worker did not consume both stop requests')
+                require(stats['control_eof'] is True, 'worker did not observe control EOF')
             expected = dict.fromkeys(COUNTERS, 0)
             if traffic:
                 expected.update(tx=3, rx=3, tx_bytes=1701, rx_bytes=1701, tx_dropped=2, dropped=2)
-            if batched_stop and traffic:
+            if (batched_stop or signal_batched_stop) and traffic:
                 expected.update(tx=6, tx_bytes=3402)
                 require(ready['tx_delay_us'] == 100 and stats['tx_drain_flushes'] > 0,
-                        'queued batch was not flushed by the real stop/EOF path')
+                        'queued batch was not flushed by the bounded stop path: ' + json.dumps(stats))
             for name, value in expected.items():
                 # Retries are scheduling-dependent; they must not inflate packet/byte totals.
                 if traffic and name in ('tx_retries', 'rx_retries'):
@@ -167,6 +175,7 @@ def main():
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--clock-probe', type=Path)
     parser.add_argument('--batched-stop', action='store_true')
+    parser.add_argument('--signal-batched-stop', choices=('TERM', 'INT'))
     args = parser.parse_args()
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
@@ -175,6 +184,8 @@ def main():
             command += ['--clock-probe', str(args.clock_probe.resolve())]
         if args.batched_stop:
             command += ['--batched-stop']
+        if args.signal_batched_stop:
+            command += ['--signal-batched-stop', args.signal_batched_stop]
         return subprocess.run(command).returncode
     # Private test namespace only: eliminate unsolicited IPv6 link traffic.
     for scope in ('all', 'default'):
@@ -189,6 +200,9 @@ def main():
             run_worker(args.worker, work, False, args.clock_probe)
         else:
             run_worker(args.worker, work, True, batched_stop=args.batched_stop)
+            if args.signal_batched_stop:
+                run_worker(args.worker, work, True,
+                           signal_batched_stop=args.signal_batched_stop)
     print('PASS: actual DPDK ' + ('monotonic drain and clock-failure cleanup' if args.clock_probe
           else 'idle/traffic snapshots, frame bytes, directional drops and repeated stop'), flush=True)
     return 0

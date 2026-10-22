@@ -213,6 +213,14 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-traffic.py"
             --worker "$<TARGET_FILE:ker-io-worker>" --batched-stop)
     set_tests_properties(native-fstack-worker-batched-stop PROPERTIES TIMEOUT 60 LABELS "fstack;dpdk")
+    add_test(NAME native-fstack-worker-term-batched-stop
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-traffic.py"
+            --worker "$<TARGET_FILE:ker-io-worker>" --signal-batched-stop TERM)
+    set_tests_properties(native-fstack-worker-term-batched-stop PROPERTIES TIMEOUT 60 LABELS "fstack;dpdk")
+    add_test(NAME native-fstack-worker-int-batched-stop
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-traffic.py"
+            --worker "$<TARGET_FILE:ker-io-worker>" --signal-batched-stop INT)
+    set_tests_properties(native-fstack-worker-int-batched-stop PROPERTIES TIMEOUT 60 LABELS "fstack;dpdk")
     add_test(NAME native-fstack-worker-clock-interop
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-traffic.py"
             --worker "$<TARGET_FILE:ker-io-worker>" --clock-probe "$<TARGET_FILE:ker-worker-clock-probe>")

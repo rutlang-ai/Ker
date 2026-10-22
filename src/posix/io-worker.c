@@ -280,7 +280,7 @@ int main(int argc, char **argv)
         promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"), idle_sleep_us, tx_delay_us);
     fflush(stdout);
     status = 0;
-    while (!stopping) {
+    for (;;) {
         char commands[256];
         ssize_t control;
         size_t control_budget = 4096;
@@ -294,7 +294,8 @@ int main(int argc, char **argv)
         } while (control > 0 && control_budget);
         if (control < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { status = 1; break; }
         if (control == 0) control_eof = true;
-        if ((control == 0 || stop_requests) && !draining) {
+        /* Signals use the same bounded drain as control-channel shutdown. */
+        if ((stopping || control == 0 || stop_requests) && !draining) {
             draining = true;
             if (ker_worker_now_ns(&drain_started)) goto clock_error;
             drain_progress = drain_started;

@@ -644,4 +644,7 @@ PMD 接收的前缀转移所有权，未接收的后缀仍属于 worker。长度
 FIFO、字节/scatter计数、期限边界、满批与清理；不将受控回调称作真实PMD背压测试。
 `native-fstack-worker-batched-stop` 在暂停的真实 worker 通道中放入三帧及stop/EOF后恢复，
 要求三帧按序到达独立宿主、精确计数、实际停止刷新及资源回收。
+`native-fstack-worker-term-batched-stop` 和 `native-fstack-worker-int-batched-stop`
+分别在暂停 worker 时排入三帧并发送 SIGTERM/SIGINT；恢复后要求帧按序送达、出现停止刷新、
+DONE 成功且 mbuf 全部回收，不依赖控制通道停止请求。
 微秒值控制等待策略，不保证宿主调度延迟或吞吐；也不等价于 F-Stack 周期TSC刷新或多进程模型。
