@@ -417,3 +417,8 @@ TCP_WINDOW_CLAMP 扩展：`native-fstack-tcp-window-clamp` 将共享选项和初
 限制关联到实际原生握手抓包，并验证超过初始窗口大小的双向流。原版 Linux 在
 数据阶段可重算 clamp，测试不声明永久窗口上限。此项扩展已有 socket 场景，
 源案例仍有 222 个 blocked、20 个 partial。
+
+
+TCP_LINGER2 扩展：`native-fstack-tcp-linger2` 检查真实 FIN_WAIT2、保留别名的
+接收能力及最后关闭后的 RST/CLOSE_WAIT 错误，协议行为均来自原版 Linux。
+本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。

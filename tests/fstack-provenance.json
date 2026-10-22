@@ -1556,6 +1556,17 @@
         "native-fstack-tcp-window-clamp"
       ],
       "adaptation": "Ker-specific original-Linux TCP_WINDOW_CLAMP extension of already-adapted socket/dup cases, not an additional pinned source case. Run host reference and native client/server against independent host peers over DPDK net_tap/veth. Fix SO_RCVBUF65536 and set clamp4096 before connect/accept, checking dup-shared state, short-option-length EINVAL with state preserved, zero reset while unconnected versus EINVAL while listening/connected, and normalization of a too-small positive value before restoring4096. An independent control TCP stream ensures both endpoints finish initial state/error checks before application payload can change receive sizing. Connected effective clamp must be positive and <=4096 with equal alias readback. Native full PCAP must contain both handshake directions and native SYN/SYN-ACK raw window in1..4096. Decode window-scale offers from both endpoints, applying the local scale only when both offered it; record later native maximum effective window and require positive ACK-window evidence plus >=16385 native payload bytes. Verify exact bidirectional16KiB streams, a small recovery exchange, positive shared post-data clamp readback and half-close EOF. Later receive windows are deliberately not constrained to4096: original pinned Linux tcp_measure_rcv_mss can recalculate scaling_ratio and overwrite window_clamp even with application-fixed SO_RCVBUF; this is observed original-kernel behavior, not a Ker protocol defect to patch. Require at least two actual native opens (control and tested data), DPDK TX/RX and zero outstanding buffers. No production/upstream changes, permanent post-handshake cap guarantee, dynamic clamp-shrink deadline, concurrent tuning, loss/retransmission or IPv6 qualification. Source-case counts remain unchanged."
+    },
+    "native-fstack-tcp-linger2": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-linger2"
+      ],
+      "adaptation": "Ker-specific original-Linux TCP_LINGER2 extension of already-adapted socket/dup bridge scenarios, not another pinned source case. Host-reference and native client/server runs use independent peers over DPDK net_tap/veth and a separate control TCP stream. In each endpoint direction the closer verifies SO_LINGER remains disabled, changes TCP_LINGER2 through dup to2, checks short-length EINVAL without changing it, resets0 to the kernel default, then sets-1. Send a byte and SHUT_WR; the peer verifies the byte and EOF before the closer waits for actual TCP_INFO FIN_WAIT2. Close the original descriptor, coordinate another byte from the peer and require the remaining alias to receive it while still in FIN_WAIT2. Only the last alias close triggers abortive orphan cleanup. The peer must observe POLLERR and original-Linux CLOSE_WAIT error EPIPE through SO_ERROR, then cleared shared error, repeated EOF and EPIPE on MSG_NOSIGNAL send. Verify full native TX/RX captures contain both FIN and RST for the tested data port, actual control+two data native opens, real DPDK traffic and zero outstanding buffers. No production/upstream/protocol changes, positive-linger orphan timer-expiry guarantee, TIME_WAIT duration, exact deadlines, packet-loss retransmission or IPv6 qualification. Source-case counts remain unchanged."
     }
   }
 }

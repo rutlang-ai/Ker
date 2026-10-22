@@ -1077,3 +1077,16 @@ TCP_WINDOW_CLAMP：`native-fstack-tcp-window-clamp` 在宿主参考及原生客�
 变化时重新写入 window_clamp，即使应用已设置 SO_RCVBUF；实测后续窗口可增大。
 测试保留该原版 Linux 行为，不增加 Ker 自有窗口逻辑，也不修改上游源码。
 不覆盖动态缩小的时限、并发调参、丢包重传或 IPv6。
+
+
+TCP_LINGER2：`native-fstack-tcp-linger2` 在宿主参考、原生客户端和原生服务器
+中分别验证双方主动半关闭的路径。独立控制连接协调先发送字节再 SHUT_WR，
+对端验证数据与 EOF；关闭方必须通过 TCP_INFO 看到真实 FIN_WAIT2，才关闭
+原描述符。保留的 dup 别名仍须接收对端的后续字节，且状态保持 FIN_WAIT2；
+最后关闭该别名时，负值 TCP_LINGER2 触发原版 Linux 的孤儿 socket 清理。
+对端须观察到 POLLERR，并通过 SO_ERROR 读取 Linux 在 CLOSE_WAIT 收到 RST
+时给出的 EPIPE；错误消费后共享状态清零，随后 EOF 与 MSG_NOSIGNAL 的 EPIPE
+也必须正确。原生数据端口抓包必须在 TX/RX 均出现 FIN 和 RST，并具有至少三次
+原生连接、实际 DPDK 收发及零 outstanding。另查 dup 共享、正值设置、零重置
+和错误长度 EINVAL；SO_LINGER 保持关闭，避免混淆两组选项。
+测试不声明正值 LINGER2 的孤儿定时器期限、TIME_WAIT 时长、丢包重传或 IPv6。

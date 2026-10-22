@@ -763,6 +763,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-cork COMMAND ${ker_native_test_command}
         --cork-app "$<TARGET_FILE:ker-posix-fstack-tcp-cork-test>")
     set_tests_properties(native-fstack-tcp-cork PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-linger2-test tests/posix/fstack-tcp-linger2.c)
+    target_compile_options(ker-posix-fstack-tcp-linger2-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-linger2 COMMAND ${ker_native_test_command}
+        --linger2-app "$<TARGET_FILE:ker-posix-fstack-tcp-linger2-test>")
+    set_tests_properties(native-fstack-tcp-linger2 PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-tcp-linger-test tests/posix/fstack-tcp-linger.c)
     target_compile_options(ker-posix-fstack-tcp-linger-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-linger COMMAND ${ker_native_test_command}
