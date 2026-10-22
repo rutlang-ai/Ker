@@ -3,6 +3,10 @@
 #include "host-memory.h"
 #include "host-clock.h"
 #include <errno.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +32,71 @@ static void closed(int native)
 {
     CHECK(lkl_sys_fcntl(native, LKL_F_GETFD, 0) == -LKL_EBADF);
 }
+static void host_datagram(int host)
+{
+    int type = -1; socklen_t length = sizeof(type);
+    CHECK(syscall(SYS_getsockopt, host, SOL_SOCKET, SO_TYPE, &type, &length) == 0);
+    CHECK(type == SOCK_DGRAM && length == sizeof(type));
+    struct sockaddr_in address = {0}; length = sizeof(address);
+    CHECK(syscall(SYS_getsockname, host, &address, &length) == 0);
+    CHECK(length == sizeof(address) && address.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    static const char expected[] = "host socket remains independent";
+    CHECK(syscall(SYS_sendto, host, expected, sizeof(expected), 0,
+                  &address, sizeof(address)) == (long)sizeof(expected));
+    char actual[sizeof(expected)];
+    CHECK(syscall(SYS_recvfrom, host, actual, sizeof(actual), 0, NULL, NULL) == (long)sizeof(actual));
+    CHECK(!memcmp(actual, expected, sizeof(actual)));
+}
+static void coexistence(void)
+{
+    for (int host_first = 0; host_first < 2; ++host_first) {
+        int original = (int)syscall(SYS_socket, AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        CHECK(original >= 0);
+        /* Reserve a host fd outside bootstrap descriptors; the private Linux
+         * table can hold the identical number without sharing the object. */
+        int host = (int)syscall(SYS_fcntl, original, F_DUPFD_CLOEXEC, 256);
+        CHECK(host >= 256 && host < KER_FD_LIMIT);
+        CHECK(syscall(SYS_close, original) == 0);
+        struct timeval timeout = {.tv_sec = 2};
+        CHECK(syscall(SYS_setsockopt, host, SOL_SOCKET, SO_RCVTIMEO,
+                      &timeout, sizeof(timeout)) == 0);
+        struct sockaddr_in address = {.sin_family = AF_INET,
+                                     .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        CHECK(syscall(SYS_bind, host, &address, sizeof(address)) == 0);
+        int first = native_socket(LKL_SOCK_STREAM);
+        int native = (int)lkl_sys_fcntl(first, LKL_F_DUPFD_CLOEXEC, host);
+        CHECK(native == host);
+        CHECK(lkl_sys_close(first) == 0);
+        CHECK(ker_fd_get(host) == NULL);
+        int app = ker_fd_export(native, KER_FD_SOCKET, -1, O_CLOEXEC, 0, -1);
+        CHECK(app >= 0 && app != host);
+        CHECK(ker_fd_get(host) == NULL);
+        struct ker_fd *entry = ker_fd_get(app);
+        CHECK(entry && entry->native == host && entry->kind == KER_FD_SOCKET);
+        socket_type(entry->native, LKL_SOCK_STREAM);
+        CHECK(ker_fd_put(entry) == 0);
+        CHECK(syscall(SYS_fcntl, app, F_GETFD) == FD_CLOEXEC);
+        CHECK((syscall(SYS_fcntl, app, F_GETFL) & O_PATH) == O_PATH);
+        host_datagram(host);
+        if (host_first) {
+            CHECK(syscall(SYS_close, host) == 0);
+            errno = 0;
+            CHECK(syscall(SYS_fcntl, host, F_GETFD) == -1 && errno == EBADF);
+            entry = ker_fd_get(app); CHECK(entry && entry->native == native);
+            socket_type(entry->native, LKL_SOCK_STREAM);
+            CHECK(ker_fd_put(entry) == 0);
+        }
+        CHECK(ker_fd_close(app) == 0);
+        CHECK(ker_fd_get(app) == NULL); closed(native);
+        errno = 0;
+        CHECK(syscall(SYS_fcntl, app, F_GETFD) == -1 && errno == EBADF);
+        if (!host_first) {
+            host_datagram(host);
+            CHECK(syscall(SYS_close, host) == 0);
+        }
+    }
+    puts("PASS: same-number host UDP/native TCP descriptors round-trip through real exports with independent close lifetimes");
+}
 static void invalid_indices(void)
 {
     const int invalid[] = {-1, KER_FD_LIMIT, 1 << 30};
@@ -51,6 +120,7 @@ int main(void)
     CHECK(lkl_init(&lkl_host_ops) == 0);
     CHECK(lkl_start_kernel("%s", "mem=64M") == 0);
     invalid_indices();
+    coexistence();
     int empty = (int)syscall(SYS_openat, AT_FDCWD, "/dev/null", O_RDONLY, 0);
     CHECK(empty >= 0 && ker_fd_get(empty) == NULL);
     CHECK(syscall(SYS_close, empty) == 0);

@@ -360,3 +360,9 @@ INI 重复键：`native-fstack-config-lifecycle` 与
 `test_ff_load_config_repeat_keys_no_leak`；最终值生效、CLI 优先、重复加载隔离，
 并验证真实 DPDK/Linux 的最终地址与 EAL 参数。该来源项从 blocked 转为
 scenario-adapted（126 adapted、224 blocked、20 partial）。
+
+描述符共存：`native-fstack-fd-map` 进一步覆盖相同内部 fd 数值的宿主 UDP/
+原生 Linux TCP 对象、Ker export/lookup 往返和两种关闭顺序；使用真实
+宿主 socket、原生 socket 和 fd 预留，来源 `test_ff_kernel_fd_encode_roundtrip`
+按映射表架构适配，固定偏移编码 ABI 不在覆盖范围。清单为 127 adapted、
+223 blocked、20 partial。

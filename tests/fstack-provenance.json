@@ -1435,6 +1435,16 @@
         "native-fstack-launcher-config-interop"
       ],
       "adaptation": "Use the production Ker INI loader with final-key precedence, including repeated sections continuing the same section. Repeated address CIDRs (address plus netmask), gateways, DPDK ports, sysctl values and VLAN address lists replace previous values. Twenty load/reset cycles and mutation of returned dictionaries verify isolation of later loads and defaults. CLI values still override final file values; invalid final values, unknown options and unknown sections still fail before startup. The native launcher integration uses an earlier wrong address, invalid EAL string and unused log directory followed by final working values. Both native TCP client/server roles over real DPDK net_tap must pass with kernel open counters, capture/log files and zero outstanding mbufs, proving effective address/EAL precedence plus CLI port/stat overrides. Python-managed configuration storage replaces the upstream strdup/free path; this is scenario adaptation rather than F-Stack global struct ABI or native heap-leak instrumentation. Intermediate values are overwritten before typed conversion, so malformed superseded values do not fail independently. No Linux/DPDK source or protocol behavior changes."
+    },
+    "native-fstack-fd-coexistence": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_kernel_fd_encode_roundtrip"
+      ],
+      "ker_ctests": [
+        "native-fstack-fd-map"
+      ],
+      "adaptation": "Adapt the pinned descriptor-namespace separation and round-trip scenario to actual Ker fd exports rather than the F-Stack host_fd + FF_KERNEL_FD_BASE helpers. Boot the original pinned Linux kernel and create a real private native TCP socket plus an independent real host UDP loopback socket with an identical internal descriptor number chosen through each namespace fcntl. Export consumes the native fd and reserves a distinct real host O_PATH/CLOEXEC application descriptor; lookup must return the exact native number and socket kind while the host number remains unmanaged. Native SO_TYPE and actual host datagram send/receive prove distinct objects. Close the native export first and require the host socket to continue real traffic; repeat with host first and require native SO_TYPE to remain valid. Each export removal must clear the association, release its real host reservation and close only its native fd. Existing fd-map tests also cover aliases, replacement and out-of-range safety. No dummy descriptors or successful syscall stubs. This is an architectural scenario adaptation, not fixed-offset encode/decode/predicate ABI, exact numeric ranges, or FreeBSD protocol equivalence. No production implementation or upstream source changes."
     }
   }
 }

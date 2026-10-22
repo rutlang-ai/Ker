@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 126 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 127 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 20 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 224 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 223 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -757,4 +757,9 @@ FreeBSD 上下文 ABI 仍未覆盖。
 INI 重复键现已采用最后一项生效，并以重复加载隔离及真实 DPDK/native TCP
 证明最终地址、EAL 与日志目录生效。`test_ff_load_config_repeat_keys_no_leak`
 从 blocked 转为 scenario-adapted；Python 管理配置存储，不宣称 F-Stack
-全局结构 ABI 或 C strdup/free 泄漏检测。当前未完成为 224 blocked + 20 partial。
+全局结构 ABI 或 C strdup/free 泄漏检测。该配置批次后未完成为 224 blocked + 20 partial。
+
+描述符命名空间共存场景 `test_ff_kernel_fd_encode_roundtrip` 现通过真实
+Ker/LKL export/lookup 与宿主 fd 预留验证，转为 scenario-adapted。
+Ker 使用映射表，不使用 F-Stack 固定偏移编码；不声明其 helper ABI 或数值范围等价。
+当前未完成为 223 blocked + 20 partial，共 243 项。

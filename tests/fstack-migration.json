@@ -3313,9 +3313,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_kernel_fd_encode_roundtrip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Descriptor namespace coexistence adapted to the actual Ker/LKL export and lookup table: same-number real host UDP/native TCP sockets retain distinct identities and close lifetimes. Real host placeholders replace F-Stack fixed-offset encoding; this does not claim arithmetic helper ABI or unrestricted numeric-fd range equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-fd-map",
+          "provenance_case": "native-fstack-fd-coexistence"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_native_fd_map",

@@ -942,3 +942,13 @@ INI 重复配置键采用最后一项生效，重复节继续同一节；CLI 覆
 `native-fstack-launcher-config-interop` 以早期错误地址/EAL/日志目录加后续
 有效值，验证真实 DPDK 与原始 Linux 在 TCP 两种角色下只使用最终配置，
 CLI port/stats 仍优先。对应 F-Stack 重复键来源场景，不声称 C 内存分配 ABI 等价。
+
+
+描述符命名空间共存：`native-fstack-fd-map` 在原始 Linux 内核内创建 TCP socket，
+同时以宿主 syscall 创建 UDP loopback socket，再通过各自的 fcntl 使内部 fd
+数值相同。Ker 导出原生 fd 时必须预留不同的真实宿主 O_PATH/CLOEXEC fd；
+查表返回原始 native fd 和类型，宿主 socket 的 fd 必须仍被视为 unmanaged。
+测试执行真实宿主 UDP 自发自收、原生 SO_TYPE 查询，并分别先关闭 native export
+或宿主 socket，验证另一方继续可用。最后同时检查映射清除、宿主预留释放、
+原生 fd 关闭。它适配 F-Stack 编码往返的命名空间隔离意图，
+不声明固定偏移算术、helper ABI 或数值范围等价，不增加 Ker 自有协议路径。
