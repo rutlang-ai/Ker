@@ -1035,3 +1035,15 @@ TCP_USER_TIMEOUT：`native-fstack-tcp-user-timeout` 在宿主参考、原生客�
 原生运行还必须具有 TCPWinProbe、实际 TCP 连接、DPDK TX/RX 和零 outstanding。
 该项不声明精确 1000ms 墙钟、丢包重传期限、keepalive 失效或 IPv6 覆盖；
 所有窗口探测和关闭行为来自原版 Linux，未修改协议实现。
+
+
+TCP_NOTSENT_LOWAT：`native-fstack-tcp-notsent-lowat` 在宿主参考及原生客户端/
+服务器发送端中验证未发送数据阈值。控制连接阻止宿主对端读取，发送端扩大
+SO_SNDBUF 并设置 LOWAT4096，使用 MSG_DONTWAIT 填充至 EAGAIN。
+必须观察到 SIOCOUTQNSD 至少 4096、无 POLLOUT，且已接受字节小于查询所得
+发送缓冲的四分之一。保持对端不读取，仅经 dup 将阈值改为 UINT32_MAX 时
+必须可写，恢复 4096 后必须再次不可写，以区分低水位背压与发送内存耗尽。
+释放对端后，五秒内恢复可写，继续发送独立字节并半关闭；对端必须验证全部
+已接受字节及 EOF，发送端也验证反向 EOF。另查默认值、共享选项、重置与
+错误长度的 EINVAL 恢复，以及实际原生连接、DPDK TX/RX 和零 outstanding。
+该项不承诺精确队列大小或通知期限，不覆盖并发发送、丢包重传或 IPv6。

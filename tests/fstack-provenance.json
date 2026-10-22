@@ -1523,6 +1523,17 @@
         "native-fstack-tcp-user-timeout"
       ],
       "adaptation": "Ker-specific original-Linux TCP_USER_TIMEOUT extension of already-adapted socket/dup bridge cases; not an additional pinned source case. Host-reference, native-client sender and native-server sender runs use independent host peers over real DPDK net_tap/veth. Before the handshake each endpoint limits its receive buffer to4096; an independent control TCP stream holds the receiver from reading until the sender observes a timeout. Sender checks default0, sets1000ms through dup, rejects negative EINVAL without losing the value, resets0 and restores1000ms, then limits SO_SNDBUF and sends known bytes with MSG_DONTWAIT until real EAGAIN. A bounded10-second poll must report POLLERR; SO_ERROR through an alias must yield ETIMEDOUT, a second read through the original descriptor must yield0, and a subsequent MSG_NOSIGNAL send must fail EPIPE. Only then does control release the receiver to verify every delivered byte until EOF/ECONNRESET, requiring positive delivery smaller than the reported accepted send count. Both data aliases and control connections are closed normally. Native runs require original-Linux active/passive opens, a positive TCPWinProbe counter, actual DPDK TX/RX and zero outstanding buffers. Qualifies a responsive peer with a persistently closed receive window, not packet loss, retransmission deadlines, exact1000ms wall time, keepalive failure or IPv6. No production/upstream/protocol implementation changes; source-case counts remain unchanged."
+    },
+    "native-fstack-tcp-notsent-lowat": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-notsent-lowat"
+      ],
+      "adaptation": "Ker-specific original-Linux TCP_NOTSENT_LOWAT extension of already-adapted socket/dup bridge scenarios, not another pinned source case. Run host reference and native client/server senders against independent host receivers over real DPDK net_tap/veth. A separate TCP control stream forbids receiver reads during backpressure inspection. Sender checks default0, shared4096 setting, short-option-length EINVAL with old value preserved, and zero reset. Increase SO_SNDBUF, then send deterministic bytes using MSG_DONTWAIT until EAGAIN. Bounded fill/readiness retries require SIOCOUTQNSD >=4096, no POLLOUT, and accepted bytes below one quarter of queried SO_SNDBUF. Without releasing the receiver, set UINT32_MAX through an alias and require POLLOUT, restore4096 through the original fd and require no POLLOUT; this threshold-only toggle separates low-water backpressure from ordinary send-memory exhaustion. Only then release the peer, require writable readiness within5 seconds, send another verified byte and half-close. Receiver must validate every accepted queued byte, the resumed byte and EOF; sender also verifies peer EOF and aliases close. Require original-Linux active/passive opens, DPDK TX/RX and zero outstanding buffers. No production/runtime/protocol/upstream changes, no exact queue-size or event deadline promise, no concurrent writers, loss/retransmission or IPv6 qualification. Source-case migration counts remain unchanged."
     }
   }
 }
