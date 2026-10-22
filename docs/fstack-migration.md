@@ -608,3 +608,10 @@ extra-keys 的 `base_virtaddr` 子集现有 typed 配置、真实 EAL 内存段�
 五组宿主TCP/UDP证据，补充已有 file_prefix 子集。地址提示及16MiB对齐由原始
 DPDK处理；不保证固定地址或地址冲突回退。源用例仍因 vdev completion queues、
 bond down_delay 与配置 ABI 缺口保持 partial，清单计数不变。
+
+
+`native-fstack-tcp-fastopen` 补齐原始 Linux Fast Open 的独立宿主互通与线路证据：
+宿主参考、native client/server 均对比 MSG_FASTOPEN 和普通 connect，并要求抓包
+观察到完整 SYN 数据。私有命名空间显式启用无 cookie 策略；不改变部署默认值。
+这是 host message/name/shutdown 桥接场景的 Ker/Linux 扩展，非上游注册 TFO 用例，
+不增加源用例迁移计数，不替代 cookie、重传或性能资格验证。

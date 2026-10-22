@@ -1317,6 +1317,16 @@
         "native-fstack-launcher-config"
       ],
       "adaptation": "Virtual-address-hint subset of the registered extra-keys case, alongside the existing file-prefix subset. Typed dpdk.base_virtaddr/--base-virtaddr accepts positive hexadecimal 0x-prefixed uint64 hints with room for original DPDK 16MiB upward alignment. CLI overrides INI, omission preserves raw EAL, and competing raw active-prefix --base-virtaddr forms fail before library loading. Generated hint is inserted before the first raw -- and suffix tokens remain untouched. Original EAL owns allocation, alignment and fallback; no allocator replacement or upstream change. Worker diagnostics walk actual populated rte_memseg records and report the lowest mapped virtual address, not the configured hint. Five real net_tap/original-Linux profiles cover raw8GiB, INI16GiB, CLI24GiB overridingINI16GiB, an unaligned32GiB+1 hint aligned byDPDK, and typed40GiB before a conflicting-looking suffix48GiB. Require actual lowest mapped segment in the requested aligned region (within1GiB), regular pages, independent host TCP/UDP, native counters, control shutdown and zero outstanding mbufs. These available-address test mappings do not guarantee exact address placement, collision fallback behavior, physical DMA/NUMA topology, hugepage placement or secondary processes. Source case remains partial because full vdev completion queues, bond down-delay and F-Stack configuration ABI are missing."
+    },
+    "native-fstack-tcp-fastopen": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-fastopen"
+      ],
+      "adaptation": "Ker-specific Linux TCP Fast Open extension of the pinned message/name/shutdown bridge scenario, not an upstream F-Stack TFO test or FreeBSD ABI-equivalence claim. Same unmodified C application runs host reference and independent native-client/native-server modes over net_tap/veth. In private host/native network namespaces, explicitly set original Linux tcp_fastopen=519 (client/server plus send/accept SYN data without cookies); this does not change production defaults or global host policy. The listener sets and reads back TCP_FASTOPEN backlog4. First blocking client socket uses sendto(MSG_FASTOPEN|MSG_NOSIGNAL) without connect, handling a short positive write; second socket uses ordinary connect/send as control. Both validate exact request/echo, peer address/port, graceful half-close and EOF. An independent host AF_PACKET capture observes both directions and requires the entire exact request in a SYN without ACK plus an empty ordinary SYN, so ordinary handshakes cannot masquerade as Fast Open. Each native role requires at least two matching original-Linux TCP opens, positive DPDK traffic and zero outstanding packet buffers. No Ker protocol/runtime code or upstream sources are changed. Cookie negotiation/cache, normal default policy, nonblocking EINPROGRESS/fallback, retransmission/loss, Fast Open connect option, IPv6 and performance remain unqualified. Source inventory counts are unchanged."
     }
   }
 }
