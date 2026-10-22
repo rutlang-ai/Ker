@@ -152,25 +152,36 @@ def verify_backup_key(records, port):
         for r in replies for v in new), 'refreshed B-cookie SYN data was not accepted after backup retirement')
 
 
-def run_deferred(connect, environment, capture, port):
+def run_deferred(connect, environment, capture, port, cancel=False):
     # The client has returned from connect and verified SYN_SENT, but cannot write
     # until this coordinator releases stdin. Preserve warm-up packets for verification.
     with subprocess.Popen(connect, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, env=environment) as client:
         try:
-            with selectors.DefaultSelector() as selector:
-                selector.register(client.stdout, selectors.EVENT_READ)
-                require(selector.select(20), 'deferred connect barrier timeout')
-            fields = client.stdout.readline().split()
-            require(len(fields) == 2 and fields[0] == 'DEFERRED', 'missing deferred connect barrier')
-            source = int(fields[1])
-            require(0 < source < 65536, 'invalid deferred local port')
-            before = tcp_records(capture, port)
+            def barrier(expected):
+                with selectors.DefaultSelector() as selector:
+                    selector.register(client.stdout, selectors.EVENT_READ)
+                    require(selector.select(20), expected + ' barrier timeout')
+                fields = client.stdout.readline().split()
+                require(len(fields) == 2 and fields[0] == expected, 'missing ' + expected + ' barrier')
+                source = int(fields[1])
+                require(0 < source < 65536, 'invalid barrier local port')
+                return source
+            before = []; cancelled_source = None
+            if cancel:
+                cancelled_source = barrier('CANCELLED')
+                before += tcp_records(capture, port)
+                require(not any(cancelled_source in (v['source'], v['destination']) for v in before),
+                        'closed deferred connection emitted TCP traffic')
+                client.stdin.write('C'); client.stdin.flush()
+            source = barrier('DEFERRED')
+            require(source != cancelled_source, 'new connection reused the cancelled flow identity')
+            before += tcp_records(capture, port)
             require(not any(v['source'] == source and v['destination'] == port and v['syn'] for v in before),
                     'cached-cookie connect sent SYN before the first write')
             output, error = client.communicate(input='W', timeout=25)
             require(client.returncode == 0 and 'PASS:' in output, error)
-            return subprocess.CompletedProcess(connect, client.returncode, output, error), before, source
+            return subprocess.CompletedProcess(connect, client.returncode, output, error), before, source, cancelled_source
         finally:
             if client.poll() is None:
                 client.kill(); client.wait()
@@ -185,8 +196,10 @@ def main():
     parser.add_argument('--key-rotation', action='store_true', help='rotate the listener key and require stale-cookie fallback and recovery')
     parser.add_argument('--backup-key', action='store_true', help='accept the old cookie with a backup key, refresh, then retire the backup')
     parser.add_argument('--deferred-connect', action='store_true', help='require cached-cookie connect to defer SYN until the first write')
+    parser.add_argument('--cancel-before-write', action='store_true', help='close a deferred socket before writing and verify a fresh connection still works')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
+    args.deferred_connect = args.deferred_connect or args.cancel_before_write
     args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation or args.backup_key or args.deferred_connect
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
@@ -221,7 +234,7 @@ def main():
             if args.cookie_exchange:
                 mode = 'backup' if args.backup_key else ('rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies'))
                 if args.deferred_connect:
-                    mode = 'deferred'
+                    mode = 'cancel' if args.cancel_before_write else 'deferred'
                 listen += [mode]; connect += [mode]
             if role == 'server':
                 listen = native + listen
@@ -236,9 +249,10 @@ def main():
                             selector.register(process.stdout, selectors.EVENT_READ)
                             require(selector.select(20), 'Fast Open server startup timeout')
                         require(process.stdout.readline() == f'READY {port}\n', 'Fast Open server not ready')
-                        before = []; deferred_source = None
+                        before = []; deferred_source = None; cancelled_source = None
                         if args.deferred_connect:
-                            result, before, deferred_source = run_deferred(connect, environment, capture, port)
+                            result, before, deferred_source, cancelled_source = run_deferred(
+                                connect, environment, capture, port, args.cancel_before_write)
                         else:
                             result = subprocess.run(connect, capture_output=True, text=True, timeout=25, env=environment)
                         require(result.returncode == 0 and 'PASS:' in result.stdout, result.stderr)
@@ -249,6 +263,10 @@ def main():
                         require(process.returncode == 0 and 'PASS:' in output, output)
                         records = before + tcp_records(capture, port)
                         verify_syns(records, port, args.cookie_exchange)
+                        if args.cancel_before_write:
+                            require(not any(cancelled_source in (v['source'], v['destination']) for v in records),
+                                    'cancelled deferred connection emitted TCP traffic before peer cleanup')
+                            print('PASS: write-free close emitted no TCP traffic; new cached-cookie stream succeeded', flush=True)
                         if args.deferred_connect:
                             deferred_syns = [v for v in records if v['source'] == deferred_source and
                                 v['destination'] == port and v['syn'] and not v['ack']]

@@ -796,3 +796,16 @@ bridge 场景的原始 Linux 扩展，不改变来源案例计数或运行时/�
 此测试不依赖睡眠，验证明确的写入前屏障，不宣称任意时长的空闲行为。
 不修改运行时或上游协议实现，来源案例计数不变；非阻塞延迟 connect、写前取消、
 缓存过期、丢包重传、IPv6 和性能仍未验证。
+
+`native-fstack-tcp-fastopen-cancel` 补齐首次写入前关闭延迟连接的边界。
+宿主参考、native 客户端和 native 服务端均先协商 cookie，再创建缓存 cookie
+连接，要求 connect 返回0且 TCP_INFO 仍为 SYN_SENT；不写入即 close，随后
+fcntl 必须返回 EBADF。客户端在关闭后等待 stdin 屏障，协调器检查独立抓包中
+该连接没有任何 TCP 报文，再放行下一条不同本地端口的缓存 cookie 连接。
+下一连接继续使用写前屏障，随后要求携原 cookie 和完整数据的 SYN、精确回显、
+peer、半关闭和 EOF，并保留普通 connect 对照。抓包直到双方退出都不得出现
+已取消连接的 TCP 报文（包括 SYN、FIN、RST）；native 角色要求至少三条成功
+流的 opens、DPDK TX/RX 和零遗留 mbuf，不把取消尝试算作成功流。
+这是原始 Linux 对 F-Stack host bridge 场景的扩展，来源案例计数不变，未修改
+运行时或上游源码。仅验证明确屏障及测试流生命周期，不宣称任意时长无报文或
+SYN 已发送后的取消行为；非阻塞延迟建连、缓存过期、丢包重传、IPv6 与性能仍待覆盖。

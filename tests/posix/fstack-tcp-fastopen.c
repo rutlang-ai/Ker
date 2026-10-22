@@ -42,8 +42,9 @@ static void set_keys(int fd, unsigned char value, int backup)
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking") || !strcmp(argv[4], "rotation") || !strcmp(argv[4], "backup") || !strcmp(argv[4], "deferred"))));
-    int deferred = argc == 5 && !strcmp(argv[4], "deferred");
+    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking") || !strcmp(argv[4], "rotation") || !strcmp(argv[4], "backup") || !strcmp(argv[4], "deferred") || !strcmp(argv[4], "cancel"))));
+    int cancel = argc == 5 && !strcmp(argv[4], "cancel");
+    int deferred = cancel || (argc == 5 && !strcmp(argv[4], "deferred"));
     int nonblocking = argc == 5 && !strcmp(argv[4], "nonblocking");
     int backup = argc == 5 && !strcmp(argv[4], "backup");
     int rotation = backup || (argc == 5 && !strcmp(argv[4], "rotation"));
@@ -77,6 +78,7 @@ int main(int argc, char **argv)
         CHECK(close(listener) == 0);
     } else {
         CHECK(!strcmp(argv[1], "client"));
+        if (cancel) ++connections; /* One attempt is closed without becoming a server stream. */
         for (int phase = 0; phase < connections; ++phase) {
             int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0); timeout(fd);
             if (backup && phase < connections - 1) {
@@ -101,12 +103,19 @@ int main(int argc, char **argv)
                 CHECK(getsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT, &actual, &length) == 0);
                 CHECK(length == sizeof(actual) && actual == enabled);
                 CHECK(connect(fd, (void *)&address, sizeof(address)) == 0);
-                if (phase == 1) {
+                if (phase == 1 || (cancel && phase == 2)) {
                     struct tcp_info info = {0}; length = sizeof(info);
                     CHECK(getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &length) == 0);
                     CHECK(info.tcpi_state == TCP_SYN_SENT);
                     struct sockaddr_in local = {0}; length = sizeof(local);
                     CHECK(getsockname(fd, (void *)&local, &length) == 0);
+                    if (cancel && phase == 1) {
+                        CHECK(close(fd) == 0);
+                        CHECK(fcntl(fd, F_GETFD) == -1 && errno == EBADF);
+                        printf("CANCELLED %u\n", ntohs(local.sin_port)); fflush(stdout);
+                        CHECK(getchar() == 'C');
+                        continue;
+                    }
                     printf("DEFERRED %u\n", ntohs(local.sin_port)); fflush(stdout);
                     CHECK(getchar() == 'W');
                 }
