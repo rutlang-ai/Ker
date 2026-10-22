@@ -1387,6 +1387,16 @@
         "native-fstack-tcp-fastopen-cancel"
       ],
       "adaptation": "Ker-specific original-Linux extension of pinned F-Stack message/name/shutdown bridge scenarios, not an upstream registered Fast Open cancellation test or FreeBSD equivalence claim. Shared harness uses tcp_fastopen=3 only in private namespaces. Host reference and native client/server warm a cookie with TCP_FASTOPEN_CONNECT, create another optioned socket whose connect returns zero while TCP_INFO is SYN_SENT, and close it without a first write; fcntl must report EBADF. A coordinator stdin barrier after close drains independent AF_PACKET capture and requires no TCP traffic for the cancelled flow. Explicit release starts a fresh cached-cookie deferred connection on a distinct source port, again coordinated before its first write; exact cookie-bearing SYN data, cookie reuse, echo, peer, half-close and EOF must work. An ordinary-connect control follows. The complete capture through peer cleanup must contain no TCP packet for the cancelled flow, including SYN, FIN or RST. Native roles require at least three successful original-Linux opens, DPDK TX/RX and zero outstanding buffers; cancelled attempts are not counted as successful streams. No runtime/upstream changes or source-case count changes. The explicit barriers and stream lifetime are qualified, not arbitrary-duration absence or cancellation after SYN transmission. Nonblocking deferred connect, cache expiry, loss/retransmission, IPv6 and performance remain unqualified."
+    },
+    "native-fstack-tcp-fastopen-connect-nonblocking": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-fastopen-connect-nonblocking"
+      ],
+      "adaptation": "Ker-specific original-Linux nonblocking TCP_FASTOPEN_CONNECT extension of pinned F-Stack message/name/shutdown bridge scenarios, not an upstream registered test or FreeBSD equivalence claim. Shared private-namespace harness uses tcp_fastopen=3. Host reference and native client/server set/read TCP_FASTOPEN_CONNECT and set O_NONBLOCK. Without a cached cookie, connect must return EINPROGRESS then POLLOUT with SO_ERROR=0. With the cached cookie, connect must return zero and a zero-timeout poll must report POLLOUT without error/hangup while TCP_INFO still reports SYN_SENT and O_NONBLOCK remains set. The coordinator stdin barrier and independent AF_PACKET capture require no SYN for that flow before release; every subsequent SYN for that flow must contain the exact request and cookie. Shared assertions require actual cookie request/response/reuse on a fresh port, ordinary empty SYN control, exact streams, peer, half-close and EOF. After initiation sockets return to blocking mode for stream transfers, so general nonblocking reads/writes are not qualified. Native roles check at least three original-Linux opens, DPDK TX/RX and zero outstanding buffers. No runtime/upstream changes or source-case count changes. Packet loss/retransmission, cache expiry, IPv6 and performance remain unqualified."
     }
   }
 }

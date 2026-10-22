@@ -29,6 +29,17 @@ static void transfer(int fd, void *buffer, size_t length, int sending)
         CHECK(count > 0); done += (size_t)count;
     }
 }
+static void writable_without_error(int fd, int timeout_ms)
+{
+    struct pollfd ready = {.fd = fd, .events = POLLOUT};
+    int result;
+    do { result = poll(&ready, 1, timeout_ms); } while (result < 0 && errno == EINTR);
+    CHECK(result == 1 && (ready.revents & POLLOUT));
+    CHECK(!(ready.revents & (POLLERR | POLLHUP | POLLNVAL)));
+    int error = -1; socklen_t length = sizeof(error);
+    CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0);
+    CHECK(length == sizeof(error) && error == 0);
+}
 static void set_keys(int fd, unsigned char value, int backup)
 {
     unsigned char key[32], actual[32];
@@ -42,9 +53,10 @@ static void set_keys(int fd, unsigned char value, int backup)
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking") || !strcmp(argv[4], "rotation") || !strcmp(argv[4], "backup") || !strcmp(argv[4], "deferred") || !strcmp(argv[4], "cancel"))));
+    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking") || !strcmp(argv[4], "rotation") || !strcmp(argv[4], "backup") || !strcmp(argv[4], "deferred") || !strcmp(argv[4], "cancel") || !strcmp(argv[4], "deferred-nonblocking"))));
+    int deferred_nonblocking = argc == 5 && !strcmp(argv[4], "deferred-nonblocking");
     int cancel = argc == 5 && !strcmp(argv[4], "cancel");
-    int deferred = cancel || (argc == 5 && !strcmp(argv[4], "deferred"));
+    int deferred = deferred_nonblocking || cancel || (argc == 5 && !strcmp(argv[4], "deferred"));
     int nonblocking = argc == 5 && !strcmp(argv[4], "nonblocking");
     int backup = argc == 5 && !strcmp(argv[4], "backup");
     int rotation = backup || (argc == 5 && !strcmp(argv[4], "rotation"));
@@ -102,11 +114,24 @@ int main(int argc, char **argv)
                 CHECK(setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT, &enabled, sizeof(enabled)) == 0);
                 CHECK(getsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT, &actual, &length) == 0);
                 CHECK(length == sizeof(actual) && actual == enabled);
-                CHECK(connect(fd, (void *)&address, sizeof(address)) == 0);
+                int flags = fcntl(fd, F_GETFL); CHECK(flags >= 0);
+                if (deferred_nonblocking) CHECK(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
+                int connected = connect(fd, (void *)&address, sizeof(address));
+                if (deferred_nonblocking && phase == 0) {
+                    CHECK(connected == -1 && errno == EINPROGRESS);
+                    writable_without_error(fd, 8000);
+                } else {
+                    CHECK(connected == 0);
+                    if (deferred_nonblocking) writable_without_error(fd, 0);
+                }
                 if (phase == 1 || (cancel && phase == 2)) {
                     struct tcp_info info = {0}; length = sizeof(info);
                     CHECK(getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &length) == 0);
                     CHECK(info.tcpi_state == TCP_SYN_SENT);
+                    if (deferred_nonblocking) {
+                        int actual_flags = fcntl(fd, F_GETFL);
+                        CHECK(actual_flags >= 0 && (actual_flags & O_NONBLOCK));
+                    }
                     struct sockaddr_in local = {0}; length = sizeof(local);
                     CHECK(getsockname(fd, (void *)&local, &length) == 0);
                     if (cancel && phase == 1) {
@@ -119,7 +144,10 @@ int main(int argc, char **argv)
                     printf("DEFERRED %u\n", ntohs(local.sin_port)); fflush(stdout);
                     CHECK(getchar() == 'W');
                 }
+                if (deferred_nonblocking) CHECK(fcntl(fd, F_SETFL, flags) == 0);
                 transfer(fd, (void *)request, sizeof(request), 1);
+                if (deferred_nonblocking && phase == 1)
+                    puts("PASS: nonblocking connect EINPROGRESS without cookie; cached connect returns zero and POLLOUT before SYN");
             } else if (phase < connections - 1) {
                 int flags = fcntl(fd, F_GETFL); CHECK(flags >= 0);
                 if (nonblocking) CHECK(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
@@ -128,13 +156,7 @@ int main(int argc, char **argv)
                 if (nonblocking) {
                     if (phase == 0) CHECK(sent == -1 && errno == EINPROGRESS);
                     else CHECK(sent > 0 && sent <= (ssize_t)sizeof(request));
-                    struct pollfd ready = {.fd = fd, .events = POLLOUT};
-                    int result;
-                    do { result = poll(&ready, 1, 8000); } while (result < 0 && errno == EINTR);
-                    CHECK(result == 1 && (ready.revents & POLLOUT));
-                    int error = -1; socklen_t error_length = sizeof(error);
-                    CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_length) == 0);
-                    CHECK(error_length == sizeof(error) && error == 0);
+                    writable_without_error(fd, 8000);
                     CHECK(fcntl(fd, F_SETFL, flags) == 0);
                     if (phase == 0) {
                         sent = 0;
