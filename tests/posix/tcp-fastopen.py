@@ -55,7 +55,9 @@ def tcp_records(capture, port):
                 require(cookie is None, 'multiple Fast Open options')
                 cookie = tcp[offset + 2:offset + length]
             offset += length
-        found.append(dict(source=source, destination=destination, ack=bool(tcp[13] & 16), syn=bool(tcp[13] & 2),
+        found.append(dict(source=source, destination=destination,
+                          source_ip=socket.inet_ntoa(ip[12:16]), destination_ip=socket.inet_ntoa(ip[16:20]),
+                          ack=bool(tcp[13] & 16), syn=bool(tcp[13] & 2),
                           sequence=struct.unpack('!I', tcp[4:8])[0], acknowledgement=struct.unpack('!I', tcp[8:12])[0],
                           payload=tcp[header:], cookie=cookie))
     return found
@@ -103,6 +105,53 @@ def verify_rotation(records, port):
         for r in replies for v in refreshed), 'replacement cookie SYN data was not acknowledged')
 
 
+def verify_backup_key(records, port):
+    syns = [v for v in records if v['destination'] == port and v['syn'] and not v['ack']]
+    replies = [v for v in records if v['source'] == port and v['syn'] and v['ack']]
+    requests = [v for v in syns if v['cookie'] == b'' and not v['payload']]
+    require(len({v['source_ip'] for v in requests}) >= 2,
+            'independent original-Linux client cookie caches were not seeded')
+    issued = [r for r in replies if r['cookie'] and any(
+        r['destination'] == v['source'] and r['destination_ip'] == v['source_ip'] for v in requests)]
+    cache_cookies = {}
+    for request in requests:
+        matching = next((r for r in issued if r['destination'] == request['source'] and
+                         r['destination_ip'] == request['source_ip']), None)
+        require(matching is not None, 'initial A cookie missing for one client cache')
+        cache_cookies.setdefault(request['source_ip'], matching['cookie'])
+    require(len(cache_cookies) >= 2, 'initial A cookies were not issued to both client addresses')
+    retired_source, backup_source = list(cache_cookies)[:2]
+    old_on_backup = [v for v in syns if v['source_ip'] == backup_source and v['payload'] == PAYLOAD and
+                     v['cookie'] == cache_cookies[backup_source]]
+    require(old_on_backup, 'B+A overlap did not accept source B original A-cookie SYN data')
+    refreshed = [r for r in replies if r['cookie'] and 4 <= len(r['cookie']) <= 16 and any(
+        r['destination'] == v['source'] and r['destination_ip'] == backup_source and
+        r['cookie'] != cache_cookies[backup_source] and
+        r['acknowledgement'] == (v['sequence'] + 1 + len(PAYLOAD)) % (1 << 32)
+        for v in old_on_backup)]
+    require(refreshed, 'backup A cookie was not accepted and refreshed to B under B+A')
+    stale_on_retired_source = [v for v in syns if v['source_ip'] == retired_source and v['payload'] == PAYLOAD and
+                               v['cookie'] == cache_cookies[retired_source]]
+    require(stale_on_retired_source,
+            'source A did not present its retained original A cookie after backup retirement')
+    rejected = [r for r in replies if r['cookie'] and 4 <= len(r['cookie']) <= 16 and any(
+        r['destination'] == v['source'] and r['destination_ip'] == retired_source and
+        r['cookie'] != v['cookie'] and
+        r['acknowledgement'] == (v['sequence'] + 1) % (1 << 32) for v in stale_on_retired_source)]
+    require(rejected, 'retired A cookie was accepted instead of receiving a replacement B cookie')
+    require(any(not r['syn'] and r['destination'] == port and r['source_ip'] == retired_source and
+        r['payload'] == PAYLOAD and any(r['source'] == v['source'] and
+        r['sequence'] == (v['sequence'] + 1) % (1 << 32) for v in stale_on_retired_source)
+        for r in records), 'retired A-cookie payload was not resent on the established stream')
+    new = [v for v in syns if v['source_ip'] == backup_source and v['payload'] == PAYLOAD and
+           any(v['cookie'] == r['cookie'] and r['destination_ip'] == backup_source and
+               v['source'] != r['destination'] for r in refreshed)]
+    require(new, 'source B did not reuse its refreshed B cookie')
+    require(any(r['destination'] == v['source'] and r['destination_ip'] == backup_source and
+        r['acknowledgement'] == (v['sequence'] + 1 + len(PAYLOAD)) % (1 << 32)
+        for r in replies for v in new), 'refreshed B-cookie SYN data was not accepted after backup retirement')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app'):
@@ -110,9 +159,10 @@ def main():
     parser.add_argument('--cookie-exchange', action='store_true', help='require real cookie request, response and reuse on a fresh connection')
     parser.add_argument('--nonblocking', action='store_true', help='validate nonblocking Fast Open initiation and no-cookie resend')
     parser.add_argument('--key-rotation', action='store_true', help='rotate the listener key and require stale-cookie fallback and recovery')
+    parser.add_argument('--backup-key', action='store_true', help='accept the old cookie with a backup key, refresh, then retire the backup')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
-    args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation
+    args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation or args.backup_key
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
             '--inside', *sys.argv[1:]]).returncode
@@ -121,6 +171,7 @@ def main():
     ip('link', 'set', 'lo', 'up')
     ip('link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink')
     ip('addr', 'add', '198.18.0.1/24', 'dev', 'kerhost')
+    ip('addr', 'add', '198.18.0.4/24', 'dev', 'kerhost')
     for name in ('kerhost', 'kerlink'):
         ip('link', 'set', name, 'up')
     # Private network namespace only: cookie mode enables client/server without no-cookie flags.
@@ -138,10 +189,12 @@ def main():
             native = [sys.executable, str(args.launcher), '--library', str(args.library),
                 '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0',
                 '--eal', eal, '--sysctl', 'net.ipv4.tcp_fastopen=' + policy, '--stats', str(stats), '--']
+            if args.backup_key and role == 'client':
+                native[native.index('--eal'):native.index('--eal')] = ['--vip-address', '198.18.0.3/24']
             listen = [str(args.app), 'server', address, str(port)]
             connect = [str(args.app), 'client', address, str(port)]
             if args.cookie_exchange:
-                mode = 'rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies')
+                mode = 'backup' if args.backup_key else ('rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies'))
                 listen += [mode]; connect += [mode]
             if role == 'server':
                 listen = native + listen
@@ -168,10 +221,13 @@ def main():
                         if args.key_rotation:
                             verify_rotation(records, port)
                             print('PASS: stale cookie rejected, payload resent, replacement cookie accepted', flush=True)
+                        if args.backup_key:
+                            verify_backup_key(records, port)
+                            print('PASS: source B refreshed A to B during overlap; source A retained and rejected retired A after B-only rotation, retried on-stream; source B reused B', flush=True)
                         if role != 'host-reference':
                             record = json.loads(stats.read_text())
                             counter = 'passive_opens' if role == 'server' else 'active_opens'
-                            require(record['native'][counter] >= (4 if args.key_rotation else (3 if args.cookie_exchange else 2)) and record['tx'] and record['rx'] and
+                            require(record['native'][counter] >= (6 if args.backup_key else (4 if args.key_rotation else (3 if args.cookie_exchange else 2))) and record['tx'] and record['rx'] and
                                     record['outstanding'] == 0, 'missing original Linux traffic/cleanup evidence')
                         print('PASS: ' + role + (', cookie request/response/reuse on fresh connection' if args.cookie_exchange else ', exact SYN data') + ', ordinary SYN control, exact streams and EOF', flush=True)
                     except Exception:
