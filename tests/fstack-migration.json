@@ -3724,9 +3724,18 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_key_name",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker rejects unknown option names instead of silently truncating names to the F-Stack fixed buffer size.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production Ker INI parsing preserves supported 60-character sysctl keys in full, including distinct suffixes and duplicate/CLI ordering; 128-character keys are accepted and 129 rejected before startup. Native unknown-key failure exposes the complete converted path and cleans up. This adapts key retention, not arbitrary handler APIs or successful kernel support for invented sysctl names.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-config-long-keys"
+        },
+        {
+          "ctest": "native-fstack-network-sysctl",
+          "provenance_case": "native-fstack-config-long-keys"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
