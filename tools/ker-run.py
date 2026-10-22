@@ -135,8 +135,10 @@ CONFIG_SCHEMA = {
 
 
 def read_configuration(stream, directory, source='<stream>'):
+    # Match F-Stack's repeated-key precedence: convert only the final value.
+    # A repeated section continues the same section; unknown names remain errors.
     ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
-        empty_lines_in_values=False)
+        empty_lines_in_values=False, strict=False)
     ini.optionxform = str
     ini.read_string(stream.read().removeprefix('\ufeff'), source=str(source))
     if ini.defaults():

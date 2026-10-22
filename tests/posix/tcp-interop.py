@@ -1212,9 +1212,9 @@ def inside(args):
             config_path = work / 'launcher.ini'
             config_logs = work / 'configured-logs'; config_logs.mkdir()
             config_capture = work / 'configured-capture'; config_capture.mkdir()
-            config_path.write_text('[network]\naddress=198.18.0.2/24\n'
-                '[dpdk]\nport=must-be-overridden\neal=' + eal.replace(' --vdev=', '\n  --vdev=') + '\n'
-                '[logging]\ndirectory=configured-logs\nlevel=7\n'
+            config_path.write_text('[network]\naddress=198.19.0.99/24\naddress=198.18.0.2/24\n'
+                '[dpdk]\nport=earlier-port\nport=must-be-overridden\neal=--invalid-earlier-eal\neal=' + eal.replace(' --vdev=', '\n  --vdev=') + '\n'
+                '[logging]\ndirectory=unused-earlier-logs\ndirectory=configured-logs\nlevel=7\n'
                 '[capture]\ndirectory=configured-capture\nsnaplen=96\nmax_bytes=1073741824\nnsec=yes\n'
                 '[runtime]\nstats=unused-default.json\nshutdown_timeout_ms=5000\n')
             launcher = [sys.executable, str(args.launcher), '--config', str(config_path), '--port', 'net_tap0']
@@ -1327,9 +1327,11 @@ def inside(args):
                     if len(files) != 2 or any('ker.io ready port=net_tap0' not in f.read_text()
                             or 'ker.io stopped status=0' not in f.read_text() for f in files):
                         raise RuntimeError('configuration did not reach both actual workers')
+                    if (work / 'unused-earlier-logs').exists():
+                        raise RuntimeError('earlier duplicate logging directory was used')
                     if (work / 'unused-default.json').exists():
                         raise RuntimeError('CLI stats option did not override configuration')
-                    print('PASS: INI configured real DPDK/native TCP in both roles, relative paths and CLI overrides', flush=True)
+                    print('PASS: repeated INI keys use final address/EAL/log directory in real DPDK/native TCP, with CLI overrides', flush=True)
                 if args.capture:
                     full = work / 'pcap-full'
                     full.mkdir()

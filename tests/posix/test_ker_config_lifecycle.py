@@ -129,8 +129,37 @@ addresses=198.19.100.2/24,198.19.100.3/24
         self.assertEqual(launcher.CONFIG_DEFAULTS['sysctls'], ())
         self.assertEqual(launcher.CONFIG_DEFAULTS['vlans'], ())
 
-    def test_repeated_keys_have_explicit_strict_boundary(self):
-        self.reject_before_setup(MINIMAL + 'port=net_tap1\n', 'already exists')
+    def test_repeated_keys_last_value_wins_without_state_leak(self):
+        repeated = ('[network]\naddress=198.18.0.10/24\naddress=198.18.0.30/16\n'
+                    'gateway=198.18.0.1\ngateway=198.18.0.254\n'
+                    '[dpdk]\nport=net_tap1\nport=net_tap0\neal=--no-huge\n'
+                    '[sysctl]\nnet.ipv4.ip_default_ttl=42\nnet.ipv4.ip_default_ttl=65\n'
+                    '[vlan.100]\naddresses=198.19.100.2/24\naddresses=198.19.100.3/24\n')
+        for _ in range(20):
+            args = self.parse(repeated)
+            self.assertEqual(str(args.address), '198.18.0.30/16')
+            self.assertEqual(str(args.gateway), '198.18.0.254')
+            self.assertEqual(args.port, 'net_tap0')
+            self.assertEqual(args.sysctls, {'net.ipv4.ip_default_ttl': '65'})
+            self.assertEqual(str(args.vlans[0][1][0]), '198.19.100.3/24')
+            args.sysctls['net.ipv4.ip_default_ttl'] = '99'
+            fresh = self.parse('', BASE)
+            self.assertEqual(fresh.sysctls, {})
+            self.assertEqual(fresh.vlans, ())
+            self.assertIsNone(fresh.gateway)
+        args = self.parse(repeated, ['--address', '198.20.0.2/24', '--port', 'net_tap9'])
+        self.assertEqual(str(args.address), '198.20.0.2/24')
+        self.assertEqual(args.port, 'net_tap9')
+        self.assertEqual(launcher.CONFIG_DEFAULTS['sysctls'], ())
+        self.assertEqual(launcher.CONFIG_DEFAULTS['vlans'], ())
+
+    def test_repeated_sections_merge_but_invalid_final_values_still_fail(self):
+        args = self.parse(MINIMAL + '[network]\nmtu=2000\naddress=198.19.0.2/25\n')
+        self.assertEqual((str(args.address), args.mtu), ('198.19.0.2/25', 2000))
+        self.assertEqual(args.port, 'net_tap0')
+        self.reject_before_setup(MINIMAL + '[network]\naddress=bad-final\n', 'bad-final')
+        self.reject_before_setup(MINIMAL + '[dpdk]\nunknown=one\nunknown=two\n', 'unknown option')
+        self.reject_before_setup(MINIMAL + '[unknown]\nk=one\n[unknown]\nk=two\n', 'unknown section')
         self.assertEqual(self.parse(MINIMAL).port, 'net_tap0')
 
 
