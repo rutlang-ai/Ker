@@ -877,3 +877,19 @@ FreeBSD 上下文 ABI 仍未覆盖。
 通过真实 DPDK 验证。上游、协议及调度实现保持不变，来源案例计数不变。
 这是 F-Stack thread 场景的 Ker 同步扩展，不宣称公平性、跨进程共享信号量、
 线程取消、仍有 waiter 时销毁或性能结论。
+
+
+宿主定时器适配由 Ker 持有 opaque timer_t 包装对象，保留 pinned LKL 的
+相对 CLOCK_REALTIME/SIGEV_THREAD 行为和原始 Linux clock-event 实现。
+分配或 timer_create 失败返回 NULL，保留 errno 并完整回收存储；
+timer_settime 失败直接返回错误；void timer_free 无法报告删除失败，因此明确
+abort，不能静默释放仍有效的 handle。0 纳秒解除定时，interval 始终为0。
+
+`native-fstack-host-timer-debug/release` 使用真实 POSIX timer 验证失败恢复、
+秒/纳秒换算、通过 timer_gettime 检查解除定时，以及把100秒期限重新设为1纳秒后的真实单次回调。
+删除失败的子进程在父进程创建任何线程或 timer 之前 fork；成功路径不模拟。
+原始 Linux 必须实际分配、设定、触发和释放这些 timer，并唤醒一次带超时 poll。
+另以实际 DPDK TCP/UDP 和启动生命周期做回归。固定 F-Stack clock 案例仅为来源
+动机，本批是 Ker 适配扩展，不增加迁移来源案例数，也不修改上游源码。
+不宣称 timer_delete 等待已经执行中的 SIGEV_THREAD 回调结束；墙钟调整、周期
+定时器、回调静止保证、精确延迟和性能仍未验证。

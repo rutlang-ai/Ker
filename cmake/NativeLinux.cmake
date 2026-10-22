@@ -39,7 +39,7 @@ foreach(artifact config library)
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/posix-poll.c src/posix/posix-stat.c
-    src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-entropy.c src/posix/realtime-clock.c)
+    src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -215,6 +215,24 @@ if(BUILD_TESTING)
     target_compile_options(ker-host-runtime-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-host-runtime COMMAND ker-host-runtime-test)
     set_tests_properties(native-fstack-host-runtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    foreach(timer_mode debug release)
+        add_executable(ker-host-timer-${timer_mode}-test tests/posix/fstack-host-timer.c
+            src/posix/host-timer.c src/posix/host-memory.c src/posix/host-clock.c src/posix/host-thread.c)
+        target_include_directories(ker-host-timer-${timer_mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+        target_include_directories(ker-host-timer-${timer_mode}-test SYSTEM PRIVATE
+            "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+        target_link_libraries(ker-host-timer-${timer_mode}-test PRIVATE "${ker_native_tools}/liblkl.a"
+            Threads::Threads ${CMAKE_DL_LIBS} rt)
+        target_link_options(ker-host-timer-${timer_mode}-test PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free
+            -Wl,--wrap=timer_create -Wl,--wrap=timer_settime -Wl,--wrap=timer_delete)
+        target_compile_options(ker-host-timer-${timer_mode}-test PRIVATE -Wall -Wextra -Werror)
+        add_test(NAME native-fstack-host-timer-${timer_mode} COMMAND ker-host-timer-${timer_mode}-test)
+        set_tests_properties(native-fstack-host-timer-${timer_mode} PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    endforeach()
+    target_compile_definitions(ker-host-timer-debug-test PRIVATE DEBUG)
+    target_compile_options(ker-host-timer-debug-test PRIVATE -UNDEBUG)
+    target_compile_definitions(ker-host-timer-release-test PRIVATE NDEBUG)
+    target_compile_options(ker-host-timer-release-test PRIVATE -UDEBUG)
     add_executable(ker-native-drain-test tests/posix/native-drain.c src/posix/lifecycle.c)
     target_include_directories(ker-native-drain-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-native-drain-test SYSTEM PRIVATE
