@@ -893,3 +893,14 @@ abort，不能静默释放仍有效的 handle。0 纳秒解除定时，interval 
 动机，本批是 Ker 适配扩展，不增加迁移来源案例数，也不修改上游源码。
 不宣称 timer_delete 等待已经执行中的 SIGEV_THREAD 回调结束；墙钟调整、周期
 定时器、回调静止保证、精确延迟和性能仍未验证。
+
+
+宿主线程完成边界：Ker 的 thread_join 继续使用真实 pthread_join，失败返回 -1，
+并将 pthread 直接返回的错误码写入 errno。测试分别注入 EDEADLK、EINVAL、ESRCH，
+每次保留真实 joinable 子线程，再执行成功的真实 join，确认回调完成。
+void thread_detach 针对当前宿主线程调用真实 pthread_detach；失败明确 abort，
+不继续假定线程已经 detached。尚未创建宿主线程时 fork 的独立子进程分别验证
+真实 detached 属性和注入 EINVAL 后的 SIGABRT；不对已 detached 线程调用 join。
+默认、DEBUG、NDEBUG 均验证这些边界，原始 Linux 启停和 TCP/UDP 互通继续回归。
+这扩展 F-Stack thread 场景的 Ker 适配覆盖，不增加来源案例计数；不宣称取消、
+detached worker 的并发回收或 FreeBSD pcurthread 继承合同。

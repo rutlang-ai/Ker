@@ -126,7 +126,7 @@ if(BUILD_TESTING)
         target_include_directories(${thread_target} SYSTEM PRIVATE
             "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
         target_link_libraries(${thread_target} PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
-        target_link_options(${thread_target} PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=pthread_create
+        target_link_options(${thread_target} PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=pthread_create -Wl,--wrap=pthread_join -Wl,--wrap=pthread_detach
             -Wl,--wrap=pthread_key_create -Wl,--wrap=pthread_key_delete -Wl,--wrap=pthread_setspecific
             -Wl,--wrap=pthread_mutexattr_init -Wl,--wrap=pthread_mutexattr_settype
             -Wl,--wrap=pthread_mutexattr_destroy -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy)

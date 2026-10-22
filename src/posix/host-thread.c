@@ -32,6 +32,24 @@ static lkl_thread_t thread_create(void (*routine)(void *), void *argument)
     }
     return (lkl_thread_t)thread;
 }
+/* pthread returns error numbers directly. Join can report failure; the void
+ * detach callback must stop if the current thread remains joinable. */
+static int thread_join(lkl_thread_t thread)
+{
+    int error = pthread_join((pthread_t)thread, NULL);
+    if (!error) return 0;
+    errno = error;
+    return -1;
+}
+static void thread_detach(void)
+{
+    int error = pthread_detach(pthread_self());
+    if (error) {
+        errno = error;
+        perror("ker: host thread detach");
+        abort();
+    }
+}
 /* The pinned POSIX host tsd_alloc dereferences its allocation before checking
  * failure. Keep the fix in Ker, using a private key representation and the
  * same pthread TLS semantics (including destructors) as the original table. */
@@ -175,6 +193,8 @@ void ker_native_host_thread_init(struct lkl_host_operations *ops)
     ops->sem_up = semaphore_up;
     ops->sem_down = semaphore_down;
     ops->thread_create = thread_create;
+    ops->thread_join = thread_join;
+    ops->thread_detach = thread_detach;
     ops->mutex_alloc = mutex_alloc;
     ops->mutex_free = mutex_free;
     ops->mutex_lock = mutex_lock;
