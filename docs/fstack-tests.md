@@ -319,3 +319,13 @@ INI/large、CLI/scatter、16×8 地址上限和重复地址拒绝共四次原生
 含完整帧、标签、UDP checksum、NDP、原始内核计数及 mbuf 清理证据。
 错误 VLAN/untagged UDP 先通过 worker RX，再以实际 socket 收包验证未被交付。
 固定 `test_ff_load_config_inet6_fixture_ignored` 仍 blocked，不增加迁移通过计数。
+
+
+`native-fstack-thread-runtime` 的 TLS 失败路径扩展使用实际 Ker 回调，分别在默认、
+DEBUG 和 NDEBUG 构建中验证 key 创建的 EAGAIN/ENOMEM、设置的 ENOMEM，
+以及删除失败时的显式终止。创建失败需回收包装对象并允许下一次真实创建；
+设置失败需保留空槽或旧值，之后真实替换、清空及删除仍成功。
+删除失败由链接包装器注入，不向 pthread 传递失效 key；void 回调不能报告错误，
+因此必须中止，不能把仍注册的 key 当作已释放。故障仅作用于测试调用线程，
+原始 Linux 启停和实际 TCP/UDP 回归在故障关闭时执行。
+这是线程适配层的 Ker 扩展，不改变上游源案例迁移计数或 FreeBSD 上下文边界。

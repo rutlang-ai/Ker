@@ -22,6 +22,34 @@ static _Thread_local long allocation_balance;
 static _Thread_local int fail_next_thread_error, track_thread_start;
 static atomic_uintptr_t observed_start;
 static atomic_uint start_frees;
+static _Thread_local int fail_key_create, fail_key_delete, fail_key_set;
+int __real_pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
+int __real_pthread_key_delete(pthread_key_t key);
+int __real_pthread_setspecific(pthread_key_t key, const void *value);
+int __wrap_pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
+{
+    if (fail_key_create) {
+        int error = fail_key_create; fail_key_create = 0;
+        return error;
+    }
+    return __real_pthread_key_create(key, destructor);
+}
+int __wrap_pthread_key_delete(pthread_key_t key)
+{
+    if (fail_key_delete) {
+        int error = fail_key_delete; fail_key_delete = 0;
+        return error;
+    }
+    return __real_pthread_key_delete(key);
+}
+int __wrap_pthread_setspecific(pthread_key_t key, const void *value)
+{
+    if (fail_key_set) {
+        int error = fail_key_set; fail_key_set = 0;
+        return error;
+    }
+    return __real_pthread_setspecific(key, value);
+}
 int __real_pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
                           void *(*routine)(void *), void *argument);
 int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
@@ -279,6 +307,55 @@ static void locked_mutex_is_fatal(void)
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
     puts("PASS: destroying a locked host mutex aborts instead of freeing a live lock");
 }
+static void tls_failures(void)
+{
+    const int errors[] = {EAGAIN, ENOMEM};
+    count_allocations = 1;
+    for (unsigned int i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        fail_key_create = errors[i];
+        errno = EINVAL;
+        CHECK(ops.tls_alloc(NULL) == NULL);
+        CHECK(!fail_key_create && errno == errors[i] && allocation_balance == 0);
+        struct lkl_tls_key *value = ops.tls_alloc(NULL); CHECK(value);
+        CHECK(allocation_balance == 1 && ops.tls_get(value) == NULL);
+        ops.tls_free(value);
+        CHECK(allocation_balance == 0);
+    }
+    struct lkl_tls_key *value = ops.tls_alloc(NULL); CHECK(value);
+    int original = 1, replacement = 2;
+    /* Failed writes must preserve both an empty slot and an existing value. */
+    for (unsigned int populated = 0; populated <= 1; ++populated) {
+        if (populated) CHECK(ops.tls_set(value, &original) == 0);
+        fail_key_set = ENOMEM;
+        errno = EINVAL;
+        CHECK(ops.tls_set(value, &replacement) == -1);
+        CHECK(!fail_key_set && errno == ENOMEM);
+        CHECK(ops.tls_get(value) == (populated ? &original : NULL));
+    }
+    CHECK(ops.tls_set(value, &replacement) == 0);
+    CHECK(ops.tls_get(value) == &replacement);
+    CHECK(ops.tls_set(value, NULL) == 0);
+    ops.tls_free(value);
+    CHECK(allocation_balance == 0);
+    count_allocations = 0;
+    /* Fork before any host threads exist. No invalid key is passed to pthreads:
+     * the wrapper reports a delete failure without unregistering the real key. */
+    pid_t child = fork(); CHECK(child >= 0);
+    if (!child) {
+        struct rlimit no_core = {0, 0};
+        CHECK(setrlimit(RLIMIT_CORE, &no_core) == 0);
+        value = ops.tls_alloc(NULL); CHECK(value);
+        fail_key_delete = EINVAL;
+        ops.tls_free(value);
+        _exit(3);
+    }
+    int status;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    puts("PASS: TLS create failures preserve errno, release storage and allow real key recovery");
+    puts("PASS: TLS set failure preserves slot contents; subsequent real set/clear/delete succeeds");
+    puts("PASS: failed TLS deletion aborts rather than silently freeing a registered key");
+}
 int main(void)
 {
     ker_native_host_thread_init(&lkl_host_ops);
@@ -289,6 +366,7 @@ int main(void)
     CHECK(ops.mutex_alloc && ops.mutex_free && ops.mutex_lock && ops.mutex_unlock);
     mutex_initialization();
     locked_mutex_is_fatal();
+    tls_failures();
     /* No host thread exists yet: failure injection cannot affect another one. */
     fail_next_allocation = 1;
     errno = 0;
