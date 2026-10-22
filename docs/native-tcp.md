@@ -1012,3 +1012,14 @@ FIONREAD、完整读取和 EOF。支持该选项时也运行双端宿主参考�
 并保留游标；重置 0/-1 分别恢复队首预览和不推进模式。最后通过 readv 验证全部
 剩余字节、游标归零及重复 EOF，要求实际原生连接、DPDK TX/RX 和零 outstanding。
 行为来自原版 Linux；不声明越过队尾的游标或并发读取覆盖。
+
+
+IPv4 TCP TOS/TTL：`native-fstack-tcp-ip-options` 在宿主参考、原生客户端和
+原生服务器中验证 IP_TOS/IP_TTL 的监听继承与 dup 共享。客户端初值为
+TOS0x28/TTL42，服务器为 TOS0x48/TTL43；TTL0/-2/256 必须返回 EINVAL
+且保留旧值。双方精确交换 1024 字节后，通过别名更新为 TOS0x68/TTL52
+和 TOS0x88/TTL53，再交换 P/A 字节并验证半关闭 EOF。
+原生 TX 完整抓包必须确认握手和初始数据使用初值，后续字节使用新值；
+TOS 检查仅屏蔽 ECN 两位，不替代 ECN 测试。同时要求实际原生连接、
+DPDK TX/RX 和零 outstanding。该场景不覆盖路由 TTL 递减、ICMP 超时、
+IPv6 或重传，未修改原版 Linux 或 Ker 协议实现。
