@@ -655,8 +655,9 @@ TCP Fast Open cookie 缓存，并各完成六条精确流；所有流检查 peer
 两个缓存最初都收到 A cookie。B 源地址在 B+A 重叠期间用 A cookie 携数据发 SYN，
 服务端确认全部数据并返回 B cookie；备用 A 移除后，未被刷新过的 A 源地址仍携
 A cookie 发 SYN。独立抓包要求该 SYN 携带完整请求、SYN-ACK 只确认 SYN 并返回
-不同的 B cookie，且客户端在建立后的流中以原 SYN 序号重发完整请求。B 源地址
-随后必须用缓存中的 B cookie 携数据发 SYN并获得完整确认。另有普通空 SYN 对照；
+不同的 B cookie，且客户端在建立后的流中须以 SYN 数据起始序号（原 SYN 序号加一）
+重发完整请求。B 源地址随后必须用缓存中的 B cookie 携数据发 SYN并获得完整确认。
+另有普通空 SYN 对照；
 native opens、DPDK TX/RX 与零遗留 mbuf 同样必须通过。这是 F-Stack host bridge
 场景的原始 Linux 扩展，不改变来源案例计数或运行时/上游协议代码。缓存过期、
 丢包重传、IPv6 与性能仍未验证。
