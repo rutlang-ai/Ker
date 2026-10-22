@@ -23,6 +23,19 @@ static _Thread_local int fail_next_thread_error, track_thread_start;
 static atomic_uintptr_t observed_start;
 static atomic_uint start_frees;
 static _Thread_local int fail_key_create, fail_key_delete, fail_key_set;
+static _Thread_local int fail_join, fail_detach;
+int __real_pthread_join(pthread_t thread, void **result);
+int __real_pthread_detach(pthread_t thread);
+int __wrap_pthread_join(pthread_t thread, void **result)
+{
+    if (fail_join) { int error = fail_join; fail_join = 0; return error; }
+    return __real_pthread_join(thread, result);
+}
+int __wrap_pthread_detach(pthread_t thread)
+{
+    if (fail_detach) { int error = fail_detach; fail_detach = 0; return error; }
+    return __real_pthread_detach(thread);
+}
 int __real_pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
 int __real_pthread_key_delete(pthread_key_t key);
 int __real_pthread_setspecific(pthread_key_t key, const void *value);
@@ -356,14 +369,55 @@ static void tls_failures(void)
     puts("PASS: TLS set failure preserves slot contents; subsequent real set/clear/delete succeeds");
     puts("PASS: failed TLS deletion aborts rather than silently freeing a registered key");
 }
+static void completion_worker(void *argument)
+{
+    atomic_store((atomic_uint *)argument, 1);
+}
+static void thread_completion(void)
+{
+    /* Run before any parent threads: each child owns its main pthread and
+     * exits without sharing resources or depending on a detached-thread join. */
+    for (int fatal = 0; fatal <= 1; ++fatal) {
+        pid_t child = fork(); CHECK(child >= 0);
+        if (!child) {
+            struct rlimit limit = {0, 0}; CHECK(setrlimit(RLIMIT_CORE, &limit) == 0);
+            if (fatal) fail_detach = EINVAL;
+            ops.thread_detach();
+            CHECK(!fatal);
+            pthread_attr_t attributes;
+            CHECK(pthread_getattr_np(pthread_self(), &attributes) == 0);
+            int state;
+            CHECK(pthread_attr_getdetachstate(&attributes, &state) == 0);
+            CHECK(state == PTHREAD_CREATE_DETACHED);
+            CHECK(pthread_attr_destroy(&attributes) == 0);
+            _exit(0);
+        }
+        int status; CHECK(waitpid(child, &status, 0) == child);
+        if (fatal) CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+        else CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    const int errors[] = {EDEADLK, EINVAL, ESRCH};
+    for (unsigned int i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        atomic_uint completed = 0;
+        lkl_thread_t thread = ops.thread_create(completion_worker, &completed);
+        CHECK(thread);
+        fail_join = errors[i]; errno = 0;
+        CHECK(ops.thread_join(thread) == -1);
+        CHECK(!fail_join && errno == errors[i]);
+        CHECK(ops.thread_join(thread) == 0);
+        CHECK(atomic_load(&completed) == 1);
+    }
+    puts("PASS: join errors preserve errno and real joins recover; detach changes real pthread state or aborts on failure");
+}
 int main(void)
 {
     ker_native_host_thread_init(&lkl_host_ops);
     ops = lkl_host_ops;
-    CHECK(ops.thread_create && ops.thread_join && ops.thread_self && ops.thread_equal && ops.thread_exit);
+    CHECK(ops.thread_create && ops.thread_join && ops.thread_detach && ops.thread_self && ops.thread_equal && ops.thread_exit);
     CHECK(ops.tls_alloc && ops.tls_free && ops.tls_set && ops.tls_get);
     CHECK(ops.sem_alloc && ops.sem_free && ops.sem_up && ops.sem_down);
     CHECK(ops.mutex_alloc && ops.mutex_free && ops.mutex_lock && ops.mutex_unlock);
+    thread_completion();
     mutex_initialization();
     locked_mutex_is_fatal();
     tls_failures();
