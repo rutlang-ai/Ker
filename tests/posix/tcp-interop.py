@@ -798,6 +798,111 @@ def tcp_ip_options(args, launcher, work, env, log):
         print('PASS: native TCP IPv4 TOS/TTL ' + role + ', handshake and live data update', flush=True)
 
 
+def tcp_window_clamp(args, launcher, work, env, log):
+    if not args.window_clamp_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 28700 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.window_clamp_app), 'server', address, str(port)]
+        connect = [str(args.window_clamp_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-window-clamp-' + role + '.json')
+        capture = work / ('tcp-window-clamp-' + role); capture.mkdir()
+        native = [*launcher, '--stats', str(stats_path), '--pcap-dir', str(capture),
+                  '--pcap-snaplen', '65535', '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP window clamp server missed stream verification')
+        if role == 'host-reference':
+            continue
+        stats = json.loads(stats_path.read_text())
+        if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                stats['native']['passive_opens' if native_server else 'active_opens'] < 2):
+            raise RuntimeError('TCP window clamp missed native traffic: ' + str(stats))
+        frames = []
+        local_scale = remote_scale = None
+        seen_syn = seen_peer_syn = False
+        for path in capture.glob('*.pcap'):
+            data = path.read_bytes()
+            if len(data) < 24 or data[:4] not in (b'\xd4\xc3\xb2\xa1', b'\xa1\xb2\xc3\xd4'):
+                raise RuntimeError('invalid clamp PCAP header')
+            endian = '<' if data[:4] == b'\xd4\xc3\xb2\xa1' else '>'
+            offset = 24
+            while offset < len(data):
+                if offset + 16 > len(data):
+                    raise RuntimeError('truncated clamp PCAP record')
+                _, _, length, original = struct.unpack_from(endian + 'IIII', data, offset)
+                offset += 16
+                frame = data[offset:offset + length]; offset += length
+                if len(frame) != length or length != original:
+                    raise RuntimeError('truncated clamp frame')
+                if len(frame) < 54 or frame[12:14] != b'\x08\x00' or frame[23] != 6:
+                    continue
+                ihl = (frame[14] & 15) * 4
+                total = struct.unpack_from('!H', frame, 16)[0]
+                tcp = 14 + ihl
+                if ihl < 20 or total < ihl + 20 or 14 + total > len(frame):
+                    raise RuntimeError('invalid clamp IP length')
+                if port + 1 not in struct.unpack_from('!HH', frame, tcp):
+                    continue
+                header = (frame[tcp + 12] >> 4) * 4
+                if header < 20 or ihl + header > total or struct.unpack_from('!H', frame, 20)[0] & 0x3fff:
+                    raise RuntimeError('invalid clamp TCP packet')
+                native_tx = path.name.startswith('ker-tx-')
+                flags = frame[tcp + 13]
+                window = struct.unpack_from('!H', frame, tcp + 14)[0]
+                if flags & 2:
+                    scales = []
+                    position = tcp + 20
+                    while position < tcp + header:
+                        kind = frame[position]
+                        if kind == 0:
+                            break
+                        if kind == 1:
+                            position += 1
+                            continue
+                        if position + 2 > tcp + header:
+                            raise RuntimeError('short clamp TCP option')
+                        size = frame[position + 1]
+                        if size < 2 or position + size > tcp + header:
+                            raise RuntimeError('invalid clamp TCP option')
+                        if kind == 3:
+                            if size != 3 or frame[position + 2] > 14:
+                                raise RuntimeError('invalid window scale option')
+                            scales.append(frame[position + 2])
+                        position += size
+                    if len(scales) > 1:
+                        raise RuntimeError('duplicate window scale option')
+                    if native_tx:
+                        if not 0 < window <= 4096:
+                            raise RuntimeError('native initial window exceeded clamp')
+                        seen_syn = True
+                        local_scale = scales[0] if scales else None
+                    else:
+                        seen_peer_syn = True
+                        remote_scale = scales[0] if scales else None
+                elif native_tx:
+                    frames.append((flags, window, total - ihl - header))
+        negotiated_scale = local_scale if local_scale is not None and remote_scale is not None else 0
+        acknowledged = payload_bytes = max_window = 0
+        for flags, window, payload in frames:
+            if flags & 16:
+                max_window = max(max_window, window << negotiated_scale)
+                if window:
+                    acknowledged += 1
+            payload_bytes += payload
+        if not seen_syn or not seen_peer_syn or acknowledged < 2 or payload_bytes < 16385:
+            raise RuntimeError('missing clamp handshake/window/stream evidence')
+        print('PASS: native TCP window clamp ' + role + ', initial<=4096, observed post-handshake max=' + str(max_window), flush=True)
+
+
 def tcp_mss(args, launcher, work, env, log):
     if not args.mss_app:
         return
@@ -1820,6 +1925,7 @@ def inside(args):
                 tcp_receive_queue(args, launcher, work, env, log)
                 tcp_keepalive(args, launcher, work, env, log)
                 tcp_ip_options(args, launcher, work, env, log)
+                tcp_window_clamp(args, launcher, work, env, log)
                 tcp_mss(args, launcher, work, env, log)
                 tcp_cork(args, launcher, work, env, log)
                 tcp_linger(args, launcher, work, env, log)
@@ -1920,6 +2026,7 @@ def main():
     parser.add_argument('--notsent-lowat-app', type=Path)
     parser.add_argument('--user-timeout-app', type=Path)
     parser.add_argument('--ip-options-app', type=Path)
+    parser.add_argument('--window-clamp-app', type=Path)
     parser.add_argument('--mss-app', type=Path)
     parser.add_argument('--cork-app', type=Path)
     parser.add_argument('--linger-app', type=Path)
