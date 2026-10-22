@@ -336,9 +336,9 @@ TIME_WAIT 的状态/持续时间、多进程接管、未接入连接迁移或跨
 
 ## TCP 接收低水位、现有数据就绪与 FIN
 
-`native-fstack-tcp-lowwater` 在宿主参考、native 主动端和 native 监听端组合中双向验证三个阶段。通过 dup 设置 `SO_RCVLOWAT=64` 并查询共享值；独立 TCP 控制连接协调发送 17 字节，再以最多五秒的 FIONREAD 条件检查确认数据确实排队（每轮让出一毫秒），避免把网络尚未到达误判为低水位抑制就绪。poll/select/epoll 此时均须无事件。
+`native-fstack-tcp-lowwater` 在宿主参考、native 主动端和 native 监听端组合中双向验证四个阶段。通过 dup 设置 `SO_RCVLOWAT=64` 并查询共享值；独立 TCP 控制连接协调发送 17 字节，再以最多五秒的 FIONREAD 条件检查确认数据确实排队（每轮让出一毫秒），避免把网络尚未到达误判为低水位抑制就绪。poll/select/epoll 此时均须无事件。
 
-第一阶段以 `MSG_DONTWAIT` 读出已有 17 字节，保持 fd 为阻塞模式。第二阶段通过副本将低水位降到 1，已有数据须立即可读，保留原 epoll 注册及完整 64 位 tag。第三阶段确认低于水位的数据排队后才允许对端半关闭；FIN 须使 poll/epoll 报告 IN/RDHUP，`MSG_WAITALL` 的 64 字节读取返回 17 字节尾部，之后两个 alias 都返回 EOF。各阶段核对内容、未写入区域和队列计数。native 每端须有两次匹配方向的原始 Linux TCP 打开、DPDK 收发及零未释放缓冲区。
+第一阶段先以 `MSG_PEEK|MSG_DONTWAIT` 验证已有 17 字节且不消费，再以 `MSG_DONTWAIT` 读出，保持 fd 为阻塞模式。第二阶段通过副本将低水位降到 1，已有数据须立即可读，保留原 epoll 注册及完整 64 位 tag；再升回64时必须抑制就绪，再降到1须恢复。第三阶段先确认17字节低于阈值，再由控制连接允许对端补齐47字节；达到64字节时须可读，消费后清除，期间没有降低阈值或发送FIN。第四阶段确认低于水位的数据排队后才允许对端半关闭；FIN 须使 poll/epoll 报告 IN/RDHUP，`MSG_WAITALL` 的 96 字节读取返回 17 字节尾部，之后两个 alias 都返回 EOF。各阶段核对内容、未写入区域和队列计数。native 每端须有两次匹配方向的原始 Linux TCP 打开、DPDK 收发及零未释放缓冲区。
 
 这是固定 F-Stack host shutdown/dup/readiness 桥接场景的 Ker/Linux 扩展，不是上游测试或等价声明。仅增加测试，不修改协议或适配代码。未覆盖并发读者、ET/ONESHOT rearm、信号中断或低水位性能；TCP 和 UDP 的低水位语义须分别验证。
 

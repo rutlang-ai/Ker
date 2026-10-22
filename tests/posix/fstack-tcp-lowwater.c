@@ -74,13 +74,13 @@ static int64_t milliseconds(void)
     struct timespec value; CHECK(clock_gettime(CLOCK_MONOTONIC, &value) == 0);
     return (int64_t)value.tv_sec * 1000 + value.tv_nsec / 1000000;
 }
-static void queued(int fd)
+static void queued(int fd, int wanted)
 {
     int64_t deadline = milliseconds() + 5000;
     for (;;) {
         int count = -1; CHECK(ioctl(fd, FIONREAD, &count) == 0);
-        if (count == 17) return;
-        CHECK(count >= 0 && count < 17 && milliseconds() < deadline);
+        if (count == wanted) return;
+        CHECK(count >= 0 && count < wanted && milliseconds() < deadline);
         CHECK(poll(NULL, 0, 1) == 0);
     }
 }
@@ -104,13 +104,18 @@ static void readable(int fd, int ep, int fin)
 }
 static void exchange(int fd, int alias, int ep, int control, int sending, int direction)
 {
-    for (int phase = 0; phase < 3; ++phase) {
-        unsigned char expected[17];
+    for (int phase = 0; phase < 4; ++phase) {
+        unsigned char expected[64];
+        size_t payload = phase == 2 ? sizeof(expected) : 17;
         for (size_t i = 0; i < sizeof(expected); ++i) expected[i] = (unsigned char)(direction * 109 + phase * 71 + i * 31);
         if (sending) {
-            marker(control, 'R', 0); transfer(fd, expected, sizeof(expected), 1);
+            marker(control, 'R', 0); transfer(fd, expected, 17, 1);
             marker(control, 'S', 1);
             if (phase == 2) {
+                marker(control, 'T', 0); transfer(fd, expected + 17, payload - 17, 1);
+                marker(control, 'Q', 1);
+            }
+            if (phase == 3) {
                 marker(control, 'F', 0); CHECK(shutdown(alias, SHUT_WR) == 0); marker(control, 'C', 1);
             }
             marker(control, 'A', 0);
@@ -118,26 +123,37 @@ static void exchange(int fd, int alias, int ep, int control, int sending, int di
             int value = 64; CHECK(setsockopt(alias, SOL_SOCKET, SO_RCVLOWAT, &value, sizeof(value)) == 0);
             CHECK(lowwater(fd) == 64 && lowwater(alias) == 64);
             marker(control, 'R', 1); marker(control, 'S', 0);
-            queued(fd); suppressed(alias, ep);
-            unsigned char actual[64]; memset(actual, 0xa5, sizeof(actual));
+            queued(fd, 17); suppressed(alias, ep);
+            unsigned char actual[96]; memset(actual, 0xa5, sizeof(actual));
             if (!phase) {
                 /* O_NONBLOCK stays clear; the per-call flag bypasses the low-water wait. */
-                CHECK(recv(alias, actual, sizeof(actual), MSG_DONTWAIT) == sizeof(expected));
+                CHECK(recv(alias, actual, sizeof(actual), MSG_PEEK | MSG_DONTWAIT) == (ssize_t)payload);
+                CHECK(!memcmp(actual, expected, payload));
+                queued(fd, 17); suppressed(alias, ep);
+                CHECK(recv(alias, actual, sizeof(actual), MSG_DONTWAIT) == (ssize_t)payload);
                 CHECK(lowwater(fd) == 64);
             } else if (phase == 1) {
                 value = 1; CHECK(setsockopt(alias, SOL_SOCKET, SO_RCVLOWAT, &value, sizeof(value)) == 0);
                 CHECK(lowwater(fd) == 1); readable(alias, ep, 0);
-                CHECK(recv(fd, actual, sizeof(actual), 0) == sizeof(expected));
+                value = 64; CHECK(setsockopt(fd, SOL_SOCKET, SO_RCVLOWAT, &value, sizeof(value)) == 0);
+                CHECK(lowwater(alias) == 64); suppressed(alias, ep);
+                value = 1; CHECK(setsockopt(alias, SOL_SOCKET, SO_RCVLOWAT, &value, sizeof(value)) == 0);
+                CHECK(lowwater(fd) == 1); readable(alias, ep, 0);
+                CHECK(recv(fd, actual, sizeof(actual), 0) == (ssize_t)payload);
+            } else if (phase == 2) {
+                marker(control, 'T', 1); marker(control, 'Q', 0);
+                queued(fd, 64); CHECK(lowwater(alias) == 64); readable(alias, ep, 0);
+                CHECK(recv(alias, actual, payload, MSG_WAITALL) == (ssize_t)payload);
             } else {
                 marker(control, 'F', 1); marker(control, 'C', 0); readable(alias, ep, 1);
-                CHECK(recv(alias, actual, sizeof(actual), MSG_WAITALL) == sizeof(expected));
+                CHECK(recv(alias, actual, sizeof(actual), MSG_WAITALL) == (ssize_t)payload);
                 CHECK(lowwater(fd) == 64); eof(fd); eof(alias);
             }
-            CHECK(!memcmp(actual, expected, sizeof(expected)));
-            for (size_t i = sizeof(expected); i < sizeof(actual); ++i) CHECK(actual[i] == 0xa5);
+            CHECK(!memcmp(actual, expected, payload));
+            for (size_t i = payload; i < sizeof(actual); ++i) CHECK(actual[i] == 0xa5);
             int count = -1; CHECK(ioctl(fd, FIONREAD, &count) == 0 && count == 0);
             CHECK(!(fcntl(fd, F_GETFL) & O_NONBLOCK) && !(fcntl(alias, F_GETFL) & O_NONBLOCK));
-            if (phase != 2) suppressed(alias, ep);
+            if (phase != 3) suppressed(alias, ep);
             marker(control, 'A', 1);
         }
     }
@@ -167,6 +183,6 @@ int main(int argc, char **argv)
     CHECK(lowwater(alias) == 1);
     CHECK(close(fd) == 0 && close(alias) == 0 && close(ep) == 0);
     CHECK(shutdown(control, SHUT_WR) == 0); eof(control); CHECK(close(control) == 0);
-    printf("PASS: TCP %s low-water readiness, DONTWAIT, alias lowering and FIN tail\n", argv[1]);
+    printf("PASS: TCP %s low-water readiness, DONTWAIT/PEEK, threshold arrival, alias raising/lowering and FIN tail\n", argv[1]);
     return 0;
 }
