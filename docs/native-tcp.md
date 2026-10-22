@@ -1000,3 +1000,15 @@ poll；探测包不能成为应用可读事件，之后必须恢复精确字节�
 探测包，同时要求原生连接计数、DPDK TX/RX 和零 outstanding mbuf。
 本项覆盖响应正常的空闲对端，不声明丢失探测后的超时断开、精确计时或 IPv6 覆盖。
 协议处理完全来自原版 Linux，没有新增 Ker 自有 TCP 逻辑。
+
+
+SO_PEEK_OFF：`native-fstack-tcp-peek-offset` 先探测宿主支持；仅当宿主返回
+`EOPNOTSUPP`/`ENOPROTOOPT` 时跳过宿主参考，其他探测错误均失败。原生客户端和服务器
+仍必须分别执行 SO_PEEK_OFF 游标断言；其宿主对端改用普通 MSG_PEEK，同时核对精确字节、
+FIONREAD、完整读取和 EOF。支持该选项时也运行双端宿主参考。独立控制连接协调完整 16KiB+37 字节及 FIN 入队，
+默认 -1 的重复 MSG_PEEK 必须返回相同字节；经 dup 设置偏移 17 后，recvmsg
+跨两个 iovec 预览并推进共享游标，FIONREAD 不变。正常读取 257 字节后，
+游标必须向后调整，下一次预览仍指向原来的数据位置。错误的选项长度返回 EINVAL
+并保留游标；重置 0/-1 分别恢复队首预览和不推进模式。最后通过 readv 验证全部
+剩余字节、游标归零及重复 EOF，要求实际原生连接、DPDK TX/RX 和零 outstanding。
+行为来自原版 Linux；不声明越过队尾的游标或并发读取覆盖。
