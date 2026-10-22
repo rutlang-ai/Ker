@@ -714,3 +714,22 @@ CLI 覆盖 INI；省略保留原始 EAL。Typed prefix 插入首个 raw EAL `--`
 终止符边界；在这些地址可用的测试进程中，实际映射必须位于提示区域的1GiB窗口内，
 并完成宿主TCP/UDP、native计数和零mbuf退出。未验证地址冲突回退、hugepage
 映射、NUMA/硬件拓扑或secondary进程，不修改原始DPDK分配器。
+
+
+## TCP Fast Open 运行验证
+
+`native-fstack-tcp-fastopen` 使用同一 POSIX 测试程序，分别运行宿主参考、native
+客户端和 native 服务端。显式在测试私有网络命名空间设置 `net.ipv4.tcp_fastopen=519`
+（原始 Linux 客户端/服务端及无 cookie 的 SYN 数据标志），不改变默认部署策略或
+全局宿主配置。监听 socket 设置并回读 `TCP_FASTOPEN=4`。客户端首个连接通过
+`sendto(MSG_FASTOPEN|MSG_NOSIGNAL)` 发送，第二个连接用普通 connect/send 对照。
+双方检查完整 payload、peer 名称、双向半关闭与 EOF。
+
+独立宿主 AF_PACKET 抓包必须同时看到携带完整精确请求的 SYN（无ACK）及普通空SYN，
+因此仅普通握手成功不能代替 TFO 证据。native 两种角色均要求原始 Linux TCP open
+计数、真实 DPDK TX/RX 和零 outstanding mbuf。协议行为全部来自固定原始 Linux，
+本批只补齐覆盖，不新增 Ker 协议实现或修改上游代码。
+
+这是 pinned F-Stack message/name/shutdown bridge 场景的 Linux 扩展，不是上游已注册
+TFO 用例的完整迁移。不验证 cookie 协商/缓存、默认策略、非阻塞 EINPROGRESS 回退、
+丢包重传、TCP_FASTOPEN_CONNECT、IPv6 或性能。
