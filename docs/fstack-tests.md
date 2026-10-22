@@ -396,3 +396,8 @@ SO_PEEK_OFF 扩展：`native-fstack-tcp-peek-offset` 探测宿主支持，仅在
 IPv4 TCP TOS/TTL 扩展：`native-fstack-tcp-ip-options` 将监听继承、dup 共享、
 错误恢复和连接后更新与原生发送抓包关联验证。这扩展已有 socket 场景，
 不增加源案例迁移数；仍有 222 个 blocked、20 个 partial。
+
+
+TCP_USER_TIMEOUT 扩展：`native-fstack-tcp-user-timeout` 以独立宿主对端形成
+真实零窗口，验证原生探测、超时错误及描述符清理。它扩展已有 socket 迁移场景，
+不增加源案例迁移数；仍有 222 个 blocked、20 个 partial。

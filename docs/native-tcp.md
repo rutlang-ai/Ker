@@ -1023,3 +1023,15 @@ TOS0x28/TTL42，服务器为 TOS0x48/TTL43；TTL0/-2/256 必须返回 EINVAL
 TOS 检查仅屏蔽 ECN 两位，不替代 ECN 测试。同时要求实际原生连接、
 DPDK TX/RX 和零 outstanding。该场景不覆盖路由 TTL 递减、ICMP 超时、
 IPv6 或重传，未修改原版 Linux 或 Ker 协议实现。
+
+
+TCP_USER_TIMEOUT：`native-fstack-tcp-user-timeout` 在宿主参考、原生客户端发送端
+和原生服务器发送端中验证真实零窗口超时。握手前限制接收缓冲，独立 TCP 控制
+连接阻止对端读取，发送端经 MSG_DONTWAIT 填满实际发送队列直至 EAGAIN。
+选项默认 0，经 dup 设置 1000ms，负值返回 EINVAL 且保留旧值；重置 0 后再次设置。
+10 秒保护范围内必须获得 POLLERR，别名读取 SO_ERROR 得到 ETIMEDOUT，原描述符
+再次读取错误已清除，后续 MSG_NOSIGNAL 发送返回 EPIPE。此后才释放宿主对端，
+核对已交付字节及 EOF/ECONNRESET；交付数必须为正且小于已接受发送数。
+原生运行还必须具有 TCPWinProbe、实际 TCP 连接、DPDK TX/RX 和零 outstanding。
+该项不声明精确 1000ms 墙钟、丢包重传期限、keepalive 失效或 IPv6 覆盖；
+所有窗口探测和关闭行为来自原版 Linux，未修改协议实现。
