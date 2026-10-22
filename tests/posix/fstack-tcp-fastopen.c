@@ -46,7 +46,7 @@ int main(int argc, char **argv)
     int nonblocking = argc == 5 && !strcmp(argv[4], "nonblocking");
     int backup = argc == 5 && !strcmp(argv[4], "backup");
     int rotation = backup || (argc == 5 && !strcmp(argv[4], "rotation"));
-    int connections = rotation ? 4 : (argc == 5 ? 3 : 2);
+    int connections = backup ? 6 : (rotation ? 4 : (argc == 5 ? 3 : 2));
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(atoi(argv[3]))};
     CHECK(inet_pton(AF_INET, argv[2], &address.sin_addr) == 1);
     if (!strcmp(argv[1], "server")) {
@@ -64,9 +64,11 @@ int main(int argc, char **argv)
             char data[sizeof(request)]; transfer(fd, data, sizeof(data), 0);
             CHECK(!memcmp(data, request, sizeof(data)));
             /* Rotate before the echo: the client cannot start phase 1 until it receives this echo. */
-            if (rotation && phase == 0) set_keys(listener, 0x72, backup);
-            /* Phase 2 must work with the refreshed cookie after retiring the backup. */
-            if (backup && phase == 1) set_keys(listener, 0x72, 0);
+            if (rotation && !backup && phase == 0) set_keys(listener, 0x72, 0);
+            /* Keep source A's cookie untouched while source B refreshes under B+A. */
+            if (backup && phase == 1) set_keys(listener, 0x72, 1);
+            /* Source A will next present its retained A cookie after this retirement. */
+            if (backup && phase == 2) set_keys(listener, 0x72, 0);
             transfer(fd, data, sizeof(data), 1);
             CHECK(shutdown(fd, SHUT_WR) == 0);
             CHECK(recv(fd, data, 1, 0) == 0); CHECK(close(fd) == 0);
@@ -76,6 +78,22 @@ int main(int argc, char **argv)
         CHECK(!strcmp(argv[1], "client"));
         for (int phase = 0; phase < connections; ++phase) {
             int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0); timeout(fd);
+            if (backup && phase < connections - 1) {
+                struct sockaddr_in local = {.sin_family = AF_INET};
+                const char *source_a, *source_b;
+                if ((ntohl(address.sin_addr.s_addr) >> 24) == 127) {
+                    source_a = "127.0.0.2"; source_b = "127.0.0.3";
+                } else if (ntohl(address.sin_addr.s_addr) == 0xc6120001) {
+                    /* Native client: the primary and VIP addresses belong to this stack. */
+                    source_a = "198.18.0.2"; source_b = "198.18.0.3";
+                } else {
+                    /* Native server: the host Linux client uses its veth addresses. */
+                    source_a = "198.18.0.1"; source_b = "198.18.0.4";
+                }
+                const char *source = (phase == 0 || phase == 3) ? source_a : source_b;
+                CHECK(inet_pton(AF_INET, source, &local.sin_addr) == 1);
+                CHECK(bind(fd, (void *)&local, sizeof(local)) == 0);
+            }
             if (phase < connections - 1) {
                 int flags = fcntl(fd, F_GETFL); CHECK(flags >= 0);
                 if (nonblocking) CHECK(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
