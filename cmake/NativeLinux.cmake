@@ -753,6 +753,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-window-clamp COMMAND ${ker_native_test_command}
         --window-clamp-app "$<TARGET_FILE:ker-posix-fstack-tcp-window-clamp-test>")
     set_tests_properties(native-fstack-tcp-window-clamp PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-congestion-test tests/posix/fstack-tcp-congestion.c)
+    target_compile_options(ker-posix-fstack-tcp-congestion-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-congestion COMMAND ${ker_native_test_command}
+        --congestion-app "$<TARGET_FILE:ker-posix-fstack-tcp-congestion-test>")
+    set_tests_properties(native-fstack-tcp-congestion PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-tcp-mss-test tests/posix/fstack-tcp-mss.c)
     target_compile_options(ker-posix-fstack-tcp-mss-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-mss COMMAND ${ker_native_test_command}

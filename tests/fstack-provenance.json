@@ -1567,6 +1567,17 @@
         "native-fstack-tcp-linger2"
       ],
       "adaptation": "Ker-specific original-Linux TCP_LINGER2 extension of already-adapted socket/dup bridge scenarios, not another pinned source case. Host-reference and native client/server runs use independent peers over DPDK net_tap/veth and a separate control TCP stream. In each endpoint direction the closer verifies SO_LINGER remains disabled, changes TCP_LINGER2 through dup to2, checks short-length EINVAL without changing it, resets0 to the kernel default, then sets-1. Send a byte and SHUT_WR; the peer verifies the byte and EOF before the closer waits for actual TCP_INFO FIN_WAIT2. Close the original descriptor, coordinate another byte from the peer and require the remaining alias to receive it while still in FIN_WAIT2. Only the last alias close triggers abortive orphan cleanup. The peer must observe POLLERR and original-Linux CLOSE_WAIT error EPIPE through SO_ERROR, then cleared shared error, repeated EOF and EPIPE on MSG_NOSIGNAL send. Verify full native TX/RX captures contain both FIN and RST for the tested data port, actual control+two data native opens, real DPDK traffic and zero outstanding buffers. No production/upstream/protocol changes, positive-linger orphan timer-expiry guarantee, TIME_WAIT duration, exact deadlines, packet-loss retransmission or IPv6 qualification. Source-case counts remain unchanged."
+    },
+    "native-fstack-tcp-congestion": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-congestion"
+      ],
+      "adaptation": "Ker-specific original-Linux TCP_CONGESTION extension of already-adapted socket/dup bridge cases, not an additional pinned source case. Run the same executable as host reference and native client/server against independent host peers over real DPDK net_tap/veth. Record each fresh socket/listener default algorithm, select Reno before connect/accept via dup using a non-NUL optval of the stated length, and require inherited/alias readback to remain Reno. Empty optval must fail EINVAL, missing algorithm ker_missing_cc must fail ENOENT, and the preceding selection must survive both errors. Verify an exact bidirectional16KiB stream under Reno, restore the saved default through a connected alias, and verify another distinct bidirectional16KiB stream with shared readback and TCP_INFO ESTABLISHED/positive snd_cwnd after each phase. Require a small recovery exchange, half-close EOF and alias cleanup. The native endpoint must explicitly report default=cubic and restored=cubic using its real option readback; host reference and unwrapped peers restore their own defaults without assuming host CUBIC availability. Native opens, actual DPDK TX/RX and zero outstanding buffers are mandatory. Uses only built-in pinned original-Linux Reno/CUBIC implementations with no production/upstream algorithm changes, cwnd formula assertions, throughput/fairness comparison, loss/retransmission or IPv6 claim. Source-case counts remain unchanged."
     }
   }
 }

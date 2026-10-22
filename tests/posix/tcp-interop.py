@@ -623,6 +623,39 @@ def tcp_user_timeout(args, launcher, work, env, log):
             print('native TCP user timeout ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_congestion(args, launcher, work, env, log):
+    if not args.congestion_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 28900 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.congestion_app), 'server', address, str(port)]
+        connect = [str(args.congestion_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-congestion-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client_output = client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP congestion server did not verify both directions')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            native_output = ''.join(captured) if native_server else client_output
+            if 'default=cubic reno=verified restored=cubic' not in native_output:
+                raise RuntimeError('native congestion did not qualify Reno-to-CUBIC restoration')
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    1):
+                raise RuntimeError('TCP congestion scenario missed native traffic: ' + str(stats))
+            print('native TCP congestion ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_receive_queue(args, launcher, work, env, log):
     if not args.receive_queue_app:
         return
@@ -1991,6 +2024,7 @@ def inside(args):
                 tcp_peek_offset(args, launcher, work, env, log)
                 tcp_notsent_lowat(args, launcher, work, env, log)
                 tcp_user_timeout(args, launcher, work, env, log)
+                tcp_congestion(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
                 tcp_keepalive(args, launcher, work, env, log)
                 tcp_ip_options(args, launcher, work, env, log)
@@ -2099,6 +2133,7 @@ def main():
     parser.add_argument('--window-clamp-app', type=Path)
     parser.add_argument('--mss-app', type=Path)
     parser.add_argument('--cork-app', type=Path)
+    parser.add_argument('--congestion-app', type=Path)
     parser.add_argument('--linger2-app', type=Path)
     parser.add_argument('--linger-app', type=Path)
     parser.add_argument('--receive-queue-app', type=Path)
