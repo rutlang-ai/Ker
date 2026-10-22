@@ -1293,6 +1293,18 @@
         "native-fstack-launcher-config"
       ],
       "adaptation": "Related fixture-feature evidence only; the original dpdk_full case asserts multiport/bond/RSS fields and remains blocked, with migration counts unchanged. Typed dpdk.log_level/--eal-log-level selects original EAL startup global logging at1..8; omission preserves raw EAL behavior. CLI overrides INI; invalid values and conflicting raw numeric/named global --log-level authorities fail before loading the library, while raw per-component pattern:level and regexp,level policies coexist with the typed global. The existing logging.level/--log-level continues to override the global and Ker worker level after EAL initialization. Worker readiness snapshots actual rte_log_get_global_level() immediately after EAL initialization and again at readiness. Seven real net_tap/original-Linux instances verify raw warning, INI info, CLI warning replacing INI info, post-init info overriding startup warning, CLI info replacing INI warning, and typed global7 combined with per-component warning/info policies. The original EAL INFO Selected IOVA mode message must be present or absent according to the global and component thresholds. All profiles additionally require independent host TCP/UDP traffic, native counters, control shutdown and zero outstanding mbufs. This is global numeric level support plus raw per-type policy, not complete logging configuration migration. No upstream or protocol code is modified."
+    },
+    "native-fstack-eal-file-prefix": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_extra_keys"
+      ],
+      "source_fixture": "tests/unit/fixtures/valid_dpdk_extra_keys.ini",
+      "ker_ctests": [
+        "native-fstack-eal-file-prefix",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "File-prefix subset of the registered extra-keys case. Ker dpdk.file_prefix/--file-prefix forwards a literal original EAL runtime prefix, without the F-Stack container-decoration. Typed prefixes are restricted to1..64 ASCII letters/digits/dot/underscore/hyphen starting with a letter/digit; path separators, traversal names, percent, whitespace and empty strings fail before library loading. CLI overrides INI; raw --file-prefix conflicts only when it appears among active EAL options before the first --, while the raw separator and suffix are preserved and excluded from conflict checks. Typed prefix is inserted before that separator. Four real net_tap/original-Linux profiles cover raw, INI mytest, CLI override, and typed CLI prefix before a raw terminator containing a competing suffix prefix. Each requires the actual prefix-specific EAL shared-config file under a private runtime directory, independent host TCP/UDP, native counters and zero outstanding mbufs. With the first native app still live, a same-prefix primary must fail125 with the original EAL configuration-lock diagnostic and no readiness; a distinct-prefix primary using its own TAP/subnet must complete real EAL/native startup and clean shutdown before the first app continues successful TCP/UDP. This proves runtime namespace/primary-lock behavior in shared-config mode, not shared hugepage or secondary-process support. --no-shconf/--in-memory bypass EAL shared configuration and therefore are not primary-exclusion guarantees. Base virtual address, allowlist, full vdev and bond fields remain unsupported; the source case is partial, not complete. No protocol or upstream modifications."
     }
   }
 }

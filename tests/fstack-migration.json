@@ -1566,9 +1566,15 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Typed file-prefix configuration and actual original-EAL runtime namespace/primary-lock behavior are verified with concurrent native instances and host TCP/UDP.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-eal-file-prefix",
+          "provenance_case": "native-fstack-eal-file-prefix"
+        }
+      ],
+      "remaining": "The source also asserts base_virtaddr, full vdev completion queues and bond down_delay; those fields and the F-Stack global configuration layout remain unsupported. Ker forwards the literal prefix instead of adding the F-Stack container- decoration. Shared hugepages and secondary-process support are not qualified."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",

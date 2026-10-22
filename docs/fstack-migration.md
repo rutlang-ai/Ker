@@ -15,8 +15,8 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 125 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 226 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 20 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 225 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -595,3 +595,10 @@ typed INI/CLI 转为原始EAL，回读真实内存字节数与页模式，五次
 pattern/regex 规则共存，并用七个实例走通原始 Linux TCP/UDP。
 这仍是相关功能证据；源注册案例的 multi-port/bond/RSS 断言尚未迁移，保持
 blocked，不增加迁移通过计数。
+
+
+`test_ff_load_config_dpdk_extra_keys` 的 file_prefix 断言已有 typed 配置与真实 EAL
+运行目录、同名 primary 排他、异名并发 native 生命周期和宿主 TCP/UDP 证据，
+现标为 partial。其 base_virtaddr、vdev completion queues 和 bond down_delay
+断言仍缺失；Ker 原样使用 prefix，不采用 F-Stack 的 container- 装饰。
+未将源案例计为完整迁移，也不声称 shared hugepage/secondary 支持。

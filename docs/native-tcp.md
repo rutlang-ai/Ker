@@ -686,3 +686,17 @@ READY 时的实际级别；两者均通过 DPDK API 回读。
 `native-fstack-eal-log-level` 用七个真实实例检查 warning/info、INI/CLI 覆盖，
 启动 warning 后运行 info，以及 typed 全局级别配合原始 component warning/info 规则时的
 IOVA INFO 过滤。每次同时验证宿主 TCP/UDP 互通、native 计数与零 outstanding mbuf。
+
+
+`[dpdk] file_prefix=mytest` / `--file-prefix mytest` 设置 EAL 运行文件命名空间。
+CLI 覆盖 INI；省略保留原始 EAL。Typed prefix 插入首个 raw EAL `--` 之前；仅分隔符前的 raw `--file-prefix` 与 typed 值冲突，分隔符后的参数原序保留且不参与冲突检查。
+名称限制为1..64个ASCII字母、数字、点、下划线或连字符，并以字母/数字开头，
+不接受路径、空白或百分号。Ker 原样传递名称，不添加 F-Stack 的 `container-` 前缀。
+
+`native-fstack-eal-file-prefix` 在私有 RUNTIME_DIRECTORY 中核对真实的
+`dpdk/<prefix>/config` 文件，四个真实配置覆盖 raw/INI/CLI、覆盖未使用的命名空间以及 typed prefix 位于 raw terminator 前。
+首个 native 应用存活时，同名前缀 primary 必须被原始 EAL 配置锁拒绝；另一
+前缀的独立 TAP/native 实例必须正常启动和退出，然后首个应用继续 TCP/UDP 互通。
+这只验证共享配置模式的运行命名空间和 primary 排他，不声称 shared hugepages
+或 secondary 进程支持。原始 `--no-shconf` / `--in-memory` 绕过共享配置，
+不能用此前缀推断 primary 排他。
