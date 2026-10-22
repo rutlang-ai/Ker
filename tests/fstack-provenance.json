@@ -1534,6 +1534,17 @@
         "native-fstack-tcp-notsent-lowat"
       ],
       "adaptation": "Ker-specific original-Linux TCP_NOTSENT_LOWAT extension of already-adapted socket/dup bridge scenarios, not another pinned source case. Run host reference and native client/server senders against independent host receivers over real DPDK net_tap/veth. A separate TCP control stream forbids receiver reads during backpressure inspection. Sender checks default0, shared4096 setting, short-option-length EINVAL with old value preserved, and zero reset. Increase SO_SNDBUF, then send deterministic bytes using MSG_DONTWAIT until EAGAIN. Bounded fill/readiness retries require SIOCOUTQNSD >=4096, no POLLOUT, and accepted bytes below one quarter of queried SO_SNDBUF. Without releasing the receiver, set UINT32_MAX through an alias and require POLLOUT, restore4096 through the original fd and require no POLLOUT; this threshold-only toggle separates low-water backpressure from ordinary send-memory exhaustion. Only then release the peer, require writable readiness within5 seconds, send another verified byte and half-close. Receiver must validate every accepted queued byte, the resumed byte and EOF; sender also verifies peer EOF and aliases close. Require original-Linux active/passive opens, DPDK TX/RX and zero outstanding buffers. No production/runtime/protocol/upstream changes, no exact queue-size or event deadline promise, no concurrent writers, loss/retransmission or IPv6 qualification. Source-case migration counts remain unchanged."
+    },
+    "native-fstack-bind-address-no-port": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-bind-address-no-port"
+      ],
+      "adaptation": "Ker-specific original-Linux IP_BIND_ADDRESS_NO_PORT extension of already-adapted socket/dup cases; not an additional pinned source case or F-Stack RSS-table migration. The same C program runs as host reference in an isolated network namespace and through native DPDK against three independent host TCP listeners. Configure a single automatic source port40000. Ordinary bind(address,0) must immediately reserve it and a second bind must fail EADDRINUSE; closing releases it. With NO_PORT enabled, bind must leave port0, listen must then allocate40000, and an explicit40001 bind must remain immediate despite being outside the automatic range. Three aliased sockets check shared option changes/reset; a nonlocal address must still fail EADDRNOTAVAIL and permit retry with the configured local address. Bind all three before connect and require local address retention with port0. Connect through aliases to three distinct remote ports while holding all connections open, require source40000 on all, and independently verify those peer tuples at the host listeners. Each connection exchanges an exact distinct16-byte payload, half-closes, verifies EOF and closes both aliases. Require >=3 original-Linux opens, DPDK TX/RX and zero outstanding buffers. The host reference temporarily constrains only its private namespace policy and restores it before native startup; native private policy must leave host range/reservations unchanged. No production/upstream/protocol changes, automatic UDP tuple sharing, same-destination tuple reuse, IPv6, RSS queue assignment or additional source-case count."
     }
   }
 }

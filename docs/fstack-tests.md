@@ -406,3 +406,8 @@ TCP_USER_TIMEOUT 扩展：`native-fstack-tcp-user-timeout` 以独立宿主对端
 TCP_NOTSENT_LOWAT 扩展：`native-fstack-tcp-notsent-lowat` 验证非阻塞发送背压、
 阈值单独改变导致的可写状态切换，以及对端恢复读取后的完整传输。
 本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。
+
+
+延迟端口绑定扩展：`native-fstack-bind-address-no-port` 以真实单端口范围验证
+地址绑定与端口保留的区别，以及三个不同目的连接的源端口共享。该项扩展已迁移
+socket 场景，不等价于 F-Stack RSS 端口表；仍有 222 个 blocked、20 个 partial。

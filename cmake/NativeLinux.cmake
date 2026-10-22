@@ -336,6 +336,14 @@ if(BUILD_TESTING)
     set_tests_properties(native-fstack-startup-failures PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-ephemeral-ports-test tests/posix/ephemeral-ports.c)
     target_compile_options(ker-ephemeral-ports-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-posix-fstack-bind-address-no-port-test tests/posix/fstack-bind-address-no-port.c)
+    target_compile_options(ker-posix-fstack-bind-address-no-port-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-bind-address-no-port
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/bind-address-no-port.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --app "$<TARGET_FILE:ker-posix-fstack-bind-address-no-port-test>")
+    set_tests_properties(native-fstack-bind-address-no-port PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-ephemeral-ports
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/ephemeral-ports.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

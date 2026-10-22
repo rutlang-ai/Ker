@@ -1047,3 +1047,15 @@ SO_SNDBUF 并设置 LOWAT4096，使用 MSG_DONTWAIT 填充至 EAGAIN。
 已接受字节及 EOF，发送端也验证反向 EOF。另查默认值、共享选项、重置与
 错误长度的 EINVAL 恢复，以及实际原生连接、DPDK TX/RX 和零 outstanding。
 该项不承诺精确队列大小或通知期限，不覆盖并发发送、丢包重传或 IPv6。
+
+
+IP_BIND_ADDRESS_NO_PORT：`native-fstack-bind-address-no-port` 将自动端口范围
+限制为单个 40000，先证明普通 bind(address,0) 立即保留端口并导致第二次绑定
+EADDRINUSE。启用选项后 bind 保留本地地址但端口仍为 0；listen 才分配端口，
+显式绑定范围外的 40001 则仍立即生效。三个 socket 经 dup 检查选项共享和重置，
+同时先绑定地址而不占端口，再连接三个不同目的端口，全部保持连接并共享本地
+40000；独立宿主监听器必须观察到这三个准确源元组。每条连接校验独立的 16 字节
+数据和半关闭 EOF，实际原生连接至少三个，DPDK TX/RX 有流量且 outstanding 为零。
+非本地地址依旧返回 EADDRNOTAVAIL，随后可重试本地绑定；该选项不意味着 freebind。
+宿主参考只修改隔离网络命名空间的端口策略并先行恢复；原生运行后再次确认宿主
+策略未变。不声明 UDP 自动端口共享、相同目的元组复用、IPv6 或 RSS 队列能力。
