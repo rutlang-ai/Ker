@@ -83,8 +83,10 @@ def main():
     for name in ('launcher', 'library', 'worker', 'app'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--cookie-exchange', action='store_true', help='require real cookie request, response and reuse on a fresh connection')
+    parser.add_argument('--nonblocking', action='store_true', help='validate nonblocking Fast Open initiation and no-cookie resend')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
+    args.cookie_exchange = args.cookie_exchange or args.nonblocking
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
             '--inside', *sys.argv[1:]]).returncode
@@ -113,7 +115,8 @@ def main():
             listen = [str(args.app), 'server', address, str(port)]
             connect = [str(args.app), 'client', address, str(port)]
             if args.cookie_exchange:
-                listen += ['cookies']; connect += ['cookies']
+                mode = 'nonblocking' if args.nonblocking else 'cookies'
+                listen += [mode]; connect += [mode]
             if role == 'server':
                 listen = native + listen
             elif role == 'client':
@@ -129,6 +132,9 @@ def main():
                         require(process.stdout.readline() == f'READY {port}\n', 'Fast Open server not ready')
                         result = subprocess.run(connect, capture_output=True, text=True, timeout=25, env=environment)
                         require(result.returncode == 0 and 'PASS:' in result.stdout, result.stderr)
+                        if args.nonblocking:
+                            require('no-cookie EINPROGRESS' in result.stdout and 'cached-cookie send accepted' in result.stdout,
+                                    'missing nonblocking return/readiness evidence')
                         output = process.communicate(timeout=20)[0]
                         require(process.returncode == 0 and 'PASS:' in output, output)
                         verify_syns(syn_records(capture, port), port, args.cookie_exchange)

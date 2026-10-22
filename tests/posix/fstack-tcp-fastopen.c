@@ -2,6 +2,8 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +31,8 @@ static void transfer(int fd, void *buffer, size_t length, int sending)
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 4 || (argc == 5 && !strcmp(argv[4], "cookies")));
+    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking"))));
+    int nonblocking = argc == 5 && !strcmp(argv[4], "nonblocking");
     int connections = argc == 5 ? 3 : 2;
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(atoi(argv[3]))};
     CHECK(inet_pton(AF_INET, argv[2], &address.sin_addr) == 1);
@@ -56,9 +59,26 @@ int main(int argc, char **argv)
         for (int phase = 0; phase < connections; ++phase) {
             int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0); timeout(fd);
             if (phase < connections - 1) {
+                int flags = fcntl(fd, F_GETFL); CHECK(flags >= 0);
+                if (nonblocking) CHECK(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
                 ssize_t sent = sendto(fd, request, sizeof(request), MSG_FASTOPEN | MSG_NOSIGNAL,
                                      (void *)&address, sizeof(address));
-                CHECK(sent > 0 && sent <= (ssize_t)sizeof(request));
+                if (nonblocking) {
+                    if (phase == 0) CHECK(sent == -1 && errno == EINPROGRESS);
+                    else CHECK(sent > 0 && sent <= (ssize_t)sizeof(request));
+                    struct pollfd ready = {.fd = fd, .events = POLLOUT};
+                    int result;
+                    do { result = poll(&ready, 1, 8000); } while (result < 0 && errno == EINTR);
+                    CHECK(result == 1 && (ready.revents & POLLOUT));
+                    int error = -1; socklen_t error_length = sizeof(error);
+                    CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_length) == 0);
+                    CHECK(error_length == sizeof(error) && error == 0);
+                    CHECK(fcntl(fd, F_SETFL, flags) == 0);
+                    if (phase == 0) {
+                        sent = 0;
+                        puts("PASS: nonblocking no-cookie EINPROGRESS, POLLOUT and SO_ERROR=0; resend required");
+                    } else puts("PASS: nonblocking cached-cookie send accepted");
+                } else CHECK(sent > 0 && sent <= (ssize_t)sizeof(request));
                 if (sent < (ssize_t)sizeof(request))
                     transfer(fd, (char *)request + sent, sizeof(request) - (size_t)sent, 1);
             } else {
