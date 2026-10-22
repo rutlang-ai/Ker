@@ -401,3 +401,8 @@ IPv4 TCP TOS/TTL 扩展：`native-fstack-tcp-ip-options` 将监听继承、dup �
 TCP_USER_TIMEOUT 扩展：`native-fstack-tcp-user-timeout` 以独立宿主对端形成
 真实零窗口，验证原生探测、超时错误及描述符清理。它扩展已有 socket 迁移场景，
 不增加源案例迁移数；仍有 222 个 blocked、20 个 partial。
+
+
+TCP_NOTSENT_LOWAT 扩展：`native-fstack-tcp-notsent-lowat` 验证非阻塞发送背压、
+阈值单独改变导致的可写状态切换，以及对端恢复读取后的完整传输。
+本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。

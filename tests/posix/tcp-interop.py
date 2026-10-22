@@ -552,6 +552,41 @@ def tcp_peek_offset(args, launcher, work, env, log):
             print('native TCP peek offset ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_notsent_lowat(args, launcher, work, env, log):
+    if not args.notsent_lowat_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 28200 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.notsent_lowat_app), 'server', address, str(port),
+                  'send' if native_server else 'receive']
+        connect = [str(args.notsent_lowat_app), 'client', address, str(port),
+                   'receive' if native_server else 'send']
+        stats_path = work / ('tcp-notsent-lowat-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client_output = client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP notsent lowat server did not verify both directions')
+        sender_output = ''.join(captured) if native_server else client_output
+        if 'threshold-only POLLOUT toggle' not in sender_output:
+            raise RuntimeError('TCP notsent lowat sender missed threshold-only backpressure proof')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    2):
+                raise RuntimeError('TCP notsent lowat scenario missed native traffic: ' + str(stats))
+            print('native TCP notsent lowat ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_user_timeout(args, launcher, work, env, log):
     if not args.user_timeout_app:
         return
@@ -1780,6 +1815,7 @@ def inside(args):
                 tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
                 tcp_peek_offset(args, launcher, work, env, log)
+                tcp_notsent_lowat(args, launcher, work, env, log)
                 tcp_user_timeout(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
                 tcp_keepalive(args, launcher, work, env, log)
@@ -1881,6 +1917,7 @@ def main():
     parser.add_argument('--shutdown-write-app', type=Path)
     parser.add_argument('--peek-offset-app', type=Path)
     parser.add_argument('--keepalive-app', type=Path)
+    parser.add_argument('--notsent-lowat-app', type=Path)
     parser.add_argument('--user-timeout-app', type=Path)
     parser.add_argument('--ip-options-app', type=Path)
     parser.add_argument('--mss-app', type=Path)

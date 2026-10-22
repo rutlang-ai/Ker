@@ -725,6 +725,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-keepalive COMMAND ${ker_native_test_command}
         --keepalive-app "$<TARGET_FILE:ker-posix-fstack-tcp-keepalive-test>")
     set_tests_properties(native-fstack-tcp-keepalive PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-notsent-lowat-test tests/posix/fstack-tcp-notsent-lowat.c)
+    target_compile_options(ker-posix-fstack-tcp-notsent-lowat-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-notsent-lowat COMMAND ${ker_native_test_command}
+        --notsent-lowat-app "$<TARGET_FILE:ker-posix-fstack-tcp-notsent-lowat-test>")
+    set_tests_properties(native-fstack-tcp-notsent-lowat PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-tcp-user-timeout-test tests/posix/fstack-tcp-user-timeout.c)
     target_compile_options(ker-posix-fstack-tcp-user-timeout-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-user-timeout COMMAND ${ker_native_test_command}
