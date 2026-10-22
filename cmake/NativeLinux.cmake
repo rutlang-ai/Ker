@@ -725,6 +725,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-keepalive COMMAND ${ker_native_test_command}
         --keepalive-app "$<TARGET_FILE:ker-posix-fstack-tcp-keepalive-test>")
     set_tests_properties(native-fstack-tcp-keepalive PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-ip-options-test tests/posix/fstack-tcp-ip-options.c)
+    target_compile_options(ker-posix-fstack-tcp-ip-options-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-ip-options COMMAND ${ker_native_test_command}
+        --ip-options-app "$<TARGET_FILE:ker-posix-fstack-tcp-ip-options-test>")
+    set_tests_properties(native-fstack-tcp-ip-options PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-tcp-mss-test tests/posix/fstack-tcp-mss.c)
     target_compile_options(ker-posix-fstack-tcp-mss-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-mss COMMAND ${ker_native_test_command}
