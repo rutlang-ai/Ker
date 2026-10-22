@@ -611,11 +611,13 @@
       "id": "mtu-checklist",
       "title": "Replace the upstream manual MTU checklist with complete native acceptance",
       "disposition": "adaptation-needed",
-      "reason": "The upstream shell script prints manual legacy1500, large/scatter9000, dynamic-MTU and IPv6 jumbo instructions plus an unconditional PASS summary. Existing Ker jumbo/PMTU tests are useful evidence but do not automatically satisfy every instruction.",
+      "reason": "The manual shell script is not execution evidence. native-fstack-icmp-mtu now verifies static1500/large9000/scatter9000 and IPv4/IPv6 ICMP over DPDK, including full wire frames and ownership. The source entry remains partial because live9000-to1500 propagation across Linux and PMD is still missing.",
       "evidence": [
         "tests/upstream/fstack/tests/integration/test_mtu.sh",
         "tests/posix/fstack-jumbo.c",
-        "tests/posix/udp-path-mtu.py"
+        "tests/posix/udp-path-mtu.py",
+        "tests/posix/icmp-mtu.c",
+        "tests/posix/icmp-mtu.py"
       ],
       "acceptance": [
         "Map all five checklist steps to real nontrivial assertions, distinguishing ICMP ping payloads from UDP/TCP evidence.",

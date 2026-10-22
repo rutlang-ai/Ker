@@ -1072,9 +1072,15 @@
     {
       "id": "tests/integration/test_mtu.sh::entrypoint",
       "kind": "manual-checklist",
-      "status": "blocked",
-      "reason": "The upstream MTU script prints manual instructions and an unconditional ALL PASS summary; executing it is not an MTU pass. Requires a configured jumbo/IPv6/native-interface test environment.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Executable static ICMP scenarios replace the printed manual checklist: independent host/native IPv4 and IPv6 echo at MTU1500 and MTU9000 in large/scatter mode, with complete wire and mbuf ownership evidence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-icmp-mtu",
+          "provenance_case": "native-fstack-icmp-mtu"
+        }
+      ],
+      "remaining": "Live MTU9000-to1500 changes must propagate through the original Linux interface and actual DPDK PMD while running, with readback, traffic and ownership verification; tracked in issue234. Static startup profiles do not satisfy that step."
     },
     {
       "id": "tests/unit/test_ff_callout.c::test_callout_when_relative_hardclock",

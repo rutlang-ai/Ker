@@ -1578,6 +1578,16 @@
         "native-fstack-tcp-congestion"
       ],
       "adaptation": "Ker-specific original-Linux TCP_CONGESTION extension of already-adapted socket/dup bridge cases, not an additional pinned source case. Run the same executable as host reference and native client/server against independent host peers over real DPDK net_tap/veth. Record each fresh socket/listener default algorithm, select Reno before connect/accept via dup using a non-NUL optval of the stated length, and require inherited/alias readback to remain Reno. Empty optval must fail EINVAL, missing algorithm ker_missing_cc must fail ENOENT, and the preceding selection must survive both errors. Verify an exact bidirectional16KiB stream under Reno, restore the saved default through a connected alias, and verify another distinct bidirectional16KiB stream with shared readback and TCP_INFO ESTABLISHED/positive snd_cwnd after each phase. Require a small recovery exchange, half-close EOF and alias cleanup. The native endpoint must explicitly report default=cubic and restored=cubic using its real option readback; host reference and unwrapped peers restore their own defaults without assuming host CUBIC availability. Native opens, actual DPDK TX/RX and zero outstanding buffers are mandatory. Uses only built-in pinned original-Linux Reno/CUBIC implementations with no production/upstream algorithm changes, cwnd formula assertions, throughput/fairness comparison, loss/retransmission or IPv6 claim. Source-case counts remain unchanged."
+    },
+    "native-fstack-icmp-mtu": {
+      "source_file": "tests/integration/test_mtu.sh",
+      "source_case": [
+        "entrypoint"
+      ],
+      "ker_ctests": [
+        "native-fstack-icmp-mtu"
+      ],
+      "adaptation": "Partial adaptation of manual checklist steps1/2/3/5, not execution of its unconditional PASS output. Original Linux raw ICMP sockets and automatic kernel echo replies run through Ker POSIX/runtime adapters and actual DPDK net_tap/veth against an independent host kernel. Both endpoints originate IPv4/IPv6 echo with payloads0,1 and MTU minus IP/ICMP headers. MTU1500 large and MTU9000 large/scatter profiles set do-not-fragment policy; IPv4 jumbo payload8972 and IPv6 payload8952 must return byte-exact replies. Full TX/RX PCAP checks every echo request/reply, payload, ICMPv4/ICMPv6 pseudoheader checksum, IPv4 header checksum, unfragmented full1514/9014-byte Ethernet frames. Worker statistics require matching MTU/mode, actual TX/RX, zero outstanding buffers, jumbo TX/RX chains only in scatter mode. Native application waits while independent host probes native automatic echo, then initiates the reverse probes. No production or upstream protocol implementation changes. Manual step4 live MTU9000-to1500 propagation across Linux and PMD remains incomplete under issue234; startup profile changes do not count as runtime MTU changes."
     }
   }
 }
