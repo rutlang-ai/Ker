@@ -36,6 +36,32 @@ int __wrap_pthread_detach(pthread_t thread)
     if (fail_detach) { int error = fail_detach; fail_detach = 0; return error; }
     return __real_pthread_detach(thread);
 }
+enum stack_fault { STACK_OK, STACK_ATTRIBUTES, STACK_RANGE, STACK_CLEANUP };
+static _Thread_local enum stack_fault stack_fault;
+static _Thread_local int track_stack_attributes, live_stack_attributes;
+int __real_pthread_getattr_np(pthread_t thread, pthread_attr_t *attributes);
+int __real_pthread_attr_getstack(const pthread_attr_t *attributes, void **base, size_t *size);
+int __real_pthread_attr_destroy(pthread_attr_t *attributes);
+int __wrap_pthread_getattr_np(pthread_t thread, pthread_attr_t *attributes)
+{
+    if (stack_fault == STACK_ATTRIBUTES) { stack_fault = STACK_OK; return EAGAIN; }
+    int error = __real_pthread_getattr_np(thread, attributes);
+    if (!error && track_stack_attributes) ++live_stack_attributes;
+    return error;
+}
+int __wrap_pthread_attr_getstack(const pthread_attr_t *attributes, void **base, size_t *size)
+{
+    if (stack_fault == STACK_RANGE) { stack_fault = STACK_OK; return EINVAL; }
+    return __real_pthread_attr_getstack(attributes, base, size);
+}
+int __wrap_pthread_attr_destroy(pthread_attr_t *attributes)
+{
+    int error = __real_pthread_attr_destroy(attributes);
+    if (!error && track_stack_attributes) --live_stack_attributes;
+    /* Release the real attribute storage before reporting a cleanup fault. */
+    if (stack_fault == STACK_CLEANUP) { stack_fault = STACK_OK; return EIO; }
+    return error;
+}
 int __real_pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
 int __real_pthread_key_delete(pthread_key_t key);
 int __real_pthread_setspecific(pthread_key_t key, const void *value);
@@ -369,6 +395,49 @@ static void tls_failures(void)
     puts("PASS: TLS set failure preserves slot contents; subsequent real set/clear/delete succeeds");
     puts("PASS: failed TLS deletion aborts rather than silently freeing a registered key");
 }
+static void stack_range(void)
+{
+    unsigned long length = 0;
+    volatile unsigned char local = 0;
+    void *base = ops.thread_stack(&length);
+    uintptr_t address = (uintptr_t)&local, start = (uintptr_t)base;
+    CHECK(base && length && address >= start && address - start < length);
+    CHECK(ops.thread_stack(NULL) == base);
+    /* An independent real pthread query must agree with the callback. */
+    pthread_attr_t attributes;
+    CHECK(pthread_getattr_np(pthread_self(), &attributes) == 0);
+    void *expected; size_t expected_length;
+    CHECK(pthread_attr_getstack(&attributes, &expected, &expected_length) == 0);
+    CHECK(pthread_attr_destroy(&attributes) == 0);
+    CHECK(base == expected && length == expected_length);
+}
+static void stack_failures(void)
+{
+    const int errors[] = {EAGAIN, EINVAL, EIO};
+    track_stack_attributes = 1;
+    for (int stage = STACK_ATTRIBUTES; stage <= STACK_CLEANUP; ++stage) {
+        stack_fault = stage; errno = 0;
+        unsigned long size = 123;
+        CHECK(ops.thread_stack(&size) == NULL);
+        CHECK(size == 123 && errno == errors[stage - 1]);
+        CHECK(stack_fault == STACK_OK && live_stack_attributes == 0);
+        stack_range(); CHECK(live_stack_attributes == 0);
+    }
+    track_stack_attributes = 0;
+}
+static void stack_worker(void *argument)
+{
+    stack_failures(); stack_range();
+    *(int *)argument = 1;
+}
+static void thread_stacks(void)
+{
+    stack_failures(); stack_range();
+    int completed = 0;
+    lkl_thread_t thread = ops.thread_create(stack_worker, &completed);
+    CHECK(thread && ops.thread_join(thread) == 0 && completed == 1);
+    puts("PASS: main/child real stack range includes a local variable; optional size, errors, attribute cleanup and recovery");
+}
 static void completion_worker(void *argument)
 {
     atomic_store((atomic_uint *)argument, 1);
@@ -413,7 +482,7 @@ int main(void)
 {
     ker_native_host_thread_init(&lkl_host_ops);
     ops = lkl_host_ops;
-    CHECK(ops.thread_create && ops.thread_join && ops.thread_detach && ops.thread_self && ops.thread_equal && ops.thread_exit);
+    CHECK(ops.thread_create && ops.thread_join && ops.thread_detach && ops.thread_stack && ops.thread_self && ops.thread_equal && ops.thread_exit);
     CHECK(ops.tls_alloc && ops.tls_free && ops.tls_set && ops.tls_get);
     CHECK(ops.sem_alloc && ops.sem_free && ops.sem_up && ops.sem_down);
     CHECK(ops.mutex_alloc && ops.mutex_free && ops.mutex_lock && ops.mutex_unlock);
@@ -429,6 +498,7 @@ int main(void)
     CHECK(atomic_load(&unexpected_runs) == 0);
     puts("PASS: thread allocation failure returns zero without running the callback");
     thread_creation_failures();
+    thread_stacks();
 
     fail_next_allocation = 1;
     errno = 0;

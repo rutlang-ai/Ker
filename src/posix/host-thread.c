@@ -50,6 +50,22 @@ static void thread_detach(void)
         abort();
     }
 }
+/* Report a range only after both the real query and attribute cleanup
+ * succeed. Failure leaves the caller's optional size output untouched. */
+static void *thread_stack(unsigned long *size)
+{
+    pthread_attr_t attributes;
+    int error = pthread_getattr_np(pthread_self(), &attributes);
+    if (error) { errno = error; return NULL; }
+    void *base = NULL;
+    size_t length = 0;
+    error = pthread_attr_getstack(&attributes, &base, &length);
+    int cleanup_error = pthread_attr_destroy(&attributes);
+    if (!error) error = cleanup_error;
+    if (error) { errno = error; return NULL; }
+    if (size) *size = length;
+    return base;
+}
 /* The pinned POSIX host tsd_alloc dereferences its allocation before checking
  * failure. Keep the fix in Ker, using a private key representation and the
  * same pthread TLS semantics (including destructors) as the original table. */
@@ -195,6 +211,7 @@ void ker_native_host_thread_init(struct lkl_host_operations *ops)
     ops->thread_create = thread_create;
     ops->thread_join = thread_join;
     ops->thread_detach = thread_detach;
+    ops->thread_stack = thread_stack;
     ops->mutex_alloc = mutex_alloc;
     ops->mutex_free = mutex_free;
     ops->mutex_lock = mutex_lock;
