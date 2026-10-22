@@ -622,3 +622,12 @@ bond down_delay 与配置 ABI 缺口保持 partial，清单计数不变。
 发放值及另一连接 SYN 对同一 cookie 的携数据复用，另有普通连接对照。
 宿主参考与 native 双角色验证完全相同的流/EOF合同。该 Linux 扩展仍不计为
 新增源注册用例迁移；无效 cookie、轮换、过期和非阻塞/丢包场景仍明确保留。
+
+`native-fstack-tcp-fastopen-nonblocking` 补齐非阻塞 Fast Open 发起与无 cookie 回退：
+宿主参考、native 客户端及 native 服务端三种角色均要求首次 O_NONBLOCK
+MSG_FASTOPEN 返回 EINPROGRESS，经 POLLOUT 和 SO_ERROR=0 后由调用者重发完整请求；
+另一连接复用 cookie 时必须立即接受正数字节。独立抓包要求 cookie 请求/返回、
+新端口携 cookie 和完整请求的 SYN，以及普通 connect 空 SYN 对照。
+发起完成后恢复阻塞模式验证精确流、peer、半关闭和 EOF，因此不宣称覆盖通用
+非阻塞流读写。协议仍完全使用原始 Linux，未修改运行时或上游源码，来源案例计数不变。
+无效 cookie、密钥轮换、缓存过期、丢包重传和 IPv6 仍待验证。

@@ -1337,6 +1337,16 @@
         "native-fstack-tcp-fastopen-cookies"
       ],
       "adaptation": "Ker-specific original-Linux TCP Fast Open cookie extension of pinned message/name/shutdown bridge scenarios, not a registered upstream F-Stack cookie test or FreeBSD equivalence claim. Reuses the same C/Python harness as the separate no-cookie CTest. Private host/native network namespaces explicitly use tcp_fastopen=3 (client/server enabled without no-cookie flags); production defaults and global host settings are untouched. Host reference and independent native client/server each make three exact request/echo/peer/half-close/EOF connections: initial blocking MSG_FASTOPEN, a fresh MSG_FASTOPEN connection, then ordinary connect/send control. Independent AF_PACKET capture parses real IPv4/TCP option boundaries, requiring initial empty SYN with option34 cookie request, corresponding SYN-ACK with nonempty4..16-byte cookie, and exact cookie reuse on a different client source port together with the complete precise payload in SYN. An empty ordinary SYN without a Fast Open option is also required. Each native role requires at least three original-Linux TCP opens, positive DPDK TX/RX and zero outstanding buffers. All protocol, cookie generation and cache behavior come from original Linux with no upstream/runtime edits. This qualifies observed cookie request/issue/reuse only; invalid-cookie handling, key rotation, cache expiry, nonblocking EINPROGRESS/fallback, loss/retransmission, IPv6 and performance remain unqualified. Source-case migration counts are unchanged."
+    },
+    "native-fstack-tcp-fastopen-nonblocking": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-fastopen-nonblocking"
+      ],
+      "adaptation": "Ker-specific original-Linux extension of pinned F-Stack message/name/shutdown bridge scenarios, not an upstream Fast Open test. Private namespaces use tcp_fastopen=3. Host reference and native client/server validate first O_NONBLOCK MSG_FASTOPEN returns EINPROGRESS with no cookie, POLLOUT and SO_ERROR=0 complete connection, and caller resends the entire unsent request. A fresh cached-cookie O_NONBLOCK MSG_FASTOPEN must accept positive bytes. Sockets return to blocking mode after initiation for exact stream/peer/half-close/EOF checks; general nonblocking stream IO is not claimed. Independent AF_PACKET evidence requires cookie request/issue, fresh-port exact cookie reuse plus complete SYN payload, and ordinary empty SYN control. Native opens, DPDK TX/RX and zero outstanding buffers are checked. No upstream or runtime protocol changes; source-case migration counts unchanged. Invalid cookies, rotation, expiry, loss/retransmission and IPv6 remain unqualified."
     }
   }
 }

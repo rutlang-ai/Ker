@@ -746,3 +746,12 @@ cookie 请求、对应 SYN-ACK 返回的4..16字节 cookie、另一客户端端�
 复用完全相同 cookie 并携带完整请求，以及不带 TFO option 的普通空 SYN 对照。
 这验证原始 Linux 实际协商/复用，不以 socket 选项或普通握手成功代替线路证据。
 无效 cookie、密钥轮换、缓存过期、非阻塞回退、丢包重传、IPv6 和性能仍未验证。
+
+`native-fstack-tcp-fastopen-nonblocking` 补齐非阻塞 Fast Open 发起与无 cookie 回退：
+宿主参考、native 客户端及 native 服务端三种角色均要求首次 O_NONBLOCK
+MSG_FASTOPEN 返回 EINPROGRESS，经 POLLOUT 和 SO_ERROR=0 后由调用者重发完整请求；
+另一连接复用 cookie 时必须立即接受正数字节。独立抓包要求 cookie 请求/返回、
+新端口携 cookie 和完整请求的 SYN，以及普通 connect 空 SYN 对照。
+发起完成后恢复阻塞模式验证精确流、peer、半关闭和 EOF，因此不宣称覆盖通用
+非阻塞流读写。协议仍完全使用原始 Linux，未修改运行时或上游源码，来源案例计数不变。
+无效 cookie、密钥轮换、缓存过期、丢包重传和 IPv6 仍待验证。
