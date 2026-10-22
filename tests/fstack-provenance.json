@@ -1478,6 +1478,17 @@
         "native-fstack-network-sysctl"
       ],
       "adaptation": "Adapt the pinned 60-character option-name retention case through the actual production Ker configuration reader in the supported [sysctl] section. Two 60-character names sharing their first59 characters must remain distinct, with A-B-A duplicates preserving final B-A position and full CLI override names. A128-character key is retained exactly;129 characters fails validation and an actual launcher subprocess exits2 before resolving a deliberately missing library. A separate real net_tap/original-Linux startup supplies the full60-character unknown key from an INI file, requires the exact untruncated /proc/sys path in the failure diagnostic and exit125 before application readiness, no application marker/native-ready stats, zero outstanding mbufs, successful real EAL cleanup and unchanged host sysctls. This qualifies parser/adapter key retention and explicit unknown-key rejection, not invented kernel setting support, arbitrary F-Stack callback APIs, section-name truncation or full INI schema equivalence. No production or upstream implementation changes."
+    },
+    "native-fstack-tcp-keepalive": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-keepalive"
+      ],
+      "adaptation": "Ker-specific original-Linux TCP keepalive extension of already-adapted socket/dup scenarios, not additional upstream source cases. Host reference and native client/server communicate with independent host peers over real DPDK net_tap/veth. Configure SO_KEEPALIVE and TCP_KEEPIDLE=1, TCP_KEEPINTVL=1, TCP_KEEPCNT=3 before connect/listen; check accepted inheritance and dup-shared state. Reject zero, negative and INT_MAX TCP tuning values with EINVAL while preserving the prior setting. Exchange initial bytes, hold the connection idle during a four-second client poll that must not report application readability, then require exact resumed bytes, alias disable, half-close EOF and cleanup. Parse full native egress PCAP, validate IPv4/TCP lengths and reject tested fragmented/truncated frames, require at least one ACK-only zero-payload packet whose sequence is one below the preceding native data end. Require actual original-Linux opens, DPDK TX/RX and zero outstanding buffers. This qualifies probes on a responsive idle peer and subsequent stream recovery, not probe-loss expiry, exact timer deadlines, probe count, IPv6 or hardware offloads. No production/runtime/protocol/upstream source changes; source-case counts remain unchanged."
     }
   }
 }

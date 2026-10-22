@@ -527,6 +527,74 @@ def tcp_receive_queue(args, launcher, work, env, log):
             print('native TCP receive queue ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_keepalive(args, launcher, work, env, log):
+    if not args.keepalive_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 27800 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.keepalive_app), 'server', address, str(port)]
+        connect = [str(args.keepalive_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-keepalive-' + role + '.json')
+        capture = work / ('tcp-keepalive-' + role); capture.mkdir()
+        native = [*launcher, '--stats', str(stats_path), '--pcap-dir', str(capture),
+                  '--pcap-snaplen', '65535', '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP keepalive server missed stream verification')
+        if role == 'host-reference':
+            continue
+        stats = json.loads(stats_path.read_text())
+        if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                not stats['native']['passive_opens' if native_server else 'active_opens']):
+            raise RuntimeError('TCP keepalive missed native traffic: ' + str(stats))
+        probes = 0
+        data_end = None
+        for path in sorted(capture.glob('ker-tx-*.pcap')):
+            data = path.read_bytes()
+            if len(data) < 24 or data[:4] not in (b'\xd4\xc3\xb2\xa1', b'\xa1\xb2\xc3\xd4'):
+                raise RuntimeError('invalid keepalive PCAP header')
+            endian = '<' if data[:4] == b'\xd4\xc3\xb2\xa1' else '>'
+            offset = 24
+            while offset < len(data):
+                if offset + 16 > len(data):
+                    raise RuntimeError('truncated keepalive record')
+                _, _, length, original = struct.unpack_from(endian + 'IIII', data, offset)
+                offset += 16
+                frame = data[offset:offset + length]; offset += length
+                if len(frame) != length or length != original:
+                    raise RuntimeError('truncated keepalive frame')
+                if len(frame) < 54 or frame[12:14] != b'\x08\x00' or frame[23] != 6:
+                    continue
+                ihl = (frame[14] & 15) * 4
+                total = struct.unpack_from('!H', frame, 16)[0]
+                tcp = 14 + ihl
+                if ihl < 20 or total < ihl + 20 or 14 + total > len(frame):
+                    raise RuntimeError('invalid keepalive IP length')
+                if port not in struct.unpack_from('!HH', frame, tcp):
+                    continue
+                header = (frame[tcp + 12] >> 4) * 4
+                if header < 20 or ihl + header > total or struct.unpack_from('!H', frame, 20)[0] & 0x3fff:
+                    raise RuntimeError('invalid keepalive TCP packet')
+                flags = frame[tcp + 13]
+                seq = struct.unpack_from('!I', frame, tcp + 4)[0]
+                payload = total - ihl - header
+                if payload:
+                    data_end = (seq + payload) & 0xffffffff
+                elif flags == 16 and data_end is not None and seq == (data_end - 1) & 0xffffffff:
+                    probes += 1
+        if probes < 1:
+            raise RuntimeError('missing native ACK-only keepalive probe at SND.NXT-1')
+        print('PASS: native TCP keepalive ' + role + ', probes=' + str(probes), flush=True)
+
+
 def tcp_mss(args, launcher, work, env, log):
     if not args.mss_app:
         return
@@ -1544,6 +1612,7 @@ def inside(args):
                 tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
+                tcp_keepalive(args, launcher, work, env, log)
                 tcp_mss(args, launcher, work, env, log)
                 tcp_cork(args, launcher, work, env, log)
                 tcp_linger(args, launcher, work, env, log)
@@ -1639,6 +1708,7 @@ def main():
     parser.add_argument('--send-timeouts-app', type=Path)
     parser.add_argument('--listener-restart-app', type=Path)
     parser.add_argument('--shutdown-write-app', type=Path)
+    parser.add_argument('--keepalive-app', type=Path)
     parser.add_argument('--mss-app', type=Path)
     parser.add_argument('--cork-app', type=Path)
     parser.add_argument('--linger-app', type=Path)
