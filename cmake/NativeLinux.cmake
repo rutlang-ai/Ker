@@ -140,6 +140,24 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-thread-runtime-release COMMAND ker-thread-runtime-release-test)
     set_tests_properties(native-fstack-thread-runtime native-fstack-thread-runtime-debug
         native-fstack-thread-runtime-release PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    foreach(sem_mode debug release)
+        add_executable(ker-host-semaphore-${sem_mode}-test tests/posix/fstack-host-semaphore.c
+            src/posix/host-thread.c src/posix/host-memory.c src/posix/host-clock.c)
+        target_include_directories(ker-host-semaphore-${sem_mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+        target_include_directories(ker-host-semaphore-${sem_mode}-test SYSTEM PRIVATE
+            "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+        target_link_libraries(ker-host-semaphore-${sem_mode}-test PRIVATE "${ker_native_tools}/liblkl.a"
+            Threads::Threads ${CMAKE_DL_LIBS} rt)
+        target_link_options(ker-host-semaphore-${sem_mode}-test PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free
+            -Wl,--wrap=sem_init -Wl,--wrap=sem_wait -Wl,--wrap=sem_destroy)
+        target_compile_options(ker-host-semaphore-${sem_mode}-test PRIVATE -Wall -Wextra -Werror)
+        add_test(NAME native-fstack-host-semaphore-${sem_mode} COMMAND ker-host-semaphore-${sem_mode}-test)
+        set_tests_properties(native-fstack-host-semaphore-${sem_mode} PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    endforeach()
+    target_compile_definitions(ker-host-semaphore-debug-test PRIVATE DEBUG)
+    target_compile_options(ker-host-semaphore-debug-test PRIVATE -UNDEBUG)
+    target_compile_definitions(ker-host-semaphore-release-test PRIVATE NDEBUG)
+    target_compile_options(ker-host-semaphore-release-test PRIVATE -UDEBUG)
     foreach(mode debug release)
         add_executable(ker-host-failure-${mode}-test tests/posix/fstack-host-failure.c src/posix/host-clock.c)
         target_include_directories(ker-host-failure-${mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")

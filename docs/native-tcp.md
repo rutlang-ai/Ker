@@ -857,5 +857,23 @@ TLS 生命周期。真实子线程分别清空 TLS、让析构函数重设三次
 不得返回到后续语句，join 必须等待析构完成。
 同时验证父线程 TLS 不被子线程继承或修改，删除仍持有父线程值的 key 不调用
 析构函数。默认、DEBUG、NDEBUG 均直接执行现有 Ker/LKL callbacks 和真实 pthread，
-不新增运行时代码、协议或调度实现，也不提高来源案例计数。迭代上限属于宿主
-pthread 合同；取消线程、detached 线程生命周期和 FreeBSD 上下文 ABI 仍未覆盖。
+不新增运行时代码、协议或调度实现，也不提高来源案例计数。公布的最小次数和
+允许的额外迭代属于宿主 pthread 合同；取消线程、detached 线程生命周期和
+FreeBSD 上下文 ABI 仍未覆盖。
+
+宿主信号量边界：Ker 的 host-thread 适配层现在持有私有 POSIX semaphore，
+始终使用真实 sem_init/wait/post/destroy。负计数返回 EINVAL；分配或初始化
+失败返回 NULL，保留 errno 并释放已分配存储。sem_wait 仅重试 EINTR；
+无法由 void callback 返回的其他 wait/post/destroy 错误明确 abort，防止
+同步失败后仍继续执行内核。DPDK 收发不改变这些宿主同步语义。
+
+`native-fstack-host-semaphore-debug/release` 验证分配与初始化失败清理、
+随后正常信号量恢复、真实 SEM_VALUE_MAX post 溢出及注入的 wait/destroy
+错误。后三项在尚无宿主线程时 fork 子进程，必须观察 SIGABRT。
+中断场景通过真实 pthread_kill(SIGUSR1) 和不带 SA_RESTART 的 handler，
+直到转发给真实 sem_wait 的 wrapper 实际观察到 EINTR；等待线程必须重试，
+且直到真正 post 才能返回。join 后检查参数/结果，并恢复信号 mask/handler。
+原始 Linux 还必须实际分配适配后的信号量、启动并关闭；TCP/UDP 互通继续
+通过真实 DPDK 验证。上游、协议及调度实现保持不变，来源案例计数不变。
+这是 F-Stack thread 场景的 Ker 同步扩展，不宣称公平性、跨进程共享信号量、
+线程取消、仍有 waiter 时销毁或性能结论。
