@@ -647,17 +647,28 @@ cookie；客户端在建立后的流中以相同起始序号重发完整请求�
 缓存过期、丢包重传、IPv6 与性能仍未验证。
 
 `native-fstack-tcp-fastopen-backup-key` 覆盖双密钥重叠轮换：监听端先设置 A，
-首次请求后改为主密钥 B 加备用 A，下一次请求后移除备用 A，仅保留 B。
-每次 TCP_FASTOPEN_KEY 均读回检查精确内容和16/32/16字节长度，且更改发生在
-发送上一连接回显之前，使后续连接顺序确定而无需睡眠。
-宿主参考、native 客户端和 native 服务端使用两个源地址建立独立的原始 Linux
-TCP Fast Open cookie 缓存，并各完成六条精确流；所有流检查 peer、半关闭和 EOF。
-两个缓存最初都收到 A cookie。B 源地址在 B+A 重叠期间用 A cookie 携数据发 SYN，
-服务端确认全部数据并返回 B cookie；备用 A 移除后，未被刷新过的 A 源地址仍携
-A cookie 发 SYN。独立抓包要求该 SYN 携带完整请求、SYN-ACK 只确认 SYN 并返回
-不同的 B cookie，且客户端在建立后的流中须以 SYN 数据起始序号（原 SYN 序号加一）
-重发完整请求。B 源地址随后必须用缓存中的 B cookie 携数据发 SYN并获得完整确认。
-另有普通空 SYN 对照；
-native opens、DPDK TX/RX 与零遗留 mbuf 同样必须通过。这是 F-Stack host bridge
-场景的原始 Linux 扩展，不改变来源案例计数或运行时/上游协议代码。缓存过期、
-丢包重传、IPv6 与性能仍未验证。
+用两个源地址建立独立的原始 Linux TCP Fast Open cookie 缓存后，改为主密钥 B
+加备用 A，再移除备用 A 仅保留 B。每次 TCP_FASTOPEN_KEY 均读回检查精确内容和
+16/32/16字节长度；密钥更改发生在发送上一连接回显之前，以确定后续连接顺序。
+宿主参考、native 客户端和 native 服务端各完成六条精确流，并检查 peer、半关闭
+和 EOF：两个缓存先各取得 A cookie；B 源地址在 B+A 重叠期间携 A cookie 发 SYN，
+服务端确认全部 SYN 数据并返回 B cookie；移除备用 A 后，未刷新过的 A 源地址仍
+携 A cookie 发 SYN。独立抓包必须观察到此 SYN 携带完整请求、SYN-ACK 只确认 SYN
+并返回不同的 B cookie；客户端在建立后的流中须以 SYN 数据起始序号（原 SYN 序号
+加一）重发完整请求。
+B 源地址随后须用已缓存的 B cookie 携数据发 SYN并获得完整确认；另有普通连接
+对照。native opens、DPDK TX/RX 与零遗留 mbuf 同样必须通过。这是 F-Stack host
+bridge 场景的原始 Linux 扩展，不改变来源案例计数或运行时/上游协议代码。缓存
+过期、丢包重传、IPv6 与性能仍未验证。
+
+`native-fstack-tcp-fastopen-connect` 覆盖原始 Linux TCP_FASTOPEN_CONNECT。
+宿主参考、native 客户端和 native 服务端均先用未缓存 cookie 的选项式 connect
+协商 cookie，再用带缓存的新连接检查延迟 SYN，最后走普通 connect 对照。
+两条选项式连接均设置并读回选项；缓存连接的 connect 必须返回0，TCP_INFO
+必须仍为 SYN_SENT。客户端报告本地端口后等待协调器通过 stdin 放行首次写入。
+协调器在这一屏障处排空独立抓包，要求该连接尚无 SYN；放行后必须观察同一
+端口携已协商 cookie 和完整请求的 SYN。既有 cookie 请求/返回/复用、普通空 SYN、
+精确流、peer、半关闭、EOF、native opens 与零遗留 mbuf 检查同时保留。
+此测试不依赖睡眠，验证明确的写入前屏障，不宣称任意时长的空闲行为。
+不修改运行时或上游协议实现，来源案例计数不变；非阻塞延迟 connect、写前取消、
+缓存过期、丢包重传、IPv6 和性能仍未验证。

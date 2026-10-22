@@ -42,7 +42,8 @@ static void set_keys(int fd, unsigned char value, int backup)
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking") || !strcmp(argv[4], "rotation") || !strcmp(argv[4], "backup"))));
+    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking") || !strcmp(argv[4], "rotation") || !strcmp(argv[4], "backup") || !strcmp(argv[4], "deferred"))));
+    int deferred = argc == 5 && !strcmp(argv[4], "deferred");
     int nonblocking = argc == 5 && !strcmp(argv[4], "nonblocking");
     int backup = argc == 5 && !strcmp(argv[4], "backup");
     int rotation = backup || (argc == 5 && !strcmp(argv[4], "rotation"));
@@ -94,7 +95,23 @@ int main(int argc, char **argv)
                 CHECK(inet_pton(AF_INET, source, &local.sin_addr) == 1);
                 CHECK(bind(fd, (void *)&local, sizeof(local)) == 0);
             }
-            if (phase < connections - 1) {
+            if (deferred && phase < connections - 1) {
+                int enabled = 1, actual = 0; socklen_t length = sizeof(actual);
+                CHECK(setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT, &enabled, sizeof(enabled)) == 0);
+                CHECK(getsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT, &actual, &length) == 0);
+                CHECK(length == sizeof(actual) && actual == enabled);
+                CHECK(connect(fd, (void *)&address, sizeof(address)) == 0);
+                if (phase == 1) {
+                    struct tcp_info info = {0}; length = sizeof(info);
+                    CHECK(getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &length) == 0);
+                    CHECK(info.tcpi_state == TCP_SYN_SENT);
+                    struct sockaddr_in local = {0}; length = sizeof(local);
+                    CHECK(getsockname(fd, (void *)&local, &length) == 0);
+                    printf("DEFERRED %u\n", ntohs(local.sin_port)); fflush(stdout);
+                    CHECK(getchar() == 'W');
+                }
+                transfer(fd, (void *)request, sizeof(request), 1);
+            } else if (phase < connections - 1) {
                 int flags = fcntl(fd, F_GETFL); CHECK(flags >= 0);
                 if (nonblocking) CHECK(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
                 ssize_t sent = sendto(fd, request, sizeof(request), MSG_FASTOPEN | MSG_NOSIGNAL,
