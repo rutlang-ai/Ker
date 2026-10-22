@@ -197,9 +197,10 @@ def main():
     parser.add_argument('--backup-key', action='store_true', help='accept the old cookie with a backup key, refresh, then retire the backup')
     parser.add_argument('--deferred-connect', action='store_true', help='require cached-cookie connect to defer SYN until the first write')
     parser.add_argument('--cancel-before-write', action='store_true', help='close a deferred socket before writing and verify a fresh connection still works')
+    parser.add_argument('--nonblocking-connect', action='store_true', help='validate nonblocking TCP_FASTOPEN_CONNECT before and after cookie caching')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
-    args.deferred_connect = args.deferred_connect or args.cancel_before_write
+    args.deferred_connect = args.deferred_connect or args.cancel_before_write or args.nonblocking_connect
     args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation or args.backup_key or args.deferred_connect
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
@@ -234,7 +235,7 @@ def main():
             if args.cookie_exchange:
                 mode = 'backup' if args.backup_key else ('rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies'))
                 if args.deferred_connect:
-                    mode = 'cancel' if args.cancel_before_write else 'deferred'
+                    mode = 'deferred-nonblocking' if args.nonblocking_connect else ('cancel' if args.cancel_before_write else 'deferred')
                 listen += [mode]; connect += [mode]
             if role == 'server':
                 listen = native + listen
@@ -256,6 +257,9 @@ def main():
                         else:
                             result = subprocess.run(connect, capture_output=True, text=True, timeout=25, env=environment)
                         require(result.returncode == 0 and 'PASS:' in result.stdout, result.stderr)
+                        if args.nonblocking_connect:
+                            require('nonblocking connect EINPROGRESS without cookie; cached connect returns zero and POLLOUT before SYN'
+                                    in result.stdout, 'missing nonblocking deferred connect evidence')
                         if args.nonblocking:
                             require('no-cookie EINPROGRESS' in result.stdout and 'cached-cookie send accepted' in result.stdout,
                                     'missing nonblocking return/readiness evidence')

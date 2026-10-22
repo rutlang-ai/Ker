@@ -809,3 +809,15 @@ peer、半关闭和 EOF，并保留普通 connect 对照。抓包直到双方退
 这是原始 Linux 对 F-Stack host bridge 场景的扩展，来源案例计数不变，未修改
 运行时或上游源码。仅验证明确屏障及测试流生命周期，不宣称任意时长无报文或
 SYN 已发送后的取消行为；非阻塞延迟建连、缓存过期、丢包重传、IPv6 与性能仍待覆盖。
+
+`native-fstack-tcp-fastopen-connect-nonblocking` 补齐选项式延迟建连的非阻塞发起。
+宿主参考和 native 双向互通均设置并读回 TCP_FASTOPEN_CONNECT，再设置 O_NONBLOCK。
+未缓存 cookie 时 connect 必须返回 EINPROGRESS，随后经 POLLOUT 与 SO_ERROR=0
+完成连接；已缓存时 connect 必须返回0，零超时 poll 立即报告 POLLOUT 且无
+错误/挂断，同时 TCP_INFO 仍为 SYN_SENT、O_NONBLOCK 仍有效。
+已有 stdin 屏障和独立抓包验证写入前无 SYN，放行后该端口所有 SYN 必须携
+cookie 与完整请求；还要求 cookie 请求/响应/复用、普通空 SYN 对照、精确流、
+peer、半关闭、EOF、native opens、DPDK TX/RX 与零遗留 mbuf。
+连接发起完成后恢复阻塞模式完成流检查，因此不宣称通用非阻塞读写。
+协议仍由原始 Linux 处理，来源案例计数不变，无运行时或上游修改；
+缓存过期、丢包重传、IPv6 和性能仍待覆盖。
