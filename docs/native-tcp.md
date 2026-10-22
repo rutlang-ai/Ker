@@ -553,10 +553,11 @@ mbuf。PCAP 必须证明 VLAN100 标签、ARP 查询配置的网关而非远端�
 INI，0 使用不休眠的轮询。它只调整 Ker 的 I/O 调度，不改变原始 Linux 的协议定时器。
 
 完全空闲时，宿主 `ppoll` 监听 native→worker 数据通道及控制通道，通道数据或关闭请求
-可唤醒等待。仅保留待发送帧时，worker 仅监听控制通道，并使用不超过 1000 微秒的重试
+可唤醒等待。仅保留待重试的发送帧时，worker 仅监听控制通道，并使用不超过 1000 微秒的重试
 间隔；只要保留尚未送入 channel 的 RX 后缀（包括同时有待发送帧时），worker 就监听
-channel 可写状态，并使用同样的有限超时作为 PMD 重试后备。任何待处理的 TX 或 RX 都
-不会等待完整的配置空闲间隔。
+channel 可写状态，并使用同样的有限超时作为 PMD 重试后备。任何待重试的 TX 或 RX 都
+不会等待完整的配置空闲间隔。有意等待聚合的 TX 批次监听新输入，并将等待限制在首包
+期限内，详见下方 TX 批次等待。
 PMD RX 没有通道通知，因此新的网卡输入可能等到下一次空闲超时；较长设置可降低空闲
 轮询频率，也会增加收包等待。微秒配置不保证宿主调度精度或端到端时延。
 
@@ -618,3 +619,32 @@ LKL 初始化、设备注册、内核启动和接口激活入口的 `--wrap` 包
 必须紧随真实 loopback 成功，且均在 native READY/main 前退出 125。每个实例验证实际
 worker/EAL 清理与零 outstanding。生产 `libker-posix` 没有测试环境变量或故障入口。
 该证据是测试注入返回错误，不认证自然硬件失败或 F-Stack 初始化 ABI。
+
+
+## Ethernet TX 批次等待
+
+`[dpdk] pkt_tx_delay=100` 或 `--tx-delay-us 100` 选择 0..100 微秒的 worker TX 批次等待，
+CLI 覆盖 INI；非法值在加载库前返回2。默认0表示不主动等待，而不是照搬 F-Stack 默认值。
+worker 最多保留32个完整 mbuf，首包确定单调时钟期限，满批提前刷新，stop/EOF 强制刷新。
+等待聚合时监听新 TX 输入，并将 ppoll 超时限制在剩余期限内；PMD 返回未接收的后缀时，
+保持 FIFO、所有权和已有短重试策略，不将它当作新的聚合等待。
+
+PMD 接收的前缀转移所有权，未接收的后缀仍属于 worker。长度及 scatter 标志在调用前保存，
+统计只计实际接受的帧，避免读取已释放 mbuf 或重复累计重试。错误退出只释放保留后缀，
+设备停止后仍要求零 outstanding。捕获仍在所有权转移前执行一次，不在重试时重复捕获。
+原始 Linux 继续负责所有协议和重传，协议时钟不受该参数控制。
+
+`io.tx_delay_us` 显示有效配置。`tx_flushes` 是 PMD 批次发送尝试次数；
+`tx_timer_flushes` 计非满批、非重试、非停止的定时刷新；`tx_full_flushes` 与
+`tx_drain_flushes` 分别计满批及停止刷新尝试，两者可能重叠。这些计数不是包数。
+
+`native-fstack-tx-delay` 的五次真实 net_tap/native 启动验证默认、INI及CLI覆盖，
+在 idle wait=100ms 时仍要求非零延迟触发实际 timer flush，并通过独立宿主 TCP/UDP、
+原始内核计数和零 mbuf 验证。`worker-mbuf` 用真实 mbuf 和受控回调验证零/部分接受、
+FIFO、字节/scatter计数、期限边界、满批与清理；不将受控回调称作真实PMD背压测试。
+`native-fstack-worker-batched-stop` 在暂停的真实 worker 通道中放入三帧及stop/EOF后恢复，
+要求三帧按序到达独立宿主、精确计数、实际停止刷新及资源回收。
+`native-fstack-worker-term-batched-stop` 和 `native-fstack-worker-int-batched-stop`
+分别在暂停 worker 时排入三帧并发送 SIGTERM/SIGINT；恢复后要求帧按序送达、出现停止刷新、
+DONE 成功且 mbuf 全部回收，不依赖控制通道停止请求。
+微秒值控制等待策略，不保证宿主调度延迟或吞吐；也不等价于 F-Stack 周期TSC刷新或多进程模型。

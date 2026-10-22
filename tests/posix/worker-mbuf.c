@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "worker-mbuf.h"
 #include "worker-wait.h"
+#include "worker-tx.h"
 #include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include <errno.h>
@@ -10,6 +11,64 @@
 #include <stdlib.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
+
+struct tx_mock { uint16_t limit; unsigned int next; };
+static uint16_t mock_tx_burst(void *context, struct rte_mbuf **packets, uint16_t count)
+{
+    struct tx_mock *mock = context;
+    uint16_t accepted = count < mock->limit ? count : mock->limit;
+    for (uint16_t i = 0; i < accepted; ++i) {
+        CHECK(*rte_pktmbuf_mtod(packets[i], unsigned char *) == mock->next++);
+        rte_pktmbuf_free(packets[i]); /* PMD may release before returning. */
+    }
+    return accepted;
+}
+static void test_tx_batch(void)
+{
+    struct rte_mempool *pool = rte_pktmbuf_pool_create("tx_batch_test", 63, 0, 0,
+        RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+    CHECK(pool);
+    struct ker_worker_tx queue = {0};
+    unsigned char input[4096] = {0};
+    const size_t lengths[] = {14, sizeof(input), 16};
+    for (unsigned int i = 0; i < 3; ++i) {
+        input[0] = (unsigned char)i;
+        struct rte_mbuf *packet = ker_worker_mbuf_from_bytes(pool, input, lengths[i]);
+        CHECK(packet && ker_worker_tx_append(&queue, packet, 1000 + i * 100));
+    }
+    CHECK(queue.count == 3 && queue.first_ns == 1000);
+    CHECK(ker_worker_tx_wait_us(&queue, 100, 1000) == 100);
+    CHECK(ker_worker_tx_wait_us(&queue, 100, 1001) == 100);
+    CHECK(ker_worker_tx_wait_us(&queue, 100, 100999) == 1);
+    CHECK(ker_worker_tx_wait_us(&queue, 100, 101000) == 0);
+    CHECK(ker_worker_tx_wait_us(&queue, 0, 1000) == 0);
+    struct tx_mock mock = {0};
+    struct ker_worker_tx_result result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(!result.packets && !result.bytes && queue.count == 3 && queue.retrying);
+    CHECK(ker_worker_tx_wait_us(&queue, 100, 1000) == 0);
+    mock.limit = 1;
+    result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(result.packets == 1 && result.bytes == 14 && !result.multiseg && queue.count == 2);
+    result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(result.packets == 1 && result.bytes == 4096 && result.multiseg == 1 && queue.count == 1);
+    result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(result.packets == 1 && result.bytes == 16 && queue.count == 0 && !queue.retrying);
+    CHECK(rte_mempool_avail_count(pool) == 63);
+    for (unsigned int i = 0; i < KER_WORKER_TX_CAPACITY; ++i) {
+        input[0] = (unsigned char)i;
+        struct rte_mbuf *packet = ker_worker_mbuf_from_bytes(pool, input, 14);
+        CHECK(packet && ker_worker_tx_append(&queue, packet, 2000));
+    }
+    CHECK(!ker_worker_tx_wait_us(&queue, 100, 2000));
+    struct rte_mbuf *extra = rte_pktmbuf_alloc(pool); CHECK(extra);
+    CHECK(!ker_worker_tx_append(&queue, extra, 2000)); rte_pktmbuf_free(extra);
+    mock = (struct tx_mock){.limit = 11};
+    result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(result.packets == 11 && result.bytes == 154 && queue.count == 21);
+    ker_worker_tx_discard(&queue); /* Shutdown/error frees only the retained suffix. */
+    CHECK(!queue.count && rte_mempool_avail_count(pool) == 63);
+    rte_mempool_free(pool);
+}
 
 struct rx_mock {
     const uint16_t *bursts;
@@ -149,6 +208,7 @@ int main(void)
     snprintf(cores, sizeof(cores), "--lcores=0@%d", cpu);
     char *args[] = {"worker-mbuf", cores, "--no-huge", "--no-pci", "--no-shconf", "--no-telemetry", "--iova-mode=va", "-m", "64"};
     CHECK(rte_eal_init(sizeof(args) / sizeof(args[0]), args) >= 0);
+    test_tx_batch();
     struct rte_mempool *pool = rte_pktmbuf_pool_create("chain_test", 31, 0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
     CHECK(pool);
     unsigned char input[9014], output[9014];
