@@ -952,3 +952,18 @@ CLI port/stats 仍优先。对应 F-Stack 重复键来源场景，不声称 C �
 或宿主 socket，验证另一方继续可用。最后同时检查映射清除、宿主预留释放、
 原生 fd 关闭。它适配 F-Stack 编码往返的命名空间隔离意图，
 不声明固定偏移算术、helper ABI 或数值范围等价，不增加 Ker 自有协议路径。
+
+
+TCP 写入聚合：`native-fstack-tcp-cork` 在宿主参考、原生客户端和原生服务器
+中，以独立对端验证双向 TCP_CORK 与 MSG_MORE。前者设置 CORK、write 17 字节，
+再通过 dup writev 31 字节并解除 CORK；后者以两段 sendmsg(MSG_MORE) 写入
+17 字节，CORK 选项仍为 0，后续不带 MORE 的 send 提交 31 字节。
+NODELAY 设为 1，验证 MORE/CORK 仍可暂缓小写入；别名查询选项必须一致。
+完整 48 字节流、解除后的普通字节与半关闭 EOF 均必须验证。
+
+负向就绪检查使用独立 TCP 控制通道，接收方 poll 20ms，并要求从发送前
+宿主单调时间戳起累计小于 100ms，以避开 Linux 约 200ms 自动解除边界。
+两端均使用未被 Ker 接管的宿主 CLOCK_MONOTONIC；超时样本排空后最多重试
+八次，未获得有效观测则失败，不作为兼容通过。测试不认证自动解除精度、
+报文数量或线速性能。原生实例要求至少五次 Linux TCP open、DPDK TX/RX
+和零 outstanding mbuf。它扩展已有 socket/dup 场景，来源计数不变。
