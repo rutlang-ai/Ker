@@ -45,6 +45,30 @@ class ConfigTests(unittest.TestCase):
         for value in ('0', '-1', '2147483648', '1.5', 'invalid'):
             with self.subTest(value=value), self.assertRaises(SystemExit):
                 launcher.parse_arguments(base + ['--memory-mb', value, '--', '/bin/true'])
+        raw = ['--address', '198.18.0.2/24', '--port', 'net_tap0',
+               '--eal=--no-pci --file-prefix=raw-prefix -- -m 96 --no-huge -- --file-prefix=raw-suffix']
+        args = launcher.parse_arguments(raw + ['--memory-mb', '64', '--no-huge', '--', '/bin/true'])
+        self.assertEqual(args.eal_args, ['--no-pci', '--file-prefix=raw-prefix', '-m', '64',
+            '--no-huge', '--', '-m', '96', '--no-huge', '--', '--file-prefix=raw-suffix'])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'memory-after-eal-separator.ini'
+            config.write_text('[dpdk]\nmemory=48\nno_huge=yes\n')
+            args = launcher.parse_arguments(raw + ['--config', str(config), '--', '/bin/true'])
+            self.assertEqual(args.eal_args, ['--no-pci', '--file-prefix=raw-prefix', '-m', '48',
+                '--no-huge', '--', '-m', '96', '--no-huge', '--', '--file-prefix=raw-suffix'])
+        # Each selector is independent: conflicting-looking options after the
+        # first EAL terminator are application arguments, not active EAL policy.
+        args = launcher.parse_arguments(['--address', '198.18.0.2/24', '--port', 'net_tap0',
+            '--eal=--no-pci -- -m 96 --no-huge -- --file-prefix=tail', '--no-huge', '--', '/bin/true'])
+        self.assertEqual(args.eal_args,
+            ['--no-pci', '--no-huge', '--', '-m', '96', '--no-huge', '--', '--file-prefix=tail'])
+        args = launcher.parse_arguments(['--address', '198.18.0.2/24', '--port', 'net_tap0',
+            '--eal=--no-pci -- --no-huge -- --file-prefix=tail', '--memory-mb', '64', '--', '/bin/true'])
+        self.assertEqual(args.eal_args,
+            ['--no-pci', '-m', '64', '--', '--no-huge', '--', '--file-prefix=tail'])
+        args = launcher.parse_arguments(['--address', '198.18.0.2/24', '--port', 'net_tap0',
+            '--eal=--no-pci -- --no-huge -- --file-prefix=tail', '--hugepages', '--', '/bin/true'])
+        self.assertEqual(args.eal_args, ['--no-pci', '--', '--no-huge', '--', '--file-prefix=tail'])
         for selection in ('-m 64', '-m64', '--memory-size 64', '--memory-size=64',
                           '--numa-mem 64', '--socket-mem=64'):
             with self.subTest(selection=selection), self.assertRaises(SystemExit):
@@ -121,6 +145,10 @@ class ConfigTests(unittest.TestCase):
                 launcher.parse_arguments(base + ['--eal=' + selection, '--memory-channels', '2', '--', '/bin/true'])
             args = launcher.parse_arguments(base + ['--eal=' + selection, '--', '/bin/true'])
             self.assertIsNone(args.memory_channels)
+        raw = ['--address', '198.18.0.2/24', '--port', 'net_tap0',
+               '--eal=--no-huge -- --no-shconf -n 9 -- -n 10']
+        args = launcher.parse_arguments(raw + ['--memory-channels', '2', '--', '/bin/true'])
+        self.assertEqual(args.eal_args, ['--no-huge', '-n', '2', '--', '--no-shconf', '-n', '9', '--', '-n', '10'])
 
     def test_idle_wait_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
@@ -616,6 +644,11 @@ class ConfigTests(unittest.TestCase):
             path.write_text('[dpdk]\nlcore_mask=invalid\n')
             self.assertEqual(launcher.parse_arguments(base + ['--config', str(path), '--lcore-mask', '2',
                 '--', '/bin/true']).eal_args[-2:], ['-c', '2'])
+        raw = ['--address', '192.0.2.2/24', '--port', 'net_tap0',
+               '--eal=--no-huge -- --lcores=0@1 -c 7 -- -c 8']
+        args = launcher.parse_arguments(raw + ['--lcore-mask', '2', '--', '/bin/true'])
+        self.assertEqual(args.eal_args,
+            ['--no-huge', '-c', '2', '--', '--lcores=0@1', '-c', '7', '--', '-c', '8'])
 
     def test_lcore_mask_rejects_competing_eal_cpu_selection(self):
         base = ['--address', '192.0.2.2/24', '--port', 'net_tap0', '--lcore-mask', '1']

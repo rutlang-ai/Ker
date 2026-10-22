@@ -331,31 +331,38 @@ def parse_arguments(argv=None):
         args.eal_args = shlex.split(args.eal)
     except ValueError as error:
         parser.error(f'--eal: {error}')
+    try:
+        separator = args.eal_args.index('--')
+    except ValueError:
+        eal_prefix, eal_remainder = list(args.eal_args), []
+    else:
+        eal_prefix, eal_remainder = args.eal_args[:separator], args.eal_args[separator:]
+    raw_eal_options = list(eal_prefix)
     if not 0 <= args.tx_delay_us <= 100:
         parser.error('--tx-delay-us must be in 0..100')
     if args.memory_mb is not None:
         if not 1 <= args.memory_mb <= 2147483647:
             parser.error('--memory-mb must be in 1..2147483647')
         if any(token.startswith('-m') or token.split('=', 1)[0] in
-                ('--memory-size', '--numa-mem', '--socket-mem') for token in args.eal_args):
+                ('--memory-size', '--numa-mem', '--socket-mem') for token in raw_eal_options):
             parser.error('--memory-mb conflicts with EAL -m/--memory-size/--numa-mem/--socket-mem')
-        args.eal_args += ['-m', str(args.memory_mb)]
+        eal_prefix += ['-m', str(args.memory_mb)]
     if args.no_huge is not None:
-        if any(token.split('=', 1)[0] == '--no-huge' for token in args.eal_args):
+        if any(token.split('=', 1)[0] == '--no-huge' for token in raw_eal_options):
             parser.error('typed hugepage policy conflicts with EAL --no-huge')
         if args.no_huge:
-            if any(token.split('=', 1)[0] == '--in-memory' for token in args.eal_args):
+            if any(token.split('=', 1)[0] == '--in-memory' for token in raw_eal_options):
                 parser.error('--no-huge conflicts with EAL --in-memory')
-            args.eal_args += ['--no-huge']
+            eal_prefix.append('--no-huge')
     if args.memory_channels is not None:
         if not 1 <= args.memory_channels <= 2147483647:
             parser.error('--memory-channels must be in 1..2147483647')
         if any(token == '--memory-channels' or token.startswith(('--memory-channels=', '-n'))
-                for token in args.eal_args):
+                for token in raw_eal_options):
             parser.error('--memory-channels conflicts with EAL -n or --memory-channels')
-        if any(token.split('=', 1)[0] in ('--no-shconf', '--in-memory') for token in args.eal_args):
+        if any(token.split('=', 1)[0] in ('--no-shconf', '--in-memory') for token in raw_eal_options):
             parser.error('--memory-channels requires EAL shared configuration; --no-shconf/--in-memory skip channel initialization')
-        args.eal_args += ['-n', str(args.memory_channels)]
+        eal_prefix += ['-n', str(args.memory_channels)]
     if args.lcore_mask is not None:
         mask = args.lcore_mask.strip()
         if not re.fullmatch(r'(?:0[xX])?[0-9a-fA-F]+', mask) or int(mask, 16) == 0:
@@ -363,10 +370,11 @@ def parse_arguments(argv=None):
         # Keep one source of EAL CPU selection. Do not silently override or
         # remove caller-provided CPU mapping, especially --lcores remapping.
         if any(token in ('--lcores', '-c', '-l') or token.startswith(('--lcores=', '-c', '-l'))
-                for token in args.eal_args):
+                for token in raw_eal_options):
             parser.error('--lcore-mask conflicts with EAL -c, -l or --lcores')
         args.lcore_mask = format(int(mask, 16), 'x')
-        args.eal_args += ['-c', args.lcore_mask]
+        eal_prefix += ['-c', args.lcore_mask]
+    args.eal_args = eal_prefix + eal_remainder
     return args
 
 

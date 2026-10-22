@@ -40,21 +40,26 @@ def main():
         ip('link', 'set', name, 'up')
     cpu = min(os.sched_getaffinity(0))
     eal = f'--lcores=0@{cpu} --no-pci --no-telemetry --iova-mode=va --vdev=net_tap0,iface=kerpeer,remote=kerlink'
-    profiles = (('raw-default', '', [], ' -m 64 --no-huge', 64),
-                ('ini-128', '[dpdk]\nmemory=128\nno_huge=yes\n', [], '', 128),
+    profiles = (('raw-default', '', [], ' -m 64 --no-huge', '', 64),
+                ('ini-128', '[dpdk]\nmemory=128\nno_huge=yes\n', [], '', '', 128),
                 ('cli-64', '[dpdk]\nmemory=128\nno_huge=no\n',
-                    ['--memory-mb', '64', '--no-huge'], '', 64),
-                ('ini-32', '[dpdk]\nmemory=32\nno_huge=1\n', [], '', 32),
-                ('raw-long', '', [], ' --memory-size=128 --no-huge', 128))
+                    ['--memory-mb', '64', '--no-huge'], '', '', 64),
+                ('ini-32', '[dpdk]\nmemory=32\nno_huge=1\n', [], '', '', 32),
+                ('raw-long', '', [], ' --memory-size=128 --no-huge', '', 128),
+                ('cli-before-eal-terminator', '', ['--memory-mb', '64', '--no-huge'], '',
+                    ' -- -m 96 --no-huge -- --file-prefix=ignored-suffix', 64),
+                ('ini-before-eal-terminator', '[dpdk]\nmemory=48\nno_huge=yes\n', [], '',
+                    ' -- --memory-size=96 --no-huge -- --file-prefix=ignored-suffix', 48))
     with tempfile.TemporaryDirectory(prefix='ker-eal-memory-') as directory:
         root = Path(directory)
-        for index, (name, ini, options, extra_eal, expected) in enumerate(profiles):
+        for index, (name, ini, options, extra_eal, eal_remainder, expected) in enumerate(profiles):
             config, stats = root / (name + '.ini'), root / (name + '.json')
             config.write_text(ini)
             port = 30300 + index
             command = [sys.executable, str(args.launcher), '--library', str(args.library),
                 '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0',
-                '--eal', eal + extra_eal + ' --file-prefix=ker-memory-' + str(index), '--config', str(config), *options, '--stats', str(stats),
+                '--eal', eal + extra_eal + ' --file-prefix=ker-memory-' + str(index) + eal_remainder,
+                '--config', str(config), *options, '--stats', str(stats),
                 '--', str(args.app), str(port)]
             with (root / (name + '.log')).open('w+') as log:
                 app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True,

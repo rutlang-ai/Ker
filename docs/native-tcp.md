@@ -591,6 +591,10 @@ CLI 覆盖 INI；允许 1..2147483647（正 signed-int 范围），非法值在�
 该参数是 EAL 内存分布配置，数值不代表检测到的物理通道数；此处 no-huge 测试不声称
 物理拓扑、NUMA 放置、hugepage 分布或性能认证，上游源码保持不变。
 
+当 `--eal` 原始参数包含 `--` 时，typed memory、page、channel 和 lcore 选项会放在
+第一个分隔符之前；分隔符及其后的原始参数保持原顺序。此后缀属于 EAL 的应用参数，
+不参与 typed 选项的重复配置冲突检查。
+
 
 ## DPDK NUMA 分配策略
 
@@ -662,7 +666,8 @@ EAL `-m 128`。范围1..2147483647是正 signed-int 表示边界，不代表宿�
 `io.memory_bytes` 从 `rte_eal_get_physmem_size()` 读取 EAL 实际分配字节，
 `io.hugepages` 从 `rte_eal_has_hugepages()` 读取 EAL 页模式。前者不是 CLI 回显，
 也不包括独立原生 Linux 实例的内存；这些字段不证明具体 NUMA 放置或性能。
-`native-fstack-eal-memory` 使用五次真实 net_tap/native 启动，覆盖32/64/128MiB、
-INI、CLI覆盖及原始EAL长短参数，每次要求实际字节数、普通页模式、独立宿主TCP/UDP、
+`native-fstack-eal-memory` 使用七次真实 net_tap/native 启动，覆盖32/64/128MiB、
+INI、CLI覆盖及原始EAL长短参数；另验证 CLI 与 INI typed 设置在原始 EAL `--` 前生效，
+即使分隔符后保留不同的 `-m` 值及 `--no-huge` 参数。每次要求实际字节数、普通页模式、独立宿主TCP/UDP、
 原始内核计数和零mbuf。额外以私有非hugetlbfs目录验证 required-hugepages 返回125，
 不发布READY或成功统计，不静默回退。当前环境未验证 hugepage 分配成功。
