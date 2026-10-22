@@ -1512,6 +1512,17 @@
         "native-fstack-tcp-ip-options"
       ],
       "adaptation": "Ker-specific original-Linux IPv4 TCP IP_TOS/IP_TTL extension of already-adapted socket/dup bridge cases, not an additional upstream case. Run the same executable as host reference and native client/server against independent host peers over real DPDK net_tap/veth. Before connect/accept set client TOS0x28 TTL42 and listener TOS0x48 TTL43, require accepted inheritance and dup-shared queries. TTL0/-2/256 must fail EINVAL without losing the previous value. Exchange an exact deterministic bidirectional1024-byte stream, change connected options through an alias to client TOS0x68 TTL52 and server TOS0x88 TTL53, exchange exact P/A bytes, then half-close EOF and cleanup. Full native TX PCAP must show initial DSCP/TTL on SYN or SYN-ACK and initial payload, plus updated DSCP/TTL on the subsequent application byte. Mask only the two ECN bits when checking TOS; this test does not qualify ECN negotiation. Validate tested IPv4/TCP lengths and reject fragmented/truncated frames; require actual original-Linux opens, DPDK TX/RX and zero outstanding buffers. No production/runtime/protocol or upstream implementation changes. No routed TTL decrement, ICMP time-exceeded, IPv6 hop-limit, retransmission or NIC offload qualification. Source-case counts remain unchanged."
+    },
+    "native-fstack-tcp-user-timeout": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-user-timeout"
+      ],
+      "adaptation": "Ker-specific original-Linux TCP_USER_TIMEOUT extension of already-adapted socket/dup bridge cases; not an additional pinned source case. Host-reference, native-client sender and native-server sender runs use independent host peers over real DPDK net_tap/veth. Before the handshake each endpoint limits its receive buffer to4096; an independent control TCP stream holds the receiver from reading until the sender observes a timeout. Sender checks default0, sets1000ms through dup, rejects negative EINVAL without losing the value, resets0 and restores1000ms, then limits SO_SNDBUF and sends known bytes with MSG_DONTWAIT until real EAGAIN. A bounded10-second poll must report POLLERR; SO_ERROR through an alias must yield ETIMEDOUT, a second read through the original descriptor must yield0, and a subsequent MSG_NOSIGNAL send must fail EPIPE. Only then does control release the receiver to verify every delivered byte until EOF/ECONNRESET, requiring positive delivery smaller than the reported accepted send count. Both data aliases and control connections are closed normally. Native runs require original-Linux active/passive opens, a positive TCPWinProbe counter, actual DPDK TX/RX and zero outstanding buffers. Qualifies a responsive peer with a persistently closed receive window, not packet loss, retransmission deadlines, exact1000ms wall time, keepalive failure or IPv6. No production/upstream/protocol implementation changes; source-case counts remain unchanged."
     }
   }
 }
