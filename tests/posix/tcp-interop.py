@@ -527,6 +527,104 @@ def tcp_receive_queue(args, launcher, work, env, log):
             print('native TCP receive queue ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_mss(args, launcher, work, env, log):
+    if not args.mss_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 27700 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.mss_app), 'server', address, str(port)]
+        connect = [str(args.mss_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-mss-' + role + '.json')
+        capture = work / ('tcp-mss-' + role); capture.mkdir()
+        native = [*launcher, '--stats', str(stats_path), '--pcap-dir', str(capture),
+                  '--pcap-snaplen', '65535', '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP MSS server missed stream verification')
+        if role == 'host-reference':
+            continue
+        stats = json.loads(stats_path.read_text())
+        if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                not stats['native']['passive_opens' if native_server else 'active_opens']):
+            raise RuntimeError('TCP MSS missed native traffic: ' + str(stats))
+        seen_syn = seen_synack = False
+        payload_bytes = payload_packets = 0
+        for path in capture.glob('*.pcap'):
+            data = path.read_bytes()
+            if len(data) < 24 or data[:4] not in (b'\xd4\xc3\xb2\xa1', b'\xa1\xb2\xc3\xd4'):
+                raise RuntimeError('invalid MSS PCAP header')
+            endian = '<' if data[:4] == b'\xd4\xc3\xb2\xa1' else '>'
+            offset = 24
+            while offset < len(data):
+                if offset + 16 > len(data):
+                    raise RuntimeError('truncated MSS record header')
+                _, _, length, original = struct.unpack_from(endian + 'IIII', data, offset)
+                offset += 16
+                frame = data[offset:offset + length]; offset += length
+                if len(frame) != length or length != original:
+                    raise RuntimeError('truncated MSS frame')
+                if len(frame) < 54 or frame[12:14] != b'\x08\x00' or frame[23] != 6:
+                    continue
+                ihl = (frame[14] & 15) * 4
+                total = struct.unpack_from('!H', frame, 16)[0]
+                tcp = 14 + ihl
+                if ihl < 20 or total < ihl + 20 or 14 + total > len(frame):
+                    raise RuntimeError('invalid MSS IP length')
+                if port not in struct.unpack_from('!HH', frame, tcp):
+                    continue
+                if struct.unpack_from('!H', frame, 20)[0] & 0x3fff:
+                    raise RuntimeError('unexpected fragmented MSS TCP packet')
+                header = (frame[tcp + 12] >> 4) * 4
+                if header < 20 or ihl + header > total:
+                    raise RuntimeError('invalid MSS TCP header')
+                flags = frame[tcp + 13]
+                if flags & 2:
+                    values = []
+                    position = tcp + 20
+                    while position < tcp + header:
+                        kind = frame[position]
+                        if kind == 0:
+                            break
+                        if kind == 1:
+                            position += 1
+                            continue
+                        if position + 2 > tcp + header:
+                            raise RuntimeError('short MSS option')
+                        size = frame[position + 1]
+                        if size < 2 or position + size > tcp + header:
+                            raise RuntimeError('invalid MSS option size')
+                        if kind == 2:
+                            if size != 4:
+                                raise RuntimeError('invalid MSS option')
+                            values.append(struct.unpack_from('!H', frame, position + 2)[0])
+                        position += size
+                    expected = 700 if flags & 16 else 600
+                    if values != [expected]:
+                        raise RuntimeError('wrong advertised MSS: ' + str(values))
+                    if flags & 16:
+                        seen_synack = True
+                    else:
+                        seen_syn = True
+                payload = total - ihl - header
+                # Qualify actual native egress; host RX may legitimately arrive
+                # with host segmentation/aggregation metadata outside this test.
+                if path.name.startswith('ker-tx-') and payload:
+                    if payload > 600:
+                        raise RuntimeError('native segment exceeded negotiated MSS')
+                    payload_bytes += payload; payload_packets += 1
+        if not seen_syn or not seen_synack or payload_bytes < 16385 or payload_packets < 28:
+            raise RuntimeError('missing MSS handshake/native segmentation evidence')
+        print('PASS: native TCP MSS ' + role + ', SYN600/SYN-ACK700 and native payload<=600', flush=True)
+
+
 def tcp_cork(args, launcher, work, env, log):
     if not args.cork_app:
         return
@@ -1446,6 +1544,7 @@ def inside(args):
                 tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
+                tcp_mss(args, launcher, work, env, log)
                 tcp_cork(args, launcher, work, env, log)
                 tcp_linger(args, launcher, work, env, log)
                 tcp_urgent(args, launcher, work, env, log)
@@ -1540,6 +1639,7 @@ def main():
     parser.add_argument('--send-timeouts-app', type=Path)
     parser.add_argument('--listener-restart-app', type=Path)
     parser.add_argument('--shutdown-write-app', type=Path)
+    parser.add_argument('--mss-app', type=Path)
     parser.add_argument('--cork-app', type=Path)
     parser.add_argument('--linger-app', type=Path)
     parser.add_argument('--receive-queue-app', type=Path)

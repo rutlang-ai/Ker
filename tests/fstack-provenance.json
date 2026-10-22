@@ -1456,6 +1456,17 @@
         "native-fstack-tcp-cork"
       ],
       "adaptation": "Ker-specific Linux TCP_CORK/MSG_MORE extension of already-adapted socket and dup bridge scenarios; not a new upstream source case. Host-reference and native client/server runs use independent host peers over real DPDK net_tap/veth. Two modes in both send directions check queried TCP_CORK/TCP_NODELAY state through aliases, a 17-byte write or two-iovec sendmsg(MSG_MORE), no receive readiness for a 20ms poll observed within 100ms of the send timestamp, then a 31-byte writev plus alias uncork or unflagged send. Exact 48-byte stream payload and subsequent plain-byte recovery are required, followed by half-close EOF. Both processes use the real host CLOCK_MONOTONIC for the guard; samples delayed beyond 100ms are fully drained and retried up to eight times, never counted as deferral passes, to avoid mistaking the legitimate approximately 200ms automatic cork flush for a failure. Exhausted retries fail explicitly. Separate TCP control traffic coordinates observation and release. Native runs require at least five matching original-Linux opens, actual DPDK TX/RX and zero outstanding buffers. No protocol/runtime implementation changes, packet-count coalescing guarantee, send-buffer saturation, automatic-flush deadline qualification or additional migrated-source counts."
+    },
+    "native-fstack-tcp-mss": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-mss"
+      ],
+      "adaptation": "Ker-specific original-Linux TCP_MAXSEG/MSS extension of already-adapted socket/dup bridge scenarios, not additional upstream source cases. The same program runs on host Linux and as native client/server against independent host peers over DPDK. Set client MSS600 before connect and listener MSS700 before accept, query shared options through dup, reject -1/1/65536 with EINVAL without losing the preceding value, and accept zero reset before restoring the clamp. Connected/accepted effective MSS must be positive and <=600 (TCP option overhead may reduce it). Verify exact bidirectional 16KiB streams, subsequent small-message recovery, half-close EOF and alias cleanup. Native worker full PCAP must contain actual SYN MSS600 and SYN-ACK MSS700. Parse IPv4/TCP lengths/options and reject fragmented or truncated tested frames; native egress payload must never exceed600, and at least28 data packets with >=16385 payload bytes are required. Host ingress data segmentation/aggregation is not qualified. Native TCP opens, DPDK TX/RX and zero outstanding buffers are mandatory. No production/runtime, protocol or upstream source changes; no PMTU change, IPv6, post-connect MSS renegotiation, loss/retransmission or hardware-offload coverage claim."
     }
   }
 }

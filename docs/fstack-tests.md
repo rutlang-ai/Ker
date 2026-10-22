@@ -370,3 +370,7 @@ scenario-adapted（126 adapted、224 blocked、20 partial）。
 TCP_CORK/MSG_MORE 扩展：`native-fstack-tcp-cork` 验证双向暂缓、dup 共享选项、
 解除后的完整字节流与普通写入恢复；宿主参考及原生两种角色均运行。
 这是已有 socket/dup 场景的 Linux 功能扩展，不增加已迁移来源案例数。
+
+TCP MSS 扩展：`native-fstack-tcp-mss` 验证连接前 TCP_MAXSEG、监听继承、
+错误后恢复和双向完整字节流；实际抓包检查握手 MSS 与原生发送分段上限。
+来源案例数不变，剩余仍为 223 blocked + 20 partial。
