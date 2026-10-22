@@ -1410,6 +1410,18 @@
         "native-fstack-host-semaphore-release"
       ],
       "adaptation": "Ker-specific host synchronization extension of pinned F-Stack thread argument scenarios, not a registered upstream semaphore test or FreeBSD ABI equivalence claim. Ker owns an opaque POSIX semaphore adapter with real sem_init/wait/post/destroy. Negative counts fail EINVAL; allocation/init failures return NULL with preserved errno and release storage. Wait retries EINTR; unrecoverable void-callback wait/post/destroy errors abort rather than proceeding without synchronization. DEBUG/NDEBUG tests use per-test-thread allocation/init/wait/destroy fault injection, count storage cleanup, and verify real semaphore recovery. Before threads exist, child processes require SIGABRT for actual SEM_VALUE_MAX post overflow and injected EINVAL wait/destroy errors. A real host thread receives pthread_kill SIGUSR1 without SA_RESTART; a forwarding sem_wait wrapper must observe actual EINTR, then the adapter must retry and remain blocked until a real post. Argument/result transfer, join and signal-state restoration are checked. Original Linux must boot, allocate measured real adapted semaphores and halt with faults disabled; native TCP/UDP regression checks real DPDK traffic. No upstream, protocol or scheduling changes and no source-case count change. This does not qualify fairness, process-shared semaphores, thread cancellation, destruction with active waiters or performance."
+    },
+    "native-fstack-host-timer": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_clock_gettime_monotonic",
+        "test_ff_clock_gettime_ns_advances"
+      ],
+      "ker_ctests": [
+        "native-fstack-host-timer-debug",
+        "native-fstack-host-timer-release"
+      ],
+      "adaptation": "Ker-specific POSIX host-timer extension motivated by pinned host clock scenarios, not an upstream registered F-Stack timer test or source-case count increase. The adapter preserves the pinned LKL relative CLOCK_REALTIME/SIGEV_THREAD policy and uses an opaque allocated timer_t holder so NULL is reserved for allocation failure. Allocation and timer_create EAGAIN/ENOMEM failures return NULL with errno and complete storage cleanup; timer_settime errors return -1 with errno; failed void timer_free aborts rather than silently freeing a live handle. DEBUG/NDEBUG tests forward successful calls to real POSIX timers, inject failures only in the calling test thread, verify allocation balance/recovery, second/nanosecond conversion, zero disarm using timer_gettime, replacement of a 100-second arm by a 1-nanosecond arm, and a real one-shot callback with zero interval. A pre-thread forked child requires SIGABRT after injected deletion failure. Fault-free original Linux must allocate, arm, fire and free measured adapted timers and wake a timed poll; native TCP/UDP regression uses real DPDK traffic. No Linux/DPDK source, kernel clock-event logic or networking protocol changes. Deletion is not claimed to join in-flight SIGEV_THREAD callbacks; callback quiescence, wall-clock adjustments, periodic timers, exact latency and performance are not qualified."
     }
   }
 }

@@ -5,6 +5,7 @@
 #include "host-memory.h"
 #include "host-thread.h"
 #include "host-clock.h"
+#include "host-timer.h"
 #include "host-entropy.h"
 #include "realtime-clock.h"
 #include "ipv6-route.h"
@@ -118,6 +119,7 @@ __attribute__((constructor)) static void initialize(void)
     ker_native_host_memory_init(&lkl_host_ops);
     ker_native_host_thread_init(&lkl_host_ops);
     ker_native_host_clock_init(&lkl_host_ops);
+    ker_native_host_timer_init(&lkl_host_ops);
     lkl_host_ops.print = NULL;
     int result = lkl_init(&lkl_host_ops);
     if (result) fail("kernel initialization", result);
