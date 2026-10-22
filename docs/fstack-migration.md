@@ -602,3 +602,9 @@ blocked，不增加迁移通过计数。
 现标为 partial。其 base_virtaddr、vdev completion queues 和 bond down_delay
 断言仍缺失；Ker 原样使用 prefix，不采用 F-Stack 的 container- 装饰。
 未将源案例计为完整迁移，也不声称 shared hugepage/secondary 支持。
+
+
+extra-keys 的 `base_virtaddr` 子集现有 typed 配置、真实 EAL 内存段地址回读和
+五组宿主TCP/UDP证据，补充已有 file_prefix 子集。地址提示及16MiB对齐由原始
+DPDK处理；不保证固定地址或地址冲突回退。源用例仍因 vdev completion queues、
+bond down_delay 与配置 ABI 缺口保持 partial，清单计数不变。

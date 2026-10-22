@@ -700,3 +700,17 @@ CLI 覆盖 INI；省略保留原始 EAL。Typed prefix 插入首个 raw EAL `--`
 这只验证共享配置模式的运行命名空间和 primary 排他，不声称 shared hugepages
 或 secondary 进程支持。原始 `--no-shconf` / `--in-memory` 绕过共享配置，
 不能用此前缀推断 primary 排他。
+
+
+`[dpdk] base_virtaddr=0x200000000` / `--base-virtaddr 0x200000000` 为原始 EAL
+提供虚拟地址提示。CLI 覆盖 INI，省略保留 raw EAL；只接受带0x前缀的正十六进制，
+并预留16MiB向上对齐空间，避免uint64回绕。DPDK会将未对齐地址向上对齐到16MiB，
+且可能选择其他地址；这不是固定地址映射保证。typed 与 raw 有效选项中的同名设置
+冲突时启动前拒绝；typed 插入第一个 `--` 前，后缀不参与冲突检查。
+
+`io.memory_base` 用 `rte_memseg_walk` 回读已映射内存段的最低虚拟地址，
+不是配置回显，也不代表物理/DMA地址或原始 Linux 实例的内存。
+`native-fstack-eal-base-virtaddr` 的五组实例验证 raw/INI/CLI 覆盖、16MiB对齐和
+终止符边界；在这些地址可用的测试进程中，实际映射必须位于提示区域的1GiB窗口内，
+并完成宿主TCP/UDP、native计数和零mbuf退出。未验证地址冲突回退、hugepage
+映射、NUMA/硬件拓扑或secondary进程，不修改原始DPDK分配器。

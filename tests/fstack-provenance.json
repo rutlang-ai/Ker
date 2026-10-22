@@ -1305,6 +1305,18 @@
         "native-fstack-launcher-config"
       ],
       "adaptation": "File-prefix subset of the registered extra-keys case. Ker dpdk.file_prefix/--file-prefix forwards a literal original EAL runtime prefix, without the F-Stack container-decoration. Typed prefixes are restricted to1..64 ASCII letters/digits/dot/underscore/hyphen starting with a letter/digit; path separators, traversal names, percent, whitespace and empty strings fail before library loading. CLI overrides INI; raw --file-prefix conflicts only when it appears among active EAL options before the first --, while the raw separator and suffix are preserved and excluded from conflict checks. Typed prefix is inserted before that separator. Four real net_tap/original-Linux profiles cover raw, INI mytest, CLI override, and typed CLI prefix before a raw terminator containing a competing suffix prefix. Each requires the actual prefix-specific EAL shared-config file under a private runtime directory, independent host TCP/UDP, native counters and zero outstanding mbufs. With the first native app still live, a same-prefix primary must fail125 with the original EAL configuration-lock diagnostic and no readiness; a distinct-prefix primary using its own TAP/subnet must complete real EAL/native startup and clean shutdown before the first app continues successful TCP/UDP. This proves runtime namespace/primary-lock behavior in shared-config mode, not shared hugepage or secondary-process support. --no-shconf/--in-memory bypass EAL shared configuration and therefore are not primary-exclusion guarantees. Base virtual address, allowlist, full vdev and bond fields remain unsupported; the source case is partial, not complete. No protocol or upstream modifications."
+    },
+    "native-fstack-eal-base-virtaddr": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_extra_keys"
+      ],
+      "source_fixture": "tests/unit/fixtures/valid_dpdk_extra_keys.ini",
+      "ker_ctests": [
+        "native-fstack-eal-base-virtaddr",
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Virtual-address-hint subset of the registered extra-keys case, alongside the existing file-prefix subset. Typed dpdk.base_virtaddr/--base-virtaddr accepts positive hexadecimal 0x-prefixed uint64 hints with room for original DPDK 16MiB upward alignment. CLI overrides INI, omission preserves raw EAL, and competing raw active-prefix --base-virtaddr forms fail before library loading. Generated hint is inserted before the first raw -- and suffix tokens remain untouched. Original EAL owns allocation, alignment and fallback; no allocator replacement or upstream change. Worker diagnostics walk actual populated rte_memseg records and report the lowest mapped virtual address, not the configured hint. Five real net_tap/original-Linux profiles cover raw8GiB, INI16GiB, CLI24GiB overridingINI16GiB, an unaligned32GiB+1 hint aligned byDPDK, and typed40GiB before a conflicting-looking suffix48GiB. Require actual lowest mapped segment in the requested aligned region (within1GiB), regular pages, independent host TCP/UDP, native counters, control shutdown and zero outstanding mbufs. These available-address test mappings do not guarantee exact address placement, collision fallback behavior, physical DMA/NUMA topology, hugepage placement or secondary processes. Source case remains partial because full vdev completion queues, bond down-delay and F-Stack configuration ABI are missing."
     }
   }
 }

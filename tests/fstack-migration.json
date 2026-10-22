@@ -1567,14 +1567,18 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Typed file-prefix configuration and actual original-EAL runtime namespace/primary-lock behavior are verified with concurrent native instances and host TCP/UDP.",
+      "reason": "Typed file-prefix and base-virtual-address configuration have real original-EAL runtime evidence: concurrent namespace/primary locks and actual mapped-address regions, with independent host TCP/UDP.",
       "ker_tests": [
         {
           "ctest": "native-fstack-eal-file-prefix",
           "provenance_case": "native-fstack-eal-file-prefix"
+        },
+        {
+          "ctest": "native-fstack-eal-base-virtaddr",
+          "provenance_case": "native-fstack-eal-base-virtaddr"
         }
       ],
-      "remaining": "The source also asserts base_virtaddr, full vdev completion queues and bond down_delay; those fields and the F-Stack global configuration layout remain unsupported. Ker forwards the literal prefix instead of adding the F-Stack container- decoration. Shared hugepages and secondary-process support are not qualified."
+      "remaining": "Full vdev completion queues, bond down_delay and F-Stack global configuration layout remain unsupported. Ker forwards the literal file prefix instead of adding container-. Virtual addresses remain original EAL hints; collision fallback, exact placement, shared hugepages and secondary processes are not qualified."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",

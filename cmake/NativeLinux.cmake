@@ -345,6 +345,11 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-promiscuous-test>")
     set_tests_properties(native-fstack-numa-policy PROPERTIES TIMEOUT 120 LABELS "native-tcp;native-udp;fstack")
+    add_test(NAME native-fstack-eal-base-virtaddr
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/eal-base-virtaddr.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-promiscuous-test>")
+    set_tests_properties(native-fstack-eal-base-virtaddr PROPERTIES TIMEOUT 120 LABELS "native-tcp;native-udp;fstack")
     add_test(NAME native-fstack-eal-file-prefix
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/eal-file-prefix.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
