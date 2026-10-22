@@ -379,3 +379,8 @@ INI 长键名：`native-fstack-launcher-config` 与 `native-fstack-network-sysct
 适配 `test_ini_parse_stream_long_key_name` 的完整名称保留，覆盖 60 字符、
 128/129 字符边界、重复/CLI 顺序及真实内核未知键失败后的回收。清单更新为
 128 adapted、222 blocked、20 partial，剩余 242 项。
+
+
+TCP keepalive 扩展：`native-fstack-tcp-keepalive` 检查选项共享与监听继承、
+无效参数恢复，并通过原生发送抓包验证空闲探测及后续收发。它扩展已有 socket
+迁移场景，不增加源案例迁移数；当前仍有 222 个 blocked、20 个 partial。

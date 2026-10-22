@@ -990,3 +990,13 @@ INI 长键名：`native-fstack-launcher-config` 使用实际 reader 验证两个
 要求错误显示完整 /proc/sys 路径、应用未执行、没有 native READY，真实 EAL
 清理成功且无 mbuf 泄漏，宿主 sysctl 保持不变。此处验证解析和显式失败边界，
 不把未知 sysctl 当作可用功能，也不声明 F-Stack 任意 handler ABI 等价。
+
+
+TCP keepalive：`native-fstack-tcp-keepalive` 在宿主参考、原生客户端和原生服务器中，
+验证 SO_KEEPALIVE 与 TCP_KEEPIDLE/KEEPINTVL/KEEPCNT 的 dup 共享、监听继承，
+以及无效值返回 EINVAL 后保留原值。双方先交换字节，客户端保持四秒无应用数据的
+poll；探测包不能成为应用可读事件，之后必须恢复精确字节收发、禁用选项并完成 EOF。
+原生 TX 完整抓包必须出现零负载、ACK-only、序号为先前数据末尾减一的 keepalive
+探测包，同时要求原生连接计数、DPDK TX/RX 和零 outstanding mbuf。
+本项覆盖响应正常的空闲对端，不声明丢失探测后的超时断开、精确计时或 IPv6 覆盖。
+协议处理完全来自原版 Linux，没有新增 Ker 自有 TCP 逻辑。
