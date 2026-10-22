@@ -103,6 +103,26 @@ def verify_rotation(records, port):
         for r in replies for v in refreshed), 'replacement cookie SYN data was not acknowledged')
 
 
+def verify_backup_key(records, port):
+    syns = [v for v in records if v['destination'] == port and v['syn'] and not v['ack']]
+    replies = [v for v in records if v['source'] == port and v['syn'] and v['ack']]
+    requests = [v for v in syns if v['cookie'] == b'' and not v['payload']]
+    issued = [r for r in replies if r['cookie'] and any(r['destination'] == v['source'] for v in requests)]
+    old = [v for v in syns if v['payload'] == PAYLOAD and any(
+        v['cookie'] == r['cookie'] and v['source'] != r['destination'] for r in issued)]
+    require(old, 'backup-key cookie was not presented with exact SYN payload')
+    refreshed = [r for r in replies if r['cookie'] and 4 <= len(r['cookie']) <= 16 and any(
+        r['destination'] == v['source'] and r['cookie'] != v['cookie'] and
+        r['acknowledgement'] == (v['sequence'] + 1 + len(PAYLOAD)) % (1 << 32) for v in old)]
+    require(refreshed, 'backup-key SYN data was not fully acknowledged with a refreshed primary-key cookie')
+    new = [v for v in syns if v['payload'] == PAYLOAD and any(
+        v['cookie'] == r['cookie'] and v['source'] != r['destination'] for r in refreshed)]
+    require(new, 'fresh connection did not use the refreshed primary-key cookie')
+    require(any(r['destination'] == v['source'] and
+        r['acknowledgement'] == (v['sequence'] + 1 + len(PAYLOAD)) % (1 << 32)
+        for r in replies for v in new), 'refreshed cookie SYN data was not accepted after backup retirement')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app'):
@@ -110,9 +130,10 @@ def main():
     parser.add_argument('--cookie-exchange', action='store_true', help='require real cookie request, response and reuse on a fresh connection')
     parser.add_argument('--nonblocking', action='store_true', help='validate nonblocking Fast Open initiation and no-cookie resend')
     parser.add_argument('--key-rotation', action='store_true', help='rotate the listener key and require stale-cookie fallback and recovery')
+    parser.add_argument('--backup-key', action='store_true', help='accept the old cookie with a backup key, refresh, then retire the backup')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
-    args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation
+    args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation or args.backup_key
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
             '--inside', *sys.argv[1:]]).returncode
@@ -141,7 +162,7 @@ def main():
             listen = [str(args.app), 'server', address, str(port)]
             connect = [str(args.app), 'client', address, str(port)]
             if args.cookie_exchange:
-                mode = 'rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies')
+                mode = 'backup' if args.backup_key else ('rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies'))
                 listen += [mode]; connect += [mode]
             if role == 'server':
                 listen = native + listen
@@ -168,10 +189,13 @@ def main():
                         if args.key_rotation:
                             verify_rotation(records, port)
                             print('PASS: stale cookie rejected, payload resent, replacement cookie accepted', flush=True)
+                        if args.backup_key:
+                            verify_backup_key(records, port)
+                            print('PASS: backup cookie SYN data accepted, primary cookie refreshed and accepted after backup retirement', flush=True)
                         if role != 'host-reference':
                             record = json.loads(stats.read_text())
                             counter = 'passive_opens' if role == 'server' else 'active_opens'
-                            require(record['native'][counter] >= (4 if args.key_rotation else (3 if args.cookie_exchange else 2)) and record['tx'] and record['rx'] and
+                            require(record['native'][counter] >= (4 if args.key_rotation or args.backup_key else (3 if args.cookie_exchange else 2)) and record['tx'] and record['rx'] and
                                     record['outstanding'] == 0, 'missing original Linux traffic/cleanup evidence')
                         print('PASS: ' + role + (', cookie request/response/reuse on fresh connection' if args.cookie_exchange else ', exact SYN data') + ', ordinary SYN control, exact streams and EOF', flush=True)
                     except Exception:

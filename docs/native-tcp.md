@@ -769,3 +769,14 @@ cookie；客户端在建立后的流中以相同起始序号重发完整请求�
 这属于 F-Stack host bridge 场景的 Linux 扩展，不新增来源案例计数，也不修改
 运行时或上游协议源码。仅覆盖不保留备用密钥的单密钥替换；双密钥重叠轮换、
 缓存过期、丢包重传、IPv6 与性能仍未验证。
+
+`native-fstack-tcp-fastopen-backup-key` 覆盖双密钥重叠轮换：监听端先设置 A，
+首次请求后改为主密钥 B 加备用 A，下一次请求后移除备用 A，仅保留 B。
+每次 TCP_FASTOPEN_KEY 均读回检查精确内容和16/32/16字节长度，且更改发生在
+发送上一连接回显之前，使后续连接顺序确定而无需睡眠。
+宿主参考、native 客户端和 native 服务端均完成四条精确流并检查 peer、半关闭和 EOF。
+独立抓包要求旧 A cookie 的 SYN 携带完整请求，SYN-ACK 确认全部 SYN 数据并返回
+不同的 B cookie；备用密钥移除后，另一端口必须用 B cookie 携完整请求发 SYN，
+且全部数据再次被确认。普通空 SYN 对照、native opens、DPDK TX/RX 与零遗留
+mbuf 同样必须通过。这是 F-Stack host bridge 场景的原始 Linux 扩展，不改变
+来源案例计数或运行时/上游协议代码。缓存过期、丢包重传、IPv6 与性能仍未验证。
