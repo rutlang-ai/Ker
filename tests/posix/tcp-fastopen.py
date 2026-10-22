@@ -17,7 +17,7 @@ def require(value, message):
     if not value:
         raise RuntimeError(message)
 
-def syn_records(capture, port):
+def tcp_records(capture, port):
     capture.setblocking(False)
     found = []
     while True:
@@ -32,7 +32,7 @@ def syn_records(capture, port):
             continue
         ihl = (ip[0] & 15) * 4
         tcp = ip[ihl:struct.unpack('!H', ip[2:4])[0]]
-        if len(tcp) < 20 or not tcp[13] & 2:
+        if len(tcp) < 20:
             continue
         source, destination = struct.unpack('!HH', tcp[:4])
         if port not in (source, destination):
@@ -55,13 +55,14 @@ def syn_records(capture, port):
                 require(cookie is None, 'multiple Fast Open options')
                 cookie = tcp[offset + 2:offset + length]
             offset += length
-        found.append(dict(source=source, destination=destination, ack=bool(tcp[13] & 16),
+        found.append(dict(source=source, destination=destination, ack=bool(tcp[13] & 16), syn=bool(tcp[13] & 2),
+                          sequence=struct.unpack('!I', tcp[4:8])[0], acknowledgement=struct.unpack('!I', tcp[8:12])[0],
                           payload=tcp[header:], cookie=cookie))
     return found
 
 
 def verify_syns(records, port, cookies):
-    syns = [v for v in records if v['destination'] == port and not v['ack']]
+    syns = [v for v in records if v['destination'] == port and v['syn'] and not v['ack']]
     require(any(v['payload'] == b'' and v['cookie'] is None for v in syns),
             'ordinary connect control SYN missing')
     if not cookies:
@@ -69,7 +70,7 @@ def verify_syns(records, port, cookies):
         return
     requests = [v for v in syns if v['payload'] == b'' and v['cookie'] == b'']
     require(requests, 'initial empty SYN with Fast Open cookie request missing')
-    replies = [v for v in records if v['source'] == port and v['ack'] and v['cookie']]
+    replies = [v for v in records if v['source'] == port and v['syn'] and v['ack'] and v['cookie']]
     issued = [reply for reply in replies if any(reply['destination'] == request['source'] for request in requests)]
     require(issued, 'no nonempty cookie returned for the initial cookie request')
     require(all(4 <= len(v['cookie']) <= 16 for v in issued), 'invalid issued Fast Open cookie length')
@@ -78,15 +79,40 @@ def verify_syns(records, port, cookies):
     require(reused, 'a fresh connection did not reuse the issued cookie with exact SYN payload')
 
 
+def verify_rotation(records, port):
+    syns = [v for v in records if v['destination'] == port and v['syn'] and not v['ack']]
+    replies = [v for v in records if v['source'] == port and v['syn'] and v['ack']]
+    initial = [v for v in syns if v['cookie'] == b'' and not v['payload']]
+    issued = [v for v in replies if v['cookie'] and any(v['destination'] == r['source'] for r in initial)]
+    require(issued, 'initial key cookie response missing')
+    stale = [v for v in syns if v['payload'] == PAYLOAD and any(
+        v['cookie'] == r['cookie'] and v['source'] != r['destination'] for r in issued)]
+    require(stale, 'stale cookie was not presented with SYN data')
+    replacements = [r for r in replies if r['cookie'] and 4 <= len(r['cookie']) <= 16 and any(
+        r['destination'] == v['source'] and r['cookie'] != v['cookie'] and
+        r['acknowledgement'] == (v['sequence'] + 1) % (1 << 32) for v in stale)]
+    require(replacements, 'stale SYN data was not rejected with a replacement cookie and SYN-only acknowledgement')
+    require(any(not r['syn'] and r['destination'] == port and r['payload'] == PAYLOAD and any(
+        r['source'] == v['source'] and r['sequence'] == (v['sequence'] + 1) % (1 << 32)
+        for v in stale) for r in records), 'rejected SYN payload was not resent on the established stream')
+    refreshed = [v for v in syns if v['payload'] == PAYLOAD and any(
+        v['cookie'] == r['cookie'] and v['source'] != r['destination'] for r in replacements)]
+    require(refreshed, 'fresh connection did not reuse the replacement cookie')
+    require(any(r['destination'] == v['source'] and
+        r['acknowledgement'] == (v['sequence'] + 1 + len(PAYLOAD)) % (1 << 32)
+        for r in replies for v in refreshed), 'replacement cookie SYN data was not acknowledged')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--cookie-exchange', action='store_true', help='require real cookie request, response and reuse on a fresh connection')
     parser.add_argument('--nonblocking', action='store_true', help='validate nonblocking Fast Open initiation and no-cookie resend')
+    parser.add_argument('--key-rotation', action='store_true', help='rotate the listener key and require stale-cookie fallback and recovery')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
-    args.cookie_exchange = args.cookie_exchange or args.nonblocking
+    args.cookie_exchange = args.cookie_exchange or args.nonblocking or args.key_rotation
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
             '--inside', *sys.argv[1:]]).returncode
@@ -115,7 +141,7 @@ def main():
             listen = [str(args.app), 'server', address, str(port)]
             connect = [str(args.app), 'client', address, str(port)]
             if args.cookie_exchange:
-                mode = 'nonblocking' if args.nonblocking else 'cookies'
+                mode = 'rotation' if args.key_rotation else ('nonblocking' if args.nonblocking else 'cookies')
                 listen += [mode]; connect += [mode]
             if role == 'server':
                 listen = native + listen
@@ -137,11 +163,15 @@ def main():
                                     'missing nonblocking return/readiness evidence')
                         output = process.communicate(timeout=20)[0]
                         require(process.returncode == 0 and 'PASS:' in output, output)
-                        verify_syns(syn_records(capture, port), port, args.cookie_exchange)
+                        records = tcp_records(capture, port)
+                        verify_syns(records, port, args.cookie_exchange)
+                        if args.key_rotation:
+                            verify_rotation(records, port)
+                            print('PASS: stale cookie rejected, payload resent, replacement cookie accepted', flush=True)
                         if role != 'host-reference':
                             record = json.loads(stats.read_text())
                             counter = 'passive_opens' if role == 'server' else 'active_opens'
-                            require(record['native'][counter] >= (3 if args.cookie_exchange else 2) and record['tx'] and record['rx'] and
+                            require(record['native'][counter] >= (4 if args.key_rotation else (3 if args.cookie_exchange else 2)) and record['tx'] and record['rx'] and
                                     record['outstanding'] == 0, 'missing original Linux traffic/cleanup evidence')
                         print('PASS: ' + role + (', cookie request/response/reuse on fresh connection' if args.cookie_exchange else ', exact SYN data') + ', ordinary SYN control, exact streams and EOF', flush=True)
                     except Exception:

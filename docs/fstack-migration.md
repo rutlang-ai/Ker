@@ -631,3 +631,17 @@ MSG_FASTOPEN 返回 EINPROGRESS，经 POLLOUT 和 SO_ERROR=0 后由调用者重�
 发起完成后恢复阻塞模式验证精确流、peer、半关闭和 EOF，因此不宣称覆盖通用
 非阻塞流读写。协议仍完全使用原始 Linux，未修改运行时或上游源码，来源案例计数不变。
 无效 cookie、密钥轮换、缓存过期、丢包重传和 IPv6 仍待验证。
+
+`native-fstack-tcp-fastopen-key-rotation` 补齐监听端更换密钥后的旧 cookie 回退。
+测试通过原始 Linux TCP_FASTOPEN_KEY 设置并读回16字节密钥；首次连接收到请求后，
+服务端先更换为另一个单密钥，再发送回显，以确定顺序而不依赖睡眠。
+宿主参考、native 客户端和 native 服务端均依次完成首次协商、旧 cookie 发起、
+新 cookie 发起和普通 connect 对照四条连接，检查精确流、peer、半关闭与 EOF。
+
+独立抓包要求旧 cookie SYN 携带完整请求，但 SYN-ACK 只确认 SYN 并返回不同的
+cookie；客户端在建立后的流中以相同起始序号重发完整请求。下一条连接必须
+用新 cookie 携数据发 SYN，服务端须确认 SYN 加完整数据长度。native 角色同时
+要求至少四次原始 Linux opens、DPDK TX/RX 和零遗留 mbuf。
+这属于 F-Stack host bridge 场景的 Linux 扩展，不新增来源案例计数，也不修改
+运行时或上游协议源码。仅覆盖不保留备用密钥的单密钥替换；双密钥重叠轮换、
+缓存过期、丢包重传、IPv6 与性能仍未验证。
