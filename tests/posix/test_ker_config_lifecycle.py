@@ -162,6 +162,18 @@ addresses=198.19.100.2/24,198.19.100.3/24
         self.reject_before_setup(MINIMAL + '[unknown]\nk=one\n[unknown]\nk=two\n', 'unknown section')
         self.assertEqual(self.parse(MINIMAL).port, 'net_tap0')
 
+    def test_repeated_sysctl_keys_use_final_occurrence_order(self):
+        boundary = 'net.ipv4.ip_unprivileged_port_start'
+        port_range = 'net.ipv4.ip_local_port_range'
+        config = ('[network]\naddress=198.18.0.2/24\n'
+                  '[dpdk]\nport=net_tap0\neal=--no-huge\n  --no-pci\n'
+                  '[sysctl]\n' + boundary + '=0\n' + port_range + '=45000 45999\n'
+                  '[sysctl]\n' + boundary + '=40000\n')
+        args = self.parse(config)
+        self.assertEqual(list(args.sysctls), [port_range, boundary])
+        self.assertEqual(args.sysctls, {port_range: '45000 45999', boundary: '40000'})
+        self.assertEqual(args.eal_args, ['--no-huge', '--no-pci'])
+
 
 if __name__ == '__main__':
     unittest.main()

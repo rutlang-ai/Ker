@@ -121,6 +121,20 @@ CONFIG_DEFAULTS = dict(base_virtaddr=None, file_prefix=None, eal_log_level=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
+
+
+class _LastOccurrenceDict(dict):
+    """Preserve the final source position of repeated ConfigParser options."""
+
+    def __setitem__(self, key, value):
+        # ConfigParser stores parsed option values as lists, then joins them to
+        # strings in _join_multiline_values. Move only during source parsing so
+        # final-value order changes without mutating the mapping while joining.
+        if isinstance(value, list) and key in self:
+            del self[key]
+        super().__setitem__(key, value)
+
+
 CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
@@ -138,7 +152,7 @@ def read_configuration(stream, directory, source='<stream>'):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
     ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
-        empty_lines_in_values=False, strict=False)
+        empty_lines_in_values=False, strict=False, dict_type=_LastOccurrenceDict)
     ini.optionxform = str
     ini.read_string(stream.read().removeprefix('\ufeff'), source=str(source))
     if ini.defaults():

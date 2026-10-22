@@ -1214,6 +1214,9 @@ def inside(args):
             config_capture = work / 'configured-capture'; config_capture.mkdir()
             config_path.write_text('[network]\naddress=198.19.0.99/24\naddress=198.18.0.2/24\n'
                 '[dpdk]\nport=earlier-port\nport=must-be-overridden\neal=--invalid-earlier-eal\neal=' + eal.replace(' --vdev=', '\n  --vdev=') + '\n'
+                '[sysctl]\nnet.ipv4.ip_unprivileged_port_start=0\n'
+                'net.ipv4.ip_local_port_range=45000 45999\n'
+                '[sysctl]\nnet.ipv4.ip_unprivileged_port_start=40000\n'
                 '[logging]\ndirectory=unused-earlier-logs\ndirectory=configured-logs\nlevel=7\n'
                 '[capture]\ndirectory=configured-capture\nsnaplen=96\nmax_bytes=1073741824\nnsec=yes\n'
                 '[runtime]\nstats=unused-default.json\nshutdown_timeout_ms=5000\n')
