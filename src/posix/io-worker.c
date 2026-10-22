@@ -36,6 +36,16 @@
 static volatile sig_atomic_t stopping;
 static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
 
+static int memory_lowest_address(const struct rte_memseg_list *list,
+        const struct rte_memseg *segment, void *opaque)
+{
+    (void)list;
+    uintptr_t *lowest = opaque;
+    uintptr_t address = (uintptr_t)segment->addr;
+    if (address < *lowest) *lowest = address;
+    return 0;
+}
+
 struct ker_worker_rx_queue {
     uint16_t port;
     uint16_t queue;
@@ -271,13 +281,17 @@ int main(int argc, char **argv)
         perror("ker: write worker log"); goto cleanup;
     }
     struct rte_eth_link link = {0};
+    uintptr_t memory_base = UINTPTR_MAX;
+    if (rte_memseg_walk(memory_lowest_address, &memory_base) < 0 || memory_base == UINTPTR_MAX) {
+        fprintf(stderr, "ker: cannot inspect EAL memory segments\n"); goto cleanup;
+    }
     int link_status = rte_eth_link_get_nowait(port, &link);
     printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
-        "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
+        "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
-        rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, eal_log_level, rte_log_get_global_level(), (unsigned long long)rte_eal_get_physmem_size(),
+        rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, eal_log_level, rte_log_get_global_level(), (unsigned long long)memory_base, (unsigned long long)rte_eal_get_physmem_size(),
         rte_eal_has_hugepages() ? "true" : "false", rte_memory_get_nchannel(), rte_lcore_count(), rte_get_main_lcore(), sched_getcpu(), link_status ? "null" : (link.link_status ? "true" : "false"),
         promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"), idle_sleep_us, tx_delay_us);
     fflush(stdout);

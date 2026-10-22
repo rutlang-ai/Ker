@@ -19,6 +19,32 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_base_virtaddr_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci']
+        self.assertIsNone(launcher.parse_arguments(base + ['--', '/bin/true']).base_virtaddr)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'base.ini'
+            for value in ('0x200000000', '0X400000001', '0xffffffffff000000'):
+                config.write_text('[dpdk]\nbase_virtaddr=' + value + '\n')
+                args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertEqual(args.eal_args, ['--no-pci', '--base-virtaddr=' + hex(int(value, 16))])
+                args = launcher.parse_arguments(base + ['--config', str(config), '--base-virtaddr', '0x600000000', '--', '/bin/true'])
+                self.assertEqual(args.base_virtaddr, 0x600000000)
+            for value in ('0', '0x0', '-0x1000000', '0xgg', '8589934592', '0x10000000000000000', '0xffffffffffffffff'):
+                config.write_text('[dpdk]\nbase_virtaddr=' + value + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + ['--base-virtaddr=' + value, '--', '/bin/true'])
+        for raw in ('--base-virtaddr=0x200000000', '--base-virtaddr 0x200000000'):
+            with self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--eal=' + raw, '--base-virtaddr', '0x400000000', '--', '/bin/true'])
+        args = launcher.parse_arguments(base + ['--eal=--no-pci -- --base-virtaddr=0x800000000 --',
+            '--base-virtaddr', '0x400000000', '--', '/bin/true'])
+        self.assertEqual(args.eal_args, ['--no-pci', '--base-virtaddr=0x400000000', '--', '--base-virtaddr=0x800000000', '--'])
+
     def test_file_prefix_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci']
         args = launcher.parse_arguments(base + ['--', '/bin/true'])
