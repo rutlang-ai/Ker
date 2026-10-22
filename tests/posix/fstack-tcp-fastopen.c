@@ -29,11 +29,21 @@ static void transfer(int fd, void *buffer, size_t length, int sending)
         CHECK(count > 0); done += (size_t)count;
     }
 }
+static void set_key(int fd, unsigned char value)
+{
+    unsigned char key[16], actual[16];
+    memset(key, value, sizeof(key));
+    CHECK(setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_KEY, key, sizeof(key)) == 0);
+    socklen_t length = sizeof(actual);
+    CHECK(getsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_KEY, actual, &length) == 0);
+    CHECK(length == sizeof(key) && !memcmp(key, actual, sizeof(key)));
+}
 int main(int argc, char **argv)
 {
-    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking"))));
+    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "cookies") || !strcmp(argv[4], "nonblocking") || !strcmp(argv[4], "rotation"))));
     int nonblocking = argc == 5 && !strcmp(argv[4], "nonblocking");
-    int connections = argc == 5 ? 3 : 2;
+    int rotation = argc == 5 && !strcmp(argv[4], "rotation");
+    int connections = rotation ? 4 : (argc == 5 ? 3 : 2);
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(atoi(argv[3]))};
     CHECK(inet_pton(AF_INET, argv[2], &address.sin_addr) == 1);
     if (!strcmp(argv[1], "server")) {
@@ -41,6 +51,7 @@ int main(int argc, char **argv)
         CHECK(listener >= 0); timeout(listener);
         CHECK(setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) == 0);
         CHECK(setsockopt(listener, IPPROTO_TCP, TCP_FASTOPEN, &queue, sizeof(queue)) == 0);
+        if (rotation) set_key(listener, 0x31);
         int actual = -1; socklen_t length = sizeof(actual);
         CHECK(getsockopt(listener, IPPROTO_TCP, TCP_FASTOPEN, &actual, &length) == 0 && actual == queue);
         CHECK(bind(listener, (void *)&address, sizeof(address)) == 0 && listen(listener, 4) == 0);
@@ -49,6 +60,8 @@ int main(int argc, char **argv)
             int fd = accept4(listener, NULL, NULL, SOCK_CLOEXEC); CHECK(fd >= 0); timeout(fd);
             char data[sizeof(request)]; transfer(fd, data, sizeof(data), 0);
             CHECK(!memcmp(data, request, sizeof(data)));
+            /* Rotate before the echo: the client cannot start phase 1 until it receives this echo. */
+            if (rotation && phase == 0) set_key(listener, 0x72);
             transfer(fd, data, sizeof(data), 1);
             CHECK(shutdown(fd, SHUT_WR) == 0);
             CHECK(recv(fd, data, 1, 0) == 0); CHECK(close(fd) == 0);

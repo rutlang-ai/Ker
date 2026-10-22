@@ -1347,6 +1347,16 @@
         "native-fstack-tcp-fastopen-nonblocking"
       ],
       "adaptation": "Ker-specific original-Linux extension of pinned F-Stack message/name/shutdown bridge scenarios, not an upstream Fast Open test. Private namespaces use tcp_fastopen=3. Host reference and native client/server validate first O_NONBLOCK MSG_FASTOPEN returns EINPROGRESS with no cookie, POLLOUT and SO_ERROR=0 complete connection, and caller resends the entire unsent request. A fresh cached-cookie O_NONBLOCK MSG_FASTOPEN must accept positive bytes. Sockets return to blocking mode after initiation for exact stream/peer/half-close/EOF checks; general nonblocking stream IO is not claimed. Independent AF_PACKET evidence requires cookie request/issue, fresh-port exact cookie reuse plus complete SYN payload, and ordinary empty SYN control. Native opens, DPDK TX/RX and zero outstanding buffers are checked. No upstream or runtime protocol changes; source-case migration counts unchanged. Invalid cookies, rotation, expiry, loss/retransmission and IPv6 remain unqualified."
+    },
+    "native-fstack-tcp-fastopen-key-rotation": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-fastopen-key-rotation"
+      ],
+      "adaptation": "Ker-specific original-Linux Fast Open extension of pinned F-Stack message/name/shutdown bridge scenarios, not an upstream registered key-rotation test or FreeBSD equivalence claim. Uses the existing shared C/Python harness with tcp_fastopen=3 in private namespaces. The listener sets and reads back a 16-byte TCP_FASTOPEN_KEY, then replaces it without a backup key before echoing the first request, ordering rotation before the next client connection. Host reference and native client/server each complete four exact request/echo/peer/half-close/EOF streams: initial cookie request, stale-cookie Fast Open, replacement-cookie Fast Open, ordinary-connect control. Independent AF_PACKET capture requires stale cookie with exact SYN payload, a changed cookie in SYN-ACK acknowledging only SYN, exact rejected payload resent at the same TCP sequence on the established stream, and replacement-cookie reuse on a fresh source port with SYN data fully acknowledged. Native roles require four original-Linux opens, positive DPDK TX/RX and zero outstanding buffers. Linux performs key management, rejection, cache refresh and resend; no runtime/upstream changes or source-case count changes. This covers single-key replacement without backup; backup-key overlap, cache expiry, loss/retransmission, IPv6 and performance remain unqualified."
     }
   }
 }
