@@ -3,6 +3,7 @@
 #include "host-thread.h"
 #include <errno.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <lkl_host.h>
@@ -66,6 +67,47 @@ static void *key_get(struct lkl_tls_key *opaque)
     struct ker_tls_key *key = (struct ker_tls_key *)opaque;
     return pthread_getspecific(key->key);
 }
+/* A failed wait/post cannot be reported by these void callbacks. Preserve
+ * real POSIX semaphore semantics, retry interruptions, and stop on other errors. */
+struct ker_sem { sem_t value; };
+static void semaphore_check(int result)
+{
+    if (result) {
+        perror("ker: host semaphore");
+        abort();
+    }
+}
+static struct lkl_sem *semaphore_alloc(int count)
+{
+    if (count < 0) { errno = EINVAL; return NULL; }
+    struct ker_sem *sem = malloc(sizeof(*sem));
+    if (!sem) return NULL;
+    if (sem_init(&sem->value, 0, (unsigned int)count)) {
+        int error = errno;
+        free(sem);
+        errno = error;
+        return NULL;
+    }
+    return (struct lkl_sem *)sem;
+}
+static void semaphore_free(struct lkl_sem *opaque)
+{
+    struct ker_sem *sem = (struct ker_sem *)opaque;
+    semaphore_check(sem_destroy(&sem->value));
+    free(sem);
+}
+static void semaphore_up(struct lkl_sem *opaque)
+{
+    struct ker_sem *sem = (struct ker_sem *)opaque;
+    semaphore_check(sem_post(&sem->value));
+}
+static void semaphore_down(struct lkl_sem *opaque)
+{
+    struct ker_sem *sem = (struct ker_sem *)opaque;
+    int result;
+    do { result = sem_wait(&sem->value); } while (result && errno == EINTR);
+    semaphore_check(result);
+}
 /* The pinned host mutex allocator logs initialization errors but returns the
  * unusable object, and never destroys its attributes. Own the opaque mutex
  * representation here so every allocation failure has a complete unwind. */
@@ -123,6 +165,10 @@ static void mutex_free(struct lkl_mutex *opaque)
 }
 void ker_native_host_thread_init(struct lkl_host_operations *ops)
 {
+    ops->sem_alloc = semaphore_alloc;
+    ops->sem_free = semaphore_free;
+    ops->sem_up = semaphore_up;
+    ops->sem_down = semaphore_down;
     ops->thread_create = thread_create;
     ops->mutex_alloc = mutex_alloc;
     ops->mutex_free = mutex_free;
