@@ -366,3 +366,7 @@ scenario-adapted（126 adapted、224 blocked、20 partial）。
 宿主 socket、原生 socket 和 fd 预留，来源 `test_ff_kernel_fd_encode_roundtrip`
 按映射表架构适配，固定偏移编码 ABI 不在覆盖范围。清单为 127 adapted、
 223 blocked、20 partial。
+
+TCP_CORK/MSG_MORE 扩展：`native-fstack-tcp-cork` 验证双向暂缓、dup 共享选项、
+解除后的完整字节流与普通写入恢复；宿主参考及原生两种角色均运行。
+这是已有 socket/dup 场景的 Linux 功能扩展，不增加已迁移来源案例数。

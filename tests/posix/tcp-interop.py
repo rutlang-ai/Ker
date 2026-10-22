@@ -527,6 +527,36 @@ def tcp_receive_queue(args, launcher, work, env, log):
             print('native TCP receive queue ' + role + ': ' + json.dumps(stats), flush=True)
 
 
+def tcp_cork(args, launcher, work, env, log):
+    if not args.cork_app:
+        return
+    for index, role in enumerate(['host-reference', 'client', 'server']):
+        port = 27600 + 4 * index
+        native_server = role == 'server'
+        address = '198.18.0.2' if native_server else '198.18.0.1'
+        listen = [str(args.cork_app), 'server', address, str(port)]
+        connect = [str(args.cork_app), 'client', address, str(port)]
+        stats_path = work / ('tcp-cork-' + role + '.json')
+        native = [*launcher, '--stats', str(stats_path), '--']
+        if native_server:
+            listen = native + listen
+        elif role == 'client':
+            connect = native + connect
+        captured = []
+        with server(listen, port, log, env, captured=captured):
+            client(connect, env)
+        if 'PASS:' not in ''.join(captured):
+            raise RuntimeError('TCP cork server did not verify both directions')
+        print(''.join(captured).strip(), flush=True)
+        if role != 'host-reference':
+            stats = json.loads(stats_path.read_text())
+            if (not stats['tx'] or not stats['rx'] or stats['outstanding'] or
+                    stats['native']['passive_opens' if native_server else 'active_opens'] <
+                    5):
+                raise RuntimeError('TCP cork scenario missed native traffic: ' + str(stats))
+            print('native TCP cork ' + role + ': ' + json.dumps(stats), flush=True)
+
+
 def tcp_linger(args, launcher, work, env, log):
     if not args.linger_app:
         return
@@ -1416,6 +1446,7 @@ def inside(args):
                 tcp_listener_restart(args, launcher, work, env, log)
                 tcp_shutdown_write(args, launcher, work, env, log)
                 tcp_receive_queue(args, launcher, work, env, log)
+                tcp_cork(args, launcher, work, env, log)
                 tcp_linger(args, launcher, work, env, log)
                 tcp_urgent(args, launcher, work, env, log)
                 tcp_reuseport(args, launcher, work, env, log)
@@ -1509,6 +1540,7 @@ def main():
     parser.add_argument('--send-timeouts-app', type=Path)
     parser.add_argument('--listener-restart-app', type=Path)
     parser.add_argument('--shutdown-write-app', type=Path)
+    parser.add_argument('--cork-app', type=Path)
     parser.add_argument('--linger-app', type=Path)
     parser.add_argument('--receive-queue-app', type=Path)
     parser.add_argument('--urgent-app', type=Path)

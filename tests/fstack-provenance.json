@@ -1445,6 +1445,17 @@
         "native-fstack-fd-map"
       ],
       "adaptation": "Adapt the pinned descriptor-namespace separation and round-trip scenario to actual Ker fd exports rather than the F-Stack host_fd + FF_KERNEL_FD_BASE helpers. Boot the original pinned Linux kernel and create a real private native TCP socket plus an independent real host UDP loopback socket with an identical internal descriptor number chosen through each namespace fcntl. Export consumes the native fd and reserves a distinct real host O_PATH/CLOEXEC application descriptor; lookup must return the exact native number and socket kind while the host number remains unmanaged. Native SO_TYPE and actual host datagram send/receive prove distinct objects. Close the native export first and require the host socket to continue real traffic; repeat with host first and require native SO_TYPE to remain valid. Each export removal must clear the association, release its real host reservation and close only its native fd. Existing fd-map tests also cover aliases, replacement and out-of-range safety. No dummy descriptors or successful syscall stubs. This is an architectural scenario adaptation, not fixed-offset encode/decode/predicate ABI, exact numeric ranges, or FreeBSD protocol equivalence. No production implementation or upstream source changes."
+    },
+    "native-fstack-tcp-cork": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-cork"
+      ],
+      "adaptation": "Ker-specific Linux TCP_CORK/MSG_MORE extension of already-adapted socket and dup bridge scenarios; not a new upstream source case. Host-reference and native client/server runs use independent host peers over real DPDK net_tap/veth. Two modes in both send directions check queried TCP_CORK/TCP_NODELAY state through aliases, a 17-byte write or two-iovec sendmsg(MSG_MORE), no receive readiness for a 20ms poll observed within 100ms of the send timestamp, then a 31-byte writev plus alias uncork or unflagged send. Exact 48-byte stream payload and subsequent plain-byte recovery are required, followed by half-close EOF. Both processes use the real host CLOCK_MONOTONIC for the guard; samples delayed beyond 100ms are fully drained and retried up to eight times, never counted as deferral passes, to avoid mistaking the legitimate approximately 200ms automatic cork flush for a failure. Exhausted retries fail explicitly. Separate TCP control traffic coordinates observation and release. Native runs require at least five matching original-Linux opens, actual DPDK TX/RX and zero outstanding buffers. No protocol/runtime implementation changes, packet-count coalescing guarantee, send-buffer saturation, automatic-flush deadline qualification or additional migrated-source counts."
     }
   }
 }
