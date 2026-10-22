@@ -53,6 +53,9 @@ def main():
         host_before = [path.read_text() for path in host_paths]
         # The launcher must discard this inherited internal override.
         environment['KER_NATIVE_SYSCTLS'] = 'net.ipv4.ip_default_ttl=99'
+        long_key = 'net.ipv4.' + 'k' * 50 + 'a'
+        long_config = root / 'long-key.ini'
+        long_config.write_text('[sysctl]\n' + long_key + '=1\n')
         cases = [
             ('omitted', ['--config', str(empty)], 0,
              'PASS: five native network sysctls effective', 64),
@@ -61,6 +64,8 @@ def main():
              'PASS: five native network sysctls effective', 66),
             ('unknown', ['--sysctl', 'net.ipv4.ker_no_such_sysctl=1'], 125,
              '/proc/sys/net/ipv4/ker_no_such_sysctl', 65),
+            ('long-name-ini', ['--config', str(long_config)], 125,
+             '/proc/sys/' + long_key.replace('.', '/'), 65),
             ('invalid-value', ['--sysctl', 'net.ipv4.ip_default_ttl=0'], 125,
              '/proc/sys/net/ipv4/ip_default_ttl', 65),
         ]

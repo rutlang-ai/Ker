@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 127 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 128 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 20 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 223 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 222 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -99,7 +99,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 22 | 0 | 12 | 0 | 0 |
-| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 18 | 1 | 6 | 0 | 0 |
+| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 19 | 1 | 5 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
@@ -762,4 +762,9 @@ INI 重复键现已采用最后一项生效，并以重复加载隔离及真实 
 描述符命名空间共存场景 `test_ff_kernel_fd_encode_roundtrip` 现通过真实
 Ker/LKL export/lookup 与宿主 fd 预留验证，转为 scenario-adapted。
 Ker 使用映射表，不使用 F-Stack 固定偏移编码；不声明其 helper ABI 或数值范围等价。
-当前未完成为 223 blocked + 20 partial，共 243 项。
+该描述符批次后未完成为 223 blocked + 20 partial，共 243 项。
+
+INI 长键名来源场景已通过实际 Ker reader、CLI 覆盖和原生启动失败路径适配。
+60 字符键完整保留，128 字符边界可用，129 字符在启动前拒绝；真实 Linux
+未知键路径必须完整显示并正确回收。它不宣称虚构 sysctl 在内核中有效。
+当前未完成为 222 blocked + 20 partial，共 242 项。

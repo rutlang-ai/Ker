@@ -981,3 +981,12 @@ payload 不得超过 600，且至少 28 段、16385 数据字节；不对宿主 
 GSO/GRO 聚合行为作等价要求。Linux TCP open、DPDK TX/RX 与零 outstanding
 均需满足。该测试扩展已有 socket 场景，不增加来源计数，也不宣称 PMTU 变化、
 IPv6、连接后重协商或硬件 offload 资格。上游和生产协议实现保持不变。
+
+
+INI 长键名：`native-fstack-launcher-config` 使用实际 reader 验证两个前 59
+字符相同、末尾不同的 60 字符 sysctl 键完整保留，A-B-A 最终顺序和 CLI 覆盖
+仍使用完整名称。128 字符允许，129 字符在加载库/启动 worker 前返回 2。
+`native-fstack-network-sysctl` 再从 INI 将 60 字符未知键传到原始 Linux，
+要求错误显示完整 /proc/sys 路径、应用未执行、没有 native READY，真实 EAL
+清理成功且无 mbuf 泄漏，宿主 sysctl 保持不变。此处验证解析和显式失败边界，
+不把未知 sysctl 当作可用功能，也不声明 F-Stack 任意 handler ABI 等价。

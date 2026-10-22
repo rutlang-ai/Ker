@@ -374,3 +374,8 @@ TCP_CORK/MSG_MORE 扩展：`native-fstack-tcp-cork` 验证双向暂缓、dup 共
 TCP MSS 扩展：`native-fstack-tcp-mss` 验证连接前 TCP_MAXSEG、监听继承、
 错误后恢复和双向完整字节流；实际抓包检查握手 MSS 与原生发送分段上限。
 来源案例数不变，剩余仍为 223 blocked + 20 partial。
+
+INI 长键名：`native-fstack-launcher-config` 与 `native-fstack-network-sysctl`
+适配 `test_ini_parse_stream_long_key_name` 的完整名称保留，覆盖 60 字符、
+128/129 字符边界、重复/CLI 顺序及真实内核未知键失败后的回收。清单更新为
+128 adapted、222 blocked、20 partial，剩余 242 项。

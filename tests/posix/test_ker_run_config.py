@@ -835,6 +835,34 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(values['port'], 'net_tap0')
         self.assertEqual(values['eal'].split(), ['--no-huge', '--no-pci', '--no-shconf'])
 
+    def test_long_sysctl_keys_preserve_full_names_and_boundaries(self):
+        first = 'net.ipv4.' + 'k' * 50 + 'a'
+        second = 'net.ipv4.' + 'k' * 50 + 'b'
+        self.assertEqual((len(first), len(second)), (60, 60))
+        text = '[sysctl]\n' + first + '=1\n' + second + '=2\n' + first + '=3\n'
+        # Different suffixes after the old 49-character parser buffer boundary
+        # must remain distinct, and the repeated full key moves to the end.
+        self.assertEqual(self.read(text)['sysctls'], [(second, '2'), (first, '3')])
+        boundary = 'net.ipv4.' + 'k' * 119
+        self.assertEqual(len(boundary), 128)
+        self.assertEqual(self.read('[sysctl]\n' + boundary + '=4\n')['sysctls'], [(boundary, '4')])
+        with self.assertRaises(ValueError):
+            self.read('[sysctl]\n' + boundary + 'x=5\n')
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'long.ini'
+            config.write_text(text)
+            base = ['--config', str(config), '--address', '198.18.0.2/24',
+                    '--port', 'net_tap0', '--eal=--no-huge']
+            args = launcher.parse_arguments(base + ['--sysctl', second + '=6', '--', '/bin/true'])
+            self.assertEqual(list(args.sysctls.items()), [(first, '3'), (second, '6')])
+            config.write_text('[sysctl]\n' + boundary + 'x=5\n')
+            rejected = subprocess.run([sys.executable, str(SOURCE), *base,
+                '--library', '/missing-library', '--', '/bin/true'],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn('dotted Linux net.* key', rejected.stderr)
+            self.assertNotIn('Traceback', rejected.stderr)
+
     def test_bom_and_open_file(self):
         self.assertEqual(self.read('\ufeff[dpdk]\nport=net_tap0\n'), {'port': 'net_tap0'})
         with tempfile.TemporaryDirectory() as directory:
