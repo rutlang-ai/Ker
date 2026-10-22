@@ -19,6 +19,42 @@ class ConfigTests(unittest.TestCase):
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'), 'fixture.ini')
 
+    def test_file_prefix_configuration(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci']
+        args = launcher.parse_arguments(base + ['--', '/bin/true'])
+        self.assertIsNone(args.file_prefix)
+        self.assertEqual(args.eal_args, ['--no-pci'])
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'prefix.ini'
+            for value in ('mytest', 'A1.b_c-d', 'x' * 64):
+                config.write_text('[dpdk]\nfile_prefix=' + value + '\n')
+                args = launcher.parse_arguments(base + ['--config', str(config), '--', '/bin/true'])
+                self.assertEqual(args.eal_args, ['--no-pci', '--file-prefix=' + value])
+                args = launcher.parse_arguments(base + ['--config', str(config), '--file-prefix', 'cli', '--', '/bin/true'])
+                self.assertEqual(args.file_prefix, 'cli')
+                self.assertEqual(args.eal_args, ['--no-pci', '--file-prefix=cli'])
+            for value in ('', '.', '..', '../escape', '/absolute', 'a/b', 'a b', 'a%b', 'x' * 65, '中文', '-bad'):
+                config.write_text('[dpdk]\nfile_prefix=' + value + '\n')
+                result = subprocess.run([sys.executable, str(SOURCE), *base, '--config', str(config),
+                    '--library', '/missing-library', '--', '/bin/true'], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                with self.assertRaises(SystemExit):
+                    launcher.parse_arguments(base + ['--file-prefix=' + value, '--', '/bin/true'])
+        for raw in ('--file-prefix raw', '--file-prefix=raw'):
+            args = launcher.parse_arguments(base + ['--eal=' + raw, '--', '/bin/true'])
+            self.assertIsNone(args.file_prefix)
+            with self.assertRaises(SystemExit):
+                launcher.parse_arguments(base + ['--eal=' + raw, '--file-prefix', 'typed', '--', '/bin/true'])
+        suffix = ['--address', '198.18.0.2/24', '--port', 'net_tap0',
+                  '--eal=--no-pci -- --file-prefix=ignored -- --file-prefix=also-ignored']
+        args = launcher.parse_arguments(suffix + ['--file-prefix', 'typed', '--', '/bin/true'])
+        self.assertEqual(args.eal_args, ['--no-pci', '--file-prefix=typed', '--',
+            '--file-prefix=ignored', '--', '--file-prefix=also-ignored'])
+        with self.assertRaises(SystemExit):
+            launcher.parse_arguments(base + ['--eal=--file-prefix=active -- --file-prefix=ignored',
+                '--file-prefix', 'typed', '--', '/bin/true'])
+
     def test_eal_log_level_configuration(self):
         base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci']
         args = launcher.parse_arguments(base + ['--', '/bin/true'])
