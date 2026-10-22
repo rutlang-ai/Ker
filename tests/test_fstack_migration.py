@@ -18,7 +18,7 @@ class CatalogTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / 'tests').mkdir()
-        for name in ('fstack-migration.json', 'fstack-provenance.json', 'CMakeLists.txt'):
+        for name in ('fstack-migration.json', 'fstack-provenance.json', 'fstack-followups.json', 'CMakeLists.txt'):
             shutil.copyfile(ROOT / 'tests' / name, self.root / 'tests' / name)
         shutil.copyfile(ROOT / 'CMakeLists.txt', self.root / 'CMakeLists.txt')
         shutil.copytree(ROOT / 'cmake', self.root / 'cmake')
@@ -26,6 +26,8 @@ class CatalogTests(unittest.TestCase):
         self.path = self.root / 'tests/fstack-migration.json'
         self.provenance_path = self.root / 'tests/fstack-provenance.json'
         self.manifest = json.loads(self.path.read_text())
+        self.followup_path = self.root / 'tests/fstack-followups.json'
+        self.followups = json.loads(self.followup_path.read_text())
 
     def save(self):
         self.path.write_text(json.dumps(self.manifest))
@@ -110,11 +112,44 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Snapshot file mismatch'):
             audit.validate(self.root)
 
+    def test_missing_followup_case_is_rejected(self):
+        self.followups['groups'][0]['cases'].pop()
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Missing follow-up cases'):
+            audit.validate(self.root)
+
+    def test_duplicate_followup_case_is_rejected(self):
+        self.followups['groups'][1]['cases'].append(self.followups['groups'][0]['cases'][0])
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Duplicate follow-up case'):
+            audit.validate(self.root)
+
+    def test_pull_request_is_not_a_tracking_issue(self):
+        self.followups['groups'][0]['issue'] = 'https://github.com/rutlang-ai/Ker/pull/217'
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Invalid follow-up issue URL'):
+            audit.validate(self.root)
+
+    def test_adapted_case_cannot_be_used_to_fill_followup_gap(self):
+        adapted = next(item['id'] for item in self.manifest['cases']
+                       if item['status'] == 'scenario-adapted')
+        self.followups['groups'][0]['cases'][0] = adapted
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Unexpected follow-up case'):
+            audit.validate(self.root)
+
+    def test_empty_followup_acceptance_is_rejected(self):
+        self.followups['groups'][0]['acceptance'] = []
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Missing follow-up acceptance criteria'):
+            audit.validate(self.root)
+
     def test_completion_gate_fails_while_cases_are_incomplete(self):
         result = subprocess.run([sys.executable, str(ROOT / 'tests/fstack_migration.py'),
                                  '--root', str(self.root), '--require-complete'],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
+        self.assertIn('issue tracking is not migration completion', result.stdout)
         partial_count = sum(item['status'] == 'partial' for item in self.manifest['cases'])
         self.assertIn(f'blocked + {partial_count} partial cases', result.stderr)
 

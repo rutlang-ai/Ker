@@ -46,6 +46,48 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 默认、20 微秒、零等待和上限配置下的实际超时及 TCP/UDP/控制关闭。该源用例的
 其他缺口继续保留，计数不变。
 
+## 剩余案例的 issue 追踪
+
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 305 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 242 项是
+20 partial + 222 blocked，另有 8 项架构专用和 55 项上游工具链自测。
+**建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
+
+后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
+需要适配器的继续移植；合同差异必须逐项核对，不能为了减少计数加入无实际调用方的
+API，或改写原版 Linux 协议实现。不适合直接移植的案例保留精确源 ID、理由、issue
+和可接受的替代/排除边界；不把原始 helper 的成功、软件 checksum、普通 FIFO 或
+额外 socket 功能测试冒充硬件 offload、跨代 reload 或原始 ABI 合同通过。
+
+| 工作组 | 源案例数 | 处置类别 | issue |
+|---|---:|---|---|
+| Design generation-aware reload, IPC and drain ownership | 81 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Define a supported host exception bridge and KNI policy adaptation | 38 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
+| Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
+| Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
+| Resolve device/run lifecycle and upstream fault-injection contracts | 7 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
+| Adapt typed vdev, bond and multi-port configuration | 10 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
+| Define a Linux-native zero-copy send and ownership contract | 13 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
+| Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
+| Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
+| Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 13 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
+| Resolve FreeBSD thread context and join-result assertions | 3 | 合同差异待决策 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
+| Record nonportable callout and internal kqueue filter assertions | 8 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
+| Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
+| Replace the upstream manual MTU checklist with complete native acceptance | 1 | 需要适配器实现 | [#234](https://github.com/rutlang-ai/Ker/issues/234) |
+
+默认审计还检查：每个非 `scenario-adapted` 案例都恰好出现一次、issue 必须是
+Ker issue 链接、固定版本一致、分组有理由及验收条件。它不联网判定 issue 关闭
+与否；issue 的存在和状态需通过 GitHub 核对，关闭 issue 也不能自动改写覆盖状态。
+新增可运行适配后，应同时更新源案例映射、provenance、issue 证据和后续清单。
+
+优先推进真实运行缺口：先核对 MTU 手工清单的全部五步与现有 jumbo/PMTU 测试，
+再推进适配器生命周期、vdev/bond、多队列/RSS、异常桥接和跨代 reload。正向硬件
+checksum/TSO 验收保留对实际支持设备与独立抓包环境的要求。
+
 ## 自动检查
 
 ```sh
