@@ -107,7 +107,7 @@ def ephemeral_ports(text):
     return first, last
 
 
-CONFIG_DEFAULTS = dict(tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -115,7 +115,7 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -198,6 +198,10 @@ def parse_arguments(argv=None):
     parser.add_argument('--gateway', type=ipaddress.IPv4Address)
     parser.add_argument('--numa', action=argparse.BooleanOptionalAction,
         help='use worker lcore NUMA socket for pool/queues (default); --no-numa uses socket 0')
+    parser.add_argument('--memory-mb', type=int, help='initial EAL memory in MiB, 1..2147483647; actual allocation remains subject to host capacity')
+    huge_policy = parser.add_mutually_exclusive_group()
+    huge_policy.add_argument('--no-huge', action='store_true', help='use regular pages for DPDK EAL memory')
+    huge_policy.add_argument('--hugepages', dest='no_huge', action='store_false', help='require EAL hugepage mode; needs configured host hugepages')
     parser.add_argument('--memory-channels', type=int,
         help='DPDK memory channels per socket, 1..2147483647; omitted preserves EAL policy; conflicts with EAL -n/--memory-channels')
     parser.add_argument('--lcore-mask', help='nonzero hexadecimal DPDK lcore mask; conflicts with EAL -c/-l/--lcores')
@@ -327,17 +331,38 @@ def parse_arguments(argv=None):
         args.eal_args = shlex.split(args.eal)
     except ValueError as error:
         parser.error(f'--eal: {error}')
+    try:
+        separator = args.eal_args.index('--')
+    except ValueError:
+        eal_prefix, eal_remainder = list(args.eal_args), []
+    else:
+        eal_prefix, eal_remainder = args.eal_args[:separator], args.eal_args[separator:]
+    raw_eal_options = list(eal_prefix)
     if not 0 <= args.tx_delay_us <= 100:
         parser.error('--tx-delay-us must be in 0..100')
+    if args.memory_mb is not None:
+        if not 1 <= args.memory_mb <= 2147483647:
+            parser.error('--memory-mb must be in 1..2147483647')
+        if any(token.startswith('-m') or token.split('=', 1)[0] in
+                ('--memory-size', '--numa-mem', '--socket-mem') for token in raw_eal_options):
+            parser.error('--memory-mb conflicts with EAL -m/--memory-size/--numa-mem/--socket-mem')
+        eal_prefix += ['-m', str(args.memory_mb)]
+    if args.no_huge is not None:
+        if any(token.split('=', 1)[0] == '--no-huge' for token in raw_eal_options):
+            parser.error('typed hugepage policy conflicts with EAL --no-huge')
+        if args.no_huge:
+            if any(token.split('=', 1)[0] == '--in-memory' for token in raw_eal_options):
+                parser.error('--no-huge conflicts with EAL --in-memory')
+            eal_prefix.append('--no-huge')
     if args.memory_channels is not None:
         if not 1 <= args.memory_channels <= 2147483647:
             parser.error('--memory-channels must be in 1..2147483647')
         if any(token == '--memory-channels' or token.startswith(('--memory-channels=', '-n'))
-                for token in args.eal_args):
+                for token in raw_eal_options):
             parser.error('--memory-channels conflicts with EAL -n or --memory-channels')
-        if any(token.split('=', 1)[0] in ('--no-shconf', '--in-memory') for token in args.eal_args):
+        if any(token.split('=', 1)[0] in ('--no-shconf', '--in-memory') for token in raw_eal_options):
             parser.error('--memory-channels requires EAL shared configuration; --no-shconf/--in-memory skip channel initialization')
-        args.eal_args += ['-n', str(args.memory_channels)]
+        eal_prefix += ['-n', str(args.memory_channels)]
     if args.lcore_mask is not None:
         mask = args.lcore_mask.strip()
         if not re.fullmatch(r'(?:0[xX])?[0-9a-fA-F]+', mask) or int(mask, 16) == 0:
@@ -345,10 +370,11 @@ def parse_arguments(argv=None):
         # Keep one source of EAL CPU selection. Do not silently override or
         # remove caller-provided CPU mapping, especially --lcores remapping.
         if any(token in ('--lcores', '-c', '-l') or token.startswith(('--lcores=', '-c', '-l'))
-                for token in args.eal_args):
+                for token in raw_eal_options):
             parser.error('--lcore-mask conflicts with EAL -c, -l or --lcores')
         args.lcore_mask = format(int(mask, 16), 'x')
-        args.eal_args += ['-c', args.lcore_mask]
+        eal_prefix += ['-c', args.lcore_mask]
+    args.eal_args = eal_prefix + eal_remainder
     return args
 
 

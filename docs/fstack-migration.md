@@ -580,3 +580,10 @@ FreeBSD 到 DPDK 的完整阶段/ABI，迁移计数不变。
 场景证明按序交付与零mbuf。受控部分接受测试与真实PMD背压证据明确区分。
 不声称 F-Stack 周期TSC/多进程 ABI 或微秒调度/性能等价；完整配置布局仍缺失，源案例
 保持partial，迁移计数不变，上游源码未修改。
+
+
+`native-fstack-eal-memory` 补齐 `valid_dpdk_full.ini` 的 memory/no_huge 相关运行功能：
+typed INI/CLI 转为原始EAL，回读真实内存字节数与页模式，五次实例验证32/64/128MiB和
+独立宿主TCP/UDP，并验证 hugepages 不可用时明确失败。它不是该注册源测试的迁移通过：
+`test_ff_load_config_dpdk_full` 主要断言 multi-port/bond/RSS，仍为blocked，ker_tests为空；
+相关功能证据单独记录在 provenance，不改变清单计数，也不声称hugepage成功或硬件资格。

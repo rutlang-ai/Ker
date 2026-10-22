@@ -1283,7 +1283,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "The source case asserts multi-port, bond and RSS configuration fields that remain unsupported. Related memory/no_huge fixture settings now have typed original-EAL translation and real native memory/page-policy tests, but these do not satisfy the registered source assertions, so this case remains blocked without pass bindings.",
       "ker_tests": []
     },
     {
