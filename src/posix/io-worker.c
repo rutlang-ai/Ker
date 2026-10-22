@@ -350,9 +350,17 @@ int main(int argc, char **argv)
         fprintf(stderr, "ker: cannot inspect EAL memory segments\n"); goto cleanup;
     }
     int link_status = rte_eth_link_get_nowait(port, &link);
-    printf("KER_IO_READY {\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    struct rte_eth_dev_info device_info = {0};
+    struct rte_eth_rxq_info receive_info = {0};
+    int device_status = rte_eth_dev_info_get(port, &device_info);
+    if (device_status) memset(&device_info, 0, sizeof(device_info));
+    int receive_status = rte_eth_rx_queue_info_get(port, 0, &receive_info);
+    if (receive_status) receive_info.nb_desc = 0;
+    printf("KER_IO_READY {\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
+        device_info.driver_name ? device_info.driver_name : "unknown",
+        device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
         rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, eal_log_level, rte_log_get_global_level(), (unsigned long long)memory_base, (unsigned long long)rte_eal_get_physmem_size(),

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Real virtio-user -> independent vhost/TAP -> host-kernel ICMP acceptance."""
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location('icmp_mtu', Path(__file__).with_name('icmp-mtu.py'))
+mtu = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mtu)
+require, ready, stop = mtu.require, mtu.ready, mtu.stop
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root'):
+        parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--inside', action='store_true')
+    args = parser.parse_args()
+    modules = []
+    for name in ('tap', 'virtio', 'vhost'):
+        found = list(args.pmd_root.glob('dpdk/pmds-*/librte_net_' + name + '.so'))
+        if not found:
+            print('SKIP: build/install the pinned DPDK net_' + name + ' PMD', flush=True)
+            return 77
+        modules.append(str(found[0]))
+    environment = dict(os.environ)
+    environment['LD_PRELOAD'] = ':'.join(modules)
+    if not args.inside:
+        command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
+        for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root'):
+            command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        return subprocess.run(command, env=environment).returncode
+    for command in (
+        ['ip', 'link', 'set', 'lo', 'up'],
+        ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
+        ['ip', 'addr', 'add', '198.18.0.1/24', 'dev', 'kerhost'],
+        ['ip', '-6', 'addr', 'add', '2001:db8:1::1/64', 'dev', 'kerhost', 'nodad'],
+        ['ip', 'link', 'set', 'kerhost', 'up'], ['ip', 'link', 'set', 'kerlink', 'up']):
+        subprocess.run(command, check=True)
+    cpu = min(os.sched_getaffinity(0))
+    with tempfile.TemporaryDirectory(prefix='ker-vdev-') as directory:
+        root = Path(directory)
+        backend_path = root / 'vhost.sock'
+        backend = [str(args.bridge), f'--lcores=0@{cpu}', '--no-huge', '--no-pci', '--no-shconf',
+            '--no-telemetry', '--iova-mode=va', '-m', '64',
+            f'--vdev=net_vhost0,iface={backend_path},queues=2',
+            '--vdev=net_tap0,iface=kerbackend,remote=kerlink']
+        with (root / 'bridge.log').open('w+') as backend_log:
+            bridge = subprocess.Popen(backend, stdout=subprocess.PIPE, stderr=backend_log, env=environment, text=True)
+            try:
+                ready(bridge)
+                require(backend_path.is_socket(), 'real vhost socket not created')
+                # The pinned PMD rejects the original fixture's iface+socket
+                # combination. Preserve that error; do not silently drop iface.
+                rejected = root / 'unsupported-iface.ini'
+                rejected.write_text('[network]\naddress=198.18.0.2/24\n[dpdk]\nnb_vdev=1\n'
+                    'port=net_virtio_user0\n'
+                    f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64\n'
+                    f'[vdev0]\niface=eth0\npath={backend_path}\nqueues=2\nqueue_size=512\nmac=00:11:22:33:44:55\ncq=1\n')
+                rejected_stats = root / 'unsupported-iface.json'
+                result = subprocess.run([sys.executable, str(args.launcher), '--config', str(rejected),
+                    '--library', str(args.library), '--io-worker', str(args.worker), '--stats', str(rejected_stats),
+                    '--', '/bin/true'], capture_output=True, text=True, env=environment, timeout=20)
+                require(result.returncode == 125 and 'arg iface applies only to vhost-kernel backend' in result.stderr,
+                        'unsupported iface/socket tuple was silently accepted: ' + result.stderr)
+                require(json.loads(rejected_stats.read_text())['outstanding'] == 0, 'rejected vdev leaked buffers')
+                print('PASS: unsupported source iface/socket tuple fails explicitly and cleans up', flush=True)
+                for repeated in (False, True):
+                    name = 'repeat' if repeated else 'socket'
+                    config, stats, capture = root / (name + '.ini'), root / (name + '.json'), root / (name + '-pcap')
+                    capture.mkdir()
+                    # Supported vhost-user subset; iface is kernel-backend-only in pinned DPDK.
+                    text = '[dpdk]\nnb_vdev=1\nport=net_virtio_user0\n'
+                    text += f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64\n'
+                    text += '[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\n'
+                    if repeated:
+                        text += '[vdev0]\npath=/missing-backend\nqueues=bad\nqueue_size=3\nmac=invalid\ncq=9\n'
+                    text += f'[vdev0]\npath={backend_path}\nqueues=2\nqueue_size=512\nmac=00:11:22:33:44:55\ncq=1\n'
+                    config.write_text(text)
+                    subprocess.run(['ip', 'neigh', 'flush', 'dev', 'kerhost'], check=True)
+                    subprocess.run(['ip', '-6', 'neigh', 'flush', 'dev', 'kerhost'], check=True)
+                    with (root / (name + '.log')).open('w+') as log:
+                        process = subprocess.Popen([sys.executable, str(args.launcher), '--config', str(config),
+                            '--library', str(args.library), '--io-worker', str(args.worker), '--stats', str(stats),
+                            '--pcap-dir', str(capture), '--', str(args.app), 'native', '1500',
+                            '198.18.0.1', '2001:db8:1::1'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=log, env=environment, text=True)
+                        try:
+                            ready(process)
+                            peer = subprocess.run([str(args.app), 'peer', '1500', '198.18.0.2', '2001:db8:1::2'],
+                                capture_output=True, text=True, timeout=20)
+                            require(peer.returncode == 0 and peer.stdout.count('PASS:') == 2, peer.stdout + peer.stderr)
+                            output, _ = process.communicate('G', timeout=20)
+                            require(process.returncode == 0 and output.count('PASS:') == 2, 'native ICMP failed: ' + output)
+                            record = json.loads(stats.read_text())
+                            info = record['io']
+                            require(info['driver'] == 'net_virtio_user' and info['port_count'] == 1,
+                                    'typed vdev did not select the original virtio-user PMD: ' + str(info))
+                            require(info['mac'] == '00:11:22:33:44:55' and info['max_rx_queues'] == 2
+                                    and info['max_tx_queues'] == 2 and info['rx_descriptors'] == 512,
+                                    'typed MAC/queue capacity did not reach actual PMD: ' + str(info))
+                            require(record['tx'] > 0 and record['rx'] > 0 and record['outstanding'] == 0,
+                                    'missing actual traffic or leaked virtio buffers')
+                            mtu.wire(capture, 1500)
+                            print('PASS: ' + name + ' typed virtio-user, real vhost/TAP IPv4/IPv6 and zero leaks', flush=True)
+                        except Exception:
+                            log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
+                            raise
+                        finally:
+                            stop(process)
+                bridge.terminate()
+                output, _ = bridge.communicate(timeout=10)
+                require(bridge.returncode == 0, 'vhost/TAP backend failed')
+                lines = [line.removeprefix('BRIDGE ') for line in output.splitlines() if line.startswith('BRIDGE ')]
+                require(len(lines) == 1, 'missing backend ownership evidence: ' + output)
+                record = json.loads(lines[0])
+                require(record['to_host'] > 0 and record['to_native'] > 0 and record['outstanding'] == 0,
+                        'vhost/TAP did not bridge both ways or leaked mbufs')
+                require(not backend_path.exists(), 'vhost socket leaked after backend close')
+            except Exception:
+                backend_log.flush(); backend_log.seek(0); print(backend_log.read(), file=sys.stderr)
+                raise
+            finally:
+                stop(bridge)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

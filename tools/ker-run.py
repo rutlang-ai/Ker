@@ -117,7 +117,7 @@ def base_virtaddr(text):
     return value
 
 
-CONFIG_DEFAULTS = dict(base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -139,13 +139,71 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
                 'max_bytes': ('pcap_max_bytes', int), 'nsec': ('pcap_nsec', bool)},
     'runtime': {'shutdown_timeout_ms': ('shutdown_timeout_ms', int), 'stats': ('stats', Path)},
 }
+
+
+def virtual_devices(ini, directory):
+    """Map F-Stack's indexed virtio-user sections to original DPDK options."""
+    count = ini.getint('dpdk', 'nb_vdev', fallback=0)
+    if not 0 <= count <= 16:
+        raise ValueError('[dpdk] nb_vdev must be in 0..16')
+    sections = [name for name in ini.sections() if name.startswith('vdev')]
+    if sections and not count:
+        raise ValueError('vdev sections require [dpdk] nb_vdev first')
+    if set(sections) != {f'vdev{i}' for i in range(count)}:
+        raise ValueError('vdev sections must exactly match indices 0..nb_vdev-1')
+    devices = []
+    allowed = {'iface', 'path', 'queues', 'queue_size', 'mac', 'cq'}
+    for index in range(count):
+        section = 'vdev' + str(index)
+        entries = dict(ini.items(section, raw=True))
+        if set(entries) - allowed or not entries.get('path'):
+            raise ValueError(f'[{section}] requires path and only supports iface/path/queues/queue_size/mac/cq')
+        device = {'name': 'net_virtio_user' + str(index)}
+        for key, default in (('queues', 1), ('queue_size', 256), ('cq', 0)):
+            device[key] = int(entries.get(key, default))
+        if not 1 <= device['queues'] <= 128 or device['cq'] not in (0, 1):
+            raise ValueError(f'[{section}] queues must be in 1..128 and cq must be 0 or 1')
+        size = device['queue_size']
+        if not 64 <= size <= 32768 or size & (size - 1):
+            raise ValueError(f'[{section}] queue_size must be a power of two in 64..32768')
+        if device['queues'] > 1 and not device['cq']:
+            raise ValueError(f'[{section}] multiple queue pairs require cq=1')
+        for key in ('iface', 'path', 'mac'):
+            if key not in entries:
+                continue
+            value = entries[key]
+            if not value or any(character in value for character in ',\x00\r\n'):
+                raise ValueError(f'[{section}] invalid {key}')
+            if key == 'iface' and not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', value):
+                raise ValueError(f'[{section}] iface must be a Linux interface name of at most 15 characters')
+            if key == 'mac':
+                if not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', value):
+                    raise ValueError(f'[{section}] invalid MAC address')
+                octets = bytes.fromhex(value.replace(':', ''))
+                if octets[0] & 1 or not any(octets):
+                    raise ValueError(f'[{section}] MAC must be nonzero unicast')
+                value = value.lower()
+            if key == 'path':
+                path = Path(value)
+                value = str(path if path.is_absolute() else directory / path)
+                if len(os.fsencode(value)) >= 4096:
+                    raise ValueError(f'[{section}] path exceeds PATH_MAX')
+            device[key] = value
+        devices.append(device)
+    return tuple(devices)
+
+
+def virtual_device_argument(device):
+    return '--vdev=' + device['name'] + ''.join(
+        ',' + key + '=' + str(device[key]) for key in
+        ('iface', 'path', 'queues', 'queue_size', 'mac', 'cq') if key in device)
 
 
 def read_configuration(stream, directory, source='<stream>'):
@@ -157,8 +215,11 @@ def read_configuration(stream, directory, source='<stream>'):
     ini.read_string(stream.read().removeprefix('\ufeff'), source=str(source))
     if ini.defaults():
         raise ValueError('DEFAULT inheritance is unsupported')
-    values = {}
+    devices = virtual_devices(ini, directory)
+    values = {'vdevs': devices} if devices or ini.has_option('dpdk', 'nb_vdev') else {}
     for section in ini.sections():
+        if section.startswith('vdev'):
+            continue
         if section.startswith('vlan.'):
             if 'addresses' not in ini[section] or set(ini[section]) - {'addresses', 'gateway', 'gateway6'}:
                 raise ValueError('VLAN section requires addresses and optional gateway/gateway6')
@@ -436,6 +497,12 @@ def parse_arguments(argv=None):
             parser.error('--lcore-mask conflicts with EAL -c, -l or --lcores')
         args.lcore_mask = format(int(mask, 16), 'x')
         eal_prefix += ['-c', args.lcore_mask]
+    if args.vdevs:
+        if any(token == '--vdev' or token.startswith('--vdev=') for token in raw_eal_options):
+            parser.error('typed [vdevN] configuration conflicts with EAL --vdev')
+        if args.port not in {device['name'] for device in args.vdevs}:
+            parser.error('--port must select a configured typed net_virtio_userN device')
+        eal_prefix += [virtual_device_argument(device) for device in args.vdevs]
     args.eal_args = eal_prefix + eal_remainder
     return args
 

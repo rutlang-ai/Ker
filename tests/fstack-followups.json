@@ -286,23 +286,26 @@
       "id": "dpdk-devices",
       "title": "Adapt typed vdev, bond and multi-port configuration",
       "disposition": "adaptation-needed",
-      "reason": "Ker accepts original EAL arguments and selects one ethdev, but does not expose the complete F-Stack typed vdev/bond/multi-port structures, queue/completion settings or their allocation-failure boundaries.",
+      "reason": "Typed virtio-user sections now map iface/path/queues/queue_size/MAC/cq into the original DPDK PMD. Independent vhost/TAP traffic qualifies the socket-backend subset and actual MAC/two-pair capacity/512-descriptor settings. The source iface+socket tuple is rejected by pinned DPDK (iface is kernel-backend-only); full vdev remains partial. Bond/multi-port structures, active multi-queue use and allocation-failure contracts remain incomplete.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
         "tests/upstream/fstack/tests/unit/fixtures/valid_vdev.ini",
-        "tests/upstream/fstack/tests/unit/fixtures/valid_bond.ini"
+        "tests/upstream/fstack/tests/unit/fixtures/valid_bond.ini",
+        "tests/posix/test_typed_vdev.py",
+        "tests/posix/typed-vdev.py",
+        "tests/posix/vhost-bridge.c"
       ],
       "acceptance": [
         "Specify useful typed configuration mappings to real supported EAL/PMD options while preserving strict validation.",
         "Test repeated sections/options, missing count/configuration, invalid section/index and allocation failures before runtime side effects.",
-        "Qualify actual vdev/bond/multi-port behavior and cleanup on a capable backend; configuration parsing alone is not a device pass."
+        "Qualify actual vdev/bond/multi-port behavior and cleanup on a capable backend; configuration parsing alone is not a device pass.",
+        "Resolve the pinned source iface+Unix-socket mismatch explicitly. Qualify a supported vhost-kernel iface path on an accessible backend; do not drop iface or call socket-backend traffic a full source fixture pass."
       ],
       "cases": [
         "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
         "tests/unit/test_ff_config.c::test_bond_cfg_handler_no_nb_bond",
         "tests/unit/test_ff_config.c::test_bond_cfg_handler_bad_section",
-        "tests/unit/test_ff_config.c::test_vdev_cfg_handler_no_nb_vdev_returns_zero",
         "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
         "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
         "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",

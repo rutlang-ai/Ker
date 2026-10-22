@@ -1598,6 +1598,29 @@
         "native-fstack-live-mtu"
       ],
       "adaptation": "Executes manual step4 through the Ker primary native-interface SIOCSIFMTU adapter and a private SOCK_SEQPACKET control channel to the same DPDK worker. Both large/scatter start1500, change9000 and return1500 without restarting the application or worker. Linux and PMD MTU readbacks must agree; the independent harness also queries the actual host TAP interface MTU at every step. IPv4/IPv6 raw ICMP in both directions proves payloads0,1 and maximum unfragmented1472/1452 or8972/8952; one-byte oversize DF sends must fail EMSGSIZE. Phase-tagged full TX/RX PCAP validates all request/reply payloads and checksums and1514/9014-byte frames. Worker final MTU1500, two successful changes, TX/RX, actual scatter chains and zero outstanding mbufs are required. A1500 deployment ceiling rejects1501 without changing either side. Private fault-injection fixture rejects a9000 PMD set before or after real device mutation; Linux and actual TAP must return1500, followed by complete successful traffic and growth/shrink recovery. Another injected rollback failure must terminate the backend, preserve no false success and free all mbufs. Worker stops the ethdev and rebuilds RX capacity on MTU changes because TAP scatter segments are fixed at queue setup; successful rollback restores the prior configuration. Traffic may be lost during link reconfiguration; no atomic concurrent packet guarantee, physical-NIC coverage, native rtnetlink MTU API or F-Stack interface ABI equivalence is claimed. Static steps1/2/3/5 are covered separately by native-fstack-icmp-mtu. Original Linux and DPDK sources are unchanged."
+    },
+    "native-fstack-typed-vdev-config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_vdev_cfg_handler_no_nb_vdev_returns_zero",
+        "test_ff_load_config_vdev_full",
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+      ],
+      "ker_ctests": [
+        "native-fstack-typed-vdev-config"
+      ],
+      "adaptation": "Actual Ker read_configuration/parse_arguments validates indexed vdev0..N-1 with explicit nb_vdev0..16 and maps all six pinned source fields to original net_virtio_userN EAL arguments. The exact pinned invalid_vdev_no_nb_vdev.ini must fail with status2 before resolving a deliberately missing library. Exact valid_vdev.ini fields are checked against generated EAL tokens; the vdev section from valid_bond_vdev_repeat.ini must retain net_pcap_b,/tmp/b and final MAC. Defaults mirror pinned PMD queues1/queue_size256/cq0; relative paths resolve against INI directory. Reject count/index/section/key errors, empty or injected options, non-unicast MAC, queue bounds and non-power-of-two rings; typed vdevs cannot coexist with raw EAL --vdev, and the selected port must match a configured typed device. Repeated sections/options use final values and repeated reads own independent storage. EAL application-separator arguments remain after the typed device. This completes the missing-count source rejection scenario, not the complete full-vdev or combined bond/vdev contracts. The source iface+socket tuple is explicitly unsupported by the pinned PMD, and C allocation-failure/strdup/valgrind ABI evidence is not claimed."
+    },
+    "native-fstack-typed-vdev": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_vdev_full",
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+      ],
+      "ker_ctests": [
+        "native-fstack-typed-vdev"
+      ],
+      "adaptation": "Independent original DPDK net_vhost backend and TAP PMD bridge Ethernet to a separate host Linux kernel; Ker worker uses original net_virtio_user from typed INI. Normal and repeated-final-value configurations require actual net_virtio_user driver, exactly one frontend ethdev, configured MAC00:11:22:33:44:55, advertised RX/TX capacity2 and actual RX virtqueue512 descriptors. The worker still activates one RX/TX pair; no active multi-queue/RSS claim. Independent host and native original Linux both originate IPv4/IPv6 raw ICMP with exact0/1/maximum1472/1452-byte payloads and DF EMSGSIZE boundary. Native full TX/RX PCAP checks requests/replies, payload/checksums and complete1514-byte frames. Worker and independent bridge require real bidirectional traffic and zero outstanding buffers; backend socket must disappear on close. A separate actual PMD run must reject the original iface+Unix-socket tuple with the pinned driver diagnostic, status125 and zero leaked buffers; iface is never dropped to obtain a pass. Supported socket configurations omit iface because it is vhost-kernel-only. Full source fixture and combined bond/vdev cases stay partial, with issue224 tracking kernel iface, bond and allocation contracts. Missing installed virtio/vhost/TAP PMDs produces an explicit CTest skip77; qualification evidence used a new build of the exact pinned DPDK with these PMDs enabled. No Linux/DPDK sources or Ker protocol state machines are modified."
     }
   }
 }

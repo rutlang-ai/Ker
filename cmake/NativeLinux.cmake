@@ -839,4 +839,17 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic
             --failure-library "$<TARGET_FILE:ker-mtu-failure>")
     set_tests_properties(native-fstack-live-mtu PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_executable(ker-vhost-bridge-test tests/posix/vhost-bridge.c)
+    target_compile_options(ker-vhost-bridge-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-vhost-bridge-test PRIVATE PkgConfig::DPDK)
+    list(GET DPDK_LIBRARY_DIRS 0 ker_vdev_library_root)
+    add_test(NAME native-fstack-typed-vdev
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-vdev.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+            --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}")
+    set_tests_properties(native-fstack-typed-vdev PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-typed-vdev-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_vdev.py")
+    set_tests_properties(native-fstack-typed-vdev-config PROPERTIES TIMEOUT 30 LABELS "fstack")
 endif()
