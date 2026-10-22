@@ -384,3 +384,8 @@ INI 长键名：`native-fstack-launcher-config` 与 `native-fstack-network-sysct
 TCP keepalive 扩展：`native-fstack-tcp-keepalive` 检查选项共享与监听继承、
 无效参数恢复，并通过原生发送抓包验证空闲探测及后续收发。它扩展已有 socket
 迁移场景，不增加源案例迁移数；当前仍有 222 个 blocked、20 个 partial。
+
+
+SO_PEEK_OFF 扩展：`native-fstack-tcp-peek-offset` 验证偏移预览、dup 共享游标、
+消费后的回退、重置和完整字节流恢复。这是已有 socket 场景的 Linux 扩展，
+未新增源案例迁移数；仍有 222 个 blocked、20 个 partial。

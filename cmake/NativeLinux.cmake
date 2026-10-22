@@ -712,6 +712,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-urgent COMMAND ${ker_native_test_command}
         --urgent-app "$<TARGET_FILE:ker-posix-fstack-tcp-urgent-test>")
     set_tests_properties(native-fstack-tcp-urgent PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-peek-offset-test tests/posix/fstack-tcp-peek-offset.c)
+    target_compile_options(ker-posix-fstack-tcp-peek-offset-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-peek-offset COMMAND ${ker_native_test_command}
+        --peek-offset-app "$<TARGET_FILE:ker-posix-fstack-tcp-peek-offset-test>")
+    set_tests_properties(native-fstack-tcp-peek-offset PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-tcp-keepalive-test tests/posix/fstack-tcp-keepalive.c)
     target_compile_options(ker-posix-fstack-tcp-keepalive-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-keepalive COMMAND ${ker_native_test_command}

@@ -1489,6 +1489,17 @@
         "native-fstack-tcp-keepalive"
       ],
       "adaptation": "Ker-specific original-Linux TCP keepalive extension of already-adapted socket/dup scenarios, not additional upstream source cases. Host reference and native client/server communicate with independent host peers over real DPDK net_tap/veth. Configure SO_KEEPALIVE and TCP_KEEPIDLE=1, TCP_KEEPINTVL=1, TCP_KEEPCNT=3 before connect/listen; check accepted inheritance and dup-shared state. Reject zero, negative and INT_MAX TCP tuning values with EINVAL while preserving the prior setting. Exchange initial bytes, hold the connection idle during a four-second client poll that must not report application readability, then require exact resumed bytes, alias disable, half-close EOF and cleanup. Parse full native egress PCAP, validate IPv4/TCP lengths and reject tested fragmented/truncated frames, require at least one ACK-only zero-payload packet whose sequence is one below the preceding native data end. Require actual original-Linux opens, DPDK TX/RX and zero outstanding buffers. This qualifies probes on a responsive idle peer and subsequent stream recovery, not probe-loss expiry, exact timer deadlines, probe count, IPv6 or hardware offloads. No production/runtime/protocol/upstream source changes; source-case counts remain unchanged."
+    },
+    "native-fstack-tcp-peek-offset": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_host_msg_name_shutdown_bridges",
+        "test_ff_host_dup"
+      ],
+      "ker_ctests": [
+        "native-fstack-tcp-peek-offset"
+      ],
+      "adaptation": "Ker-specific original-Linux SO_PEEK_OFF extension of already-adapted socket/dup bridge scenarios; not an additional pinned source case. The same executable runs as host reference and native client/server against independent host peers over real DPDK net_tap/veth. Each direction queues 16KiB+37 deterministic bytes followed by FIN, coordinated over a separate TCP control connection, and requires FIONREAD to report the complete queue before inspection. Default -1 yields identical repeated MSG_PEEK data. Set offset17 through dup, require recvmsg with 31/4096-byte iovecs to return exact bytes beginning at17 and advance the shared cursor to4144 without consuming the queue. A normal257-byte read must return bytes0..256 and reduce the cursor to3887; the next513-byte peek starts at original offset4144 and advances the cursor to4400. A one-byte option length must fail EINVAL without changing the cursor. Reset0 previews the new queue head; reset-1 restores repeated nonadvancing peeks; reset0 and readv consumption must clamp the shared cursor to0 while recovering every remaining byte. Require repeated EOF, zero FIONREAD, alias cleanup, actual original-Linux opens, DPDK TX/RX and zero outstanding buffers. No production/upstream/protocol implementation changes, arbitrary new callback API, cursor-beyond-queue behavior, concurrent readers or additional source-case migration count."
     }
   }
 }
