@@ -587,3 +587,11 @@ typed INI/CLI 转为原始EAL，回读真实内存字节数与页模式，五次
 独立宿主TCP/UDP，并验证 hugepages 不可用时明确失败。它不是该注册源测试的迁移通过：
 `test_ff_load_config_dpdk_full` 主要断言 multi-port/bond/RSS，仍为blocked，ker_tests为空；
 相关功能证据单独记录在 provenance，不改变清单计数，也不声称hugepage成功或硬件资格。
+
+
+`native-fstack-eal-log-level` 继续补齐 full fixture 的 `dpdk.log_level` 相关功能，
+将数值级别传给原始 EAL，在初始化后及 READY 时回读全局级别，并验证启动 INFO
+日志过滤与现有运行级别覆盖的时间边界。它允许 typed 全局级别与原始 EAL component
+pattern/regex 规则共存，并用七个实例走通原始 Linux TCP/UDP。
+这仍是相关功能证据；源注册案例的 multi-port/bond/RSS 断言尚未迁移，保持
+blocked，不增加迁移通过计数。

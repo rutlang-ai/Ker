@@ -671,3 +671,18 @@ INI、CLI覆盖及原始EAL长短参数；另验证 CLI 与 INI typed 设置在�
 即使分隔符后保留不同的 `-m` 值及 `--no-huge` 参数。每次要求实际字节数、普通页模式、独立宿主TCP/UDP、
 原始内核计数和零mbuf。额外以私有非hugetlbfs目录验证 required-hugepages 返回125，
 不发布READY或成功统计，不静默回退。当前环境未验证 hugepage 分配成功。
+
+
+EAL 启动全局日志级别可用 `[dpdk] log_level=4` 或 `--eal-log-level 4` 设置（1..8，
+1为emergency，8为debug）。省略时保留原始 EAL 日志策略；CLI 覆盖 INI。
+若原始 `--eal` 已指定 numeric/named global `--log-level`，typed 全局级别会在启动前拒绝；
+原始 `--log-level=pattern:level` 和 `--log-level=regexp,level` 类型规则可与 typed 全局级别共存。
+原有
+`[logging] level` / `--log-level` 仍在 EAL 初始化后覆盖全局与 Ker worker
+级别，因此不能回溯改变启动日志。每类型 pattern/regex 策略仍通过原始 EAL 传入。
+`io.eal_log_level` 是 EAL 初始化后的实际全局级别快照，`io.log_level` 是
+READY 时的实际级别；两者均通过 DPDK API 回读。
+
+`native-fstack-eal-log-level` 用七个真实实例检查 warning/info、INI/CLI 覆盖，
+启动 warning 后运行 info，以及 typed 全局级别配合原始 component warning/info 规则时的
+IOVA INFO 过滤。每次同时验证宿主 TCP/UDP 互通、native 计数与零 outstanding mbuf。
