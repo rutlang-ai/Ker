@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "mtu-control.h"
 #include "syscall-result.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -211,7 +212,7 @@ int ioctl(int fd, unsigned long request, ...)
     if (request == FIOASYNC || request == FIOSETOWN || request == SIOCSPGRP) {
         ker_fd_put(entry); errno = EOPNOTSUPP; return -1;
     }
-    long value = lkl_sys_ioctl(entry->native, request, argument);
+    long value = ker_mtu_ioctl(entry->native, request, argument);
     ker_fd_put(entry);
     return ker_native_result(value);
 }

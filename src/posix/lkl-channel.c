@@ -12,6 +12,7 @@
 #include "vlan.h"
 #include "packet-channel.h"
 #include "packet-device.h"
+#include "mtu-control.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -116,6 +117,13 @@ __attribute__((constructor)) static void initialize(void)
     const char *mtu_text = getenv("KER_PACKET_MTU");
     long mtu = mtu_text ? parse_number(mtu_text, KER_NATIVE_MAX_MTU) : KER_NATIVE_DEFAULT_MTU;
     if (mtu < KER_NATIVE_MIN_MTU) fail("interface MTU below IPv6 minimum", -EINVAL);
+    long maximum = parse_number(required("KER_PACKET_MAX_MTU"), KER_NATIVE_MAX_MTU);
+    if (maximum < mtu) fail("MTU exceeds deployment ceiling", -EINVAL);
+    int mtu_fd = (int)parse_number(required("KER_PACKET_CONTROL_FD"), INT_MAX);
+    length = sizeof(type);
+    if (syscall(SYS_getsockopt, mtu_fd, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_SEQPACKET ||
+        syscall(SYS_fcntl, mtu_fd, F_SETFD, FD_CLOEXEC) < 0)
+        fail("invalid MTU control channel", -EINVAL);
     ker_native_host_memory_init(&lkl_host_ops);
     ker_native_host_thread_init(&lkl_host_ops);
     ker_native_host_clock_init(&lkl_host_ops);
@@ -125,10 +133,10 @@ __attribute__((constructor)) static void initialize(void)
     if (result) fail("kernel initialization", result);
     device = ker_packet_device_create(fd);
     if (!device) fail("packet device allocation", -ENOMEM);
-    /* Jumbo RX needs multiple virtio buffers. The original LKL transport
-     * implements mergeable buffers, including num_buffers accounting; this
+    /* Live jumbo growth needs multiple virtio buffers even at MTU1500 startup.
+     * The original LKL transport implements mergeable buffers, including num_buffers accounting; this
      * does not enable checksum or segmentation offloads. */
-    struct lkl_netdev_args args = {.mac = mac, .offload = mtu > 1500 ?
+    struct lkl_netdev_args args = {.mac = mac, .offload = maximum > 1500 ?
         (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0};
     result = lkl_netdev_add(device, &args);
     if (result < 0) fail("packet device registration", result);
@@ -227,6 +235,7 @@ __attribute__((constructor)) static void initialize(void)
     }
     result = lkl_if_set_mtu(index, (int)mtu);
     if (result) fail("interface MTU", result);
+    ker_mtu_control_init(mtu_fd, index, (int)maximum);
     result = lkl_if_up(index);
     if (result) fail("interface activation", result);
     result = ker_native_configure_vlans(index, (int)mtu, getenv("KER_NATIVE_VLANS"));

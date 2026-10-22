@@ -4,6 +4,14 @@
 #define KER_NATIVE_DEFAULT_MTU 1500
 #define KER_NATIVE_MIN_MTU 1280
 #define KER_NATIVE_MAX_MTU 9000
+/* Private local SOCK_SEQPACKET device-control ABI, independent of frames. */
+#define KER_MTU_MAGIC 0x4b4d5455U
+#define KER_MTU_GET 1U
+#define KER_MTU_SET 2U
+struct ker_mtu_message {
+    uint32_t magic, operation;
+    int32_t mtu, previous, status;
+};
 /* Native virtio-net v1 framing. Offloads remain disabled; this header only
  * separates the imported Linux device ABI from complete Ethernet frames. */
 struct ker_packet_header {
