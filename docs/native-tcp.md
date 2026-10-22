@@ -821,3 +821,19 @@ peer、半关闭、EOF、native opens、DPDK TX/RX 与零遗留 mbuf。
 连接发起完成后恢复阻塞模式完成流检查，因此不宣称通用非阻塞读写。
 协议仍由原始 Linux 处理，来源案例计数不变，无运行时或上游修改；
 缓存过期、丢包重传、IPv6 和性能仍待覆盖。
+
+宿主 mutex 初始化与失败清理：`native-fstack-thread-runtime` 现在还覆盖普通/递归
+mutex 的 malloc、属性初始化/类型设置、mutex 初始化、属性销毁故障。Ker 在
+`host-thread.c` 内提供私有 mutex 表示，失败返回 NULL 并保留 pthread 错误码，
+完整销毁已初始化资源；成功路径始终使用真实 pthread 锁，保留上游源码不变。
+测试通过仅测试线程有效的链接器 wrapper 注入错误，检查分配、属性和 mutex
+全部归零，再验证下一把真实锁可用及递归锁可重复持有。四线程共享计数与原始
+Linux 启动/关闭同时执行，并要求内核实际分配适配后的 host mutex。
+无返回值的 lock/unlock/free 回调发生 pthread 错误时明确 abort；子进程验证
+销毁仍持有的锁不会静默释放。
+
+DPDK worker 的单核收发不代表 LKL 宿主运行时单线程：原始 LKL `cpu.lock`
+保护虚拟 CPU owner/count，内核线程和 SIGEV_THREAD 定时器都参与宿主调度。
+此处保留同步，不进行锁消除，也不宣称单 lcore 独占协议栈调度或性能结论。
+这是 F-Stack thread 场景的 Ker 适配扩展，FreeBSD 线程上下文 ABI 缺口仍保留，
+来源案例计数不变，无 TCP/UDP 协议实现修改。
