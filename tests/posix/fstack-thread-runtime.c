@@ -14,8 +14,8 @@
 #include <lkl_host.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
-/* Inject only host allocation failure, as in the pinned upstream case.
- * All thread, TLS, semaphore and mutex operations use real callbacks. */
+/* Fail selected host allocations/pthread calls only in the test thread.
+ * Successful operations and the lifecycle probes use real host callbacks. */
 void *__real_malloc(size_t size);
 static _Thread_local int fail_next_allocation, count_allocations;
 static _Thread_local long allocation_balance;
@@ -184,6 +184,53 @@ static void thread_creation_failures(void)
     puts("PASS: pthread EAGAIN/EPERM return zero with errno, free start storage and never run the failed callback");
     puts("PASS: real create/join recovers after each failure and frees start storage before callback entry");
 }
+static struct lkl_tls_key *lifecycle_key;
+struct lifecycle_argument { unsigned int requested, callbacks; int explicit_exit; };
+static atomic_uint exit_returned;
+static void repeated_destructor(void *opaque)
+{
+    struct lifecycle_argument *argument = opaque;
+    CHECK(argument && ops.tls_get(lifecycle_key) == NULL);
+    ++argument->callbacks;
+    if (argument->callbacks < argument->requested)
+        CHECK(ops.tls_set(lifecycle_key, argument) == 0);
+}
+static void lifecycle_worker(void *opaque)
+{
+    struct lifecycle_argument *argument = opaque;
+    CHECK(ops.tls_get(lifecycle_key) == NULL);
+    CHECK(ops.tls_set(lifecycle_key, argument) == 0);
+    if (!argument->requested) CHECK(ops.tls_set(lifecycle_key, NULL) == 0);
+    if (argument->explicit_exit) {
+        ops.thread_exit();
+        atomic_fetch_add(&exit_returned, 1);
+    }
+}
+static void thread_exit_and_tls(void)
+{
+    long iterations = sysconf(_SC_THREAD_DESTRUCTOR_ITERATIONS);
+    CHECK(iterations >= 3 && iterations <= 1024);
+    const unsigned int requests[] = {0, 3, (unsigned int)iterations + 2};
+    for (int explicit_exit = 0; explicit_exit <= 1; ++explicit_exit) {
+        for (unsigned int i = 0; i < sizeof(requests) / sizeof(requests[0]); ++i) {
+            lifecycle_key = ops.tls_alloc(repeated_destructor); CHECK(lifecycle_key);
+            struct lifecycle_argument parent_value = {.requested = 3};
+            CHECK(ops.tls_set(lifecycle_key, &parent_value) == 0);
+            struct lifecycle_argument argument = {.requested = requests[i], .explicit_exit = explicit_exit};
+            lkl_thread_t thread = ops.thread_create(lifecycle_worker, &argument); CHECK(thread);
+            CHECK(ops.thread_join(thread) == 0);
+            unsigned int minimum = requests[i] > (unsigned int)iterations ? (unsigned int)iterations : requests[i];
+            CHECK(argument.callbacks >= minimum && argument.callbacks <= requests[i]);
+            CHECK(atomic_load(&exit_returned) == 0);
+            CHECK(ops.tls_get(lifecycle_key) == &parent_value && parent_value.callbacks == 0);
+            /* Key deletion does not run a destructor for the parent's non-NULL value. */
+            ops.tls_free(lifecycle_key);
+            CHECK(parent_value.callbacks == 0);
+        }
+    }
+    printf("PASS: return/thread_exit run TLS destructors with cleared values, repopulation and host minimum %ld\n", iterations);
+    puts("PASS: cleared child TLS and key deletion skip destructors; parent TLS remains isolated");
+}
 static void mutex_initialization(void)
 {
     count_allocations = track_mutex = 1;
@@ -236,7 +283,7 @@ int main(void)
 {
     ker_native_host_thread_init(&lkl_host_ops);
     ops = lkl_host_ops;
-    CHECK(ops.thread_create && ops.thread_join && ops.thread_self && ops.thread_equal);
+    CHECK(ops.thread_create && ops.thread_join && ops.thread_self && ops.thread_equal && ops.thread_exit);
     CHECK(ops.tls_alloc && ops.tls_free && ops.tls_set && ops.tls_get);
     CHECK(ops.sem_alloc && ops.sem_free && ops.sem_up && ops.sem_down);
     CHECK(ops.mutex_alloc && ops.mutex_free && ops.mutex_lock && ops.mutex_unlock);
@@ -303,6 +350,7 @@ int main(void)
     key = ops.tls_alloc(NULL); CHECK(key && ops.tls_get(key) == NULL); ops.tls_free(key);
     puts("PASS: arguments, join completion, thread identity, isolated TLS and destructors");
     puts("PASS: semaphore gating and mutex-protected counter across four real threads");
+    thread_exit_and_tls();
 
     lkl_host_ops.print = NULL;
     lkl_host_ops.thread_create = count_create;

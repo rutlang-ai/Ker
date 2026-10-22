@@ -848,3 +848,14 @@ create/join，检查参数、结果及回调入口之前恰好一次 wrapper 释
 默认、DEBUG、NDEBUG 三个变体及原始 Linux 启动/关闭都验证实际适配器。
 未修改上游源码、协议或调度实现，不进行应用 pthread 拦截；这不等同于真实
 宿主线程资源耗尽或调度策略测试，FreeBSD 上下文 ABI 缺口和来源案例计数不变。
+
+`native-fstack-thread-runtime` 进一步覆盖正常返回和显式 host thread_exit 后的
+TLS 生命周期。真实子线程分别清空 TLS、让析构函数重设三次，或持续重设超过
+宿主 `_SC_THREAD_DESTRUCTOR_ITERATIONS` 公布的最小次数；join 后检查0次、3次，
+以及对超出最小值的请求至少执行公布次数且不超过请求次数。每次析构入口必须
+观察到该 TLS slot 已被清空，thread_exit
+不得返回到后续语句，join 必须等待析构完成。
+同时验证父线程 TLS 不被子线程继承或修改，删除仍持有父线程值的 key 不调用
+析构函数。默认、DEBUG、NDEBUG 均直接执行现有 Ker/LKL callbacks 和真实 pthread，
+不新增运行时代码、协议或调度实现，也不提高来源案例计数。迭代上限属于宿主
+pthread 合同；取消线程、detached 线程生命周期和 FreeBSD 上下文 ABI 仍未覆盖。
