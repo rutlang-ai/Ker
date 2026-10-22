@@ -1419,9 +1419,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_repeat_keys_no_leak",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker production INI loader applies final-key precedence, validates final typed values, preserves CLI overrides and creates fresh per-load state; real DPDK/native TCP proves the final address and EAL settings. Python-managed storage replaces F-Stack strdup/free ownership; no F-Stack global struct ABI claim.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-config-repeat-keys"
+        },
+        {
+          "ctest": "native-fstack-launcher-config-interop",
+          "provenance_case": "native-fstack-config-repeat-keys"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",

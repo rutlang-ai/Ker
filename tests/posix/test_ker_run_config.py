@@ -858,8 +858,9 @@ class ConfigTests(unittest.TestCase):
             self.assertIn(str(line), str(caught.exception))
 
     def test_explicit_boundaries(self):
+        self.assertEqual(self.read('[dpdk]\nport=a\nport=b\n'), {'port': 'b'})
         for text in ('port=x\n', '[unknown]\nport=x\n', '[dpdk]\nunknown=x\n',
-                     '[DEFAULT]\nport=x\n', '[dpdk]\nport=a\nport=b\n',
+                     '[DEFAULT]\nport=x\n',
                      '[dpdk]\nall_multicast=perhaps\n', '[network]\naddress=invalid\n'):
             with self.subTest(text=text), self.assertRaises((configparser.Error, ValueError)):
                 self.read(text)

@@ -354,3 +354,9 @@ abort，不能静默释放仍有效的 handle。0 纳秒解除定时，interval 
 宿主线程栈扩展：现有 `native-fstack-thread-runtime` 三种构建变体验证主/子
 线程真实栈范围、可选 size、查询失败后的属性清理和恢复。它是现有线程场景的
 Ker 扩展，不增加来源案例计数，也不宣称已运行 KASAN 内核。
+
+INI 重复键：`native-fstack-config-lifecycle` 与
+`native-fstack-launcher-config-interop` 共同适配
+`test_ff_load_config_repeat_keys_no_leak`；最终值生效、CLI 优先、重复加载隔离，
+并验证真实 DPDK/Linux 的最终地址与 EAL 参数。该来源项从 blocked 转为
+scenario-adapted（126 adapted、224 blocked、20 partial）。

@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 125 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 126 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 20 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 225 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 224 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -753,3 +753,8 @@ FreeBSD 上下文 ABI 仍未覆盖。
 通过真实 DPDK 验证。上游、协议及调度实现保持不变，来源案例计数不变。
 这是 F-Stack thread 场景的 Ker 同步扩展，不宣称公平性、跨进程共享信号量、
 线程取消、仍有 waiter 时销毁或性能结论。
+
+INI 重复键现已采用最后一项生效，并以重复加载隔离及真实 DPDK/native TCP
+证明最终地址、EAL 与日志目录生效。`test_ff_load_config_repeat_keys_no_leak`
+从 blocked 转为 scenario-adapted；Python 管理配置存储，不宣称 F-Stack
+全局结构 ABI 或 C strdup/free 泄漏检测。当前未完成为 224 blocked + 20 partial。

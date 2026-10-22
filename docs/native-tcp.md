@@ -931,3 +931,14 @@ TCP/UDP 互通继续验证安装后的适配层。来源案例计数不变，不
 每次失败后必须恢复真实查询。来源计数不变，上游 Linux/DPDK 不变。
 当前固定内核未启用 KASAN；测试仅验证已安装的宿主 callback，
 不宣称 KASAN 栈去毒、自定义栈或备用信号栈覆盖。
+
+
+INI 重复配置键采用最后一项生效，重复节继续同一节；CLI 覆盖最终 INI 值。
+这适用于 network、dpdk、sysctl、VLAN 等已有支持字段，不引入未知配置项支持。
+只转换并校验最终值，因此被覆盖的早期值不会单独触发类型错误；最终值非法、
+未知键/节、DEFAULT 继承仍在启动前返回 2。每次加载使用独立对象，
+不保留上一次加载的 sysctl、VLAN 或网关。
+`native-fstack-config-lifecycle` 验证加载隔离和失败后恢复；
+`native-fstack-launcher-config-interop` 以早期错误地址/EAL/日志目录加后续
+有效值，验证真实 DPDK 与原始 Linux 在 TCP 两种角色下只使用最终配置，
+CLI port/stats 仍优先。对应 F-Stack 重复键来源场景，不声称 C 内存分配 ABI 等价。
