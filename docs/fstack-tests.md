@@ -350,3 +350,7 @@ abort，不能静默释放仍有效的 handle。0 纳秒解除定时，interval 
 映射场景上覆盖分配失败恢复、固定地址回退清理与 page_free 失败边界；
 成功操作始终执行真实 mmap/munmap，失败的 void 释放回调明确终止。
 两项扩展不增加来源案例计数，具体边界见 native-tcp.md。
+
+宿主线程栈扩展：现有 `native-fstack-thread-runtime` 三种构建变体验证主/子
+线程真实栈范围、可选 size、查询失败后的属性清理和恢复。它是现有线程场景的
+Ker 扩展，不增加来源案例计数，也不宣称已运行 KASAN 内核。

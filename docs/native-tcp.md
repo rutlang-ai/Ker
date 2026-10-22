@@ -918,3 +918,16 @@ EINVAL、固定地址冲突和旧宿主回退清理。失败释放在未创建�
 中注入 EINVAL，必须收到 SIGABRT。已有 host-runtime 的原始 Linux 启停及
 TCP/UDP 互通继续验证安装后的适配层。来源案例计数不变，不宣称 hugepage、
 共享/文件映射、MMU 内核或并发地址预留语义。
+
+
+宿主线程栈查询：Ker 的 thread_stack 继续通过 pthread_getattr_np/getstack
+查询当前宿主线程的真实栈范围，属性销毁也成功后才写入可选的 size 输出。
+查询或清理失败返回 NULL，保留调用方 size，errno 接收 pthread 的错误码；
+属性已初始化时，即使 getstack 失败也执行销毁，优先保留查询错误。
+
+现有 `native-fstack-thread-runtime` 的默认、DEBUG、NDEBUG 变体分别在
+主线程和真实子线程内验证：范围包含当前局部变量，与独立 pthread 查询一致，
+并接受 NULL size 指针。逐阶段注入 EAGAIN/EINVAL/EIO，跟踪属性资源清理，
+每次失败后必须恢复真实查询。来源计数不变，上游 Linux/DPDK 不变。
+当前固定内核未启用 KASAN；测试仅验证已安装的宿主 callback，
+不宣称 KASAN 栈去毒、自定义栈或备用信号栈覆盖。
