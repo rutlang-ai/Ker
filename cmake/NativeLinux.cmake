@@ -712,6 +712,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tcp-urgent COMMAND ${ker_native_test_command}
         --urgent-app "$<TARGET_FILE:ker-posix-fstack-tcp-urgent-test>")
     set_tests_properties(native-fstack-tcp-urgent PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fstack-tcp-mss-test tests/posix/fstack-tcp-mss.c)
+    target_compile_options(ker-posix-fstack-tcp-mss-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-tcp-mss COMMAND ${ker_native_test_command}
+        --mss-app "$<TARGET_FILE:ker-posix-fstack-tcp-mss-test>")
+    set_tests_properties(native-fstack-tcp-mss PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-tcp-cork-test tests/posix/fstack-tcp-cork.c)
     target_compile_options(ker-posix-fstack-tcp-cork-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-tcp-cork COMMAND ${ker_native_test_command}

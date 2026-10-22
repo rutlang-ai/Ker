@@ -967,3 +967,17 @@ NODELAY 设为 1，验证 MORE/CORK 仍可暂缓小写入；别名查询选项�
 八次，未获得有效观测则失败，不作为兼容通过。测试不认证自动解除精度、
 报文数量或线速性能。原生实例要求至少五次 Linux TCP open、DPDK TX/RX
 和零 outstanding mbuf。它扩展已有 socket/dup 场景，来源计数不变。
+
+
+TCP_MAXSEG/MSS：`native-fstack-tcp-mss` 在宿主参考、原生客户端和原生服务器
+中，分别在 connect 前设置客户端 600、握手前设置监听器 700。dup 查询必须
+共享设置；-1、1、65536 返回 EINVAL 且保留之前值，0 重置合法，随后恢复
+目标值。连接/accept 后有效 MSS 必须为正且不超过 600，TCP 选项开销可使其更小。
+双方验证精确 16KiB 字节流、后续小消息、半关闭 EOF 与别名释放。
+
+原生 worker 的完整 PCAP 必须显示 SYN 的 MSS600、SYN-ACK 的 MSS700；
+检查 IPv4/TCP 长度和选项，拒绝目标连接的分片/截断记录。原生 TX 数据段
+payload 不得超过 600，且至少 28 段、16385 数据字节；不对宿主 RX 的
+GSO/GRO 聚合行为作等价要求。Linux TCP open、DPDK TX/RX 与零 outstanding
+均需满足。该测试扩展已有 socket 场景，不增加来源计数，也不宣称 PMTU 变化、
+IPv6、连接后重协商或硬件 offload 资格。上游和生产协议实现保持不变。
