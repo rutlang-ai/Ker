@@ -3,10 +3,16 @@
 Ker uses descriptor ownership, rather than F-Stack's global
 `[stack] kernel_coexist` boolean. Normal `socket(AF_INET/AF_INET6, ...)` calls
 under the preload create sockets in original native Linux. Other socket
-families and unregistered host descriptors remain host objects. A caller that
-explicitly needs a host INET socket can create it with the host `SYS_socket`
-syscall; subsequent ordinary POSIX operations dispatch by that descriptor's
-actual ownership. This does not select a stack based on a numeric fd offset.
+families and unregistered host descriptors remain host objects. Under the
+production `ker-run` launcher, however, its seccomp guard returns `EPERM` for
+direct `SYS_socket` calls requesting `AF_INET`/`AF_INET6` with
+`SOCK_STREAM` (including type flags). Callers therefore cannot use a raw host
+INET stream socket as a host TCP path. Non-stream types pass this guard; the
+host UDP case exercised below is supported, subject to normal host-kernel
+permissions. A caller that explicitly needs an allowed host INET socket can
+create it with the host `SYS_socket` syscall; subsequent ordinary POSIX
+operations dispatch by that descriptor's actual ownership. This does not
+select a stack based on a numeric fd offset.
 
 [src/posix/fd-table.c](../src/posix/fd-table.c) reserves real host placeholders
 for exported native fds, keeps references through duplication/replacement and
