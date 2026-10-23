@@ -2,6 +2,7 @@
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,18 +13,19 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('ker_bond_config', ROOT / 'tools/ker-run.py')
 launcher = importlib.util.module_from_spec(spec); spec.loader.exec_module(launcher)
+WORKER = Path(os.environ['KER_TEST_IO_WORKER']) if os.environ.get('KER_TEST_IO_WORKER') else None
 BASE = '[network]\naddress=198.18.0.2/24\n[dpdk]\nnb_bond=1\nport=net_bonding0\neal=--no-pci --vdev=net_tap0 --vdev=net_tap1\n'
 FIELDS = 'mode=4\nslave=0,1\nprimary=0\nsocket_id=0\nmac=AA:BB:CC:DD:EE:FF\nxmit_policy=l34\nlsc_poll_period_ms=100\nup_delay=100\ndown_delay=200\n'
 
 
 class BondTests(unittest.TestCase):
     def read(self, text):
-        return launcher.read_configuration(io.StringIO(text), Path('/configuration'))
+        return launcher.read_configuration(io.StringIO(text), Path('/configuration'), worker_path=WORKER)
 
     def parse(self, text, extra=()):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bond.ini'; path.write_text(text)
-            return launcher.parse_arguments(['--config', str(path), *extra, '--', '/bin/true'])
+            return launcher.parse_arguments(['--config', str(path), *(('--io-worker', str(WORKER)) if WORKER else ()), *extra, '--', '/bin/true'])
 
     def test_full_pinned_fixture_fields(self):
         text = (ROOT / 'tests/upstream/fstack/tests/unit/fixtures/valid_bond.ini').read_text()

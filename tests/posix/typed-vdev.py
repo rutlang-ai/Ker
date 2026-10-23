@@ -55,6 +55,10 @@ def main():
         modules.append(str(found[0]))
     environment = dict(os.environ)
     environment['LD_PRELOAD'] = ':'.join(modules)
+    library_path = str(args.pmd_root.resolve())
+    if environment.get('LD_LIBRARY_PATH'):
+        library_path += ':' + environment['LD_LIBRARY_PATH']
+    environment['LD_LIBRARY_PATH'] = library_path
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
         for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root', 'startup-delay-library'):
@@ -133,6 +137,8 @@ def main():
                             require(process.returncode == 0 and output.count('PASS:') == 2, 'native ICMP failed: ' + output)
                             record = json.loads(stats.read_text())
                             info = record['io']
+                            print('DPDK virtio-user runtime evidence (' + name + '): ' +
+                                json.dumps(record, sort_keys=True), flush=True)
                             require(info['driver'] == 'net_virtio_user' and info['port_count'] == 1,
                                     'typed vdev did not select the original virtio-user PMD: ' + str(info))
                             require(info['mac'] == '00:11:22:33:44:55' and info['max_rx_queues'] == 2

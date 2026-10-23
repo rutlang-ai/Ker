@@ -112,7 +112,10 @@ def main():
                         and bond['primary'] in (0, 1) and 1 <= bond['active'] <= 2 and bond['lacp_distributing'] == 1,
                         'LACP did not retire the disconnected path: ' + str(bond))
                 require(record['outstanding'] == 0 and record['tx'] > 0 and record['rx'] > 0, 'missing bond traffic or leaked member buffers')
-                mtu.wire(capture, 1500)
+                print('DPDK bond runtime evidence: ' + json.dumps(record, sort_keys=True), flush=True)
+                # The capture includes both the initial peer exchange and the
+                # second exchange after one LACP member is removed.
+                mtu.wire(capture, 1500, request_counts={'rx': 6, 'tx': 3})
                 print('PASS: actual mode4 LACP partners, all bond fields, IPv4/IPv6 frames and zero buffers', flush=True)
             except Exception:
                 log.flush(); log.seek(0); print(log.read(), file=sys.stderr); raise

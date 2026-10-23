@@ -206,7 +206,26 @@ def virtual_device_argument(device):
         ('iface', 'path', 'queues', 'queue_size', 'mac', 'cq') if key in device)
 
 
-def bond_devices(ini):
+def query_dpdk_max_numa_nodes(worker_path):
+    worker_path = Path(worker_path).resolve(strict=True)
+    try:
+        result = subprocess.run([str(worker_path), '--dpdk-limits'], check=False,
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f'cannot query selected DPDK worker limits: {error}') from error
+    if result.returncode != 0:
+        raise ValueError('selected DPDK worker does not provide a successful --dpdk-limits query')
+    try:
+        limits = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError('selected DPDK worker returned invalid --dpdk-limits JSON') from error
+    if (not isinstance(limits, dict) or set(limits) != {'max_numa_nodes'} or
+            type(limits['max_numa_nodes']) is not int or limits['max_numa_nodes'] <= 0):
+        raise ValueError('selected DPDK worker returned an invalid positive max_numa_nodes limit')
+    return limits['max_numa_nodes']
+
+
+def bond_devices(ini, max_numa_nodes):
     count = ini.getint('dpdk', 'nb_bond', fallback=0)
     if count not in (0, 1):
         raise ValueError('[dpdk] nb_bond supports 0 or 1 selected bond')
@@ -225,8 +244,10 @@ def bond_devices(ini):
     bond = {'name': 'net_bonding0', 'mode': int(fields['mode']),
             'slave': fields['slave'].split(','), 'socket_id': int(fields.get('socket_id', 0)),
             'xmit_policy': fields.get('xmit_policy', 'l2')}
-    if bond['mode'] not in range(7) or not -1 <= bond['socket_id'] <= 127:
-        raise ValueError('[bond0] invalid mode or socket_id')
+    if bond['mode'] not in range(7):
+        raise ValueError('[bond0] invalid mode')
+    if not -1 <= bond['socket_id'] < max_numa_nodes:
+        raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
     if not 1 <= len(bond['slave']) <= 16 or len(set(bond['slave'])) != len(bond['slave']):
         raise ValueError('[bond0] requires 1..16 distinct members')
     if any(not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', member) for member in bond['slave']):
@@ -262,7 +283,7 @@ def bond_device_argument(bond):
                     ('primary', 'socket_id', 'mac', 'xmit_policy') if key in bond))
 
 
-def read_configuration(stream, directory, source='<stream>'):
+def read_configuration(stream, directory, source='<stream>', worker_path=None):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
     ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
@@ -273,7 +294,13 @@ def read_configuration(stream, directory, source='<stream>'):
         raise ValueError('DEFAULT inheritance is unsupported')
     devices = virtual_devices(ini, directory)
     values = {'vdevs': devices} if devices or ini.has_option('dpdk', 'nb_vdev') else {}
-    bonds = bond_devices(ini)
+    if ini.getint('dpdk', 'nb_bond', fallback=0):
+        if worker_path is None:
+            raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
+        max_numa_nodes = query_dpdk_max_numa_nodes(worker_path)
+    else:
+        max_numa_nodes = None
+    bonds = bond_devices(ini, max_numa_nodes)
     if bonds or ini.has_option('dpdk', 'nb_bond'):
         values['bonds'] = bonds
     for section in ini.sections():
@@ -308,10 +335,10 @@ def read_configuration(stream, directory, source='<stream>'):
     return values
 
 
-def load_configuration(path):
+def load_configuration(path, worker_path=None):
     path = path.resolve()
     with path.open(encoding='utf-8') as stream:
-        return read_configuration(stream, path.parent, path)
+        return read_configuration(stream, path.parent, path, worker_path)
 
 
 def parse_arguments(argv=None):
@@ -379,7 +406,7 @@ def parse_arguments(argv=None):
     values = dict(CONFIG_DEFAULTS)
     if supplied.config is not None:
         try:
-            values.update(load_configuration(supplied.config))
+            values.update(load_configuration(supplied.config, supplied.io_worker))
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
             parser.error(f'{supplied.config}: {error}')
     sysctls = dict(values['sysctls'])

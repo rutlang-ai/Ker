@@ -388,6 +388,10 @@ if(BUILD_TESTING)
     add_test(NAME udp-validation-report-guards
         COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover -s "${PROJECT_SOURCE_DIR}/tests" -p test_udp_validation.py)
     set_tests_properties(udp-validation-report-guards PROPERTIES TIMEOUT 30 LABELS provenance)
+    add_test(NAME native-bond-numa-preflight
+        COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover -s "${PROJECT_SOURCE_DIR}/tests" -p test_bond_numa_validation.py)
+    set_tests_properties(native-bond-numa-preflight PROPERTIES TIMEOUT 30
+        ENVIRONMENT "KER_TEST_IO_WORKER=$<TARGET_FILE:ker-io-worker>")
     add_executable(ker-udp-signal-boundary tests/posix/udp-signal-boundary.c)
     target_compile_options(ker-udp-signal-boundary PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-udp-signal-boundary PRIVATE Threads::Threads)
@@ -895,5 +899,6 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME native-fstack-typed-bond-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_bond.py")
-    set_tests_properties(native-fstack-typed-bond-config PROPERTIES TIMEOUT 30 LABELS "fstack")
+    set_tests_properties(native-fstack-typed-bond-config PROPERTIES TIMEOUT 30 LABELS "fstack"
+        ENVIRONMENT "KER_TEST_IO_WORKER=$<TARGET_FILE:ker-io-worker>")
 endif()

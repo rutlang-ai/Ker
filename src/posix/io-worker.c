@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include <rte_config.h>
 #include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
@@ -213,6 +214,12 @@ static uint16_t tx_burst(void *context, struct rte_mbuf **packets, uint16_t coun
 
 int main(int argc, char **argv)
 {
+    /* Build-matched capability query used by ker-run preflight; this path
+     * returns before EAL initialization and reflects this worker's headers. */
+    if (argc == 2 && !strcmp(argv[1], "--dpdk-limits")) {
+        printf("{\"max_numa_nodes\":%d}\n", RTE_MAX_NUMA_NODES);
+        return RTE_MAX_NUMA_NODES > 0 ? 0 : 1;
+    }
     int packet_fd = -1, control_fd = -1, mtu_fd = -1, split = 0;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;

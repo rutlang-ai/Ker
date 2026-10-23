@@ -24,7 +24,7 @@ def validate_ipv4_flags(flags, echo_request=False):
         require(flags & 0x4000, 'IPv4 echo request missing DF')
 
 
-def wire(directory, mtu, dynamic=False, ceiling=False):
+def wire(directory, mtu, dynamic=False, ceiling=False, request_counts=None):
     df_requests = {}
     for direction in ('tx', 'rx'):
         seen = set()
@@ -79,8 +79,10 @@ def wire(directory, mtu, dynamic=False, ceiling=False):
         expected = {(family, kind, seq) for family, kinds in ((4, (0, 8)), (6, (128, 129)))
                     for kind in kinds for seq in range(9 if dynamic else 3)}
         require(seen == expected, direction + ': missing requests/replies: ' + str(expected - seen))
-        require(request_count == (9 if dynamic else 3),
-                direction + ': expected three IPv4 echo requests per MTU phase')
+        expected_requests = ((9 if dynamic else 3) if request_counts is None
+                             else request_counts[direction])
+        require(request_count == expected_requests,
+                direction + f': expected three IPv4 echo requests per MTU phase, saw {request_count}')
         df_requests[direction] = request_count
     return df_requests
 
