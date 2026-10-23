@@ -48,6 +48,17 @@ class QueueConfigTests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 self.parse(text)
 
+    def test_rx_lcore_selection(self):
+        args = self.parse(BASE + 'queues=2\nrx_lcores=bad\nrx_lcores=0, 1\n')
+        self.assertEqual(args.rx_lcores, '0,1')
+        self.assertEqual(self.parse(BASE + 'queues=2\nrx_lcores=0,1\n', ['--rx-lcores', '1']).rx_lcores, '1')
+        args = self.parse(BASE + 'queues=2\nrx_lcores=0,1\n' + AUX + 'rx_lcores=3,4\n')
+        self.assertEqual(args.interfaces[0]['rx_lcores'], '3,4')
+        self.assertIsNone(self.parse(BASE + 'rx_lcores=0\n' + AUX).interfaces[0]['rx_lcores'])
+        for value in ('', '0,', ',0', '0,0', '-1', '0-1', 'x', '10000', '0,1,2'):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.parse(BASE + 'queues=2\nrx_lcores=' + value + '\n')
+
     def test_invalid_counts_fail_before_backend(self):
         for value in ('0', '-1', '17', 'bad'):
             for text in (BASE + 'queues=' + value + '\n', BASE + AUX + 'queues=' + value + '\n'):

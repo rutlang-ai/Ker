@@ -53,7 +53,7 @@ set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
-set(ker_io_worker_sources src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+set(ker_io_worker_sources src/posix/worker-rx-lcores.c src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 add_executable(ker-io-worker ${ker_io_worker_sources})
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
@@ -1058,6 +1058,18 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rss-control.py"
             --probe "$<TARGET_FILE:ker-rss-control-test>" --failure-library "$<TARGET_FILE:ker-rss-failure>" --pmd-root "${ker_vdev_library_root}")
     set_tests_properties(native-fstack-rss-control PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "fstack")
+    add_executable(ker-rx-lcores-test tests/posix/rx-lcores.c src/posix/worker-rx-lcores.c src/posix/worker-mbuf.c src/posix/pcap.c)
+    target_include_directories(ker-rx-lcores-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_options(ker-rx-lcores-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-rx-lcores-test PRIVATE PkgConfig::DPDK "${ker_exception_ring_pmd}")
+    add_test(NAME native-fstack-rx-lcores-ownership COMMAND ker-rx-lcores-test)
+    set_tests_properties(native-fstack-rx-lcores-ownership PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "fstack")
+    add_test(NAME native-fstack-rx-lcores
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-lcores.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-exception-services-test>"
+            --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}")
+    set_tests_properties(native-fstack-rx-lcores PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;native-udp;fstack")
     add_test(NAME native-fstack-rx-queues
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-vdev.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

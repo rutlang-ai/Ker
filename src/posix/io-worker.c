@@ -26,6 +26,7 @@
 #include "worker-wait.h"
 #include "worker-tx.h"
 #include "worker-rx-drain.h"
+#include "worker-rx-lcores.h"
 #include "worker-scatter.h"
 #include "worker-rss.h"
 #include "worker-offload.h"
@@ -40,8 +41,12 @@
 #define BURST 32
 #define MAX_QUEUES 16
 #define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)
-static volatile sig_atomic_t stopping;
-static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
+static atomic_bool stopping;
+static void stop_worker(int signal_number)
+{
+    (void)signal_number;
+    atomic_store_explicit(&stopping, true, memory_order_relaxed);
+}
 
 static int memory_lowest_address(const struct rte_memseg_list *list,
         const struct rte_memseg *segment, void *opaque)
@@ -174,7 +179,8 @@ static int configure_mtu(uint16_t port, int mtu, uint16_t descriptors,
     if (!result && rss->reta_size) result = ker_worker_rss_apply(port, queues, rss);
     return result;
 }
-/* Run on the worker thread, which exclusively owns the ethdev and queues. */
+/* Main owns device control. Remote RX pollers require a fixed MTU until a
+ * queue pause/rebuild transaction is implemented. */
 static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mtu,
     bool busy, bool fixed_mtu, uint64_t *changes, struct rte_mempool *pool,
     uint16_t descriptors, unsigned int allocation_socket, uint16_t queues,
@@ -264,6 +270,7 @@ int main(int argc, char **argv)
     int promiscuous = -1, tx_offloads = 0;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
+    const char *rx_lcores = NULL;
     const char *port_name = NULL, *mbuf_mode = "large", *bond_policy = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
@@ -290,6 +297,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
         else if (!strcmp(argv[i], "--tx-offloads")) tx_offloads = number(argv[++i]);
+        else if (!strcmp(argv[i], "--rx-lcores")) rx_lcores = argv[++i];
         else if (!strcmp(argv[i], "--queues")) queues = number(argv[++i]);
         else if (!strcmp(argv[i], "--mtu-fd")) mtu_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--max-mtu")) maximum_mtu = number(argv[++i]);
@@ -369,6 +377,7 @@ int main(int argc, char **argv)
     struct ker_packet_header tx_header = {0};
     struct ker_worker_offload offload = {0};
     struct ker_worker_exception exception = {.fd = -1};
+    struct ker_worker_rx_lcores rx_workers = {.notify_fd = -1};
     struct ker_worker_receive_mode receive_mode = {.socket_fd = -1, .identity_fd = -1};
     bool receive_mode_restored = false;
     uint64_t tx_tcp_checksum = 0, tx_udp_checksum = 0, tx_ip_checksum = 0, tx_tso4 = 0, tx_tso6 = 0, tx_checksum_fallback = 0;
@@ -388,6 +397,13 @@ int main(int argc, char **argv)
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
         fprintf(stderr, "ker: unknown ethdev %s\n", port_name); goto cleanup;
+    }
+    int rx_plan = ker_worker_rx_lcores_plan(&rx_workers, port, (uint16_t)queues, rx_lcores, exception_iface != NULL);
+    if (rx_plan) {
+        fprintf(stderr, "ker: RX lcores invalid: %s\n", rx_plan == -EXDEV ?
+            "exception owner main lcore is missing from port RX lcores" :
+            "select unique enabled EAL lcores, at most one per active RX queue");
+        goto cleanup;
     }
     struct rte_eth_conf conf = {0}; /* No checksum, VLAN, LRO, or TSO offloads. */
     bool scatter = !strcmp(mbuf_mode, "scatter");
@@ -489,6 +505,18 @@ int main(int argc, char **argv)
             pool_rx_desc, pool_tx_desc);
         goto cleanup;
     }
+    /* The descriptor helper covers queue descriptors and two worker bursts.
+     * Reserve one complete ring and producer-retained burst for each remote
+     * queue, with checked arithmetic before creating the shared pool. */
+    uint32_t remote_queues = 0;
+    for (uint16_t queue = 0; queue < queues; queue++)
+        if (rx_workers.queue[queue].owner != rx_workers.main) remote_queues++;
+    const uint32_t handoff_budget = KER_RX_HANDOFF_CAPACITY + KER_RX_BURST;
+    if (remote_queues && remote_queues > (UINT32_MAX - pool_count) / handoff_budget) {
+        fprintf(stderr, "ker: RX lcore handoff pool budget overflow\n");
+        goto cleanup;
+    }
+    pool_count += remote_queues * handoff_budget;
     /* Match F-Stack numa_on: lcore-local allocations, or explicit socket 0. */
     unsigned int allocation_socket = numa ? rte_socket_id() : 0;
     pool = rte_pktmbuf_pool_create("ker_native_packets", pool_count, 0, 0,
@@ -630,6 +658,9 @@ int main(int argc, char **argv)
         for (unsigned index = 0; index < rss.key_length; index++) snprintf(key + index * 2, 3, "%02x", rss.key[index]);
         snprintf(rss_json, sizeof(rss_json), "{\"types\":%llu,\"key\":\"%s\",\"reta_size\":%u,\"reta_mapping\":\"index_mod_queues\",\"verified\":true}", (unsigned long long)rss.types, key, rss.reta_size);
     }
+    if (ker_worker_rx_lcores_start(&rx_workers)) {
+        fprintf(stderr, "ker: cannot start port RX lcore workers\n"); goto cleanup;
+    }
     printf("KER_IO_READY {\"all_multicast_method\":\"%s\",\"tap_retry_safe\":%s,\"tx_offload_features\":%u,\"tx_offload_flags\":%llu,\"tx_offload_mode\":%d,\"tx_capture_stage\":\"before_offload\",\"rss\":%s,\"queues\":%d,\"data_tx_queue\":0,\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
@@ -645,12 +676,14 @@ int main(int argc, char **argv)
     status = 0;
     bool exception_first = false;
     while (!stopping) {
+        ker_worker_rx_lcores_ack(&rx_workers);
+        if (atomic_load(&rx_workers.error)) { fprintf(stderr, "ker: RX lcore poller failed\n"); status = 1; break; }
         /* Original bonding PMD services LACP TX control rings from tx_burst,
          * including when callers currently have no application frames. */
         if (bond_policy) (void)rte_eth_tx_burst(port, 0, NULL, 0);
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
-                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, exception.pending != NULL, &mtu_changes,
+                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, exception.pending != NULL || rx_workers.remote, &mtu_changes,
                 pool, rx_desc, allocation_socket, (uint16_t)queues, &rss, &started);
             if (result < 0) { fprintf(stderr, "ker: MTU device transaction failed\n"); status = 1; break; }
             if (result > 0) { close(mtu_fd); mtu_fd = -1; }
@@ -763,6 +796,10 @@ int main(int argc, char **argv)
         }
         exception_first = !exception_first;
         if (draining) {
+            uint64_t abandoned;
+            int stopped = ker_worker_rx_lcores_stop(&rx_workers, &abandoned, rx_capture.file ? &rx_capture : NULL);
+            rx_shutdown_discarded += abandoned;
+            if (stopped) { status = 1; break; }
             rx_shutdown_discarded += rx_count - rx_index;
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
             int64_t now;
@@ -777,7 +814,7 @@ int main(int argc, char **argv)
             for (int visited = 0; visited < queues; visited++) {
                 uint16_t queue = next_queue;
                 next_queue = (uint16_t)((next_queue + 1) % queues);
-                rx_count = rte_eth_rx_burst(port, queue, rx, BURST);
+                rx_count = ker_worker_rx_lcores_burst(&rx_workers, queue, rx, BURST);
                 rx_by_queue[queue] += rx_count;
                 for (uint16_t index = 0; index < rx_count; index++)
                     if (rx[index]->ol_flags & RTE_MBUF_F_RX_RSS_HASH) rx_rss_metadata++;
@@ -861,7 +898,7 @@ int main(int argc, char **argv)
                 int remaining_us = ker_worker_tx_wait_us(&batch, tx_delay_us, tx_now);
                 if (wait_us > remaining_us) wait_us = remaining_us;
             }
-            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}};
+            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}, {rx_workers.notify_fd, POLLIN, 0}};
             /* Ethernet PMD RX has no channel readiness notification. Idle
              * channel TX and control wake ppoll; retained work uses bounded
              * retries and RX suffixes watch channel writability. Linux owns
@@ -869,7 +906,7 @@ int main(int argc, char **argv)
             if (bond_policy && wait_us > 10000) wait_us = 10000;
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
-            int result = ppoll(fds, 4, &timeout, NULL);
+            int result = ppoll(fds, 5, &timeout, NULL);
             if (!result) idle_timeouts++;
             else if (result < 0 && errno != EINTR) { perror("ker: idle wait"); status = 1; break; }
         }
@@ -882,6 +919,12 @@ clock_error:
 device_error:
     fprintf(stderr, "ker: ethdev initialization failed for %s\n", port_name);
 cleanup:
+    {
+        uint64_t abandoned;
+        if (ker_worker_rx_lcores_stop(&rx_workers, &abandoned, rx_capture.file ? &rx_capture : NULL)) { fprintf(stderr, "ker: RX lcore shutdown failed\n"); status = 1; }
+        rx_shutdown_discarded += abandoned;
+        for (uint16_t q = 0; q < rx_workers.queues; q++) rx_by_queue[q] = rx_workers.queue[q].polled;
+    }
     if (bond_policy && configured) {
         bond_member_count = ker_bond_members(port, bond_members, 16);
         if (bond_member_count < 0) { bond_member_count = 0; status = 1; }
@@ -912,7 +955,16 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"exception_console_charged\":%llu,\"exception_general_charged\":%llu,"
+    printf("KER_IO_DONE {\"rx_pollers\":[");
+    for (uint16_t q = 0; q < rx_workers.queues; q++) {
+        const struct ker_rx_poll_queue *poller = &rx_workers.queue[q];
+        printf("%s{\"queue\":%u,\"owner\":%u,\"lcore\":%u,\"cpu\":%d,\"packets\":%llu,\"polls\":%llu,\"stalled\":%llu,\"shutdown\":%llu}",
+            q ? "," : "", q, poller->owner, poller->observed, poller->cpu,
+            (unsigned long long)poller->polled, (unsigned long long)poller->polls,
+            (unsigned long long)poller->stalled, (unsigned long long)poller->shutdown);
+    }
+    printf("],");
+    printf("\"exception_console_charged\":%llu,\"exception_general_charged\":%llu,"
         "\"exception_console_dropped\":%llu,\"exception_general_dropped\":%llu,",
         (unsigned long long)exception.console_charged, (unsigned long long)exception.general_charged,
         (unsigned long long)exception.console_dropped, (unsigned long long)exception.general_dropped);
