@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import resource
 import signal
 from pathlib import Path
@@ -78,7 +79,8 @@ def wire(directory, mtu, dynamic=False, ceiling=False):
         expected = {(family, kind, seq) for family, kinds in ((4, (0, 8)), (6, (128, 129)))
                     for kind in kinds for seq in range(9 if dynamic else 3)}
         require(seen == expected, direction + ': missing requests/replies: ' + str(expected - seen))
-        require(request_count == 3, direction + ': expected three captured IPv4 echo requests')
+        require(request_count == (9 if dynamic else 3),
+                direction + ': expected three IPv4 echo requests per MTU phase')
         df_requests[direction] = request_count
     return df_requests
 
@@ -112,10 +114,12 @@ def main():
            '--iova-mode=va -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink')
     with tempfile.TemporaryDirectory(prefix='ker-icmp-mtu-') as directory:
         root = Path(directory)
-        profiles = ((1500, 'large', ''), (1500, 'scatter', ''), (1500, 'large', 'before'), (1500, 'large', 'after'), (1500, 'large', 'rollback'), (1500, 'large', 'ceiling')) if args.dynamic else ((1500, 'large', ''), (9000, 'large', ''), (9000, 'scatter', ''))
+        profiles = ((1500, 'large', ''), (1500, 'scatter', ''), (1500, 'large', 'before'), (1500, 'large', 'after'), (1500, 'large', 'rollback'), (1500, 'large', 'read-error'), (1500, 'large', 'read-mismatch'), (1500, 'large', 'rollback-read-error'), (1500, 'large', 'rollback-read-mismatch'), (1500, 'large', 'ceiling')) if args.dynamic else ((1500, 'large', ''), (9000, 'large', ''), (9000, 'scatter', ''))
         for mtu, mode, failure in profiles:
             name = str(mtu) + '-' + mode + ('-' + failure if failure else '')
-            injected = failure in ('before', 'after', 'rollback')
+            injected = failure in ('before', 'after', 'rollback', 'read-error', 'read-mismatch',
+                                   'rollback-read-error', 'rollback-read-mismatch')
+            readback_fault = failure in ('read-error', 'read-mismatch', 'rollback-read-error', 'rollback-read-mismatch')
             ceiling = failure == 'ceiling'
             for interface in ('kerhost', 'kerlink'):
                 subprocess.run(['ip', 'link', 'set', interface, 'mtu', str(mtu)], check=True)
@@ -128,7 +132,7 @@ def main():
                 '--address6', '2001:db8:1::2/64', '--port', 'net_tap0', '--eal', eal,
                 '--mtu', str(mtu), '--max-mtu', '1500' if ceiling else '9000', '--mbuf-mode', mode,
                 '--stats', str(stats), '--pcap-dir', str(capture), '--pcap-snaplen', '65535',
-                '--', str(args.app), ('dynamic-reject' if injected else ('dynamic-ceiling' if ceiling else 'dynamic')) if args.dynamic else 'native', str(mtu), '198.18.0.1', '2001:db8:1::1']
+                '--', str(args.app), ('dynamic-fault' if readback_fault else ('dynamic-reject' if injected else ('dynamic-ceiling' if ceiling else 'dynamic'))) if args.dynamic else 'native', str(mtu), '198.18.0.1', '2001:db8:1::1']
             with (root / (name + '.log')).open('w+') as log:
                 environment = dict(os.environ)
                 environment.pop('KER_TEST_MTU_FAILURE', None)
@@ -139,6 +143,26 @@ def main():
                                            stderr=log, text=True)
                 try:
                     ready(process)
+                    if readback_fault:
+                        output, _ = process.communicate(timeout=20)
+                        log.flush(); log.seek(0); errors = log.read()
+                        injection = ('INJECT: MTU readback error after PMD start generation=' if failure in ('read-error', 'rollback-read-error')
+                                     else 'INJECT: MTU readback mismatch after PMD start generation=')
+                        injected_at = errors.find(injection)
+                        match = re.search(r'generation=(\d+)', errors[injected_at:]) if injected_at >= 0 else None
+                        require(process.returncode != 0 and match,
+                                'readback ambiguity did not fail the native transaction: ' + output + errors)
+                        generation = match.group(1)
+                        stopped = errors.find('INJECT: actual PMD stop succeeded generation=' + generation, injected_at)
+                        close_record = 'INJECT: PMD close after stop=1 generation=' + generation + ' stopped_generation=' + generation
+                        closed = errors.find(close_record)
+                        require(stopped > injected_at and closed > stopped,
+                                'actual PMD was not stopped successfully before close: ' + errors)
+                        record = json.loads(stats.read_text())
+                        require(record['outstanding'] == 0,
+                                'readback ambiguity leaked actual PMD packet buffers')
+                        print('PASS: ' + failure + ' stopped actual PMD before close and freed all buffers', flush=True)
+                        continue
                     if failure == 'rollback':
                         process.communicate(timeout=20)
                         log.flush(); log.seek(0); errors = log.read()

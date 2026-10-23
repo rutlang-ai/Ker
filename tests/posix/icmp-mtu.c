@@ -82,7 +82,7 @@ static void echo(int family, int mtu, const char *target, unsigned phase)
     close(fd);
     printf("PASS: IPv%d ICMP payloads 0, 1, %d without fragmentation\n", family == AF_INET ? 4 : 6, sizes[2]);
 }
-static void dynamic(const char *target4, const char *target6, int reject)
+static void dynamic(const char *target4, const char *target6, int reject, int fault)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, 0), alias = dup(fd);
     check(fd >= 0 && alias >= 0, "MTU socket aliases");
@@ -117,6 +117,11 @@ static void dynamic(const char *target4, const char *target6, int reject)
         puts("ROLLBACK"); fflush(stdout);
         check(getchar() == 'R', "rollback verification gate");
     }
+    if (fault) {
+        interface.ifr_mtu = 9000;
+        (void)ioctl(alias, SIOCSIFMTU, &interface);
+        check(0, "ambiguous PMD readback unexpectedly succeeded");
+    }
     int values[] = {1500, reject == 2 ? 1500 : 9000, 1500};
     for (unsigned phase = 0; phase < 3; phase++) {
         interface.ifr_mtu = values[phase];
@@ -145,7 +150,7 @@ int main(int argc, char **argv)
     if (strncmp(argv[1], "dynamic", 7) == 0) {
         puts("READY"); fflush(stdout);
         dynamic(argv[3], argv[4], strcmp(argv[1], "dynamic-ceiling") == 0 ? 2 :
-            strcmp(argv[1], "dynamic-reject") == 0); return 0;
+            strcmp(argv[1], "dynamic-reject") == 0, strcmp(argv[1], "dynamic-fault") == 0); return 0;
     }
     if (strcmp(argv[1], "native") == 0) {
         puts("READY"); fflush(stdout);

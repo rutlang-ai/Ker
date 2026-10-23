@@ -137,15 +137,18 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
             if (message.status) {
                 /* Restore even if ethdev's cached MTU still says the old value:
                  * a PMD may fail after changing its underlying device. */
-                if (rte_eth_dev_stop(port) ||
-                    configure_mtu(port, *mtu, descriptors, allocation_socket, pool) ||
-                    rte_eth_dev_get_mtu(port, &actual) || actual != *mtu) return -1;
+                if (rte_eth_dev_stop(port)) return -1;
+                if (configure_mtu(port, *mtu, descriptors, allocation_socket, pool)) return -1;
+                *started = true;
+                if (rte_eth_dev_get_mtu(port, &actual) || actual != *mtu) return -1;
             } else {
+                /* configure_mtu() has restarted the PMD. Cleanup owns the stop
+                 * even if readback cannot prove which MTU the PMD applied. */
+                *started = true;
                 if (rte_eth_dev_get_mtu(port, &actual) || actual != requested) return -1;
                 (*changes)++;
                 *mtu = requested;
             }
-            *started = true;
         }
     } else if (message.operation != KER_MTU_GET) message.status = -EOPNOTSUPP;
     message.mtu = *mtu;
