@@ -65,6 +65,16 @@ int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *i
         .ether_type = ether_type, .rate_limit = rate_limit, .window_start = -1};
     return 0;
 }
+enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet)
+{
+    if (!bridge || !bridge->pending || !packet) return KER_EXCEPTION_NATIVE;
+    if (!bridge->port_mode) return ker_worker_exception_matches(bridge, packet) ? KER_EXCEPTION_HOST : KER_EXCEPTION_NATIVE;
+    enum ker_exception_class kind = ker_exception_classify(&bridge->filter, packet);
+    if (kind == KER_EXCEPTION_FRAGMENT) return KER_EXCEPTION_DROP;
+    if (kind == KER_EXCEPTION_NDP || ker_exception_arp(packet)) return KER_EXCEPTION_SHARED;
+    bool selected = kind == KER_EXCEPTION_SERVICE;
+    return (bridge->reject ? !selected : selected) ? KER_EXCEPTION_HOST : KER_EXCEPTION_NATIVE;
+}
 bool ker_worker_exception_matches(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet)
 {
     if (!bridge || !bridge->pending || !packet || packet->pkt_len < RTE_ETHER_HDR_LEN) return false;

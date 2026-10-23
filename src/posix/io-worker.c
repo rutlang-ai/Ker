@@ -258,6 +258,8 @@ int main(int argc, char **argv)
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL, *exception_iface = NULL;
     int exception_type = 0, exception_queue = 256, exception_rate = 0;
+    const char *exception_mode = "ethertype", *exception_policy = "accept", *exception_tcp = NULL, *exception_udp = NULL;
+    struct ker_exception_filter exception_filter;
     int idle_sleep_us = 1000, tx_delay_us = 0;
     int promiscuous = -1, tx_offloads = 0;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
@@ -273,7 +275,11 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--all-multicast")) { all_multicast = true; continue; }
         if (!strcmp(argv[i], "--pcap-nsec")) { pcap_nsec = true; continue; }
         if (i + 1 >= argc) break;
-        if (!strcmp(argv[i], "--exception-iface")) exception_iface = argv[++i];
+        if (!strcmp(argv[i], "--exception-mode")) exception_mode = argv[++i];
+        else if (!strcmp(argv[i], "--exception-policy")) exception_policy = argv[++i];
+        else if (!strcmp(argv[i], "--exception-tcp-ports")) exception_tcp = argv[++i];
+        else if (!strcmp(argv[i], "--exception-udp-ports")) exception_udp = argv[++i];
+        else if (!strcmp(argv[i], "--exception-iface")) exception_iface = argv[++i];
         else if (!strcmp(argv[i], "--exception-type")) exception_type = number(argv[++i]);
         else if (!strcmp(argv[i], "--exception-queue")) exception_queue = number(argv[++i]);
         else if (!strcmp(argv[i], "--exception-rate")) exception_rate = number(argv[++i]);
@@ -296,7 +302,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pcap-max-bytes")) pcap_maximum = number(argv[++i]);
         else break;
     }
-    if ((exception_iface && (exception_type < 1536 || exception_type > UINT16_MAX ||
+    bool port_filter = !strcmp(exception_mode, "ports");
+    if ((!port_filter && strcmp(exception_mode, "ethertype")) ||
+        (strcmp(exception_policy, "accept") && strcmp(exception_policy, "reject")) ||
+        (port_filter && (exception_type || !exception_iface || ker_exception_filter_init(&exception_filter, exception_tcp, exception_udp))) ||
+        (!port_filter && (exception_tcp || exception_udp || strcmp(exception_policy, "accept"))) ||
+        (exception_iface && ((!port_filter && (exception_type < 1536 || exception_type > UINT16_MAX)) ||
         exception_queue < 4 || exception_queue > 65536 || (exception_queue & (exception_queue - 1)) || exception_rate < 0)) ||
         (!exception_iface && (exception_type || exception_rate || exception_queue != 256))) return 1;
     if (!maximum_mtu) maximum_mtu = mtu;
@@ -347,6 +358,7 @@ int main(int argc, char **argv)
     struct rte_mempool *pool = NULL;
     struct rte_mbuf *pending_tx = NULL, *rx[BURST] = {0};
     uint16_t rx_count = 0, rx_index = 0, next_queue = 0;
+    bool rx_shared[BURST] = {0};
     uint64_t rx_by_queue[MAX_QUEUES] = {0}, rx_rss_metadata = 0;
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
@@ -563,8 +575,9 @@ int main(int argc, char **argv)
         struct rte_ether_addr exception_mac;
         if (rte_eth_macaddr_get(port, &exception_mac)) goto device_error;
         int result = ker_worker_exception_open(&exception, exception_iface, pool, &exception_mac, (unsigned)mtu,
-            (uint16_t)exception_type, (unsigned)exception_queue, (uint32_t)exception_rate);
+            (uint16_t)(port_filter ? RTE_ETHER_TYPE_IPV4 : exception_type), (unsigned)exception_queue, (uint32_t)exception_rate);
         if (result) { fprintf(stderr, "ker: host exception TAP startup failed: %s\n", strerror(-result)); goto cleanup; }
+        if (port_filter) { exception.port_mode = true; exception.reject = !strcmp(exception_policy, "reject"); exception.filter = exception_filter; }
     }
     int promiscuous_state = rte_eth_promiscuous_get(port);
     /* Membership filtering belongs to Linux. Until its receive-mode updates
@@ -769,6 +782,7 @@ int main(int argc, char **argv)
                 if (rx_count) break;
             }
             rx_index = 0;
+            memset(rx_shared, 0, sizeof(rx_shared));
             /* Each received frame is captured once, even if channel delivery
              * later retries or metadata validation rejects it. */
             if (pcap_dir) for (uint16_t i = 0; i < rx_count; ++i) {
@@ -787,7 +801,24 @@ int main(int argc, char **argv)
             if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && metadata_supported(packet))
                 bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
             if (bytes && frame_size_supported(bytes, length, mtu)) {
-                if (ker_worker_exception_matches(&exception, packet)) {
+                enum ker_exception_route route = ker_worker_exception_route(&exception, packet);
+                if (route == KER_EXCEPTION_DROP) {
+                    exception.fragment_dropped++; rx_dropped++;
+                    rte_pktmbuf_free(rx[rx_index]); rx[rx_index++] = NULL; progress = true; continue;
+                }
+                if (route == KER_EXCEPTION_SHARED && !rx_shared[rx_index]) {
+                    /* Exactly one deep copy even when native channel delivery
+                     * retains this RX suffix under backpressure. */
+                    struct rte_mbuf *copy = rte_pktmbuf_copy(packet, pool, 0, UINT32_MAX);
+                    rx_shared[rx_index] = true;
+                    if (copy) {
+                        int result = ker_worker_exception_enqueue(&exception, &copy);
+                        if (result && result != -ENOBUFS) { rte_pktmbuf_free(copy); status = 1; break; }
+                        exception.shared_selected++;
+                        if (ker_exception_arp(packet)) exception.shared_arp++;
+                    } else exception.shared_failed++;
+                }
+                if (route == KER_EXCEPTION_HOST) {
                     int result = ker_worker_exception_enqueue(&exception, &rx[rx_index]);
                     if (result && result != -ENOBUFS) { status = 1; break; }
                     rx_index++; progress = true; continue;
@@ -877,7 +908,10 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"exception_selected\":%llu,\"exception_enqueued\":%llu,"
+    printf("KER_IO_DONE {\"exception_shared_arp\":%llu,\"exception_shared_selected\":%llu,\"exception_shared_failed\":%llu,\"exception_fragment_dropped\":%llu,",
+        (unsigned long long)exception.shared_arp, (unsigned long long)exception.shared_selected, (unsigned long long)exception.shared_failed,
+        (unsigned long long)exception.fragment_dropped);
+    printf("\"exception_selected\":%llu,\"exception_enqueued\":%llu,"
         "\"exception_to_host\":%llu,\"exception_to_host_dropped\":%llu,\"exception_host_received\":%llu,"
         "\"exception_from_host\":%llu,\"exception_wire_dropped\":%llu,\"exception_shutdown_dropped\":%llu,"
         "\"exception_rate_dropped\":%llu,\"exception_malformed\":%llu,\"rx_by_queue\":[",

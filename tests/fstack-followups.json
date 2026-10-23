@@ -106,7 +106,7 @@
       "id": "kni-exception-bridge",
       "title": "Define a supported host exception bridge and KNI policy adaptation",
       "disposition": "adaptation-needed",
-      "reason": "An actual primary-worker Linux TAP exception interface, exclusive lifetime/MAC setup, bounded owned-mbuf queue, two-way original-PMD forwarding, partial/full drop ownership and source-compatible kernel batch gate now qualify eight integration scenarios. The remaining30 source cases require F-Stack protocol/port bitmaps, accept/reject/IPFW policy, general/console limits and shared-generation/non-owner/allocation contracts. Outer-EtherType selection is explicitly not those classifiers.",
+      "reason": "Actual original-DPDK classification now covers TCP/UDP port sets, malformed/disabled/match/miss guards, one-level IPIP, OSPF and NDP; real accept/reject worker policies serve host and native IPv4/IPv6 TCP/UDP through shared ARP/NDP. Seventeen additional source scenarios qualify. Remaining13 cases concern enqueue-time console/general budgets, IPFW/primary-lcore and generation/non-owner/allocation contracts. Static port ownership still lacks fragment reassembly/flow ownership and automatic cross-stack ephemeral discovery; explicit fragment drops are not migration completion.",
       "evidence": [
         "src/posix/packet-device.c",
         "tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c",
@@ -115,44 +115,32 @@
         "tools/ker-run.py",
         "tests/posix/exception-tap.c",
         "tests/posix/exception-tap.py",
-        "docs/host-exception.md"
+        "docs/host-exception.md",
+        "src/posix/worker-exception-filter.c",
+        "tests/posix/exception-filter.c",
+        "tests/posix/exception-services.py",
+        "tests/posix/exception-backpressure.c"
       ],
       "acceptance": [
         "Choose an actual supported DPDK/Linux exception device and explicit packet ownership boundary; do not add successful no-op KNI stubs.",
         "Verify RX/TX, partial acceptance, full queues, rate limits, malformed frames, IPv4/IPv6 classification and cleanup through real adapter paths.",
-        "Keep protocol decisions in original Linux; do not copy a simplified F-Stack/FreeBSD protocol parser as a replacement stack."
+        "Keep protocol decisions in original Linux; do not copy a simplified F-Stack/FreeBSD protocol parser as a replacement stack.",
+        "Resolve fragment/encapsulation and automatic local-port ownership with original Linux facilities, or keep an explicit unsupported boundary. Do not build Ker-owned reassembly or connection tracking merely to steer packets."
       ],
       "cases": [
         "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
-        "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_reject_ok",
-        "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_invalid_fails",
         "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_present_ok",
         "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_missing_fails",
         "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
         "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_console_ratelimit_over",
         "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_general_ratelimit_over",
         "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_filter_classification",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_short",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_non_ip_frame",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_disabled",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_disabled",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_oversized_ihl",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ipip_recurse",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_tcp_udp_port_bitmaps",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ospf_returns_ospf",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni",
-        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_null_port_lists",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_stats_oom",
-        "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_slot_oom",
-        "tests/unit/test_ff_dpdk_kni.c::test_p3_ndp_classification"
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_slot_oom"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/219"
     },

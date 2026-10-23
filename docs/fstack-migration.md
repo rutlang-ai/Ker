@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 151 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 168 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 196 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 179 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 10 | FreeBSD callout/内部 kqueue filter/mbuf 头字段断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 282 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 217 项是
-21 partial + 196 blocked，另有 10 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 265 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 200 项是
+21 partial + 179 blocked，另有 10 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -62,7 +62,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
 | Design generation-aware reload, IPC and drain ownership | 81 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 30 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Define a supported host exception bridge and KNI policy adaptation | 13 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
@@ -133,10 +133,10 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 26 | 9 | 61 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 28 | 9 | 59 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 2 | 59 | 0 | 0 |
-| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
+| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 15 | 0 | 10 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 25 | 0 | 9 | 0 | 0 |
@@ -1044,3 +1044,19 @@ PACKET_HOST 分类、原 native UDP 共存和 RX/TX 抓包。8 项 integration �
 adapted；这不是 F-Stack 私有 globals/virtio_user 热插拔 ABI 或协议/端口位图等价。
 其余 30 项 KNI 源合同继续在 #219 跟踪。当前151 adapted、21partial、196blocked、
 10架构特定、55harness-only，共217项 blocked/partial，完整迁移门禁仍失败。
+
+## 原始 DPDK 协议分类与宿主/native 端口分流
+
+新增 `exception_mode=ports`、TCP/UDP 端口列表及 accept/reject 策略，复用
+原始 DPDK 解析器提供跨 mbuf 的头部几何。ARP/NDP 控制帧只复制一次到宿主，
+原帧继续给原始 native Linux；真实通道背压也不能重复复制。独立 peer 网络命名
+空间与两个原始 Linux 栈实际完成 IPv4/IPv6 TCP/UDP 收发，返回身份和完整非周期
+数据验证实际归属，两种策略均通过。
+
+15 项协议/端口初始化源场景和2项策略配置场景进入 adapted。源用例的短内层
+IPIP 拒绝之外，还检查完整内层匹配/不匹配，避免靠一律拒绝隧道通过负例。NDP
+五种类型与非 NDP/截断帧独立核对。端口模式对分片明确丢弃计数，不增加 Ker
+重组或流状态替代实现；深层封装、自动临时端口归属仍未完成并保留在 #219。
+
+当前168 adapted、21 partial、179 blocked、10架构特定、55 harness-only，
+共200项 blocked/partial；KNI 源案例仍有13项，完整迁移门禁继续失败。

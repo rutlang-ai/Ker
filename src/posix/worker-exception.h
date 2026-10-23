@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <rte_mbuf.h>
 #include <rte_ring.h>
+#include "worker-exception-filter.h"
+enum ker_exception_route { KER_EXCEPTION_NATIVE, KER_EXCEPTION_HOST, KER_EXCEPTION_SHARED, KER_EXCEPTION_DROP };
 struct ker_pcap;
 struct rte_ether_addr;
 struct ker_worker_exception {
@@ -13,6 +15,9 @@ struct ker_worker_exception {
     struct rte_ring *pending;
     unsigned owner;
     uint16_t ether_type;
+    bool port_mode, reject;
+    struct ker_exception_filter filter;
+    uint64_t shared_selected, shared_arp, shared_failed, fragment_dropped;
     uint32_t rate_limit;
     int64_t window_start;
     uint64_t window_packets, selected, enqueued, to_host, to_host_dropped;
@@ -23,6 +28,8 @@ struct ker_worker_exception {
  * No vnet header/offloads; caller owns only complete Ethernet frames. */
 int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *iface,
     struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit);
+enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *, const struct rte_mbuf *);
+/* Outer EtherType predicate; route() also handles port/control policies. */
 bool ker_worker_exception_matches(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet);
 /* Same lcore as open/poll/close. Successful enqueue or -ENOBUFS consumes and
  * NULLs *packet, including freeing a full-queue drop. Other errors retain it. */
