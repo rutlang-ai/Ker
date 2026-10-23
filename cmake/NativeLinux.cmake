@@ -896,6 +896,9 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-native-run-stop-test>")
     set_tests_properties(native-fstack-run-stop PROPERTIES TIMEOUT 150 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-run-stop-shutdown-unit
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_run_shutdown.py")
+    set_tests_properties(native-fstack-run-stop-shutdown-unit PROPERTIES TIMEOUT 10 LABELS fstack)
     add_executable(ker-vhost-bridge-test tests/posix/vhost-bridge.c)
     target_compile_options(ker-vhost-bridge-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-vhost-bridge-test PRIVATE PkgConfig::DPDK)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a POSIX application against imported Linux, with DPDK Ethernet I/O."""
 import argparse
+import concurrent.futures
 import configparser
 import ipaddress
 import json
@@ -815,6 +816,19 @@ def collect_worker(process, stats):
     return stats, failed or process.returncode != 0 or stats is None
 
 
+def finish_concurrently(operations):
+    """Run bounded worker reaps together and return each result or exception."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(operations)) as pool:
+        futures = [pool.submit(operation) for operation in operations]
+        results = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except Exception as error:  # Keep reaping the remaining workers on one failure.
+                results.append(error)
+        return results
+
+
 def main():
     args = parse_arguments()
     library = args.library.resolve(strict=True)
@@ -943,7 +957,7 @@ def main():
                 exit_code = app.wait(timeout=0.25)
                 if exit_code < 0:
                     preserve_signal = True
-                else:
+                elif not run_finished:
                     failure = unexpected_worker_exit(worker, additional)
                     if failure:
                         exit_code = 125
@@ -975,10 +989,15 @@ def main():
                     control_write = -1
                     for extra in additional:
                         extra.stop_channels()
-                    stats, failed = collect_worker(worker, stats)
+                    operations = [lambda: collect_worker(worker, stats)]
+                    operations.extend(extra.finish for extra in additional)
+                    reaped = finish_concurrently(operations)
                     worker_finished = True
-                    for extra in additional:
-                        failed |= extra.finish()
+                    failed = True
+                    if not isinstance(reaped[0], Exception):
+                        stats, failed = reaped[0]
+                    for result in reaped[1:]:
+                        failed |= result if isinstance(result, bool) else True
                     failed |= b'KER_NATIVE_DONE\n' not in startup_status
                     failed |= stats is None or stats.get('outstanding', 1) != 0
                     if stats is not None:
@@ -994,9 +1013,10 @@ def main():
                     if time.monotonic() - stopping_at > 5:
                         raise RuntimeError('native kernel teardown timed out')
                 else:
-                    failure = unexpected_worker_exit(worker, additional)
-                    if failure:
-                        raise RuntimeError(failure)
+                    if not run_finished:
+                        failure = unexpected_worker_exit(worker, additional)
+                        if failure:
+                            raise RuntimeError(failure)
     except (KeyboardInterrupt, Interrupted) as interruption:
         preserve_signal = True
         signum = interruption.signum if isinstance(interruption, Interrupted) else signal.SIGINT

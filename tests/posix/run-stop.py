@@ -90,7 +90,8 @@ def main():
                             futures.append(executor.submit(peer, sock, tcp, payload))
                     result = subprocess.run([sys.executable, str(args.launcher), '--config', str(config),
                         '--library', str(args.library), '--io-worker', str(wrapper), '--stats', str(stats),
-                        '--', str(args.app), mode, str(port), str(pids)], capture_output=True, text=True, timeout=35)
+                        '--', str(args.app), mode, str(port), str(pids)], capture_output=True, text=True, timeout=35,
+                        env=os.environ | {'RUNTIME_DIRECTORY': str(root)})
                     require(result.returncode == (125 if mode == 'worker-failure' else 0),
                             mode + ': launcher failed: ' + result.stdout + result.stderr)
                     require('PASS: ' + mode in result.stdout, 'missing native post-return evidence: ' + result.stdout)
