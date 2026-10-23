@@ -211,6 +211,8 @@ def main():
                                             record['native']['udp_out_datagrams'] > 0,
                                             'native TCP/UDP counters or zero-buffer cleanup missing: ' + str(record))
                                         if startup_flood:
+                                            print('DPDK startup-drain runtime evidence: ' +
+                                                json.dumps(record, sort_keys=True), flush=True)
                                             require(record['rx_startup_discarded'] > 256 and
                                                 record['io']['driver'] == 'net_virtio_user' and
                                                 record['io']['rx_descriptors'] == 4096 and
