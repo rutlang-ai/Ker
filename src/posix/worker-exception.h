@@ -17,7 +17,7 @@ struct ker_worker_exception {
     uint16_t ether_type;
     bool port_mode, reject;
     struct ker_exception_filter filter;
-    uint64_t shared_selected, shared_arp, shared_failed, fragment_dropped;
+    uint64_t shared_selected, shared_arp, shared_icmp_error, shared_failed, fragment_dropped;
     uint32_t rate_limit;
     int64_t window_start;
     uint64_t window_packets, selected, enqueued, to_host, to_host_dropped;

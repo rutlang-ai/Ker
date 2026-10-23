@@ -67,6 +67,15 @@ int main(void)
     ipv6(0,0);ip[40]=17;ip[41]=0;ip[50]=0;ip[51]=53;CHECK(classify(56,0x86dd)==KER_EXCEPTION_SERVICE);
     CHECK(classify(52,0x86dd)==KER_EXCEPTION_UNKNOWN);
     ipv4(17,53);ip[6]=0x20;CHECK(classify(28,0x0800)==KER_EXCEPTION_FRAGMENT);
+    /* Error messages go to both original stacks; echoes/unknowns keep policy routing. */
+    ipv4(1,0);ip[20]=3;ip[21]=4;CHECK(classify(28,0x0800)==KER_EXCEPTION_ICMP_ERROR);
+    CHECK(classify(27,0x0800)==KER_EXCEPTION_UNKNOWN);
+    ip[20]=8;CHECK(classify(28,0x0800)==KER_EXCEPTION_UNKNOWN);
+    ip[20]=99;CHECK(classify(28,0x0800)==KER_EXCEPTION_UNKNOWN);
+    ipv6(58,0);ip[40]=2;CHECK(classify(48,0x86dd)==KER_EXCEPTION_ICMP_ERROR);
+    CHECK(classify(47,0x86dd)==KER_EXCEPTION_UNKNOWN);
+    ip[40]=128;CHECK(classify(48,0x86dd)==KER_EXCEPTION_UNKNOWN);
+    ip[40]=200;CHECK(classify(48,0x86dd)==KER_EXCEPTION_UNKNOWN);
     struct ker_exception_filter retained=filter;
     for(unsigned i=0;i<4;i++){const char*bad[]={"65536","80-1","80,","-1"};CHECK(ker_exception_filter_init(&filter,bad[i],NULL)==-EINVAL&&!memcmp(&filter,&retained,sizeof(filter)));}
     CHECK(ker_exception_filter_init(&filter,"80","bad")==-EINVAL&&!memcmp(&filter,&retained,sizeof(filter)));

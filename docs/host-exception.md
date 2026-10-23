@@ -131,17 +131,21 @@ With `accept`, a selected local destination port goes to host Linux; other
 services go to imported Linux. With `reject`, selected ports go to imported
 Linux and other services go to the host. This follows the pinned F-Stack
 accept/reject dispatch policy. OSPF has a distinct classification and follows
-the non-service policy. NDP types 133..137 are distinct from ordinary ICMPv6
-and UDP; ARP and NDP are deep-copied to the host while their original frames
-continue to imported Linux. This allows two original stacks sharing the wire
-MAC/address to learn the independent peer. Both stacks' addresses and service
-bindings must be configured by the caller; the bridge does not assign host IPs.
+the non-service policy. NDP types 133..137 are distinct from ordinary ICMPv6.
+IPv4 ICMP error types 3, 4, 5, 11 and 12, and IPv6 ICMPv6 error types 1..4,
+are deep-copied to the host while their original frames continue to imported
+Linux. Echo, other informational and unknown ICMP messages retain the selected
+service policy. The classifier reads only the bounded outer ICMP header;
+original Linux validates checksums and quotations and owns error-queue and PMTU
+processing. ARP and NDP retain their existing shared-copy behavior. Both
+stacks' addresses and service bindings must be configured by the caller; the
+bridge does not assign host IPs.
 
-A retained native RX suffix is marked after its first control-copy attempt,
-so channel backpressure cannot repeatedly clone the same ARP/NDP frame. Clone
-allocation failure is counted; the original native frame remains owned by its
-existing path. A full host queue consumes only its clone, leaving the original
-native delivery intact.
+A retained native RX suffix is marked after its first shared-copy attempt,
+so channel backpressure cannot repeatedly clone the same ARP/NDP or ICMP error
+frame. Clone allocation failure is counted; the original native frame remains
+owned by its existing path. A full host queue consumes only its clone, leaving
+the original native delivery intact.
 
 Live acceptance covers unicast TCP/UDP service ownership; full F-Stack
 multicast data/generation fanout remains unqualified.
@@ -167,9 +171,12 @@ peer namespace. For both accept and reject policies, host and imported Linux
 serve independent IPv4/IPv6 TCP and UDP sockets on one wire MAC/address. Replies
 identify their actual stack and preserve full nonperiodic payloads. The native
 kernel must record exactly two passive opens and one UDP receive per family.
-Three actual native-channel ARP sends are forced to EAGAIN; independent RX PCAP
-ARP counts must still equal the host-copy count. Two actual wire fragments
-exercise explicit rejection. Every shared/selected mbuf must be reclaimed.
+Three actual native-channel ARP sends and one each of IPv4 frag-needed and
+IPv6 Packet Too Big are forced to EAGAIN. The TAP capture and independent RX
+PCAP must each contain exactly one copy of both ICMP errors under both
+policies; ARP RX counts must still equal the host-copy count. Two actual wire
+fragments exercise explicit rejection. The test verifies delivery and ownership,
+not completion of a PMTU update. Every shared/selected mbuf must be reclaimed.
 
 The same CTest validates accepted `reject` configuration and rejected invalid
 policy before application entry. Source adaptation covers 15 classification /

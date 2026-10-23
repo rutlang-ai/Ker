@@ -71,7 +71,7 @@ enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exce
     if (!bridge->port_mode) return ker_worker_exception_matches(bridge, packet) ? KER_EXCEPTION_HOST : KER_EXCEPTION_NATIVE;
     enum ker_exception_class kind = ker_exception_classify(&bridge->filter, packet);
     if (kind == KER_EXCEPTION_FRAGMENT) return KER_EXCEPTION_DROP;
-    if (kind == KER_EXCEPTION_NDP || ker_exception_arp(packet)) return KER_EXCEPTION_SHARED;
+    if (kind == KER_EXCEPTION_NDP || kind == KER_EXCEPTION_ICMP_ERROR || ker_exception_arp(packet)) return KER_EXCEPTION_SHARED;
     bool selected = kind == KER_EXCEPTION_SERVICE;
     return (bridge->reject ? !selected : selected) ? KER_EXCEPTION_HOST : KER_EXCEPTION_NATIVE;
 }

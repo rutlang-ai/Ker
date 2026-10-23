@@ -816,6 +816,8 @@ int main(int argc, char **argv)
                         if (result && result != -ENOBUFS) { rte_pktmbuf_free(copy); status = 1; break; }
                         exception.shared_selected++;
                         if (ker_exception_arp(packet)) exception.shared_arp++;
+                        if (!result && ker_exception_classify(&exception.filter, packet) == KER_EXCEPTION_ICMP_ERROR)
+                            exception.shared_icmp_error++;
                     } else exception.shared_failed++;
                 }
                 if (route == KER_EXCEPTION_HOST) {
@@ -908,8 +910,9 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"exception_shared_arp\":%llu,\"exception_shared_selected\":%llu,\"exception_shared_failed\":%llu,\"exception_fragment_dropped\":%llu,",
-        (unsigned long long)exception.shared_arp, (unsigned long long)exception.shared_selected, (unsigned long long)exception.shared_failed,
+    printf("KER_IO_DONE {\"exception_shared_arp\":%llu,\"exception_shared_selected\":%llu,\"exception_shared_icmp_error\":%llu,\"exception_shared_failed\":%llu,\"exception_fragment_dropped\":%llu,",
+        (unsigned long long)exception.shared_arp, (unsigned long long)exception.shared_selected,
+        (unsigned long long)exception.shared_icmp_error, (unsigned long long)exception.shared_failed,
         (unsigned long long)exception.fragment_dropped);
     printf("\"exception_selected\":%llu,\"exception_enqueued\":%llu,"
         "\"exception_to_host\":%llu,\"exception_to_host_dropped\":%llu,\"exception_host_received\":%llu,"

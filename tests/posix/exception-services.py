@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import time
 import signal
 import socket
 import subprocess
@@ -50,6 +51,37 @@ def line(process):
 
 def payload(size):
     return bytes((i * 17 + (i >> 8)) & 255 for i in range(size))
+
+
+def checksum(data):
+    if len(data) & 1:
+        data += b'\0'
+    total = sum(struct.unpack('!' + 'H' * (len(data) // 2), data))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+
+def icmp_mtu_frames():
+    source4, destination4 = socket.inet_aton('198.18.0.1'), socket.inet_aton('198.18.0.2')
+    quoted4 = bytearray(struct.pack('!BBHHHBBH4s4s', 0x45, 0, 28, 901, 0, 64, 17, 0,
+                                     destination4, source4))
+    struct.pack_into('!H', quoted4, 10, checksum(quoted4))
+    quoted4 += struct.pack('!HHHH', 45001, 45002, 8, 0)
+    error4 = bytearray(struct.pack('!BBHI', 3, 4, 0, 1400) + quoted4)
+    struct.pack_into('!H', error4, 2, checksum(error4))
+    outer4 = bytearray(struct.pack('!BBHHHBBH4s4s', 0x45, 0, 20 + len(error4), 902, 0, 64, 1, 0,
+                                   source4, destination4))
+    struct.pack_into('!H', outer4, 10, checksum(outer4))
+    source6 = socket.inet_pton(socket.AF_INET6, '2001:db8:1::1')
+    destination6 = socket.inet_pton(socket.AF_INET6, '2001:db8:1::2')
+    quoted6 = struct.pack('!IHBB16s16s', 6 << 28, 8, 17, 64, destination6, source6)
+    quoted6 += struct.pack('!HHHH', 45001, 45002, 8, 0)
+    error6 = bytearray(struct.pack('!BBHI', 2, 0, 0, 1400) + quoted6)
+    pseudo = source6 + destination6 + struct.pack('!I3xB', len(error6), 58)
+    struct.pack_into('!H', error6, 2, checksum(pseudo + error6))
+    outer6 = struct.pack('!IHBB16s16s', 6 << 28, len(error6), 58, 64, source6, destination6)
+    return [(0x0800, outer4 + error4), (0x86dd, outer6 + error6)]
 
 
 def receive(fd, count):
@@ -133,7 +165,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ker-service-steer-') as directory:
         root = Path(directory)
         for policy in ('accept', 'reject'):
-            peer = app = None
+            peer = app = host_capture = None
             sockets = []
             with (root / (policy + '.peer.log')).open('w+') as peer_log, (root / (policy + '.app.log')).open('w+') as app_log:
                 try:
@@ -177,6 +209,16 @@ def main():
                             require(injection.send(frame) == len(frame), 'fragment boundary injection incomplete')
                     ip('addr', 'add', '198.18.0.2/24', 'dev', 'hostservices')
                     ip('-6', 'addr', 'add', '2001:db8:1::2/64', 'dev', 'hostservices', 'nodad')
+                    ip('link', 'set', 'hostservices', 'promisc', 'on')
+                    host_capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW | socket.SOCK_NONBLOCK, socket.htons(3))
+                    host_capture.bind(('hostservices', 0))
+                    # Bounded, checksummed error frames enter the genuine worker;
+                    # Linux retains quote validation and PMTU/error processing.
+                    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3)) as injection:
+                        injection.bind(('wirepeer', 0))
+                        for ether_type, packet in icmp_mtu_frames():
+                            frame = mac + bytes.fromhex('021122334466') + ether_type.to_bytes(2, 'big') + packet
+                            require(injection.send(frame) == len(frame), 'ICMP MTU error injection incomplete')
                     for family, address in ((socket.AF_INET, '198.18.0.2'), (socket.AF_INET6, '2001:db8:1::2')):
                         for tcp in (True, False):
                             fd = socket.socket(family, socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM); sockets.append(fd)
@@ -190,6 +232,24 @@ def main():
                         require(line(app) == 'NATIVE_DONE', 'native data path failed')
                         require(line(peer) == 'REMOTE_DONE', 'remote data phase failed')
                         for future in services: future.result(timeout=2)
+                        # Continue briefly after seeing both types so a duplicate
+                        # host copy cannot hide behind the first matching pair.
+                        host_errors = {}
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline:
+                            with selectors.DefaultSelector() as selector:
+                                selector.register(host_capture, selectors.EVENT_READ)
+                                timeout = min(0.25, deadline - time.monotonic()) if len(host_errors) == 2 else deadline - time.monotonic()
+                                if not selector.select(max(0, timeout)): break
+                            frame = host_capture.recv(2048)
+                            if frame[12:14] == b'\x08\x00' and len(frame) >= 42 and frame[23] == 1 and frame[34:36] == b'\x03\x04':
+                                key = 'ipv4-frag-needed'
+                            elif frame[12:14] == b'\x86\xdd' and len(frame) >= 62 and frame[20] == 58 and frame[54] == 2:
+                                key = 'ipv6-packet-too-big'
+                            else: continue
+                            host_errors[key] = host_errors.get(key, 0) + 1
+                        require(host_errors == {'ipv4-frag-needed': 1, 'ipv6-packet-too-big': 1},
+                                'host TAP did not receive exactly one copy of each ICMP error: ' + str(host_errors))
                         output, _ = app.communicate('Q', timeout=15)
                         require(app.returncode == 0 and 'PASS: original native' in output, 'native shutdown failed: ' + output)
                         peer_out, _ = peer.communicate('QUIT\n', timeout=10)
@@ -197,7 +257,8 @@ def main():
                     record = json.loads(stats.read_text())
                     require(record['outstanding'] == 0 and record['exception_to_host'] > 0 and record['exception_from_host'] > 0
                             and record['exception_shared_selected'] > 0 and record['exception_shared_failed'] == 0
-                            and record['exception_fragment_dropped'] == 2, 'missing real steering/control ownership: ' + str(record))
+                            and record['exception_shared_icmp_error'] == 2 and record['exception_fragment_dropped'] == 2,
+                            'missing real steering/control ownership: ' + str(record))
                     require(record['native']['active_opens'] == 0 and record['native']['passive_opens'] == 2
                             and record['native']['udp_in_datagrams'] == record['native']['udp6_in_datagrams'] == 1,
                             'wrong original-native socket traffic counters: ' + str(record['native']))
@@ -205,9 +266,12 @@ def main():
                             - record['exception_shared_selected'] + record['rx_shutdown_discarded'] - record['rx_startup_discarded'],
                             'shared control frames were double counted')
                     app_log.flush(); app_log.seek(0); trace = app_log.read()
-                    require(trace.count('INJECT: exception ARP native-channel EAGAIN') == 3 and record['rx_retries'] >= 3,
-                            'actual native-channel backpressure was not exercised')
+                    require(trace.count('INJECT: exception ARP native-channel EAGAIN') == 3
+                            and trace.count('INJECT: IPv4 frag-needed native-channel EAGAIN') == 1
+                            and trace.count('INJECT: IPv6 Packet-Too-Big native-channel EAGAIN') == 1
+                            and record['rx_retries'] >= 5, 'actual native-channel backpressure was not exercised')
                     arp_frames = 0
+                    mtu_errors = {}
                     for path in capture.glob('ker-rx-*.pcap'):
                         data = path.read_bytes(); endian = '<' if data[:4] == b'\xd4\xc3\xb2\xa1' else '>'
                         offset = 24
@@ -216,14 +280,21 @@ def main():
                             require(length == original and offset + length <= len(data), 'truncated RX frame')
                             frame = data[offset:offset + length]; offset += length
                             if frame[12:14] == b'\x08\x06': arp_frames += 1
+                            if frame[12:14] == b'\x08\x00' and len(frame) >= 42 and frame[23] == 1 and frame[34:36] == b'\x03\x04':
+                                mtu_errors['ipv4-frag-needed'] = mtu_errors.get('ipv4-frag-needed', 0) + 1
+                            if frame[12:14] == b'\x86\xdd' and len(frame) >= 62 and frame[20] == 58 and frame[54] == 2:
+                                mtu_errors['ipv6-packet-too-big'] = mtu_errors.get('ipv6-packet-too-big', 0) + 1
+                    require(mtu_errors == {'ipv4-frag-needed': 1, 'ipv6-packet-too-big': 1},
+                            'native RX did not receive exactly one copy of each ICMP error: ' + str(mtu_errors))
                     require(arp_frames > 0 and arp_frames == record['exception_shared_arp'],
                             'retained RX control frame cloned more than once: ' + str(record))
-                    print('PASS: ' + policy + ' policy; actual host/native IPv4/IPv6 TCP/UDP and shared ARP/NDP; zero mbufs', flush=True)
+                    print('PASS: ' + policy + ' policy; host/native ICMP error copies survive EAGAIN; actual TCP/UDP; zero mbufs', flush=True)
                 except BaseException:
                     for log in (peer_log, app_log):log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
                     raise
                 finally:
                     for fd in sockets:fd.close()
+                    if host_capture is not None: host_capture.close()
                     stop(app); stop(peer)
         # Invalid policy/ports must fail parsing before worker or app entry.
         invalid = root / 'invalid.ini'; invalid.write_text(config.read_text().replace('exception_policy=reject','exception_policy=invalid'))

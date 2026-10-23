@@ -55,8 +55,6 @@ enum ker_exception_class ker_exception_classify(const struct ker_exception_filte
     if (!packet) return KER_EXCEPTION_UNKNOWN;
     struct rte_net_hdr_lens lengths = {0};
     uint32_t type = rte_net_get_ptype(packet, &lengths, RTE_PTYPE_ALL_MASK);
-    if ((type & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_FRAG ||
-        (type & RTE_PTYPE_INNER_L4_MASK) == RTE_PTYPE_INNER_L4_FRAG) return KER_EXCEPTION_FRAGMENT;
     unsigned l3 = lengths.l2_len, l3_size = lengths.l3_len;
     unsigned family = type & RTE_PTYPE_L3_MASK;
     bool ipv4 = family == RTE_PTYPE_L3_IPV4 || family == RTE_PTYPE_L3_IPV4_EXT;
@@ -76,6 +74,7 @@ enum ker_exception_class ker_exception_classify(const struct ker_exception_filte
         struct rte_ipv4_hdr temporary;
         const struct rte_ipv4_hdr *ip = rte_pktmbuf_read(packet, l3, sizeof(temporary), &temporary);
         if (!ip || l3_size < sizeof(temporary) || offset > packet->pkt_len) return KER_EXCEPTION_UNKNOWN;
+        if (rte_be_to_cpu_16(ip->fragment_offset) & 0x3fff) return KER_EXCEPTION_FRAGMENT;
         protocol = ip->next_proto_id;
     } else if (ipv6) {
         struct rte_ipv6_hdr temporary;
@@ -87,10 +86,17 @@ enum ker_exception_class ker_exception_classify(const struct ker_exception_filte
         if (protocol < 0 || parsed > packet->pkt_len || parsed != offset) return KER_EXCEPTION_UNKNOWN;
     } else return KER_EXCEPTION_UNKNOWN;
     if (protocol == 89) return KER_EXCEPTION_OSPF;
-    if (ipv6 && protocol == IPPROTO_ICMPV6) {
+    if ((ipv4 && protocol == IPPROTO_ICMP) || (ipv6 && protocol == IPPROTO_ICMPV6)) {
         unsigned char temporary[8];
         const unsigned char *icmp = rte_pktmbuf_read(packet, offset, sizeof(temporary), temporary);
-        return icmp && icmp[0] >= 133 && icmp[0] <= 137 ? KER_EXCEPTION_NDP : KER_EXCEPTION_UNKNOWN;
+        if (!icmp) return KER_EXCEPTION_UNKNOWN;
+        if (ipv6 && icmp[0] >= 133 && icmp[0] <= 137) return KER_EXCEPTION_NDP;
+        /* Share only defined network-error message classes. Linux owns all
+         * validation, quote matching and PMTU/error-queue processing. */
+        if (ipv4 && (icmp[0] == 3 || icmp[0] == 4 || icmp[0] == 5 || icmp[0] == 11 || icmp[0] == 12))
+            return KER_EXCEPTION_ICMP_ERROR;
+        if (ipv6 && icmp[0] >= 1 && icmp[0] <= 4) return KER_EXCEPTION_ICMP_ERROR;
+        return KER_EXCEPTION_UNKNOWN;
     }
     if (!filter) return KER_EXCEPTION_UNKNOWN;
     const unsigned char *bitmap;
