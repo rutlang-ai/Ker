@@ -4423,15 +4423,9 @@
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_basic",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Real host thread creation, identity and joining are verified, together with actual LKL pthread TLS isolation.",
-      "ker_tests": [
-        {
-          "ctest": "native-fstack-thread-runtime",
-          "provenance_case": "native-fstack-thread-runtime"
-        }
-      ],
-      "remaining": "F-Stack inherits the opaque FreeBSD pcurthread pointer; LKL does not expose that contract. Child pthread TLS is intentionally empty, so this is not equivalent context propagation."
+      "status": "architecture-specific",
+      "reason": "Architecture-specific source assertion: the child must inherit the exact opaque FreeBSD pcurthread pointer from its parent. Original Linux/LKL manages its own task context; Ker host pthread TLS is intentionally isolated. Real create/argument/join/TLS evidence remains in native-fstack-thread-runtime, but is not a pass for FreeBSD context inheritance. Exact disposition: docs/fstack-thread-contracts.md and issue231.",
+      "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_arg_passed",
@@ -4448,15 +4442,9 @@
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_join_retval",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Real LKL threads complete work and join successfully; joined results are observed through owned argument storage.",
-      "ker_tests": [
-        {
-          "ctest": "native-fstack-thread-runtime",
-          "provenance_case": "native-fstack-thread-runtime"
-        }
-      ],
-      "remaining": "LKL takes a void start routine and thread_join has no result pointer. The F-Stack-specific assertion that a non-NULL routine return becomes NULL cannot be expressed through this callback API."
+      "status": "architecture-specific",
+      "reason": "Architecture-specific F-Stack wrapper assertion: a void* start routine returns non-NULL, but ff_start_routine discards it and pthread_join writes NULL into a caller result slot. Pinned LKL thread_create takes void (*)(void*) and thread_join takes only a thread handle, so neither tested return/result slot exists. Do not fabricate a result-returning callback or count owned argument completion as equivalent. Exact disposition: docs/fstack-thread-contracts.md and issue231.",
+      "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_malloc_failure",
@@ -4473,8 +4461,8 @@
     {
       "id": "tests/unit/test_ff_thread.c::test_ff_pthread_create_failfast",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack pthread wrapper propagates FreeBSD pcurthread/per-CPU TLS and injects ff_malloc failures; Ker/LKL has a different host-thread runtime.",
+      "status": "architecture-specific",
+      "reason": "Architecture-specific FreeBSD PCPU assertion: despite its name, the source body does not create a thread or inject allocation failure. It clears pcurthread/pcpup, then invokes the test-local ff_pcpu_get/PCPU_GET(curcpu) mirror and expects wrapped panic. Original Linux/LKL has no such FreeBSD TLS/accessor. Ker panic-abort tests do not execute this macro and are not equivalent. Exact disposition: docs/fstack-thread-contracts.md and issue231.",
       "ker_tests": []
     },
     {
