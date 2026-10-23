@@ -606,28 +606,6 @@
         "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_timeout_is_no_data"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/233"
-    },
-    {
-      "id": "mtu-checklist",
-      "title": "Replace the upstream manual MTU checklist with complete native acceptance",
-      "disposition": "adaptation-needed",
-      "reason": "The manual shell script is not execution evidence. native-fstack-icmp-mtu now verifies static1500/large9000/scatter9000 and IPv4/IPv6 ICMP over DPDK, including full wire frames and ownership. The source entry remains partial because live9000-to1500 propagation across Linux and PMD is still missing.",
-      "evidence": [
-        "tests/upstream/fstack/tests/integration/test_mtu.sh",
-        "tests/posix/fstack-jumbo.c",
-        "tests/posix/udp-path-mtu.py",
-        "tests/posix/icmp-mtu.c",
-        "tests/posix/icmp-mtu.py"
-      ],
-      "acceptance": [
-        "Map all five checklist steps to real nontrivial assertions, distinguishing ICMP ping payloads from UDP/TCP evidence.",
-        "Validate legacy1500, both mbuf profiles at9000, a live9000-to1500 change across original Linux and the real PMD, and IPv6 large ICMP packets, or explicitly document unavailable hardware requirements.",
-        "Never count the shell script unconditional ALL PASS output or an MTU parser test as end-to-end packet acceptance."
-      ],
-      "cases": [
-        "tests/integration/test_mtu.sh::entrypoint"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/234"
     }
   ]
 }

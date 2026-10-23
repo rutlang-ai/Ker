@@ -212,7 +212,7 @@ def parse_arguments(argv=None):
         help='ID=IPv6 default gateway on a configured VLAN; replaces INI VLAN gateways; one default allowed')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
-    parser.add_argument('--max-mtu', type=int, help='deployment MTU ceiling, 1280..9000 (default 9000)')
+    parser.add_argument('--max-mtu', type=int, help='startup/live MTU ceiling and large-buffer capacity, 1280..9000 (default 9000)')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
     parser.add_argument('--sysctl', dest='sysctls', action='append', type=sysctl_setting,
@@ -445,6 +445,7 @@ def main():
     library = args.library.resolve(strict=True)
     worker_path = args.io_worker.resolve(strict=True)
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
+    mtu_app, mtu_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     control_read, control_write = os.pipe2(os.O_CLOEXEC)
     startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     signal.signal(signal.SIGTERM, interrupted)
@@ -472,9 +473,10 @@ def main():
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, '--', *args.eal_args],
-            pass_fds=(channel_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
+            '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, '--', *args.eal_args],
+            pass_fds=(channel_io.fileno(), mtu_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
+        mtu_io.close()
         os.close(control_read)
         control_read = -1
         with selectors.DefaultSelector() as selector:
@@ -493,6 +495,7 @@ def main():
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
+            KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
@@ -530,8 +533,9 @@ def main():
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
         app_guard = worker_path.parent / 'ker-app'
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
-            pass_fds=(channel_app.fileno(), startup_write))
+            pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write))
         channel_app.close()
+        mtu_app.close()
         os.close(startup_write)
         startup_write = -1
         with selectors.DefaultSelector() as selector:
@@ -581,6 +585,8 @@ def main():
                 app.wait()
         channel_app.close()
         channel_io.close()
+        mtu_app.close()
+        mtu_io.close()
         if control_read >= 0:
             os.close(control_read)
         os.close(control_write)

@@ -1072,15 +1072,18 @@
     {
       "id": "tests/integration/test_mtu.sh::entrypoint",
       "kind": "manual-checklist",
-      "status": "partial",
-      "reason": "Executable static ICMP scenarios replace the printed manual checklist: independent host/native IPv4 and IPv6 echo at MTU1500 and MTU9000 in large/scatter mode, with complete wire and mbuf ownership evidence.",
+      "status": "scenario-adapted",
+      "reason": "All five manual checklist steps have executable native acceptance: static1500, large/scatter9000 and IPv4/IPv6 echo, plus live1500-to9000-to1500 changes across original Linux and the same actual DPDK TAP PMD. Complete PCAP, payload/checksum/DF, readback, rollback/recovery and zero-mbuf-ownership checks replace the script unconditional PASS output. This is scenario adaptation on TAP, not physical-NIC qualification.",
       "ker_tests": [
         {
           "ctest": "native-fstack-icmp-mtu",
           "provenance_case": "native-fstack-icmp-mtu"
+        },
+        {
+          "ctest": "native-fstack-live-mtu",
+          "provenance_case": "native-fstack-live-mtu"
         }
-      ],
-      "remaining": "Live MTU9000-to1500 changes must propagate through the original Linux interface and actual DPDK PMD while running, with readback, traffic and ownership verification; tracked in issue234. Static startup profiles do not satisfy that step."
+      ]
     },
     {
       "id": "tests/unit/test_ff_callout.c::test_callout_when_relative_hardclock",

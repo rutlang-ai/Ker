@@ -14,8 +14,8 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 128 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| scenario-adapted | 129 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 20 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
 | blocked | 221 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 305 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 242 项是
-21 partial + 221 blocked，另有 8 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 304 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 241 项是
+20 partial + 221 blocked，另有 8 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -77,15 +77,14 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve FreeBSD thread context and join-result assertions | 3 | 合同差异待决策 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout and internal kqueue filter assertions | 8 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
-| Replace the upstream manual MTU checklist with complete native acceptance | 1 | 需要适配器实现 | [#234](https://github.com/rutlang-ai/Ker/issues/234) |
 
 默认审计还检查：每个非 `scenario-adapted` 案例都恰好出现一次、issue 必须是
 Ker issue 链接、固定版本一致、分组有理由及验收条件。它不联网判定 issue 关闭
 与否；issue 的存在和状态需通过 GitHub 核对，关闭 issue 也不能自动改写覆盖状态。
 新增可运行适配后，应同时更新源案例映射、provenance、issue 证据和后续清单。
 
-优先推进真实运行缺口：先核对 MTU 手工清单的全部五步与现有 jumbo/PMTU 测试，
-再推进适配器生命周期、vdev/bond、多队列/RSS、异常桥接和跨代 reload。正向硬件
+MTU 手工清单的五步已由静态及动态 ICMP 测试完成适配（[#234](https://github.com/rutlang-ai/Ker/issues/234)）；
+下一步推进适配器生命周期、vdev/bond、多队列/RSS、异常桥接和跨代 reload。正向硬件
 checksum/TSO 验收保留对实际支持设备与独立抓包环境的要求。
 
 ## 自动检查
@@ -101,7 +100,7 @@ ctest --test-dir build -R '^native-fstack-epoll$' --output-on-failure
 CTest、精确源文件/用例 provenance 和 provenance 条目声明的 Ker CTest 绑定。它通过不代表
 433 项行为通过。
 `--require-complete` 在仍有 blocked 或 partial 项时返回 2，目前必须失败。
-12 个 mutation/门禁用例验证快照与目录完整性、适配状态、存在且匹配来源的 CTest、源文件和源用例对应关系、provenance 到 Ker CTest 的显式绑定（包括拒绝无关现存 CTest、缺失绑定和无效绑定类型），以及未完成门禁；CI 将清单校验标为 provenance。
+17 个 mutation/门禁用例验证快照与目录完整性、适配状态、存在且匹配来源的 CTest、源文件和源用例对应关系、provenance 到 Ker CTest 的显式绑定（包括拒绝无关现存 CTest、缺失绑定和无效绑定类型），以及未完成门禁；CI 将清单校验标为 provenance。
 
 ## 本批实际迁移与修复
 
@@ -132,7 +131,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 0 | 0 | 8 | 0 | 0 |
 | [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
-| [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 0 | 1 | 0 | 0 | 0 |
+| [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 22 | 6 | 68 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
@@ -289,10 +288,10 @@ IPv6 仅覆盖回环，不宣称外部 IPv6 部署完成。
 设备不支持请求的 MTU 时启动失败，需由调用方预先配置对端链路 MTU。
 `native-fstack-jumbo-mtu` 用真实 net_tap/veth 和独立宿主验证 9000 MTU、双角色 TCP/UDP、
 8972 字节 DF UDP 有效载荷、8973 字节报文 EMSGSIZE、双向完整 9014 字节抓包及零 outstanding。
-IPv6 jumbo 外部互通尚未验证；1280 下限保证默认双栈接口的配置范围。
+IPv6 jumbo 外部互通现由 ICMP 静态/动态清单验证；1280 下限保证默认双栈接口的配置范围。
 `[network] max_mtu` / `--max-mtu` 提供独立部署上限（默认 9000，范围 1280–9000），请求 MTU 不得超过它。
 9000 请求对 2000 上限在启动前拒绝；CLI 覆盖上限到 9000 后执行同一真实 jumbo 互通测试。
-`test_mtu_port_over_max_fails` 已从部分覆盖转为场景适配；此上限不是硬件能力探测或 mbuf pool 大小设置。
+`test_mtu_port_over_max_fails` 已从部分覆盖转为场景适配；此上限不是硬件能力探测；动态 MTU 适配下，large pool 会按上限预留帧容量。
 F-Stack mtu_enable 禁用分支及其内部配置 ABI 继续保留缺口。
 
 ## TCP ECN 策略
@@ -809,7 +808,7 @@ Ker 使用映射表，不使用 F-Stack 固定偏移编码；不声明其 helper
 INI 长键名来源场景已通过实际 Ker reader、CLI 覆盖和原生启动失败路径适配。
 60 字符键完整保留，128 字符边界可用，129 字符在启动前拒绝；真实 Linux
 未知键路径必须完整显示并正确回收。它不宣称虚构 sysctl 在内核中有效。
-当前未完成为 221 blocked + 21 partial，共 242 项。
+INI 批次后未完成为 222 blocked + 20 partial，共 242 项。
 
 
 MTU 手工清单现有可执行的静态 ICMP 对应项 `native-fstack-icmp-mtu`：
@@ -821,7 +820,20 @@ ICMPv4 和带伪首部的 ICMPv6 checksum，以及 1514/9014 字节的完整以�
 9000 scatter 必须实际使用双向 mbuf chain；large 不得使用 chain，退出时
 outstanding 为 0。测试程序只构造和校验探针，echo 应答由两侧原始内核生成。
 
-该源清单从 blocked 转为 partial；运行中的 9000→1500 变更尚未贯通 Linux
-接口与真实 PMD，继续由 [#234](https://github.com/rutlang-ai/Ker/issues/234) 跟踪。
-重启为不同静态配置不算动态 MTU 完成。当前仍有 221 blocked + 21 partial，
-共 242 个未完成案例；本批没有把部分覆盖计为完整适配。
+该源清单现已完成场景适配：`native-fstack-live-mtu` 在同一应用及 worker 中
+执行 1500→9000→1500，large/scatter 两种模式均要求每一步 Linux ioctl 与
+PMD readback 一致，并由独立宿主直接核对真实 TAP MTU。每一步都执行上述
+双向 IPv4/IPv6 echo、逐阶段完整抓包，以及多一字节 DF 发送的 EMSGSIZE。
+1500 部署上限必须拒绝 1501 且保留原状态。
+
+worker 独占 ethdev，通过停设备、设置 MTU、重建 RX queue 容量并重启完成变更；
+TAP scatter 的接收分段数在 queue setup 时固定，仅设置 MTU 并不足以支持增长。
+应用的原始 Linux ioctl 与 worker 控制请求串行；PMD 设置失败会恢复原设备及队列，
+随后回滚 Linux。真实 PMD mutation 前后两种注入失败均须恢复到 1500 并再次完成
+全部切换及互通。回滚自身失败时终止后端，避免不一致状态伪装为成功，mbuf 仍须全部回收。
+切换允许临时丢包，不承诺并发报文无损或瞬间原子生效；只验证真实 TAP PMD，
+不替代物理网卡验收。上游 Linux/DPDK 源码保持不变。
+
+当前共有 129 项 scenario-adapted、20 partial、221 blocked，未完成 241 项；
+另有 8 项架构专用和 55 项上游工具链专用。后续清单保留剩余 304 项的 16 个 issue 分组，
+整个迁移目标仍未完成。

@@ -429,12 +429,27 @@ launcher 清除 ambient `KER_NATIVE_VIP_ADDRESSES`，仅传递最终验证过的
 
 `--max-mtu 2000` 或 `[network] max_mtu=2000` 将当前 launcher 的 MTU 上限限制为 2000；默认 9000，合法范围 1280–9000。
 `mtu` 大于 `max_mtu` 在设备/库初始化前返回 2；CLI 可分别覆盖 INI 中的请求值或上限。
-此值仅是启动配置策略。实际 MTU 仍传给原始 Linux 与 DPDK，设备能力不足仍由运行时报告；不按 max_mtu 额外扩大缓冲池。
+此值同时限制启动配置与运行中的 primary interface MTU。large 模式按 max_mtu 预留完整帧容量，
+以支持运行时增长而无需替换仍可能由 PMD 持有的 pool；默认 9000 因而比旧版固定 1500 的 pool 占用更多内存。
+需要限制容量时显式设置较小的 max_mtu。scatter 模式仍使用标准大小 segment。
+上限不是设备能力探测，实际 MTU 仍由原始 Linux 与 DPDK 设置并受真实 PMD 能力限制。
+
+应用通过 native AF_INET/AF_INET6 socket 的 `SIOCGIFNAME`/`SIOCGIFMTU`/`SIOCSIFMTU`
+操作主接口；MTU ioctl 在应用端串行，通过独立 SOCK_SEQPACKET 通道请求唯一 worker。
+worker 校验 busy 状态、MTU 和 scatter 能力后停止 ethdev、重设 MTU、重建 RX queue 并启动；
+队列仍持有本地未发送/未递交报文时返回 EBUSY，调用方可稍后重试。
+PMD 拒绝时恢复原 MTU、RX queue 和运行状态，再回滚原始 Linux；无法证明一致或通道失联时终止后端。
+停设备/重启可能丢包，不承诺并发报文无损、物理网卡支持或 native rtnetlink MTU 控制。
+SIOCGIFMTU 也检查 worker 的 ethdev MTU 缓存与 Linux 是否一致；TAP 验收另独立读取宿主设备真实 MTU。
+`--stats` 保留启动时 `io.mtu`，并提供最终 `mtu_final`、`max_mtu` 和成功变更次数 `mtu_changes`。
+
+`native-fstack-live-mtu` 验证 large/scatter 的1500→9000→1500、每一步双向 IPv4/IPv6 ICMP
+和完整1514/9014字节抓包、DF超限错误、部署上限，以及 PMD 拒绝前/后回滚、后续恢复和回滚失败时终止。
 
 
 ### DPDK mbuf 存储模式
 
-默认 `--mbuf-mode large` 为每个 DPDK mbuf 预留完整 MTU 帧空间。
+默认 `--mbuf-mode large` 为每个 DPDK mbuf 预留 max_mtu 范围的完整帧空间。
 `--mbuf-mode scatter`（INI：`[dpdk] mbuf_mode=scatter`）使用标准大小 pool 和链式大帧；
 PMD 必须同时支持 RX scatter 和 TX multi-segment，否则启动失败。
 可与 `--mtu 9000` 一起使用，对端链路也必须设置对应 MTU。
