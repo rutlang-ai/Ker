@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 143 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 151 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 204 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 196 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 10 | FreeBSD callout/内部 kqueue filter/mbuf 头字段断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 290 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 225 项是
-21 partial + 204 blocked，另有 10 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 282 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 217 项是
+21 partial + 196 blocked，另有 10 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -62,7 +62,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
 | Design generation-aware reload, IPC and drain ownership | 81 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 38 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Define a supported host exception bridge and KNI policy adaptation | 30 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
@@ -128,7 +128,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 |---|---:|---:|---:|---:|---:|---:|
 | [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 14 | 6 | 0 | 0 | 0 |
 | [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
-| [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 0 | 0 | 8 | 0 | 0 |
+| [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 8 | 0 | 0 | 0 | 0 |
 | [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
@@ -1030,3 +1030,17 @@ Unix packet通道零拷贝是更强的后续里程碑，不额外作为全部13�
 验证完整 IPv4/IPv6 512KiB 线上内容。三个源内存场景进入 adapted；累计
 143 adapted、21 partial、204 blocked、10 架构特定、55 harness-only，仍有225项
 未完成。零拷贝写游标/空链的缺口没有因此减少，issue225 保持原处置。
+
+## 真实宿主 Linux 异常 TAP
+
+[宿主异常接口](host-exception.md) 将显式 outer EtherType 的入站帧送到独立 Linux
+TAP，其余有效帧仍进入原始 Linux native 实例。宿主 TAP 出站通过原始 DPDK PMD
+返回线路。接口独占、非持久、MAC 与实际主端口一致，退出删除；已有接口拒绝且不改写。
+有界队列、真实内核 writev/AF_PACKET、原始 net_ring PMD 验证完整/部分接收、
+整批限流及其 overshoot、满队列释放与关闭后回收。
+
+生产 worker 另验证独立 veth/原始 wire PMD 下的广播/单播数据、原始 Linux
+PACKET_HOST 分类、原 native UDP 共存和 RX/TX 抓包。8 项 integration 用例进入
+adapted；这不是 F-Stack 私有 globals/virtio_user 热插拔 ABI 或协议/端口位图等价。
+其余 30 项 KNI 源合同继续在 #219 跟踪。当前151 adapted、21partial、196blocked、
+10架构特定、55harness-only，共217项 blocked/partial，完整迁移门禁仍失败。

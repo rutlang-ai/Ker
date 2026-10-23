@@ -30,6 +30,7 @@
 #include "worker-rss.h"
 #include "worker-offload.h"
 #include "worker-receive-mode.h"
+#include "worker-exception.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
@@ -175,7 +176,7 @@ static int configure_mtu(uint16_t port, int mtu, uint16_t descriptors,
 }
 /* Run on the worker thread, which exclusively owns the ethdev and queues. */
 static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mtu,
-    bool busy, uint64_t *changes, struct rte_mempool *pool,
+    bool busy, bool fixed_mtu, uint64_t *changes, struct rte_mempool *pool,
     uint16_t descriptors, unsigned int allocation_socket, uint16_t queues,
     struct ker_worker_rss *rss, bool *started)
 {
@@ -193,6 +194,7 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
         else if (message.previous != *mtu) message.status = -ESTALE;
         else if (busy) message.status = -EBUSY;
         else if (scatter && scatter_mtu_supported(port, requested)) message.status = -EOPNOTSUPP;
+        else if (fixed_mtu && requested != *mtu) message.status = -EOPNOTSUPP;
         else if (requested != *mtu) {
             /* RX capacities can be fixed at queue setup (notably TAP scatter).
              * Stop before rebuilding queues with the same owned pool. Network
@@ -254,7 +256,8 @@ int main(int argc, char **argv)
     bool rss_enabled = false;
     int queues = 1;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
-    const char *pcap_dir = NULL, *log_dir = NULL;
+    const char *pcap_dir = NULL, *log_dir = NULL, *exception_iface = NULL;
+    int exception_type = 0, exception_queue = 256, exception_rate = 0;
     int idle_sleep_us = 1000, tx_delay_us = 0;
     int promiscuous = -1, tx_offloads = 0;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
@@ -270,7 +273,11 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--all-multicast")) { all_multicast = true; continue; }
         if (!strcmp(argv[i], "--pcap-nsec")) { pcap_nsec = true; continue; }
         if (i + 1 >= argc) break;
-        if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
+        if (!strcmp(argv[i], "--exception-iface")) exception_iface = argv[++i];
+        else if (!strcmp(argv[i], "--exception-type")) exception_type = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-queue")) exception_queue = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-rate")) exception_rate = number(argv[++i]);
+        else if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
@@ -289,6 +296,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pcap-max-bytes")) pcap_maximum = number(argv[++i]);
         else break;
     }
+    if ((exception_iface && (exception_type < 1536 || exception_type > UINT16_MAX ||
+        exception_queue < 4 || exception_queue > 65536 || (exception_queue & (exception_queue - 1)) || exception_rate < 0)) ||
+        (!exception_iface && (exception_type || exception_rate || exception_queue != 256))) return 1;
     if (!maximum_mtu) maximum_mtu = mtu;
     if (maximum_mtu < mtu || maximum_mtu > KER_NATIVE_MAX_MTU) return 1;
     if (tx_offloads < 0 || tx_offloads > 2 || queues < 1 || queues > MAX_QUEUES || (rss_enabled && queues < 2) || tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
@@ -344,6 +354,7 @@ int main(int argc, char **argv)
     uint64_t rx_startup_discarded = 0, rx_shutdown_discarded = 0, idle_waits = 0, idle_timeouts = 0;
     struct ker_packet_header tx_header = {0};
     struct ker_worker_offload offload = {0};
+    struct ker_worker_exception exception = {.fd = -1};
     struct ker_worker_receive_mode receive_mode = {.socket_fd = -1, .identity_fd = -1};
     bool receive_mode_restored = false;
     uint64_t tx_tcp_checksum = 0, tx_udp_checksum = 0, tx_ip_checksum = 0, tx_tso4 = 0, tx_tso6 = 0, tx_checksum_fallback = 0;
@@ -548,6 +559,13 @@ int main(int argc, char **argv)
             }
         }
     }
+    if (exception_iface) {
+        struct rte_ether_addr exception_mac;
+        if (rte_eth_macaddr_get(port, &exception_mac)) goto device_error;
+        int result = ker_worker_exception_open(&exception, exception_iface, pool, &exception_mac, (unsigned)mtu,
+            (uint16_t)exception_type, (unsigned)exception_queue, (uint32_t)exception_rate);
+        if (result) { fprintf(stderr, "ker: host exception TAP startup failed: %s\n", strerror(-result)); goto cleanup; }
+    }
     int promiscuous_state = rte_eth_promiscuous_get(port);
     /* Membership filtering belongs to Linux. Until its receive-mode updates
      * cross the packet channel, opt in to PMD all-multicast reception. */
@@ -616,7 +634,7 @@ int main(int argc, char **argv)
         if (bond_policy) (void)rte_eth_tx_burst(port, 0, NULL, 0);
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
-                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, &mtu_changes,
+                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, exception.pending != NULL, &mtu_changes,
                 pool, rx_desc, allocation_socket, (uint16_t)queues, &rss, &started);
             if (result < 0) { fprintf(stderr, "ker: MTU device transaction failed\n"); status = 1; break; }
             if (result > 0) { close(mtu_fd); mtu_fd = -1; }
@@ -640,6 +658,12 @@ int main(int argc, char **argv)
             drain_progress = drain_started;
         }
         bool progress = false;
+        if (exception.pending && !draining) {
+            int64_t now;
+            if (ker_worker_now_ns(&now)) goto clock_error;
+            int result = ker_worker_exception_poll(&exception, port, (unsigned)mtu, now, pcap_dir ? &tx_capture : NULL, &progress);
+            if (result) { fprintf(stderr, "ker: host exception TAP forwarding failed: %s\n", strerror(-result)); status = 1; break; }
+        }
         int reclaimed = rte_eth_tx_done_cleanup(port, 0, 0);
         if (reclaimed < 0 && reclaimed != -ENOTSUP) { status = 1; break; }
         for (unsigned int budget = 0; budget < BURST && batch.count < KER_WORKER_TX_CAPACITY && !batch.retrying; ++budget) {
@@ -752,6 +776,11 @@ int main(int argc, char **argv)
             if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && metadata_supported(packet))
                 bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
             if (bytes && frame_size_supported(bytes, length, mtu)) {
+                if (ker_worker_exception_matches(&exception, packet)) {
+                    int result = ker_worker_exception_enqueue(&exception, &rx[rx_index]);
+                    if (result && result != -ENOBUFS) { status = 1; break; }
+                    rx_index++; progress = true; continue;
+                }
                 struct ker_packet_header header = {0};
                 struct iovec vectors[] = {{&header, sizeof(header)}, {(void *)bytes, length}};
                 struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
@@ -786,7 +815,7 @@ int main(int argc, char **argv)
                 int remaining_us = ker_worker_tx_wait_us(&batch, tx_delay_us, tx_now);
                 if (wait_us > remaining_us) wait_us = remaining_us;
             }
-            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}};
+            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}};
             /* Ethernet PMD RX has no channel readiness notification. Idle
              * channel TX and control wake ppoll; retained work uses bounded
              * retries and RX suffixes watch channel writability. Linux owns
@@ -794,7 +823,7 @@ int main(int argc, char **argv)
             if (bond_policy && wait_us > 10000) wait_us = 10000;
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
-            int result = ppoll(fds, 3, &timeout, NULL);
+            int result = ppoll(fds, 4, &timeout, NULL);
             if (!result) idle_timeouts++;
             else if (result < 0 && errno != EINTR) { perror("ker: idle wait"); status = 1; break; }
         }
@@ -821,6 +850,7 @@ cleanup:
     ker_worker_tx_discard(&batch);
     rx_shutdown_discarded += rx_count - rx_index;
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
+    if (ker_worker_exception_close(&exception)) { fprintf(stderr, "ker: exception TAP cleanup failed\n"); status = 1; }
     bool had_host_receive_mode = receive_mode.socket_fd >= 0;
     if (ker_worker_receive_mode_restore(&receive_mode)) {
         fprintf(stderr, "ker: failed to restore kernel TAP receive mode\n"); status = 1;
@@ -836,7 +866,15 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"rx_by_queue\":[");
+    printf("KER_IO_DONE {\"exception_selected\":%llu,\"exception_enqueued\":%llu,"
+        "\"exception_to_host\":%llu,\"exception_to_host_dropped\":%llu,\"exception_host_received\":%llu,"
+        "\"exception_from_host\":%llu,\"exception_wire_dropped\":%llu,\"exception_shutdown_dropped\":%llu,"
+        "\"exception_rate_dropped\":%llu,\"exception_malformed\":%llu,\"rx_by_queue\":[",
+        (unsigned long long)exception.selected, (unsigned long long)exception.enqueued,
+        (unsigned long long)exception.to_host, (unsigned long long)exception.to_host_dropped,
+        (unsigned long long)exception.host_received, (unsigned long long)exception.from_host,
+        (unsigned long long)exception.wire_dropped, (unsigned long long)exception.shutdown_dropped,
+        (unsigned long long)exception.rate_dropped, (unsigned long long)exception.malformed);
     for (int queue = 0; queue < queues; queue++)
         printf("%s%llu", queue ? "," : "", (unsigned long long)rx_by_queue[queue]);
     printf("],\"host_receive_mode_restored\":%s,\"tx_tcp_checksum\":%llu,\"tx_udp_checksum\":%llu,\"tx_ip_checksum\":%llu,\"tx_tso4\":%llu,\"tx_tso6\":%llu,\"tx_checksum_fallback\":%llu,\"rx_rss_metadata\":%llu,\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"

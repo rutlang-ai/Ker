@@ -106,10 +106,16 @@
       "id": "kni-exception-bridge",
       "title": "Define a supported host exception bridge and KNI policy adaptation",
       "disposition": "adaptation-needed",
-      "reason": "No F-Stack KNI/virtio exception interface, protocol/port filters, rate-limit policy or ownership API exists in Ker. Normal native net_tap traffic is not a host exception bridge.",
+      "reason": "An actual primary-worker Linux TAP exception interface, exclusive lifetime/MAC setup, bounded owned-mbuf queue, two-way original-PMD forwarding, partial/full drop ownership and source-compatible kernel batch gate now qualify eight integration scenarios. The remaining30 source cases require F-Stack protocol/port bitmaps, accept/reject/IPFW policy, general/console limits and shared-generation/non-owner/allocation contracts. Outer-EtherType selection is explicitly not those classifiers.",
       "evidence": [
         "src/posix/packet-device.c",
-        "tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c"
+        "tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c",
+        "src/posix/worker-exception.c",
+        "src/posix/io-worker.c",
+        "tools/ker-run.py",
+        "tests/posix/exception-tap.c",
+        "tests/posix/exception-tap.py",
+        "docs/host-exception.md"
       ],
       "acceptance": [
         "Choose an actual supported DPDK/Linux exception device and explicit packet ownership boundary; do not add successful no-op KNI stubs.",
@@ -117,14 +123,6 @@
         "Keep protocol decisions in original Linux; do not copy a simplified F-Stack/FreeBSD protocol parser as a replacement stack."
       ],
       "cases": [
-        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_basic",
-        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit",
-        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit_exceeded",
-        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_partial_drop",
-        "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_forward",
-        "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_partial_drop",
-        "tests/integration/test_ff_kni_integration.c::test_kni_enqueue_full_ring_drops",
-        "tests/integration/test_ff_kni_integration.c::test_kni_alloc_primary_happy_path",
         "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
         "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_reject_ok",
         "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_invalid_fails",
