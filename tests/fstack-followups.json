@@ -387,11 +387,14 @@
       "id": "process-modes",
       "title": "Decide F-Stack primary/secondary and thread-mode compatibility",
       "disposition": "contract-review",
-      "reason": "Ker launches an isolated original-Linux runtime and worker; F-Stack proc_id/proc_type, per-core shared globals and thread-mode configuration are not the same lifecycle or ownership model.",
+      "reason": "Explicit main/aux secondary EAL requests now fail preflight before worker execution; a live same-prefix primary survives and completes real native TCP/UDP. Actual isolated auto-primary and CLI primary overriding INI secondary are qualified extensions. The six pinned cases instead require secondary acceptance/proc_id tables and valid thread_mode multi-stack/global process-count semantics, which remain absent. Four local RX pollers or independent primaries are not those contracts.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
-        "tests/upstream/fstack/tests/unit/test_ff_config.c"
+        "tests/upstream/fstack/tests/unit/test_ff_config.c",
+        "docs/process-modes.md",
+        "tests/posix/eal-file-prefix.py",
+        "tests/posix/test_ker_run_config.py"
       ],
       "acceptance": [
         "Specify whether shared/secondary worker behavior fits Ker, with explicit kernel-instance and device ownership.",

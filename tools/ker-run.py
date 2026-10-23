@@ -326,6 +326,21 @@ def rx_lcore_list(value, queues):
     return ','.join(str(core) for core in cores)
 
 
+def reject_secondary_eal(tokens):
+    """Reject an explicit unsupported secondary before any worker executes.
+
+    The original EAL still validates unknown/auto modes. Tokens after its first
+    separator belong to the driver/application suffix and are not mode options.
+    """
+    for index, token in enumerate(tokens):
+        if token == '--':
+            break
+        mode = (token.split('=', 1)[1] if token.startswith('--proc-type=') else
+                tokens[index + 1] if token == '--proc-type' and index + 1 < len(tokens) else None)
+        if mode == 'secondary':
+            raise ValueError('secondary EAL processes are unsupported; each Ker worker must own a primary device')
+
+
 def additional_interfaces(ini):
     result = []
     convert = {'address': ipaddress.IPv4Interface, 'address6': ipaddress.IPv6Interface,
@@ -343,8 +358,10 @@ def additional_interfaces(ini):
         item = {'name': name}
         for key, value in fields.items():
             item[key] = ini.getboolean(section, key, raw=True) if key == 'rss' else convert[key](value)
-        if not item['port'] or not shlex.split(item['eal']):
+        eal_tokens = shlex.split(item['eal'])
+        if not item['port'] or not eal_tokens:
             raise ValueError(f'[{section}] empty port/eal')
+        reject_secondary_eal(eal_tokens)
         result.append(item)
     if len(result) > 7:
         raise ValueError('at most seven additional native interfaces are supported')
@@ -630,6 +647,10 @@ def parse_arguments(argv=None):
     else:
         eal_prefix, eal_remainder = args.eal_args[:separator], args.eal_args[separator:]
     raw_eal_options = list(eal_prefix)
+    try:
+        reject_secondary_eal(raw_eal_options)
+    except ValueError as error:
+        parser.error(str(error))
     if not 0 <= args.tx_delay_us <= 100:
         parser.error('--tx-delay-us must be in 0..100')
     if args.base_virtaddr is not None:

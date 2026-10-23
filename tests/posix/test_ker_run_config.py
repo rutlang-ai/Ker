@@ -1107,6 +1107,45 @@ raise AssertionError('allocation failure was accepted')
                     self.assertFalse(marker.exists())
                     self.assertFalse(stats.exists())
 
+    def test_secondary_process_preflight_and_cli_precedence(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, marker, stats = root / 'mode.ini', root / 'entered', root / 'stats.json'
+            for mode in ('--proc-type=secondary', '--proc-type secondary'):
+                config.write_text('[dpdk]\neal=--no-pci ' + mode + '\n')
+                for options in (['--config', str(config)], ['--eal=--no-pci ' + mode]):
+                    rejected = subprocess.run([sys.executable, str(SOURCE), *base, *options,
+                        '--library', '/missing-library', '--io-worker', '/missing-worker',
+                        '--stats', str(stats), '--', '/bin/touch', str(marker)],
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                    self.assertIn('secondary EAL processes are unsupported', rejected.stderr)
+                    self.assertNotIn('missing-library', rejected.stderr)
+                    self.assertNotIn('Traceback', rejected.stderr)
+                    self.assertFalse(marker.exists())
+                    self.assertFalse(stats.exists())
+                # Effective CLI EAL overrides the whole INI value before mode
+                # validation, so an obsolete INI secondary can be corrected.
+                primary = launcher.parse_arguments([*base, '--config', str(config),
+                    '--eal=--no-pci --proc-type=primary', '--', '/bin/true'])
+                self.assertEqual(primary.eal_args, ['--no-pci', '--proc-type=primary'])
+                config.write_text('[interface.aux]\naddress=198.19.0.2/24\nport=net_tap1\n'
+                                  'eal=--no-pci ' + mode + '\n')
+                rejected = subprocess.run([sys.executable, str(SOURCE), *base, '--eal=--no-pci',
+                    '--config', str(config), '--library', '/missing-library',
+                    '--io-worker', '/missing-worker', '--stats', str(stats),
+                    '--', '/bin/touch', str(marker)], capture_output=True, text=True, timeout=5)
+                self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                self.assertIn('secondary EAL processes are unsupported', rejected.stderr)
+                self.assertNotIn('missing-library', rejected.stderr)
+                self.assertFalse(marker.exists())
+                self.assertFalse(stats.exists())
+        for raw in ('--proc-type=auto', '--proc-type=bogus_proc_type',
+                    '-- --proc-type=secondary', '-- --proc-type secondary'):
+            arguments = launcher.parse_arguments([*base, '--eal=--no-pci ' + raw, '--', '/bin/true'])
+            self.assertEqual(arguments.eal_args, ['--no-pci', *raw.split()])
+
     def test_explicit_boundaries(self):
         self.assertEqual(self.read('[dpdk]\nport=a\nport=b\n'), {'port': 'b'})
         for text in ('port=x\n', '[unknown]\nport=x\n', '[dpdk]\nunknown=x\n',
