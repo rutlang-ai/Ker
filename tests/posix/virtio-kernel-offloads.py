@@ -178,11 +178,19 @@ def main():
                             else:
                                 require(record['tx_tcp_checksum'] > 0 and record['tx_udp_checksum'] == 8,
                                         'no actual original Linux checksum requests')
-                            require(info['rss'] is None and sum(record['rx_by_queue']) == record['rx'] + record['rx_dropped'],
-                                    'queue accounting differs or non-RSS landing mislabeled')
+                            queue_rx = sum(record['rx_by_queue'])
+                            shutdown_discarded = record.get('rx_shutdown_discarded', 0)
+                            startup_discarded = record.get('rx_startup_discarded', 0)
+                            require(info['rss'] is None and queue_rx == record['rx'] + record['rx_dropped'] +
+                                    shutdown_discarded - startup_discarded,
+                                    'queue accounting differs or non-RSS landing mislabeled: ' + str({
+                                        'queue_rx': queue_rx, 'rx': record['rx'], 'rx_dropped': record['rx_dropped'],
+                                        'rx_shutdown_discarded': shutdown_discarded,
+                                        'rx_startup_discarded': startup_discarded}))
                             require(counts['tcp4'] > 100 and counts['tcp6'] > 100 and counts['udp4'] == counts['udp6'] == 4,
                                     'missing independent wire evidence')
                             print('PASS: kernel virtio ' + label + ' queues=' + str(queues) + '; wire=' + str(counts) +
+                                  '; rx_shutdown_discarded=' + str(shutdown_discarded) +
                                   '; requests=' + str({k: record[k] for k in ('tx_tcp_checksum', 'tx_udp_checksum', 'tx_tso4', 'tx_tso6')}), flush=True)
                         finally:
                             stop.set()

@@ -341,7 +341,7 @@ int main(int argc, char **argv)
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
-    uint64_t rx_startup_discarded = 0, idle_waits = 0, idle_timeouts = 0;
+    uint64_t rx_startup_discarded = 0, rx_shutdown_discarded = 0, idle_waits = 0, idle_timeouts = 0;
     struct ker_packet_header tx_header = {0};
     struct ker_worker_offload offload = {0};
     struct ker_worker_receive_mode receive_mode = {.socket_fd = -1, .identity_fd = -1};
@@ -713,6 +713,7 @@ int main(int argc, char **argv)
             if (sent.packets) progress = true;
         }
         if (draining) {
+            rx_shutdown_discarded += rx_count - rx_index;
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
             int64_t now;
             if (ker_worker_now_ns(&now)) goto clock_error;
@@ -818,6 +819,7 @@ cleanup:
     if (tx_capture_status || rx_capture_status) { perror("ker: close packet capture"); status = 1; }
     if (pending_tx) rte_pktmbuf_free(pending_tx);
     ker_worker_tx_discard(&batch);
+    rx_shutdown_discarded += rx_count - rx_index;
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
     bool had_host_receive_mode = receive_mode.socket_fd >= 0;
     if (ker_worker_receive_mode_restore(&receive_mode)) {
@@ -839,14 +841,14 @@ cleanup:
         printf("%s%llu", queue ? "," : "", (unsigned long long)rx_by_queue[queue]);
     printf("],\"host_receive_mode_restored\":%s,\"tx_tcp_checksum\":%llu,\"tx_udp_checksum\":%llu,\"tx_ip_checksum\":%llu,\"tx_tso4\":%llu,\"tx_tso6\":%llu,\"tx_checksum_fallback\":%llu,\"rx_rss_metadata\":%llu,\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", receive_mode_restored ? "true" : "false", (unsigned long long)tx_tcp_checksum, (unsigned long long)tx_udp_checksum, (unsigned long long)tx_ip_checksum, (unsigned long long)tx_tso4, (unsigned long long)tx_tso6, (unsigned long long)tx_checksum_fallback, (unsigned long long)rx_rss_metadata, bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"rx_shutdown_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", receive_mode_restored ? "true" : "false", (unsigned long long)tx_tcp_checksum, (unsigned long long)tx_udp_checksum, (unsigned long long)tx_ip_checksum, (unsigned long long)tx_tso4, (unsigned long long)tx_tso6, (unsigned long long)tx_checksum_fallback, (unsigned long long)rx_rss_metadata, bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
         (unsigned long long)tx_dropped, (unsigned long long)rx_dropped, outstanding,
         (unsigned long long)stop_requests, control_eof ? "true" : "false",
         (unsigned long long)tx_multiseg, (unsigned long long)rx_multiseg,
-        (unsigned long long)rx_startup_discarded, (unsigned long long)idle_waits,
+        (unsigned long long)rx_startup_discarded, (unsigned long long)rx_shutdown_discarded, (unsigned long long)idle_waits,
         (unsigned long long)idle_timeouts, (unsigned long long)tx_flushes,
         (unsigned long long)tx_timer_flushes, (unsigned long long)tx_full_flushes,
         (unsigned long long)tx_drain_flushes);
