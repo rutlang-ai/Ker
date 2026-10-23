@@ -427,3 +427,9 @@ TCP_LINGER2 扩展：`native-fstack-tcp-linger2` 检查真实 FIN_WAIT2、保留
 TCP_CONGESTION 扩展：`native-fstack-tcp-congestion` 验证 Reno 选择、监听继承、
 错误恢复以及连接中恢复 CUBIC 后的真实流量，不增加 Ker 自有拥塞控制逻辑。
 本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。
+
+
+配置分配失败：`native-fstack-launcher-config` 在测试专用子进程中分别使实际接口、
+vdev、bond 配置 builder 的一次 dict 分配抛出 MemoryError，验证真实 CLI
+返回2且没有 worker/应用动作，随后相同输入的无故障加载恢复成功。成功解析和
+分配不做模拟；不覆盖 C calloc ABI 或整个宿主进程的持续内存耗尽。

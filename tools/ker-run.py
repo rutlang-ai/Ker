@@ -490,6 +490,8 @@ def parse_arguments(argv=None):
     if supplied.config is not None:
         try:
             values.update(load_configuration(supplied.config, supplied.io_worker))
+        except MemoryError:
+            parser.error(f'{supplied.config}: configuration allocation failed')
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
             parser.error(f'{supplied.config}: {error}')
     sysctls = dict(values['sysctls'])

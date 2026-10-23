@@ -49,6 +49,18 @@
     }
   },
   "cases": {
+    "native-fstack-config-allocation-failure": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_alloc_port_cfgs_calloc_oom_returns_error",
+        "test_vdev_cfgs_calloc_oom_returns_error",
+        "test_bond_cfgs_calloc_oom_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Inject MemoryError only at the actual dict allocation in the production additional-interface, vdev or bond configuration builder; all prerequisite parsing/copies remain real. The real CLI rejects with status2 and a configuration-allocation diagnostic before worker-limit queries, process creation, missing-library resolution or app entry. No stats/app marker is created. Disarming the fault lets the same real configuration rebuild its typed object. This adapts the source allocation-failure rejection scenario, not C calloc ordinal, NULL pointer/global struct layout, ff_load_config return-1 or global host-OOM survivability. Old launcher negative controls expose an uncaught traceback at all three selected stages. Test-only child-process loader global dict wrapping forwards successful calls to builtins.dict and fails one selected builder allocation; no production fault hook or successful parser/worker mock is introduced. Forbidden Popen/run/check_output sentinels enforce the pre-process boundary. Only SystemExit2 is caught; the old uncaught MemoryError fails the regression. Existing real config interop still runs original Linux TCP with the changed launcher."
+    },
     "native-udp-functional-matrix": {
       "source_example": "adapter/syscall/main_stack_udp.c",
       "ker_ctests": [

@@ -281,7 +281,7 @@
       "id": "dpdk-devices",
       "title": "Adapt typed vdev, bond and multi-port configuration",
       "disposition": "adaptation-needed",
-      "reason": "Typed vdev/bond settings and native multi-interface routing have actual traffic and cleanup evidence. Named vhost-kernel iface now qualifies IPv4/IPv6 checksum/TSO, active queues, descriptor geometry and receive-mode rollback. The literal iface+Unix-socket fixture, full lcore/RSS topology, exact structs and C allocation-failure/combined fixture contracts remain partial or blocked.",
+      "reason": "Three typed interface/vdev/bond configuration allocation-failure rejection scenarios now have real loader/CLI failure and recovery evidence. Remaining source fixture/ABI, combined topology and RSS/lcore contracts stay partial; real typed device traffic does not prove those remaining assertions.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
@@ -297,7 +297,8 @@
         "tests/posix/native-multiport.py",
         "tests/posix/test_multiport_config.py",
         "src/posix/worker-receive-mode.c",
-        "tests/posix/virtio-kernel-offloads.py"
+        "tests/posix/virtio-kernel-offloads.py",
+        "tests/posix/test_ker_run_config.py"
       ],
       "acceptance": [
         "Specify useful typed configuration mappings to real supported EAL/PMD options while preserving strict validation.",
@@ -308,10 +309,7 @@
       "cases": [
         "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
         "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
-        "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
-        "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
-        "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",
-        "tests/unit/test_ff_config.c::test_bond_cfgs_calloc_oom_returns_error"
+        "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/224"
     },

@@ -1757,9 +1757,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Inject MemoryError only at the actual dict allocation in the production additional-interface, vdev or bond configuration builder; all prerequisite parsing/copies remain real. The real CLI rejects with status2 and a configuration-allocation diagnostic before worker-limit queries, process creation, missing-library resolution or app entry. No stats/app marker is created. Disarming the fault lets the same real configuration rebuild its typed object. This adapts the source allocation-failure rejection scenario, not C calloc ordinal, NULL pointer/global struct layout, ff_load_config return-1 or global host-OOM survivability. Old launcher negative controls expose an uncaught traceback at all three selected stages.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-config-allocation-failure"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",
@@ -1771,16 +1776,26 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Inject MemoryError only at the actual dict allocation in the production additional-interface, vdev or bond configuration builder; all prerequisite parsing/copies remain real. The real CLI rejects with status2 and a configuration-allocation diagnostic before worker-limit queries, process creation, missing-library resolution or app entry. No stats/app marker is created. Disarming the fault lets the same real configuration rebuild its typed object. This adapts the source allocation-failure rejection scenario, not C calloc ordinal, NULL pointer/global struct layout, ff_load_config return-1 or global host-OOM survivability. Old launcher negative controls expose an uncaught traceback at all three selected stages.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-config-allocation-failure"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_bond_cfgs_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Inject MemoryError only at the actual dict allocation in the production additional-interface, vdev or bond configuration builder; all prerequisite parsing/copies remain real. The real CLI rejects with status2 and a configuration-allocation diagnostic before worker-limit queries, process creation, missing-library resolution or app entry. No stats/app marker is created. Disarming the fault lets the same real configuration rebuild its typed object. This adapts the source allocation-failure rejection scenario, not C calloc ordinal, NULL pointer/global struct layout, ff_load_config return-1 or global host-OOM survivability. Old launcher negative controls expose an uncaught traceback at all three selected stages.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-config-allocation-failure"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_defaults_legacy",
