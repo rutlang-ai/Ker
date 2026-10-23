@@ -107,7 +107,7 @@ int main(void)
     for(unsigned i=0;i<512;i++)CHECK(!rte_ring_enqueue(input[1],packet(2000+i)));
     char directory[]="/tmp/ker-rx-capture-XXXXXX";CHECK(mkdtemp(directory));
     struct ker_pcap capture={0};CHECK(!ker_pcap_open(&capture,directory,"shutdown",1500,1048576,false));
-    full(&rx);CHECK(!ker_worker_rx_lcores_stop(&rx,&abandoned,&capture));CHECK(!ker_pcap_close(&capture));
+    full(&rx);CHECK(!ker_worker_rx_lcores_pause(&rx,&abandoned,&capture));CHECK(!ker_pcap_close(&capture));
     char path[128];snprintf(path,sizeof(path),"%s/shutdown-0.pcap",directory);
     FILE *file=fopen(path,"rb");CHECK(file&&!fseek(file,24,SEEK_SET));
     for(unsigned i=0;i<abandoned;i++){
@@ -117,11 +117,23 @@ int main(void)
         memcpy(expected,&id,sizeof(id));CHECK(fread(data,sizeof(data),1,file)==1&&!memcmp(data,expected,sizeof(data)));
     }
     CHECK(fgetc(file)==EOF&&!fclose(file)&&!unlink(path)&&!rmdir(directory));
-    CHECK(abandoned>=255&&abandoned<=287&&rx.queue[1].stalled>0&&rx.queue[1].shutdown==abandoned);
+    CHECK(abandoned>=255&&abandoned<=287&&rx.queue[1].stalled>0&&rx.queue[1].reconfigured==abandoned&&rx.queue[1].shutdown==0);
     CHECK(rx.queue[0].polled==10&&rx.queue[1].polled==512+abandoned);
     for(unsigned q=0;q<2;q++)CHECK(rx.queue[q].owner==q&&rx.queue[q].observed==q&&rx.queue[q].cpu==cpu[q]&&rx.queue[q].polls>0);
     CHECK(!ker_worker_rx_lcores_stop(&rx,&abandoned,NULL)&&!abandoned);
     for(unsigned q=0;q<2;q++){struct rte_mbuf *p;while(!rte_ring_dequeue(input[q],(void**)&p))rte_pktmbuf_free(p);}
+    uint64_t prior_polled=rx.queue[1].polled,prior_discarded=rx.queue[1].reconfigured;
+    CHECK(!ker_worker_rx_lcores_start(&rx)); /* Same assignment, counters survive. */
+    CHECK(ker_worker_rx_lcores_start(&rx)==-EBUSY);
+    for(unsigned i=0;i<32;i++)CHECK(!rte_ring_enqueue(input[1],packet(4000+i)));
+    received=0;end=deadline();
+    while(received<32){
+        uint16_t count=ker_worker_rx_lcores_burst(&rx,1,packets,32);
+        for(unsigned i=0;i<count;i++)verify(packets[i],4000+received++);
+        CHECK(rte_get_timer_cycles()<end);if(!count)rte_pause();
+    }
+    CHECK(!ker_worker_rx_lcores_stop(&rx,&abandoned,NULL)&&!abandoned);
+    CHECK(rx.queue[1].polled==prior_polled+32&&rx.queue[1].reconfigured==prior_discarded&&rx.queue[1].starts==2);
     /* Exercise the real remote RX handoff with jumbo chains. The exact pool
      * includes five mbufs for each retained packet; the old one-mbuf reserve
      * cannot construct this full admitted burst. */

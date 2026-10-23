@@ -4481,14 +4481,14 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
       "kind": "cmocka",
       "status": "architecture-specific",
-      "reason": "Asserts the FreeBSD mbuf head M_PKTHDR bit. Original Linux VMA/skb interfaces have no such mbuf field; a fabricated mbuf mirror would not qualify. Explicit incompatible source layout under issue225, not a Ker pass.",
+      "reason": "Asserts the FreeBSD mbuf head M_PKTHDR bit. Original Linux VMA/skb interfaces have no such mbuf field; a fabricated mbuf mirror would not qualify. Explicit incompatible source layout under issue232 (Linux buffer-ownership contracts remain under issue225), not a Ker pass.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
       "kind": "cmocka",
       "status": "architecture-specific",
-      "reason": "Asserts the initial FreeBSD head m_pkthdr.len field, not zero-filled payload storage. Linux VMA buffers have no mbuf header/write cursor. Explicit incompatible source layout under issue225, not a Ker pass.",
+      "reason": "Asserts the initial FreeBSD head m_pkthdr.len field, not zero-filled payload storage. Linux VMA buffers have no mbuf header/write cursor. Explicit incompatible source layout under issue232 (Linux buffer-ownership contracts remain under issue225), not a Ker pass.",
       "ker_tests": []
     },
     {

@@ -57,6 +57,13 @@ def source_cases(snapshot, files):
 
 
 FOLLOWUP_DISPOSITIONS = {'adaptation-needed', 'contract-review', 'architecture-specific', 'harness-only'}
+ACTIONABLE_FOLLOWUP_DISPOSITIONS = {'adaptation-needed', 'contract-review'}
+STATUS_DISPOSITIONS = {
+    'architecture-specific': {'architecture-specific'},
+    'harness-only': {'harness-only'},
+    'blocked': ACTIONABLE_FOLLOWUP_DISPOSITIONS,
+    'partial': ACTIONABLE_FOLLOWUP_DISPOSITIONS,
+}
 
 
 def validate_followups(root, manifest):
@@ -66,6 +73,7 @@ def validate_followups(root, manifest):
     require(followups['revision'] == manifest['revision'], 'Follow-up and snapshot pins differ')
     expected = {item['id'] for item in manifest['cases'] if item['status'] != 'scenario-adapted'}
     require(isinstance(followups['groups'], list), 'Invalid follow-up groups')
+    statuses = {item['id']: item['status'] for item in manifest['cases']}
     seen, group_ids, issues = set(), set(), set()
     for group in followups['groups']:
         key = group['id']
@@ -89,6 +97,10 @@ def validate_followups(root, manifest):
         require(isinstance(group['cases'], list) and group['cases'], f'Empty follow-up group: {key}')
         for case in group['cases']:
             require(isinstance(case, str) and case in expected, f'Unexpected follow-up case: {case}')
+            allowed = STATUS_DISPOSITIONS[statuses[case]]
+            require(group['disposition'] in allowed,
+                    f'Wrong follow-up disposition for {statuses[case]} case {case}: '
+                    f'{group["disposition"]} (expected one of {sorted(allowed)})')
             require(case not in seen, f'Duplicate follow-up case: {case}')
             seen.add(case)
     require(seen == expected, f'Missing follow-up cases: {sorted(expected - seen)}')

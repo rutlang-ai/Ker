@@ -59,18 +59,27 @@ while owned mbufs are freed. The device and pool close only after all producer
 and consumer suffixes have been reclaimed. Packets still owned by unpolled PMD
 descriptors remain the original driver's shutdown responsibility.
 
-With any remote RX poller, changing MTU returns EOPNOTSUPP until a coordinated
-pause/rebuild transaction is qualified. MTU queries remain valid, and rejected
-changes preserve both native and PMD MTU. Main-only mode retains existing live
-MTU transactions. RSS is a separate feature; core assignment does not configure
-RSS or guarantee flow affinity across queues.
+Live MTU changes pause/join remote pollers before original PMD stop, RX queue
+rebuild and restart. Queued and retained handoffs are captured and freed before
+rebuild. The same core assignment resumes after success or successful rollback,
+with lifetime counters preserved. Failed rollback or failed poller resumption
+fails the whole session and reclaims its buffers. An exception TAP still rejects
+MTU mutation until its separate two-device transaction is supported. Main-only
+live MTU retains its existing path.
+
+Large-buffer storage includes the original PMD's reported RX overhead, including
+virtio's device header, so the configured maximum remains usable after queues
+exist. No upstream driver is patched. RSS is separate; core assignment does not
+configure RSS or guarantee flow affinity across queues.
 
 ## Evidence
 
 `rx_pollers` in final worker statistics records each queue's configured owner,
 observed `rte_lcore_id`, actual host CPU, physical packet count, poll count,
-handoff stalls and shutdown discards. Fields are read only after joining
-producers. `rx_by_queue` counts physical RX, including remote handoff shutdown
+handoff stalls, shutdown/reconfiguration discards and starts of that queue's
+polling session. Fields are read only after joining producers. A pause/resume
+keeps these counters rather than recreating the plan. `rx_reconfigure_discarded`
+is a subset of `rx_dropped`; `rx_shutdown_discarded` remains separate. `rx_by_queue` counts physical RX, including remote handoff shutdown
 suffixes, and retains the existing native/exception/shutdown accounting identity.
 
 `native-fstack-rx-lcores-ownership` uses original EAL cores and net_ring PMD,
@@ -85,7 +94,18 @@ backend explicitly alternates incoming bursts across two queues, qualifying
 actual queue landing rather than hardware RSS. Main0, main1 and remote-only
 profiles require real original-Linux IPv4/IPv6 TCP/UDP payloads, observed queue
 owners/CPUs, exact exception frames, full physical RX PCAP counts and zero
-outstanding mbufs. Missing actual main membership and a disabled selected core
+outstanding mbufs. Remote-only profiles change MTU, reject and roll back failures
+before/after actual PMD mutation, then complete the same TCP/UDP traffic. Test
+observers require all non-main EAL cores to be WAIT before device stop, RX queue
+setup or MTU set. Actual rollback/resume failures must terminate with zero mbufs. Missing actual main membership and a disabled selected core
 must reject before app entry. The two pinned source membership cases qualify;
 generation/non-owner/allocator and other exception gaps remain in
 [#219](https://github.com/rutlang-ai/Ker/issues/219).
+
+
+`native-fstack-rx-lcores-mtu` additionally runs original TAP over two remote RX
+queues through 1500 → 9000 → 1500, in large and scatter modes. Independent host
+and native IPv4/IPv6 ICMP require full-size Ethernet frames, exact payloads and
+checksums, and DF on all nine captured IPv4 echo requests in each direction.
+Pre/post-mutation rollback, fatal rollback and ceiling rejection are covered.
+This extends the existing MTU source evidence; it adds no new pinned source IDs.

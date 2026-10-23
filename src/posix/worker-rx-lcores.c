@@ -56,7 +56,7 @@ static int poll_queues(void *opaque)
     unsigned core=rte_lcore_id();
     if (core!=poller->lcore) {atomic_store(&rx->error,-EXDEV);return -EXDEV;}
     for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner==core) {
-        rx->queue[q].observed=core;rx->queue[q].cpu=sched_getcpu();
+        rx->queue[q].observed=core;rx->queue[q].cpu=sched_getcpu();rx->queue[q].starts++;
     }
     while (!atomic_load_explicit(&rx->stopping,memory_order_acquire)) {
         bool progress=false;
@@ -89,6 +89,11 @@ static int poll_queues(void *opaque)
 int ker_worker_rx_lcores_start(struct ker_worker_rx_lcores *rx)
 {
     if (!rx || !rx->count || rte_lcore_id()!=rx->main) return -EINVAL;
+    if (rx->notify_fd>=0) return -EBUSY;
+    for (unsigned i=0;i<rx->count;i++) if (rx->poller[i].launched) return -EBUSY;
+    atomic_store_explicit(&rx->stopping,false,memory_order_release);
+    atomic_store(&rx->error,0);
+    for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner==rx->main) rx->queue[q].starts++;
     if (!rx->remote) return 0;
     rx->notify_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
     if (rx->notify_fd<0) return -errno;
@@ -126,7 +131,7 @@ static void discard_packet(struct rte_mbuf *packet, struct ker_pcap *capture, in
     }
     rte_pktmbuf_free(packet);
 }
-int ker_worker_rx_lcores_stop(struct ker_worker_rx_lcores *rx, uint64_t *discarded, struct ker_pcap *capture)
+static int retire(struct ker_worker_rx_lcores *rx, uint64_t *discarded, struct ker_pcap *capture, bool reconfigure)
 {
     int result=0;*discarded=0;
     atomic_store_explicit(&rx->stopping,true,memory_order_release);
@@ -137,16 +142,26 @@ int ker_worker_rx_lcores_stop(struct ker_worker_rx_lcores *rx, uint64_t *discard
     for (uint16_t q=0;q<rx->queues;q++) {
         struct ker_rx_poll_queue *queue=&rx->queue[q];
         struct rte_mbuf *packet;
+        uint64_t *retired=reconfigure ? &queue->reconfigured : &queue->shutdown;
         /* Accepted ring entries precede the producer's retained FIFO suffix.
          * Main is the sole capture owner, including shutdown-only packets. */
         while (queue->handoff && !rte_ring_dequeue(queue->handoff,(void **)&packet)) {
-            discard_packet(packet,capture,&result);queue->shutdown++;(*discarded)++;
+            discard_packet(packet,capture,&result);(*retired)++;(*discarded)++;
         }
         while (queue->index<queue->count) {
-            discard_packet(queue->pending[queue->index++],capture,&result);queue->shutdown++;(*discarded)++;
+            discard_packet(queue->pending[queue->index++],capture,&result);(*retired)++;(*discarded)++;
         }
         rte_ring_free(queue->handoff);queue->handoff=NULL;
     }
     if (rx->notify_fd>=0) {if (close(rx->notify_fd)) result=-errno;rx->notify_fd=-1;}
     return result;
+}
+
+int ker_worker_rx_lcores_stop(struct ker_worker_rx_lcores *rx, uint64_t *discarded, struct ker_pcap *capture)
+{
+    return retire(rx,discarded,capture,false);
+}
+int ker_worker_rx_lcores_pause(struct ker_worker_rx_lcores *rx, uint64_t *discarded, struct ker_pcap *capture)
+{
+    return retire(rx,discarded,capture,true);
 }

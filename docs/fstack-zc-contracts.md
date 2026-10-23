@@ -41,3 +41,12 @@ loopback。每项实际断言通过后才输出对应 `BUFFER_SOURCE_CASE`。运
 SO_ZEROCOPY、MSG_ZEROCOPY 和完成 code 0 均不是全链路无复制认证；
 [原生缓冲区合同](native-buffers.md) 记录生命周期及后续传输复制边界。
 不改变 Linux/DPDK 上游源码，不实现 Ker 自有协议状态机。
+
+
+The two FreeBSD mbuf-header assertions (`test_ff_zc_mbuf_get_pkthdr_flag_set`
+and `test_ff_zc_mbuf_get_initial_pkthdr_len_zero`) retain their existing
+architecture-specific status. Their canonical follow-up is now
+[#232](https://github.com/rutlang-ai/Ker/issues/232), so exclusion status and
+group disposition agree. The seven blocked allocation/write-cursor/zero-send
+contracts remain under [#225](https://github.com/rutlang-ai/Ker/issues/225).
+This tracking correction changes no case status and claims no Linux mbuf ABI.

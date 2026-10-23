@@ -179,12 +179,13 @@ static int configure_mtu(uint16_t port, int mtu, uint16_t descriptors,
     if (!result && rss->reta_size) result = ker_worker_rss_apply(port, queues, rss);
     return result;
 }
-/* Main owns device control. Remote RX pollers require a fixed MTU until a
- * queue pause/rebuild transaction is implemented. */
+/* Main owns device control; join remote RX pollers before queue rebuild,
+ * then resume their original assignment on success or successful rollback. */
 static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mtu,
     bool busy, bool fixed_mtu, uint64_t *changes, struct rte_mempool *pool,
     uint16_t descriptors, unsigned int allocation_socket, uint16_t queues,
-    struct ker_worker_rss *rss, bool *started)
+    struct ker_worker_rss *rss, bool *started, struct ker_worker_rx_lcores *rx_workers,
+    struct ker_pcap *capture, uint64_t *rx_dropped, uint64_t *reconfigure_discarded)
 {
     struct ker_mtu_message message;
     ssize_t size = recv(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_TRUNC);
@@ -205,6 +206,13 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
             /* RX capacities can be fixed at queue setup (notably TAP scatter).
              * Stop before rebuilding queues with the same owned pool. Network
              * traffic can be lost during this link reconfiguration. */
+            if (rx_workers->remote) {
+                uint64_t discarded;
+                int paused=ker_worker_rx_lcores_pause(rx_workers,&discarded,capture);
+                *rx_dropped+=discarded;
+                *reconfigure_discarded+=discarded;
+                if (paused) return -1;
+            }
             if (rte_eth_dev_stop(port)) return -1;
             *started = false;
             message.status = configure_mtu(port, requested, descriptors, allocation_socket, pool, queues, rss, started);
@@ -223,6 +231,10 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
                 (*changes)++;
                 *mtu = requested;
             }
+            /* A successful reconfiguration or rollback leaves the PMD started.
+             * Resume the same RX assignment only after queue setup is complete. */
+            *started = true;
+            if (rx_workers->remote && ker_worker_rx_lcores_start(rx_workers)) return -1;
         }
     } else if (message.operation != KER_MTU_GET) message.status = -EOPNOTSUPP;
     message.mtu = *mtu;
@@ -373,6 +385,7 @@ int main(int argc, char **argv)
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
+    uint64_t rx_reconfigure_discarded = 0;
     uint64_t rx_startup_discarded = 0, rx_shutdown_discarded = 0, idle_waits = 0, idle_timeouts = 0;
     struct ker_packet_header tx_header = {0};
     struct ker_worker_offload offload = {0};
@@ -423,8 +436,14 @@ int main(int argc, char **argv)
     if (ker_worker_offload_prepare(port, tx_offloads, &conf, &offload)) {
         fprintf(stderr, "ker: requested TX checksum/TSO offloads exceed original PMD capabilities or current adapter qualification\n"); goto cleanup;
     }
-    uint16_t buffer_size = (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE :
-        RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, maximum_mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM));
+    /* Original PMDs can reserve more RX space than Ethernet/VLAN/CRC (for
+     * example the virtio header). Keep the configured ceiling usable after
+     * queue creation, when the original driver's MTU checks inspect this pool. */
+    uint64_t room = (uint64_t)maximum_mtu + ker_worker_rx_eth_overhead(&queue_info) + RTE_PKTMBUF_HEADROOM;
+    if (!scatter && room > UINT16_MAX) {
+        fprintf(stderr, "ker: original PMD RX geometry exceeds mbuf data room limit\n"); goto cleanup;
+    }
+    uint16_t buffer_size = scatter ? RTE_MBUF_DEFAULT_BUF_SIZE : (uint16_t)RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, room);
     unsigned gso_segments = (KER_NATIVE_MAX_GSO + buffer_size - RTE_PKTMBUF_HEADROOM - 1) /
         (buffer_size - RTE_PKTMBUF_HEADROOM);
     if (tx_offloads == 2 && offload.segment_limit && gso_segments > offload.segment_limit) {
@@ -687,8 +706,9 @@ int main(int argc, char **argv)
         if (bond_policy) (void)rte_eth_tx_burst(port, 0, NULL, 0);
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
-                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, exception.pending != NULL || rx_workers.remote, &mtu_changes,
-                pool, rx_desc, allocation_socket, (uint16_t)queues, &rss, &started);
+                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, exception.pending != NULL, &mtu_changes,
+                pool, rx_desc, allocation_socket, (uint16_t)queues, &rss, &started,
+                &rx_workers, rx_capture.file ? &rx_capture : NULL, &rx_dropped, &rx_reconfigure_discarded);
             if (result < 0) { fprintf(stderr, "ker: MTU device transaction failed\n"); status = 1; break; }
             if (result > 0) { close(mtu_fd); mtu_fd = -1; }
         }
@@ -959,13 +979,15 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"rx_pollers\":[");
+    printf("KER_IO_DONE {\"rx_reconfigure_discarded\":%llu,\"rx_pollers\":[",
+        (unsigned long long)rx_reconfigure_discarded);
     for (uint16_t q = 0; q < rx_workers.queues; q++) {
         const struct ker_rx_poll_queue *poller = &rx_workers.queue[q];
-        printf("%s{\"queue\":%u,\"owner\":%u,\"lcore\":%u,\"cpu\":%d,\"packets\":%llu,\"polls\":%llu,\"stalled\":%llu,\"shutdown\":%llu}",
+        printf("%s{\"queue\":%u,\"owner\":%u,\"lcore\":%u,\"cpu\":%d,\"packets\":%llu,\"polls\":%llu,\"stalled\":%llu,\"shutdown\":%llu,\"reconfigured\":%llu,\"starts\":%llu}",
             q ? "," : "", q, poller->owner, poller->observed, poller->cpu,
             (unsigned long long)poller->polled, (unsigned long long)poller->polls,
-            (unsigned long long)poller->stalled, (unsigned long long)poller->shutdown);
+            (unsigned long long)poller->stalled, (unsigned long long)poller->shutdown,
+            (unsigned long long)poller->reconfigured, (unsigned long long)poller->starts);
     }
     printf("],");
     printf("\"exception_console_charged\":%llu,\"exception_general_charged\":%llu,"
