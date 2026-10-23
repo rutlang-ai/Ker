@@ -16,8 +16,8 @@
 #define TOTAL (256U * 1024U + 13U)
 #define CHUNK 8192U
 #define BATCH 3U
-enum api { VECTOR, MESSAGE, BATCHED };
-static unsigned int send_partial, send_retry, receive_short, receive_retry;
+enum api { VECTOR, MESSAGE, BATCHED, BATCHED_ZEROCOPY };
+static unsigned int send_partial, send_partial_message, send_retry, receive_short, receive_retry;
 static unsigned char value(size_t offset, unsigned int seed)
 {
     return (unsigned char)((offset * 131U + (offset >> 7) + seed) & 255U);
@@ -46,20 +46,25 @@ static void transmit(int fd, enum api api, unsigned int seed)
     while (offset < TOTAL) {
         ssize_t count;
         size_t offered;
-        if (api == BATCHED) {
+        if (api == BATCHED || api == BATCHED_ZEROCOPY) {
             struct mmsghdr messages[BATCH] = {0};
             struct iovec vectors[BATCH][2];
             size_t prepared = 0;
             unsigned int n = 0;
             while (n < BATCH && offset + prepared < TOTAL) {
-                size_t length = minimum(CHUNK, TOTAL - offset - prepared), split = length / 3;
+                size_t requested = CHUNK;
+                if (api == BATCHED_ZEROCOPY && n == 0) requested = 64U * 1024U;
+                else if (api == BATCHED_ZEROCOPY && n == 1) requested = 1;
+                size_t length = minimum(requested, TOTAL - offset - prepared), split = length / 3;
                 vectors[n][0] = (struct iovec){bytes + offset + prepared, split};
                 vectors[n][1] = (struct iovec){bytes + offset + prepared + split, length - split};
                 messages[n].msg_hdr.msg_iov = vectors[n]; messages[n].msg_hdr.msg_iovlen = 2;
+                messages[n].msg_len = 0xdecafbadU;
                 prepared += length; ++n;
             }
             offered = prepared;
-            int sent = sendmmsg(fd, messages, n, MSG_NOSIGNAL);
+            int flags = MSG_NOSIGNAL | (api == BATCHED_ZEROCOPY ? MSG_ZEROCOPY : 0);
+            int sent = sendmmsg(fd, messages, n, flags);
             count = sent < 0 ? -1 : 0;
             if (sent >= 0) {
                 CHECK(sent > 0 && (unsigned int)sent <= n);
@@ -68,8 +73,13 @@ static void transmit(int fd, enum api api, unsigned int seed)
                     CHECK(messages[i].msg_len > 0 && messages[i].msg_len <= maximum);
                     count += messages[i].msg_len;
                     /* Linux stops the batch after a partial stream message. */
-                    if (messages[i].msg_len < maximum) CHECK(i + 1 == sent);
+                    if (messages[i].msg_len < maximum) {
+                        ++send_partial_message;
+                        CHECK(i + 1 == sent);
+                    }
                 }
+                for (unsigned int i = (unsigned int)sent; i < n; ++i)
+                    CHECK(messages[i].msg_len == 0xdecafbadU);
             }
         } else {
             size_t length = minimum(CHUNK, TOTAL - offset), split = length / 3;
@@ -144,13 +154,16 @@ static void receive_stream(int fd, enum api api, unsigned int seed)
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 5);
+    CHECK(argc == 5 || argc == 6);
+    int require_short = argc == 6 && !strcmp(argv[5], "require-short");
+    CHECK(argc == 5 || require_short);
     int server = strcmp(argv[1], "server") == 0;
     CHECK(server || strcmp(argv[1], "client") == 0);
     enum api api;
     if (strcmp(argv[4], "vector") == 0) api = VECTOR;
     else if (strcmp(argv[4], "message") == 0) api = MESSAGE;
-    else {CHECK(strcmp(argv[4], "batch") == 0); api = BATCHED;}
+    else if (strcmp(argv[4], "batch") == 0) api = BATCHED;
+    else {CHECK(strcmp(argv[4], "batch-zc") == 0); api = BATCHED_ZEROCOPY;}
     char *end;
     long port = strtol(argv[3], &end, 10);
     CHECK(!*end && port > 0 && port <= 65535);
@@ -167,11 +180,16 @@ int main(int argc, char **argv)
         CHECK(child >= 0 && close(fd) == 0); fd = child;
     } else CHECK(connect(fd, (void *)&address, sizeof(address)) == 0);
     configure(fd);
+    if (api == BATCHED_ZEROCOPY) {
+        int disabled = 0;
+        CHECK(setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &disabled, sizeof(disabled)) == 0);
+    }
     if (server) {receive_stream(fd, api, 17); transmit(fd, api, 93);}
     else {transmit(fd, api, 17); receive_stream(fd, api, 93);}
+    if (require_short) CHECK(api == BATCHED_ZEROCOPY && send_partial_message > 0);
     CHECK(close(fd) == 0);
     printf("PASS: F-Stack %s stream I/O, %u bytes each direction, nonblocking and EOF; "
-        "send_partial=%u send_eagain=%u recv_short=%u recv_eagain=%u\n",
-        argv[4], TOTAL, send_partial, send_retry, receive_short, receive_retry);
+        "send_partial=%u send_partial_message=%u send_eagain=%u recv_short=%u recv_eagain=%u\n",
+        argv[4], TOTAL, send_partial, send_partial_message, send_retry, receive_short, receive_retry);
     return 0;
 }

@@ -39,7 +39,7 @@ foreach(artifact config library)
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c
-    src/posix/lifecycle.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c)
+    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -645,6 +645,15 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-stream-io COMMAND ${ker_native_test_command}
         --stream-app "$<TARGET_FILE:ker-posix-fstack-stream-io-test>")
     set_tests_properties(native-fstack-stream-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-sendmmsg-short-test tests/posix/sendmmsg-short.c src/posix/posix-socket.c)
+    target_include_directories(ker-posix-sendmmsg-short-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-posix-sendmmsg-short-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_options(ker-posix-sendmmsg-short-test PRIVATE -Wall -Wextra -Werror -ffunction-sections)
+    target_link_options(ker-posix-sendmmsg-short-test PRIVATE -Wl,--gc-sections -Wl,--wrap=lkl_syscall)
+    target_link_libraries(ker-posix-sendmmsg-short-test PRIVATE Threads::Threads)
+    add_test(NAME fstack-sendmmsg-short-boundary COMMAND ker-posix-sendmmsg-short-test)
+    set_tests_properties(fstack-sendmmsg-short-boundary PROPERTIES TIMEOUT 10 LABELS fstack)
     add_executable(ker-posix-fstack-udp-test tests/posix/fstack-udp.c)
     target_compile_options(ker-posix-fstack-udp-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-interop COMMAND ${ker_native_test_command}
@@ -950,6 +959,18 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-native-tx-offloads-test>"
             --pmd-root "${ker_offload_library_root}" --failure-library "$<TARGET_FILE:ker-receive-mode-failure>")
     set_tests_properties(native-fstack-virtio-kernel-offloads PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-test tests/posix/tx-offloads.c)
+    target_compile_definitions(ker-native-buffer-test PRIVATE KER_TEST_NATIVE_BUFFERS=1)
+    target_include_directories(ker-native-buffer-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_compile_options(ker-native-buffer-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-native-buffer-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    add_test(NAME native-fstack-native-buffers
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/virtio-kernel-offloads.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-native-buffer-test>"
+            --pmd-root "${ker_offload_library_root}" --failure-library "$<TARGET_FILE:ker-receive-mode-failure>"
+            --native-buffers)
+    set_tests_properties(native-fstack-native-buffers PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-tx-offloads-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_tx_offloads_config.py")
     set_tests_properties(native-fstack-tx-offloads-config PROPERTIES TIMEOUT 30 LABELS "fstack")
