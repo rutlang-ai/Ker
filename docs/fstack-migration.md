@@ -981,3 +981,17 @@ worker 只对逐端口确认使用修复的驱动开放重试；未修改 PMD �
 额外复制不作性能等价声明，部分 GSO 前缀可能重复，去重归原版 Linux TCP。
 补丁说明见 [compat/dpdk/README.md](../compat/dpdk/README.md)。
 四项硬件案例仍为 partial，未增加完成计数；当前仍有234项未完成迁移。
+
+2026-10-23 virtio/vhost-kernel IPv6 TSO 批次
+
+支持明确命名的 kernel TAP 接收模式适配：原版 virtio-user 缺少 CTRL_RX 时，
+验证真实后端和 iface，设置并读回宿主 IFF_ALLMULTI，退出/错误回滚原值。
+不对其他不支持的 PMD 返回假成功，也不修改 Linux/DPDK 源码。
+实际 path=/dev/vhost-net、iface、MAC、queue_size512、1/2 active queue pairs
+已经通过原版 PMD/宿主内核运行，五组完整 IPv4/IPv6 TCP/UDP 线包验收覆盖
+checksum、TSO4、TSO6、MTU 队列停启、持久接口标志恢复、缺少 iface 拒绝和
+真实设置后读回错误回滚。原版 TC 转发承载 Ethernet；全部协议与分段归原版 Linux。
+物理 NIC 卸载验收仍缺失，TAP 自身的 GSO 仍只支持IPv4；四项硬件案例继续 partial。
+源配置的 iface+Unix socket 字面组合仍不被固定版本 DPDK 支持，不能以受支持的
+kernel tuple 冒充原例全部通过，C 分配器/combined topology 也仍由 issue224 保留。
+当前仍为136 scenario-adapted、21 partial、213 blocked，共234项未完成。

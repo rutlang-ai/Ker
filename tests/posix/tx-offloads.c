@@ -44,9 +44,11 @@ static void reconfigure(void)
 }
 int main(int argc, char **argv)
 {
-    check(argc == 2 || argc == 3, "usage: tx-offloads PORT [failure]");
+    check(argc == 2 || argc == 3, "usage: tx-offloads PORT [failure|wait]");
+    bool wait_for_link = argc == 3 && !strcmp(argv[2], "wait");
+    if (wait_for_link) { puts("READY"); fflush(stdout); check(getchar() == 'G', "wait for independent link"); }
     int port = atoi(argv[1]);
-    if (argc == 2) reconfigure();
+    if (argc == 2 || wait_for_link) reconfigure();
     for (unsigned family = 0; family < 2; family++) {
         struct sockaddr_storage target = {0};
         socklen_t size;
@@ -63,7 +65,7 @@ int main(int argc, char **argv)
         check(fd >= 0 && !connect(fd, (void *)&target, size), "native UDP");
         struct timeval timeout = {.tv_sec = 5};
         check(!setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), "UDP timeout");
-        if (argc == 3) {
+        if (argc == 3 && !wait_for_link) {
             check(send(fd, "failure", 7, 0) == 7, "offload failure trigger");
             sleep(5);
             return 0;

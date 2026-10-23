@@ -1333,4 +1333,31 @@ ip_checksum/tso4/tso6/checksum_fallback` 是构建时的元数据请求计数，
 AF_PACKET 抓包、禁止 GRO/GSO 聚合、检查抓包零丢包、两条各512KiB TCP 的完整
 字节覆盖、IPv4/TCP/UDP checksum 和每段 MTU，并验证1600/1500 MTU 停启后卸载
 仍有效。off/checksum/tso-large/tso-scatter 均测试；IPv6 UDP checksum 必须非零。
-四项源硬件卸载案例继续 partial，物理 NIC 和 IPv6 TSO 正向验收仍由 issue221 跟踪。
+四项源硬件卸载案例继续 partial，物理 NIC 正向验收仍由 issue221 跟踪；
+virtio/vhost-kernel 的 IPv6 TSO 软件路径见下文。
+
+原版 virtio-user/vhost-kernel 卸载与接收模式
+
+`[vdevN] path=/dev/vhost-net` 配合明确的 `iface=...` 可以直接使用原版
+virtio-user 与宿主 vhost-net/TAP。checksum 与 tso 仍从真实 PMD 能力/配置读回协商；
+该路径支持 HOST_TSO4 和 HOST_TSO6，由原版宿主 Linux 完成实际分段和校验和，
+不能计为物理 NIC 硬件卸载。未启用 RX LRO，原版应用 Linux 继续处理协议状态。
+
+kernel 后端没有 virtio CTRL_RX，PMD 的 all-multicast API 会返回不支持。
+Ker 仅在实际选中 net_virtio_user、devargs 有唯一明确 iface、path 与真实
+`/dev/vhost-net` 字符设备相同且接口存在时，使用宿主 ioctl 设置/读回 IFF_ALLMULTI。
+`io.all_multicast_method=host_tap` 区别于 PMD API 成功的 `pmd`；不会伪造 PMD 状态。
+宿主需要允许访问 vhost-net 和配置该 TAP。未命名后端、socket 后端或其他字符设备
+不能套用此路径；原始错误仍阻止应用启动。退出只恢复本次改变的 ALLMULTI 位，
+保留 UP 等其他标志；设置后读回失败也必须回滚。`host_receive_mode_restored`
+记录宿主接收模式清理结果，持久 TAP 的原始 off/on 状态有实际退出后检查。
+
+`native-fstack-virtio-kernel-offloads` 在独立网络命名空间中，通过原版 Linux TC
+透明转发 TAP/veth Ethernet 帧。kernel 后端把 guest MAC 设置到宿主 TAP，普通
+Linux bridge 会把该 MAC 作为本机 FDB 条目，故采用与 net_tap remote 路径相同
+类别的 TC 转发。私有 veth 禁用 GRO/GSO/TSO 和 TX checksum，确保独立 AF_PACKET
+捕获到完成后的线上字节。五组 off/checksum/tso-large/tso-scatter、1/2 队列与持久
+TAP 运行检查实际 IPv4/IPv6 TSO 请求、两条各512KiB完整 TCP 数据、UDP边界长度、
+全部校验和、分段MTU、零抓包丢失、零未归还mbuf及1600/1500原生/PMD队列停启。
+此处不宣称 host TAP 的 MTU 被 PMD MTU API 同步设置，也不将多队列流量称为 RSS。
+缺少 PMD 或可访问的 vhost 设备时，该专用验收明确跳过，不记为功能通过。

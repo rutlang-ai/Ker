@@ -685,7 +685,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -702,15 +702,19 @@
         {
           "ctest": "native-fstack-tap-offload-retry",
           "provenance_case": "native-fstack-tap-offload-retry"
+        },
+        {
+          "ctest": "native-fstack-virtio-kernel-offloads",
+          "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tcp_csum",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -727,15 +731,19 @@
         {
           "ctest": "native-fstack-tap-offload-retry",
           "provenance_case": "native-fstack-tap-offload-retry"
+        },
+        {
+          "ctest": "native-fstack-virtio-kernel-offloads",
+          "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tso",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -752,15 +760,19 @@
         {
           "ctest": "native-fstack-tap-offload-retry",
           "provenance_case": "native-fstack-tap-offload-retry"
+        },
+        {
+          "ctest": "native-fstack-virtio-kernel-offloads",
+          "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_udp_csum",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -777,9 +789,13 @@
         {
           "ctest": "native-fstack-tap-offload-retry",
           "provenance_case": "native-fstack-tap-offload-retry"
+        },
+        {
+          "ctest": "native-fstack-virtio-kernel-offloads",
+          "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
@@ -1417,7 +1433,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "All six source vdev fields are parsed with final-value precedence and map to original DPDK net_virtio_user arguments. Actual independent vhost/TAP IPv4/IPv6 traffic verifies the supported socket-backend subset, MAC, two-pair capacity,512 descriptors and cleanup. The pinned PMD explicitly rejects the source iface+Unix-socket tuple; no field is silently discarded.",
+      "reason": "All six source vdev fields are parsed with final-value precedence and map to original DPDK net_virtio_user arguments. Actual independent vhost/TAP IPv4/IPv6 traffic verifies the supported socket-backend subset, MAC, two-pair capacity,512 descriptors and cleanup. The pinned PMD explicitly rejects the source iface+Unix-socket tuple; no field is silently discarded. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -1426,9 +1442,13 @@
         {
           "ctest": "native-fstack-typed-vdev",
           "provenance_case": "native-fstack-typed-vdev"
+        },
+        {
+          "ctest": "native-fstack-virtio-kernel-offloads",
+          "provenance_case": "native-fstack-virtio-kernel-config"
         }
       ],
-      "remaining": "The exact source fixture combines iface with a Unix socket path, which pinned DPDK rejects because iface is vhost-kernel-only. Kernel-backend iface runtime acceptance is not qualified here; source queue count is PMD capacity, not proof of active multi-queue/RSS use. Full F-Stack config structs/allocation-failure ABI remain unmapped; tracked in issue224."
+      "remaining": "The literal source fixture combines iface with a Unix socket path, which pinned DPDK explicitly rejects; the supported named vhost-kernel backend is separately qualified. Full F-Stack config structs, combined bond/vdev topology and C allocation-failure/strdup/free/valgrind ABI remain unqualified under issue224. Active kernel-backend queue pairs are not RSS evidence."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
@@ -1637,7 +1657,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Exact pinned repeated bond and vdev strings retain final members/primary/MAC/policy/iface/path values. Repeated-invalid-to-valid configuration drives real original DPDK LACP bond and virtio-user/vhost traffic with final settings and complete buffer cleanup.",
+      "reason": "Exact pinned repeated bond and vdev strings retain final members/primary/MAC/policy/iface/path values. Repeated-invalid-to-valid configuration drives real original DPDK LACP bond and virtio-user/vhost traffic with final settings and complete buffer cleanup. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -1654,9 +1674,13 @@
         {
           "ctest": "native-fstack-typed-bond",
           "provenance_case": "native-fstack-typed-bond"
+        },
+        {
+          "ctest": "native-fstack-virtio-kernel-offloads",
+          "provenance_case": "native-fstack-virtio-kernel-config"
         }
       ],
-      "remaining": "Full combined fixture still contains a vdev iface+Unix-socket tuple rejected by the pinned PMD; vhost-kernel iface qualification remains pending. Python storage replacement and DPDK buffer ownership do not prove F-Stack C strdup/free, allocation-failure or valgrind contracts; tracked in issue224."
+      "remaining": "The literal source fixture combines iface with a Unix socket path, which pinned DPDK explicitly rejects; the supported named vhost-kernel backend is separately qualified. Full F-Stack config structs, combined bond/vdev topology and C allocation-failure/strdup/free/valgrind ABI remain unqualified under issue224. Active kernel-backend queue pairs are not RSS evidence."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
