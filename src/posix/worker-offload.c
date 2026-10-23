@@ -13,21 +13,32 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 
+static bool same_file(const char *left, const char *right)
+{
+    struct stat left_stat, right_stat;
+    return left && right && !stat(left, &left_stat) && !stat(right, &right_stat) &&
+        left_stat.st_dev == right_stat.st_dev && left_stat.st_ino == right_stat.st_ino;
+}
+
 static void *loaded_driver_symbol(const struct rte_driver *driver, const char *name)
 {
     Dl_info module_info;
     if (!driver || !dladdr(driver, &module_info) || !module_info.dli_fname) return NULL;
-    struct stat module_stat, executable_stat;
-    if (!stat(module_info.dli_fname, &module_stat) &&
-        !stat("/proc/self/exe", &executable_stat) &&
-        module_stat.st_dev == executable_stat.st_dev &&
-        module_stat.st_ino == executable_stat.st_ino)
-        return dlsym(RTLD_DEFAULT, name); /* Explicit static/main-binary case. */
+    bool main_executable = same_file(module_info.dli_fname, "/proc/self/exe");
+    if (main_executable) {
+        void *symbol = dlsym(RTLD_DEFAULT, name);
+        Dl_info symbol_info;
+        return symbol && dladdr(symbol, &symbol_info) &&
+            same_file(symbol_info.dli_fname, module_info.dli_fname) ? symbol : NULL;
+    }
     void *handle = dlopen(module_info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
     if (!handle) return NULL;
     void *symbol = dlsym(handle, name);
+    Dl_info symbol_info;
+    bool owned = symbol && dladdr(symbol, &symbol_info) &&
+        same_file(symbol_info.dli_fname, module_info.dli_fname);
     dlclose(handle);
-    return symbol;
+    return owned ? symbol : NULL;
 }
 
 uint32_t ker_worker_offload_feature_mask(int mode)

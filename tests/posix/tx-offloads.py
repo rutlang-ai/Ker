@@ -115,13 +115,13 @@ def peer(sock, tcp, family):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library'):
+    for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library', 'foreign-abi-library'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
-        for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library'):
+        for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library', 'foreign-abi-library'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         return subprocess.run(command).returncode
     for command in (
@@ -152,7 +152,7 @@ def main():
             rejected = root / (requested + '-rejected.json')
             bad_eal = eal.rsplit(' --vdev=', 1)[0] + ' --vdev=net_null0,no-rx=1'
             environment = dict(os.environ)
-            environment['LD_PRELOAD'] = str(modules[0])
+            environment['LD_PRELOAD'] = str(args.foreign_abi_library) + ':' + str(modules[0])
             result = subprocess.run([sys.executable, str(args.launcher), '--library', str(args.library),
                 '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_null0',
                 '--eal', bad_eal, '--tx-offloads', requested, '--stats', str(rejected),
@@ -174,8 +174,9 @@ def main():
             port = 42000
             stats = root / (mode + '-' + storage + '-' + str(fault) + '.json')
             environment = dict(os.environ)
+            environment['LD_PRELOAD'] = str(args.foreign_abi_library) + ':' + environment.get('LD_PRELOAD', '')
             if fault:
-                environment['LD_PRELOAD'] = str(args.failure_library) + ':' + environment.get('LD_PRELOAD', '')
+                environment['LD_PRELOAD'] = str(args.failure_library) + ':' + str(args.foreign_abi_library) + ':' + environment.get('LD_PRELOAD', '')
                 environment['KER_TAP_FAULT'] = 'copy' if fault == 'copy' else 'write'
                 if fault == 'write-tso':
                     environment['KER_TAP_FAULT_TSO'] = '1'
@@ -241,7 +242,7 @@ def main():
                 for sock in sockets:
                     sock.close()
         environment = dict(os.environ)
-        environment['LD_PRELOAD'] = str(args.failure_library) + ':' + environment.get('LD_PRELOAD', '')
+        environment['LD_PRELOAD'] = str(args.failure_library) + ':' + str(args.foreign_abi_library) + ':' + environment.get('LD_PRELOAD', '')
         failed_stats = root / 'tap-rejection.json'
         result, group = launch([sys.executable, str(args.launcher), '--library', str(args.library),
             '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', eal,

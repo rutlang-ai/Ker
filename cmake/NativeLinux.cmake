@@ -906,6 +906,8 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tx-offload-metadata COMMAND ker-worker-offload-test)
     set_tests_properties(native-fstack-tx-offload-metadata PROPERTIES TIMEOUT 30 LABELS "fstack")
     list(GET DPDK_LIBRARY_DIRS 0 ker_offload_library_root)
+    add_library(ker-test-foreign-tap-abi SHARED tests/posix/foreign-tap-abi.c)
+    target_compile_options(ker-test-foreign-tap-abi PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-tap-offload-retry-test tests/posix/tap-offload-retry.c src/posix/worker-mbuf.c)
     target_include_directories(ker-tap-offload-retry-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_compile_options(ker-tap-offload-retry-test PRIVATE -Wall -Wextra -Werror)
@@ -913,7 +915,8 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-tap-offload-retry
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/tap-offload-retry.py"
             --app "$<TARGET_FILE:ker-tap-offload-retry-test>" --failure-library "$<TARGET_FILE:ker-tap-offload-failure>"
-            --pmd-root "${ker_offload_library_root}")
+            --pmd-root "${ker_offload_library_root}"
+            --foreign-abi-library "$<TARGET_FILE:ker-test-foreign-tap-abi>")
     set_tests_properties(native-fstack-tap-offload-retry PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "fstack")
     add_library(ker-tap-offload-failure SHARED tests/posix/tap-offload-failure.c)
     target_compile_options(ker-tap-offload-failure PRIVATE -Wall -Wextra -Werror)
@@ -924,7 +927,8 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/tx-offloads.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-native-tx-offloads-test>"
-            --pmd-root "${ker_offload_library_root}" --failure-library "$<TARGET_FILE:ker-tap-offload-failure>")
+            --pmd-root "${ker_offload_library_root}" --failure-library "$<TARGET_FILE:ker-tap-offload-failure>"
+            --foreign-abi-library "$<TARGET_FILE:ker-test-foreign-tap-abi>")
     set_tests_properties(native-fstack-tx-offloads PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-tx-offloads-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_tx_offloads_config.py")
