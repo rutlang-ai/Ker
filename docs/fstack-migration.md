@@ -14,8 +14,8 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 133 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 23 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| scenario-adapted | 134 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 22 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
 | blocked | 214 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 300 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 237 项是
-23 partial + 214 blocked，另有 8 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 299 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 236 项是
+22 partial + 214 blocked，另有 8 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -66,7 +66,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
-| Resolve device/run lifecycle and upstream fault-injection contracts | 7 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
+| Resolve device/run lifecycle and upstream fault-injection contracts | 6 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 6 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 13 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
 | Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
@@ -141,7 +141,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 22 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 19 | 1 | 5 | 0 | 0 |
-| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 4 | 2 | 0 | 0 | 0 |
+| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 2 | 1 | 0 | 0 |
@@ -912,3 +912,19 @@ RSS 适配器只调用原版 ethdev API，检查四类 TCP/UDP IPv4/IPv6 哈希�
 转为完成。全局多 lcore、对称 RSS、实际流落点、原版 Linux 源端口与队列配合、
 80/443 表等由 issues224/220 继续跟踪。计数仍为133 scenario-adapted、23 partial、
 214 blocked，237 项未完成，另外8项架构专属和55项 harness-only 保留其原因。
+
+2026-10-23 原生回调 run/stop 批次
+
+增加 `ker_posix_run` / `ker_posix_stop_run`，由调用方提供业务回调，Ker 仅负责运行/停止
+和原版 Linux/DPDK 生命周期。保留回调参数、当前线程执行和忽略返回值的合同，支持
+重复停止、外部线程停止及 NULL 回调等待；嵌套/并发 run 明确失败。停止先关闭原生
+socket、等待发送队列、移除设备并停掉内核，再由 launcher 停止、回收全部 EAL worker，
+确认零 mbuf 所有权后才应答。回调程序在 API 返回后继续运行六秒，验证完整清理不依赖
+应用退出；独立宿主端观察四条原生 TCP 的 EOF，另有四条 UDP 交互，覆盖双接口 IPv4/IPv6。
+真实 worker 退出后的失败码会反馈为 API 的 EIO 和 launcher 的125，不会伪报清理成功。
+
+`test_ff_run_and_stop_forward` 完成原生 API 场景适配。`test_main_loop_one_iteration_then_stop`
+仍为 partial：一次应用回调不等于原始 F-Stack EAL dispatch/RX/message/TX/accounting
+只运行一次；独立 worker 与原版 Linux 调度器仍自主运行，未实现原始耦合循环/lcore ABI。
+该差异继续在 issue223 中保留。当前为134 scenario-adapted、22 partial、214 blocked，
+仍有236项未完成，另有8项架构专属及55项 harness-only。

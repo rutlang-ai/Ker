@@ -23,6 +23,17 @@ void ker_mtu_control_init(int fd, int index, int maximum)
     if (device_count == 8) abort();
     devices[device_count++] = (struct device_control){fd, index, maximum};
 }
+/* The caller has quiesced native ioctl users and removed every netdev. */
+void ker_mtu_control_close_all(void)
+{
+    pthread_mutex_lock(&lock);
+    while (device_count) {
+        struct device_control *device = &devices[--device_count];
+        if (device->fd >= 0) syscall(SYS_close, device->fd);
+        device->fd = -1;
+    }
+    pthread_mutex_unlock(&lock);
+}
 /* A failed/ambiguous transaction cannot be reported as a coherent interface.
  * The launcher detects the failed application and stops the worker as well. */
 static void inconsistent(void)

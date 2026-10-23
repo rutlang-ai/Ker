@@ -707,6 +707,7 @@ class AdditionalWorker:
         self.process = self.app_packet = self.io_packet = self.app_mtu = self.io_mtu = None
         self.stop_read = self.stop_write = -1
         self.info = self.stats = None
+        self.finished_result = None
 
     def start(self, worker, args):
         item = self.interface
@@ -774,6 +775,8 @@ class AdditionalWorker:
             fd = getattr(self, name)
             if fd >= 0: os.close(fd); setattr(self, name, -1)
     def finish(self):
+        if self.finished_result is not None:
+            return self.finished_result
         self.stop_channels()
         failed = False
         if self.process is not None:
@@ -783,9 +786,10 @@ class AdditionalWorker:
                 self.process.kill(); output, _ = self.process.communicate(); failed = True
             for line in output.splitlines():
                 if line.startswith('KER_IO_DONE '): self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
-            failed |= self.process.returncode != 0 or self.stats is None
+            failed |= self.process.returncode != 0 or self.stats is None or self.stats.get('outstanding', 1) != 0
         if self.stats is not None:
             self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None)
+        self.finished_result = failed
         return failed
 
 
@@ -798,12 +802,28 @@ def unexpected_worker_exit(worker, additional):
     return None
 
 
+def collect_worker(process, stats):
+    failed = False
+    try:
+        output, _ = process.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill(); output, _ = process.communicate(); failed = True
+        print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
+    for line in output.splitlines():
+        if line.startswith('KER_IO_DONE '):
+            stats = json.loads(line.removeprefix('KER_IO_DONE '))
+    return stats, failed or process.returncode != 0 or stats is None
+
+
 def main():
     args = parse_arguments()
     library = args.library.resolve(strict=True)
     worker_path = args.io_worker.resolve(strict=True)
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
     mtu_app, mtu_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    run_parent, run_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    run_parent.setblocking(False)
+    worker_finished = run_finished = False
     control_read, control_write = os.pipe2(os.O_CLOEXEC)
     startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     signal.signal(signal.SIGTERM, interrupted)
@@ -861,7 +881,7 @@ def main():
             extra_worker.start(worker_path, args)
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
-            KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
+            KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
@@ -902,10 +922,11 @@ def main():
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
         app_guard = worker_path.parent / 'ker-app'
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
-            pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write,
+            pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write, run_app.fileno(),
                       *(fd for extra in additional for fd in extra.app_fds())))
         channel_app.close()
         mtu_app.close()
+        run_app.close()
         for extra in additional:
             extra.close_app_channels()
         os.close(startup_write)
@@ -933,7 +954,41 @@ def main():
                     startup_status += os.read(startup_read, 4096)
                 except BlockingIOError:
                     pass
-                if b'KER_NATIVE_STOPPING\n' in startup_status:
+                try:
+                    request = run_parent.recv(64)
+                except BlockingIOError:
+                    request = None
+                if request:
+                    if request != b'KER_RUN_STOP\n' or run_finished:
+                        raise RuntimeError('invalid native run shutdown request')
+                    while True:
+                        try:
+                            pending = os.read(startup_read, 4096)
+                        except BlockingIOError:
+                            break
+                        if not pending:
+                            break
+                        startup_status += pending
+                    if b'KER_NATIVE_DONE\n' not in startup_status and b'KER_NATIVE_INCOMPLETE\n' not in startup_status:
+                        raise RuntimeError('run requested EAL teardown before native kernel teardown')
+                    os.close(control_write)
+                    control_write = -1
+                    for extra in additional:
+                        extra.stop_channels()
+                    stats, failed = collect_worker(worker, stats)
+                    worker_finished = True
+                    for extra in additional:
+                        failed |= extra.finish()
+                    failed |= b'KER_NATIVE_DONE\n' not in startup_status
+                    failed |= stats is None or stats.get('outstanding', 1) != 0
+                    if stats is not None:
+                        stats['run_shutdown'] = True
+                        stats['run_shutdown_workers'] = 1 + len(additional)
+                        stats['run_shutdown_ack'] = not failed
+                    infrastructure_failure |= failed
+                    run_finished = True
+                    run_parent.send(b'FAIL\n' if failed else b'OK\n')
+                if b'KER_NATIVE_STOPPING\n' in startup_status and not run_finished:
                     if stopping_at is None:
                         stopping_at = time.monotonic()
                     if time.monotonic() - stopping_at > 5:
@@ -968,7 +1023,10 @@ def main():
         mtu_io.close()
         if control_read >= 0:
             os.close(control_read)
-        os.close(control_write)
+        if control_write >= 0:
+            os.close(control_write)
+        run_parent.close()
+        run_app.close()
         while True:
             try:
                 extra = os.read(startup_read, 1024)
@@ -986,18 +1044,9 @@ def main():
         for extra in additional:
             extra.stop_channels()
         if worker:
-            try:
-                output, _ = worker.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                worker.kill()
-                output, _ = worker.communicate()
-                print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
-                infrastructure_failure = True
-            for line in output.splitlines():
-                if line.startswith('KER_IO_DONE '):
-                    stats = json.loads(line.removeprefix('KER_IO_DONE '))
-            if worker.returncode:
-                infrastructure_failure = True
+            if not worker_finished:
+                stats, failed = collect_worker(worker, stats)
+                infrastructure_failure |= failed
             if stats is not None:
                 stats['io'] = info
                 for line in startup_status.splitlines():
