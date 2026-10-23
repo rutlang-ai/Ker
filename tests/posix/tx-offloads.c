@@ -82,8 +82,11 @@ int main(int argc, char **argv)
         check(!setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) &&
             !setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)), "TCP timeout");
         unsigned char block[32768];
-        for (unsigned i = 0; i < sizeof(block); i++) block[i] = (unsigned char)(i * 17 + family);
         for (unsigned index = 0; index < 16; index++) {
+            for (unsigned i = 0; i < sizeof(block); i++) {
+                unsigned position = index * (unsigned)sizeof(block) + i;
+                block[i] = (unsigned char)((position * 17) ^ (position >> 8) ^ (position >> 16) ^ family);
+            }
             unsigned offset = 0;
             while (offset < sizeof(block)) {
                 ssize_t count = send(fd, block + offset, sizeof(block) - offset, MSG_NOSIGNAL);

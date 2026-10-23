@@ -80,7 +80,7 @@ def capture(sock, stop, port):
                 initial.setdefault(version, sequence)
                 relative = (sequence - initial[version]) & 0xffffffff
                 require(relative + len(data) <= len(coverage[version]), 'wire TCP sequence range')
-                require(data == bytes(((relative + i) * 17 + (version == 6)) & 255 for i in range(len(data))),
+                require(data == bytes(((relative + i) * 17 ^ ((relative + i) >> 8) ^ ((relative + i) >> 16) ^ (version == 6)) & 255 for i in range(len(data))),
                         'wire TCP payload differs')
                 coverage[version][relative:relative + len(data)] = b'\1' * len(data)
         counts[('tcp' if proto == 6 else 'udp') + str(version)] += 1
@@ -101,7 +101,7 @@ def peer(sock, tcp, family):
                 data = connection.recv(65536)
                 if not data:
                     break
-                require(data == bytes(((offset + i) * 17 + family) & 255 for i in range(len(data))), 'TCP bulk byte stream')
+                require(data == bytes(((offset + i) * 17 ^ ((offset + i) >> 8) ^ ((offset + i) >> 16) ^ family) & 255 for i in range(len(data))), 'TCP bulk byte stream')
                 offset += len(data)
             require(offset == 512 * 1024, 'missing original TCP bulk bytes')
             connection.sendall(b'ACK-DONE')
