@@ -161,7 +161,15 @@ def main():
                     time.sleep(0.05)
                     drain = threading.Thread(target=drain_exception_wire)
                     drain.start()
-                    require(ready_line(process) == 'NATIVE_DONE', 'normal native UDP or MTU guard failed')
+                    require(ready_line(process) == 'MTU_CHANGED', 'native MTU transaction failed')
+                    for interface in ('wirepeer', 'hostexcept'):
+                        actual = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', interface], text=True))[0]['mtu']
+                        require(actual == 1400, interface + ' MTU differs from native readback')
+                    process.stdin.write('M'); process.stdin.flush()
+                    require(ready_line(process) == 'NATIVE_DONE', 'normal native UDP or MTU restore failed')
+                    for interface in ('wirepeer', 'hostexcept'):
+                        actual = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', interface], text=True))[0]['mtu']
+                        require(actual == 1500, interface + ' MTU restoration differs')
                     echoed.result(timeout=3)
                     flood_stop.set(); producer.join(timeout=2); drain.join(timeout=4)
                     require(not producer.is_alive() and not drain.is_alive() and not flood_counts['errors'] and
@@ -173,6 +181,8 @@ def main():
                     exception.close()
                 record = json.loads(stats.read_text())
                 require(record['outstanding'] == 0, 'exception path leaked owned mbufs')
+                require(record['mtu_final'] == 1500 and record['mtu_changes'] == 2,
+                        'main-only exception MTU transaction accounting differs')
                 require(record['exception_to_host'] == 5 and record['exception_from_host'] >= 128,
                         'missing actual worker direction or queued burst progress: ' + str(record))
                 require(record['exception_selected'] == 5 and record['exception_enqueued'] == 5 and

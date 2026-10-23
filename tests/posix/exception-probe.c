@@ -20,15 +20,23 @@ int main(void)
         check(sendto(fd,payload,sizeof(payload),0,(void*)&peer,sizeof(peer))==sizeof(payload),"native send");
         check(recv(fd,data,sizeof(data),0)==sizeof(payload)&&!memcmp(data,payload,sizeof(payload)),"native independent echo");
     }
-    /* Bridge MTU changes are explicitly unsupported until a two-device
-     * transaction can preserve both sides; no successful one-sided change. */
+    /* The main-owned worker updates both devices and verifies both sides. */
     struct ifreq entries[16], request={0};struct ifconf list={.ifc_len=sizeof(entries),.ifc_req=entries};
     check(!ioctl(fd,SIOCGIFCONF,&list),"native interface list");
     for(unsigned i=0;i<(unsigned)list.ifc_len/sizeof(entries[0]);i++)
         if(((struct sockaddr_in*)&entries[i].ifr_addr)->sin_addr.s_addr==htonl(0xc6120002))strcpy(request.ifr_name,entries[i].ifr_name);
     check(*request.ifr_name,"native device found");request.ifr_mtu=1400;
-    check(ioctl(fd,SIOCSIFMTU,&request)==-1&&errno==EOPNOTSUPP,"bridge MTU mutation rejected");
-    check(!ioctl(fd,SIOCGIFMTU,&request)&&request.ifr_mtu==1500,"native MTU preserved");
+    int result;
+    for(unsigned attempt=0;;attempt++){
+        result=ioctl(fd,SIOCSIFMTU,&request);
+        if(result<0&&errno==EBUSY&&attempt<100){usleep(1000);request.ifr_mtu=1400;continue;}
+        break;
+    }
+    check(!result,"bridge MTU transaction");
+    check(!ioctl(fd,SIOCGIFMTU,&request)&&request.ifr_mtu==1400,"native MTU changed");
+    puts("MTU_CHANGED");fflush(stdout);check(getchar()=='M',"host MTU readback barrier");
+    request.ifr_mtu=1500;check(!ioctl(fd,SIOCSIFMTU,&request),"bridge MTU restore");
+    check(!ioctl(fd,SIOCGIFMTU,&request)&&request.ifr_mtu==1500,"native MTU restored");
     check(!close(fd),"native close");puts("NATIVE_DONE");fflush(stdout);
     check(getchar()=='Q',"exception frame barrier");puts("PASS: native UDP and exception bridge coexist");return 0;
 }

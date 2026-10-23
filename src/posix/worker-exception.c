@@ -66,6 +66,28 @@ int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *i
         .general_limit = general_limit, .window_start = -1};
     return 0;
 }
+int ker_worker_exception_mtu(struct ker_worker_exception *bridge, unsigned *mtu, bool set)
+{
+    if (!owner(bridge)) return -EXDEV;
+    if (!mtu || (set && (*mtu < KER_NATIVE_MIN_MTU || *mtu > KER_NATIVE_MAX_MTU))) return -EINVAL;
+    struct ifreq request = {0};
+    if (ioctl(bridge->fd, TUNGETIFF, &request)) return -errno;
+    int control = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (control < 0) return -errno;
+    int result = 0;
+    unsigned requested = *mtu;
+    if (set) {
+        request.ifr_mtu = (int)requested;
+        if (ioctl(control, SIOCSIFMTU, &request)) result = -errno;
+    }
+    if (!result && ioctl(control, SIOCGIFMTU, &request)) result = -errno;
+    if (!result) {
+        *mtu = (unsigned)request.ifr_mtu;
+        if (set && *mtu != requested) result = -EIO;
+    }
+    if (close(control) && !result) result = -errno;
+    return result;
+}
 enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet)
 {
     if (!bridge || !bridge->pending || !packet) return KER_EXCEPTION_NATIVE;

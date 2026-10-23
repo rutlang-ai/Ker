@@ -30,6 +30,10 @@ struct ker_worker_exception {
  * No vnet header/offloads; caller owns only complete Ethernet frames. */
 int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *iface,
     struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit, uint32_t console_limit, uint32_t general_limit);
+/* Resolve the currently owned TAP via its live fd, including after rename.
+ * Device control stays on the opening EAL lcore. Setter verifies readback;
+ * callers must roll back both devices if a setter fails after mutation. */
+int ker_worker_exception_mtu(struct ker_worker_exception *bridge, unsigned *mtu, bool set);
 enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *, const struct rte_mbuf *);
 /* Outer EtherType predicate; route() also handles port/control policies. */
 bool ker_worker_exception_matches(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet);
