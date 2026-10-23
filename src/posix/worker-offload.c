@@ -1,13 +1,45 @@
+#define _GNU_SOURCE
 /* Translate original Linux virtio metadata; packet processing/segmentation and
  * checksum arithmetic belong to original Linux and original DPDK APIs. */
 #include "worker-offload.h"
 #include <errno.h>
+#include <dlfcn.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <rte_dev.h>
 #include <rte_ip.h>
 #include <rte_net.h>
 #include <rte_tcp.h>
 #include <rte_udp.h>
+
+static bool same_file(const char *left, const char *right)
+{
+    struct stat left_stat, right_stat;
+    return left && right && !stat(left, &left_stat) && !stat(right, &right_stat) &&
+        left_stat.st_dev == right_stat.st_dev && left_stat.st_ino == right_stat.st_ino;
+}
+
+static void *loaded_driver_symbol(const struct rte_driver *driver, const char *name)
+{
+    Dl_info module_info;
+    if (!driver || !dladdr(driver, &module_info) || !module_info.dli_fname) return NULL;
+    bool main_executable = same_file(module_info.dli_fname, "/proc/self/exe");
+    if (main_executable) {
+        void *symbol = dlsym(RTLD_DEFAULT, name);
+        Dl_info symbol_info;
+        return symbol && dladdr(symbol, &symbol_info) &&
+            same_file(symbol_info.dli_fname, module_info.dli_fname) ? symbol : NULL;
+    }
+    void *handle = dlopen(module_info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+    if (!handle) return NULL;
+    void *symbol = dlsym(handle, name);
+    Dl_info symbol_info;
+    bool owned = symbol && dladdr(symbol, &symbol_info) &&
+        same_file(symbol_info.dli_fname, module_info.dli_fname);
+    dlclose(handle);
+    return owned ? symbol : NULL;
+}
 
 uint32_t ker_worker_offload_feature_mask(int mode)
 {
@@ -37,6 +69,15 @@ int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *con
     state->flags = required | (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM);
     state->segment_limit = info.tx_desc_lim.nb_seg_max;
     state->tap = info.driver_name && !strcmp(info.driver_name, "net_tap");
+    if (state->tap) {
+        /* Only the isolated, qualified TAP ownership patch may opt into
+         * retries. Unmodified PMDs keep the fail-closed boundary. */
+        /* EAL loads PMDs RTLD_LOCAL. Resolve only the driver library owning
+         * this selected port, using its public device/driver information. */
+        int (*retry_abi)(uint16_t) = loaded_driver_symbol(
+            rte_dev_driver(info.device), "ker_dpdk_tap_tx_retry_abi");
+        state->tap_retry_safe = retry_abi && retry_abi(port) == 1;
+    }
     /* Map only features fully implemented by the translator. */
     state->features = ker_worker_offload_feature_mask(mode);
     config->txmode.offloads |= state->flags;

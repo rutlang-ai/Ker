@@ -685,7 +685,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -698,15 +698,19 @@
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
+        },
+        {
+          "ctest": "native-fstack-tap-offload-retry",
+          "provenance_case": "native-fstack-tap-offload-retry"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP is an original PMD software implementation, not hardware proof; its original GSO does not support IPv6, so Linux retains IPv6 software segmentation. Safe retry after TAP offload rejection remains blocked by the reproduced private buffer/flag ownership defect in issue244; the adapter fails the backend rather than retrying or claiming successful cleanup. No legacy Ker-owned protocol test substitutes for these missing proofs."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tcp_csum",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -719,15 +723,19 @@
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
+        },
+        {
+          "ctest": "native-fstack-tap-offload-retry",
+          "provenance_case": "native-fstack-tap-offload-retry"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP is an original PMD software implementation, not hardware proof; its original GSO does not support IPv6, so Linux retains IPv6 software segmentation. Safe retry after TAP offload rejection remains blocked by the reproduced private buffer/flag ownership defect in issue244; the adapter fails the backend rather than retrying or claiming successful cleanup. No legacy Ker-owned protocol test substitutes for these missing proofs."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tso",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -740,15 +748,19 @@
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
+        },
+        {
+          "ctest": "native-fstack-tap-offload-retry",
+          "provenance_case": "native-fstack-tap-offload-retry"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP is an original PMD software implementation, not hardware proof; its original GSO does not support IPv6, so Linux retains IPv6 software segmentation. Safe retry after TAP offload rejection remains blocked by the reproduced private buffer/flag ownership defect in issue244; the adapter fails the backend rather than retrying or claiming successful cleanup. No legacy Ker-owned protocol test substitutes for these missing proofs."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_udp_csum",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly.",
+      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection.",
       "ker_tests": [
         {
           "ctest": "native-fstack-tx-offloads",
@@ -761,9 +773,13 @@
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
+        },
+        {
+          "ctest": "native-fstack-tap-offload-retry",
+          "provenance_case": "native-fstack-tap-offload-retry"
         }
       ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP is an original PMD software implementation, not hardware proof; its original GSO does not support IPv6, so Linux retains IPv6 software segmentation. Safe retry after TAP offload rejection remains blocked by the reproduced private buffer/flag ownership defect in issue244; the adapter fails the backend rather than retrying or claiming successful cleanup. No legacy Ker-owned protocol test substitutes for these missing proofs."
+      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner are still missing under issue221. TAP software offload is not physical hardware evidence; IPv6 TSO remains unavailable in its pinned GSO implementation. TAP safe rejection retries require the opt-in isolated ownership patch tracked in issue244; original PMDs retain the diagnosed fail-closed boundary. No legacy Ker-owned protocol test substitutes for missing hardware proof."
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",

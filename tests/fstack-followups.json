@@ -212,19 +212,22 @@
       "id": "hardware-offloads",
       "title": "Add positive hardware checksum and TSO acceptance coverage",
       "disposition": "adaptation-needed",
-      "reason": "Actual original Linux virtio-to-DPDK capability/metadata adaptation and TAP PMD software checksum/IPv4 TSO wire acceptance now exist. Physical-NIC and IPv6 TSO execution remain unqualified; TAP rejected-buffer ownership prevents safe retry (issue244), so current failures are explicit.",
+      "reason": "Actual Linux/DPDK metadata and TAP software wire acceptance exist. An opt-in isolated TAP patch qualifies rejection ownership and safe retries under issue244. Physical-NIC and IPv6 TSO execution remain unqualified; unmodified TAP keeps fail-closed rejection.",
       "evidence": [
         "src/runtime/ethdev-tx.c",
         "tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c",
         "src/posix/worker-offload.c",
         "tests/posix/tx-offloads.py",
-        "tests/posix/tap-offload-failure.c"
+        "tests/posix/tap-offload-failure.c",
+        "compat/dpdk/tap-tx-retry.patch",
+        "tests/posix/tap-offload-retry.c",
+        "tools/prepare-dpdk-tap-retry.py"
       ],
       "acceptance": [
-        "Implement capability-negotiated ownership/metadata adaptation without changing upstream Linux/DPDK.",
+        "Preserve upstream Linux protocol behavior and prefer DPDK adapters; isolate and document any unavoidable minimal driver ownership fix.",
         "Use an actually capable PMD/NIC and independent wire verification for IPv4/TCP/UDP checksum and TSO, including fallback/rejection boundaries.",
         "Keep software-only runs distinct from hardware passes and document the required runner.",
-        "Qualify TAP rejected-offload buffer ownership/safe retry under https://github.com/rutlang-ai/Ker/issues/244 before removing the current fail-closed boundary."
+        "Require per-port qualification of the isolated TAP rejection-ownership fix before enabling retries; original PMDs must retain the fail-closed boundary. Issue244 records the patch and acceptance."
       ],
       "cases": [
         "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",

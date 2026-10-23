@@ -2,6 +2,7 @@
 """Native virtio TX metadata -> real original TAP PMD -> independent wire capture."""
 import argparse
 import concurrent.futures
+import ctypes
 import json
 import os
 import signal
@@ -114,13 +115,13 @@ def peer(sock, tcp, family):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library'):
+    for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library', 'foreign-abi-library'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
-        for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library'):
+        for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library', 'foreign-abi-library'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         return subprocess.run(command).returncode
     for command in (
@@ -137,6 +138,11 @@ def main():
            '--vdev=net_tap0,iface=offpeer,remote=offlink')
     with tempfile.TemporaryDirectory(prefix='ker-tx-offloads-') as directory:
         root = Path(directory)
+        tap_modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_net_tap.so'))
+        if not tap_modules:
+            print('SKIP: original net_tap PMD is not installed')
+            return 77
+        tap_retry_abi_available = hasattr(ctypes.CDLL(str(tap_modules[0])), 'ker_dpdk_tap_tx_retry_abi')
         modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_net_null.so'))
         if not modules:
             print('SKIP: install original net_null PMD for capability rejection control')
@@ -146,7 +152,7 @@ def main():
             rejected = root / (requested + '-rejected.json')
             bad_eal = eal.rsplit(' --vdev=', 1)[0] + ' --vdev=net_null0,no-rx=1'
             environment = dict(os.environ)
-            environment['LD_PRELOAD'] = str(modules[0])
+            environment['LD_PRELOAD'] = str(args.foreign_abi_library) + ':' + str(modules[0])
             result = subprocess.run([sys.executable, str(args.launcher), '--library', str(args.library),
                 '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_null0',
                 '--eal', bad_eal, '--tx-offloads', requested, '--stats', str(rejected),
@@ -156,14 +162,24 @@ def main():
                     json.loads(rejected.read_text())['outstanding'] == 0,
                     'unsupported original PMD accepted offloads: ' + result.stdout + result.stderr)
         print('PASS: unsupported original PMD rejects checksum/TSO before application entry, zero mbufs', flush=True)
-        for mode, storage in (('off', 'large'), ('checksum', 'large'), ('tso', 'large'), ('tso', 'scatter')):
+        safe = False
+        profiles = [(mode, storage, None) for mode, storage in
+                    (('off', 'large'), ('checksum', 'large'), ('tso', 'large'), ('tso', 'scatter'))]
+        for mode, storage, fault in profiles:
             sockets = []
             wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
             wire.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
             wire.bind(('offhost', 0))
             stop = threading.Event()
             port = 42000
-            stats = root / (mode + '-' + storage + '.json')
+            stats = root / (mode + '-' + storage + '-' + str(fault) + '.json')
+            environment = dict(os.environ)
+            environment['LD_PRELOAD'] = str(args.foreign_abi_library) + ':' + environment.get('LD_PRELOAD', '')
+            if fault:
+                environment['LD_PRELOAD'] = str(args.failure_library) + ':' + str(args.foreign_abi_library) + ':' + environment.get('LD_PRELOAD', '')
+                environment['KER_TAP_FAULT'] = 'copy' if fault == 'copy' else 'write'
+                if fault == 'write-tso':
+                    environment['KER_TAP_FAULT_TSO'] = '1'
             try:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     try:
@@ -182,7 +198,7 @@ def main():
                         result, _ = launch([sys.executable, str(args.launcher), '--library', str(args.library),
                             '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
                             '--port', 'net_tap0', '--eal', eal, '--mbuf-mode', storage, '--tx-offloads', mode,
-                            '--stats', str(stats), '--', str(args.app), str(port)])
+                            '--stats', str(stats), '--', str(args.app), str(port)], env=environment)
                         require(result.returncode == 0 and result.stdout.count('PASS:') == 2,
                                 mode + ': native offload failed: ' + result.stdout + result.stderr)
                         for future in peers:
@@ -191,7 +207,20 @@ def main():
                         counts = recording.result(timeout=2)
                         require(counts['tcp4'] > 100 and counts['tcp6'] > 100 and counts['udp4'] == counts['udp6'] == 4,
                                 'missing complete independent wire evidence: ' + str(counts))
+                        if fault:
+                            require('INJECT:' in result.stderr, 'fault did not reach original PMD')
+                            if fault == 'write-tso':
+                                require('after 2 successful checksum writes' in result.stderr, 'no actual GSO segment prefix')
                         record = json.loads(stats.read_text())
+                        if fault:
+                            require(record['tx_retries'] > 0, 'worker did not retry rejected packet')
+                        if mode == 'checksum' and not fault:
+                            require(record['io'].get('tap_retry_safe') == tap_retry_abi_available,
+                                    'worker retry qualification disagrees with selected TAP module ABI')
+                            safe = record['io'].get('tap_retry_safe', False)
+                            if safe:
+                                profiles.extend([('checksum', 'large', 'copy'), ('checksum', 'scatter', 'write'),
+                                                 ('tso', 'large', 'copy'), ('tso', 'scatter', 'write-tso')])
                         require(record['mtu_changes'] == 2 and record['mtu_final'] == 1500, 'missing actual offload queue restart')
                         require(record['outstanding'] == 0 and record['dropped'] == 0, 'offload ownership/drop failure')
                         require(record['io']['tx_offload_mode'] == {'off': 0, 'checksum': 1, 'tso': 2}[mode], 'wrong actual mode')
@@ -203,7 +232,7 @@ def main():
                             require(record['tx_tso6'] == 0 and not record['io']['tx_offload_features'] & (1 << 12),
                                     'TAP advertised unsupported original DPDK IPv6 GSO')
                             require((record['tx_tso4'] > 0) == (mode == 'tso'), 'missing original IPv4 GSO requests: ' + str(record))
-                        print('PASS: ' + mode + '/' + storage + ' original Linux metadata -> original TAP PMD software offload; '
+                        print('PASS: ' + mode + '/' + storage + '/' + str(fault) + ' original Linux metadata -> original TAP PMD software offload; '
                               'wire=' + str(counts) + '; requests=' + str({k: record[k] for k in ('tx_tcp_checksum', 'tx_udp_checksum', 'tx_ip_checksum', 'tx_tso4', 'tx_tso6')}), flush=True)
                     finally:
                         stop.set()
@@ -213,22 +242,27 @@ def main():
                 for sock in sockets:
                     sock.close()
         environment = dict(os.environ)
-        environment['LD_PRELOAD'] = str(args.failure_library) + ':' + environment.get('LD_PRELOAD', '')
+        environment['LD_PRELOAD'] = str(args.failure_library) + ':' + str(args.foreign_abi_library) + ':' + environment.get('LD_PRELOAD', '')
         failed_stats = root / 'tap-rejection.json'
         result, group = launch([sys.executable, str(args.launcher), '--library', str(args.library),
             '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', eal,
             '--tx-offloads', 'checksum', '--stats', str(failed_stats), '--', str(args.app), '42000', 'failure'], env=environment)
         failed = json.loads(failed_stats.read_text())
-        require(result.returncode == 125 and 'INJECT: original TAP checksum writev EAGAIN' in result.stderr and
-                'TAP rejected an offload buffer; retry is unsupported' in result.stderr and failed['outstanding'] > 0,
-                'pinned TAP rejection was hidden or retried: ' + result.stdout + result.stderr + str(failed))
+        require('INJECT: original TAP checksum writev EAGAIN' in result.stderr, 'no original TAP rejection')
+        if safe:
+            require(result.returncode == 0 and failed['outstanding'] == 0 and failed['dropped'] == 0,
+                    'qualified TAP retry failed: ' + result.stdout + result.stderr + str(failed))
+        else:
+            require(result.returncode == 125 and
+                    'TAP rejected an offload buffer; retry is unsupported' in result.stderr and failed['outstanding'] > 0,
+                    'pinned TAP rejection was hidden or retried: ' + result.stdout + result.stderr + str(failed))
         try:
             os.killpg(group, 0)
         except ProcessLookupError:
             pass
         else:
             raise RuntimeError('failed offload backend left live processes')
-        print('PASS: original TAP rejected-buffer ownership defect is diagnosed; backend fails125 without retry, all processes reaped; outstanding=' + str(failed['outstanding']), flush=True)
+        print('PASS: TAP retry_safe=' + str(safe) + '; rejection handled, all processes reaped; outstanding=' + str(failed['outstanding']), flush=True)
 
     return 0
 

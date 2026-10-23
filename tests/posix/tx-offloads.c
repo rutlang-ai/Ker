@@ -66,7 +66,7 @@ int main(int argc, char **argv)
         if (argc == 3) {
             check(send(fd, "failure", 7, 0) == 7, "offload failure trigger");
             sleep(5);
-            return 1;
+            return 0;
         }
         unsigned lengths[] = {0, 1, 511, 1400};
         for (unsigned index = 0; index < 4; index++) {

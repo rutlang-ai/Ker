@@ -1760,7 +1760,7 @@
       "ker_ctests": [
         "native-fstack-tx-offloads"
       ],
-      "adaptation": "Actual original Linux virtio CSUM/HOST_TSO feature negotiation derives from original ethdev capability and enabled-config readback; the worker translates original metadata to mbuf lengths/flags/pseudo-header seeds and calls original TX prepare. Independent TAP/veth host kernels run IPv4/IPv6 UDP lengths0/1/511/1400 and two512KiB TCP streams. AF_PACKET sees all native TCP bytes with independent sequence/payload coverage, IPv4 header and TCP/UDP checksum validation, no omitted UDP checksums, per-segment MTU and zero socket drops; host GRO/GSO/TSO are disabled. Run off-large,checksum-large,tso-large,tso-scatter after1600/1500 native/PMD MTU restarts; verify actual request counters, configured features, IPv4 TSO requests and zero IPv6 TSO advertisement for TAP. TX-first TAP setup initializes original GSO; output segment maximum fits the pinned PMD Ethernet budget without exceeding kernel-requested size. All normal buffers are reclaimed. Original null PMD must reject missing checksum/TSO capabilities before app entry with zero owned buffers. Test-only interposition forwards a real checksum header copy then injects EAGAIN into original TAP writev: detect its orphan header, refuse retry, return125 and require all processes reaped. That fault path is characterization of issue244, not successful cleanup; physical-NIC and IPv6 TSO claims stay partial under221. Worker pre-PMD capture is not wire evidence."
+      "adaptation": "Actual original Linux virtio CSUM/HOST_TSO feature negotiation derives from original ethdev capability and enabled-config readback; the worker translates original metadata to mbuf lengths/flags/pseudo-header seeds and calls original TX prepare. Independent TAP/veth host kernels run IPv4/IPv6 UDP lengths0/1/511/1400 and two512KiB TCP streams. AF_PACKET sees all native TCP bytes with independent sequence/payload coverage, IPv4 header and TCP/UDP checksum validation, no omitted UDP checksums, per-segment MTU and zero socket drops; host GRO/GSO/TSO are disabled. Run off-large,checksum-large,tso-large,tso-scatter after1600/1500 native/PMD MTU restarts; verify actual request counters, configured features, IPv4 TSO requests and zero IPv6 TSO advertisement for TAP. TX-first TAP setup initializes original GSO; output segment maximum fits the pinned PMD Ethernet budget without exceeding kernel-requested size. All normal buffers are reclaimed. Original null PMD must reject missing checksum/TSO capabilities before app entry with zero owned buffers. Test-only interposition forwards a real checksum header copy then injects EAGAIN into original TAP writev: detect its orphan header, refuse retry, return125 and require all processes reaped. That fault path is characterization of issue244, not successful cleanup; physical-NIC and IPv6 TSO claims stay partial under221. Worker pre-PMD capture is not wire evidence. With the isolated TAP ownership patch, the same test adds injected original checksum-copy ENOMEM and writev EAGAIN, including rejection after two successful GSO segment writes. Complete independent raw TCP/UDP checksum, nonperiodic512KiB byte coverage and zero-drop evidence must still pass, with zero outstanding buffers and all processes reaped. Without that qualified PMD, the original failure characterization remains enforced."
     },
     "native-fstack-tx-offload-metadata": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -1787,6 +1787,19 @@
         "native-fstack-tx-offloads-config"
       ],
       "adaptation": "Validate explicit off/checksum/tso mode, default off, final repeated INI value and CLI precedence, independent additional-interface inheritance/override and rejection of unsupported mode strings before runtime. Native extra-interface settings retain old9-field compatibility with an optional negotiated-feature field; production original Linux UAPI bit positions are compile-time checked. No full F-Stack config ABI or hardware execution is claimed."
+    },
+    "native-fstack-tap-offload-retry": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_ip_csum",
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_tso",
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-tap-offload-retry"
+      ],
+      "adaptation": "Real pinned TAP PMD in an isolated namespace, built with the explicit ownership patch only. UDP, ordinary TCP, chained GSO, GSO zero-segmentation and implicit TCP-checksum TSO inputs face copy ENOMEM, first writev EAGAIN, rejection after two successful GSO writes, and actual exhaustion of caller/private GSO pools (including partial allocation cleanup). A zero accepted count must preserve every caller mbuf descriptor byte, chain pointer, data byte and flags, and reclaim every temporary mbuf across all pools. Release pressure then resend the exact same input; require one accepted packet and all pool counts restored. PMD close requires zero in-use buffers. Unpatched PMDs skip this optional qualification; their known unsafe path remains covered separately. Full copies trade additional allocation/bandwidth for deterministic ownership; no NIC hardware or performance claim. Linux/GSO/checksum protocol behavior stays upstream; only TAP copy lifetime and rejected-input flags are patched, with a per-port driver-owned ABI marker."
     }
   }
 }
