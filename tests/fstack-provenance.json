@@ -1727,6 +1727,27 @@
         "native-fstack-run-stop"
       ],
       "adaptation": "Partial integration-loop adaptation: exactly one caller callback can request stop after actual original Linux traffic; complete kernel and independent EAL-worker cleanup is observed before API return, not inferred from process exit. Autonomous separate workers service the original Linux kernel while the app callback executes. This does not qualify exactly one coupled original F-Stack dispatch/RX/message/TX/accounting loop iteration or callback-on-EAL-lcore semantics. The source case stays partial under223."
+    },
+    "native-fstack-interface-context": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_register_deregister_roundtrip"
+      ],
+      "ker_ctests": [
+        "native-fstack-packet-device",
+        "native-fstack-run-stop"
+      ],
+      "adaptation": "Pinned original ff_dpdk_register_if allocates a context, saves softc/ifp/config fields and optionally creates LRO; deregister frees LRO/context. The exact source fixture has LRO disabled and only asserts a non-NULL context followed by free, not dynamic device hotplug. Qualify the production native packet-device allocation/ops/free equivalent with both connected Unix datagram and seqpacket endpoints. Reject bad fd, regular file, stream, Internet datagram and unconnected Unix datagram before allocation, preserving caller flags/ownership. Inject actual calloc failure and exhaust eventfd creation, requiring no allocation/fd leaks. Success sets CLOEXEC only on the consumed endpoint, transports real vectored records, frees the exact context once and closes only its endpoint/private eventfd; the peer descriptor remains open. Existing64 repeated cycles, blocked poll stop/EINTR/backpressure guards remain. Native run-stop additionally creates/registers two real contexts in original LKL, runs TCP/UDP IPv4/IPv6 through two real DPDK/TAP workers and verifies all inherited channels closed and workers reaped after removal. No FreeBSD pointer-layout/LRO or general hotplug ABI claim."
+    },
+    "native-fstack-null-context": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_null_ctx_safe"
+      ],
+      "ker_ctests": [
+        "native-fstack-packet-device"
+      ],
+      "adaptation": "Call the actual production native ops TX and RX with NULL context/NULL iovec/count0; require -1/EINVAL without descriptor/allocation side effects. Also reject a NULL context with a non-NULL borrowed vector while preserving its pointer, length and bytes, then transfer the same bytes successfully using the valid context and reclaim exactly one owned context. This completes only the source both-NULL error guard. The distinct source non-NULL-owned-FreeBSD-mbuf case stays blocked under223 because it requires disposal, whereas this borrowed-iovec boundary must not free caller memory."
     }
   }
 }

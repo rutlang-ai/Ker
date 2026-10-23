@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 134 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 22 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 214 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 136 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 213 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 299 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 236 项是
-22 partial + 214 blocked，另有 8 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 297 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 234 项是
+21 partial + 213 blocked，另有 8 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -66,7 +66,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
-| Resolve device/run lifecycle and upstream fault-injection contracts | 6 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
+| Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 6 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 13 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
 | Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
@@ -126,7 +126,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 
 | 上游入口 | 总数 | 场景适配 | 部分覆盖 | 阻塞 | 架构特有 | 工具自测 |
 |---|---:|---:|---:|---:|---:|---:|
-| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 13 | 7 | 0 | 0 | 0 |
+| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 14 | 6 | 0 | 0 | 0 |
 | [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
 | [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 0 | 0 | 8 | 0 | 0 |
 | [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
@@ -135,7 +135,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 26 | 9 | 61 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
-| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 2 | 60 | 0 | 0 |
+| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 2 | 59 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
@@ -928,3 +928,21 @@ socket、等待发送队列、移除设备并停掉内核，再由 launcher 停�
 只运行一次；独立 worker 与原版 Linux 调度器仍自主运行，未实现原始耦合循环/lcore ABI。
 该差异继续在 issue223 中保留。当前为134 scenario-adapted、22 partial、214 blocked，
 仍有236项未完成，另有8项架构专属及55项 harness-only。
+
+2026-10-23 接口上下文与空上下文批次
+
+核对固定版本原始实现，`ff_dpdk_register_if/deregister_if` 是上下文分配、保存字段及
+释放函数，不是运行期设备热插拔。对应的生产 packet-device 上下文现在自行验证
+连接的 Unix datagram/seqpacket 通道；非法 fd、文件、stream、Internet datagram
+和未连接通道在分配前明确失败。失败保留调用方 fd/标志；成功接管单个端点、标记
+CLOEXEC 并拥有独立 eventfd，释放不会关闭对端 fd。真实断连通道启动报告 ENOTCONN，
+不再把所有创建错误都误报为 ENOMEM。实际分配失败、eventfd 耗尽和64次循环均检查
+fd/内存所有权，原版 LKL 双接口注册/收发/移除及原版 DPDK 回收提供运行证据。
+
+TX/RX 对 NULL 上下文安全返回 EINVAL；借用向量的指针、长度、内容和所有权均保留，
+随后可用有效上下文正常传送。完成 `test_ff_dpdk_if_send_null_ctx_safe` 的双 NULL
+合同；`test_ff_dpdk_if_send_null_ctx_with_mbuf` 要求释放拥有的 FreeBSD mbuf，不能
+用借用 iovec 的错误返回冒充该合同，继续由 issue223 保留。也不宣称 FreeBSD 指针
+布局、软件 LRO 或运行期热插拔兼容。上下文 roundtrip 与双 NULL 共完成2项适配，
+当前136 scenario-adapted、21 partial、213 blocked，仍有234项未完成，另有8项
+架构专属和55项 harness-only。

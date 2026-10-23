@@ -1278,3 +1278,12 @@ ENETDOWN；应用仍可继续执行普通宿主操作。进程析构不会再次
 CLOEXEC。它没有实现 F-Stack 同进程 ff_run/ff_dpdk_run 符号或多 lcore/耦合轮询 ABI；
 业务回调仍完全由调用方提供。`--stats` 的 run_shutdown、run_shutdown_workers、
 run_shutdown_ack 仅在使用本接口时记录监督者的实际清理结果。
+
+原生设备通道边界
+
+内部 packet-device 构造函数要求已连接的 AF_UNIX datagram/seqpacket 通道，不支持
+字节流或宿主 Internet socket 作为 Ethernet record 通道。失败不接管 fd 或修改其标志；
+成功后拥有传入端点和私有唤醒 eventfd，并设置 FD_CLOEXEC。TX/RX 的 iovec 是借用
+缓冲区，NULL 上下文返回 EINVAL 且不释放、修改调用方的向量或数据。原版 LKL
+设备移除/释放后才回收上下文；这些规则没有创建 F-Stack FreeBSD mbuf 所有权 ABI，
+也不构成运行期设备热插拔 API。启动会保留上下文创建的实际 errno。

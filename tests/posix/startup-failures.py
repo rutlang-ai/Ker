@@ -44,6 +44,7 @@ def main():
             ('success', [], None, 0, 'PASS: native interfaces ready'),
             ('native-clock', [], 'realtime', 125, 'native realtime clock initialization'),
             ('kernel-init', [], None, 125, 'kernel initialization (-5)'),
+            ('packet-peer', [], None, 125, 'packet device allocation (-107)'),
             ('device-register', [], None, 125, 'packet device registration (-5)'),
             ('kernel-boot', [], None, 125, 'kernel boot (-5)'),
             ('wrapped-success', [], None, 0, 'PASS: native interfaces ready'),
@@ -61,14 +62,14 @@ def main():
             env.pop('KER_TEST_NATIVE_STAGE_TRACE', None)
             selected_launcher = list(launcher)
             wrapped = name in ('wrapped-success', 'loopback-up', 'interface-up',
-                'kernel-init', 'device-register', 'kernel-boot')
+                'kernel-init', 'device-register', 'kernel-boot', 'packet-peer')
             trace = root / (name + '.trace')
             if wrapped:
                 selected_launcher[selected_launcher.index('--library') + 1] = str(args.failure_library)
                 env['KER_TEST_NATIVE_STAGE_TRACE'] = str(trace)
                 if name != 'wrapped-success':
                     env['KER_TEST_NATIVE_STAGE_FAILURE'] = {'loopback-up': 'loopback',
-                        'interface-up': 'interface', 'kernel-init': 'init',
+                        'interface-up': 'interface', 'kernel-init': 'init', 'packet-peer': 'packet-peer',
                         'device-register': 'register', 'kernel-boot': 'boot'}[name]
             if failure:
                 env['KER_TEST_STARTUP_FAILURE'] = failure
@@ -84,7 +85,7 @@ def main():
             record = json.loads(stats.read_text())
             require(record['outstanding'] == 0, f'{name}: worker leaked mbufs: {record}')
             if name in ('native-clock', 'native-route', 'loopback-up', 'interface-up',
-                        'kernel-init', 'device-register', 'kernel-boot'):
+                        'kernel-init', 'device-register', 'kernel-boot', 'packet-peer'):
                 require('application did not initialize the native Linux backend' in result.stderr,
                         f'{name}: failed native startup unexpectedly sent READY')
             if name == 'worker-port':
@@ -98,15 +99,15 @@ def main():
                 lines = trace.read_text().splitlines() if trace.is_file() else []
                 stages = ['init', 'register', 'boot', 'loopback', 'interface']
                 stop = env.get('KER_TEST_NATIVE_STAGE_FAILURE')
-                expected_stages = stages[:stages.index(stop) + 1] if stop else stages
+                expected_stages = ['init', 'packet-peer'] if stop == 'packet-peer' else (stages[:stages.index(stop) + 1] if stop else stages)
                 require(len(lines) == len(expected_stages), f'{name}: unexpected later startup stages: {lines}')
                 for line, stage in zip(lines, expected_stages):
                     fields = line.split()
                     require(len(fields) == 3 and fields[:2] == [stage, 'injected' if stage == stop else 'real'],
                             f'{name}: startup trace mismatch: {lines}')
                     result_code = int(fields[2])
-                    require(result_code == -5 if stage == stop else
-                            (result_code >= 0 if stage == 'register' else result_code == 0),
+                    require(result_code == 0 if stage == 'packet-peer' else (result_code == -5 if stage == stop else
+                            (result_code >= 0 if stage == 'register' else result_code == 0)),
                             f'{name}: stage result mismatch: {lines}')
             print('PASS: ' + name + ' startup order, application marker and worker/EAL cleanup', flush=True)
     return 0
