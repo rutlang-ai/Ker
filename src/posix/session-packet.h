@@ -15,6 +15,6 @@
 int ker_session_packet_create(struct rte_ring **rx, struct rte_ring **tx);
 int ker_session_packet_endpoint(int fd, int type);
 int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_fd,
-    int control, int resident_pidfd, _Atomic uint64_t *owner, uint64_t expected_owner,
+    int control, int registration_fd, int resident_pidfd, _Atomic uint64_t *owner, uint64_t expected_owner,
     struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet, const volatile sig_atomic_t *stopping);
 #endif

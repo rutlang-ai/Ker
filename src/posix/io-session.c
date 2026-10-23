@@ -839,7 +839,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         struct rte_mbuf *rx_packet = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire);
         if (!known_object(rx_packet) || rx_packet == device_packet || rx_packet == leased_packet || rx_packet->pool != pool) goto cleanup;
         uint64_t key = 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
-        result = ker_session_packet_loop(pmd_port, packet_fd, wire_fd, mtu_fd, control, peer,
+        result = ker_session_packet_loop(pmd_port, packet_fd, wire_fd, mtu_fd, control, fd, peer,
             &directory->pmd_owner, key, device_packet, rx_packet, &stopping) ? 1 : 0;
         goto cleanup;
     }

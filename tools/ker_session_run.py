@@ -5,11 +5,40 @@ import json
 import os
 from pathlib import Path
 import selectors
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+
+
+
+def validate_interrupted_cleanup(worker_code, packet_stats, *, app_launched=False,
+                                 app_code=None, startup=b'', native_stats=None):
+    """Validate signal cleanup without overriding the application's signal semantics."""
+    if worker_code != 0:
+        raise RuntimeError('secondary packet cleanup failed during SIGTERM')
+    if not isinstance(packet_stats, dict) or packet_stats.get('status') != 0:
+        raise RuntimeError('secondary packet worker did not report clean SIGTERM teardown')
+    if not app_launched:
+        return None
+    if app_code not in (-signal.SIGTERM, 128 + signal.SIGTERM):
+        raise RuntimeError('original Linux application did not exit from SIGTERM: ' + repr(app_code))
+    ready = b'KER_NATIVE_READY\n' in startup
+    stopping = b'KER_NATIVE_STOPPING\n' in startup
+    done = b'KER_NATIVE_DONE\n' in startup
+    incomplete = b'KER_NATIVE_INCOMPLETE\n' in startup
+    if not ready:
+        raise RuntimeError('SIGTERM arrived before native application readiness')
+    if stopping:
+        if (not done or incomplete or not isinstance(native_stats, dict) or
+                native_stats.get('buffers_live') != 0):
+            raise RuntimeError('started native teardown did not finish cleanly')
+        return 'graceful'
+    if done or incomplete or native_stats is not None:
+        raise RuntimeError('native teardown markers are inconsistent after signal termination')
+    return 'signal-terminated'
 
 
 def run_session(args, api):
@@ -39,6 +68,14 @@ def run_session(args, api):
     owned = {args.wire_fd}
     metrics = {'stage': 'starting', 'app_started': False}
     completed = False
+    received_signal = None
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def record_sigterm(signum, _frame):
+        # Keep the handler async and non-reentrant; child cleanup stays in the
+        # ordinary control flow and finally block.
+        nonlocal received_signal
+        received_signal = signum
 
     def publish():
         if args.stats is None: return
@@ -83,6 +120,7 @@ def run_session(args, api):
         print(line.decode().rstrip(), file=sys.stderr, flush=True)
         return value
 
+    signal.signal(signal.SIGTERM, record_sigterm)
     try:
         ticket = connection.request(api.MASTER)
         ticket_r, ticket_w = pipe(os.O_CLOEXEC)
@@ -108,6 +146,22 @@ def run_session(args, api):
         if info['mtu'] != 1500 or info['tx_features'] != 0 or info['rx_ring'] == info['tx_ring']:
             raise RuntimeError('unsupported secondary packet geometry')
         metrics['stage'] = 'worker-ready'; publish()
+        if received_signal is not None:
+            close(control_w)
+            try: output, _ = worker.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                worker.kill(); worker.communicate()
+                raise RuntimeError('secondary packet worker did not exit after launcher SIGTERM')
+            print(output.decode().rstrip(), file=sys.stderr, flush=True)
+            packet_stats = None
+            for line in output.decode().splitlines():
+                if line.startswith('KER_SESSION_PACKET_DONE '):
+                    packet_stats = json.loads(line.removeprefix('KER_SESSION_PACKET_DONE '))
+            metrics.update(packet=packet_stats, worker_code=worker.returncode, app_code=None)
+            release(ticket)
+            validate_interrupted_cleanup(worker.returncode, packet_stats)
+            metrics.update(native_cleanup=None, stage='interrupted'); publish(); completed = True
+            return 128 + received_signal
         environment = {k: v for k, v in os.environ.items() if not k.startswith(
             ('LKL_', 'KER_PACKET_', 'KER_NATIVE_', 'KER_RUN_', 'KER_STARTUP_', 'KER_PRELOAD_'))}
         environment.update(KER_PRELOAD_LIBRARY=(environment.pop('LD_PRELOAD') + ':' if environment.get('LD_PRELOAD') else '') + str(library),
@@ -139,6 +193,12 @@ def run_session(args, api):
                     raise RuntimeError('native startup/control output exceeded its bound')
 
         while app.poll() is None:
+            if received_signal is not None:
+                app.terminate()
+                try: app.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    app.kill(); app.wait()
+                break
             drain_startup()
             if b'KER_NATIVE_READY\n' not in startup and time.monotonic() >= deadline:
                 raise RuntimeError('native Linux startup timed out')
@@ -173,6 +233,11 @@ def run_session(args, api):
         release(ticket)
         if worker.returncode or packet_stats is None or packet_stats['status']:
             raise RuntimeError('secondary packet cleanup failed')
+        if received_signal is not None:
+            native_cleanup = validate_interrupted_cleanup(worker.returncode, packet_stats, app_launched=True,
+                app_code=code, startup=startup, native_stats=native_stats)
+            metrics.update(native_cleanup=native_cleanup, stage='interrupted'); publish(); completed = True
+            return 128 + received_signal
         if code:
             metrics['stage'] = 'application-failed'; publish(); completed = True
             return code if code > 0 else 128 - code
@@ -182,17 +247,20 @@ def run_session(args, api):
         metrics['stage'] = 'finished'; publish(); completed = True
         return 0
     finally:
-        if app is not None and app.poll() is None:
-            app.terminate()
-            try: app.wait(timeout=5)
-            except subprocess.TimeoutExpired: app.kill(); app.wait()
-        for fd in tuple(owned): close(fd)
-        if worker is not None and worker.poll() is None:
-            try: worker.wait(timeout=5)
-            except subprocess.TimeoutExpired: worker.kill(); worker.wait()
-        for endpoint in (packet_worker, packet_app, mtu_worker, mtu_app): endpoint.close()
-        connection.close()
-        if not completed:
-            metrics.update(stage='failed', worker_code=worker.poll() if worker is not None else None,
-                app_code=app.poll() if app is not None else None)
-            publish()
+        try:
+            if app is not None and app.poll() is None:
+                app.terminate()
+                try: app.wait(timeout=5)
+                except subprocess.TimeoutExpired: app.kill(); app.wait()
+            for fd in tuple(owned): close(fd)
+            if worker is not None and worker.poll() is None:
+                try: worker.wait(timeout=5)
+                except subprocess.TimeoutExpired: worker.kill(); worker.wait()
+            for endpoint in (packet_worker, packet_app, mtu_worker, mtu_app): endpoint.close()
+            connection.close()
+            if not completed:
+                metrics.update(stage='failed', worker_code=worker.poll() if worker is not None else None,
+                    app_code=app.poll() if app is not None else None)
+                publish()
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)

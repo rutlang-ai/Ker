@@ -237,6 +237,35 @@ def main():
             finally:
                 spare.close()
                 if prestart.poll() is None: prestart.kill(); prestart.wait()
+            # Deliver SIGTERM to the real launcher just after it starts its
+            # actual worker. It must wait for EAL startup, quiesce that worker,
+            # and return the signal status without ever spawning ker-app.
+            with (trace / 'sitecustomize.py').open('a') as out:
+                out.write('import signal\n_start_worker = subprocess.Popen\n'
+                    'def signal_after_worker(*values, **options):\n'
+                    ' command = values[0] if values else options.get("args")\n'
+                    ' result = _start_worker(*values, **options)\n'
+                    ' if isinstance(command, (list, tuple)) and command and Path(command[0]).name == "ker-io-session":\n'
+                    '  os.kill(os.getpid(), signal.SIGTERM)\n'
+                    ' return result\nsubprocess.Popen = signal_after_worker\n')
+            signal_stats = root / 'signal-before-app.json'
+            spare, signal_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            signalled = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
+                '--wire-fd', str(signal_endpoint.fileno()), '--library', str(args.library),
+                '--stats', str(signal_stats), '--', str(args.app)], pass_fds=(signal_endpoint.fileno(),),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment | {'PYTHONPATH': str(trace)}, bufsize=0)
+            signal_endpoint.close()
+            try:
+                _, signal_errors = signalled.communicate(timeout=20)
+                snapshot = json.loads(signal_stats.read_text())
+                require(signalled.returncode == 143 and not snapshot['app_started'] and
+                    snapshot['stage'] == 'interrupted' and b'KER_SESSION_PACKET_DONE' in signal_errors and
+                    not marker.exists(), 'pre-app SIGTERM did not clean the actual worker: ' + signal_errors.decode())
+                print('PASS: pre-app SIGTERM drains the actual worker, returns143, and never launches ker-app')
+            finally:
+                spare.close()
+                if signalled.poll() is None: signalled.kill(); signalled.wait()
             # Fail an actual granted worker while the real native application
             # is waiting at its setup barrier. The supervisor must report125,
             # stop the app and recover all three original journaled objects.
@@ -270,6 +299,42 @@ def main():
                 sink.close()
                 if worker_pidfd >= 0: os.close(worker_pidfd)
                 if failed.poll() is None: failed.kill(); failed.wait()
+            # SIGTERM the real launcher while its original Linux application
+            # is held at READY with stdin still open. The launcher must reap
+            # both native children and preserve the conventional signal status.
+            sink, interrupted_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            interrupted_stats = root / 'interrupted.json'
+            interrupted = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
+                '--wire-fd', str(interrupted_endpoint.fileno()), '--library', str(args.library),
+                '--stats', str(interrupted_stats), '--address6', '2001:db8:1::2/64', '--', str(args.app), '--signal-ready'],
+                pass_fds=(interrupted_endpoint.fileno(),), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            interrupted_endpoint.close()
+            app_pidfd = worker_pidfd = -1
+            try:
+                require(line(interrupted) == 'READY', 'SIGTERM fixture did not reach original Linux')
+                snapshot = json.loads(interrupted_stats.read_text())
+                app_pidfd = os.pidfd_open(snapshot['app_pid'])
+                worker_pidfd = os.pidfd_open(snapshot['attached']['pid'])
+                interrupted.send_signal(signal.SIGTERM)
+                interrupted_output, interrupted_errors = interrupted.communicate(timeout=15)
+                snapshot = json.loads(interrupted_stats.read_text())
+                require(interrupted.returncode == 143 and snapshot['stage'] == 'interrupted' and
+                    snapshot['native_cleanup'] == 'graceful' and snapshot['native']['buffers_live'] == 0 and
+                    snapshot['worker_code'] == 0 and snapshot['packet']['status'] == 0 and
+                    select.select([app_pidfd], [], [], 0)[0] and select.select([worker_pidfd], [], [], 0)[0],
+                    'SIGTERM did not report exact child cleanup: ' + repr(snapshot) + interrupted_errors.decode())
+                connection = api.Connection(path)
+                try:
+                    census = connection.request(api.STATUS)
+                    require(census['generation'] == 511 and census['token'] == 0 and census['process'] == 0,
+                        'SIGTERM left original session pool objects leased')
+                finally: connection.close()
+            finally:
+                sink.close()
+                for pidfd in (app_pidfd, worker_pidfd):
+                    if pidfd >= 0: os.close(pidfd)
+                if interrupted.poll() is None: interrupted.kill(); interrupted.wait()
             primary.stdin.close(); primary.stdin = None
             try:
                 primary_output, primary_errors = primary.communicate(timeout=20)
@@ -280,11 +345,50 @@ def main():
                     ' stderr=' + primary_errors.decode(errors='replace'))
             require(primary.returncode == 0, 'resident packet-device cleanup failed: ' + primary_errors.decode(errors='replace'))
             require(b'KER_SESSION_DRAINED' in primary_output, 'resident pool cleanup proof absent')
+            # Stop the resident while a second real native application remains
+            # at READY. Its registration socket must quiesce the worker inside
+            # the resident's five second cleanup window.
+            stop_path = root / 'resident-stop.sock'
+            stop_common = ['--socket', str(stop_path), '--worker', str(args.worker), '--eal', eal,
+                '--paired-pmd']
+            stopping_primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *stop_common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            record(stopping_primary, 'KER_SESSION_READY')
+            sink, resident_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            resident_stats = root / 'resident-stop.json'
+            resident_app = subprocess.Popen([sys.executable, str(args.tool), 'run', *stop_common,
+                '--wire-fd', str(resident_endpoint.fileno()), '--library', str(args.library),
+                '--stats', str(resident_stats), '--address6', '2001:db8:1::2/64', '--', str(args.app)],
+                pass_fds=(resident_endpoint.fileno(),), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            resident_endpoint.close()
+            app_pidfd = worker_pidfd = -1
+            try:
+                require(line(resident_app) == 'READY', 'resident-shutdown fixture did not reach original Linux')
+                snapshot = json.loads(resident_stats.read_text())
+                app_pidfd = os.pidfd_open(snapshot['app_pid'])
+                worker_pidfd = os.pidfd_open(snapshot['attached']['pid'])
+                stopping_primary.send_signal(signal.SIGTERM)
+                resident_output, resident_errors = stopping_primary.communicate(timeout=8)
+                launcher_output, launcher_errors = resident_app.communicate(timeout=12)
+                require(stopping_primary.returncode == 0 and b'KER_SESSION_DRAINED' in resident_output,
+                    'resident did not complete normal DRAINED cleanup: ' + resident_errors.decode())
+                require(resident_app.returncode == 125 and b'worker exited while application was running' in launcher_errors and
+                    select.select([app_pidfd], [], [], 0)[0] and select.select([worker_pidfd], [], [], 0)[0],
+                    'resident shutdown did not reap launcher children or report backend loss: ' + launcher_errors.decode())
+            finally:
+                sink.close()
+                for pidfd in (app_pidfd, worker_pidfd):
+                    if pidfd >= 0: os.close(pidfd)
+                for process in (resident_app, stopping_primary):
+                    if process.poll() is None: process.kill(); process.wait()
             print('PASS: original guest Linux peers exchange exact IPv4/IPv6 TCP4097/UDP512 with original imported Linux')
             print('PASS: actual granted EAL secondary consumes independent original PMD RX/TX queues; resident stays off packet path')
             print('PASS: fixed1500 MTU rejects live mutation coherently; original Linux/PMD counters and bidirectional Ethernet capture')
             print('PASS: original control/TX/RX journal restores all511 objects after process death and native kernel teardown')
             print('PASS: real competing secondary never launches an application; actual worker loss returns125 and restores all original objects')
+            print('PASS: app-owned SIGTERM reaches native DONE; launcher reports143, reaps exact children, worker packet status0 and native buffers0')
+            print('PASS: resident SIGTERM closes registration, worker exits before five second deadline, resident drains, launcher reports125')
             print('PASS: source A4 primary precreates all128 coordinate rings and one original network port before actual secondary lookup')
         finally:
             if app is not None and app.poll() is None:

@@ -56,7 +56,7 @@ static int mtu_control(int fd, uint16_t port)
     return send(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_NOSIGNAL) == sizeof(message) ? 0 : -EIO;
 }
 int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_fd,
-    int control, int resident_pidfd, _Atomic uint64_t *owner, uint64_t expected_owner,
+    int control, int registration_fd, int resident_pidfd, _Atomic uint64_t *owner, uint64_t expected_owner,
     struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet, const volatile sig_atomic_t *stopping)
 {
     struct rte_ring *rx = rte_ring_lookup(KER_SESSION_PACKET_RX), *tx = rte_ring_lookup(KER_SESSION_PACKET_TX);
@@ -79,21 +79,31 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         if (atomic_load_explicit(owner, memory_order_acquire) != expected_owner) { status = -ESTALE; break; }
         short packet_events = (!tx_pending && !tx_queued && !tx_output ? POLLIN : 0) | (rx_output ? POLLOUT : 0);
         short wire_events = (!rx_pending && !rx_queued && !rx_output ? POLLIN : 0) | (tx_output ? POLLOUT : 0);
-        struct pollfd fds[] = {{.fd = control, .events = POLLIN}, {.fd = packet_fd, .events = packet_events},
+        struct pollfd fds[] = {{.fd = control, .events = POLLIN}, {.fd = registration_fd, .events = POLLIN},
+            {.fd = packet_fd, .events = packet_events},
             {.fd = wire_fd, .events = wire_events}, {.fd = mtu_fd, .events = POLLIN},
             {.fd = resident_pidfd, .events = POLLIN}};
-        int ready = poll(fds, 5, 0);
+        int ready = poll(fds, 6, 0);
         if (ready < 0) { if (errno == EINTR) continue; status = -errno; break; }
-        if (fds[4].revents) _Exit(125);
+        if (fds[5].revents) _Exit(125);
         if (fds[0].revents) break;
-        if (fds[3].revents & POLLIN) {
+        if (fds[1].revents & (POLLHUP | POLLERR | POLLNVAL)) break;
+        if (fds[1].revents & POLLIN) {
+            /* The resident closes this exact registration socket on graceful
+             * shutdown. Any queued command here is outside the idle packet loop. */
+            uint8_t unexpected;
+            ssize_t n = recv(registration_fd, &unexpected, sizeof(unexpected), MSG_PEEK | MSG_DONTWAIT);
+            if (n <= 0) break;
+            status = -EPROTO; break;
+        }
+        if (fds[4].revents & POLLIN) {
             int result = mtu_control(mtu_fd, port);
             if (result > 0) break;
             if (result < 0) { status = result; break; }
         }
-        if (fds[3].revents & (POLLHUP | POLLERR | POLLNVAL)) break;
+        if (fds[4].revents & (POLLHUP | POLLERR | POLLNVAL)) break;
         bool progress = false;
-        if (!tx_pending && !tx_queued && !tx_output && (fds[1].revents & POLLIN)) {
+        if (!tx_pending && !tx_queued && !tx_output && (fds[2].revents & POLLIN)) {
             uint8_t bytes[sizeof(struct ker_packet_header) + 1518];
             ssize_t n = recv(packet_fd, bytes, sizeof(bytes), MSG_DONTWAIT | MSG_TRUNC);
             if (n < 0) { if (!transient()) { status = -errno; break; } }
@@ -124,7 +134,7 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
             else if (n != tx_packet->pkt_len) { status = n < 0 ? -errno : -EIO; break; }
             else { tx_output = false; to_wire++; progress = true; }
         }
-        if (!rx_pending && !rx_queued && !rx_output && (fds[2].revents & POLLIN)) {
+        if (!rx_pending && !rx_queued && !rx_output && (fds[3].revents & POLLIN)) {
             uint8_t bytes[1518];
             ssize_t n = recv(wire_fd, bytes, sizeof(bytes), MSG_DONTWAIT | MSG_TRUNC);
             if (n < 0) { if (!transient()) { status = -errno; break; } }
@@ -154,7 +164,7 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
             else if (n != (ssize_t)(sizeof(header) + rx_packet->pkt_len)) { status = n < 0 ? -errno : -EIO; break; }
             else { rx_output = false; progress = true; }
         }
-        if (!progress) poll(fds, 5, 1);
+        if (!progress) poll(fds, 6, 1);
     }
     if (rte_eth_stats_get(port, &after) || after.opackets - before.opackets != sent ||
         after.ipackets - before.ipackets != received) status = -EUCLEAN;

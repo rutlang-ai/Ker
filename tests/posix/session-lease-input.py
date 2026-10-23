@@ -31,6 +31,41 @@ def main():
     api = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(api)
 
+    cleanup_spec = importlib.util.spec_from_file_location('ker_session_run',
+        args.tool.resolve().parent / 'ker_session_run.py')
+    cleanup = importlib.util.module_from_spec(cleanup_spec)
+    cleanup_spec.loader.exec_module(cleanup)
+
+    def rejected_cleanup(label, *values, **options):
+        try:
+            cleanup.validate_interrupted_cleanup(*values, **options)
+        except RuntimeError:
+            return
+        raise RuntimeError('SIGTERM cleanup accepted failed ' + label)
+
+    cleanup.validate_interrupted_cleanup(0, {'status': 0})
+    require(cleanup.validate_interrupted_cleanup(0, {'status': 0}, app_launched=True,
+        app_code=-15, startup=b'KER_NATIVE_READY\n', native_stats=None) == 'signal-terminated',
+        'exact SIGTERM death without destructor markers was not classified truthfully')
+    require(cleanup.validate_interrupted_cleanup(0, {'status': 0}, app_launched=True,
+        app_code=-15, startup=b'KER_NATIVE_READY\nKER_NATIVE_STOPPING\nKER_NATIVE_DONE\n',
+        native_stats={'buffers_live': 0}) == 'graceful', 'complete native teardown was not classified graceful')
+    rejected_cleanup('worker', 1, {'status': 0})
+    rejected_cleanup('packet status', 0, {'status': 1})
+    rejected_cleanup('missing packet completion', 0, None)
+    rejected_cleanup('app status', 0, {'status': 0}, app_launched=True, app_code=0,
+        startup=b'KER_NATIVE_READY\n', native_stats=None)
+    rejected_cleanup('inconsistent no-stop stats', 0, {'status': 0}, app_launched=True,
+        app_code=-15, startup=b'KER_NATIVE_READY\n', native_stats={'buffers_live': 0})
+    rejected_cleanup('missing native completion', 0, {'status': 0}, app_launched=True,
+        app_code=-15, startup=b'KER_NATIVE_READY\nKER_NATIVE_STOPPING\n', native_stats={'buffers_live': 0})
+    rejected_cleanup('incomplete native teardown', 0, {'status': 0}, app_launched=True,
+        app_code=-15, startup=b'KER_NATIVE_READY\nKER_NATIVE_STOPPING\nKER_NATIVE_DONE\nKER_NATIVE_INCOMPLETE\n',
+        native_stats={'buffers_live': 0})
+    rejected_cleanup('live native buffers', 0, {'status': 0}, app_launched=True,
+        app_code=-15, startup=b'KER_NATIVE_READY\nKER_NATIVE_STOPPING\nKER_NATIVE_DONE\n', native_stats={'buffers_live': 1})
+    print('PASS: SIGTERM returns success only after worker, packet and native cleanup validation')
+
     ticket = api.packet(api.MASTER, session=17, epoch=23, token=31, slot=1)
     state = SimpleNamespace(connection=None)
 
