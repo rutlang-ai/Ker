@@ -23,6 +23,22 @@ from pathlib import Path
 args = sys.argv
 fd = int(args[args.index('--control-fd') + 1])
 port = args[args.index('--port') + 1]
+if os.environ.get('FAKE_STARTUP_LOSS_ROLE'):
+    role = 'primary' if port == 'fake0' else port
+    delay_port = os.environ['FAKE_STARTUP_DELAY_PORT']
+    if port == delay_port:
+        Path(os.environ['FAKE_STARTUP_DELAY_FILE']).write_text('waiting')
+        time.sleep(0.25)
+    print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:03'}}), flush=True)
+    if role == os.environ['FAKE_STARTUP_LOSS_ROLE']:
+        delay_file = Path(os.environ['FAKE_STARTUP_DELAY_FILE'])
+        while not delay_file.exists(): time.sleep(0.001)
+        time.sleep(0.03)
+        print('KER_IO_DONE {{}}', flush=True)
+        sys.exit(0)
+    while os.read(fd, 1): pass
+    print('KER_IO_DONE {{}}', flush=True)
+    sys.exit(0)
 if os.environ.get('FAKE_TEARDOWN') == '1':
     role = 'AUX' if port == 'aux0' else 'PRIMARY'
     Path(os.environ[f'FAKE_{{role}}_PID_FILE']).write_text(str(os.getpid()))
@@ -56,9 +72,12 @@ sys.exit(int(os.environ.get('FAKE_AUX_WORKER_EXIT' if port == 'aux0' else 'FAKE_
 
 APP_GUARD = f'''#!{sys.executable}
 import os, sys
+from pathlib import Path
 status = b'KER_NATIVE_READY\\n'
 if os.environ.get('FAKE_NATIVE_DONE') == '1':
     status += b'KER_NATIVE_DONE\\n'
+if os.environ.get('FAKE_APP_MARKER'):
+    Path(os.environ['FAKE_APP_MARKER']).write_text('spawned')
 os.write(int(os.environ['KER_STARTUP_FD']), status)
 os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
 '''
@@ -75,6 +94,10 @@ class KerRunMainTests(unittest.TestCase):
         cls.config = cls.root / 'multiport.ini'
         cls.config.write_text('[interface.aux]\naddress=198.19.0.2/24\n'
                               'port=aux0\neal=--no-pci\n')
+        cls.multi_config = cls.root / 'multiport-two-aux.ini'
+        cls.multi_config.write_text('[interface.aux0]\naddress=198.19.0.2/24\n'
+            'port=aux0\neal=--no-pci\n[interface.aux1]\naddress=198.20.0.2/24\n'
+            'port=aux1\neal=--no-pci\n')
         cls.aux_pid_file = cls.root / 'aux.pid'
         cls.aux_done_file = cls.root / 'aux.done'
         cls.app_start_file = cls.root / 'app.start'
@@ -84,6 +107,8 @@ class KerRunMainTests(unittest.TestCase):
         cls.primary_done_file = cls.root / 'primary.done'
         cls.teardown_start_file = cls.root / 'teardown.start'
         cls.teardown_app_done_file = cls.root / 'teardown.app.done'
+        cls.startup_delay_file = cls.root / 'startup-delay'
+        cls.app_marker_file = cls.root / 'app-spawned'
         cls.worker.write_text(WORKER)
         cls.guard.write_text(APP_GUARD)
         cls.worker.chmod(0o755)
@@ -118,6 +143,40 @@ class KerRunMainTests(unittest.TestCase):
             result = ker_run.main()
             message = stderr.getvalue() if capture_stderr else ''
         return (result, message) if capture_stderr else result
+
+    def startup_worker_loss(self, role):
+        self.startup_delay_file.unlink(missing_ok=True)
+        self.app_marker_file.unlink(missing_ok=True)
+        return self.run_launcher(0, native_done=True, config=self.multi_config,
+            capture_stderr=True, extra_env={
+                'FAKE_STARTUP_LOSS_ROLE': role, 'FAKE_STARTUP_DELAY_PORT': 'aux1',
+                'FAKE_STARTUP_DELAY_FILE': str(self.startup_delay_file),
+                'FAKE_APP_MARKER': str(self.app_marker_file)})
+
+    def test_primary_loss_during_later_aux_startup_prevents_app_spawn(self):
+        result, stderr = self.startup_worker_loss('primary')
+        self.assertTrue(self.startup_delay_file.exists())
+        self.assertEqual(result, 125)
+        self.assertIn('primary DPDK worker exited before application startup', stderr)
+        self.assertFalse(self.app_marker_file.exists())
+
+    def test_earlier_aux_loss_during_later_aux_startup_prevents_app_spawn(self):
+        result, stderr = self.startup_worker_loss('aux0')
+        self.assertTrue(self.startup_delay_file.exists())
+        self.assertEqual(result, 125)
+        self.assertIn('additional DPDK worker aux0 exited before application startup', stderr)
+        self.assertFalse(self.app_marker_file.exists())
+
+    def test_worker_loss_is_rechecked_immediately_before_app_spawn(self):
+        self.app_marker_file.unlink(missing_ok=True)
+        with mock.patch.object(ker_run, 'startup_worker_failure',
+                               side_effect=[None, None, 'primary DPDK worker exited before application startup']) as check:
+            result, stderr = self.run_launcher(0, native_done=True, config=self.multi_config,
+                capture_stderr=True, extra_env={'FAKE_APP_MARKER': str(self.app_marker_file)})
+        self.assertEqual(check.call_count, 3)
+        self.assertEqual(result, 125)
+        self.assertIn('primary DPDK worker exited before application startup', stderr)
+        self.assertFalse(self.app_marker_file.exists())
 
     def test_missing_native_done_overrides_nonzero_app_exit(self):
         self.assertEqual(self.run_launcher(7, native_done=False), 125)

@@ -791,6 +791,15 @@ def unexpected_worker_exit(worker, additional):
     return None
 
 
+def startup_worker_failure(worker, additional):
+    if worker.poll() is not None:
+        return 'primary DPDK worker exited before application startup'
+    for extra in additional:
+        if extra.process.poll() is not None:
+            return f'additional DPDK worker {extra.interface["name"]} exited before application startup'
+    return None
+
+
 def drain_startup_status(startup_read, startup_status):
     while True:
         try:
@@ -863,6 +872,9 @@ def main():
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
             extra_worker.start(worker_path, args)
+            failure = startup_worker_failure(worker, additional)
+            if failure:
+                raise RuntimeError(failure)
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
@@ -905,6 +917,9 @@ def main():
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
         app_guard = worker_path.parent / 'ker-app'
+        failure = startup_worker_failure(worker, additional)
+        if failure:
+            raise RuntimeError(failure)
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
             pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write,
                       *(fd for extra in additional for fd in extra.app_fds())))
