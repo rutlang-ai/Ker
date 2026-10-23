@@ -15,8 +15,8 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 133 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 22 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 215 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 23 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 214 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -50,7 +50,7 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配的 300 项记录均在
 [后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 237 项是
-22 partial + 215 blocked，另有 8 项架构专用和 55 项上游工具链自测。
+23 partial + 214 blocked，另有 8 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -133,7 +133,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 26 | 8 | 62 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 26 | 9 | 61 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 2 | 60 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -874,4 +874,21 @@ LACP distributing 成员。TAP carrier 仍 UP 时 active 数可大于 distributi
 完整 bond 配置、缺失 count、错误 section 三项来源用例转为 scenario-adapted。
 合并的 bond/vdev 重复键源用例仍 partial：vdev 的 iface+socket 组合和 F-Stack
 C 分配/valgrind 合同仍由 [#224](https://github.com/rutlang-ai/Ker/issues/224) 跟踪。
-当前为 133 scenario-adapted、22 partial、215 blocked，仍有 237 个未完成案例。
+bond 批次后为 133 scenario-adapted、22 partial、215 blocked，仍有 237 个未完成案例。
+
+
+完整 DPDK 配置来源案例现由 blocked 推进为 partial：同一个原始 Linux 实例接入
+两个真实 DPDK 设备，分别由独立 EAL worker 负责，具有各自 IPv4/IPv6 主地址和
+3/2 个 VIP。每个地址实际建立 native TCP 连接，独立宿主验证全部 14 个来源、载荷与 EOF。
+绑定主接口地址的同一 UDP socket 必须从附加接口发出、经主接口收回，IPv4/IPv6
+完整抓包验证这条非对称路径；两个独立 Linux 协议栈无法满足该 socket/路由合同。
+
+附加接口 MTU 由主接口创建的 native fd 查询和修改，必须命中自己的 worker，
+主接口保持 1500；自己的 2000 ceiling 拒绝 9000，恢复后两个 pool 均无遗留缓冲区。
+附加 worker 启动失败、附加接口原始 Linux DAD 冲突、运行中附加 worker 退出，
+均须使整个启动/后端失败并回收全部 worker，不让用户应用误以为多接口已就绪。
+
+它不是 F-Stack 全配置通过：一接口一 EAL worker 与源全局 4-lcore/每端口 2-lcore
+拓扑不同，多队列 RSS、thash 调整、80/443 RSS 表及完整配置 ABI 仍未验证，继续由
+[#224](https://github.com/rutlang-ai/Ker/issues/224) 和 [#220](https://github.com/rutlang-ai/Ker/issues/220)
+跟踪。当前仍为 133 scenario-adapted、23 partial、214 blocked，共 237 个未完成案例。

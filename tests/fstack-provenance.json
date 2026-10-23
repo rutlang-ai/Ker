@@ -1628,7 +1628,8 @@
         "test_bond_cfg_handler_no_nb_bond",
         "test_bond_cfg_handler_bad_section",
         "test_ff_load_config_bond_full",
-        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+        "test_ff_load_config_dpdk_full"
       ],
       "ker_ctests": [
         "native-fstack-typed-bond-config"
@@ -1639,12 +1640,33 @@
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
         "test_ff_load_config_bond_full",
-        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+        "test_ff_load_config_dpdk_full"
       ],
       "ker_ctests": [
         "native-fstack-typed-bond"
       ],
       "adaptation": "Same pinned original DPDK bonding driver in an optional statically linked worker (KER_WITH_NATIVE_BOND), without modifying upstream sources. Static pkg-config archive ordering preserves PMD constructors and public timing APIs absent from shared exports. Worker applies and reads poll100/up100/down200 using original APIs after configuration, services original LACP with RX and zero-frame TX bursts while idle, and closes bond members before releasing its own mempool. Two real TAP/veth members connect to an independent original host Linux802.3ad bond; both host actor and partner port states must be collecting/distributing in one aggregator. Mode4, configured primary0, two members, socket0,MACaa:bb:cc:dd:ee:ff,l34 and all timings must be read back from actual driver state. Both kernels send IPv4/IPv6 raw ICMP with exact0/1/max unfragmented payloads; full native TX/RX PCAP checks all echo payloads/checksums and1514-byte frames. Disconnect host member0 without restarting either native process, wait for original LACP timeout, require continued host/native traffic and exactly one original PMD distributing member. Physical active-count is not conflated with LACP state: TAP can still report carrier up. Repeated invalid strings replaced by valid final values must produce the same actual configuration. All worker/member buffers must be freed on exit. Completes the supported single-bond source configuration scenario; no physical-NIC/LACP timing-performance guarantee, active-backup substitution, multi-bond/multi-port scheduling or combined iface+socket vdev compatibility claim."
+    },
+    "native-fstack-multiport-config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_full"
+      ],
+      "ker_ctests": [
+        "native-fstack-multiport-config"
+      ],
+      "adaptation": "Partial adaptation of the full source fixture multi-port/VIP requirements. Ker adds named [interface.NAME] sections, each with independent port/EAL/IPv4 and optional IPv6/VIPs/MTU/buffer-mode settings. Validate0..7 additional interfaces, required/unknown/malformed keys, final repeated section/options, independent repeated-read storage, inherited final CLI MTU defaults, finite deployment ceilings, VIP bounds, native unicast address ownership and duplicate/overlapping primary networks. A duplicate primary/VIP must fail status2 before resolving deliberately missing library/worker paths. Additional interfaces have explicit EAL contexts, not the source global4-lcore/per-port2-lcore arrays, and no RSS/table/hash-adjust/allocator ABI pass is claimed."
+    },
+    "native-fstack-multiport": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_full"
+      ],
+      "ker_ctests": [
+        "native-fstack-multiport"
+      ],
+      "adaptation": "One imported original Linux kernel registers both real DPDK-backed packet devices before boot, configures each through original LKL address/MTU/UP/DAD helpers and removes each before halt. Independent EAL workers retain one RX/TX queue apiece; the legacy primary path is preserved. Native app discovers both actual interface names, uses one native fd to change only the auxiliary MTU1500->1600->1500, rejects9000 against its2000 ceiling while primary remains1500, then opens original TCP sockets from both primary IPv4/IPv6 addresses and3/2 VIPs on each interface. Independent host TCP peers validate all14 unique source addresses, payload and EOF. The same native UDP socket bound to a primary address sends to the auxiliary network: complete auxiliary-TX and primary-RX PCAP proves the asymmetric IPv4/IPv6 request/reply path. Separate native kernels cannot satisfy this route/socket-table check. Require >=14 original Linux opens, actual TX/RX and zero outstanding buffers for each worker, correct per-port MTU counters and reaped worker PIDs. A failed auxiliary ethdev startup must prevent application entry and reap both workers; duplicate host IPv6 on the auxiliary interface must fail original Linux DAD with the same cleanup; orderly auxiliary worker exit while the app runs must fail the complete backend and reap both workers. Owned process groups are killed on test timeout. Global kernel counters remain aggregate, extra worker statistics/captures are labelled separately. Completes native multi-interface capability, but source full-DPDK fixture stays partial: global4/per-port2 lcore scheduling, active multi-queue/hardware RSS/thash/table80/443 and exact config ABI remain under issues224/220. No Linux/DPDK source or protocol-state replacement is introduced."
     }
   }
 }

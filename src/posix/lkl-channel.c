@@ -13,6 +13,7 @@
 #include "packet-channel.h"
 #include "packet-device.h"
 #include "mtu-control.h"
+#include "extra-interfaces.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -141,6 +142,8 @@ __attribute__((constructor)) static void initialize(void)
     result = lkl_netdev_add(device, &args);
     if (result < 0) fail("packet device registration", result);
     device->id = result;
+    result = ker_extra_interfaces_register(getenv("KER_PACKET_INTERFACES"));
+    if (result) fail("additional interface registration", result);
     result = lkl_start_kernel("%s", "mem=64M");
     if (result) fail("kernel boot", result);
     result = ker_native_seed_entropy();
@@ -281,6 +284,8 @@ __attribute__((constructor)) static void initialize(void)
         result = lkl_set_ipv4_gateway(address.s_addr);
         if (result) fail("default route", result);
     }
+    result = ker_extra_interfaces_configure();
+    if (result) fail("additional interface configuration", result);
     const char *timeout = getenv("KER_SHUTDOWN_TIMEOUT_MS");
     if (timeout) drain_timeout = (unsigned int)parse_number(timeout, 60000);
     if (pthread_atfork(NULL, NULL, fork_child)) fail("fork boundary", -ENOMEM);
@@ -329,6 +334,7 @@ __attribute__((destructor)) static void finalize(void)
         if (length > 0 && (size_t)length < sizeof(json))
             (void)syscall(SYS_write, startup_fd, json, (size_t)length);
     }
+    ker_extra_interfaces_remove();
     lkl_netdev_remove(device->id);
     lkl_netdev_free(device);
     lkl_sys_halt();
