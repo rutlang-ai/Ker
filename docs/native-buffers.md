@@ -15,6 +15,44 @@ original Linux page lookup as native user pages. Native mapped storage can be
 used by original Linux MSG_ZEROCOPY; it does **not** eliminate the copies in the
 Unix packet channel and worker mbuf construction.
 
+## Resizing registered memory
+
+`ker_posix_buffer_realloc(base, size)` grows or shrinks a registered allocation.
+Original Linux creates the replacement VMA; the adapter copies
+`min(old_size, size)` bytes and then unmaps the old VMA. New bytes are zero.
+The returned base can change even when shrinking. Use a temporary return value:
+
+```c
+void *replacement = ker_posix_buffer_realloc(buffer, wanted);
+if (replacement) buffer = replacement; /* old buffer survives failure */
+```
+
+Nonzero sizes must be <=INT_MAX; NULL with nonzero size allocates. Exact live
+bases are required for nonzero resizes. Foreign, interior and stale bases fail
+EINVAL. ENOMEM or failure releasing the old mapping leaves that original mapping
+valid. If rollback release also fails, the replacement stays registered for
+shutdown cleanup; the failed call does not hand it to the caller.
+
+Zero size deliberately follows the pinned F-Stack helper's pointer-identity
+contract rather than libc realloc: it returns the input unchanged, including
+NULL or a foreign sentinel, without allocating, freeing, dereferencing or
+registering it. This no-op needs no active instance and preserves errno. It
+never makes a foreign pointer suitable for MSG_ZEROCOPY.
+
+Consume all original send completions before resizing, just as before freeing.
+Do not race access, resize, free or native shutdown. Live allocations require an
+active native instance; positive resize after shutdown fails ENETDOWN. This
+memory adapter does not add an owned-chain writer or transfer ownership to a
+socket. Resizing itself copies bytes and is not a zero-copy operation.
+
+`native-fstack-buffer-resize` boots original Linux and exercises these paths,
+including individually injected mmap ENOMEM, old-mapping munmap EIO and failed
+rollback munmap. Every successful syscall reaches original Linux, and final
+allocation/release counts and live bytes must balance. The existing five
+virtio/vhost-kernel profiles additionally send from grown buffers and shrink /
+regrow midway through IPv4/IPv6 TCP512KiB, after actual completion ranges, with
+full independent wire payload validation.
+
 ## Socket contract
 
 Enable SO_ZEROCOPY on a native TCP/UDP socket and send mapped ranges with

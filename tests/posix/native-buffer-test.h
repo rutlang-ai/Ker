@@ -8,6 +8,7 @@
 #include <limits.h>
 static void *(*buffer_allocate)(size_t);
 static int (*buffer_release)(void *);
+static void *(*buffer_resize)(void *, size_t);
 static int (*buffer_run)(ker_posix_loop_func, void *);
 static void (*buffer_stop)(void);
 static unsigned sent_ids, completed_ids, family_copied[2], family_direct[2], current_family;
@@ -19,7 +20,9 @@ static void *buffer_thread(void *opaque)
 {
     unsigned char *inherited = opaque;
     check(inherited[0] == 0x2a, "cross-thread native mapping access");
-    check(!buffer_release(inherited), "cross-thread mapping release");
+    unsigned char *resized = buffer_resize(inherited, 8193);
+    check(resized && resized[0] == 0x2a && !resized[8192], "cross-thread native mapping resize");
+    check(!buffer_release(resized), "cross-thread mapping release");
     for (unsigned turn = 0; turn < 16; turn++) {
         unsigned char *p = buffer_allocate(8193); check(p, "concurrent native mapping");
         check(!p[0] && !p[8192], "concurrent mapping zero initialization");
@@ -31,9 +34,12 @@ static void buffer_init(void)
 {
     buffer_allocate = dlsym(RTLD_DEFAULT, "ker_posix_buffer_alloc");
     buffer_release = dlsym(RTLD_DEFAULT, "ker_posix_buffer_free");
+    buffer_resize = dlsym(RTLD_DEFAULT, "ker_posix_buffer_realloc");
     buffer_run = dlsym(RTLD_DEFAULT, "ker_posix_run");
     buffer_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
-    check(buffer_allocate && buffer_release && buffer_run && buffer_stop, "native buffer API");
+    check(buffer_allocate && buffer_release && buffer_resize && buffer_run && buffer_stop, "native buffer API");
+    int sentinel = 0xCAFE;
+    check(buffer_resize(&sentinel, 0) == &sentinel && sentinel == 0xCAFE, "zero resize pointer identity");
     errno = 0; check(!buffer_allocate(0) && errno == EINVAL, "zero allocation rejected");
     errno = 0; check(!buffer_allocate(SIZE_MAX) && errno == EINVAL, "allocation overflow rejected");
     unsigned char *retained = buffer_allocate(16); check(retained, "retained allocation");

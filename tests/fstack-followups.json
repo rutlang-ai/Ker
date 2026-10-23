@@ -455,12 +455,15 @@
       "id": "host-helper-abi",
       "title": "Resolve unmapped host memory, time, environment and kqueue helpers",
       "disposition": "contract-review",
-      "reason": "Pinned LKL callbacks expose private anonymous pages, exact mappings, monotonic nanoseconds and pthread/runtime facilities. They do not expose F-Stack calloc/realloc helpers, shared/file-backed mmap ABI, cached realtime tuples, environment wrappers, hardclock or idempotent kqueue registration.",
+      "reason": "Three allocation scenarios now have actual native-buffer-domain acceptance: zero-initialized allocation, prefix-preserving resize and zero-size pointer identity. Remaining F-Stack cached time/environment, fatal/shared/file mapping and host kqueue helper ABI cases need their actual adapter or explicit incompatibility disposition; no libc-only test or successful unsupported stub qualifies.",
       "evidence": [
         "src/posix/host-memory.c",
         "src/posix/host-clock.c",
         "src/posix/worker-clock.c",
-        "tests/upstream/fstack/tests/unit/test_ff_host_interface.c"
+        "tests/upstream/fstack/tests/unit/test_ff_host_interface.c",
+        "src/posix/native-buffer.c",
+        "tests/posix/native-buffer-resize.c",
+        "docs/native-buffers.md"
       ],
       "acceptance": [
         "Determine an actual Ker/LKL consumer and contract for each helper, or record why the source-specific API is unsuitable.",
@@ -469,12 +472,9 @@
       ],
       "cases": [
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
-        "tests/unit/test_ff_host_interface.c::test_ff_calloc_zeros_memory",
-        "tests/unit/test_ff_host_interface.c::test_ff_realloc_grow",
         "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
         "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
-        "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
         "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
