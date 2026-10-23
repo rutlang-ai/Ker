@@ -56,6 +56,56 @@ def source_cases(snapshot, files):
     return result
 
 
+FOLLOWUP_DISPOSITIONS = {'adaptation-needed', 'contract-review', 'architecture-specific', 'harness-only'}
+ACTIONABLE_FOLLOWUP_DISPOSITIONS = {'adaptation-needed', 'contract-review'}
+STATUS_DISPOSITIONS = {
+    'architecture-specific': {'architecture-specific'},
+    'harness-only': {'harness-only'},
+    'blocked': ACTIONABLE_FOLLOWUP_DISPOSITIONS,
+    'partial': ACTIONABLE_FOLLOWUP_DISPOSITIONS,
+}
+
+
+def validate_followups(root, manifest):
+    """Require traceable work for every remaining case, without waiving coverage."""
+    followups = json.loads((root / 'tests/fstack-followups.json').read_text())
+    require(followups['schema'] == 1, 'Unsupported follow-up schema')
+    require(followups['revision'] == manifest['revision'], 'Follow-up and snapshot pins differ')
+    expected = {item['id'] for item in manifest['cases'] if item['status'] != 'scenario-adapted'}
+    require(isinstance(followups['groups'], list), 'Invalid follow-up groups')
+    statuses = {item['id']: item['status'] for item in manifest['cases']}
+    seen, group_ids, issues = set(), set(), set()
+    for group in followups['groups']:
+        key = group['id']
+        require(isinstance(key, str) and re.fullmatch(r'[a-z][a-z0-9-]*', key),
+                f'Invalid follow-up group ID: {key}')
+        require(key not in group_ids, f'Duplicate follow-up group: {key}')
+        group_ids.add(key)
+        require(group['disposition'] in FOLLOWUP_DISPOSITIONS, f'Invalid follow-up disposition: {key}')
+        issue = group['issue']
+        require(isinstance(issue, str) and re.fullmatch(
+                r'https://github\.com/rutlang-ai/Ker/issues/[1-9][0-9]*', issue),
+                f'Invalid follow-up issue URL: {key}')
+        require(issue not in issues, f'Duplicate follow-up issue: {issue}')
+        issues.add(issue)
+        for field in ('title', 'reason'):
+            require(isinstance(group[field], str) and group[field].strip(),
+                    f'Missing follow-up {field}: {key}')
+        require(isinstance(group['acceptance'], list) and group['acceptance']
+                and all(isinstance(v, str) and v.strip() for v in group['acceptance']),
+                f'Missing follow-up acceptance criteria: {key}')
+        require(isinstance(group['cases'], list) and group['cases'], f'Empty follow-up group: {key}')
+        for case in group['cases']:
+            require(isinstance(case, str) and case in expected, f'Unexpected follow-up case: {case}')
+            allowed = STATUS_DISPOSITIONS[statuses[case]]
+            require(group['disposition'] in allowed,
+                    f'Wrong follow-up disposition for {statuses[case]} case {case}: '
+                    f'{group["disposition"]} (expected one of {sorted(allowed)})')
+            require(case not in seen, f'Duplicate follow-up case: {case}')
+            seen.add(case)
+    require(seen == expected, f'Missing follow-up cases: {sorted(expected - seen)}')
+
+
 def validate(root):
     manifest = json.loads((root / 'tests/fstack-migration.json').read_text())
     require(manifest['schema'] == 1, 'Unsupported migration schema')
@@ -129,6 +179,7 @@ def validate(root):
                 cases = [cases]
             require(source_case in cases,
                     f'Provenance source case mismatch: {item["id"]} -> {link["provenance_case"]}')
+    validate_followups(root, manifest)
     return manifest, Counter(item['status'] for item in records)
 
 
@@ -138,6 +189,7 @@ def report(manifest, counts):
         print(f'  {state}: {counts[state]}')
     print('This is an inventory audit, not compatibility passes for every catalog entry. Upstream code was not executed.')
     print('Blocked cases remain incomplete; architecture-specific and harness-only entries are not Ker passes.')
+    print('Every non-adapted entry is linked to a follow-up issue; issue tracking is not migration completion.')
 
 
 def main():

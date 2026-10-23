@@ -1,0 +1,631 @@
+{
+  "schema": 1,
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "groups": [
+    {
+      "id": "reload-generations",
+      "title": "Design generation-aware reload, IPC and drain ownership",
+      "disposition": "adaptation-needed",
+      "reason": "Ker has independent native instances and bounded local queues, but no F-Stack process:generation:epoch directory, cross-generation admission or graceful handover protocol. Local SP/SC tests do not satisfy these contracts.",
+      "evidence": [
+        "src/posix/io-worker.c",
+        "src/runtime/tx-ring.c",
+        "tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c"
+      ],
+      "acceptance": [
+        "Specify generation lifecycle, single-consumer admission, peer liveness, failure recovery and ownership before adding implementation.",
+        "Implement only runtime/device/ownership adapters around original Linux, with actual multiprocess data and teardown evidence.",
+        "Qualify each listed case, including delayed/foreign epochs, bounded growth, overflow, purge and the external reload acceptance flow; do not substitute a same-process FIFO."
+      ],
+      "cases": [
+        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
+        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_secondary_looks_up_own_slot",
+        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
+        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
+        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
+        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
+        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_chain_slot_recycle",
+        "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
+        "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",
+        "tests/integration/test_ff_reload_integration.c::test_it_a09_drain_ring_tx_watermark",
+        "tests/integration/test_ff_reload_integration.c::test_it_a09_send_burst_guard",
+        "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_dispatch",
+        "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_window_mechanism",
+        "tests/integration/test_ff_reload_integration.c::test_it_a09_main_loop_parked_pass",
+        "tests/integration/test_graceful_reload.sh::entrypoint",
+        "tests/unit/test_ff_config.c::test_graceful_reload_default_off",
+        "tests/unit/test_ff_config.c::test_graceful_reload_parse",
+        "tests/unit/test_ff_config.c::test_graceful_reload_requires_slim",
+        "tests/unit/test_ff_config.c::test_greload_thread_mode_mutex",
+        "tests/unit/test_ff_config.c::test_greload_off_no_new_checks",
+        "tests/unit/test_ff_config.c::test_greload_bad_value_atoi",
+        "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
+        "tests/unit/test_ff_config.c::test_ut_nr_10_all_legal_transitions",
+        "tests/unit/test_ff_config.c::test_ut_nr_10_illegal_combinations_exhaustive",
+        "tests/unit/test_ff_config.c::test_ut_nr_10_error_recovery_and_abort",
+        "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
+        "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
+        "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
+        "tests/unit/test_ff_config.c::test_ut_nr_22_heartbeat_and_rx_return",
+        "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
+        "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
+        "tests/unit/test_ff_config.c::test_ut_nr_11_handover_barrier",
+        "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
+        "tests/unit/test_ff_config.c::test_ut_nr_m5_gendir_arbitration",
+        "tests/unit/test_ff_config.c::test_ut_nr_m5_probe_epoch_fallback",
+        "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
+        "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
+        "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_handover_sequence",
+        "tests/unit/test_ff_config.c::test_p2_hw_user_proof",
+        "tests/unit/test_ff_config.c::test_p2_reclaim_needs_user_proof",
+        "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
+        "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
+        "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
+        "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
+        "tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off",
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
+        "tests/unit/test_ff_dpdk_if.c::test_f_m4_1_drain_ring_full_visible",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_queue_ownership",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_nonowner_tx",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_peer_tx",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_empty_qconf",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_full",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_missing",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_invalid",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_success",
+        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_primary_slot_busy",
+        "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_window",
+        "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_exhausted",
+        "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",
+        "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_admission_rule",
+        "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_revoke",
+        "tests/unit/test_ff_dpdk_if.c::test_p3_flow_map_bounded_growth",
+        "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",
+        "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",
+        "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen",
+        "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen_epoch",
+        "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_full_coordinate",
+        "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_epoch",
+        "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_plain",
+        "tests/unit/test_ff_ipc.c::test_ff_ipc_rejects_malformed",
+        "tests/unit/test_ff_ipc.c::test_p4_recv_own_reply",
+        "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_live_owner",
+        "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_without_send",
+        "tests/unit/test_ff_ipc.c::test_p4_recv_orphan_dead_owner",
+        "tests/unit/test_ff_ipc.c::test_p4_probe_is_non_destructive"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/218"
+    },
+    {
+      "id": "kni-exception-bridge",
+      "title": "Define a supported host exception bridge and KNI policy adaptation",
+      "disposition": "adaptation-needed",
+      "reason": "No F-Stack KNI/virtio exception interface, protocol/port filters, rate-limit policy or ownership API exists in Ker. Normal native net_tap traffic is not a host exception bridge.",
+      "evidence": [
+        "src/posix/packet-device.c",
+        "tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c"
+      ],
+      "acceptance": [
+        "Choose an actual supported DPDK/Linux exception device and explicit packet ownership boundary; do not add successful no-op KNI stubs.",
+        "Verify RX/TX, partial acceptance, full queues, rate limits, malformed frames, IPv4/IPv6 classification and cleanup through real adapter paths.",
+        "Keep protocol decisions in original Linux; do not copy a simplified F-Stack/FreeBSD protocol parser as a replacement stack."
+      ],
+      "cases": [
+        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_basic",
+        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit",
+        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_kernel_ratelimit_exceeded",
+        "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_partial_drop",
+        "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_forward",
+        "tests/integration/test_ff_kni_integration.c::test_kni_process_rx_partial_drop",
+        "tests/integration/test_ff_kni_integration.c::test_kni_enqueue_full_ring_drops",
+        "tests/integration/test_ff_kni_integration.c::test_kni_alloc_primary_happy_path",
+        "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
+        "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_reject_ok",
+        "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_invalid_fails",
+        "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_present_ok",
+        "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_missing_fails",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_console_ratelimit_over",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_general_ratelimit_over",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_filter_classification",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_short",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_non_ip_frame",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_disabled",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_disabled",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_oversized_ihl",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ipip_recurse",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_tcp_udp_port_bitmaps",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ospf_returns_ospf",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni",
+        "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_null_port_lists",
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner",
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_stats_oom",
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_slot_oom",
+        "tests/unit/test_ff_dpdk_kni.c::test_p3_ndp_classification"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/219"
+    },
+    {
+      "id": "rss-port-steering",
+      "title": "Qualify RSS steering and queue-aware source-port contracts",
+      "disposition": "adaptation-needed",
+      "reason": "Native Linux ephemeral range coverage does not implement F-Stack RSS tables, Toeplitz hit-rate targets, per-queue source-port adjustment or IPv6 landing behavior.",
+      "evidence": [
+        "src/posix/io-worker.c",
+        "tests/posix/ephemeral-ports.c",
+        "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c"
+      ],
+      "acceptance": [
+        "Define multi-queue ownership and the supported EAL/NIC RSS capability contract.",
+        "Use original Linux port allocation and supported adapters; do not implement a Ker-owned TCP source-port/state machine or claim range checks are RSS.",
+        "Validate actual IPv4/IPv6 queue landing, null/disabled guards, range updates, rotation/miss paths and the listed performance claims with an appropriate RSS device."
+      ],
+      "cases": [
+        "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
+        "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
+        "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_inverted_range",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_disabled",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_smoke",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_hit",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_rotation",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_miss",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_null",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_degraded",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_single_queue",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_equivalence_hitrate",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_landing",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_guard",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash6_equivalence_hitrate",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_off",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_on",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_off",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_on",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_microbench",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_thash_adjust_off",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_thash_adjust_off",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_ctx_init_thash_adjust_off",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_range_params",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_range_params"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/220"
+    },
+    {
+      "id": "hardware-offloads",
+      "title": "Add positive hardware checksum and TSO acceptance coverage",
+      "disposition": "adaptation-needed",
+      "reason": "Software checksum completion and explicit unsupported-metadata rejection are tested, but neither proves positive NIC checksum/TSO execution.",
+      "evidence": [
+        "src/runtime/ethdev-tx.c",
+        "tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c"
+      ],
+      "acceptance": [
+        "Implement capability-negotiated ownership/metadata adaptation without changing upstream Linux/DPDK.",
+        "Use an actually capable PMD/NIC and independent wire verification for IPv4/TCP/UDP checksum and TSO, including fallback/rejection boundaries.",
+        "Keep software-only runs distinct from hardware passes and document the required runner."
+      ],
+      "cases": [
+        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
+        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tcp_csum",
+        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tso",
+        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_udp_csum"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/221"
+    },
+    {
+      "id": "packet-dispatch-hooks",
+      "title": "Define packet-dispatch and PCB callback adaptation boundaries",
+      "disposition": "contract-review",
+      "reason": "F-Stack dispatcher/context and PCB-local-address callbacks are not Ker APIs. A Linux packet-device bridge or legacy dispatcher is not a registration-compatible substitute.",
+      "evidence": [
+        "include/ker/posix.h",
+        "src/posix/packet-device.c",
+        "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c"
+      ],
+      "acceptance": [
+        "For every callback, decide whether a runtime hook has a useful Ker caller and an ownership/quiescence contract, or document why the FreeBSD ABI is excluded.",
+        "If supported, exercise registration, context forwarding, replacement/unregistration and packet delivery through the actual adapter.",
+        "Do not expose an unused setter solely to pass smoke tests or bypass original Linux protocol behavior."
+      ],
+      "cases": [
+        "tests/unit/test_ff_dpdk_if.c::test_ff_regist_pcblddr_fun_smoke",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_no_callback",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet_dispatches",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap",
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/222"
+    },
+    {
+      "id": "device-run-lifecycle",
+      "title": "Resolve device/run lifecycle and upstream fault-injection contracts",
+      "disposition": "contract-review",
+      "reason": "Real Ker startup, stop and several activation failures are covered, but the remaining contracts reference F-Stack callbacks, interface registration and FreeBSD m_copydata or initialization ordering.",
+      "evidence": [
+        "src/posix/lkl-channel.c",
+        "src/posix/io-worker.c",
+        "tests/upstream/fstack/tests/unit/test_ff_init.c"
+      ],
+      "acceptance": [
+        "Separate portable startup/ownership requirements from FreeBSD ABI/callback/ordering requirements for each listed case.",
+        "Implement missing supported adapters with real registration/run/stop/failure and cleanup evidence, or record an explicit incompatible boundary.",
+        "Do not treat real Linux failure tests as proof of F-Stack callback forwarding or an injected m_copydata failure."
+      ],
+      "cases": [
+        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_register_deregister_roundtrip",
+        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
+        "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_safe",
+        "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
+        "tests/unit/test_ff_init.c::test_ff_run_and_stop_forward",
+        "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_if_up"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/223"
+    },
+    {
+      "id": "dpdk-devices",
+      "title": "Adapt typed vdev, bond and multi-port configuration",
+      "disposition": "adaptation-needed",
+      "reason": "Ker accepts original EAL arguments and selects one ethdev, but does not expose the complete F-Stack typed vdev/bond/multi-port structures, queue/completion settings or their allocation-failure boundaries.",
+      "evidence": [
+        "tools/ker-run.py",
+        "src/posix/io-worker.c",
+        "tests/upstream/fstack/tests/unit/fixtures/valid_vdev.ini",
+        "tests/upstream/fstack/tests/unit/fixtures/valid_bond.ini"
+      ],
+      "acceptance": [
+        "Specify useful typed configuration mappings to real supported EAL/PMD options while preserving strict validation.",
+        "Test repeated sections/options, missing count/configuration, invalid section/index and allocation failures before runtime side effects.",
+        "Qualify actual vdev/bond/multi-port behavior and cleanup on a capable backend; configuration parsing alone is not a device pass."
+      ],
+      "cases": [
+        "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
+        "tests/unit/test_ff_config.c::test_bond_cfg_handler_no_nb_bond",
+        "tests/unit/test_ff_config.c::test_bond_cfg_handler_bad_section",
+        "tests/unit/test_ff_config.c::test_vdev_cfg_handler_no_nb_vdev_returns_zero",
+        "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
+        "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
+        "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+        "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
+        "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",
+        "tests/unit/test_ff_config.c::test_bond_cfgs_calloc_oom_returns_error"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/224"
+    },
+    {
+      "id": "zero-copy-ownership",
+      "title": "Define a Linux-native zero-copy send and ownership contract",
+      "disposition": "contract-review",
+      "reason": "F-Stack ff_zc_send and FreeBSD mbuf/header mutation APIs are absent; the pinned source suite mirrors mbuf algorithms. Ker copied/borrowed chain exporters are not a substitute zero-copy socket API.",
+      "evidence": [
+        "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
+        "src/runtime/tx-export.c",
+        "src/posix/packet-device.c"
+      ],
+      "acceptance": [
+        "Decide whether an actual Linux-backed zero-copy socket/export API belongs in Ker and define buffer lifetime/completion/error semantics.",
+        "Use real kernel/DPDK ownership adapters and test invalid lengths, zero sends, partial sends, multisegment lifetime, reclamation and failure paths.",
+        "Do not copy a FreeBSD algorithm mirror, rename a copying path zero-copy, or return success for unsupported operations."
+      ],
+      "cases": [
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_negative_len_returns_error",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/225"
+    },
+    {
+      "id": "configuration-contracts",
+      "title": "Resolve remaining typed configuration and intentional schema differences",
+      "disposition": "contract-review",
+      "reason": "Ker typed settings and Linux defaults differ from F-Stack global structures, permissive handlers, FreeBSD boot fields and several fixture/default/ignore contracts. Existing subset coverage must not be promoted to complete fixture equivalence.",
+      "evidence": [
+        "tools/ker-run.py",
+        "tests/posix/test_ker_run_config.py",
+        "tests/upstream/fstack/tests/unit/test_ff_config.c"
+      ],
+      "acceptance": [
+        "Review each source assertion and identify a supported typed/runtime adaptation or an explicitly unsuitable FreeBSD/schema contract.",
+        "For feasible cases implement missing validation or adapters and demonstrate real startup/traffic where the source contract requires it.",
+        "Document intentional strict-section, IPv6-ignore, ECN-default, literal-prefix and upstream-layout differences without silently changing Linux defaults just to satisfy F-Stack assertions."
+      ],
+      "cases": [
+        "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
+        "tests/unit/test_ff_config.c::test_ff_load_config_unknown_section",
+        "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
+        "tests/unit/test_ff_config.c::test_ff_load_config_all_sections",
+        "tests/unit/test_ff_config.c::test_ff_load_config_portlist_nonint",
+        "tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state",
+        "tests/unit/test_ff_config.c::test_vlan_cfg_handler_id_not_in_filter_returns_one",
+        "tests/unit/test_ff_config.c::test_vlan_cfg_handler_bad_section_returns_zero",
+        "tests/unit/test_ff_config.c::test_port_cfg_handler_bad_section_returns_zero",
+        "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
+        "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",
+        "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",
+        "tests/unit/test_ff_config.c::test_vlan_cfg_handler_portid_over_max_skips",
+        "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
+        "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
+        "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",
+        "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
+        "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/226"
+    },
+    {
+      "id": "process-modes",
+      "title": "Decide F-Stack primary/secondary and thread-mode compatibility",
+      "disposition": "contract-review",
+      "reason": "Ker launches an isolated original-Linux runtime and worker; F-Stack proc_id/proc_type, per-core shared globals and thread-mode configuration are not the same lifecycle or ownership model.",
+      "evidence": [
+        "tools/ker-run.py",
+        "src/posix/io-worker.c",
+        "tests/upstream/fstack/tests/unit/test_ff_config.c"
+      ],
+      "acceptance": [
+        "Specify whether shared/secondary worker behavior fits Ker, with explicit kernel-instance and device ownership.",
+        "Implement real mode selection, CLI precedence, lcore/index checks and rejection/unwind for unsupported combinations, or document the incompatible source contracts.",
+        "Do not relabel multiple independent native instances as F-Stack secondary processes."
+      ],
+      "cases": [
+        "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
+        "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_in_range",
+        "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",
+        "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",
+        "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
+        "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/227"
+    },
+    {
+      "id": "stack-coexistence",
+      "title": "Document and qualify host/native stack coexistence configuration",
+      "disposition": "contract-review",
+      "reason": "Ker host/native descriptors coexist through exported placeholders and dispatch, while F-Stack stack.coexist flags and garbage/default handling describe a different global configuration contract.",
+      "evidence": [
+        "src/posix/fd-table.c",
+        "tests/posix/fstack-fd-map.c",
+        "tests/upstream/fstack/tests/unit/test_ff_config.c"
+      ],
+      "acceptance": [
+        "Record the supported Ker coexistence contract and whether a global mode flag is needed.",
+        "Retain real host/native same-number descriptor and independent-traffic evidence; do not infer equivalence to F-Stack boolean parsing.",
+        "Add any useful configuration behavior and rejection tests, or document why the original flag/default assertions are not portable."
+      ],
+      "cases": [
+        "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
+        "tests/unit/test_ff_config.c::test_ff_load_config_stack_absent_defaults_disabled",
+        "tests/unit/test_ff_config.c::test_ff_load_config_stack_garbage_defaults_disabled",
+        "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_disabled_explicit"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/228"
+    },
+    {
+      "id": "host-helper-abi",
+      "title": "Resolve unmapped host memory, time, environment and kqueue helpers",
+      "disposition": "contract-review",
+      "reason": "Pinned LKL callbacks expose private anonymous pages, exact mappings, monotonic nanoseconds and pthread/runtime facilities. They do not expose F-Stack calloc/realloc helpers, shared/file-backed mmap ABI, cached realtime tuples, environment wrappers, hardclock or idempotent kqueue registration.",
+      "evidence": [
+        "src/posix/host-memory.c",
+        "src/posix/host-clock.c",
+        "src/posix/worker-clock.c",
+        "tests/upstream/fstack/tests/unit/test_ff_host_interface.c"
+      ],
+      "acceptance": [
+        "Determine an actual Ker/LKL consumer and contract for each helper, or record why the source-specific API is unsuitable.",
+        "Test a real production adapter if one is required, including allocation/error/null-output behavior and cleanup.",
+        "Do not add unused wrappers, libc-only smoke tests, successful unsupported stubs or a FreeBSD hardclock layer merely to reduce migration counts."
+      ],
+      "cases": [
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
+        "tests/unit/test_ff_host_interface.c::test_ff_calloc_zeros_memory",
+        "tests/unit/test_ff_host_interface.c::test_ff_realloc_grow",
+        "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
+        "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",
+        "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
+        "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",
+        "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
+        "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
+        "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
+        "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_nsec",
+        "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
+        "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_add_idempotent"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/229"
+    },
+    {
+      "id": "ini-callback-contract",
+      "title": "Resolve INI callback, userdata and section semantics",
+      "disposition": "contract-review",
+      "reason": "Ker validates a typed Python configuration stream. F-Stack arbitrary C handler/userdata invocation, NULL FILE pointer behavior, truncation and continuation callback sequences are not that API.",
+      "evidence": [
+        "tools/ker-run.py",
+        "tests/upstream/fstack/tests/unit/test_ff_ini_parser.c"
+      ],
+      "acceptance": [
+        "Decide each source callback/NULL/truncation assertion explicitly rather than treating parse-result similarity as API equivalence.",
+        "Keep useful typed continuation/validation behavior and actual launcher tests; add a public callback interface only if a real Ker consumer requires it.",
+        "Document incompatible cases with exact source IDs and maintain the existing strict boundary."
+      ],
+      "cases": [
+        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
+        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
+        "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
+        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
+        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
+        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/230"
+    },
+    {
+      "id": "thread-context-abi",
+      "title": "Resolve FreeBSD thread context and join-result assertions",
+      "disposition": "contract-review",
+      "reason": "LKL void thread starts and join callbacks do not forward FreeBSD pcurthread/per-CPU pointers or expose the F-Stack return-value transformation. Existing real pthread/TLS evidence covers a different adapter contract.",
+      "evidence": [
+        "src/posix/host-thread.c",
+        "tests/upstream/fstack/tests/unit/test_ff_thread.c"
+      ],
+      "acceptance": [
+        "Record the exact differences for context propagation, non-NULL start return and the FreeBSD curcpu failure setup.",
+        "Preserve original Linux scheduling/TLS semantics; do not synthesize pcurthread or change LKL callback signatures to fake equivalence.",
+        "Add any needed real adapter failure coverage and explicitly dispose of incompatible assertions."
+      ],
+      "cases": [
+        "tests/unit/test_ff_thread.c::test_ff_pthread_create_basic",
+        "tests/unit/test_ff_thread.c::test_ff_pthread_join_retval",
+        "tests/unit/test_ff_thread.c::test_ff_pthread_create_failfast"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/231"
+    },
+    {
+      "id": "freebsd-internals",
+      "title": "Record nonportable callout and internal kqueue filter assertions",
+      "disposition": "architecture-specific",
+      "reason": "These source assertions depend on FreeBSD sbintime/hardclock/tick conversion, timer activation macros or unknown internal kqueue filter IDs; original Linux uses different internal timer and readiness representations.",
+      "evidence": [
+        "tests/upstream/fstack/tests/unit/test_ff_callout.c",
+        "tests/upstream/fstack/tests/unit/test_ff_epoll.c",
+        "src/posix/posix-poll.c"
+      ],
+      "acceptance": [
+        "Confirm each listed assertion is FreeBSD-internal and document the supported Linux timer/readiness behavior with existing runnable evidence.",
+        "Do not transplant FreeBSD internals or declare their tests passed on unrelated Linux behavior.",
+        "Retain pinned source provenance and an explicit architecture-specific disposition."
+      ],
+      "cases": [
+        "tests/unit/test_ff_callout.c::test_callout_when_relative_hardclock",
+        "tests/unit/test_ff_callout.c::test_callout_when_absolute_precalc_passthrough",
+        "tests/unit/test_ff_callout.c::test_callout_when_overflow_clamps_to_sbt_max",
+        "tests/unit/test_ff_callout.c::test_callout_sbt_to_ticks_absolute",
+        "tests/unit/test_ff_callout.c::test_callout_sbt_to_ticks_relative",
+        "tests/unit/test_ff_callout.c::test_tcp_timer_activation_chain",
+        "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_unknown_filter_yields_zero_events",
+        "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_eof_unknown_filter_only_hup"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/232"
+    },
+    {
+      "id": "upstream-harness",
+      "title": "Disposition upstream reload-tool self-tests and CMocka smoke cases",
+      "disposition": "harness-only",
+      "reason": "These entries test the F-Stack remote reload orchestration/capture tooling or CMocka itself. Executing copied harness tests would not demonstrate Ker networking, reload ownership or protocol compatibility.",
+      "evidence": [
+        "tests/upstream/fstack/tests/unit/test_reload_harness.py",
+        "tests/upstream/fstack/tests/unit/test_hello.c"
+      ],
+      "acceptance": [
+        "Keep all source cases discoverable and pinned without executing remote-host/process-control helpers implicitly.",
+        "Decide which orchestration helpers should be reworked for an implemented Ker reload runner; tie those adaptations to the reload issue and real acceptance evidence.",
+        "Explicitly record framework-only smoke exclusions without counting them as native network passes."
+      ],
+      "cases": [
+        "tests/unit/test_hello.c::test_hello_world",
+        "tests/unit/test_hello.c::test_basic_arithmetic",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_ipv4_ipv6",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_injection_and_bad_hosts",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_invalid_counts_cases_and_paths",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_lc_exact_fields",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_stream_and_cps",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_partial_workers_cannot_hide_behind_total_samples",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_aggregate_requires_selected_cases_and_exit_codes",
+        "tests/unit/test_reload_harness.py::ValidationTests.test_nonpass_and_exit_mismatch",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_identity_mismatch_refused",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_explicit_signal_does_not_escalate",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_bounded_exit_and_timeout",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_bounded_child_exit_and_startup_handoff",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_production_inventory_includes_new_and_generated_sources",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_wrong_case_cannot_be_renamed_to_pass",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_foreign_deleted_executable_is_not_inspected",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_reclaim_requires_unlocked_backing",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_wrapper_validation_before_signals",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_source_has_no_execution",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_cli_rejects_before_output_creation",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_build_identity_binding",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_foreign_process_not_collected",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_driver_result_and_cleanup_failure",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_remote_local_fixture_execution",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_http_response_integrity",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_resource_namespace_rejects_public_paths",
+        "tests/unit/test_reload_harness.py::OwnedProcessTests.test_remote_stale_and_nonzero_results",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_stable_parent_is_checked_before_publication",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_parent_exits_before_publication_without_stop_authority",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_reused_parent_in_discovery_never_authorizes_candidate",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_exe_denied_while_exiting_is_tolerated",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_exe_denied_on_live_process_fails_closed",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_missing_parent_during_revalidation_releases_candidate",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_invalid_parent_does_not_reparent_existing_authority",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_exited_known_child_is_not_a_pid_reuse_failure",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_rejected_candidate_can_be_proven_by_direct_adoption",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_changed_child_parent_is_not_published",
+        "tests/unit/test_reload_harness.py::ParentAuthorizationTests.test_parent_exit_after_proof_keeps_valid_child_authority",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_01_03_erased_environment_and_double_fork",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_04_late_orphan_during_stop",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_permitted_exec",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_unpermitted_exec",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_wrong_identity_and_bystander",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_05_stale_control_authority",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_06_controller_exit",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_06_controller_disconnect",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_07_supervisor_loss_blocks_reclaim",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_08_exec_failure",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_08_persistence_failure",
+        "tests/unit/test_reload_harness.py::OwnershipSupervisorTests.test_owned_08_helper_deadline",
+        "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_reported_and_passed",
+        "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_reported_but_failed_is_not_no_data",
+        "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_absent_summary_is_no_data",
+        "tests/unit/test_reload_harness.py::SummaryFetchCodeTests.test_timeout_is_no_data"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/233"
+    },
+    {
+      "id": "mtu-checklist",
+      "title": "Replace the upstream manual MTU checklist with complete native acceptance",
+      "disposition": "adaptation-needed",
+      "reason": "The upstream shell script prints manual legacy1500, large/scatter9000, dynamic-MTU and IPv6 jumbo instructions plus an unconditional PASS summary. Existing Ker jumbo/PMTU tests are useful evidence but do not automatically satisfy every instruction.",
+      "evidence": [
+        "tests/upstream/fstack/tests/integration/test_mtu.sh",
+        "tests/posix/fstack-jumbo.c",
+        "tests/posix/udp-path-mtu.py"
+      ],
+      "acceptance": [
+        "Map all five checklist steps to real nontrivial assertions, distinguishing ICMP ping payloads from UDP/TCP evidence.",
+        "Validate legacy1500, both mbuf profiles at9000, a live9000-to1500 change across original Linux and the real PMD, and IPv6 large ICMP packets, or explicitly document unavailable hardware requirements.",
+        "Never count the shell script unconditional ALL PASS output or an MTU parser test as end-to-end packet acceptance."
+      ],
+      "cases": [
+        "tests/integration/test_mtu.sh::entrypoint"
+      ],
+      "issue": "https://github.com/rutlang-ai/Ker/issues/234"
+    }
+  ]
+}
