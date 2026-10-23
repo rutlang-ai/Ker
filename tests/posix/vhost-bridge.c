@@ -53,7 +53,13 @@ static int startup_flood(uint16_t port, struct rte_mempool *pool, uint64_t count
 
 int main(int argc, char **argv)
 {
-    if (rte_eal_init(argc, argv) < 0) return 1;
+    int consumed = rte_eal_init(argc, argv);
+    if (consumed < 0) return 1;
+    bool queue_one = false;
+    for (int index = consumed + 1; index < argc; index++) {
+        if (strcmp(argv[index], "--queue-one")) return 1;
+        queue_one = true;
+    }
     struct rte_mempool *pool = rte_pktmbuf_pool_create("vhost_peer", 4095, 0, 0,
         RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
     uint16_t ports[2]; bool configured[2] = {0}, started[2] = {0};
@@ -97,7 +103,8 @@ int main(int argc, char **argv)
                 uint16_t count = rte_eth_rx_burst(ports[side], queue, packets, 32);
                 if (!count) continue;
                 progress = true;
-                uint16_t sent = rte_eth_tx_burst(ports[1 - side], 0, packets, count);
+                uint16_t tx_queue = side == 1 && queue_one ? 1 : 0;
+                uint16_t sent = rte_eth_tx_burst(ports[1 - side], tx_queue, packets, count);
                 forwarded[side] += sent; dropped += count - sent;
                 for (uint16_t index = sent; index < count; index++) rte_pktmbuf_free(packets[index]);
             }

@@ -92,11 +92,12 @@ def main():
     for name in ('launcher', 'library', 'worker', 'app'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--queues', type=int, default=1)
     parser.add_argument('--dynamic', action='store_true')
     parser.add_argument('--failure-library', type=Path)
     args = parser.parse_args()
     if not args.inside:
-        command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
+        command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside', '--queues', str(args.queues)]
         for name in ('launcher', 'library', 'worker', 'app'):
             command += ['--' + name, str(getattr(args, name).resolve())]
         if args.dynamic:
@@ -130,7 +131,7 @@ def main():
             stats, capture = root / (name + '.json'), root / (name + '-pcap')
             capture.mkdir()
             command = [sys.executable, str(args.launcher), '--library', str(args.library),
-                '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
+                '--io-worker', str(args.worker), '--queues', str(args.queues), '--address', '198.18.0.2/24',
                 '--address6', '2001:db8:1::2/64', '--port', 'net_tap0', '--eal', eal,
                 '--mtu', str(mtu), '--max-mtu', '1500' if ceiling else '9000', '--mbuf-mode', mode,
                 '--stats', str(stats), '--pcap-dir', str(capture), '--pcap-snaplen', '65535',
@@ -213,6 +214,8 @@ def main():
                             'missing DPDK traffic or leaked buffers')
                     require(record['io']['mtu'] == mtu and record['io']['mbuf_mode'] == mode,
                             'worker ignored MTU/buffer mode')
+                    require(record['io']['queues'] == args.queues and len(record['rx_by_queue']) == args.queues,
+                            'queue count differs from actual worker setup')
                     if args.dynamic:
                         require(record['mtu_final'] == 1500 and record['mtu_changes'] == (0 if ceiling else 2),
                                 'missing live PMD MTU transition evidence')

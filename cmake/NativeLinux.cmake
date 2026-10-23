@@ -53,7 +53,7 @@ set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
-set(ker_io_worker_sources src/posix/io-worker.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+set(ker_io_worker_sources src/posix/io-worker.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 add_executable(ker-io-worker ${ker_io_worker_sources})
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
@@ -881,6 +881,12 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic
             --failure-library "$<TARGET_FILE:ker-mtu-failure>")
     set_tests_properties(native-fstack-live-mtu PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-rx-queues-mtu
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic --queues 2
+            --failure-library "$<TARGET_FILE:ker-mtu-failure>")
+    set_tests_properties(native-fstack-rx-queues-mtu PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
     add_executable(ker-vhost-bridge-test tests/posix/vhost-bridge.c)
     target_compile_options(ker-vhost-bridge-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-vhost-bridge-test PRIVATE PkgConfig::DPDK)
@@ -896,9 +902,30 @@ if(BUILD_TESTING)
             --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}"
             --startup-delay-library "$<TARGET_FILE:ker-test-promiscuous-disable-delay>")
     set_tests_properties(native-fstack-typed-vdev PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+    add_library(ker-rss-failure SHARED tests/posix/rss-failure.c)
+    target_compile_options(ker-rss-failure PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-rss-failure PRIVATE PkgConfig::DPDK ${CMAKE_DL_LIBS})
+    add_executable(ker-rss-control-test tests/posix/rss-control.c src/posix/worker-rss.c)
+    target_include_directories(ker-rss-control-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_options(ker-rss-control-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-rss-control-test PRIVATE PkgConfig::DPDK)
+    add_test(NAME native-fstack-rss-control
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rss-control.py"
+            --probe "$<TARGET_FILE:ker-rss-control-test>" --failure-library "$<TARGET_FILE:ker-rss-failure>" --pmd-root "${ker_vdev_library_root}")
+    set_tests_properties(native-fstack-rss-control PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "fstack")
+    add_test(NAME native-fstack-rx-queues
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-vdev.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+            --queue-one --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}"
+            --startup-delay-library "$<TARGET_FILE:ker-test-promiscuous-disable-delay>")
+    set_tests_properties(native-fstack-rx-queues PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-typed-vdev-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_vdev.py")
     set_tests_properties(native-fstack-typed-vdev-config PROPERTIES TIMEOUT 30 LABELS "fstack")
+    add_test(NAME native-fstack-rx-queues-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_rx_queues_config.py")
+    set_tests_properties(native-fstack-rx-queues-config PROPERTIES TIMEOUT 30 LABELS "fstack")
     if(KER_WITH_NATIVE_BOND)
         add_test(NAME native-fstack-typed-bond
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"

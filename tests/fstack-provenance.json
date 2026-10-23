@@ -1667,6 +1667,46 @@
         "native-fstack-multiport"
       ],
       "adaptation": "One imported original Linux kernel registers both real DPDK-backed packet devices before boot, configures each through original LKL address/MTU/UP/DAD helpers and removes each before halt. Independent EAL workers retain one RX/TX queue apiece; the legacy primary path is preserved. Native app discovers both actual interface names, uses one native fd to change only the auxiliary MTU1500->1600->1500, rejects9000 against its2000 ceiling while primary remains1500, then opens original TCP sockets from both primary IPv4/IPv6 addresses and3/2 VIPs on each interface. Independent host TCP peers validate all14 unique source addresses, payload and EOF. The same native UDP socket bound to a primary address sends to the auxiliary network: complete auxiliary-TX and primary-RX PCAP proves the asymmetric IPv4/IPv6 request/reply path. Separate native kernels cannot satisfy this route/socket-table check. Require >=14 original Linux opens, actual TX/RX and zero outstanding buffers for each worker, correct per-port MTU counters and reaped worker PIDs. A failed auxiliary ethdev startup must prevent application entry and reap both workers; duplicate host IPv6 on the auxiliary interface must fail original Linux DAD with the same cleanup; orderly auxiliary worker exit while the app runs must fail the complete backend and reap both workers. Owned process groups are killed on test timeout. Global kernel counters remain aggregate, extra worker statistics/captures are labelled separately. Completes native multi-interface capability, but source full-DPDK fixture stays partial: global4/per-port2 lcore scheduling, active multi-queue/hardware RSS/thash/table80/443 and exact config ABI remain under issues224/220. No Linux/DPDK source or protocol-state replacement is introduced."
+    },
+    "native-fstack-rx-queues": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_full"
+      ],
+      "ker_ctests": [
+        "native-fstack-rx-queues"
+      ],
+      "adaptation": "Partial adaptation of per-port queue configuration in the full DPDK fixture. Original virtio-user frontend actively configures two RX/TX pairs; independent original vhost/TAP backend deliberately injects every host frame into queue1. Both host and original native Linux send IPv4/IPv6 ICMP, full PCAP frames/payloads/checksums pass, actual rx_by_queue[0]=0 and rx_by_queue[1]>0, all frames accounted and all mbufs reclaimed. Default single-queue typed-vdev acceptance remains. Reject queue3 beyond PMD capacity2 and reject unsupported global RSS before application entry, retaining zero buffer ownership. Queue1 injection is a test transport choice, not RSS hashing or symmetric RSS qualification; application TX stays queue0."
+    },
+    "native-fstack-rx-queues-mtu": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_full"
+      ],
+      "ker_ctests": [
+        "native-fstack-rx-queues-mtu"
+      ],
+      "adaptation": "Configure two actual original TAP RX/TX pairs, then use native SIOCSIFMTU to move1500->9000->1500 in large and scatter storage modes. Rebuild every RX queue before restart, verify actual TAP MTU and bidirectional original host/native IPv4/IPv6 echo at each phase, full frame checksums/payload/maximum sizes, scatter chains and zero outstanding buffers. Inject original PMD failures before/after mutation and rollback failure; check rollback, fatal ambiguous state and ceiling. RSS hash/RETA restoration uses the same restart path when enabled, but TAP here has RSS disabled and does not qualify that dataplane."
+    },
+    "native-fstack-rx-queues-config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_full"
+      ],
+      "ker_ctests": [
+        "native-fstack-rx-queues-config"
+      ],
+      "adaptation": "Validate active dpdk.queues1..16 independently of vdev queue capacity; final repeated values, CLI precedence, additional-interface inheritance/override and malformed counts. RSS boolean requires at least two queues on every selected interface; invalid final booleans fail before backend startup. No source config struct/lcore list or symmetric-RSS compatibility claim."
+    },
+    "native-fstack-rss-control": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_dpdk_full"
+      ],
+      "ker_ctests": [
+        "native-fstack-rss-control"
+      ],
+      "adaptation": "Control-plane prerequisite for source full-DPDK RSS configuration, not a migrated source RSS landing test. Production adapter requires original PMD IPv4/IPv6 TCP/UDP RSS bits,40..64-byte key and nonzero power-of-two RETA<=4096; keeps original default key/hash algorithm and requires exact type/key-length readback. Real original net_null PMD configures two pairs, preserves its40-byte key, programs/query-verifies every128 RETA entries as index%2, then repairs an independently poisoned table. A preload fixture corrupts one successful original query result; the adapter must reject it. No traffic, physical NIC landing, symmetric algorithm, thash or Linux source-port selection is claimed."
     }
   }
 }

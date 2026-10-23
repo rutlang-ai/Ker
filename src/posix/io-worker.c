@@ -27,6 +27,7 @@
 #include "worker-tx.h"
 #include "worker-rx-drain.h"
 #include "worker-scatter.h"
+#include "worker-rss.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
@@ -34,6 +35,7 @@
 /* This process transports Ethernet frames only. All socket/TCP behavior runs
  * in the separate imported Linux instance in the application process. */
 #define BURST 32
+#define MAX_QUEUES 16
 #define WIRE_MAX (KER_NATIVE_MAX_MTU + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)
 static volatile sig_atomic_t stopping;
 static void stop_worker(int signal_number) { (void)signal_number; stopping = 1; }
@@ -156,17 +158,24 @@ static int scatter_mtu_supported(uint16_t port, int mtu)
     return 0;
 }
 static int configure_mtu(uint16_t port, int mtu, uint16_t descriptors,
-    unsigned int allocation_socket, struct rte_mempool *pool)
+    unsigned int allocation_socket, struct rte_mempool *pool, uint16_t queues,
+    struct ker_worker_rss *rss, bool *started)
 {
     int result = rte_eth_dev_set_mtu(port, (uint16_t)mtu);
-    if (!result) result = rte_eth_rx_queue_setup(port, 0, descriptors, allocation_socket, NULL, pool);
-    if (!result) result = rte_eth_dev_start(port);
+    for (uint16_t queue = 0; !result && queue < queues; queue++)
+        result = rte_eth_rx_queue_setup(port, queue, descriptors, allocation_socket, NULL, pool);
+    if (!result) {
+        result = rte_eth_dev_start(port);
+        if (!result) *started = true;
+    }
+    if (!result && rss->reta_size) result = ker_worker_rss_apply(port, queues, rss);
     return result;
 }
 /* Run on the worker thread, which exclusively owns the ethdev and queues. */
 static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mtu,
     bool busy, uint64_t *changes, struct rte_mempool *pool,
-    uint16_t descriptors, unsigned int allocation_socket, bool *started)
+    uint16_t descriptors, unsigned int allocation_socket, uint16_t queues,
+    struct ker_worker_rss *rss, bool *started)
 {
     struct ker_mtu_message message;
     ssize_t size = recv(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_TRUNC);
@@ -188,13 +197,13 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
              * traffic can be lost during this link reconfiguration. */
             if (rte_eth_dev_stop(port)) return -1;
             *started = false;
-            message.status = configure_mtu(port, requested, descriptors, allocation_socket, pool);
+            message.status = configure_mtu(port, requested, descriptors, allocation_socket, pool, queues, rss, started);
             if (message.status) {
                 /* Restore even if ethdev's cached MTU still says the old value:
                  * a PMD may fail after changing its underlying device. */
                 if (rte_eth_dev_stop(port)) return -1;
-                if (configure_mtu(port, *mtu, descriptors, allocation_socket, pool)) return -1;
-                *started = true;
+                *started = false;
+                if (configure_mtu(port, *mtu, descriptors, allocation_socket, pool, queues, rss, started)) return -1;
                 if (rte_eth_dev_get_mtu(port, &actual) || actual != *mtu) return -1;
             } else {
                 /* configure_mtu() has restarted the PMD. Cleanup owns the stop
@@ -240,6 +249,8 @@ int main(int argc, char **argv)
         return RTE_MAX_NUMA_NODES > 0 ? 0 : 1;
     }
     int packet_fd = -1, control_fd = -1, mtu_fd = -1, split = 0;
+    bool rss_enabled = false;
+    int queues = 1;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
     int idle_sleep_us = 1000, tx_delay_us = 0;
@@ -249,6 +260,7 @@ int main(int argc, char **argv)
     const char *port_name = NULL, *mbuf_mode = "large", *bond_policy = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
+        if (!strcmp(argv[i], "--rss")) { rss_enabled = true; continue; }
         if (!strcmp(argv[i], "--numa")) { numa = true; continue; }
         if (!strcmp(argv[i], "--no-numa")) { numa = false; continue; }
         if (!strcmp(argv[i], "--promiscuous")) { promiscuous = 1; continue; }
@@ -260,6 +272,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
+        else if (!strcmp(argv[i], "--queues")) queues = number(argv[++i]);
         else if (!strcmp(argv[i], "--mtu-fd")) mtu_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--max-mtu")) maximum_mtu = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
@@ -275,9 +288,9 @@ int main(int argc, char **argv)
     }
     if (!maximum_mtu) maximum_mtu = mtu;
     if (maximum_mtu < mtu || maximum_mtu > KER_NATIVE_MAX_MTU) return 1;
-    if (tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
+    if (queues < 1 || queues > MAX_QUEUES || (rss_enabled && queues < 2) || tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--mtu-fd N] [--max-mtu 1280..9000] [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--tx-delay-us 0..100] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--rss] [--queues 1..16] [--mtu-fd N] [--max-mtu 1280..9000] [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--tx-delay-us 0..100] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -320,7 +333,8 @@ int main(int argc, char **argv)
     bool started = false, configured = false;
     struct rte_mempool *pool = NULL;
     struct rte_mbuf *pending_tx = NULL, *rx[BURST] = {0};
-    uint16_t rx_count = 0, rx_index = 0;
+    uint16_t rx_count = 0, rx_index = 0, next_queue = 0;
+    uint64_t rx_by_queue[MAX_QUEUES] = {0}, rx_rss_metadata = 0;
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
@@ -349,7 +363,15 @@ int main(int argc, char **argv)
         conf.rxmode.offloads = RTE_ETH_RX_OFFLOAD_SCATTER;
         conf.txmode.offloads = RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
     }
-    if (rte_eth_dev_configure(port, 1, 1, &conf)) goto device_error;
+    struct ker_worker_rss rss = {0};
+    struct rte_eth_dev_info queue_info = {0};
+    if (rte_eth_dev_info_get(port, &queue_info) || queues > queue_info.max_rx_queues || queues > queue_info.max_tx_queues) {
+        fprintf(stderr, "ker: requested queue pairs exceed ethdev capacity\n"); goto cleanup;
+    }
+    if (rss_enabled && ker_worker_rss_prepare(port, (uint16_t)queues, &conf, &rss)) {
+        fprintf(stderr, "ker: RSS requires IPv4/IPv6 TCP/UDP types, a readable key and a bounded RETA\n"); goto cleanup;
+    }
+    if (rte_eth_dev_configure(port, (uint16_t)queues, (uint16_t)queues, &conf)) goto device_error;
     configured = true;
     if (bond_policy) {
         int result = ker_bond_policy_apply(port, bond_policy);
@@ -375,6 +397,14 @@ int main(int argc, char **argv)
             selected_rx_budget, selected_tx_budget, budget_info.rx_desc_lim.nb_max,
             budget_info.tx_desc_lim.nb_max);
         goto cleanup;
+    }
+    for (int queue = 1; queue < queues; queue++) {
+        int result = ker_worker_mbuf_budget_add(&pool_rx_desc, &pool_tx_desc,
+            selected_rx_budget, selected_tx_budget);
+        if (result) {
+            fprintf(stderr, "ker: multi-queue descriptor pool budget overflow\n");
+            goto cleanup;
+        }
     }
     if (bond_policy) {
         int count = ker_bond_members(port, bond_members, 16);
@@ -422,10 +452,15 @@ int main(int argc, char **argv)
             pool_count, pool_rx_desc, pool_tx_desc, rte_strerror(rte_errno));
         goto cleanup;
     }
-    if (rte_eth_rx_queue_setup(port, 0, rx_desc, allocation_socket, NULL, pool) ||
-        rte_eth_tx_queue_setup(port, 0, tx_desc, allocation_socket, NULL) ||
-        rte_eth_dev_start(port)) goto device_error;
+    for (uint16_t queue = 0; queue < queues; queue++) {
+        if (rte_eth_rx_queue_setup(port, queue, rx_desc, allocation_socket, NULL, pool) ||
+            rte_eth_tx_queue_setup(port, queue, tx_desc, allocation_socket, NULL)) goto device_error;
+    }
+    if (rte_eth_dev_start(port)) goto device_error;
     started = true;
+    if (rss_enabled && ker_worker_rss_apply(port, (uint16_t)queues, &rss)) {
+        fprintf(stderr, "ker: original RSS key/RETA API failed or readback differs\n"); goto cleanup;
+    }
     for (int member = 0; member < bond_member_count; member++) {
         struct rte_eth_rxq_info member_rx = {0};
         struct rte_eth_txq_info member_tx = {0};
@@ -473,14 +508,18 @@ int main(int argc, char **argv)
     if (promiscuous == 0) {
         /* Device start precedes the explicit mode switch and can queue frames
          * while the PMD is promiscuous. Do not expose that backlog after READY. */
-        struct ker_worker_rx_queue queue = {.port = port, .queue = 0};
-        int result = ker_worker_rx_drain(worker_rx_burst, worker_rx_free,
-            &queue, rx_ring_capacity, &rx_startup_discarded);
-        rx_dropped += rx_startup_discarded;
-        if (result) {
-            fprintf(stderr, "ker: ethdev RX queue could not be proven empty after the %u-packet startup budget: %s\n",
-                rx_ring_capacity, rte_strerror(-result));
-            goto cleanup;
+        for (uint16_t index = 0; index < queues; index++) {
+            struct ker_worker_rx_queue queue = {.port = port, .queue = index};
+            uint64_t discarded = 0;
+            int result = ker_worker_rx_drain(worker_rx_burst, worker_rx_free, &queue,
+                rx_ring_capacity, &discarded);
+            rx_startup_discarded += discarded;
+            rx_dropped += discarded;
+            if (result) {
+                fprintf(stderr, "ker: ethdev RX queue %u could not be proven empty after the %u-packet startup budget: %s\n",
+                    index, rx_ring_capacity, rte_strerror(-result));
+                goto cleanup;
+            }
         }
     }
     int promiscuous_state = rte_eth_promiscuous_get(port);
@@ -530,10 +569,16 @@ int main(int argc, char **argv)
             receive_info.nb_desc, transmit_info.nb_desc, selected_rx_budget, selected_tx_budget);
         goto cleanup;
     }
-    printf("KER_IO_READY {\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    char rss_json[384] = "null";
+    if (rss_enabled) {
+        char key[129];
+        for (unsigned index = 0; index < rss.key_length; index++) snprintf(key + index * 2, 3, "%02x", rss.key[index]);
+        snprintf(rss_json, sizeof(rss_json), "{\"types\":%llu,\"key\":\"%s\",\"reta_size\":%u,\"reta_mapping\":\"index_mod_queues\",\"verified\":true}", (unsigned long long)rss.types, key, rss.reta_size);
+    }
+    printf("KER_IO_READY {\"rss\":%s,\"queues\":%d,\"data_tx_queue\":0,\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
-        initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
+        rss_json, queues, initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
         device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc,
         pool_rx_desc, pool_tx_desc, pool_count,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
@@ -550,7 +595,7 @@ int main(int argc, char **argv)
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
                 pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, &mtu_changes,
-                pool, rx_desc, allocation_socket, &started);
+                pool, rx_desc, allocation_socket, (uint16_t)queues, &rss, &started);
             if (result < 0) { fprintf(stderr, "ker: MTU device transaction failed\n"); status = 1; break; }
             if (result > 0) { close(mtu_fd); mtu_fd = -1; }
         }
@@ -641,7 +686,15 @@ int main(int argc, char **argv)
             continue;
         }
         if (rx_index == rx_count) {
-            rx_count = rte_eth_rx_burst(port, 0, rx, BURST);
+            for (int visited = 0; visited < queues; visited++) {
+                uint16_t queue = next_queue;
+                next_queue = (uint16_t)((next_queue + 1) % queues);
+                rx_count = rte_eth_rx_burst(port, queue, rx, BURST);
+                rx_by_queue[queue] += rx_count;
+                for (uint16_t index = 0; index < rx_count; index++)
+                    if (rx[index]->ol_flags & RTE_MBUF_F_RX_RSS_HASH) rx_rss_metadata++;
+                if (rx_count) break;
+            }
             rx_index = 0;
             /* Each received frame is captured once, even if channel delivery
              * later retries or metadata validation rejects it. */
@@ -740,9 +793,11 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
+    printf("KER_IO_DONE {\"rx_by_queue\":[");
+    for (int queue = 0; queue < queues; queue++) printf("%s%llu", queue ? "," : "", (unsigned long long)rx_by_queue[queue]);
+    printf("],\"rx_rss_metadata\":%llu,\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", (unsigned long long)rx_rss_metadata, bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
