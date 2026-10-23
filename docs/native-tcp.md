@@ -1161,8 +1161,12 @@ C 分配器合同尚未通过，详见迁移清单和 issue224。
 
 `[dpdk] nb_bond=1` 启用 `[bond0]`，并要求 `port=net_bonding0`。
 必须提供 mode=0..6 和 slave（逗号分隔、1..16 个不同的原始端口 ID/设备名）；
-primary 可选但必须是成员之一。支持 socket_id=-1..127、非零单播 MAC、
-xmit_policy=l2/l23/l34、lsc_poll_period_ms（正整数）、up_delay/down_delay（非负整数），
+primary 可选但必须是成员之一。支持 socket_id=-1（`SOCKET_ID_ANY`）或
+`0..max_numa_nodes-1`，其中 `max_numa_nodes` 由选中的 `--io-worker --dpdk-limits`
+查询返回，并来自该 worker 编译时使用的 DPDK `RTE_MAX_NUMA_NODES`。launcher 会在
+启动应用和 DPDK EAL 前验证该值及 socket_id；worker 不支持查询或返回无效上限时会明确报错。
+还支持非零单播 MAC、xmit_policy=l2/l23/l34、lsc_poll_period_ms（正整数）、
+up_delay/down_delay（非负整数），
 时间最大 INT_MAX 毫秒。缺省 poll=100、up/down=0，最终重复键生效。
 成员须先由 EAL 或类型化 vdev 声明；只启用选中的一个 bond，不承诺多 bond 调度。
 `slave` 翻译成原版 PMD 的重复 `member=` 参数，其余设备设置交给原始 DPDK。
