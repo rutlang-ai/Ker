@@ -774,6 +774,15 @@ class AdditionalWorker:
         return failed
 
 
+def unexpected_worker_exit(worker, additional):
+    if worker.poll() is not None:
+        return 'DPDK worker stopped while the application was running'
+    stopped = [extra.interface['name'] for extra in additional if extra.process.poll() is not None]
+    if stopped:
+        return 'additional DPDK worker stopped while the application was running: ' + ', '.join(stopped)
+    return None
+
+
 def main():
     args = parse_arguments()
     library = args.library.resolve(strict=True)
@@ -898,6 +907,11 @@ def main():
                 exit_code = app.wait(timeout=0.25)
                 if exit_code < 0:
                     preserve_signal = True
+                else:
+                    failure = unexpected_worker_exit(worker, additional)
+                    if failure:
+                        exit_code = 125
+                        raise RuntimeError(failure)
                 break
             except subprocess.TimeoutExpired:
                 try:
@@ -909,8 +923,10 @@ def main():
                         stopping_at = time.monotonic()
                     if time.monotonic() - stopping_at > 5:
                         raise RuntimeError('native kernel teardown timed out')
-                elif worker.poll() is not None or any(extra.process.poll() is not None for extra in additional):
-                    raise RuntimeError('DPDK worker stopped while the application was running')
+                else:
+                    failure = unexpected_worker_exit(worker, additional)
+                    if failure:
+                        raise RuntimeError(failure)
     except (KeyboardInterrupt, Interrupted) as interruption:
         preserve_signal = True
         signum = interruption.signum if isinstance(interruption, Interrupted) else signal.SIGINT
