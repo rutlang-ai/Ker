@@ -1321,16 +1321,26 @@
     {
       "id": "tests/unit/test_ff_config.c::test_bond_cfg_handler_no_nb_bond",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exact pinned missing-count or malformed bond-section fixture is rejected by the actual Ker configuration reader with status2 before resolving a missing native library or starting a worker. Ker does not replicate the F-Stack loader return-value ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-typed-bond-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_bond_cfg_handler_bad_section",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exact pinned missing-count or malformed bond-section fixture is rejected by the actual Ker configuration reader with status2 before resolving a missing native library or starting a worker. Ker does not replicate the F-Stack loader return-value ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-typed-bond-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
@@ -1422,9 +1432,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All pinned bond0 fields map to original DPDK bonding: mode4, two members, primary0, NUMA socket0, MAC, l34 hash and link poll/up/down delays. Original static PMD APIs preserve the public timing semantics missing from the shared exports. Independent host Linux LACP partners, complete IPv4/IPv6 frames, member-path loss, live original PMD state and zero buffers qualify the adapted scenario; no F-Stack struct ABI or physical-NIC coverage is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-typed-bond-config"
+        },
+        {
+          "ctest": "native-fstack-typed-bond",
+          "provenance_case": "native-fstack-typed-bond"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_bad_section_returns_zero",
@@ -1617,7 +1636,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "The exact pinned repeated vdev strings retain the final iface/path/MAC. Repeated sections and initially invalid replaced values also drive actual virtio-user/vhost/TAP traffic with final MAC, queue capacity and descriptor settings, and both sides free all mbufs.",
+      "reason": "Exact pinned repeated bond and vdev strings retain final members/primary/MAC/policy/iface/path values. Repeated-invalid-to-valid configuration drives real original DPDK LACP bond and virtio-user/vhost traffic with final settings and complete buffer cleanup.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -1626,9 +1645,17 @@
         {
           "ctest": "native-fstack-typed-vdev",
           "provenance_case": "native-fstack-typed-vdev"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-typed-bond-config"
+        },
+        {
+          "ctest": "native-fstack-typed-bond",
+          "provenance_case": "native-fstack-typed-bond"
         }
       ],
-      "remaining": "Repeated bond slave/primary/MAC/xmit-policy mapping and actual bond runtime are not implemented. Python storage replacement and DPDK buffer ownership are not F-Stack C strdup/free or valgrind leak proof. The source iface+socket backend combination remains unsupported by the pinned PMD; tracked in issue224."
+      "remaining": "Full combined fixture still contains a vdev iface+Unix-socket tuple rejected by the pinned PMD; vhost-kernel iface qualification remains pending. Python storage replacement and DPDK buffer ownership do not prove F-Stack C strdup/free, allocation-failure or valgrind contracts; tracked in issue224."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",

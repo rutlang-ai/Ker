@@ -117,7 +117,7 @@ def base_virtaddr(text):
     return value
 
 
-CONFIG_DEFAULTS = dict(nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -139,7 +139,7 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -206,6 +206,62 @@ def virtual_device_argument(device):
         ('iface', 'path', 'queues', 'queue_size', 'mac', 'cq') if key in device)
 
 
+def bond_devices(ini):
+    count = ini.getint('dpdk', 'nb_bond', fallback=0)
+    if count not in (0, 1):
+        raise ValueError('[dpdk] nb_bond supports 0 or 1 selected bond')
+    sections = [name for name in ini.sections() if name.startswith('bond')]
+    if sections and not count:
+        raise ValueError('bond sections require [dpdk] nb_bond first')
+    if set(sections) != ({'bond0'} if count else set()):
+        raise ValueError('bond section must be [bond0] for nb_bond=1')
+    if not count:
+        return ()
+    fields = dict(ini.items('bond0', raw=True))
+    allowed = {'mode', 'slave', 'primary', 'socket_id', 'mac', 'xmit_policy',
+               'lsc_poll_period_ms', 'up_delay', 'down_delay'}
+    if set(fields) - allowed or not {'mode', 'slave'} <= set(fields):
+        raise ValueError('[bond0] requires mode/slave and only supports known bond options')
+    bond = {'name': 'net_bonding0', 'mode': int(fields['mode']),
+            'slave': fields['slave'].split(','), 'socket_id': int(fields.get('socket_id', 0)),
+            'xmit_policy': fields.get('xmit_policy', 'l2')}
+    if bond['mode'] not in range(7) or not -1 <= bond['socket_id'] <= 127:
+        raise ValueError('[bond0] invalid mode or socket_id')
+    if not 1 <= len(bond['slave']) <= 16 or len(set(bond['slave'])) != len(bond['slave']):
+        raise ValueError('[bond0] requires 1..16 distinct members')
+    if any(not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', member) for member in bond['slave']):
+        raise ValueError('[bond0] invalid member name/port')
+    if bond['name'] in bond['slave']:
+        raise ValueError('[bond0] cannot contain itself')
+    if 'primary' in fields:
+        if fields['primary'] not in bond['slave']:
+            raise ValueError('[bond0] primary must name a listed member')
+        bond['primary'] = fields['primary']
+    if bond['xmit_policy'] not in ('l2', 'l23', 'l34'):
+        raise ValueError('[bond0] invalid xmit_policy')
+    if 'mac' in fields:
+        mac = fields['mac']
+        if not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', mac):
+            raise ValueError('[bond0] invalid MAC')
+        octets = bytes.fromhex(mac.replace(':', ''))
+        if octets[0] & 1 or not any(octets):
+            raise ValueError('[bond0] MAC must be nonzero unicast')
+        bond['mac'] = mac.lower()
+    for key, default in (('lsc_poll_period_ms', 100), ('up_delay', 0), ('down_delay', 0)):
+        value = int(fields.get(key, default))
+        if not (1 if key == 'lsc_poll_period_ms' else 0) <= value <= 2147483647:
+            raise ValueError('[bond0] invalid timing: ' + key)
+        bond[key] = value
+    return (bond,)
+
+
+def bond_device_argument(bond):
+    return ('--vdev=' + bond['name'] + ',mode=' + str(bond['mode']) +
+            ''.join(',member=' + member for member in bond['slave']) +
+            ''.join(',' + key + '=' + str(bond[key]) for key in
+                    ('primary', 'socket_id', 'mac', 'xmit_policy') if key in bond))
+
+
 def read_configuration(stream, directory, source='<stream>'):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
@@ -217,8 +273,11 @@ def read_configuration(stream, directory, source='<stream>'):
         raise ValueError('DEFAULT inheritance is unsupported')
     devices = virtual_devices(ini, directory)
     values = {'vdevs': devices} if devices or ini.has_option('dpdk', 'nb_vdev') else {}
+    bonds = bond_devices(ini)
+    if bonds or ini.has_option('dpdk', 'nb_bond'):
+        values['bonds'] = bonds
     for section in ini.sections():
-        if section.startswith('vdev'):
+        if section.startswith(('vdev', 'bond')):
             continue
         if section.startswith('vlan.'):
             if 'addresses' not in ini[section] or set(ini[section]) - {'addresses', 'gateway', 'gateway6'}:
@@ -500,9 +559,21 @@ def parse_arguments(argv=None):
     if args.vdevs:
         if any(token == '--vdev' or token.startswith('--vdev=') for token in raw_eal_options):
             parser.error('typed [vdevN] configuration conflicts with EAL --vdev')
-        if args.port not in {device['name'] for device in args.vdevs}:
+        if not args.bonds and args.port not in {device['name'] for device in args.vdevs}:
             parser.error('--port must select a configured typed net_virtio_userN device')
         eal_prefix += [virtual_device_argument(device) for device in args.vdevs]
+    if args.bonds:
+        if args.port != args.bonds[0]['name']:
+            parser.error('--port must select the configured net_bonding0')
+        raw_devices = []
+        for index, token in enumerate(raw_eal_options):
+            if token.startswith('--vdev='):
+                raw_devices.append(token.split('=', 1)[1].split(',', 1)[0])
+            elif token == '--vdev' and index + 1 < len(raw_eal_options):
+                raw_devices.append(raw_eal_options[index + 1].split(',', 1)[0])
+        if any(name.startswith(('net_bonding', 'eth_bond')) for name in raw_devices):
+            parser.error('typed bond conflicts with raw EAL bonding device')
+        eal_prefix += [bond_device_argument(bond) for bond in args.bonds]
     args.eal_args = eal_prefix + eal_remainder
     return args
 
@@ -539,8 +610,12 @@ def main():
                 '--pcap-snaplen', str(args.pcap_snaplen), '--pcap-max-bytes', str(args.pcap_max_bytes)]
             if args.pcap_nsec:
                 capture_options.append('--pcap-nsec')
+        bond_options = []
+        if args.bonds:
+            bond_options = ['--bond-policy', ','.join(str(args.bonds[0][key]) for key in
+                            ('lsc_poll_period_ms', 'up_delay', 'down_delay'))]
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, '--', *args.eal_args],
+            '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), mtu_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         mtu_io.close()

@@ -17,6 +17,7 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include "packet-channel.h"
+#include "bond-policy.h"
 #include "pcap.h"
 #include "worker-log.h"
 #include "worker-clock.h"
@@ -219,7 +220,7 @@ int main(int argc, char **argv)
     int promiscuous = -1;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
-    const char *port_name = NULL, *mbuf_mode = "large";
+    const char *port_name = NULL, *mbuf_mode = "large", *bond_policy = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
         if (!strcmp(argv[i], "--numa")) { numa = true; continue; }
@@ -232,6 +233,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
+        else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
         else if (!strcmp(argv[i], "--mtu-fd")) mtu_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--max-mtu")) maximum_mtu = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
@@ -305,6 +307,9 @@ int main(int argc, char **argv)
     bool draining = false;
     uint64_t stop_requests = 0, mtu_changes = 0;
     bool control_eof = false;
+    char bond_json[256] = "null";
+    uint16_t bond_members[16];
+    int bond_member_count = 0;
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
         fprintf(stderr, "ker: unknown ethdev %s\n", port_name); goto cleanup;
@@ -318,6 +323,13 @@ int main(int argc, char **argv)
     }
     if (rte_eth_dev_configure(port, 1, 1, &conf)) goto device_error;
     configured = true;
+    if (bond_policy) {
+        int result = ker_bond_policy_apply(port, bond_policy);
+        if (result) {
+            fprintf(stderr, "ker: original bond policy API unavailable/failed (%d); use a worker with complete PMD API support\n", result);
+            goto device_error;
+        }
+    }
     if (rte_eth_dev_set_mtu(port, (uint16_t)mtu)) goto device_error;
     uint16_t rx_desc = 256, tx_desc = 256;
     if (rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) goto device_error;
@@ -421,6 +433,8 @@ int main(int argc, char **argv)
     if (rte_memseg_walk(memory_lowest_address, &memory_base) < 0 || memory_base == UINTPTR_MAX) {
         fprintf(stderr, "ker: cannot inspect EAL memory segments\n"); goto cleanup;
     }
+    char initial_bond_json[256] = "null";
+    if (bond_policy && ker_bond_snapshot(port, initial_bond_json, sizeof(initial_bond_json))) goto device_error;
     int link_status = rte_eth_link_get_nowait(port, &link);
     struct rte_eth_dev_info device_info = {0};
     struct rte_eth_rxq_info receive_info = {0};
@@ -436,10 +450,10 @@ int main(int argc, char **argv)
             receive_info.nb_desc, transmit_info.nb_desc, pool_rx_desc, pool_tx_desc);
         goto cleanup;
     }
-    printf("KER_IO_READY {\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    printf("KER_IO_READY {\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
-        device_info.driver_name ? device_info.driver_name : "unknown",
+        initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
         device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc, pool_count,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
@@ -449,6 +463,9 @@ int main(int argc, char **argv)
     fflush(stdout);
     status = 0;
     while (!stopping) {
+        /* Original bonding PMD services LACP TX control rings from tx_burst,
+         * including when callers currently have no application frames. */
+        if (bond_policy) (void)rte_eth_tx_burst(port, 0, NULL, 0);
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
                 pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, &mtu_changes,
@@ -602,6 +619,7 @@ int main(int argc, char **argv)
              * channel TX and control wake ppoll; retained work uses bounded
              * retries and RX suffixes watch channel writability. Linux owns
              * protocol timers. */
+            if (bond_policy && wait_us > 10000) wait_us = 10000;
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
             int result = ppoll(fds, 3, &timeout, NULL);
@@ -617,6 +635,13 @@ clock_error:
 device_error:
     fprintf(stderr, "ker: ethdev initialization failed for %s\n", port_name);
 cleanup:
+    if (bond_policy && configured) {
+        bond_member_count = ker_bond_members(port, bond_members, 16);
+        if (bond_member_count < 0) { bond_member_count = 0; status = 1; }
+    }
+    if (bond_policy && started && ker_bond_snapshot(port, bond_json, sizeof(bond_json))) {
+        fprintf(stderr, "ker: cannot read original bond state\n"); status = 1;
+    }
     tx_capture_status = ker_pcap_close(&tx_capture);
     rx_capture_status = ker_pcap_close(&rx_capture);
     if (tx_capture_status || rx_capture_status) { perror("ker: close packet capture"); status = 1; }
@@ -625,14 +650,18 @@ cleanup:
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
     if (started && rte_eth_dev_stop(port)) status = 1;
     if (configured && rte_eth_dev_close(port)) status = 1;
+    /* Bond close detaches/stops members but does not release their queues.
+     * Those queues can still own this worker's mempool buffers. */
+    for (int member = 0; member < bond_member_count; member++)
+        if (rte_eth_dev_close(bond_members[member])) status = 1;
     unsigned int outstanding = pool ? rte_mempool_in_use_count(pool) : 0;
     if (outstanding) {
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
+    printf("KER_IO_DONE {\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,

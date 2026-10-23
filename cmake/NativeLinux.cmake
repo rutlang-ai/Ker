@@ -53,17 +53,45 @@ set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
-add_executable(ker-io-worker src/posix/io-worker.c src/posix/worker-mbuf.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+set(ker_io_worker_sources src/posix/io-worker.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+add_executable(ker-io-worker ${ker_io_worker_sources})
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
     target_compile_options(${native_target} PRIVATE -Wall -Wextra -Werror)
 endforeach()
-target_link_libraries(ker-io-worker PRIVATE PkgConfig::DPDK)
+target_link_libraries(ker-io-worker PRIVATE PkgConfig::DPDK ${CMAKE_DL_LIBS})
 # DPDK's libraries have transitive dependencies in this selected installation.
 # Use a transitive RPATH rather than relying on the developer's shell setup.
 target_link_options(ker-io-worker PRIVATE -Wl,--disable-new-dtags)
 set_target_properties(ker-io-worker PROPERTIES
     BUILD_RPATH "${DPDK_LIBRARY_DIRS}" INSTALL_RPATH "${DPDK_LIBRARY_DIRS}")
+option(KER_WITH_NATIVE_BOND "Build the original static DPDK PMD worker for complete bond API support" OFF)
+if(KER_WITH_NATIVE_BOND)
+    set(ker_bond_archive_found FALSE)
+    foreach(ker_bond_libdir IN LISTS DPDK_LIBRARY_DIRS)
+        if(EXISTS "${ker_bond_libdir}/librte_net_bond.a")
+            set(ker_bond_archive_found TRUE)
+        endif()
+    endforeach()
+    if(NOT ker_bond_archive_found)
+        message(FATAL_ERROR "Native bond requires pinned DPDK net/bonding with sched/ip_frag and its static archive")
+    endif()
+    set(ker_saved_pkg_config_argn "${PKG_CONFIG_ARGN}")
+    set(PKG_CONFIG_ARGN --static)
+    pkg_check_modules(DPDK_BOND REQUIRED IMPORTED_TARGET libdpdk>=26.11.0)
+    set(PKG_CONFIG_ARGN "${ker_saved_pkg_config_argn}")
+    add_executable(ker-io-worker-bond ${ker_io_worker_sources})
+    target_compile_features(ker-io-worker-bond PRIVATE c_std_11)
+    target_compile_definitions(ker-io-worker-bond PRIVATE KER_NATIVE_STATIC_BOND=1)
+    target_compile_options(ker-io-worker-bond PRIVATE -Wall -Wextra -Werror)
+    # Keep pkg-config's whole-archive boundaries around its actual archives.
+    # An imported target moves these flags ahead of all libraries and loses
+    # PMD constructors; raw ordered link items are required for DPDK static.
+    target_include_directories(ker-io-worker-bond SYSTEM PRIVATE ${DPDK_BOND_INCLUDE_DIRS})
+    target_compile_options(ker-io-worker-bond PRIVATE ${DPDK_BOND_CFLAGS_OTHER})
+    target_link_libraries(ker-io-worker-bond PRIVATE ${DPDK_BOND_LDFLAGS} ${CMAKE_DL_LIBS})
+    install(TARGETS ker-io-worker-bond RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(TARGETS ker-posix EXPORT kerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-io-worker ker-app
@@ -857,4 +885,15 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-typed-vdev-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_vdev.py")
     set_tests_properties(native-fstack-typed-vdev-config PROPERTIES TIMEOUT 30 LABELS "fstack")
+    if(KER_WITH_NATIVE_BOND)
+        add_test(NAME native-fstack-typed-bond
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+                --pmd-root "${ker_vdev_library_root}")
+        set_tests_properties(native-fstack-typed-bond PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+    endif()
+    add_test(NAME native-fstack-typed-bond-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_bond.py")
+    set_tests_properties(native-fstack-typed-bond-config PROPERTIES TIMEOUT 30 LABELS "fstack")
 endif()
