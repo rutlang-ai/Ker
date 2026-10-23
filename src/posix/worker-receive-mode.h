@@ -5,6 +5,7 @@
 #include <stdint.h>
 struct ker_worker_receive_mode {
     int socket_fd; /* initialize to -1 */
+    int identity_fd; /* protocol-zero AF_PACKET socket pins the Linux ifindex */
     unsigned ifindex;
     bool restore_allmulti;
     char interface[IFNAMSIZ];

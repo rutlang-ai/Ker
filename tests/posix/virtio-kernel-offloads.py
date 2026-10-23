@@ -56,9 +56,10 @@ def main():
     cpu = min(os.sched_getaffinity(0))
     with tempfile.TemporaryDirectory(prefix='ker-virtio-tso-') as directory:
         root = Path(directory)
-        for mode, storage, queues, persistent in (('off', 'large', 1, None), ('checksum', 'large', 1, None),
-                ('tso', 'large', 1, None), ('tso', 'scatter', 2, False), ('tso', 'large', 1, True)):
-            label = mode + '-' + storage + ('-persistent-' + str(persistent) if persistent is not None else '')
+        for mode, storage, queues, persistent, rename_tap in (('off', 'large', 1, None, False), ('checksum', 'large', 1, None, False),
+                ('tso', 'large', 1, None, False), ('tso', 'scatter', 2, False, False), ('tso', 'large', 1, True, False),
+                ('tso', 'large', 1, False, True)):
+            label = mode + '-' + storage + ('-persistent-' + str(persistent) if persistent is not None else '') + ('-rename' if rename_tap else '')
             stats, config = root / (label + '.json'), root / (label + '.ini')
             config.write_text('[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\n'
                 f'[dpdk]\nnb_vdev=1\nport=net_virtio_user0\nqueues={queues}\nmbuf_mode={storage}\ntx_offloads={mode}\n'
@@ -82,7 +83,8 @@ def main():
                             'cannot enable --all-multicast' in result.stderr, 'unsupported/failed receive mode reached app: ' + result.stderr)
                     if injected:
                         require('INJECT: kernel TAP flag readback EIO after successful set' in result.stderr and
-                                failed['host_receive_mode_restored'], 'readback failure did not exercise real rollback')
+                                failed['host_receive_mode_restored'], 'readback failure did not exercise real rollback: ' +
+                                result.stderr + ' stats=' + json.dumps(failed))
                         flags = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'offpeer'], text=True))[0]['flags']
                         require('ALLMULTI' not in flags and 'UP' not in flags, 'failed startup changed persistent TAP flags')
                         subprocess.run(['ip', 'tuntap', 'del', 'dev', 'offpeer', 'mode', 'tap', 'multi_queue', 'vnet_hdr'], check=True)
@@ -126,18 +128,25 @@ def main():
                                 selector.register(process.stdout, selectors.EVENT_READ)
                                 require(selector.select(20), 'virtio/vhost-net startup timeout')
                             require(process.stdout.readline().strip() == 'READY', 'application failed before link setup')
+                            tap_name = 'offpeer'
+                            if rename_tap:
+                                original_index = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', tap_name], text=True))[0]['ifindex']
+                                subprocess.run(['ip', 'link', 'set', tap_name, 'name', 'offpeer-moved'], check=True)
+                                tap_name = 'offpeer-moved'
+                                moved = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', tap_name], text=True))[0]
+                                require(moved['ifindex'] == original_index, 'TAP rename changed interface index')
                             # The original kernel backend assigns the guest MAC to TAP.
                             # Forward Ethernet through original TC, like net_tap's
                             # remote path; a bridge's local FDB would consume that MAC.
                             for command in (['tc', 'filter', 'del', 'dev', 'offlink', 'ingress'],
-                                            ['ip', 'link', 'set', 'offpeer', 'up'],
-                                            ['tc', 'qdisc', 'add', 'dev', 'offpeer', 'clsact'],
-                                            ['tc', 'filter', 'add', 'dev', 'offpeer', 'ingress', 'matchall',
+                                            ['ip', 'link', 'set', tap_name, 'up'],
+                                            ['tc', 'qdisc', 'add', 'dev', tap_name, 'clsact'],
+                                            ['tc', 'filter', 'add', 'dev', tap_name, 'ingress', 'matchall',
                                              'action', 'mirred', 'egress', 'redirect', 'dev', 'offlink'],
                                             ['tc', 'filter', 'add', 'dev', 'offlink', 'ingress', 'pref', '1', 'matchall',
-                                             'action', 'mirred', 'egress', 'redirect', 'dev', 'offpeer']):
+                                             'action', 'mirred', 'egress', 'redirect', 'dev', tap_name]):
                                 subprocess.run(command, check=True)
-                            link = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'offpeer'], text=True))[0]
+                            link = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', tap_name], text=True))[0]
                             require('ALLMULTI' in link['flags'], 'host TAP all-multicast flag was not actually set')
                             output, _ = process.communicate('G', timeout=25)
                             require(process.returncode == 0 and output.count('PASS:') == 2,
@@ -193,11 +202,13 @@ def main():
                 require(subprocess.run(['ip', 'link', 'show', 'offpeer'], capture_output=True).returncode != 0,
                         'ephemeral vhost-kernel TAP survived worker teardown')
             else:
-                flags = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'offpeer'], text=True))[0]['flags']
+                tap_name = 'offpeer-moved' if rename_tap else 'offpeer'
+                flags = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', tap_name], text=True))[0]['flags']
                 require(('ALLMULTI' in flags) == persistent and 'UP' in flags,
                         'worker did not preserve original multicast state and unrelated interface flags')
-                subprocess.run(['ip', 'tuntap', 'del', 'dev', 'offpeer', 'mode', 'tap', 'multi_queue', 'vnet_hdr'], check=True)
-                print('PASS: persistent kernel TAP restores ALLMULTI=' + str(persistent) + ' and preserves UP', flush=True)
+                subprocess.run(['ip', 'tuntap', 'del', 'dev', tap_name, 'mode', 'tap', 'multi_queue', 'vnet_hdr'], check=True)
+                print('PASS: persistent kernel TAP restores ALLMULTI=' + str(persistent) + ' and preserves UP' +
+                      (' after rename' if rename_tap else ''), flush=True)
     return 0
 
 

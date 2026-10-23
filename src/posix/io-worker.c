@@ -344,7 +344,7 @@ int main(int argc, char **argv)
     uint64_t rx_startup_discarded = 0, idle_waits = 0, idle_timeouts = 0;
     struct ker_packet_header tx_header = {0};
     struct ker_worker_offload offload = {0};
-    struct ker_worker_receive_mode receive_mode = {.socket_fd = -1};
+    struct ker_worker_receive_mode receive_mode = {.socket_fd = -1, .identity_fd = -1};
     bool receive_mode_restored = false;
     uint64_t tx_tcp_checksum = 0, tx_udp_checksum = 0, tx_ip_checksum = 0, tx_tso4 = 0, tx_tso6 = 0, tx_checksum_fallback = 0;
     unsigned char tx_bytes[sizeof(struct ker_packet_header) + KER_NATIVE_MAX_GSO], rx_bytes[WIRE_MAX];
