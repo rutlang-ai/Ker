@@ -3,10 +3,14 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <sys/epoll.h>
+#include <sys/syscall.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -163,6 +167,78 @@ static void duplicate_identity(void)
     char bytes[5]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 5 && memcmp(bytes, "alias", 5) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
 }
+/* A raw syscall explicitly chooses host Linux. Subsequent ordinary POSIX fd
+ * operations must dispatch by actual ownership, with no global mode toggle. */
+static void datagram(int fd, struct sockaddr_in address, const char *payload)
+{
+    size_t size = strlen(payload) + 1;
+    CHECK(sendto(fd, payload, size, MSG_DONTWAIT, (void *)&address, sizeof(address)) == (ssize_t)size);
+}
+static void received(int fd, struct sockaddr_in address, const char *payload)
+{
+    char data[64]; struct sockaddr_in peer = {0}; socklen_t length = sizeof(peer);
+    CHECK(recvfrom(fd, data, sizeof(data), MSG_DONTWAIT, (void *)&peer, &length) == (ssize_t)strlen(payload) + 1);
+    CHECK(!strcmp(data, payload) && length == sizeof(peer) && peer.sin_family == AF_INET);
+    CHECK(peer.sin_addr.s_addr == address.sin_addr.s_addr && peer.sin_port == address.sin_port);
+    ERROR(recv(fd, data, sizeof(data), MSG_DONTWAIT), EAGAIN);
+}
+static void host_native_same_tuple(void)
+{
+    uint64_t (*capabilities)(void) = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "ker_posix_capabilities");
+    int native_instance = capabilities && capabilities();
+    const uint64_t tags[2] = {UINT64_C(0x91a3000000000101), UINT64_C(0xb7f5000000000202)};
+    for (int host_first = 0; host_first < 2; ++host_first) {
+        int host = (int)syscall(SYS_socket, AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        CHECK(host >= 0);
+        struct sockaddr_in address = local();
+        CHECK(bind(host, (void *)&address, sizeof(address)) == 0);
+        socklen_t length = sizeof(address);
+        CHECK(getsockname(host, (void *)&address, &length) == 0 && length == sizeof(address));
+        CHECK(address.sin_port != 0);
+        int native = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        CHECK(native >= 0 && native != host);
+        if (!native_instance) {
+            /* Host reference: a second same-kernel bind must collide. */
+            ERROR(bind(native, (void *)&address, sizeof(address)), EADDRINUSE);
+            CHECK(close(native) == 0);
+            datagram(host, address, "host-reference"); ready(host);
+            received(host, address, "host-reference"); CHECK(close(host) == 0);
+            continue;
+        }
+        /* This can succeed only when the sockets belong to separate kernels. */
+        CHECK(bind(native, (void *)&address, sizeof(address)) == 0);
+        int ep = epoll_create1(EPOLL_CLOEXEC); CHECK(ep >= 0);
+        int sockets[2] = {host, native};
+        const char *payloads[2] = {"HOST-only-identical-tuple", "NATIVE-only-identical-tuple"};
+        for (int i = 0; i < 2; ++i) {
+            CHECK((flags(sockets[i], F_GETFL) & O_NONBLOCK) && (flags(sockets[i], F_GETFD) & FD_CLOEXEC));
+            struct epoll_event event = {.events = EPOLLIN, .data.u64 = tags[i]};
+            CHECK(epoll_ctl(ep, EPOLL_CTL_ADD, sockets[i], &event) == 0);
+            datagram(sockets[i], address, payloads[i]);
+        }
+        unsigned seen = 0;
+        for (int attempt = 0; seen != 3 && attempt < 4; ++attempt) {
+            struct epoll_event events[2]; int count = epoll_wait(ep, events, 2, 2000);
+            CHECK(count > 0 && count <= 2);
+            for (int i = 0; i < count; ++i) {
+                int index = events[i].data.u64 == tags[0] ? 0 : 1;
+                CHECK(events[i].data.u64 == tags[index] && events[i].events == EPOLLIN);
+                CHECK(!(seen & (1u << index)));
+                received(sockets[index], address, payloads[index]); seen |= 1u << index;
+            }
+        }
+        CHECK(seen == 3);
+        int closed_index = host_first ? 0 : 1, survivor = 1 - closed_index;
+        CHECK(close(sockets[closed_index]) == 0);
+        datagram(sockets[survivor], address, payloads[survivor]);
+        struct epoll_event event; CHECK(epoll_wait(ep, &event, 1, 2000) == 1);
+        CHECK(event.data.u64 == tags[survivor] && event.events == EPOLLIN);
+        received(sockets[survivor], address, payloads[survivor]);
+        CHECK(close(sockets[survivor]) == 0 && epoll_wait(ep, &event, 1, 0) == 0 && close(ep) == 0);
+    }
+    puts(native_instance ? "PASS: independent host/native UDP same tuple, mixed epoll and both close orders" :
+        "PASS: host reference same-kernel UDP tuple collision and survivor traffic");
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
@@ -172,6 +248,7 @@ int main(void)
         {"socket-options-errors-and-recovery", option_roundtrip},
         {"bind-collision-preserves-listener", bind_collision},
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
+        {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run(); printf("PASS: fstack socket contract %s\n", cases[i].name); fflush(stdout);

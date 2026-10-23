@@ -1195,3 +1195,19 @@ VLAN 的 tag 和全部 IPv4/IPv6 地址。这完成源 VLAN 配置分配失败�
 Ker 目前把全局 mask 转交原始 EAL，RX owner 列表不是那张跨进程表。因此该项
 继续 blocked，不把本批 RX 验证计成它的完整或部分迁移。清单为179适配、
 19partial、167blocked、13架构专用、55harness-only，共433项，仍有186项未完成。
+
+
+## 宿主与 native 同元组 socket 共存的实际边界
+
+新增[共存合同](stack-coexistence.md)：同一进程的宿主/native UDP socket
+无 reuse 标志同时绑定相同 loopback IP/port，精确字节和 peer 元组互不串流；
+同一混合 epoll 保留完整64位标签，两个关闭顺序均保留幸存端流量。原始 native
+UDP 计数精确为3，排除宿主流量；宿主对照必须因同内核绑定冲突而得到 EADDRINUSE。
+现有同号内部 fd 映射和独立 DPDK TCP 回归继续保留。UDP 本身走各自 loopback，
+不声称经过 wire PMD。
+
+四条原始 [stack] kernel_coexist 配置断言仍 blocked：Ker 不保存该全局字段，
+拒绝显式1/0/garbage，缺少该节时仍按 fd 所有权共存。实际 socket 证据不能冒充
+布尔解析等价；#228 已记录精确差异。不添加成功 no-op 配置或无消费者开关。
+清单179适配、19partial、167blocked、13架构专用、55harness-only保持不变，
+186项 blocked/partial 仍未完成。

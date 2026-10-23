@@ -441,3 +441,9 @@ vdev、bond 配置 builder 的一次 dict 分配抛出 MemoryError，验证真�
 VLAN 地址数组、INI/CLI 合并后 RX 核列表分配处注入失败，检查拒绝及真实恢复。
 CPython opcode trace 只存在于测试子进程。仅 VLAN 记录对应一条新增源场景；
 RX owner 列表不等于 F-Stack 全局 proc_lcore 表，不计入该源用例迁移。
+
+
+宿主/native 共存：`host-fstack-socket-contracts-reference` 验证同内核 UDP
+元组冲突；`native-fstack-socket-contracts` 的 `--fd-coexistence` 验证两个
+内核同元组 UDP 独立流量、混合 epoll 完整64位标签、双关闭顺序与精确 native
+UDP 计数。见 [共存合同及四条尚未迁移的配置断言](stack-coexistence.md)。
