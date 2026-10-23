@@ -15,7 +15,7 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 1
+VERSION = 2
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
           'generation', 'process', 'token', 'slot', 'status')
 WIRE = struct.Struct('=10Qq')
@@ -127,7 +127,9 @@ def lease(args):
             control = control_read
             worker = subprocess.Popen([str(args.worker.resolve(strict=True)), '--role', 'secondary',
                 '--socket', str(args.socket), '--control-fd', str(control), '--ticket-fd', str(read_fd),
-                '--generation', str(args.generation), '--process', str(args.process), '--',
+                '--generation', str(args.generation), '--process', str(args.process),
+                '--probe-count', str(args.probe_count),
+                *(['--probe-only'] if args.action == 'probe' else []), '--',
                 *role_arguments(args.eal, 'secondary')], stdin=subprocess.DEVNULL,
                 pass_fds=(read_fd, control_read))
             close_fd('read_fd'); close_fd('control_read')
@@ -299,14 +301,25 @@ def lease(args):
             raise cleanup_error
 
 
+def bounded_probe_count(value):
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('probe count must be an integer') from error
+    if not 0 <= count <= 4096:
+        raise argparse.ArgumentTypeError('probe count must be between 0 and 4096')
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('serve', 'lease', 'status'))
+    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe'))
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-session')
     parser.add_argument('--eal', default='')
     parser.add_argument('--generation', type=int, choices=range(2), default=0)
     parser.add_argument('--process', type=int, choices=range(4), default=0)
+    parser.add_argument('--probe-count', type=bounded_probe_count, default=0)
     args = parser.parse_args()
     args.socket = args.socket.absolute()
     try:
@@ -315,14 +328,17 @@ def main():
             worker = str(args.worker.resolve(strict=True))
             os.execv(worker, [worker, '--role', 'primary', '--socket', str(args.socket),
                 '--control-fd', str(sys.stdin.fileno()), '--', *role_arguments(args.eal, 'primary')])
-        if args.action == 'lease':
+        if args.action in ('lease', 'probe'):
+            if args.action == 'probe' and not args.probe_count:
+                args.probe_count = 1
             return lease(args)
         connection = Connection(args.socket)
         try:
             reply = connection.request(STATUS)
-            print(json.dumps(dict(stage='registration-only', session=reply['session'],
+            print(json.dumps(dict(stage='shared-control', session=reply['session'],
                 registered_epochs=reply['slot'], eal_processes=reply['process'],
-                next_epoch=reply['epoch'])))
+                registered_eal_users=reply['process'], outstanding=reply['token'],
+                pool_available=reply['generation'], next_epoch=reply['epoch'])))
         finally:
             connection.close()
         return 0

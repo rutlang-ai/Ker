@@ -147,7 +147,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
                 api.sys.stdout = stdout
                 try:
                     result = api.lease(SimpleNamespace(socket=root / 'unused.sock', worker=worker,
-                        generation=0, process=0, eal=''))
+                        generation=0, process=0, eal='', probe_count=0, action='lease'))
                 finally:
                     api.sys.stdout = original_stdout
                     api.sys.stdin.close()
@@ -201,7 +201,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
             api.os.write = coordinated_write
             try:
                 result = api.lease(SimpleNamespace(socket=root / 'unused.sock', worker=fast_worker,
-                    generation=0, process=0, eal=''))
+                    generation=0, process=0, eal='', probe_count=0, action='lease'))
             finally:
                 api.os.write = real_write
                 api.sys.stdout = original_stdout
@@ -257,7 +257,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
             api.subprocess.Popen = capture_popen
             try:
                 result = api.lease(SimpleNamespace(socket=root / 'unused.sock', worker=early_worker,
-                    generation=0, process=0, eal=''))
+                    generation=0, process=0, eal='', probe_count=0, action='lease'))
             finally:
                 api.os.write = real_write
                 api.subprocess.Popen = real_popen

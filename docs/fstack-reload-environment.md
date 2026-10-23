@@ -108,3 +108,28 @@ test-owned backing files after process-death proof, report test exit 0 and
 `GUEST_SESSION_REGISTRATION_PASS`, and power down normally. Host CTest may
 still skip for lack of hugepages. Registration does not qualify PMD or packet
 transport, and all 79 actionable #218 source cases remain blocked.
+
+
+## Shared-control transport acceptance
+
+The resident session subsequently adds a version-2 shared-control transport:
+128 precreated rings and a 511-object original DPDK mbuf pool. The same guest
+runs the production one-shot probe and three concurrently gated master/secondary
+chains. It checks complete returned identities/payloads, continuing sequence
+numbers, the production pool census, and reclamation after a real published
+request times out while the resident is stopped. Graceful cleanup must report
+zero outstanding objects; the intentional stopped-borrower failure still
+refuses cleanup and retains its namespace until the test proves all borrowers
+dead and reclaims only its own unchanged backing files.
+
+The message pool requires the original `mempool_ring` EAL module in the guest
+image as well as the libraries discovered by `ldd`. EAL also checks the module's
+parent directories; the guest init sets its initial rootfs mode to0755 because
+the kernel's default initramfs root mode is world-writable. Omitting the module
+or leaving that mode insecure produces a failed startup, not evidence of a
+transport pass. These are guest image changes and do not alter host settings.
+
+This health probe returns the registered sender's identity. It does not answer
+F-Stack's hardware-owner query, grant network-device ownership, exercise a
+secondary network PMD or deliver packets into an original Linux instance. The
+remaining #218 source-case status is unchanged.

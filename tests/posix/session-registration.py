@@ -30,6 +30,12 @@ def ready(process, prefix):
         selector.register(process.stdout, selectors.EVENT_READ)
         require(selector.select(30), 'session readiness timed out')
     line = process.stdout.readline().decode().strip()
+    if not line:
+        try:
+            _output, errors = process.communicate(timeout=2)
+            line = 'process exited ' + str(process.returncode) + ': ' + errors.decode(errors='replace')
+        except subprocess.TimeoutExpired:
+            line = 'stdout closed while process remains alive; stderr pending'
     require(line.startswith(prefix + ' '), 'unexpected readiness: ' + line)
     return json.loads(line[len(prefix) + 1:])
 
@@ -97,7 +103,7 @@ def main():
         try:
             info = ready(primary, 'KER_SESSION_READY')
             record_pages('session-' + run_id)
-            require(info['rings'] == 96 and info['slots'] == 4 and info['stage'] == 'registration-only',
+            require(info['rings'] == 128 and info['slots'] == 4 and info['stage'] == 'shared-control',
                     'finite geometry was not completely precreated')
 
             def status():
@@ -226,7 +232,7 @@ def main():
             leases, entries = [], []
             for gen, process_id in ((0, 0), (1, 3), (0, 0)):
                 lease = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common,
-                    '--generation', str(gen), '--process', str(process_id)], stdin=subprocess.PIPE,
+                    '--generation', str(gen), '--process', str(process_id), '--probe-count', '16'], stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
                 processes.append(lease); leases.append(lease)
                 entry = ready(lease, 'KER_SESSION_ATTACHED'); entries.append(entry)
@@ -236,6 +242,24 @@ def main():
             require(len({x['rings'][0] for x in entries}) == 3, 'masters looked up the same control ring')
             require(all(p.poll() is None for p in leases), 'master exited before simultaneous samples')
             eventually(3, 3)
+            # All three masters and workers are alive before any shared mbuf probe.
+            for lease in leases:
+                lease.stdin.write(b'P'); lease.stdin.flush()
+            for lease, entry in zip(leases, entries):
+                reply = ready(lease, 'KER_SESSION_PROBED')
+                require(all(reply[key] == entry[key] for key in ('epoch', 'slot', 'generation', 'process')) and
+                        reply['count'] == 16 and reply['sequence'] == 16 and reply['primary_pid'] == primary.pid,
+                        'shared reply crossed a live master namespace')
+            leases[1].stdin.write(b'P'); leases[1].stdin.flush()
+            require(ready(leases[1], 'KER_SESSION_PROBED')['sequence'] == 32, 'probe sequence reset')
+            census = status()
+            require(census['generation'] == 511 and census['token'] == 0, 'shared probes leaked mbufs')
+            diagnostic = subprocess.run([sys.executable, str(args.tool), 'status', '--socket', str(path)],
+                capture_output=True, env=environment, timeout=10)
+            require(diagnostic.returncode == 0, 'production status failed: ' + diagnostic.stderr.decode())
+            diagnostic = json.loads(diagnostic.stdout)
+            require(diagnostic['registered_eal_users'] == 3 and diagnostic['outstanding'] == 0 and
+                    diagnostic['pool_available'] == 511, 'production pool census is incorrect')
             # Stop the exact secondary before killing its supervisor. The
             # supervisor-owned control pipe closes on death, but the stopped
             # EAL process remains an exact live borrower until resumed.
@@ -288,6 +312,35 @@ def main():
                 require(lease.returncode == 0, 'master/secondary cleanup failed: ' + errors.decode())
             eventually(0, 0)
 
+            # Queue one real shared probe while the resident is stopped; the
+            # borrower must time out, and the resident must reclaim the mbuf.
+            timed = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common, '--probe-count', '1'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            processes.append(timed)
+            timed_info = ready(timed, 'KER_SESSION_ATTACHED')
+            worker_pidfds.append(os.pidfd_open(timed_info['pid']))
+            primary_pidfd = os.pidfd_open(primary.pid)
+            try:
+                signal.pidfd_send_signal(primary_pidfd, signal.SIGSTOP)
+                deadline = time.monotonic() + 5
+                while Path(f'/proc/{primary.pid}/stat').read_text().rsplit(')', 1)[1].split()[0] not in ('T', 't'):
+                    require(time.monotonic() < deadline, 'resident did not actually stop')
+                    time.sleep(0.01)
+                timed.stdin.write(b'P'); timed.stdin.flush()
+                output, errors = timed.communicate(timeout=20)
+                require(timed.returncode == 125 and b'shared probe failed -110' in errors and
+                        b'KER_SESSION_PROBED' not in output, 'unserved shared request did not time out safely: ' + errors.decode())
+            finally:
+                signal.pidfd_send_signal(primary_pidfd, signal.SIGCONT)
+                os.close(primary_pidfd)
+            census = eventually(0, 0)
+            require(census['generation'] == 511 and census['token'] == 0,
+                    'dead borrower queued request was not reclaimed')
+            probe = subprocess.run([sys.executable, str(args.tool), 'probe', *common, '--probe-count', '4'],
+                input=b'', capture_output=True, env=environment, timeout=20)
+            require(probe.returncode == 0 and b'KER_SESSION_PROBED' in probe.stdout,
+                    'production one-shot shared probe failed: ' + probe.stderr.decode())
+            eventually(0, 0)
             # Signal only the lease supervisor. Keep its caller-owned stdin
             # writer open so the attached secondary cannot observe EOF there.
             signaled = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common],
@@ -391,8 +444,9 @@ def main():
                     'secondary accepted a dead primary lifetime: ' + str(held.returncode) + ' ' + errors.decode() + ' ' + output.decode())
             require(blocked_socket.exists(), 'failed cleanup silently removed a live session namespace')
             print('PASS: device/descriptor preflight; stopped live borrower prevents cleanup; primary death is fatal')
-            print('PASS: resident precreates96rings; real EAL secondary lookup, identity/retry guards, '
-                  'live-borrower release refusal, orphan liveness and epoch recycle; registration-only')
+            print('PASS: three live master namespaces exchange64-byte shared mbufs; monotonic sequences; timeout recovers after borrower death')
+            print('PASS: resident precreates128rings; real EAL secondary lookup, identity/retry guards, '
+                  'live-borrower release refusal, orphan liveness and epoch recycle; shared-control')
         finally:
             for process in reversed(processes):
                 stop(process)

@@ -55,7 +55,7 @@ set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 
 add_executable(ker-app src/posix/app-guard.c)
 set(ker_io_worker_sources src/posix/worker-rx-lcores.c src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 add_executable(ker-io-worker ${ker_io_worker_sources})
-# Separate registration-only EAL session. This does not enable secondary mode
+# Separate resident shared-control session. This does not enable secondary mode
 # in the existing packet worker or advertise application reload support.
 add_executable(ker-io-session src/posix/io-session.c)
 target_compile_features(ker-io-session PRIVATE c_std_11)
@@ -138,6 +138,11 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-lease-input.py"
             --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
     set_tests_properties(native-fstack-session-lease-input PROPERTIES TIMEOUT 30 LABELS "fstack;session")
+    add_executable(ker-session-envelope-test tests/posix/session-envelope.c)
+    target_include_directories(ker-session-envelope-test PRIVATE src/posix)
+    target_compile_options(ker-session-envelope-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-session-envelope COMMAND ker-session-envelope-test)
+    set_tests_properties(native-fstack-session-envelope PROPERTIES TIMEOUT 10 LABELS "fstack;session")
     add_test(NAME native-fstack-session-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")

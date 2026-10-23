@@ -21,6 +21,8 @@
 #include <rte_errno.h>
 #include <rte_memzone.h>
 #include <rte_ring.h>
+#include <rte_mbuf.h>
+#include <time.h>
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
 #endif
@@ -32,13 +34,15 @@ struct client {
     pid_t pid;
     enum kind kind;
     unsigned slot, generation, process;
-    uint64_t sequence;
+    uint64_t sequence, probe_sequence;
     struct ker_session_message request, reply;
 };
 struct slot { uint64_t epoch, token; int master; };
 static struct client clients[CLIENTS];
 static struct slot slots[KER_SESSION_SLOTS];
 static struct rte_ring *rings[QUEUES];
+static struct rte_mempool *message_pool;
+static struct rte_mbuf *message_objects[KER_SESSION_OBJECTS];
 static const struct rte_memzone *zone;
 static struct ker_session_directory *directory;
 static uint64_t next_epoch = 1;
@@ -58,7 +62,7 @@ static unsigned ring_index(unsigned s, unsigned g, unsigned p, unsigned c)
 }
 static int ring_name(char *name, size_t size, unsigned s, unsigned g, unsigned p, unsigned c)
 {
-    static const char *const names[] = {"ctl", "rx", "tx"};
+    static const char *const names[] = {"ctl", "rx", "tx", "reply"};
     int result = snprintf(name, size, "ker_s%u_g%u_p%u_%s", s, g, p, names[c]);
     return result < 0 || (size_t)result >= size ? -ENAMETOOLONG : 0;
 }
@@ -67,6 +71,63 @@ static int random_id(uint64_t *value)
     ssize_t result;
     do result = getrandom(value, sizeof(*value), 0); while (result < 0 && errno == EINTR);
     return result == sizeof(*value) && *value ? 0 : -EIO;
+}
+static void remember_object(struct rte_mempool *pool, void *context,
+    void *object, unsigned index)
+{
+    (void)pool; (void)context;
+    if (index < KER_SESSION_OBJECTS) message_objects[index] = object;
+}
+static bool known_object(struct rte_mbuf *packet)
+{
+    for (unsigned i = 0; i < KER_SESSION_OBJECTS; i++)
+        if (message_objects[i] == packet && packet) return true;
+    return false;
+}
+static void reclaim_control(unsigned slot, unsigned generation, unsigned process)
+{
+    /* Called only after the exact registered EAL process has died, or after
+     * the shutdown census proves every borrower dead. RX/TX are untouched. */
+    for (unsigned channel = 0; channel < KER_SESSION_CHANNELS; channel += 3) {
+        struct rte_ring *ring = rings[ring_index(slot, generation, process, channel)];
+        if (!ring) continue;
+        struct rte_mbuf *packet;
+        while (!rte_ring_dequeue(ring, (void **)&packet)) {
+            if (!known_object(packet)) { fprintf(stderr, "ker session: foreign shared object\n"); _Exit(125); }
+            rte_pktmbuf_free(packet);
+        }
+    }
+}
+static void serve_probes(void)
+{
+    for (unsigned i = 0; i < CLIENTS; i++) {
+        struct client *client = &clients[i];
+        if (client->kind != ATTACHED || dead(client->pidfd)) continue;
+        struct rte_ring *input = rings[ring_index(client->slot, client->generation, client->process, 0)];
+        struct rte_ring *output = rings[ring_index(client->slot, client->generation, client->process, 3)];
+        /* Keep ownership on the input when the reply channel is full. */
+        for (unsigned budget = 0; budget < KER_SESSION_CAPACITY && rte_ring_free_count(output); budget++) {
+            struct rte_mbuf *packet;
+            if (rte_ring_dequeue(input, (void **)&packet)) break;
+            if (!known_object(packet) || packet->nb_segs != 1 ||
+                packet->data_len != sizeof(struct ker_session_probe) || packet->pkt_len != packet->data_len) {
+                fprintf(stderr, "ker session: invalid control envelope\n"); _Exit(125);
+            }
+            struct ker_session_probe *probe = rte_pktmbuf_mtod(packet, struct ker_session_probe *);
+            struct ker_session_message *m = &probe->identity;
+            struct ker_session_message expected = {.session = directory->session,
+                .epoch = slots[client->slot].epoch, .slot = client->slot,
+                .generation = client->generation, .process = client->process};
+            m->status = ker_session_probe_check(probe, &expected, client->probe_sequence);
+            if (!m->status) client->probe_sequence = m->sequence;
+            probe->responder = (uint64_t)getpid();
+            if (rte_ring_enqueue(output, packet)) {
+                /* One producer, with capacity checked above: never discard an
+                 * owned reply or fabricate success if the invariant fails. */
+                fprintf(stderr, "ker session: reply ownership invariant failed\n"); _Exit(125);
+            }
+        }
+    }
 }
 static void drop_client(unsigned i)
 {
@@ -106,7 +167,11 @@ static void reap_clients(void)
         if (clients[i].kind != UNUSED && dead(clients[i].pidfd)) {
             if (clients[i].kind == MASTER) {
                 if (!release_slot(clients[i].slot)) drop_client(i);
-            } else drop_client(i);
+            } else {
+                if (clients[i].kind == RESERVED || clients[i].kind == ATTACHED)
+                    reclaim_control(clients[i].slot, clients[i].generation, clients[i].process);
+                drop_client(i);
+            }
         }
     for (unsigned s = 1; s < KER_SESSION_SLOTS; s++) {
         int m = slots[s].master;
@@ -138,6 +203,8 @@ static int handle(unsigned i, const struct ker_session_message *request,
         if (request->session || request->epoch || request->token || request->slot ||
             request->generation || request->process) return -EINVAL;
         reply->epoch = next_epoch;
+        reply->generation = message_pool ? rte_mempool_avail_count(message_pool) : 0;
+        reply->token = message_pool ? rte_mempool_in_use_count(message_pool) : 0;
         reply->slot = reply->process = 0;
         for (unsigned s = 1; s < KER_SESSION_SLOTS; s++) {
             reply->slot += !!slots[s].epoch;
@@ -273,6 +340,10 @@ static int primary(const char *path, int control)
                         SOCKET_ID_ANY, RING_F_EXACT_SZ | RING_F_SP_ENQ | RING_F_SC_DEQ);
                     if (!rings[ring_index(s, g, p, c)]) goto cleanup;
                 }
+    message_pool = rte_pktmbuf_pool_create(KER_SESSION_POOL, KER_SESSION_OBJECTS, 0, 0,
+        RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+    if (!message_pool) { fprintf(stderr, "ker session message pool: %s\n", rte_strerror(rte_errno)); goto cleanup; }
+    if (rte_mempool_obj_iter(message_pool, remember_object, NULL) != KER_SESSION_OBJECTS) goto cleanup;
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     if (strlen(path) >= sizeof(address.sun_path)) goto cleanup;
     strcpy(address.sun_path, path);
@@ -293,11 +364,12 @@ static int primary(const char *path, int control)
     bound = true;
     if (lstat(path, &socket_identity) || listen(listener, 16)) goto cleanup;
     atomic_store_explicit(&directory->state, KER_SESSION_READY, memory_order_release);
-    printf("KER_SESSION_READY {\"stage\":\"registration-only\",\"session\":%llu,\"rings\":%u,\"slots\":%u}\n",
+    printf("KER_SESSION_READY {\"stage\":\"shared-control\",\"session\":%llu,\"rings\":%u,\"slots\":%u}\n",
         (unsigned long long)directory->session, QUEUES, KER_SESSION_SLOTS); fflush(stdout);
     result = 0;
     while (!stopping) {
         reap_clients();
+        serve_probes();
         struct pollfd fds[CLIENTS + 2];
         fds[0] = (struct pollfd){.fd = control, .events = POLLIN};
         fds[1] = (struct pollfd){.fd = listener, .events = POLLIN};
@@ -325,6 +397,17 @@ cleanup:
     for (unsigned i = 0; all_eal_users() && i < 100; i++) poll(NULL, 0, 50);
     if (all_eal_users()) { fprintf(stderr, "ker session: live EAL users prevent cleanup\n"); _Exit(125); }
     for (unsigned i = 0; i < CLIENTS; i++) drop_client(i);
+    for (unsigned slot = 0; slot < KER_SESSION_SLOTS; slot++)
+        for (unsigned gen = 0; gen < KER_SESSION_GENERATIONS; gen++)
+            for (unsigned proc = 0; proc < KER_SESSION_PROCESSES; proc++)
+                reclaim_control(slot, gen, proc);
+    if (message_pool) {
+        if (rte_mempool_in_use_count(message_pool)) {
+            fprintf(stderr, "ker session: outstanding shared control objects prevent cleanup\n"); _Exit(125);
+        }
+        printf("KER_SESSION_DRAINED {\"outstanding\":0,\"objects\":%u}\n", KER_SESSION_OBJECTS); fflush(stdout);
+        rte_mempool_free(message_pool);
+    }
     for (unsigned i = 0; i < QUEUES; i++) if (rings[i]) {
         if (!rte_ring_empty(rings[i])) { fprintf(stderr, "ker session: nonempty ring prevents cleanup\n"); _Exit(125); }
         rte_ring_free(rings[i]);
@@ -359,8 +442,49 @@ static int exchange(int fd, struct ker_session_message *message)
     *message = response;
     return (int)response.status;
 }
+static uint64_t monotonic_ms(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) return 0;
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+static int shared_probe(struct rte_ring *input, struct rte_ring *output,
+    struct rte_mempool *pool, const struct ker_session_message *identity,
+    unsigned count, uint64_t *next_sequence, int resident)
+{
+    for (unsigned sequence = 1; sequence <= count; sequence++) {
+        struct rte_mbuf *packet = rte_pktmbuf_alloc(pool);
+        if (!packet) return -ENOMEM;
+        struct ker_session_probe expected = {.identity = *identity};
+        if (*next_sequence == UINT64_MAX) { rte_pktmbuf_free(packet); return -EOVERFLOW; }
+        expected.identity.command = KER_SESSION_PROBE; expected.identity.sequence = ++*next_sequence;
+        expected.identity.token = 0; expected.identity.status = -EINPROGRESS;
+        for (unsigned b = 0; b < sizeof(expected.payload); b++)
+            expected.payload[b] = (uint8_t)(identity->epoch + identity->generation * 17 + identity->process * 31 + sequence + b);
+        void *data = rte_pktmbuf_append(packet, sizeof(expected));
+        if (!data) { rte_pktmbuf_free(packet); return -EMSGSIZE; }
+        memcpy(data, &expected, sizeof(expected));
+        if (rte_ring_enqueue(input, packet)) { rte_pktmbuf_free(packet); return -ENOBUFS; }
+        /* Once published, a timeout never frees an object another process may
+         * own. The resident recovers queued objects after exact borrower death. */
+        uint64_t deadline = monotonic_ms() + 5000;
+        struct rte_mbuf *reply;
+        while (rte_ring_dequeue(output, (void **)&reply)) {
+            if (dead(resident)) { fprintf(stderr, "ker session: primary process exited\n"); _Exit(125); }
+            if (stopping || monotonic_ms() >= deadline) return -ETIMEDOUT;
+            poll(NULL, 0, 1);
+        }
+        if (reply != packet || reply->nb_segs != 1 || reply->data_len != sizeof(expected)) return -EPROTO;
+        struct ker_session_probe *actual = rte_pktmbuf_mtod(reply, struct ker_session_probe *);
+        expected.identity.status = 0; expected.responder = (uint64_t)directory->primary_pid;
+        int result = memcmp(actual, &expected, sizeof(expected)) ? -EPROTO : 0;
+        rte_pktmbuf_free(reply);
+        if (result) return result;
+    }
+    return 0;
+}
 static int secondary(const char *path, int control, int ticket, unsigned generation,
-    unsigned process, int argc, char **argv)
+    unsigned process, unsigned probe_count, bool probe_only, int argc, char **argv)
 {
     int result = 1, fd = -1, peer = -1;
     bool initialized = false;
@@ -394,6 +518,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     const struct rte_memzone *shared = rte_memzone_lookup(KER_SESSION_ZONE);
     if (!shared || shared->len < sizeof(struct ker_session_directory)) goto cleanup;
     const struct ker_session_directory *d = shared->addr;
+    directory = (struct ker_session_directory *)shared->addr;
     if (atomic_load_explicit(&d->state, memory_order_acquire) != KER_SESSION_READY ||
         d->magic != KER_SESSION_MAGIC || d->version != KER_SESSION_VERSION || d->size != sizeof(*d) ||
         d->session != message.session || d->primary_pid != (uint32_t)credential.pid ||
@@ -401,18 +526,35 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         d->processes != KER_SESSION_PROCESSES || d->channels != KER_SESSION_CHANNELS ||
         d->capacity != KER_SESSION_CAPACITY ||
         atomic_load_explicit(&d->epoch[message.slot], memory_order_acquire) != message.epoch) goto cleanup;
+    struct rte_mempool *pool = rte_mempool_lookup(KER_SESSION_POOL);
+    if (!pool || pool->size != KER_SESSION_OBJECTS || pool->cache_size) goto cleanup;
     char names[KER_SESSION_CHANNELS][RTE_RING_NAMESIZE];
+    struct rte_ring *channels[KER_SESSION_CHANNELS];
     for (unsigned c = 0; c < KER_SESSION_CHANNELS; c++) {
         if (ring_name(names[c], sizeof(names[c]), (unsigned)message.slot, generation, process, c)) goto cleanup;
         struct rte_ring *ring = rte_ring_lookup(names[c]);
         if (!ring || rte_ring_get_capacity(ring) != KER_SESSION_CAPACITY) goto cleanup;
+        channels[c] = ring;
     }
     message.command = KER_SESSION_ATTACHED; message.sequence++;
     if (exchange(fd, &message)) goto cleanup;
-    printf("KER_SESSION_ATTACHED {\"stage\":\"registration-only\",\"pid\":%ld,\"master\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"rings\":[\"%s\",\"%s\",\"%s\"]}\n",
+    printf("KER_SESSION_ATTACHED {\"stage\":\"shared-control\",\"pid\":%ld,\"master\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"rings\":[\"%s\",\"%s\",\"%s\",\"%s\"]}\n",
         (long)getpid(), (long)getppid(), (unsigned long long)message.epoch,
-        (unsigned long long)message.slot, generation, process, names[0], names[1], names[2]); fflush(stdout);
+        (unsigned long long)message.slot, generation, process, names[0], names[1], names[2], names[3]); fflush(stdout);
+    uint64_t probe_sequence = 0;
+    bool probe_pending = probe_only;
     while (!stopping) {
+        if (probe_pending) {
+            int probe_result = shared_probe(channels[0], channels[3], pool, &message,
+                probe_count, &probe_sequence, peer);
+            if (probe_result) { fprintf(stderr, "ker session: shared probe failed %d\n", probe_result); goto cleanup; }
+            printf("KER_SESSION_PROBED {\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"count\":%u,\"sequence\":%llu,\"primary_pid\":%u,\"payload_bytes\":%u}\n",
+                (unsigned long long)message.epoch, (unsigned long long)message.slot,
+                generation, process, probe_count, (unsigned long long)probe_sequence,
+                directory->primary_pid, KER_SESSION_PROBE_PAYLOAD); fflush(stdout);
+            probe_pending = false;
+            if (probe_only) break;
+        }
         struct pollfd fds[] = {{.fd = control, .events = POLLIN}, {.fd = fd, .events = POLLIN},
                               {.fd = peer, .events = POLLIN}};
         int ready = poll(fds, 3, 100);
@@ -421,7 +563,10 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         if (fds[0].revents || fds[1].revents) {
             /* A control event must not hide a concurrent resident death. */
             if (dead(peer)) { fprintf(stderr, "ker session: primary process exited\n"); _Exit(125); }
-            break;
+            char command;
+            if (!fds[1].revents && probe_count && (fds[0].revents & POLLIN) &&
+                read(control, &command, 1) == 1 && command == 'P') probe_pending = true;
+            else break;
         }
     }
     result = 0;
@@ -441,9 +586,11 @@ static int number(const char *s)
 int main(int argc, char **argv)
 {
     const char *path = NULL, *role = NULL;
-    int control = -1, ticket = -1, generation = 0, process = 0, split = -1;
+    int control = -1, ticket = -1, generation = 0, process = 0, split = -1, probe_count = 0;
+    bool probe_only = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
+        if (!strcmp(argv[i], "--probe-only")) { probe_only = true; continue; }
         if (i + 1 >= argc) break;
         if (!strcmp(argv[i], "--socket")) path = argv[++i];
         else if (!strcmp(argv[i], "--role")) role = argv[++i];
@@ -451,8 +598,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--ticket-fd")) ticket = number(argv[++i]);
         else if (!strcmp(argv[i], "--generation")) generation = number(argv[++i]);
         else if (!strcmp(argv[i], "--process")) process = number(argv[++i]);
+        else if (!strcmp(argv[i], "--probe-count")) probe_count = number(argv[++i]);
         else break;
     }
+    if (probe_count < 0 || probe_count > 4096 || (probe_only && !probe_count)) return 2;
     if (!path || !role || control < 0 || split < 0 || generation < 0 || process < 0 ||
         generation >= (int)KER_SESSION_GENERATIONS || process >= (int)KER_SESSION_PROCESSES ||
         (strcmp(role, "primary") && strcmp(role, "secondary")) || (!strcmp(role, "secondary") && ticket < 0)) {
@@ -490,7 +639,7 @@ int main(int argc, char **argv)
     sigemptyset(&action.sa_mask); sigaction(SIGTERM, &action, NULL); sigaction(SIGINT, &action, NULL);
     argv[split] = argv[0];
     if (!strcmp(role, "secondary"))
-        return secondary(path, control, ticket, (unsigned)generation, (unsigned)process, argc - split, argv + split);
+        return secondary(path, control, ticket, (unsigned)generation, (unsigned)process, (unsigned)probe_count, probe_only, argc - split, argv + split);
     if (rte_eal_init(argc - split, argv + split) < 0) return 1;
     if (rte_eal_process_type() != RTE_PROC_PRIMARY) { rte_eal_cleanup(); return 1; }
     return primary(path, control);
