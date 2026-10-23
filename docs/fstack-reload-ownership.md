@@ -1,7 +1,7 @@
 # Generation reload ownership contract
 
 This is the implementation prerequisite for [issue #218](https://github.com/rutlang-ai/Ker/issues/218),
-not a supported reload feature or test-pass claim. Its original 81 source cases include two page-array build assertions, separately excluded under #232. The remaining 79 actionable cases are unfinished: 78 blocked and 1 partial. The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
+not a supported reload feature or test-pass claim. Its original 81 source cases include two page-array build assertions, separately excluded under #232. The isolated A4 namespace-recycle scenario is now adapted; 78 actionable cases remain incomplete (74 blocked and 4 partial). The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
 The retained tests are authoritative; proposed Ker mechanisms below still need
 implementation and runtime qualification.
 
@@ -9,9 +9,10 @@ The first executable prerequisite now exists as a separate
 [resident EAL registration stage](fstack-session-registration.md): it precreates
 bounded shared rings and attaches real secondaries under live master epochs.
 It also exchanges authenticated shared control mbufs with the parked resident,
-including recovery of queued requests after exact borrower death.
-It does not yet implement packet transport, PMD ownership, generation handover
-or application reload, so the source-case disposition above is unchanged.
+including resident-journaled leases recovered after exact borrower death, even
+when a worker exits before enqueue or after reply dequeue. The source A4 chain
+scenario now qualifies namespace recycling only; packet transport, PMD ownership,
+generation handover and application reload remain unsupported.
 
 ## Existing boundary and implementation choice
 
@@ -232,9 +233,9 @@ park/publication and crash/recycle evidence; qualify the Linux connection hook
 before enabling application reload or attempting the flow-map cases. Keep
 hardware-dependent PMD profiles explicit and unqualified profiles unsupported.
 
-At this checkpoint the catalog remains 179 scenario-adapted, 19 partial,
-165 blocked, 15 architecture-specific and 55 harness-only (433 total).
-The 184 blocked/partial cases, including all 79 tracked here, remain unfinished;
+The current catalog records 181 scenario-adapted, 22 partial, 160 blocked,
+15 architecture-specific and 55 harness-only (433 total).
+The 182 blocked/partial cases, including the remaining 78 tracked here, remain unfinished;
 `--require-complete` must continue to fail.
 
 For the actual local EAL attachment precondition and its observed failure, see

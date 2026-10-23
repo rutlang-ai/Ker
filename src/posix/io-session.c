@@ -35,6 +35,7 @@ struct client {
     enum kind kind;
     unsigned slot, generation, process;
     uint64_t sequence, probe_sequence;
+    struct rte_mbuf *leased_packet;
     struct ker_session_message request, reply;
 };
 struct slot { uint64_t epoch, token; int master; };
@@ -84,19 +85,37 @@ static bool known_object(struct rte_mbuf *packet)
         if (message_objects[i] == packet && packet) return true;
     return false;
 }
-static void reclaim_control(unsigned slot, unsigned generation, unsigned process)
+static void reclaim_control(unsigned index)
 {
-    /* Called only after the exact registered EAL process has died, or after
-     * the shutdown census proves every borrower dead. RX/TX are untouched. */
+    struct client *client = &clients[index];
+    struct rte_mbuf *owned = client->leased_packet;
+    /* The private resident journal predates RESERVE's acknowledgement. Queue
+     * emptiness is not evidence that an object was never borrowed. */
+    if (!owned || !known_object(owned) || !dead(client->pidfd) ||
+        owned->pool != message_pool || owned->nb_segs != 1 ||
+        rte_mbuf_refcnt_read(owned) != 1 || (owned->ol_flags & RTE_MBUF_F_EXTERNAL)) {
+        fprintf(stderr, "ker session: control lease lacks death/ownership proof\n"); _Exit(125);
+    }
+    unsigned seen = 0;
     for (unsigned channel = 0; channel < KER_SESSION_CHANNELS; channel += 3) {
-        struct rte_ring *ring = rings[ring_index(slot, generation, process, channel)];
-        if (!ring) continue;
+        struct rte_ring *ring = rings[ring_index(client->slot, client->generation, client->process, channel)];
         struct rte_mbuf *packet;
         while (!rte_ring_dequeue(ring, (void **)&packet)) {
-            if (!known_object(packet)) { fprintf(stderr, "ker session: foreign shared object\n"); _Exit(125); }
-            rte_pktmbuf_free(packet);
+            if (packet != owned || ++seen > 1) {
+                fprintf(stderr, "ker session: foreign or duplicated leased control object\n"); _Exit(125);
+            }
         }
     }
+    _Atomic uintptr_t *lease = &directory->lease[client->slot][client->generation][client->process];
+    if (atomic_load_explicit(lease, memory_order_acquire) != (uintptr_t)owned) {
+        fprintf(stderr, "ker session: shared control lease changed\n"); _Exit(125);
+    }
+    atomic_store_explicit(lease, 0, memory_order_release);
+    /* Recover allocation-before-enqueue and reply-dequeue-before-reuse too.
+     * The borrower never returns leased objects to the original mempool. */
+    rte_pktmbuf_reset(owned);
+    rte_pktmbuf_free(owned);
+    client->leased_packet = NULL;
 }
 static void serve_probes(void)
 {
@@ -109,7 +128,7 @@ static void serve_probes(void)
         for (unsigned budget = 0; budget < KER_SESSION_CAPACITY && rte_ring_free_count(output); budget++) {
             struct rte_mbuf *packet;
             if (rte_ring_dequeue(input, (void **)&packet)) break;
-            if (!known_object(packet) || packet->nb_segs != 1 ||
+            if (packet != client->leased_packet || !known_object(packet) || packet->nb_segs != 1 ||
                 packet->data_len != sizeof(struct ker_session_probe) || packet->pkt_len != packet->data_len) {
                 fprintf(stderr, "ker session: invalid control envelope\n"); _Exit(125);
             }
@@ -153,9 +172,11 @@ static int release_slot(unsigned s)
 {
     if (users(s)) return -EBUSY;
     for (unsigned g = 0; g < KER_SESSION_GENERATIONS; g++)
-        for (unsigned p = 0; p < KER_SESSION_PROCESSES; p++)
+        for (unsigned p = 0; p < KER_SESSION_PROCESSES; p++) {
+            if (atomic_load_explicit(&directory->lease[s][g][p], memory_order_acquire)) return -EBUSY;
             for (unsigned c = 0; c < KER_SESSION_CHANNELS; c++)
                 if (!rte_ring_empty(rings[ring_index(s, g, p, c)])) return -EBUSY;
+        }
     atomic_store_explicit(&directory->epoch[s], 0, memory_order_release);
     slots[s] = (struct slot){.master = -1};
     return 0;
@@ -169,7 +190,7 @@ static void reap_clients(void)
                 if (!release_slot(clients[i].slot)) drop_client(i);
             } else {
                 if (clients[i].kind == RESERVED || clients[i].kind == ATTACHED)
-                    reclaim_control(clients[i].slot, clients[i].generation, clients[i].process);
+                    reclaim_control(i);
                 drop_client(i);
             }
         }
@@ -250,8 +271,14 @@ static int handle(unsigned i, const struct ker_session_message *request,
             if ((clients[k].kind == RESERVED || clients[k].kind == ATTACHED) && clients[k].slot == s &&
                 clients[k].generation == request->generation && clients[k].process == request->process)
                 return -EBUSY;
+        _Atomic uintptr_t *lease = &directory->lease[s][request->generation][request->process];
+        if (atomic_load_explicit(lease, memory_order_acquire)) return -EUCLEAN;
+        struct rte_mbuf *packet = rte_pktmbuf_alloc(message_pool);
+        if (!packet) return -ENOMEM;
+        client->leased_packet = packet;
         client->kind = RESERVED; client->slot = s;
         client->generation = (unsigned)request->generation; client->process = (unsigned)request->process;
+        atomic_store_explicit(lease, (uintptr_t)packet, memory_order_release);
         return 0;
     }
     if (request->command == KER_SESSION_ATTACHED) {
@@ -328,8 +355,13 @@ static int primary(const char *path, int control)
     directory->processes = KER_SESSION_PROCESSES; directory->channels = KER_SESSION_CHANNELS;
     directory->capacity = KER_SESSION_CAPACITY;
     atomic_init(&directory->state, KER_SESSION_PREPARING);
-    for (unsigned s = 0; s < KER_SESSION_SLOTS; s++) atomic_init(&directory->epoch[s], 0);
-    if (!atomic_is_lock_free(&directory->epoch[0]) || random_id(&directory->session)) goto cleanup;
+    for (unsigned s = 0; s < KER_SESSION_SLOTS; s++) {
+        atomic_init(&directory->epoch[s], 0);
+        for (unsigned g = 0; g < KER_SESSION_GENERATIONS; g++)
+            for (unsigned p = 0; p < KER_SESSION_PROCESSES; p++) atomic_init(&directory->lease[s][g][p], 0);
+    }
+    if (!atomic_is_lock_free(&directory->epoch[0]) ||
+        !atomic_is_lock_free(&directory->lease[0][0][0]) || random_id(&directory->session)) goto cleanup;
     for (unsigned s = 0; s < KER_SESSION_SLOTS; s++)
         for (unsigned g = 0; g < KER_SESSION_GENERATIONS; g++)
             for (unsigned p = 0; p < KER_SESSION_PROCESSES; p++)
@@ -396,11 +428,10 @@ cleanup:
      * EAL borrowers are gone. Never free live secondary references on timeout. */
     for (unsigned i = 0; all_eal_users() && i < 100; i++) poll(NULL, 0, 50);
     if (all_eal_users()) { fprintf(stderr, "ker session: live EAL users prevent cleanup\n"); _Exit(125); }
-    for (unsigned i = 0; i < CLIENTS; i++) drop_client(i);
-    for (unsigned slot = 0; slot < KER_SESSION_SLOTS; slot++)
-        for (unsigned gen = 0; gen < KER_SESSION_GENERATIONS; gen++)
-            for (unsigned proc = 0; proc < KER_SESSION_PROCESSES; proc++)
-                reclaim_control(slot, gen, proc);
+    for (unsigned i = 0; i < CLIENTS; i++) {
+        if (clients[i].kind == RESERVED || clients[i].kind == ATTACHED) reclaim_control(i);
+        drop_client(i);
+    }
     if (message_pool) {
         if (rte_mempool_in_use_count(message_pool)) {
             fprintf(stderr, "ker session: outstanding shared control objects prevent cleanup\n"); _Exit(125);
@@ -477,30 +508,29 @@ static int probe_control(int control, unsigned *deferred_probes)
     return 0;
 }
 static int shared_probe(struct rte_ring *input, struct rte_ring *output,
-    struct rte_mempool *pool, const struct ker_session_message *identity, int control,
+    struct rte_mbuf *packet, const struct ker_session_message *identity, int control,
     unsigned *deferred_probes, unsigned count, uint64_t *next_sequence, int resident)
 {
     for (unsigned sequence = 1; sequence <= count; sequence++) {
         require_resident_alive(resident);
         int cancelled = probe_control(control, deferred_probes);
         if (cancelled) { require_resident_alive(resident); return cancelled; }
-        struct rte_mbuf *packet = rte_pktmbuf_alloc(pool);
-        if (!packet) return -ENOMEM;
+        rte_pktmbuf_reset(packet);
         struct ker_session_probe expected = {.identity = *identity};
-        if (*next_sequence == UINT64_MAX) { rte_pktmbuf_free(packet); return -EOVERFLOW; }
+        if (*next_sequence == UINT64_MAX) return -EOVERFLOW;
         expected.identity.command = KER_SESSION_PROBE; expected.identity.sequence = ++*next_sequence;
         expected.identity.token = 0; expected.identity.status = -EINPROGRESS;
         for (unsigned b = 0; b < sizeof(expected.payload); b++)
             expected.payload[b] = (uint8_t)(identity->epoch + identity->generation * 17 + identity->process * 31 + sequence + b);
         void *data = rte_pktmbuf_append(packet, sizeof(expected));
-        if (!data) { rte_pktmbuf_free(packet); return -EMSGSIZE; }
+        if (!data) return -EMSGSIZE;
         memcpy(data, &expected, sizeof(expected));
         require_resident_alive(resident);
         cancelled = probe_control(control, deferred_probes);
-        if (cancelled) { rte_pktmbuf_free(packet); require_resident_alive(resident); return cancelled; }
-        if (rte_ring_enqueue(input, packet)) { rte_pktmbuf_free(packet); return -ENOBUFS; }
-        /* After publication, cancellation leaves ownership with whichever ring
-         * holds the mbuf. The resident reclaims it after exact borrower death. */
+        if (cancelled) { require_resident_alive(resident); return cancelled; }
+        if (rte_ring_enqueue(input, packet)) return -ENOBUFS;
+        /* After publication, cancellation leaves the leased mbuf in its ring.
+         * The resident reclaims it only after this exact borrower dies. */
         uint64_t deadline = monotonic_ms() + 5000;
         struct rte_mbuf *reply;
         for (;;) {
@@ -515,7 +545,6 @@ static int shared_probe(struct rte_ring *input, struct rte_ring *output,
         struct ker_session_probe *actual = rte_pktmbuf_mtod(reply, struct ker_session_probe *);
         expected.identity.status = 0; expected.responder = (uint64_t)directory->primary_pid;
         int result = memcmp(actual, &expected, sizeof(expected)) ? -EPROTO : 0;
-        rte_pktmbuf_free(reply);
         if (result) return result;
     }
     return 0;
@@ -565,6 +594,10 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         atomic_load_explicit(&d->epoch[message.slot], memory_order_acquire) != message.epoch) goto cleanup;
     struct rte_mempool *pool = rte_mempool_lookup(KER_SESSION_POOL);
     if (!pool || pool->size != KER_SESSION_OBJECTS || pool->cache_size) goto cleanup;
+    if (rte_mempool_obj_iter(pool, remember_object, NULL) != KER_SESSION_OBJECTS) goto cleanup;
+    struct rte_mbuf *leased_packet = (struct rte_mbuf *)atomic_load_explicit(
+        &d->lease[message.slot][generation][process], memory_order_acquire);
+    if (!known_object(leased_packet) || leased_packet->pool != pool) goto cleanup;
     char names[KER_SESSION_CHANNELS][RTE_RING_NAMESIZE];
     struct rte_ring *channels[KER_SESSION_CHANNELS];
     for (unsigned c = 0; c < KER_SESSION_CHANNELS; c++) {
@@ -583,7 +616,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     bool probe_pending = probe_only;
     while (!stopping) {
         if (probe_pending) {
-            int probe_result = shared_probe(channels[0], channels[3], pool, &message,
+            int probe_result = shared_probe(channels[0], channels[3], leased_packet, &message,
                 control, &deferred_probes, probe_count, &probe_sequence, peer);
             if (probe_result == -ECANCELED) { result = 0; goto cleanup; }
             if (probe_result) { fprintf(stderr, "ker session: shared probe failed %d\n", probe_result); goto cleanup; }

@@ -3,6 +3,10 @@
   "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "mode": "scenario-adaptation; full upstream test snapshot retained separately for audit, not executed as Ker coverage; no upstream network implementation copied",
   "files": {
+    "tests/integration/test_ff_gendir_mp_integration.c": {
+      "sha256": "9fa32d1e63fedf5e692f0f360fcbb65916d4b3bc3c411d9ad4b291e1ac946534",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_ff_gendir_mp_integration.c"
+    },
     "tests/unit/test_ff_config.c": {
       "sha256": "936949c9abb5b15f2d0e7822fd6e591be2af4cccae951df7d9f2f4fe42e3b365",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_config.c"
@@ -49,6 +53,19 @@
     }
   },
   "cases": {
+    "native-fstack-session-directory": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_primary_precreates_all_slots",
+        "test_it_a14_secondary_looks_up_own_slot",
+        "test_it_a14_two_masters_single_consumer",
+        "test_it_a14_usr2_chain_slot_recycle"
+      ],
+      "ker_ctests": [
+        "native-fstack-session-registration"
+      ],
+      "adaptation": "Runtime-only adaptation using original DPDK EAL, rings and mbufs: production resident precreates shared geometry, authenticates real secondary processes under distinct plain masters, journals each control mbuf before RESERVE acknowledgement, and reclaims it only after exact borrower death. Three chains are held alive before concurrent probes; identity/payload/sequence checks prohibit cross-namespace replies. For the source A4/USR2-chain recycling case, all three masters are killed without retirement, surviving borrowers still block recycling, then all workers leave original EAL and a fourth master/secondary must obtain a fresh nonzero epoch/slot and validate real directory/rings/pool through actual shared transport. Empty-ring borrower crashes before first enqueue and after reply dequeue, published-request timeout and conservative live-borrower cleanup are tested. This fully qualifies only test_it_a14_usr2_chain_slot_recycle. The precreation, own-slot lookup and simultaneous-master cases remain partial because fixed network dispatch, original secondary PMD/hardware claim, primary no-hardware parking, and consistent hardware/KNI-owner arbitration are absent. No source F-Stack ABI, FreeBSD networking, actual USR2 application reload or hardware handover is claimed. Runtime CTest skips77 without shared hugepages; complete CMake-built production acceptance passed in the isolated original-DPDK guest."
+    },
     "native-fstack-config-owned-arrays": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": "test_vlan_cfgs_calloc_oom_returns_error",

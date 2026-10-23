@@ -1269,3 +1269,26 @@ hugepage。该环境证据不构成 secondary/PMD/网络通过，也不改变79�
 [环境记录](fstack-reload-environment.md) 明确这只解除共享内存前置条件，
 不代表双master、PMD数据面、generation或reload通过。下一步可回到#218，
 在该环境中实现真实监督会话，79项用例保持blocked。
+
+
+## Journaled control leases and source A4 namespace recycling
+
+The resident EAL session now journals one original control mbuf per registered
+coordinate before acknowledging admission. Actual borrower death before first
+enqueue and after reply dequeue both recover the object, while a stopped live
+borrower prevents cleanup. The isolated original-DPDK guest runs the production
+session binary and commands, restores all511pool objects, and leaves no test
+hugepage files after exact process-death proof.
+
+The pinned `test_it_a14_usr2_chain_slot_recycle` scenario is now adapted: three
+plain masters occupy all reusable slots and die without retirement, their real
+EAL secondaries keep the slots protected until cleanup, then a fourth master
+and secondary get a strictly newer nonzero epoch and nonzero slot with valid
+shared lookup and actual control roundtrips. Three related directory/isolation
+cases are partial, with network dispatch/hardware-owner assertions explicitly
+remaining. This does not qualify hardware handover, actual application USR2,
+generation network packet transport or full reload.
+
+Current inventory:181scenario-adapted,22partial,160blocked,15architecture-specific,
+55harness-only (433total). The completion gate still fails for182unfinished
+cases. Issue#218 remains open for78incomplete cases (74blocked/4partial).

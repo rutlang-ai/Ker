@@ -6,7 +6,7 @@
       "id": "reload-generations",
       "title": "Design generation-aware reload, IPC and drain ownership",
       "disposition": "adaptation-needed",
-      "reason": "Ker now has resident EAL registration and authenticated cross-process shared control probes with bounded mbuf pools/rings, exact borrower-lifetime retention and queued-request recovery. It still lacks hardware consumer grants, generation packet transport into original Linux, packet allocation journals, cross-generation admission and graceful handover. Registration or control echoes do not satisfy the complete source generation contracts.",
+      "reason": "Ker now has resident EAL registration and authenticated cross-process shared control probes with bounded mbuf pools/rings, exact borrower-lifetime retention and resident-journaled control leases. The A4 three-abandoned-master/fourth-secondary namespace-recycling source scenario is now qualified; three directory/isolation cases remain partial. It still lacks hardware consumer grants, generation packet transport into original Linux, packet allocation journals, cross-generation admission and graceful handover. Registration or control echoes do not satisfy the complete source generation contracts.",
       "evidence": [
         "docs/fstack-reload-ownership.md",
         "src/posix/io-worker.c",
@@ -26,7 +26,6 @@
         "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
         "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
         "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
-        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_chain_slot_recycle",
         "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
         "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",
         "tests/integration/test_ff_reload_integration.c::test_it_a09_drain_ring_tx_watermark",
