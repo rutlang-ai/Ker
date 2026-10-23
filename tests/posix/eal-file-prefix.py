@@ -48,6 +48,38 @@ def main():
                     'typed-before-terminator'))
     with tempfile.TemporaryDirectory(prefix='ker-eal-prefix-') as directory:
         root = Path(directory)
+        # The source case named test_ipfw_pr_cfg_handler_isolated actually
+        # supplies an invalid process type, not an IPFW firewall rule. Exercise
+        # original EAL parsing through the real INI -> launcher -> worker path.
+        worker_pid = root / 'invalid-worker.pid'
+        wrapper = root / 'record-worker'
+        wrapper.write_text('#!' + sys.executable + '\nimport os, sys\n'
+            + 'from pathlib import Path\nPath(' + repr(str(worker_pid)) + ').write_text(str(os.getpid()))\n'
+            + 'worker = ' + repr(str(args.worker.resolve())) + '\nos.execv(worker, [worker, *sys.argv[1:]])\n')
+        wrapper.chmod(0o700)
+        for process_arg in ('--proc-type=bogus_proc_type', '--proc-type bogus_proc_type'):
+            config, stats = root / 'invalid.ini', root / 'invalid.json'
+            marker = root / 'invalid-app-entered'
+            config.write_text('[network]\naddress=198.18.0.2/24\n[dpdk]\nport=net_tap0\n'
+                'exception_iface=invalidexcept\nexception_type=34997\nfile_prefix=ker-raw\n'
+                + 'eal=' + eal.replace('--proc-type=primary', process_arg) + '\n')
+            result = subprocess.run([sys.executable, str(args.launcher), '--config', str(config),
+                '--library', str(args.library), '--io-worker', str(wrapper), '--stats', str(stats),
+                '--', '/usr/bin/touch', str(marker)],
+                env=dict(os.environ, RUNTIME_DIRECTORY=str(root)), capture_output=True, text=True, timeout=20)
+            require(result.returncode == 125 and 'invalid process type: bogus_proc_type' in result.stderr
+                    and 'ker EAL:' in result.stderr and 'DPDK worker failed before packet I/O became ready' in result.stderr,
+                    'invalid process type did not fail in original EAL: ' + result.stdout + result.stderr)
+            require(not marker.exists() and not stats.exists() and 'KER_IO_READY' not in result.stdout,
+                    'invalid EAL process reached application entry or worker readiness')
+            require(worker_pid.is_file(), 'real EAL worker was not executed')
+            require(not Path('/proc/' + worker_pid.read_text()).exists(), 'failed EAL worker was not reaped')
+            require(not (root / 'dpdk' / 'ker-raw').exists(), 'invalid process created an EAL runtime namespace')
+            for iface in ('kerpeer', 'invalidexcept'):
+                require(subprocess.run(['ip', 'link', 'show', iface], capture_output=True).returncode != 0,
+                        'invalid EAL process created an interface: ' + iface)
+            worker_pid.unlink()
+        print('PASS: test_ipfw_pr_cfg_handler_isolated; original EAL rejected both invalid process-type forms before app/device setup', flush=True)
         for index, (name, ini, options, extra_eal, expected) in enumerate(profiles):
             config, stats = root / (name + '.ini'), root / (name + '.json')
             config.write_text(ini)
