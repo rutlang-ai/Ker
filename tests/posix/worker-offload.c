@@ -38,10 +38,10 @@ static void reject(void)
 }
 int main(void)
 {
-    CHECK(ker_worker_offload_feature_mask(0) == 0);
-    CHECK(ker_worker_offload_feature_mask(1) == 1U);
-    CHECK(ker_worker_offload_feature_mask(2) == (1U | (1U << 11)));
-    CHECK(!(ker_worker_offload_feature_mask(2) & (1U << 12)));
+    CHECK(ker_worker_offload_feature_mask(0, false) == 0);
+    CHECK(ker_worker_offload_feature_mask(1, false) == 1U);
+    CHECK(ker_worker_offload_feature_mask(2, false) == (1U | (1U << 11) | (1U << 12)));
+    CHECK(ker_worker_offload_feature_mask(2, true) == (1U | (1U << 11)));
     reset(); header.flags = 3; reject();
     reset(); header.flags = 0; reject();
     reset(); header.checksum_start = 65535; reject();
@@ -61,6 +61,58 @@ int main(void)
     CHECK(result.tso4 == 1 && result.tso6 == 0 && result.tcp == 1 && result.ip == 1);
     CHECK(packet.tso_segsz == 1446 && packet.l2_len == 14 && packet.l3_len == 20 && packet.l4_len == 20);
     CHECK(packet.ol_flags & RTE_MBUF_F_TX_TCP_SEG);
+    /* A parsed IPv6 Hop-by-Hop header contributes to l3_len and checksum start. */
+    reset();
+    memset(bytes, 0, sizeof(bytes));
+    bytes[12] = 0x86; bytes[13] = 0xdd;
+    struct rte_ipv6_hdr *ip6 = (void *)(bytes + 14);
+    ip6->vtc_flow = rte_cpu_to_be_32(6U << 28);
+    ip6->payload_len = rte_cpu_to_be_16(8 + sizeof(struct rte_tcp_hdr) + 9000);
+    ip6->proto = IPPROTO_HOPOPTS;
+    bytes[54] = IPPROTO_TCP; bytes[55] = 0;
+    struct rte_tcp_hdr *tcp6 = (void *)(bytes + 62);
+    tcp6->data_off = 5U << 4;
+    packet.data_len = packet.pkt_len = 14 + 40 + 8 + sizeof(*tcp6) + 9000;
+    header = (struct ker_packet_header){.flags = 1, .gso_type = 4, .gso_size = 1400,
+        .header_length = 14 + 40 + 8 + sizeof(*tcp6), .checksum_start = 14 + 40 + 8,
+        .checksum_offset = 16};
+    state = (struct ker_worker_offload){.mode = 2, .features = ker_worker_offload_feature_mask(2, false),
+        .flags = RTE_ETH_TX_OFFLOAD_TCP_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM};
+    CHECK(!ker_worker_offload_apply(&state, &header, &packet, 1500, &result));
+    CHECK(result.tso6 == 1 && packet.l3_len == 48 && packet.l4_len == 20 &&
+        packet.tso_segsz == 1400 && (packet.ol_flags & RTE_MBUF_F_TX_IPV6));
+    uint16_t actual_seed, expected_seed;
+    memcpy(&actual_seed, bytes + header.checksum_start + header.checksum_offset, sizeof(actual_seed));
+    struct rte_ipv6_hdr expected_pseudo = *ip6;
+    expected_pseudo.proto = IPPROTO_TCP;
+    expected_pseudo.payload_len = 0;
+    expected_seed = rte_ipv6_phdr_cksum(&expected_pseudo, packet.ol_flags);
+    CHECK(actual_seed == expected_seed);
+
+    /* CHECKSUM_PARTIAL after an extension header excludes that header from
+     * the upper-layer length and uses TCP as the pseudo-header protocol. */
+    header.gso_type = header.gso_size = header.header_length = 0;
+    ip6->payload_len = rte_cpu_to_be_16(8 + sizeof(*tcp6) + 100);
+    packet.data_len = packet.pkt_len = 14 + 40 + 8 + sizeof(*tcp6) + 100;
+    packet.ol_flags = 0;
+    state.mode = 1;
+    CHECK(!ker_worker_offload_apply(&state, &header, &packet, 1500, &result));
+    memcpy(&actual_seed, bytes + header.checksum_start + header.checksum_offset, sizeof(actual_seed));
+    expected_pseudo = *ip6;
+    expected_pseudo.proto = IPPROTO_TCP;
+    expected_pseudo.payload_len = rte_cpu_to_be_16(sizeof(*tcp6) + 100);
+    expected_seed = rte_ipv6_phdr_cksum(&expected_pseudo, packet.ol_flags);
+    CHECK(actual_seed == expected_seed);
+
+    state.tap = true;
+    state.features = ker_worker_offload_feature_mask(2, true);
+    state.mode = 2;
+    header.gso_type = 4; header.gso_size = 1400;
+    packet.ol_flags = 0;
+    memcpy(snapshot, bytes, sizeof(bytes));
+    CHECK(ker_worker_offload_apply(&state, &header, &packet, 1500, &result) == -EOPNOTSUPP);
+    CHECK(!memcmp(snapshot, bytes, sizeof(bytes)) && packet.ol_flags == 0 &&
+        packet.pkt_len == 14 + 40 + 8 + sizeof(*tcp6) + 100);
     reset();
     packet.data_len = packet.pkt_len = 54;
     struct rte_ipv4_hdr *ip = (void *)(bytes + 14);

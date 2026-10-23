@@ -41,12 +41,11 @@ static void *loaded_driver_symbol(const struct rte_driver *driver, const char *n
     return owned ? symbol : NULL;
 }
 
-uint32_t ker_worker_offload_feature_mask(int mode)
+uint32_t ker_worker_offload_feature_mask(int mode, bool tap)
 {
     if (mode <= 0 || mode > 2) return 0;
-    /* The translator currently handles only plain IPv4/IPv6 headers and IPv4
-     * TSO. Do not negotiate HOST_TSO6 until IPv6 extension headers are handled. */
-    return 1U | (mode == 2 ? (1U << 11) : 0U);
+    /* Original TAP software GSO cannot run IPv6 TSO; other qualified PMDs can. */
+    return 1U | (mode == 2 ? (1U << 11) | (tap ? 0U : (1U << 12)) : 0U);
 }
 
 int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *config,
@@ -79,7 +78,7 @@ int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *con
         state->tap_retry_safe = retry_abi && retry_abi(port) == 1;
     }
     /* Map only features fully implemented by the translator. */
-    state->features = ker_worker_offload_feature_mask(mode);
+    state->features = ker_worker_offload_feature_mask(mode, state->tap);
     config->txmode.offloads |= state->flags;
     return 0;
 }
@@ -103,7 +102,7 @@ int ker_worker_offload_apply(const struct ker_worker_offload *state,
     uint32_t type = rte_net_get_ptype(packet, &lengths, RTE_PTYPE_ALL_MASK);
     unsigned l3 = type & RTE_PTYPE_L3_MASK, l4 = type & RTE_PTYPE_L4_MASK;
     bool ipv4 = l3 == RTE_PTYPE_L3_IPV4 || l3 == RTE_PTYPE_L3_IPV4_EXT;
-    bool ipv6 = l3 == RTE_PTYPE_L3_IPV6;
+    bool ipv6 = l3 == RTE_PTYPE_L3_IPV6 || l3 == RTE_PTYPE_L3_IPV6_EXT;
     unsigned start = lengths.l2_len + lengths.l3_len;
     bool tcp = l4 == RTE_PTYPE_L4_TCP, udp = l4 == RTE_PTYPE_L4_UDP;
     if (!header->gso_type && ((!ipv4 && !ipv6) || (!tcp && !udp))) {
@@ -165,8 +164,15 @@ int ker_worker_offload_apply(const struct ker_worker_offload *state,
         }
         seed = rte_ipv4_phdr_cksum(ip, packet->ol_flags);
     } else {
-        struct rte_ipv6_hdr *ip = (void *)(bytes + lengths.l2_len);
-        seed = rte_ipv6_phdr_cksum(ip, packet->ol_flags);
+        struct rte_ipv6_hdr pseudo = *(struct rte_ipv6_hdr *)(bytes + lengths.l2_len);
+        pseudo.proto = tcp ? IPPROTO_TCP : IPPROTO_UDP;
+        if (!tso) {
+            unsigned extension_length = lengths.l3_len - sizeof(pseudo);
+            uint16_t payload_length = rte_be_to_cpu_16(pseudo.payload_len);
+            if (extension_length > payload_length) return -EINVAL;
+            pseudo.payload_len = rte_cpu_to_be_16(payload_length - extension_length);
+        }
+        seed = rte_ipv6_phdr_cksum(&pseudo, packet->ol_flags);
     }
     memcpy(bytes + location, &seed, sizeof(seed));
     result->tcp = tcp;

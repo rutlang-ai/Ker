@@ -1292,8 +1292,11 @@ run_shutdown_ack 仅在使用本接口时记录监督者的实际清理结果。
 
 `--tx-offloads off|checksum|tso` / `[dpdk] tx_offloads=...` 默认 off。
 附加 `[interface.NAME]` 可覆盖，否则继承主接口最终配置。worker 先读取原版 PMD
-能力、配置并读回实际 ethdev offload 标志，再把支持的 virtio CSUM/HOST_TSO4 特征交给原版 Linux；当前所有 PMD 均不声明
-HOST_TSO6，直到 translator 支持并验证 IPv6 extension-header GSO；不更改上游源码或实现 Ker TCP/UDP 状态机。
+能力、配置并读回实际 ethdev offload 标志，再按所选 PMD 的实际执行路径决定交给原版
+Linux 的 virtio CSUM/HOST_TSO4/HOST_TSO6 特征。translator 使用原版 DPDK 解析 IPv6
+extension-header 长度，并按最终 TCP/UDP 协议构造 IPv6 checksum pseudo-header；原版
+virtio-user/vhost-kernel 路径实际验证 HOST_TSO6。固定版本 net_tap 软件 GSO 仍不支持
+IPv6 TSO，因此该 PMD 不声明 HOST_TSO6；不更改上游源码或实现 Ker TCP/UDP 状态机。
 checksum 要求 TCP/UDP checksum 能力；IPv4 header checksum 在 PMD 支持时启用。
 tso 还要求 TCP_TSO、MULTI_SEGS 和足够描述符容量；不满足时阻止应用启动。
 当前不支持将此选项用于 bonding PMD，因为通用能力位不能表达成员特有的限制。
