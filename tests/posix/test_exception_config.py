@@ -21,6 +21,22 @@ class ExceptionConfigTests(unittest.TestCase):
                            ['--exception-rate', '2'])
         self.assertEqual((value.exception_iface, value.exception_type, value.exception_queue, value.exception_rate),
                          ('except0', 34997, 256, 2))
+    def test_port_mode_and_atomic_precedence(self):
+        value = self.parse('exception_iface=except0\nexception_mode=ports\nexception_policy=accept\n'
+                           'exception_tcp_ports=bad\nexception_tcp_ports=80,443,8000-8002\nexception_udp_ports=53\n',
+                           ['--exception-policy', 'reject', '--exception-udp-ports', ' 53, 5060 '])
+        self.assertEqual((value.exception_mode, value.exception_policy, value.exception_tcp_ports, value.exception_udp_ports),
+                         ('ports', 'reject', '80,443,8000-8002', '53,5060'))
+        empty = self.parse('exception_iface=except0\nexception_mode=ports\n')
+        self.assertIsNone(empty.exception_tcp_ports)
+    def test_invalid_port_selection(self):
+        for value in ('-1', '65536', '80-1', '80,', '1--2', 'a', '1' * 4097):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.parse('exception_iface=except0\nexception_mode=ports\nexception_tcp_ports=' + value + '\n')
+        for value in ('exception_mode=ports\n', 'exception_iface=except0\nexception_type=34997\nexception_mode=ports\n',
+                      'exception_iface=except0\nexception_type=34997\nexception_tcp_ports=80\n',
+                      'exception_iface=except0\nexception_mode=ports\nexception_policy=garbage\n'):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): self.parse(value)
     def test_invalid_resource_configuration(self):
         for text in ('exception_type=34997\n', 'exception_rate=1\n', 'exception_queue=4\n',
                      'exception_iface=except0\n', 'exception_iface=..\nexception_type=34997\n', 'exception_iface=../other\nexception_type=34997\n',

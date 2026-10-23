@@ -1283,7 +1283,7 @@
       "id": "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source FreeBSD IPFW PR_CFG handler and isolated mutable configuration are not implemented by Linux-TAP port selection. A Linux firewall-policy adaptation or explicit incompatible disposition remains under issue219.",
       "ker_tests": []
     },
     {
@@ -1651,29 +1651,39 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_reject_ok",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker exception_policy=reject survives real INI/CLI configuration and sends matching ports to imported Linux, unmatched ports to host Linux. Both families/protocols return distinct stack identity and exact payload. This adapts method acceptance and behavior, not literal F-Stack fixture/global-config ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_check_config_kni_method_reject_ok"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_method_invalid_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Invalid exception policy fails actual launcher configuration with exit2 before worker/application entry; no successful default or unsupported stub is substituted. This adapts the rejection scenario through the Ker loader.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_check_config_kni_method_invalid_fails"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_present_ok",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "The actual worker has one EAL primary owner, but no F-Stack primary-lcore/per-port lcore-list configuration contract. Accept/reject port steering does not prove the source primary-lcore membership validation. Retained under issue219.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_missing_fails",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "The actual worker has one EAL primary owner, but no F-Stack primary-lcore/per-port lcore-list configuration contract. Accept/reject port steering does not prove the source primary-lcore membership validation. Retained under issue219.",
       "ker_tests": []
     },
     {
@@ -2679,176 +2689,251 @@
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_console_ratelimit_over",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_general_ratelimit_over",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_filter_classification",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_short",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual original DPDK header parsing rejects a10-byte IPv4 payload as unknown without reading beyond its real mbuf chain.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_short"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_non_ip_frame",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ARP payload is not classified as an IP service. ARP control fanout is a distinct worker routing operation, not a fabricated service verdict.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_non_ip_frame"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A configured TCP80 match becomes unknown when service classification is disabled; actual original-DPDK parsing still supplies bounded header geometry.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_disabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A configured UDP53 match becomes unknown when service classification is disabled; actual original-DPDK parsing still supplies bounded header geometry.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_udp_kni_disabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_oversized_ihl",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual original-DPDK IPv4 geometry plus bounded mbuf reads rejects an IHL60-byte header in a24-byte payload as unknown.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_oversized_ihl"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ipip_recurse",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual original-DPDK IP-in-IP parsing rejects the source short inner packet. A complete one-level inner TCP80 packet must match and TCP81 must miss, proving the negative is not a blanket tunnel rejection. Arbitrary recursive tunnel support is not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_ipip_recurse"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_tcp_udp_port_bitmaps",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual worker filter initialization accepts TCP80/443/8000-8002 and UDP53/5060, with direct original-DPDK mbuf parsing checking every range endpoint, match and miss. Live worker destination-port sets then select real host/native services. No private F-Stack global layout or rte_zmalloc table ABI is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_init_tcp_udp_port_bitmaps"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_ospf_returns_ospf",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual original-DPDK IPv4 header parsing returns a distinct OSPF classification for protocol89 even with service-port matching disabled. This is packet ownership classification, not an OSPF protocol implementation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_ospf_returns_ospf"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Enabled TCP service classification rejects the source25-byte IPv4/TCP payload, including a truncated minimum TCP header, through original-DPDK geometry and real bounded mbuf reads.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Enabled UDP service classification rejects the source25-byte IPv4/UDP payload, including a truncated minimum UDP header, through original-DPDK geometry and real bounded mbuf reads.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A complete source-shaped IPv4/TCP destination80 matches the actual port set across real mbuf segments. Production-worker accept/reject runs also require exact TCP replies from the correct host/native original Linux sockets.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A complete source-shaped IPv4/TCP destination8080 misses a configured80 set. Production-worker policy tests require unmatched native/host ownership to select the correct real TCP endpoint.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A complete source-shaped IPv4/UDP destination53 matches the actual port set across real mbuf segments. Production-worker policy tests also require exact UDP replies from the correct host/native original Linux sockets.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_init_null_port_lists",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual filter initialization succeeds with NULL port lists and leaves service sets empty; an enabled native worker may use empty port lists. This adapts nullable-list initialization, not F-Stack private ring/stat allocation layout.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_ff_kni_init_null_port_lists"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_stats_oom",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_slot_oom",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
+      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p3_ndp_classification",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "An actual Linux-TAP exception bridge now covers owned queues, bidirectional frame processing and kernel batch limits. This source case still needs its F-Stack-specific protocol/port classification, accept/reject configuration, general/console enqueue limit, IPFW or generation/non-owner/allocation ABI contract; outer-EtherType selection and a single EAL owner do not prove it. Retained under issue219; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual original-DPDK IPv6 geometry distinguishes all NDP types133..137 from echo, UDP, wrong-EtherType and truncated input. Actual host/native IPv6 TCP/UDP requires shared NDP neighbour learning; this is not draining-generation ownership equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-filter",
+          "provenance_case": "exception-filter-test_p3_ndp_classification"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_pcap.c::test_ff_enable_pcap_basic",

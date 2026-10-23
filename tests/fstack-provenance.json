@@ -1944,6 +1944,142 @@
         "native-fstack-exception-tap"
       ],
       "adaptation": "Actual size4 owned exception ring holds3 frames; the fourth enqueue returns ENOBUFS, consumes/NULLs and frees its mbuf, increments drops without delivery. Shutdown discards the remaining3 owned frames and restores the pool completely. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "exception-filter-test_ff_kni_init_tcp_udp_port_bitmaps": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_init_tcp_udp_port_bitmaps",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Actual worker filter initialization accepts TCP80/443/8000-8002 and UDP53/5060, with direct original-DPDK mbuf parsing checking every range endpoint, match and miss. Live worker destination-port sets then select real host/native services. No private F-Stack global layout or rte_zmalloc table ABI is claimed. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_init_null_port_lists": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_init_null_port_lists",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Actual filter initialization succeeds with NULL port lists and leaves service sets empty; an enabled native worker may use empty port lists. This adapts nullable-list initialization, not F-Stack private ring/stat allocation layout. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_short": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_short",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Actual original DPDK header parsing rejects a10-byte IPv4 payload as unknown without reading beyond its real mbuf chain. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_non_ip_frame": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_non_ip_frame",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "ARP payload is not classified as an IP service. ARP control fanout is a distinct worker routing operation, not a fabricated service verdict. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_tcp_kni_disabled",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "A configured TCP80 match becomes unknown when service classification is disabled; actual original-DPDK parsing still supplies bounded header geometry. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_udp_kni_disabled": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_udp_kni_disabled",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "A configured UDP53 match becomes unknown when service classification is disabled; actual original-DPDK parsing still supplies bounded header geometry. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_oversized_ihl": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_oversized_ihl",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Actual original-DPDK IPv4 geometry plus bounded mbuf reads rejects an IHL60-byte header in a24-byte payload as unknown. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_ipip_recurse": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_ipip_recurse",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Actual original-DPDK IP-in-IP parsing rejects the source short inner packet. A complete one-level inner TCP80 packet must match and TCP81 must miss, proving the negative is not a blanket tunnel rejection. Arbitrary recursive tunnel support is not claimed. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_ospf_returns_ospf": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_ospf_returns_ospf",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Actual original-DPDK IPv4 header parsing returns a distinct OSPF classification for protocol89 even with service-port matching disabled. This is packet ownership classification, not an OSPF protocol implementation. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_short",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Enabled TCP service classification rejects the source25-byte IPv4/TCP payload, including a truncated minimum TCP header, through original-DPDK geometry and real bounded mbuf reads. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_udp_kni_enabled_short",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Enabled UDP service classification rejects the source25-byte IPv4/UDP payload, including a truncated minimum UDP header, through original-DPDK geometry and real bounded mbuf reads. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_match_returns_kni",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "A complete source-shaped IPv4/TCP destination80 matches the actual port set across real mbuf segments. Production-worker accept/reject runs also require exact TCP replies from the correct host/native original Linux sockets. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_tcp_kni_enabled_miss_returns_unknown",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "A complete source-shaped IPv4/TCP destination8080 misses a configured80 set. Production-worker policy tests require unmatched native/host ownership to select the correct real TCP endpoint. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_proto_filter_ipv4_udp_kni_enabled_match_returns_kni",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "A complete source-shaped IPv4/UDP destination53 matches the actual port set across real mbuf segments. Production-worker policy tests also require exact UDP replies from the correct host/native original Linux sockets. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_p3_ndp_classification": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_p3_ndp_classification",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Actual original-DPDK IPv6 geometry distinguishes all NDP types133..137 from echo, UDP, wrong-EtherType and truncated input. Actual host/native IPv6 TCP/UDP requires shared NDP neighbour learning; this is not draining-generation ownership equivalence. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_check_config_kni_method_reject_ok": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_ff_check_config_kni_method_reject_ok",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Ker exception_policy=reject survives real INI/CLI configuration and sends matching ports to imported Linux, unmatched ports to host Linux. Both families/protocols return distinct stack identity and exact payload. This adapts method acceptance and behavior, not literal F-Stack fixture/global-config ABI. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-filter-test_ff_check_config_kni_method_invalid_fails": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_ff_check_config_kni_method_invalid_fails",
+      "ker_ctests": [
+        "native-fstack-exception-filter"
+      ],
+      "adaptation": "Invalid exception policy fails actual launcher configuration with exit2 before worker/application entry; no successful default or unsupported stub is substituted. This adapts the rejection scenario through the Ker loader. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
     }
   }
 }

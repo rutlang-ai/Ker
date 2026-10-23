@@ -53,7 +53,7 @@ set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
-set(ker_io_worker_sources src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+set(ker_io_worker_sources src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 add_executable(ker-io-worker ${ker_io_worker_sources})
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
@@ -260,14 +260,31 @@ if(BUILD_TESTING)
     endif()
     list(GET ker_exception_ring_pmds 0 ker_exception_ring_pmd)
     add_executable(ker-exception-tap-test tests/posix/exception-tap.c
-        src/posix/worker-exception.c src/posix/worker-mbuf.c src/posix/pcap.c)
+        src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/worker-mbuf.c src/posix/pcap.c)
     target_include_directories(ker-exception-tap-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_link_libraries(ker-exception-tap-test PRIVATE PkgConfig::DPDK "${ker_exception_ring_pmd}")
     target_link_options(ker-exception-tap-test PRIVATE -Wl,--wrap=writev)
     target_compile_options(ker-exception-tap-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-exception-filter-test tests/posix/exception-filter.c
+        src/posix/worker-exception-filter.c src/posix/worker-mbuf.c)
+    target_include_directories(ker-exception-filter-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_link_libraries(ker-exception-filter-test PRIVATE PkgConfig::DPDK)
+    target_compile_options(ker-exception-filter-test PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-exception-probe tests/posix/exception-probe.c)
     target_compile_options(ker-exception-probe PRIVATE -Wall -Wextra -Werror)
     list(GET DPDK_LIBRARY_DIRS 0 ker_exception_library_root)
+    add_library(ker-exception-backpressure SHARED tests/posix/exception-backpressure.c)
+    target_include_directories(ker-exception-backpressure PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_link_libraries(ker-exception-backpressure PRIVATE ${CMAKE_DL_LIBS})
+    target_compile_options(ker-exception-backpressure PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-exception-services-test tests/posix/exception-services.c)
+    target_compile_options(ker-exception-services-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-exception-filter
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/exception-services.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-exception-services-test>"
+            --classifier "$<TARGET_FILE:ker-exception-filter-test>" --backpressure "$<TARGET_FILE:ker-exception-backpressure>" --pmd-root "${ker_exception_library_root}")
+    set_tests_properties(native-fstack-exception-filter PROPERTIES TIMEOUT 100 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-exception-tap
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/exception-tap.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
