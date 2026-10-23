@@ -1,7 +1,11 @@
 # Generation reload ownership contract
 
 This is the implementation prerequisite for [issue #218](https://github.com/rutlang-ai/Ker/issues/218),
-not a supported reload feature or test-pass claim. Its original 81 source cases include two page-array build assertions, separately excluded under #232. The isolated A4 namespace-recycle scenario is now adapted; 78 actionable cases remain incomplete (74 blocked and 4 partial). The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
+not a claim of full reload support. Of its original 79 actionable cases,
+three A4 scenarios are now adapted: namespace recycling, own-slot secondary
+lookup/device claim and epoch liveness. 76 remain incomplete (73 blocked and
+3 partial). The two page-array build assertions are separately excluded in #232.
+The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
 The retained tests are authoritative; proposed Ker mechanisms below still need
 implementation and runtime qualification.
 
@@ -9,10 +13,15 @@ The first executable prerequisite now exists as a separate
 [resident EAL registration stage](fstack-session-registration.md): it precreates
 bounded shared rings and attaches real secondaries under live master epochs.
 It also exchanges authenticated shared control mbufs with the parked resident,
-including resident-journaled leases recovered after exact borrower death, even
-when a worker exits before enqueue or after reply dequeue. The source A4 chain
-scenario now qualifies namespace recycling only; packet transport, PMD ownership,
-generation handover and application reload remain unsupported.
+including resident-journaled leases recovered after exact borrower death,
+even when a worker exits before enqueue or after reply dequeue.
+The optional [original ring-PMD stage](fstack-session-pmd.md) supplies an actual
+secondary consumer grant and live standbys that sample ownership and take over
+in the same PID/EAL/epoch after exact borrower death. Epoch liveness comes from
+the resident pidfd census, including surviving/frozen orphans and stale-epoch
+rejection after slot reuse. This still does not implement packet transport into
+original Linux, fixed network dispatch/exception-owner agreement, physical PMD
+handover or application reload.
 
 ## Existing boundary and implementation choice
 

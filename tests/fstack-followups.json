@@ -6,7 +6,7 @@
       "id": "reload-generations",
       "title": "Design generation-aware reload, IPC and drain ownership",
       "disposition": "adaptation-needed",
-      "reason": "Ker now has resident EAL registration and authenticated cross-process shared control probes with bounded mbuf pools/rings, exact borrower-lifetime retention and resident-journaled control leases. The A4 three-abandoned-master/fourth-secondary recycling and own-slot secondary lookup/device-claim source scenarios are qualified. Optional original ring-PMD bursts use a single journaled consumer grant retained through exact borrower death; TX-before-first-enqueue and RX-after-dequeue deaths recover its original mbuf. Two directory/isolation cases remain partial. Fixed dispatch and simultaneous live no-hardware observer/exception-owner agreement, physical PMD handover, queued packet crash injection, packet transport into original Linux, driver packet journals, cross-generation admission and graceful handover remain unqualified. Registration or control echoes do not satisfy the complete source generation contracts.",
+      "reason": "Ker now has resident EAL registration and authenticated cross-process shared control probes with bounded mbuf pools/rings, exact borrower-lifetime retention and resident-journaled control leases. The A4 three-abandoned-master/fourth-secondary recycling, own-slot secondary lookup/device-claim and epoch-liveness source scenarios are qualified. Optional original ring-PMD bursts use a single journaled consumer grant retained through exact borrower death; TX-before-first-enqueue and RX-after-dequeue deaths recover its original mbuf. Two directory/isolation cases remain partial. Live standby now samples the actual PMD owner while both chains remain alive and takes over in the same PID/EAL/epoch only after exact consumer death. Fixed dispatch/exception-owner agreement, physical PMD handover, queued packet crash injection, packet transport into original Linux, driver packet journals, cross-generation admission and graceful handover remain unqualified. Registration or control echoes do not satisfy the complete source generation contracts.",
       "evidence": [
         "docs/fstack-reload-ownership.md",
         "src/posix/io-worker.c",
@@ -15,7 +15,8 @@
         "docs/fstack-reload-environment.md",
         "docs/fstack-session-pmd.md",
         "src/posix/io-session.c",
-        "tests/posix/session-ring-pmd.py"
+        "tests/posix/session-ring-pmd.py",
+        "tests/posix/session-standby.py"
       ],
       "acceptance": [
         "Specify generation lifecycle, single-consumer admission, peer liveness, failure recovery and ownership before adding implementation.",
@@ -25,7 +26,6 @@
       "cases": [
         "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
         "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
-        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
         "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
         "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
         "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",

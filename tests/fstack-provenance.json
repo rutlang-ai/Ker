@@ -53,6 +53,17 @@
     }
   },
   "cases": {
+    "native-fstack-session-standby": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_two_masters_single_consumer",
+        "test_it_a14_epoch_liveness_after_exit"
+      ],
+      "ker_ctests": [
+        "native-fstack-session-standby"
+      ],
+      "adaptation": "Two real master/secondary chains retain their original EAL attachments and coordinate-specific controls while the resident grants one original ring-PMD consumer. Both masters and workers remain alive through synchronized control/owner samples; only the owner executes actual174-byte TX/RX bursts with exact original counter deltas. Serialized resident owner snapshots prevent mixing a grant with a recycled slot epoch. Master death and a frozen live orphan do not permit preemption. Exact borrower death recovers the old journaled object, and the same standby PID/EAL/epoch then acquires and performs actual PMD bursts without restart. Production epoch-status proves dead epochs become non-live, resident epoch0 remains live and slot reuse cannot revive an old epoch. Zero-count standby performs control only and does not fabricate frame traffic. All511 original objects return. This qualifies only source test_it_a14_epoch_liveness_after_exit in addition to previously qualified scenarios; TC-3 stays partial because separate fixed network dispatch and exception/KNI ownership agreement have no implemented packet-routing path. No imported-Linux packet delivery, physical-device handover, original heartbeat-timeout ABI or full application reload claim."
+    },
     "native-fstack-session-directory": {
       "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
       "source_case": [

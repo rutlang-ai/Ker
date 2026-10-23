@@ -252,7 +252,24 @@ static int handle(unsigned i, const struct ker_session_message *request,
     reply->session = directory->session;
     if (request->magic != KER_SESSION_MAGIC || request->version != KER_SESSION_VERSION ||
         request->status || !request->sequence) return -EPROTO;
-    if (request->command == KER_SESSION_PMD_STATUS && client->kind == UNBOUND) {
+    if (request->command == KER_SESSION_EPOCH_LIVE && client->kind == UNBOUND) {
+        if (request->session || request->token || request->slot || request->generation || request->process) return -EINVAL;
+        reply->token = 0;
+        if (!request->epoch) {
+            reply->token = atomic_load_explicit(&directory->state, memory_order_acquire) == KER_SESSION_READY;
+        } else for (unsigned s = 1; s < KER_SESSION_SLOTS; s++) {
+            if (slots[s].epoch != request->epoch) continue;
+            int m = slots[s].master;
+            if (m >= 0 && !dead(clients[m].pidfd)) reply->token = 1;
+            for (unsigned k = 0; k < CLIENTS; k++)
+                if ((clients[k].kind == RESERVED || clients[k].kind == ATTACHED) && clients[k].slot == s &&
+                    !dead(clients[k].pidfd)) reply->token = 1;
+            if (reply->token) reply->slot = s;
+            break;
+        }
+        return 0;
+    }
+    if (request->command == KER_SESSION_PMD_STATUS && (client->kind == UNBOUND || client->kind == ATTACHED)) {
         if (request->session || request->epoch || request->token || request->slot ||
             request->generation || request->process) return -EINVAL;
         if (!ring_pmd) return -EOPNOTSUPP;
@@ -671,8 +688,35 @@ static int pmd_roundtrips(struct rte_mbuf *packet, const struct ker_session_mess
         after.opackets - before.opackets != count) return -EIO;
     return 0;
 }
+static int acquire_pmd(int fd, struct ker_session_message *identity,
+    struct rte_mempool *pool, struct rte_mbuf *control_packet, struct rte_mbuf **packet)
+{
+    identity->command = KER_SESSION_PMD_ACQUIRE; identity->sequence++; identity->status = 0;
+    int result = exchange(fd, identity);
+    if (result) return result;
+    *packet = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_lease, memory_order_acquire);
+    uint64_t key = 1 + (identity->slot * KER_SESSION_GENERATIONS + identity->generation) * KER_SESSION_PROCESSES + identity->process;
+    return !known_object(*packet) || (*packet)->pool != pool || *packet == control_packet ||
+        atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) != key ? -EUCLEAN : 0;
+}
+/* Use the resident's serialized snapshot; separately reading the owner key and
+ * a recycled slot epoch could combine two different grants. */
+static int observe_pmd(int fd, struct ker_session_message *identity, struct ker_session_message *owner)
+{
+    struct ker_session_message request = {.magic = KER_SESSION_MAGIC, .version = KER_SESSION_VERSION,
+        .command = KER_SESSION_PMD_STATUS, .sequence = ++identity->sequence};
+    if (send(fd, &request, sizeof(request), MSG_NOSIGNAL) != sizeof(request) ||
+        recv(fd, owner, sizeof(*owner), MSG_TRUNC) != sizeof(*owner)) return -EIO;
+    if (owner->magic != request.magic || owner->version != request.version || owner->command != request.command ||
+        owner->sequence != request.sequence || owner->session != identity->session || owner->status) return -EPROTO;
+    if (!owner->token) return owner->epoch || owner->slot || owner->generation || owner->process ? -EPROTO : 0;
+    if (!owner->epoch || !owner->slot || owner->slot >= KER_SESSION_SLOTS ||
+        owner->generation >= KER_SESSION_GENERATIONS || owner->process >= KER_SESSION_PROCESSES) return -EPROTO;
+    uint64_t key = 1 + (owner->slot * KER_SESSION_GENERATIONS + owner->generation) * KER_SESSION_PROCESSES + owner->process;
+    return key == owner->token ? 0 : -EPROTO;
+}
 static int secondary(const char *path, int control, int ticket, unsigned generation,
-    unsigned process, unsigned probe_count, bool probe_only, int argc, char **argv)
+    unsigned process, unsigned probe_count, bool probe_only, bool standby, int argc, char **argv)
 {
     int result = 1, fd = -1, peer = -1;
     bool initialized = false;
@@ -737,12 +781,12 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         (unsigned long long)message.slot, generation, process, names[0], names[1], names[2], names[3]); fflush(stdout);
     struct rte_mbuf *device_packet = NULL;
     if (ring_pmd) {
-        message.command = KER_SESSION_PMD_ACQUIRE; message.sequence++;
-        int acquired = exchange(fd, &message);
-        if (acquired) { fprintf(stderr, "ker session: PMD consumer grant rejected %d\n", acquired); goto cleanup; }
-        device_packet = (struct rte_mbuf *)atomic_load_explicit(&d->pmd_lease, memory_order_acquire);
-        if (!known_object(device_packet) || device_packet->pool != pool || device_packet == leased_packet) goto cleanup;
-        printf("KER_SESSION_PMD_GRANTED {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu}\n",
+        int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet);
+        if (acquired && (!standby || acquired != -EBUSY)) {
+            fprintf(stderr, "ker session: PMD consumer grant rejected %d\n", acquired); goto cleanup;
+        }
+        printf("%s {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu}\n",
+            acquired ? "KER_SESSION_PMD_STANDBY" : "KER_SESSION_PMD_GRANTED",
             (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot); fflush(stdout);
     }
     uint64_t device_sequence = 0;
@@ -759,7 +803,24 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 (unsigned long long)message.epoch, (unsigned long long)message.slot,
                 generation, process, probe_count, (unsigned long long)probe_sequence,
                 directory->primary_pid, KER_SESSION_PROBE_PAYLOAD); fflush(stdout);
-            if (ring_pmd) {
+            if (ring_pmd && standby) {
+                if (!device_packet) {
+                    int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet);
+                    if (acquired && acquired != -EBUSY) {
+                        fprintf(stderr, "ker session: standby PMD acquisition failed %d\n", acquired); goto cleanup;
+                    }
+                }
+                struct ker_session_message owner;
+                if (observe_pmd(fd, &message, &owner)) goto cleanup;
+                bool owns = owner.epoch == message.epoch && owner.slot == message.slot &&
+                    owner.generation == message.generation && owner.process == message.process;
+                if (owns != (device_packet != NULL)) goto cleanup;
+                printf("KER_SESSION_PMD_SAMPLED {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu,\"owns_device\":%s,\"owner_epoch\":%llu,\"owner_generation\":%llu,\"owner_slot\":%llu,\"owner_process\":%llu,\"sequence\":%llu}\n",
+                    (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot,
+                    owns ? "true" : "false", (unsigned long long)owner.epoch, (unsigned long long)owner.generation,
+                    (unsigned long long)owner.slot, (unsigned long long)owner.process, (unsigned long long)probe_sequence); fflush(stdout);
+            }
+            if (ring_pmd && device_packet && probe_count) {
                 int status = pmd_roundtrips(device_packet, &message, probe_count, &device_sequence,
                     peer, control, &deferred_probes);
                 if (status == -ECANCELED) { result = 0; goto cleanup; }
@@ -784,7 +845,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             /* A control event must not hide a concurrent resident death. */
             if (dead(peer)) { fprintf(stderr, "ker session: primary process exited\n"); _Exit(125); }
             char command;
-            if (!fds[1].revents && probe_count && (fds[0].revents & POLLIN) &&
+            if (!fds[1].revents && (probe_count || standby) && (fds[0].revents & POLLIN) &&
                 read(control, &command, 1) == 1 && command == 'P') probe_pending = true;
             else break;
         }
@@ -807,9 +868,10 @@ int main(int argc, char **argv)
 {
     const char *path = NULL, *role = NULL;
     int control = -1, ticket = -1, generation = 0, process = 0, split = -1, probe_count = 0;
-    bool probe_only = false;
+    bool probe_only = false, standby = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
+        if (!strcmp(argv[i], "--standby")) { standby = true; continue; }
         if (!strcmp(argv[i], "--ring-pmd")) { ring_pmd = true; continue; }
         if (!strcmp(argv[i], "--probe-only")) { probe_only = true; continue; }
         if (i + 1 >= argc) break;
@@ -822,7 +884,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--probe-count")) probe_count = number(argv[++i]);
         else break;
     }
-    if (probe_count < 0 || probe_count > 4096 || (probe_only && !probe_count)) return 2;
+    if ((standby && (!ring_pmd || probe_only || !role || strcmp(role, "secondary"))) ||
+        probe_count < 0 || probe_count > 4096 || (probe_only && !probe_count)) return 2;
     if (!path || !role || control < 0 || split < 0 || generation < 0 || process < 0 ||
         generation >= (int)KER_SESSION_GENERATIONS || process >= (int)KER_SESSION_PROCESSES ||
         (strcmp(role, "primary") && strcmp(role, "secondary")) || (!strcmp(role, "secondary") && ticket < 0)) {
@@ -861,7 +924,7 @@ int main(int argc, char **argv)
     sigemptyset(&action.sa_mask); sigaction(SIGTERM, &action, NULL); sigaction(SIGINT, &action, NULL);
     argv[split] = argv[0];
     if (!strcmp(role, "secondary"))
-        return secondary(path, control, ticket, (unsigned)generation, (unsigned)process, (unsigned)probe_count, probe_only, argc - split, argv + split);
+        return secondary(path, control, ticket, (unsigned)generation, (unsigned)process, (unsigned)probe_count, probe_only, standby, argc - split, argv + split);
     if (rte_eal_init(argc - split, argv + split) < 0) return 1;
     if (rte_eal_process_type() != RTE_PROC_PRIMARY) { rte_eal_cleanup(); return 1; }
     return primary(path, control);
