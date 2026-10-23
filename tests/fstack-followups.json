@@ -106,7 +106,7 @@
       "id": "kni-exception-bridge",
       "title": "Define a supported host exception bridge and KNI policy adaptation",
       "disposition": "adaptation-needed",
-      "reason": "Actual original-DPDK classification and host/native Linux service routing now also enforce independent console/general admission budgets before the owned queue. Four further source scenarios qualify with disabled counters, firstN/over-limit release, classification, ring-full accounting and window reset. Remaining9 source cases concern IPFW/primary-lcore and generation/non-owner/allocation contracts. Static port ownership still lacks fragment reassembly/flow ownership, deeper/opaque encapsulations, full multicast/generation fanout and automatic cross-stack ephemeral discovery; explicit fragment drops are not migration completion.",
+      "reason": "Actual original-DPDK classification and host/native Linux service routing now also enforce independent console/general admission budgets before the owned queue. Four further source scenarios qualify with disabled counters, firstN/over-limit release, classification, ring-full accounting and window reset. Remaining9 source cases concern invalid process-type/primary-lcore and generation/non-owner/allocation contracts. Static port ownership still lacks fragment reassembly/flow ownership, deeper/opaque encapsulations, full multicast/generation fanout and automatic cross-stack ephemeral discovery; explicit fragment drops are not migration completion.",
       "evidence": [
         "src/posix/packet-device.c",
         "tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c",

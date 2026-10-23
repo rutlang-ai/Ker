@@ -1283,7 +1283,7 @@
       "id": "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Source FreeBSD IPFW PR_CFG handler and isolated mutable configuration are not implemented by Linux-TAP port selection. A Linux firewall-policy adaptation or explicit incompatible disposition remains under issue219.",
+      "reason": "Despite its IPFW-style name, the pinned source body supplies -t bogus_proc_type to ff_load_config and asserts rejection. Ker needs explicit invalid-process-type rejection evidence before application entry; port selection or firewall tests do not prove this contract. Retained under issue219.",
       "ker_tests": []
     },
     {

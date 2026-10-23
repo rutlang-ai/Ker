@@ -228,7 +228,7 @@ accept/reject policies. It requires both charged classes, their sum equal to
 selected, no admission drops, and no repeated charge under the existing three
 ARP channel EAGAIN injections, while real host/native IPv4/IPv6 TCP/UDP completes.
 
-Nine KNI source cases remain for primary-lcore/IPFW configuration and
+Nine KNI source cases remain for primary-lcore/invalid process-type configuration and
 generation/non-owner/allocation contracts. Fragment/encapsulation, full
 multicast/generation fanout and automatic cross-stack ephemeral ownership gaps
 remain explicit; admission limits do not implement those behaviors.
