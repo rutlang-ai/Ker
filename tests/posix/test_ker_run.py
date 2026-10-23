@@ -23,6 +23,18 @@ from pathlib import Path
 args = sys.argv
 fd = int(args[args.index('--control-fd') + 1])
 port = args[args.index('--port') + 1]
+if os.environ.get('FAKE_TEARDOWN') == '1':
+    role = 'AUX' if port == 'aux0' else 'PRIMARY'
+    Path(os.environ[f'FAKE_{{role}}_PID_FILE']).write_text(str(os.getpid()))
+    print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02'}}), flush=True)
+    stop_file = Path(os.environ['FAKE_TEARDOWN_FILE'])
+    while not stop_file.exists(): time.sleep(0.001)
+    if os.environ.get(f'FAKE_{{role}}_TEARDOWN_MALFORMED') == '1':
+        print('KER_IO_DONE not-json', flush=True)
+    else:
+        print('KER_IO_DONE {{}}', flush=True)
+    Path(os.environ[f'FAKE_{{role}}_DONE_FILE']).write_text('done')
+    sys.exit(int(os.environ.get(f'FAKE_{{role}}_EXIT', '0')))
 if port == 'aux0' and os.environ.get('FAKE_AUX_MALFORMED') == '1':
     print('KER_IO_DONE not-json', flush=True)
     sys.exit(0)
@@ -67,6 +79,11 @@ class KerRunMainTests(unittest.TestCase):
         cls.aux_done_file = cls.root / 'aux.done'
         cls.app_start_file = cls.root / 'app.start'
         cls.app_done_file = cls.root / 'app.done'
+        cls.teardown_file = cls.root / 'native.stopping'
+        cls.primary_pid_file = cls.root / 'primary.pid'
+        cls.primary_done_file = cls.root / 'primary.done'
+        cls.teardown_start_file = cls.root / 'teardown.start'
+        cls.teardown_app_done_file = cls.root / 'teardown.app.done'
         cls.worker.write_text(WORKER)
         cls.guard.write_text(APP_GUARD)
         cls.worker.chmod(0o755)
@@ -176,6 +193,92 @@ sys.exit(0)
     def test_malformed_auxiliary_completion_remains_an_infrastructure_failure(self):
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config,
             extra_env={'FAKE_AUX_MALFORMED': '1'}), 125)
+
+    def graceful_native_teardown(self, *, native_done=True, primary_exit=0, aux_exit=0, delay=0,
+                                 malformed_primary=False, malformed_aux=False):
+        for path in (self.teardown_file, self.primary_pid_file, self.aux_pid_file,
+                     self.primary_done_file, self.aux_done_file, self.teardown_start_file,
+                     self.teardown_app_done_file):
+            path.unlink(missing_ok=True)
+        app = '''import os, sys, time
+from pathlib import Path
+Path(os.environ['FAKE_TEARDOWN_START_FILE']).write_text(str(time.monotonic_ns()))
+startup = int(os.environ['KER_STARTUP_FD'])
+os.write(startup, b'KER_NATIVE_STOPPING\\n')
+time.sleep(float(os.environ.get('FAKE_TEARDOWN_DELAY', '0')))
+for fd in (int(os.environ['KER_PACKET_FD']), int(os.environ['KER_PACKET_CONTROL_FD'])):
+    os.close(fd)
+for interface in os.environ['KER_PACKET_INTERFACES'].split(';'):
+    for fd in interface.split('|')[:2]: os.close(int(fd))
+Path(os.environ['FAKE_TEARDOWN_FILE']).write_text('stop')
+all_exited = True
+for role in ('PRIMARY', 'AUX'):
+    pid = Path(os.environ[f'FAKE_{role}_PID_FILE']).read_text()
+    done = Path(os.environ[f'FAKE_{role}_DONE_FILE'])
+    deadline = time.monotonic() + 1
+    while not done.exists() and time.monotonic() < deadline: time.sleep(0.001)
+    while time.monotonic() < deadline:
+        try: state = Path('/proc/' + pid + '/stat').read_text().rsplit(')', 1)[1].split()[0]
+        except FileNotFoundError: break
+        if state == 'Z': break
+        time.sleep(0.001)
+    else:
+        all_exited = False
+if os.environ.get('FAKE_NATIVE_DONE') == '1':
+    os.write(startup, b'KER_NATIVE_DONE\\n')
+Path(os.environ['FAKE_TEARDOWN_APP_DONE_FILE']).write_text(
+    f'{time.monotonic_ns()} {int(all_exited)}')
+os.close(startup)
+sys.exit(0)
+'''
+        return self.run_launcher(0, native_done=native_done, config=self.config,
+            app_source=app, capture_stderr=True, extra_env={
+                'FAKE_TEARDOWN': '1', 'FAKE_TEARDOWN_FILE': str(self.teardown_file),
+                'FAKE_PRIMARY_PID_FILE': str(self.primary_pid_file),
+                'FAKE_PRIMARY_DONE_FILE': str(self.primary_done_file),
+                'FAKE_AUX_PID_FILE': str(self.aux_pid_file),
+                'FAKE_AUX_DONE_FILE': str(self.aux_done_file),
+                'FAKE_TEARDOWN_START_FILE': str(self.teardown_start_file),
+                'FAKE_TEARDOWN_APP_DONE_FILE': str(self.teardown_app_done_file),
+                'FAKE_TEARDOWN_DELAY': str(delay),
+                'FAKE_PRIMARY_EXIT': str(primary_exit), 'FAKE_AUX_EXIT': str(aux_exit),
+                'FAKE_PRIMARY_TEARDOWN_MALFORMED': '1' if malformed_primary else '0',
+                'FAKE_AUX_TEARDOWN_MALFORMED': '1' if malformed_aux else '0'})
+
+    def test_native_stopping_authorizes_graceful_worker_exit(self):
+        result, stderr = self.graceful_native_teardown()
+        self.assertEqual(result, 0, stderr)
+        self.assertTrue(self.primary_done_file.exists())
+        self.assertTrue(self.aux_done_file.exists())
+        app_done, all_exited = map(int, self.teardown_app_done_file.read_text().split())
+        elapsed = app_done - int(self.teardown_start_file.read_text())
+        self.assertEqual(all_exited, 1, 'both worker processes must exit before app success')
+        self.assertLess(elapsed, 250_000_000, 'STOPPING and worker exits must complete in the app wait interval')
+
+    def test_native_stopping_seen_during_wait_timeout_allows_orderly_worker_exit(self):
+        result, stderr = self.graceful_native_teardown(delay=0.3)
+        self.assertEqual(result, 0, stderr)
+
+    def test_native_stopping_does_not_mask_missing_done(self):
+        result, stderr = self.graceful_native_teardown(native_done=False)
+        self.assertEqual(result, 125)
+        self.assertIn('native Linux shutdown did not complete', stderr)
+
+    def test_native_stopping_does_not_mask_nonzero_auxiliary_exit(self):
+        result, _ = self.graceful_native_teardown(aux_exit=9)
+        self.assertEqual(result, 125)
+
+    def test_native_stopping_does_not_mask_nonzero_primary_exit(self):
+        result, _ = self.graceful_native_teardown(primary_exit=9)
+        self.assertEqual(result, 125)
+
+    def test_native_stopping_does_not_mask_malformed_primary_completion(self):
+        result, _ = self.graceful_native_teardown(malformed_primary=True)
+        self.assertEqual(result, 125)
+
+    def test_native_stopping_does_not_mask_malformed_auxiliary_completion(self):
+        result, _ = self.graceful_native_teardown(malformed_aux=True)
+        self.assertEqual(result, 125)
 
 
 if __name__ == '__main__':

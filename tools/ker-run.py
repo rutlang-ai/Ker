@@ -770,7 +770,11 @@ class AdditionalWorker:
             except subprocess.TimeoutExpired:
                 self.process.kill(); output, _ = self.process.communicate(); failed = True
             for line in output.splitlines():
-                if line.startswith('KER_IO_DONE '): self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+                if line.startswith('KER_IO_DONE '):
+                    try:
+                        self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+                    except json.JSONDecodeError:
+                        failed = True
             failed |= self.process.returncode != 0 or self.stats is None
         if self.stats is not None:
             self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None)
@@ -784,6 +788,17 @@ def unexpected_worker_exit(worker, additional):
     if stopped:
         return 'additional DPDK worker stopped while the application was running: ' + ', '.join(stopped)
     return None
+
+
+def drain_startup_status(startup_read, startup_status):
+    while True:
+        try:
+            data = os.read(startup_read, 4096)
+        except BlockingIOError:
+            return startup_status
+        if not data:
+            return startup_status
+        startup_status += data
 
 
 def main():
@@ -911,16 +926,15 @@ def main():
                 if exit_code < 0:
                     preserve_signal = True
                 else:
-                    failure = unexpected_worker_exit(worker, additional)
-                    if failure:
-                        exit_code = 125
-                        raise RuntimeError(failure)
+                    startup_status = drain_startup_status(startup_read, startup_status)
+                    if b'KER_NATIVE_STOPPING\n' not in startup_status:
+                        failure = unexpected_worker_exit(worker, additional)
+                        if failure:
+                            exit_code = 125
+                            raise RuntimeError(failure)
                 break
             except subprocess.TimeoutExpired:
-                try:
-                    startup_status += os.read(startup_read, 4096)
-                except BlockingIOError:
-                    pass
+                startup_status = drain_startup_status(startup_read, startup_status)
                 if b'KER_NATIVE_STOPPING\n' in startup_status:
                     if stopping_at is None:
                         stopping_at = time.monotonic()
@@ -957,14 +971,7 @@ def main():
         if control_read >= 0:
             os.close(control_read)
         os.close(control_write)
-        while True:
-            try:
-                extra = os.read(startup_read, 1024)
-                if not extra:
-                    break
-                startup_status += extra
-            except BlockingIOError:
-                break
+        startup_status = drain_startup_status(startup_read, startup_status)
         os.close(startup_read)
         if app and b'KER_NATIVE_READY\n' in startup_status and b'KER_NATIVE_DONE\n' not in startup_status:
             print('ker-run: native Linux shutdown did not complete', file=sys.stderr)
@@ -983,7 +990,11 @@ def main():
                 infrastructure_failure = True
             for line in output.splitlines():
                 if line.startswith('KER_IO_DONE '):
-                    stats = json.loads(line.removeprefix('KER_IO_DONE '))
+                    try:
+                        stats = json.loads(line.removeprefix('KER_IO_DONE '))
+                    except json.JSONDecodeError:
+                        stats = None
+                        infrastructure_failure = True
             if worker.returncode:
                 infrastructure_failure = True
             if stats is not None:
