@@ -2385,7 +2385,7 @@
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_equivalence_hitrate",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. This is not observed PMD queue landing. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
+      "reason": "On a non-skipped run (the source test skips if EAL initialization fails), standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. An EAL-init skip is not a pass and reaches none of these assertions. This is not observed PMD queue landing. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
@@ -2420,7 +2420,7 @@
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash6_equivalence_hitrate",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. No device RX queue is observed. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
+      "reason": "On a non-skipped run (the source test skips if EAL initialization fails), standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. An EAL-init skip is not a pass and reaches none of these assertions. No device RX queue is observed. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {

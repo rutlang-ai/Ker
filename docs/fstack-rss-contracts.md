@@ -31,10 +31,12 @@ not a legitimate runtime capability query. Its software predicate uses the
 resulting mask0xffff. Several adjustment guards run before the branches their
 names suggest. Their exact assertions are useful, but do not prove those later
 branches. The microbench calls `skip()` on unready context; it supplies no timing
-result on that path. IPv4/IPv6 equivalence tests create real DPDK thash contexts
-and require200/200 full-loop software landing at RETA128 and512. They report
-first-candidate rates rather than imposing the same threshold on those rates.
-Neither observes hardware queues.
+result on that path. When their EAL initialization succeeds, the IPv4/IPv6
+equivalence tests create real DPDK thash contexts and require200/200 full-loop
+software landing at RETA128 and512. An EAL-init skip reaches neither the context
+creation nor those assertions and is not a pass. They report first-candidate
+rates rather than imposing the same threshold on those rates. Neither observes
+hardware queues.
 
 ## Original kernel allocation boundary
 
@@ -81,12 +83,12 @@ partial.
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_null` | Source rejects NULL softc or output pointer with -1 before dereference. Guarding a different RSS control API does not implement this source-port-selection consumer. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_degraded` | With BSS RETA size0, context initialization succeeds but leaves ports unready; adjustment declines -1 for native/software fallback. This is degraded readiness, not working reverse calculation. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_single_queue` | Source sets one queue but the earlier unready-context guard already returns -1 in this unit environment. It does not isolate the one-queue branch or prove traffic landing. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_thash_equivalence_hitrate` | Standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. This is not observed PMD queue landing. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_thash_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. An EAL-init skip does not reach these assertions. This is not observed PMD queue landing. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 own-queue verdicts match an independent software Toeplitz replica over64 destination ports and include at least one hit. Source BSS RETA0 implies mask0xffff; it is not a queried device RETA. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_check6_single_queue` | Source own-queue predicate returns1 for a fixed IPv6 tuple with one queue. Ordinary single-queue TCP delivery does not invoke or establish a corresponding Ker predicate ABI. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | IPv6 rule initialization and lookup return a candidate array whose sampled ports pass the source own-queue predicate; missing tuples must miss. Ker has no IPv6 candidate table consumer. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_guard` | Source IPv6 adjustment rejects NULL softc/output and declines after initialization with RETA0/unready context. Neither disabled device RSS nor zero packet counters proves these guards. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_thash6_equivalence_hitrate` | Standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. No device RX queue is observed. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_thash6_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. An EAL-init skip does not reach these assertions. No device RX queue is observed. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_off` | Source makes100 IPv4 adjustments with recheck=0, all declining at the unready-context guard, and asserts zero wrapped own-queue checks. The recheck branch is not reached. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_on` | Source makes100 IPv4 adjustments with recheck=1 but the unready-context guard still prevents rechecks; zero wrapper calls plus a direct predicate-call sanity check are asserted. It does not demonstrate enabled runtime rechecking. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_off` | Source makes100 IPv6 adjustments with recheck=0; RETA0/unready initialization causes -1 and no wrapped predicate calls. No ready recheck branch is exercised. |
