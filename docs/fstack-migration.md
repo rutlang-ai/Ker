@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 129 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 20 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 221 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 130 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 22 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 218 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 304 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 241 项是
-20 partial + 221 blocked，另有 8 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 303 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 240 项是
+22 partial + 218 blocked，另有 8 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -67,7 +67,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
 | Resolve device/run lifecycle and upstream fault-injection contracts | 7 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
-| Adapt typed vdev, bond and multi-port configuration | 10 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
+| Adapt typed vdev, bond and multi-port configuration | 9 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 13 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
 | Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
@@ -133,7 +133,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 22 | 6 | 68 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 23 | 8 | 65 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 5 | 2 | 60 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
@@ -834,6 +834,24 @@ TAP scatter 的接收分段数在 queue setup 时固定，仅设置 MTU 并不�
 切换允许临时丢包，不承诺并发报文无损或瞬间原子生效；只验证真实 TAP PMD，
 不替代物理网卡验收。上游 Linux/DPDK 源码保持不变。
 
-当前共有 129 项 scenario-adapted、20 partial、221 blocked，未完成 241 项；
-另有 8 项架构专用和 55 项上游工具链专用。后续清单保留剩余 304 项的 16 个 issue 分组，
+MTU 批次后共有 129 项 scenario-adapted、20 partial、221 blocked，未完成 241 项；
+另有 8 项架构专用和 55 项上游工具链专用。该批次的后续清单保留剩余 304 项的 16 个 issue 分组，
 整个迁移目标仍未完成。
+
+
+类型化 vdev 配置现支持 `[dpdk] nb_vdev` 与连续的 `[vdev0]..[vdevN]`，
+将 iface/path/queues/queue_size/mac/cq 交给原版 DPDK `net_virtio_userN`。
+缺少 nb_vdev 的精确源 fixture 已验证在库加载前失败，对应源用例转为 scenario-adapted。
+完整 vdev 及 bond/vdev 重复键源用例只转为 partial：实际 PMD 不接受源 fixture 中
+`iface` 与 Unix socket path 的组合，`iface` 仅适用于 vhost-kernel，不能为了通过而丢弃它。
+
+独立 vhost/TAP 后端与 native virtio-user 前端已验证受支持的 socket 子集：
+实际 MAC、2 对队列容量、512 个 RX virtqueue descriptors，以及逐方向 IPv4/IPv6
+ICMP 有效载荷、完整帧和 checksum。worker 仍启用一对 RX/TX queue；容量为 2
+不等于同时使用两对 queue，也不构成 RSS 迁移通过。重复键和重复 section 的最终
+配置必须驱动相同真实流量；两个 DPDK 进程退出时均无遗留 mbuf，后端 socket 被删除。
+源组合则必须明确报告原始 PMD 错误并清理。kernel iface 后端、bond 重复键/运行及
+C 分配失败/valgrind 合同继续由 [#224](https://github.com/rutlang-ai/Ker/issues/224) 跟踪。
+
+当前为 130 scenario-adapted、22 partial、218 blocked，共 240 个未完成案例；
+另有 8 项架构专用、55 项工具链专用。后续清单仍覆盖其余 303 项，建单不等于迁移完成。

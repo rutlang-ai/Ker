@@ -121,6 +121,21 @@ static void test_rx_startup_drain(void)
     CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4,
         &discarded) == -EAGAIN);
     CHECK(discarded == 5 && mock.freed == 5 && mock.calls == 3);
+
+    /* A full configured virtio ring exceeds the old adjusted 256-descriptor
+     * budget. Drain all 4096 packets, then keep the one-packet overflow probe. */
+    uint16_t full_ring[130];
+    for (size_t i = 0; i < 128; ++i) full_ring[i] = 32;
+    full_ring[128] = 0;
+    mock = (struct rx_mock){.bursts = full_ring, .burst_count = 130};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4096,
+        &discarded) == 0);
+    CHECK(discarded == 4096 && mock.freed == 4096 && mock.calls == 129);
+    full_ring[128] = 1;
+    mock = (struct rx_mock){.bursts = full_ring, .burst_count = 130};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4096,
+        &discarded) == -EAGAIN);
+    CHECK(discarded == 4097 && mock.freed == 4097 && mock.calls == 129);
 }
 static void test_scatter_rx_limits(void)
 {
@@ -174,6 +189,17 @@ static void test_worker_wait_plan(void)
     CHECK(events == 0 && wait_us == 0);
 }
 
+static void test_descriptor_pool_budget(void)
+{
+    uint32_t count = 0;
+    CHECK(ker_worker_mbuf_pool_count(256, 256, &count) == 0 && count == 4095);
+    CHECK(ker_worker_mbuf_pool_count(4096, 4096, &count) == 0 && count == 8512);
+    CHECK(ker_worker_mbuf_pool_count(32768, 32768, &count) == 0 && count == 65856);
+    CHECK(ker_worker_mbuf_pool_count(1, 1, NULL) == -EINVAL);
+    CHECK(ker_worker_mbuf_pool_count(UINT32_MAX, 1, &count) == -EOVERFLOW);
+    CHECK(ker_worker_mbuf_pool_count(UINT32_MAX - 319, 0, &count) == -EOVERFLOW);
+}
+
 static void test_scatter_segment_limits(void)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
@@ -196,6 +222,7 @@ static void test_scatter_segment_limits(void)
 int main(void)
 {
     test_worker_wait_plan();
+    test_descriptor_pool_budget();
     test_rx_startup_drain();
     test_scatter_rx_limits();
     test_scatter_segment_limits();

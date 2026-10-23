@@ -61,8 +61,8 @@ RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤尚未验收，
 
 ```sh
 git submodule update --init --recursive --depth 1
-KER_DPDK_DRIVERS=mempool/ring,net/ring,net/tap \
-KER_DPDK_LIBS=eal,ring,mempool,mbuf,ethdev,gso \
+KER_DPDK_DRIVERS=mempool/ring,net/ring,net/tap,net/virtio,net/vhost,bus/pci,bus/vdev \
+KER_DPDK_LIBS=eal,ring,mempool,mbuf,ethdev,gso,vhost,cryptodev,dmadev \
   bash tools/build-dpdk.sh
 python3 tools/build-native-linux.py --build "$PWD/build-native-linux" --jobs 16
 cmake -S . -B build-native-tcp \
@@ -1117,3 +1117,41 @@ TCP_CONGESTION：`native-fstack-tcp-congestion` 在宿主参考及原生客户�
 宿主参考和独立宿主对端使用自身默认值，不额外要求宿主提供 CUBIC。
 原生连接、实际 DPDK TX/RX 和零 outstanding 为必需证据。算法全部来自固定的
 原版 Linux；不声明拥塞窗口公式、吞吐/公平性、丢包重传或 IPv6 覆盖。
+
+
+### 类型化 virtio-user vdev
+
+INI 可以声明原版 DPDK virtio-user 设备，无需把设备参数拼入 EAL 字符串：
+
+```ini
+[dpdk]
+nb_vdev=1
+port=net_virtio_user0
+eal=--no-huge --no-pci --no-shconf --iova-mode=va -m 64
+
+[vdev0]
+path=/run/example-vhost.sock
+queues=2
+queue_size=512
+mac=00:11:22:33:44:55
+cq=1
+```
+
+`nb_vdev` 支持 0..16，section 必须精确覆盖 0..N-1。path 必填，相对路径以
+配置文件目录为基准；其余默认 queues=1、queue_size=256、cq=0，与固定 PMD 一致。
+queues 范围 1..128，多对 queue 需要 cq=1；ring size 必须为 64..32768 的 2 次幂。
+MAC 必须非零单播。可选 iface 最长 15 字符，原始 PMD 仅允许 vhost-kernel 使用它；
+Unix socket 后端必须省略 iface，组合错误不会被静默转换或忽略。
+重复键/section 以最终值为准。未知键、缺失 count、索引不连续和与原始 EAL --vdev
+冲突在启动前拒绝；port 必须选择一个声明的 net_virtio_userN。
+
+当前 worker 仍只使用选中设备的一对 RX/TX queue。queues 配置 PMD 可用容量，
+不承诺多队列调度、RSS 或多接口流量。内核/vDPA 后端仍受原始 DPDK 及设备权限限制。
+`io.driver`、`io.max_rx_queues`、`io.max_tx_queues` 和 `io.rx_descriptors`
+提供原始 ethdev 的诊断值；队列信息不可用时 descriptors 为 0。
+
+`native-fstack-typed-vdev-config` 检查源配置映射及失败边界；
+`native-fstack-typed-vdev` 使用独立 vhost/TAP 进程和宿主内核做真实双向 IPv4/IPv6
+互通及 ownership 验证。测试需要固定 DPDK 的 net_virtio/net_vhost/net_tap PMD；
+缺少模块时明确 skip，不作为运行通过。完整 F-Stack iface+socket fixture、bond 与
+C 分配器合同尚未通过，详见迁移清单和 issue224。

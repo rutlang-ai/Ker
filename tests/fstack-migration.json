@@ -1393,16 +1393,31 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vdev_cfg_handler_no_nb_vdev_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Run the exact pinned missing-nb_vdev fixture through the actual Ker reader; a vdev section without a positive count fails with argparse status2 before resolving a missing native library or starting a worker. Ker returns a CLI/configuration error rather than the F-Stack loader -1 ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-typed-vdev-config",
+          "provenance_case": "native-fstack-typed-vdev-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "All six source vdev fields are parsed with final-value precedence and map to original DPDK net_virtio_user arguments. Actual independent vhost/TAP IPv4/IPv6 traffic verifies the supported socket-backend subset, MAC, two-pair capacity,512 descriptors and cleanup. The pinned PMD explicitly rejects the source iface+Unix-socket tuple; no field is silently discarded.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-typed-vdev-config",
+          "provenance_case": "native-fstack-typed-vdev-config"
+        },
+        {
+          "ctest": "native-fstack-typed-vdev",
+          "provenance_case": "native-fstack-typed-vdev"
+        }
+      ],
+      "remaining": "The exact source fixture combines iface with a Unix socket path, which pinned DPDK rejects because iface is vhost-kernel-only. Kernel-backend iface runtime acceptance is not qualified here; source queue count is PMD capacity, not proof of active multi-queue/RSS use. Full F-Stack config structs/allocation-failure ABI remain unmapped; tracked in issue224."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
@@ -1601,9 +1616,19 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "The exact pinned repeated vdev strings retain the final iface/path/MAC. Repeated sections and initially invalid replaced values also drive actual virtio-user/vhost/TAP traffic with final MAC, queue capacity and descriptor settings, and both sides free all mbufs.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-typed-vdev-config",
+          "provenance_case": "native-fstack-typed-vdev-config"
+        },
+        {
+          "ctest": "native-fstack-typed-vdev",
+          "provenance_case": "native-fstack-typed-vdev"
+        }
+      ],
+      "remaining": "Repeated bond slave/primary/MAC/xmit-policy mapping and actual bond runtime are not implemented. Python storage replacement and DPDK buffer ownership are not F-Stack C strdup/free or valgrind leak proof. The source iface+socket backend combination remains unsupported by the pinned PMD; tracked in issue224."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
