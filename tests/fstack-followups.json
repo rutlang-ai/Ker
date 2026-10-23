@@ -335,7 +335,7 @@
       "id": "zero-copy-ownership",
       "title": "Define a Linux-native zero-copy send and ownership contract",
       "disposition": "contract-review",
-      "reason": "The real pinned source uses FreeBSD owned-chain sends, while unit tests mirror mbuf/header algorithms. Linux VMA buffers and original MSG_ZEROCOPY wire/completion/lifetime acceptance now exist; source owned-chain/write-cursor contracts still need case-specific review. The upstream default DPDK path also copies, so packet-copy removal is a distinct stronger milestone rather than a prerequisite for all13 socket-stage cases.",
+      "reason": "Case-specific audit qualifies four allocation/send validation scenarios through actual original Linux VMAs/sockets/completions. Nine source cases remain: two FreeBSD mbuf layout assertions are architecture-specific; seven empty-chain/write-cursor/zero-send contracts remain blocked. Linux scatter-gather delivery and send guards do not implement a staged owned-chain writer. Default upstream DPDK copying makes end-to-end copy removal a distinct stronger milestone.",
       "evidence": [
         "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
         "src/runtime/tx-export.c",
@@ -343,7 +343,9 @@
         "src/posix/native-buffer.c",
         "src/posix/posix-socket.c",
         "tests/posix/native-buffer-test.h",
-        "docs/native-buffers.md"
+        "docs/native-buffers.md",
+        "tests/posix/zc-validation.py",
+        "docs/fstack-zc-contracts.md"
       ],
       "acceptance": [
         "Decide whether an actual Linux-backed zero-copy socket/export API belongs in Ker and define buffer lifetime/completion/error semantics.",
@@ -354,17 +356,13 @@
       "cases": [
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_negative_len_returns_error",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds"
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/225"
     },

@@ -4305,93 +4305,113 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "status": "architecture-specific",
+      "reason": "Asserts the FreeBSD mbuf head M_PKTHDR bit. Original Linux VMA/skb interfaces have no such mbuf field; a fabricated mbuf mirror would not qualify. Explicit incompatible source layout under issue225, not a Ker pass.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "status": "architecture-specific",
+      "reason": "Asserts the initial FreeBSD head m_pkthdr.len field, not zero-filled payload storage. Linux VMA buffers have no mbuf header/write cursor. Explicit incompatible source layout under issue225, not a Ker pass.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_negative_len_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real ker_posix_buffer_alloc rejects signed negative lengths converted to size_t (-1 and INT_MIN) with NULL/EINVAL, preserving a live native mapping. This adapts allocation rejection through the Linux-native API, not ff_zc_mbuf_get ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-zc-mbuf_get_negative_len_returns_error"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "reason": "Source allocates an owned minimal mbuf chain for zero capacity; native buffer_alloc(0) intentionally rejects EINVAL. No equivalent owned empty-chain API. Contract decision remains under issue225.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "reason": "No staged write-cursor/owned-head length API. Filling a VMA or delivering a datagram does not prove repeated writes accumulate a head length. Remains under issue225.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "reason": "No staged write-cursor API. Send-range rejection occurs at a different phase and cannot substitute for source write-overflow rejection. Remains under issue225.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "reason": "No staged write-cursor API. Rejecting NULL send payloads does not prove NULL input rejection during owned-chain writes. Remains under issue225.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "reason": "No staged write-cursor/head-length API. Linux zero-byte UDP send is a real datagram with a completion ID, not this no-op write. Remains under issue225.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "reason": "Source asserts per-mbuf m_len, m_next and head-length mutation. Actual multi-VMA Linux sendmsg proves scatter-gather delivery/completions, not a source owned-chain write cursor. Remains under issue225.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real native SO_ZEROCOPY send/sendmsg/sendmmsg reject NULL nonempty payloads with EFAULT before GUP; no receiver data, completion or caller-byte mutation. Linux EFAULT intentionally replaces the source owned-chain EINVAL; this maps the rejection scenario, not errno/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-zc-send_mb_null_returns_einval"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Real MSG_ZEROCOPY send/sendmsg reject one mapped extent of INT_MAX+1 bytes with EFAULT before GUP; no data, completion or caller-byte mutation. Native allocations are limited to INT_MAX. This maps single-extent rejection, not the ff_zc ABI or an aggregate iovec INT_MAX limit.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-zc-send_nbytes_overflow_returns_einval"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
+      "reason": "Source owned-chain send rejects zero bytes; original Linux UDP permits an empty datagram and allocates a zerocopy completion ID. Preserve Linux semantics; no equivalent owned-chain rejection API. Contract decision remains under issue225.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Source asserts only that a non-NULL 16-byte argument passes its mirror validator. Actual registered 16-byte MSG_ZEROCOPY send reaches original Linux, delivers exact peer bytes and completes through original MSG_ERRQUEUE starting at ID zero. No claim of FreeBSD owned-chain handoff or end-to-end copy elimination.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-zc-send_valid_args_proceeds"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_hello.c::test_hello_world",

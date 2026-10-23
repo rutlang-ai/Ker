@@ -14,10 +14,10 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 136 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 140 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 213 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
-| architecture-specific | 8 | FreeBSD callout/内部 kqueue filter 断言，不适用于 Linux 内部结构 |
+| blocked | 207 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| architecture-specific | 10 | FreeBSD callout/内部 kqueue filter/mbuf 头字段断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 297 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 234 项是
-21 partial + 213 blocked，另有 8 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 293 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 228 项是
+21 partial + 207 blocked，另有 10 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -68,7 +68,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
 | Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 6 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
-| Define a Linux-native zero-copy send and ownership contract | 13 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
+| Define a Linux-native zero-copy send and ownership contract | 9 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
 | Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
@@ -1010,3 +1010,9 @@ F-Stack默认ff_dpdk_if_send同样复制；FF_USE_PAGE_ARRAY是独立可选路�
 Unix packet通道零拷贝是更强的后续里程碑，不额外作为全部13项socket快路径测试
 的完成前提，也不能由完成码0冒充；其所有权/背压/故障停机要求另行保留。
 当前仍为136 scenario-adapted、21 partial、213 blocked，共234项未完成。
+
+## 零拷贝参数合同逐项验收
+
+[13 项合同核对](fstack-zc-contracts.md) 新增 4 项真实 Linux 参数边界验收，
+2 项 FreeBSD mbuf 头字段明确为结构特定，7 项继续 blocked。当前 partial + blocked
+共 228 项；所有 293 项非 adapted 记录仍有 issue 跟踪，未声称全量完成。

@@ -48,6 +48,11 @@ static void reconfigure(void)
 }
 int main(int argc, char **argv)
 {
+#ifdef KER_TEST_NATIVE_BUFFERS
+    if (argc == 2 && !strcmp(argv[1], "contracts")) {
+        buffer_init(); buffer_guards(); buffer_finish(); return 0;
+    }
+#endif
     bool failure = argc == 3 && !strcmp(argv[2], "failure");
     bool wait_for_link = argc == 3 && !strcmp(argv[2], "wait");
     bool tap_extension = argc == 3 && !strcmp(argv[2], "tap-extension");

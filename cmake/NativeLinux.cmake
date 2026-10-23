@@ -964,6 +964,12 @@ if(BUILD_TESTING)
     target_include_directories(ker-native-buffer-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_compile_options(ker-native-buffer-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-native-buffer-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    add_test(NAME native-fstack-zc-validation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/zc-validation.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-native-buffer-test>"
+            --pmd-root "${ker_offload_library_root}")
+    set_tests_properties(native-fstack-zc-validation PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-native-buffers
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/virtio-kernel-offloads.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
