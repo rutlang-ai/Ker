@@ -17,6 +17,8 @@ import sys
 import tempfile
 import time
 
+from hugepage_preflight import hugepage_capacity_error
+
 
 def require(value, message):
     if not value:
@@ -47,10 +49,9 @@ def main():
     parser.add_argument('--tool', type=Path, required=True)
     parser.add_argument('--huge-dir', type=Path, default=Path('/dev/hugepages'))
     args = parser.parse_args()
-    fields = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
-    if (int(fields.get('HugePages_Free', '0').split()[0]) < 32 or
-            not args.huge_dir.is_dir() or not os.access(args.huge_dir, os.W_OK)):
-        print('SKIP: writable hugetlbfs and at least64MiB free hugepages are required; no host settings changed')
+    reason = hugepage_capacity_error(args.huge_dir, 64 * 1024 * 1024)
+    if reason:
+        print('SKIP: ' + reason + '; no host settings changed')
         return 77
     spec = importlib.util.spec_from_file_location('ker_session_tool', args.tool)
     api = importlib.util.module_from_spec(spec); spec.loader.exec_module(api)

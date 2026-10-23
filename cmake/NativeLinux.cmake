@@ -137,6 +137,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-session-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    add_test(NAME native-fstack-hugepage-preflight
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_hugepage_preflight.py")
+    set_tests_properties(native-fstack-hugepage-preflight PROPERTIES LABELS "fstack;session")
     set_tests_properties(native-fstack-session-registration PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
         LABELS "fstack;session")
     add_executable(ker-packet-device-test tests/posix/fstack-packet-device.c src/posix/packet-device.c)
