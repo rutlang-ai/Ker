@@ -42,7 +42,7 @@ def folded(data):
 
 
 def capture(sock, stop, port):
-    counts = {'tcp4': 0, 'tcp6': 0, 'udp4': 0, 'udp6': 0}
+    counts = {'tcp4': 0, 'tcp6': 0, 'udp4': 0, 'udp6': 0, 'udp6ext': 0}
     coverage = {4: bytearray(512 * 1024), 6: bytearray(512 * 1024)}
     initial = {}
     sock.settimeout(.1)
@@ -54,6 +54,7 @@ def capture(sock, stop, port):
                 break
             continue
         if frame[12:14] == b'\x08\x00' and frame[26:30] == socket.inet_pton(socket.AF_INET, '198.18.0.2'):
+            extension = False
             version, offset = 4, 14 + (frame[14] & 15) * 4
             length, proto = struct.unpack_from('!H', frame, 16)[0], frame[23]
             packet = frame[14:14 + length]
@@ -63,6 +64,12 @@ def capture(sock, stop, port):
         elif frame[12:14] == b'\x86\xdd' and frame[22:38] == socket.inet_pton(socket.AF_INET6, '2001:db8:1::2'):
             version, offset = 6, 54
             length, proto = struct.unpack_from('!H', frame, 18)[0], frame[20]
+            extension = False
+            if proto == 0 and length >= 8:
+                extension_length = (frame[offset + 1] + 1) * 8
+                require(extension_length <= length, 'invalid captured IPv6 extension length')
+                proto, offset = frame[offset], offset + extension_length
+                extension = True
             payload = frame[offset:54 + length]
             pseudo = frame[22:54] + struct.pack('!I', len(payload)) + bytes([0, 0, 0, proto])
             length += 40
@@ -84,7 +91,8 @@ def capture(sock, stop, port):
                 require(data == bytes(((relative + i) * 17 ^ ((relative + i) >> 8) ^ ((relative + i) >> 16) ^ (version == 6)) & 255 for i in range(len(data))),
                         'wire TCP payload differs')
                 coverage[version][relative:relative + len(data)] = b'\1' * len(data)
-        counts[('tcp' if proto == 6 else 'udp') + str(version)] += 1
+        key = 'udp6ext' if version == 6 and extension else ('tcp' if proto == 6 else 'udp') + str(version)
+        counts[key] += 1
     require(all(value.count(1) == 512 * 1024 for value in coverage.values()), 'wire capture missed TCP payload bytes')
     _, drops = struct.unpack('II', sock.getsockopt(263, 6, 8))
     require(drops == 0, 'independent packet socket dropped ' + str(drops) + ' packets')
@@ -198,14 +206,15 @@ def main():
                         result, _ = launch([sys.executable, str(args.launcher), '--library', str(args.library),
                             '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
                             '--port', 'net_tap0', '--eal', eal, '--mbuf-mode', storage, '--tx-offloads', mode,
-                            '--stats', str(stats), '--', str(args.app), str(port)], env=environment)
+                            '--stats', str(stats), '--', str(args.app), str(port), 'tap-extension'], env=environment)
                         require(result.returncode == 0 and result.stdout.count('PASS:') == 2,
                                 mode + ': native offload failed: ' + result.stdout + result.stderr)
                         for future in peers:
                             future.result(timeout=2)
                         stop.set()
                         counts = recording.result(timeout=2)
-                        require(counts['tcp4'] > 100 and counts['tcp6'] > 100 and counts['udp4'] == counts['udp6'] == 4,
+                        require(counts['tcp4'] > 100 and counts['tcp6'] > 100 and
+                                counts['udp4'] == 4 and counts['udp6'] == 4 and counts['udp6ext'] == 1,
                                 'missing complete independent wire evidence: ' + str(counts))
                         if fault:
                             require('INJECT:' in result.stderr, 'fault did not reach original PMD')

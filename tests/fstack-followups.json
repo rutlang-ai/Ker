@@ -212,7 +212,7 @@
       "id": "hardware-offloads",
       "title": "Add positive hardware checksum and TSO acceptance coverage",
       "disposition": "adaptation-needed",
-      "reason": "Actual Linux/DPDK metadata and TAP software wire acceptance exist. An opt-in isolated TAP patch qualifies rejection ownership and safe retries under issue244. Physical-NIC and IPv6 TSO execution remain unqualified; unmodified TAP keeps fail-closed rejection.",
+      "reason": "Actual Linux/DPDK metadata, TAP software checksum/IPv4 TSO, and original virtio/vhost-kernel checksum/IPv4+IPv6 TSO have independent wire/payload acceptance. TAP rejection retry requires optional isolated patch244. Physical-NIC offload execution remains unqualified.",
       "evidence": [
         "src/runtime/ethdev-tx.c",
         "tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c",
@@ -221,7 +221,9 @@
         "tests/posix/tap-offload-failure.c",
         "compat/dpdk/tap-tx-retry.patch",
         "tests/posix/tap-offload-retry.c",
-        "tools/prepare-dpdk-tap-retry.py"
+        "tools/prepare-dpdk-tap-retry.py",
+        "src/posix/worker-receive-mode.c",
+        "tests/posix/virtio-kernel-offloads.py"
       ],
       "acceptance": [
         "Preserve upstream Linux protocol behavior and prefer DPDK adapters; isolate and document any unavoidable minimal driver ownership fix.",
@@ -295,7 +297,7 @@
       "id": "dpdk-devices",
       "title": "Adapt typed vdev, bond and multi-port configuration",
       "disposition": "adaptation-needed",
-      "reason": "Typed vdev/single-bond settings and native multi-interface routing/VIPs now have real device and cleanup evidence. The full DPDK source fixture is partial: its global/per-port lcore topology, active multi-queue RSS/thash/tables and exact structs remain unqualified. Remaining cases also need vhost-kernel iface and C allocation-failure/combined fixture contracts.",
+      "reason": "Typed vdev/bond settings and native multi-interface routing have actual traffic and cleanup evidence. Named vhost-kernel iface now qualifies IPv4/IPv6 checksum/TSO, active queues, descriptor geometry and receive-mode rollback. The literal iface+Unix-socket fixture, full lcore/RSS topology, exact structs and C allocation-failure/combined fixture contracts remain partial or blocked.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
@@ -309,13 +311,15 @@
         "tests/posix/test_typed_bond.py",
         "src/posix/extra-interfaces.c",
         "tests/posix/native-multiport.py",
-        "tests/posix/test_multiport_config.py"
+        "tests/posix/test_multiport_config.py",
+        "src/posix/worker-receive-mode.c",
+        "tests/posix/virtio-kernel-offloads.py"
       ],
       "acceptance": [
         "Specify useful typed configuration mappings to real supported EAL/PMD options while preserving strict validation.",
         "Test repeated sections/options, missing count/configuration, invalid section/index and allocation failures before runtime side effects.",
         "Qualify actual vdev/bond/multi-port behavior and cleanup on a capable backend; configuration parsing alone is not a device pass.",
-        "Resolve the pinned source iface+Unix-socket mismatch explicitly. Qualify a supported vhost-kernel iface path on an accessible backend; do not drop iface or call socket-backend traffic a full source fixture pass."
+        "Resolve the pinned source iface+Unix-socket mismatch explicitly. Retain qualified named vhost-kernel iface traffic/rollback coverage; do not drop iface or call socket-backend traffic a full source fixture pass."
       ],
       "cases": [
         "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",

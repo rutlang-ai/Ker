@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #include <time.h>
 static void check(bool success, const char *message)
@@ -44,9 +45,14 @@ static void reconfigure(void)
 }
 int main(int argc, char **argv)
 {
-    check(argc == 2 || argc == 3, "usage: tx-offloads PORT [failure]");
+    bool failure = argc == 3 && !strcmp(argv[2], "failure");
+    bool wait_for_link = argc == 3 && !strcmp(argv[2], "wait");
+    bool tap_extension = argc == 3 && !strcmp(argv[2], "tap-extension");
+    check(argc == 2 || failure || wait_for_link || tap_extension,
+        "usage: tx-offloads PORT [failure|wait|tap-extension]");
+    if (wait_for_link) { puts("READY"); fflush(stdout); check(getchar() == 'G', "wait for independent link"); }
     int port = atoi(argv[1]);
-    if (argc == 2) reconfigure();
+    if (argc == 2 || wait_for_link || tap_extension) reconfigure();
     for (unsigned family = 0; family < 2; family++) {
         struct sockaddr_storage target = {0};
         socklen_t size;
@@ -63,7 +69,7 @@ int main(int argc, char **argv)
         check(fd >= 0 && !connect(fd, (void *)&target, size), "native UDP");
         struct timeval timeout = {.tv_sec = 5};
         check(!setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), "UDP timeout");
-        if (argc == 3) {
+        if (failure) {
             check(send(fd, "failure", 7, 0) == 7, "offload failure trigger");
             sleep(5);
             return 0;
@@ -75,6 +81,23 @@ int main(int argc, char **argv)
             check(send(fd, bytes, lengths[index], 0) == lengths[index], "UDP send");
             check(recv(fd, reply, sizeof(reply), 0) == lengths[index] &&
                 !memcmp(bytes, reply, lengths[index]), "UDP exact reply");
+        }
+        if (family && tap_extension) {
+            /* Linux emits CHECKSUM_PARTIAL metadata for this valid IPv6
+             * Hop-by-Hop UDP datagram; the TAP PMD must keep it on the
+             * kernel-seeded byte-range checksum path. */
+            unsigned char extension[8] = {IPPROTO_UDP, 0, 0, 0, 0, 0, 0, 0};
+            unsigned char control[CMSG_SPACE(sizeof(extension))] = {0};
+            unsigned char payload[] = "tap-ipv6-extension";
+            struct iovec iov = {.iov_base = payload, .iov_len = sizeof(payload)};
+            struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+                .msg_control = control, .msg_controllen = sizeof(control)};
+            struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+            cmsg->cmsg_level = IPPROTO_IPV6;
+            cmsg->cmsg_type = IPV6_HOPOPTS;
+            cmsg->cmsg_len = CMSG_LEN(sizeof(extension));
+            memcpy(CMSG_DATA(cmsg), extension, sizeof(extension));
+            check(sendmsg(fd, &message, 0) == sizeof(payload), "IPv6 Hop-by-Hop UDP send");
         }
         check(!close(fd), "UDP close");
         fd = socket(family ? AF_INET6 : AF_INET, SOCK_STREAM, 0);

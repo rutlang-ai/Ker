@@ -1800,6 +1800,30 @@
         "native-fstack-tap-offload-retry"
       ],
       "adaptation": "Real pinned TAP PMD in an isolated namespace, built with the explicit ownership patch only. UDP, ordinary TCP, chained GSO, GSO zero-segmentation and implicit TCP-checksum TSO inputs face copy ENOMEM, first writev EAGAIN, rejection after two successful GSO writes, and actual exhaustion of caller/private GSO pools (including partial allocation cleanup). A zero accepted count must preserve every caller mbuf descriptor byte, chain pointer, data byte and flags, and reclaim every temporary mbuf across all pools. Release pressure then resend the exact same input; require one accepted packet and all pool counts restored. PMD close requires zero in-use buffers. Unpatched PMDs skip this optional qualification; their known unsafe path remains covered separately. Full copies trade additional allocation/bandwidth for deterministic ownership; no NIC hardware or performance claim. Linux/GSO/checksum protocol behavior stays upstream; only TAP copy lifetime and rejected-input flags are patched, with a per-port driver-owned ABI marker."
+    },
+    "native-fstack-virtio-kernel-offloads": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_ip_csum",
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_tso",
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-virtio-kernel-offloads"
+      ],
+      "adaptation": "Actual original virtio-user PMD -> host vhost-net/TAP -> original Linux TC/veth software offload. Five off/checksum/TSO large/scatter profiles, including two active queue pairs and persistent TAP with initial ALLMULTI off/on. Run original Linux IPv4/IPv6 TCP512KiB with nonperiodic data and UDP0/1/511/1400 after native/PMD MTU1600/1500 restart. Require original Linux TSO4 and TSO6 requests, actual PMD enabled-feature/queue/MAC readback, full independent raw-wire TCP byte coverage, IPv4/TCP/UDP checksums, MTU bounds, zero capture drops and outstanding buffers. Private veth GRO/GSO/TSO and TX checksums are disabled to force complete wire bytes at capture. Linux TC redirects Ethernet because the original kernel backend sets the guest MAC on host TAP, which a Linux bridge would consume locally. Original Linux owns protocol and host segmentation; no upstream changes or Ker protocol implementation. A scoped adapter sets/reads real host IFF_ALLMULTI only for the actual named kernel backend when CTRL_RX is unavailable; restores only its changed flag at teardown. Persistent TAP proves off/on restoration and unrelated UP preservation. Missing explicit iface and injected readback EIO after a successful set must fail before app entry, restore flags and reclaim all mbufs. Test skips only when original PMD or accessible vhost device is missing. Software evidence does not fulfill the remaining physical NIC requirement under221."
+    },
+    "native-fstack-virtio-kernel-config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_vdev_full",
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+      ],
+      "ker_ctests": [
+        "native-fstack-virtio-kernel-offloads"
+      ],
+      "adaptation": "Supported typed kernel-backend tuple uses path=/dev/vhost-net, explicit iface, queues1/2, queue_size512, MAC and cq1 through original virtio-user. Assert actual PMD selection, capacity/active pairs/descriptor readback and native IPv4/IPv6 TCP/UDP plus TSO4/6. Named kernel TAP receives a real verified ALLMULTI setting with rollback/teardown checks; auto-generated unsupported iface path fails before app. This does not validate the literal source iface+Unix-socket tuple, F-Stack structs/allocator ABI, combined bond/vdev topology or RSS. Those remain partial under224."
     }
   }
 }

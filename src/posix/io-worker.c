@@ -29,6 +29,7 @@
 #include "worker-scatter.h"
 #include "worker-rss.h"
 #include "worker-offload.h"
+#include "worker-receive-mode.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
@@ -340,9 +341,11 @@ int main(int argc, char **argv)
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
-    uint64_t rx_startup_discarded = 0, idle_waits = 0, idle_timeouts = 0;
+    uint64_t rx_startup_discarded = 0, rx_shutdown_discarded = 0, idle_waits = 0, idle_timeouts = 0;
     struct ker_packet_header tx_header = {0};
     struct ker_worker_offload offload = {0};
+    struct ker_worker_receive_mode receive_mode = {.socket_fd = -1, .identity_fd = -1};
+    bool receive_mode_restored = false;
     uint64_t tx_tcp_checksum = 0, tx_udp_checksum = 0, tx_ip_checksum = 0, tx_tso4 = 0, tx_tso6 = 0, tx_checksum_fallback = 0;
     unsigned char tx_bytes[sizeof(struct ker_packet_header) + KER_NATIVE_MAX_GSO], rx_bytes[WIRE_MAX];
     struct ker_worker_tx batch = {0};
@@ -549,13 +552,9 @@ int main(int argc, char **argv)
     /* Membership filtering belongs to Linux. Until its receive-mode updates
      * cross the packet channel, opt in to PMD all-multicast reception. */
     if (all_multicast) {
-        int result = rte_eth_allmulticast_enable(port);
+        int result = ker_worker_allmulticast_enable(port, &receive_mode);
         if (result) {
             fprintf(stderr, "ker: ethdev cannot enable --all-multicast: %s\n", rte_strerror(-result));
-            goto cleanup;
-        }
-        if (rte_eth_allmulticast_get(port) != 1) {
-            fprintf(stderr, "ker: ethdev did not enable --all-multicast\n");
             goto cleanup;
         }
     }
@@ -598,10 +597,10 @@ int main(int argc, char **argv)
         for (unsigned index = 0; index < rss.key_length; index++) snprintf(key + index * 2, 3, "%02x", rss.key[index]);
         snprintf(rss_json, sizeof(rss_json), "{\"types\":%llu,\"key\":\"%s\",\"reta_size\":%u,\"reta_mapping\":\"index_mod_queues\",\"verified\":true}", (unsigned long long)rss.types, key, rss.reta_size);
     }
-    printf("KER_IO_READY {\"tap_retry_safe\":%s,\"tx_offload_features\":%u,\"tx_offload_flags\":%llu,\"tx_offload_mode\":%d,\"tx_capture_stage\":\"before_offload\",\"rss\":%s,\"queues\":%d,\"data_tx_queue\":0,\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    printf("KER_IO_READY {\"all_multicast_method\":\"%s\",\"tap_retry_safe\":%s,\"tx_offload_features\":%u,\"tx_offload_flags\":%llu,\"tx_offload_mode\":%d,\"tx_capture_stage\":\"before_offload\",\"rss\":%s,\"queues\":%d,\"data_tx_queue\":0,\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
-        offload.tap_retry_safe ? "true" : "false", offload.features, (unsigned long long)offload.flags, tx_offloads, rss_json, queues, initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
+        receive_mode.method ? receive_mode.method : "off", offload.tap_retry_safe ? "true" : "false", offload.features, (unsigned long long)offload.flags, tx_offloads, rss_json, queues, initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
         device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc,
         pool_rx_desc, pool_tx_desc, pool_count,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
@@ -714,6 +713,7 @@ int main(int argc, char **argv)
             if (sent.packets) progress = true;
         }
         if (draining) {
+            rx_shutdown_discarded += rx_count - rx_index;
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
             int64_t now;
             if (ker_worker_now_ns(&now)) goto clock_error;
@@ -819,7 +819,12 @@ cleanup:
     if (tx_capture_status || rx_capture_status) { perror("ker: close packet capture"); status = 1; }
     if (pending_tx) rte_pktmbuf_free(pending_tx);
     ker_worker_tx_discard(&batch);
+    rx_shutdown_discarded += rx_count - rx_index;
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
+    bool had_host_receive_mode = receive_mode.socket_fd >= 0;
+    if (ker_worker_receive_mode_restore(&receive_mode)) {
+        fprintf(stderr, "ker: failed to restore kernel TAP receive mode\n"); status = 1;
+    } else if (had_host_receive_mode) receive_mode_restored = true;
     if (started && rte_eth_dev_stop(port)) status = 1;
     if (configured && rte_eth_dev_close(port)) status = 1;
     /* Bond close detaches/stops members but does not release their queues.
@@ -834,16 +839,16 @@ cleanup:
     printf("KER_IO_DONE {\"rx_by_queue\":[");
     for (int queue = 0; queue < queues; queue++)
         printf("%s%llu", queue ? "," : "", (unsigned long long)rx_by_queue[queue]);
-    printf("],\"tx_tcp_checksum\":%llu,\"tx_udp_checksum\":%llu,\"tx_ip_checksum\":%llu,\"tx_tso4\":%llu,\"tx_tso6\":%llu,\"tx_checksum_fallback\":%llu,\"rx_rss_metadata\":%llu,\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
+    printf("],\"host_receive_mode_restored\":%s,\"tx_tcp_checksum\":%llu,\"tx_udp_checksum\":%llu,\"tx_ip_checksum\":%llu,\"tx_tso4\":%llu,\"tx_tso6\":%llu,\"tx_checksum_fallback\":%llu,\"rx_rss_metadata\":%llu,\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", (unsigned long long)tx_tcp_checksum, (unsigned long long)tx_udp_checksum, (unsigned long long)tx_ip_checksum, (unsigned long long)tx_tso4, (unsigned long long)tx_tso6, (unsigned long long)tx_checksum_fallback, (unsigned long long)rx_rss_metadata, bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"rx_shutdown_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", receive_mode_restored ? "true" : "false", (unsigned long long)tx_tcp_checksum, (unsigned long long)tx_udp_checksum, (unsigned long long)tx_ip_checksum, (unsigned long long)tx_tso4, (unsigned long long)tx_tso6, (unsigned long long)tx_checksum_fallback, (unsigned long long)rx_rss_metadata, bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,
         (unsigned long long)tx_dropped, (unsigned long long)rx_dropped, outstanding,
         (unsigned long long)stop_requests, control_eof ? "true" : "false",
         (unsigned long long)tx_multiseg, (unsigned long long)rx_multiseg,
-        (unsigned long long)rx_startup_discarded, (unsigned long long)idle_waits,
+        (unsigned long long)rx_startup_discarded, (unsigned long long)rx_shutdown_discarded, (unsigned long long)idle_waits,
         (unsigned long long)idle_timeouts, (unsigned long long)tx_flushes,
         (unsigned long long)tx_timer_flushes, (unsigned long long)tx_full_flushes,
         (unsigned long long)tx_drain_flushes);
