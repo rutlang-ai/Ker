@@ -64,7 +64,7 @@ int ker_extra_interfaces_register(const char *settings)
             mac[i] = (unsigned char)values[i];
         }
         struct lkl_netdev *device = ker_packet_device_create(fd);
-        if (!device) return -ENOMEM;
+        if (!device) return -errno;
         struct lkl_netdev_args args = {.mac = mac, .offload = maximum > 1500 ?
             (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0};
         int result = lkl_netdev_add(device, &args);

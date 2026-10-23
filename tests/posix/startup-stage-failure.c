@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include <lkl.h>
 #include <lkl_host.h>
@@ -43,7 +44,19 @@ static int record(const char *stage, int injected, int result)
 int __wrap_lkl_init(struct lkl_host_operations *ops)
 {
     int failed = inject("init");
-    return record("init", failed, failed ? -LKL_EIO : __real_lkl_init(ops));
+    int result = record("init", failed, failed ? -LKL_EIO : __real_lkl_init(ops));
+    if (!result && inject("packet-peer")) {
+        /* Keep a real initialized LKL context; replace only the host packet
+         * endpoint so production validation sees a genuine ENOTCONN. */
+        int fd = atoi(getenv("KER_PACKET_FD"));
+        int replacement = (int)syscall(SYS_socket, AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (replacement < 0) return -LKL_EIO;
+        long changed = syscall(SYS_dup3, replacement, fd, O_CLOEXEC);
+        syscall(SYS_close, replacement);
+        if (changed < 0) return -LKL_EIO;
+        return record("packet-peer", 1, 0);
+    }
+    return result;
 }
 
 int __wrap_lkl_netdev_add(struct lkl_netdev *device, struct lkl_netdev_args *args)

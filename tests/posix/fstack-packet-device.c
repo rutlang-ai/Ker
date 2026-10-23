@@ -74,6 +74,61 @@ static void allocation_failures(void)
     CHECK(fcntl(fd[0], F_GETFD) >= 0 && descriptors() == before);
     CHECK(close(fd[0]) == 0 && close(fd[1]) == 0);
 }
+static void context_contracts(void)
+{
+    unsigned before = descriptors(), allocated = allocations;
+    errno = 0;
+    CHECK(!ker_packet_device_create(-1) && errno == EBADF);
+    int plain = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    CHECK(plain >= 0);
+    errno = 0;
+    CHECK(!ker_packet_device_create(plain) && errno == ENOTSOCK);
+    CHECK(fcntl(plain, F_GETFD) == FD_CLOEXEC && close(plain) == 0);
+    int stream[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, stream) == 0);
+    CHECK(!ker_packet_device_create(stream[0]) && errno == EPROTOTYPE);
+    CHECK(fcntl(stream[0], F_GETFD) == 0);
+    CHECK(write(stream[0], "S", 1) == 1);
+    char byte;
+    CHECK(read(stream[1], &byte, 1) == 1 && byte == 'S');
+    CHECK(close(stream[0]) == 0 && close(stream[1]) == 0);
+    int internet = socket(AF_INET, SOCK_DGRAM, 0);
+    CHECK(internet >= 0);
+    CHECK(!ker_packet_device_create(internet) && errno == EAFNOSUPPORT);
+    CHECK(fcntl(internet, F_GETFD) == 0 && close(internet) == 0);
+    int unconnected = socket(AF_UNIX, SOCK_DGRAM, 0);
+    CHECK(unconnected >= 0);
+    CHECK(!ker_packet_device_create(unconnected) && errno == ENOTCONN);
+    CHECK(fcntl(unconnected, F_GETFD) == 0 && close(unconnected) == 0);
+    CHECK(allocations == allocated && descriptors() == before);
+    for (unsigned kind = 0; kind < 2; kind++) {
+        int fd[2];
+        CHECK(socketpair(AF_UNIX, kind ? SOCK_SEQPACKET : SOCK_DGRAM, 0, fd) == 0);
+        fail_allocation = 1;
+        CHECK(!ker_packet_device_create(fd[0]) && errno == ENOMEM);
+        CHECK(fcntl(fd[0], F_GETFD) == 0 && fcntl(fd[1], F_GETFD) == 0);
+        struct lkl_netdev *device = ker_packet_device_create(fd[0]);
+        CHECK(device && (fcntl(fd[0], F_GETFD) & FD_CLOEXEC) && fcntl(fd[1], F_GETFD) == 0);
+        unsigned saved = descriptors();
+        CHECK(device->ops->tx(NULL, NULL, 0) == -1 && errno == EINVAL);
+        CHECK(device->ops->rx(NULL, NULL, 0) == -1 && errno == EINVAL);
+        char data[] = "borrowed bytes";
+        struct iovec vector = {data, sizeof(data)};
+        CHECK(device->ops->tx(NULL, &vector, 1) == -1 && errno == EINVAL);
+        CHECK(vector.iov_base == data && vector.iov_len == sizeof(data) &&
+            !memcmp(data, "borrowed bytes", sizeof(data)) && descriptors() == saved);
+        CHECK(device->ops->tx(device, &vector, 1) == sizeof(data));
+        char received[sizeof(data)];
+        CHECK(recv(fd[1], received, sizeof(received), 0) == sizeof(data) && !memcmp(data, received, sizeof(data)));
+        unsigned freed = releases;
+        device->ops->free(device);
+        CHECK(releases == freed + 1 && !allocation);
+        CHECK(fcntl(fd[0], F_GETFD) == -1 && errno == EBADF);
+        CHECK(fcntl(fd[1], F_GETFD) == 0 && close(fd[1]) == 0);
+    }
+    CHECK(descriptors() == before);
+    puts("PASS: context roundtrip, invalid transport rejection, failure preserves fd/flags, success owns only its fd; NULL context rejects without freeing borrowed vectors");
+}
 struct poll_task { struct lkl_netdev *device; atomic_int tid; int result; };
 static void *poll_thread(void *argument)
 {
@@ -188,6 +243,7 @@ int main(void)
     CHECK(sigaction(SIGUSR1, &action, NULL) == 0);
     unsigned before = descriptors();
     allocation_failures();
+    context_contracts();
     transfer_and_stop();
     for (unsigned i = 0; i < 64; i++) {
         int fd[2]; pair(fd);

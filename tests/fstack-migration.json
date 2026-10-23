@@ -564,15 +564,18 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_register_deregister_roundtrip",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "Pinned ff_dpdk_register_if/deregister_if allocate/save/free an interface context, not a hotplug device. Adapt this lifecycle to the production LKL packet-device context, with real connected Unix endpoints, original netdev ops, exact allocation/free and fd ownership. Datagram/seqpacket contexts transfer actual records and free only their own endpoint/eventfd; failures leave caller ownership/flags intact. Real dual-interface original Linux/DPDK traffic and synchronous native removal/EAL cleanup exercise registered contexts in native-fstack-run-stop. The source fixture has software LRO disabled; no FreeBSD softc/ifp/LRO ABI or general hotplug claim.",
       "ker_tests": [
         {
-          "ctest": "ethdev-rebind",
-          "provenance_case": "ethdev-rebind"
+          "ctest": "native-fstack-packet-device",
+          "provenance_case": "native-fstack-interface-context"
+        },
+        {
+          "ctest": "native-fstack-run-stop",
+          "provenance_case": "native-fstack-interface-context"
         }
-      ],
-      "remaining": "Borrowed Ker ethdev rebind does not implement full F-Stack interface registration/deregistration."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_get_tsc_ns_monotonic",
@@ -2436,15 +2439,20 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_safe",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production native netdev TX/RX callbacks reject NULL context/NULL vectors without dereferencing, allocating, closing descriptors or transferring buffer ownership. The same valid native adapter context remains usable afterwards. This adapts the source both-NULL guard only; it does not claim owned FreeBSD mbuf disposal.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-packet-device",
+          "provenance_case": "native-fstack-null-context"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "The source invalid-context guard consumes an owned FreeBSD mbuf through ff_mbuf_free. Ker original-Linux netdev callbacks borrow caller iovecs; they must leave those bytes and vectors intact even on error. No owned FreeBSD mbuf enters this boundary. NULL-context/borrowed-vector rejection is tested, but it cannot prove the source owned-mbuf disposal contract. Preserve this incompatible ownership boundary under issue223 rather than invent an unused mbuf clone or free caller storage.",
       "ker_tests": []
     },
     {

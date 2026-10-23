@@ -137,7 +137,7 @@ __attribute__((constructor)) static void initialize(void)
     int result = lkl_init(&lkl_host_ops);
     if (result) fail("kernel initialization", result);
     device = ker_packet_device_create(fd);
-    if (!device) fail("packet device allocation", -ENOMEM);
+    if (!device) fail("packet device allocation", -errno);
     /* Live jumbo growth needs multiple virtio buffers even at MTU1500 startup.
      * The original LKL transport implements mergeable buffers, including num_buffers accounting; this
      * does not enable checksum or segmentation offloads. */
