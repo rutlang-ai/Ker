@@ -969,3 +969,15 @@ Linux/PMD 路径；旧 Ker 自有协议单测不再作为这些硬件案例的�
 TAP 通过的是原版 PMD 的软件实现，不是物理 NIC 硬件，IPv6 TSO 也未验证，
 因此四项仍为 partial，未增加完成计数。当前仍为136 scenario-adapted、21 partial、
 213 blocked，共234项未完成，另有8项架构专属及55项 harness-only。
+
+2026-10-23 TAP 卸载拒绝重试批次
+
+增加可选隔离补丁修复 issue244：校验和使用私有全包副本，失败时保留调用者链、
+字节和标志；GSO/写入拒绝恢复原 TSO 标志。公开 ethdev 无法找回已遗失的私有头部，
+故记录最小上游例外，并从固定提交导出独立构建目录，不修改依赖 checkout。
+worker 只对逐端口确认使用修复的驱动开放重试；未修改 PMD 保留失败关闭。
+测试覆盖注入 ENOMEM/EAGAIN、GSO 部分写出、真实池耗尽、完整 mbuf 描述符/数据
+保持与零泄漏，再以完整原生 TCP/UDP 和独立线包校验验证重试后的实际交付。
+额外复制不作性能等价声明，部分 GSO 前缀可能重复，去重归原版 Linux TCP。
+补丁说明见 [compat/dpdk/README.md](../compat/dpdk/README.md)。
+四项硬件案例仍为 partial，未增加完成计数；当前仍有234项未完成迁移。

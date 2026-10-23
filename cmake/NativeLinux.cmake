@@ -902,15 +902,24 @@ if(BUILD_TESTING)
     add_executable(ker-worker-offload-test tests/posix/worker-offload.c src/posix/worker-offload.c)
     target_include_directories(ker-worker-offload-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_compile_options(ker-worker-offload-test PRIVATE -Wall -Wextra -Werror)
-    target_link_libraries(ker-worker-offload-test PRIVATE PkgConfig::DPDK)
+    target_link_libraries(ker-worker-offload-test PRIVATE PkgConfig::DPDK ${CMAKE_DL_LIBS})
     add_test(NAME native-fstack-tx-offload-metadata COMMAND ker-worker-offload-test)
     set_tests_properties(native-fstack-tx-offload-metadata PROPERTIES TIMEOUT 30 LABELS "fstack")
+    list(GET DPDK_LIBRARY_DIRS 0 ker_offload_library_root)
+    add_executable(ker-tap-offload-retry-test tests/posix/tap-offload-retry.c src/posix/worker-mbuf.c)
+    target_include_directories(ker-tap-offload-retry-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_options(ker-tap-offload-retry-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-tap-offload-retry-test PRIVATE PkgConfig::DPDK ${CMAKE_DL_LIBS})
+    add_test(NAME native-fstack-tap-offload-retry
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/tap-offload-retry.py"
+            --app "$<TARGET_FILE:ker-tap-offload-retry-test>" --failure-library "$<TARGET_FILE:ker-tap-offload-failure>"
+            --pmd-root "${ker_offload_library_root}")
+    set_tests_properties(native-fstack-tap-offload-retry PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "fstack")
     add_library(ker-tap-offload-failure SHARED tests/posix/tap-offload-failure.c)
     target_compile_options(ker-tap-offload-failure PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-tap-offload-failure PRIVATE PkgConfig::DPDK ${CMAKE_DL_LIBS})
     add_executable(ker-native-tx-offloads-test tests/posix/tx-offloads.c)
     target_compile_options(ker-native-tx-offloads-test PRIVATE -Wall -Wextra -Werror)
-    list(GET DPDK_LIBRARY_DIRS 0 ker_offload_library_root)
     add_test(NAME native-fstack-tx-offloads
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/tx-offloads.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

@@ -1312,12 +1312,19 @@ Linux 声明其 HOST_TSO6；IPv6 继续由原版 Linux 软件分段。TAP 的 TS
 的分段上限。所有实际分段由原版 DPDK 完成。其他直接 PMD 仍不声明 HOST_TSO6；各自的 IPv4 TSO 能力需由物理 runner 验收，
 不能将 TAP 软件执行计为 NIC 硬件通过。
 
-TAP 在拒绝 checksum/GSO buffer 时存在上游所有权缺陷：复制头部后 writev 失败
-可能丢失新分配头部，GSO 拒绝还可能不恢复原输入标志，见
-[#244](https://github.com/rutlang-ai/Ker/issues/244)。当前在 TAP 卸载发送被拒绝时明确
-终止后端并报告125，不重试可能已改变的 buffer；正常路径要求零 outstanding。
-故障注入路径刻意检查非零 outstanding 的诊断和全部进程已回收，不伪报成功清理。
-安全重试需先修复/验证该依赖。默认 off 的既有重试策略保持原样。
+固定版本 TAP 的拒绝路径存在私有头部丢失和 GSO 标志未恢复的所有权缺陷，见
+[#244](https://github.com/rutlang-ai/Ker/issues/244)。未修改 PMD 仍在卸载拒绝后终止
+后端、报告125；其非零 outstanding 是缺陷诊断，不能称作成功清理。
+
+可选的 [隔离补丁与构建说明](../compat/dpdk/README.md) 在全包私有副本上计算校验和，
+成功/失败均释放临时副本，并在拒绝时恢复调用者的 GSO 标志。公开 ethdev API
+无法取回驱动已遗失的私有指针，因此这是必要的最小上游例外；仓库依赖源码保持不变。
+只对逐端口确认使用该补丁的 PMD 启用重试，记录 `io.tap_retry_safe`。
+额外复制/分配有开销，不宣称性能等价。GSO 失败前可能已写出部分分段，重试可能
+重复该前缀，序号和去重仍由原版 Linux TCP 处理，不提供线上原子批次。
+真实 TAP 测试验证拷贝 ENOMEM、writev EAGAIN、部分分段写出后失败及实际池耗尽，
+要求调用者完整描述符、链和数据保持原样，重试后所有池零泄漏；完整 TCP/UDP
+互通与独立线包校验也必须继续通过。物理 NIC 和 IPv6 TSO 验收仍未完成。
 
 `io.tx_offload_features/flags/mode` 记录实际协商。`tx_tcp_checksum/udp_checksum/
 ip_checksum/tso4/tso6/checksum_fallback` 是构建时的元数据请求计数，不是物理线速包数，

@@ -2,6 +2,7 @@
  * checksum arithmetic belong to original Linux and original DPDK APIs. */
 #include "worker-offload.h"
 #include <errno.h>
+#include <dlfcn.h>
 #include <stddef.h>
 #include <string.h>
 #include <rte_ip.h>
@@ -37,6 +38,12 @@ int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *con
     state->flags = required | (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM);
     state->segment_limit = info.tx_desc_lim.nb_seg_max;
     state->tap = info.driver_name && !strcmp(info.driver_name, "net_tap");
+    if (state->tap) {
+        /* Only the isolated, qualified TAP ownership patch may opt into
+         * retries. Unmodified PMDs keep the fail-closed boundary. */
+        int (*retry_abi)(uint16_t) = (int (*)(uint16_t))dlsym(RTLD_DEFAULT, "ker_dpdk_tap_tx_retry_abi");
+        state->tap_retry_safe = retry_abi && retry_abi(port) == 1;
+    }
     /* Map only features fully implemented by the translator. */
     state->features = ker_worker_offload_feature_mask(mode);
     config->txmode.offloads |= state->flags;

@@ -9,6 +9,7 @@ struct ker_worker_offload {
     uint16_t segment_limit;
     int mode;
     bool tap;
+    bool tap_retry_safe;
 };
 struct ker_worker_offload_result { unsigned tcp, udp, ip, tso4, tso6, fallback; };
 uint32_t ker_worker_offload_feature_mask(int mode);
