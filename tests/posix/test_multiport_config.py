@@ -22,6 +22,9 @@ class MultiportTests(unittest.TestCase):
             path = Path(directory) / 'interfaces.ini'; path.write_text(text)
             return launcher.parse_arguments(['--config', str(path), *extra, '--', '/bin/true'])
 
+    def primary_vips(self, text, ipv4='', ipv6=''):
+        return text.replace('[dpdk]', ipv4 + ipv6 + '[dpdk]')
+
     def test_defaults_final_sections_and_independent_storage(self):
         self.assertEqual(self.parse(BASE).interfaces, ())
         text = BASE + AUX + 'mtu=bad\n[interface.aux]\nmtu=1600\nmax_mtu=2000\n'
@@ -67,6 +70,62 @@ class MultiportTests(unittest.TestCase):
                 '--library', '/missing-library', '--io-worker', '/missing-worker', '--', '/bin/true'],
                 capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
+    def test_cross_interface_prefix_overlap_rejected_for_primary_and_vips(self):
+        cases = (
+            # Primary VIP versus auxiliary primary.
+            self.primary_vips(BASE, 'vip_addresses=198.0.0.20/8\n',
+                              'vip_addresses6=2001:db8::20/32\n') + AUX,
+            self.primary_vips(BASE, ipv6='vip_addresses6=2001:db8::20/32\n') + AUX,
+            # Auxiliary VIP versus primary.
+            BASE + AUX + 'vip_addresses=198.18.0.20/16\n'
+            'vip_addresses6=2001:db8:1::20/32\n',
+            BASE + AUX + 'vip_addresses6=2001:db8::20/32\n',
+            # An auxiliary VIP versus a second auxiliary primary/VIP.
+            BASE + AUX +
+            'vip_addresses=198.0.0.20/8\nvip_addresses6=2001:db8::20/32\n'
+            '[interface.other]\naddress=198.20.0.2/24\nport=net_tap2\neal=--no-pci\n'
+            'address6=2001:db8:3::2/64\nvip_addresses=198.1.0.20/8\n'
+            'vip_addresses6=2001:db8:1::20/32\n',
+            BASE + AUX + 'vip_addresses6=2001:db8::20/32\n'
+            '[interface.other]\naddress=198.20.0.2/24\nport=net_tap2\neal=--no-pci\n'
+            'address6=2001:db8:3::2/64\nvip_addresses6=2001:db8:1::20/32\n',
+            # Primary address versus a broader VIP prefix on an auxiliary port.
+            BASE + '[interface.aux]\naddress=198.19.0.2/24\nport=net_tap1\neal=--no-pci\n'
+            'address6=2001:db8:2::2/64\nvip_addresses=198.0.0.20/8\n'
+            'vip_addresses6=2001:db8::20/32\n',
+        )
+        for text in cases:
+            with self.subTest(text=text), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                self.parse(text)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.parse(BASE, ['--vlan', '100=198.18.1.2/16,2001:db8:1:1::2/48'])
+
+    def test_overlapping_prefixes_on_same_interface_remain_valid(self):
+        text = (self.primary_vips(BASE, 'vip_addresses=198.18.0.3/25\n',
+                                  'vip_addresses6=2001:db8:1::3/80\n') + AUX +
+                'vip_addresses=198.19.0.3/25\n'
+                'vip_addresses6=2001:db8:2::3/80\n')
+        self.assertEqual(len(self.parse(text).interfaces), 1)
+
+    def test_disjoint_multiinterface_vip_prefixes_remain_valid(self):
+        text = (self.primary_vips(BASE, 'vip_addresses=198.18.1.3/24\n',
+                                  'vip_addresses6=2001:db8:1:1::3/64\n') + AUX +
+                'vip_addresses=198.19.1.3/24\n'
+                'vip_addresses6=2001:db8:2:1::3/64\n')
+        self.assertEqual(len(self.parse(text).interfaces), 1)
+
+    def test_overlap_rejection_precedes_library_and_worker_resolution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'overlap.ini'
+            path.write_text(self.primary_vips(BASE, 'vip_addresses=198.19.0.20/25\n') + AUX)
+            result = subprocess.run([sys.executable, str(ROOT / 'tools/ker-run.py'), '--config', str(path),
+                '--library', '/missing-library', '--io-worker', '/missing-worker', '--', '/bin/true'],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn('overlap', result.stderr)
             self.assertNotIn('Traceback', result.stderr)
 
 

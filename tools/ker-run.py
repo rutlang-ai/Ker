@@ -637,8 +637,18 @@ def parse_arguments(argv=None):
         eal_prefix += [bond_device_argument(bond) for bond in args.bonds]
     args.eal_args = eal_prefix + eal_remainder
     seen = set(all_ips)
-    networks = [args.address.network]
-    networks6 = [args.address6.network] if args.address6 is not None else []
+    networks = [value.network for value in (args.address, *args.vip_addresses)]
+    networks6 = ([value.network for value in (args.address6, *args.vip_addresses6)]
+                 if args.address6 is not None else [])
+    for tag, entries in args.vlans:
+        vlan_networks = [value.network for value in entries if value.version == 4]
+        if any(network.overlaps(previous) for network in vlan_networks for previous in networks):
+            parser.error('IPv4 networks must not overlap across interfaces')
+        networks.extend(vlan_networks)
+        vlan_networks6 = [value.network for value in entries if value.version == 6]
+        if any(network.overlaps(previous) for network in vlan_networks6 for previous in networks6):
+            parser.error('IPv6 networks must not overlap across interfaces')
+        networks6.extend(vlan_networks6)
     for interface in args.interfaces:
         for key in ('mtu', 'max_mtu', 'mbuf_mode'):
             interface.setdefault(key, getattr(args, key))
@@ -663,15 +673,16 @@ def parse_arguments(argv=None):
             if value.ip in seen:
                 parser.error('additional interface address duplicates an existing address')
             seen.add(value.ip)
-        network = interface['address'].network
-        if any(network.overlaps(previous) for previous in networks):
-            parser.error('additional interface IPv4 primary networks must not overlap')
-        networks.append(network)
+        interface_networks = [value.network for value in (interface['address'], *interface['vip_addresses'])]
+        if any(network.overlaps(previous) for network in interface_networks for previous in networks):
+            parser.error('IPv4 networks must not overlap across interfaces')
+        networks.extend(interface_networks)
         if interface['address6'] is not None:
-            network6 = interface['address6'].network
-            if any(network6.overlaps(previous) for previous in networks6):
-                parser.error('additional interface IPv6 primary networks must not overlap')
-            networks6.append(network6)
+            interface_networks6 = [value.network for value in
+                                    (interface['address6'], *interface['vip_addresses6'])]
+            if any(network.overlaps(previous) for network in interface_networks6 for previous in networks6):
+                parser.error('IPv6 networks must not overlap across interfaces')
+            networks6.extend(interface_networks6)
     return args
 
 
