@@ -174,6 +174,17 @@ static void test_worker_wait_plan(void)
     CHECK(events == 0 && wait_us == 0);
 }
 
+static void test_descriptor_pool_budget(void)
+{
+    uint32_t count = 0;
+    CHECK(ker_worker_mbuf_pool_count(256, 256, &count) == 0 && count == 4095);
+    CHECK(ker_worker_mbuf_pool_count(4096, 4096, &count) == 0 && count == 8512);
+    CHECK(ker_worker_mbuf_pool_count(32768, 32768, &count) == 0 && count == 65856);
+    CHECK(ker_worker_mbuf_pool_count(1, 1, NULL) == -EINVAL);
+    CHECK(ker_worker_mbuf_pool_count(UINT32_MAX, 1, &count) == -EOVERFLOW);
+    CHECK(ker_worker_mbuf_pool_count(UINT32_MAX - 319, 0, &count) == -EOVERFLOW);
+}
+
 static void test_scatter_segment_limits(void)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
@@ -196,6 +207,7 @@ static void test_scatter_segment_limits(void)
 int main(void)
 {
     test_worker_wait_plan();
+    test_descriptor_pool_budget();
     test_rx_startup_drain();
     test_scatter_rx_limits();
     test_scatter_segment_limits();

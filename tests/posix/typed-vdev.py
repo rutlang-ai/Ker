@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import socket
 
 spec = importlib.util.spec_from_file_location('icmp_mtu', Path(__file__).with_name('icmp-mtu.py'))
 mtu = importlib.util.module_from_spec(spec)
@@ -16,6 +17,29 @@ require, ready, stop = mtu.require, mtu.ready, mtu.stop
 
 
 def main():
+    if sys.argv[1:] == ['--socket-server']:
+        def receive_exact(stream, length):
+            data = bytearray()
+            while len(data) < length:
+                chunk = stream.recv(length - len(data))
+                require(chunk, 'native TCP stream closed early')
+                data.extend(chunk)
+            return bytes(data)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp.bind(('198.18.0.2', 27991)); tcp.listen(1)
+            udp.bind(('198.18.0.2', 27992))
+            print('READY sockets', flush=True)
+            connection, _ = tcp.accept()
+            with connection:
+                data = receive_exact(connection, len(b'original-linux-tcp'))
+                require(data == b'original-linux-tcp', 'native TCP payload mismatch')
+                connection.sendall(data)
+            data, peer = udp.recvfrom(256)
+            require(data == b'original-linux-udp', 'native UDP payload mismatch')
+            udp.sendto(data, peer)
+        print('PASS: original Linux TCP and UDP over virtio-user', flush=True)
+        return 0
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root'):
         parser.add_argument('--' + name, type=Path, required=True)
@@ -70,17 +94,18 @@ def main():
                         'unsupported iface/socket tuple was silently accepted: ' + result.stderr)
                 require(json.loads(rejected_stats.read_text())['outstanding'] == 0, 'rejected vdev leaked buffers')
                 print('PASS: unsupported source iface/socket tuple fails explicitly and cleans up', flush=True)
-                for repeated in (False, True):
-                    name = 'repeat' if repeated else 'socket'
+                for queue_size, repeated in ((512, False), (4096, True), (32768, False)):
+                    name = 'repeat' if repeated else 'queue-' + str(queue_size)
                     config, stats, capture = root / (name + '.ini'), root / (name + '.json'), root / (name + '-pcap')
                     capture.mkdir()
                     # Supported vhost-user subset; iface is kernel-backend-only in pinned DPDK.
                     text = '[dpdk]\nnb_vdev=1\nport=net_virtio_user0\n'
-                    text += f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64\n'
-                    text += '[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\n'
+                    memory_mb = 1024 if queue_size == 32768 else 64
+                    text += f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m {memory_mb}\n'
+                    text += '[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\nmax_mtu=1500\n'
                     if repeated:
                         text += '[vdev0]\npath=/missing-backend\nqueues=bad\nqueue_size=3\nmac=invalid\ncq=9\n'
-                    text += f'[vdev0]\npath={backend_path}\nqueues=2\nqueue_size=512\nmac=00:11:22:33:44:55\ncq=1\n'
+                    text += f'[vdev0]\npath={backend_path}\nqueues=2\nqueue_size={queue_size}\nmac=00:11:22:33:44:55\ncq=1\n'
                     config.write_text(text)
                     subprocess.run(['ip', 'neigh', 'flush', 'dev', 'kerhost'], check=True)
                     subprocess.run(['ip', '-6', 'neigh', 'flush', 'dev', 'kerhost'], check=True)
@@ -102,12 +127,50 @@ def main():
                             require(info['driver'] == 'net_virtio_user' and info['port_count'] == 1,
                                     'typed vdev did not select the original virtio-user PMD: ' + str(info))
                             require(info['mac'] == '00:11:22:33:44:55' and info['max_rx_queues'] == 2
-                                    and info['max_tx_queues'] == 2 and info['rx_descriptors'] == 512,
+                                    and info['max_tx_queues'] == 2 and info['rx_descriptors'] == queue_size,
                                     'typed MAC/queue capacity did not reach actual PMD: ' + str(info))
+                            require(info['mbuf_pool_count'] >= info['rx_descriptors'] + info['tx_descriptors'] + 320,
+                                    'mbuf pool does not cover RX/TX descriptors and worker headroom: ' + str(info))
                             require(record['tx'] > 0 and record['rx'] > 0 and record['outstanding'] == 0,
                                     'missing actual traffic or leaked virtio buffers')
                             mtu.wire(capture, 1500)
-                            print('PASS: ' + name + ' typed virtio-user, real vhost/TAP IPv4/IPv6 and zero leaks', flush=True)
+                            print('PASS: ' + name + ' typed virtio-user queue_size=' + str(queue_size) +
+                                ', real vhost/TAP IPv4/IPv6 and zero leaks', flush=True)
+                            if queue_size in (4096, 32768):
+                                tcp_udp_stats = root / (name + '-tcp-udp.json')
+                                with (root / (name + '-tcp-udp.log')).open('w+') as socket_log:
+                                    native = subprocess.Popen([sys.executable, str(args.launcher), '--config', str(config),
+                                        '--library', str(args.library), '--io-worker', str(args.worker),
+                                        '--stats', str(tcp_udp_stats), '--', sys.executable,
+                                        str(Path(__file__).resolve()), '--socket-server'],
+                                        stdout=subprocess.PIPE, stderr=socket_log, env=environment, text=True)
+                                    try:
+                                        ready(native)
+                                        with socket.create_connection(('198.18.0.2', 27991), timeout=10) as peer:
+                                            peer.sendall(b'original-linux-tcp')
+                                            response = bytearray()
+                                            while len(response) < len(b'original-linux-tcp'):
+                                                chunk = peer.recv(len(b'original-linux-tcp') - len(response))
+                                                require(chunk, 'native TCP echo closed early')
+                                                response.extend(chunk)
+                                            require(bytes(response) == b'original-linux-tcp', 'native TCP echo mismatch')
+                                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
+                                            peer.settimeout(10)
+                                            peer.sendto(b'original-linux-udp', ('198.18.0.2', 27992))
+                                            require(peer.recvfrom(256)[0] == b'original-linux-udp', 'native UDP echo mismatch')
+                                        output, _ = native.communicate(timeout=20)
+                                        require(native.returncode == 0 and 'PASS:' in output,
+                                            'native TCP/UDP process failed: ' + output)
+                                        record = json.loads(tcp_udp_stats.read_text())
+                                        require(record['tx'] and record['rx'] and record['outstanding'] == 0 and
+                                            record['native']['passive_opens'] > 0 and
+                                            record['native']['udp_in_datagrams'] > 0 and
+                                            record['native']['udp_out_datagrams'] > 0,
+                                            'native TCP/UDP counters or zero-buffer cleanup missing: ' + str(record))
+                                        print('PASS: queue_size=' + str(queue_size) +
+                                            ' real imported Linux TCP/UDP and zero buffers', flush=True)
+                                    finally:
+                                        stop(native)
                         except Exception:
                             log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
                             raise

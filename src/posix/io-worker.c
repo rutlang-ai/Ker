@@ -51,6 +51,40 @@ struct ker_worker_rx_queue {
     uint16_t queue;
 };
 
+/* Typed virtio-user queue_size controls the actual RX and TX rings even when
+ * rte_eth_dev_adjust_nb_rx_tx_desc leaves its requested counts unchanged. */
+static uint16_t configured_vdev_ring_size(int argc, char **argv, const char *port)
+{
+    for (int i = 0; i < argc; ++i) {
+        const char *device = NULL;
+        if (!strcmp(argv[i], "--vdev") && i + 1 < argc) device = argv[++i];
+        else if (!strncmp(argv[i], "--vdev=", 7)) device = argv[i] + 7;
+        if (!device) continue;
+        const char *options = strchr(device, ',');
+        if (!options || (size_t)(options - device) != strlen(port) ||
+            strncmp(device, port, (size_t)(options - device))) continue;
+        for (const char *item = options + 1; *item;) {
+            const char *end = strchr(item, ',');
+            size_t length = end ? (size_t)(end - item) : strlen(item);
+            if (length > sizeof("queue_size=") - 1 &&
+                !strncmp(item, "queue_size=", sizeof("queue_size=") - 1)) {
+                char value[16];
+                size_t digits = length - (sizeof("queue_size=") - 1);
+                if (digits >= sizeof(value)) return 0;
+                memcpy(value, item + sizeof("queue_size=") - 1, digits);
+                value[digits] = '\0';
+                char *tail;
+                unsigned long parsed = strtoul(value, &tail, 10);
+                if (*tail || parsed > UINT16_MAX) return 0;
+                return (uint16_t)parsed;
+            }
+            if (!end) break;
+            item = end + 1;
+        }
+    }
+    return 0;
+}
+
 static uint16_t worker_rx_burst(void *context, struct rte_mbuf **packets,
     uint16_t capacity)
 {
@@ -232,6 +266,8 @@ int main(int argc, char **argv)
         perror("ker: open worker log"); return 1;
     }
     argv[split] = argv[0];
+    uint16_t configured_ring = configured_vdev_ring_size(argc - split - 1,
+        argv + split + 1, port_name);
     if (rte_eal_init(argc - split, argv + split) < 0) {
         fprintf(stderr, "ker EAL: %s\n", rte_strerror(rte_errno));
         if (ker_worker_log_close(&log)) perror("ker: close worker log");
@@ -285,11 +321,36 @@ int main(int argc, char **argv)
     if (rte_eth_dev_set_mtu(port, (uint16_t)mtu)) goto device_error;
     uint16_t rx_desc = 256, tx_desc = 256;
     if (rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) goto device_error;
+    struct rte_eth_dev_info budget_info = {0};
+    if (rte_eth_dev_info_get(port, &budget_info)) goto device_error;
+    /* A typed virtio-user ring can exceed the PMD-adjusted defaults. Use its
+     * selected config value for both directions; other devices use adjusted
+     * descriptors. Check PMD limits before attempting queue setup. */
+    uint16_t pool_rx_desc = RTE_MAX(rx_desc, configured_ring);
+    uint16_t pool_tx_desc = RTE_MAX(tx_desc, configured_ring);
+    if ((budget_info.rx_desc_lim.nb_max && pool_rx_desc > budget_info.rx_desc_lim.nb_max) ||
+        (budget_info.tx_desc_lim.nb_max && pool_tx_desc > budget_info.tx_desc_lim.nb_max)) {
+        fprintf(stderr, "ker: configured descriptor budget RX=%u TX=%u exceeds ethdev limits RX=%u TX=%u\n",
+            pool_rx_desc, pool_tx_desc, budget_info.rx_desc_lim.nb_max,
+            budget_info.tx_desc_lim.nb_max);
+        goto cleanup;
+    }
+    uint32_t pool_count;
+    int pool_result = ker_worker_mbuf_pool_count(pool_rx_desc, pool_tx_desc, &pool_count);
+    if (pool_result) {
+        fprintf(stderr, "ker: RX/TX descriptor pool budget overflow (%u RX, %u TX)\n",
+            pool_rx_desc, pool_tx_desc);
+        goto cleanup;
+    }
     /* Match F-Stack numa_on: lcore-local allocations, or explicit socket 0. */
     unsigned int allocation_socket = numa ? rte_socket_id() : 0;
-    pool = rte_pktmbuf_pool_create("ker_native_packets", 4095, 0, 0,
+    pool = rte_pktmbuf_pool_create("ker_native_packets", pool_count, 0, 0,
         (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE : RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, maximum_mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM)), allocation_socket);
-    if (!pool) { fprintf(stderr, "ker packet pool: %s\n", rte_strerror(rte_errno)); goto cleanup; }
+    if (!pool) {
+        fprintf(stderr, "ker: cannot allocate %u mbufs for %u RX descriptors, %u TX descriptors and worker refill/burst headroom: %s\n",
+            pool_count, pool_rx_desc, pool_tx_desc, rte_strerror(rte_errno));
+        goto cleanup;
+    }
     if (rte_eth_rx_queue_setup(port, 0, rx_desc, allocation_socket, NULL, pool) ||
         rte_eth_tx_queue_setup(port, 0, tx_desc, allocation_socket, NULL) ||
         rte_eth_dev_start(port)) goto device_error;
@@ -352,15 +413,23 @@ int main(int argc, char **argv)
     int link_status = rte_eth_link_get_nowait(port, &link);
     struct rte_eth_dev_info device_info = {0};
     struct rte_eth_rxq_info receive_info = {0};
+    struct rte_eth_txq_info transmit_info = {0};
     int device_status = rte_eth_dev_info_get(port, &device_info);
     if (device_status) memset(&device_info, 0, sizeof(device_info));
     int receive_status = rte_eth_rx_queue_info_get(port, 0, &receive_info);
     if (receive_status) receive_info.nb_desc = 0;
-    printf("KER_IO_READY {\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    int transmit_status = rte_eth_tx_queue_info_get(port, 0, &transmit_info);
+    if (transmit_status) transmit_info.nb_desc = 0;
+    if (receive_info.nb_desc > pool_rx_desc || transmit_info.nb_desc > pool_tx_desc) {
+        fprintf(stderr, "ker: ethdev configured RX/TX rings (%u/%u) exceed mbuf budget (%u/%u)\n",
+            receive_info.nb_desc, transmit_info.nb_desc, pool_rx_desc, pool_tx_desc);
+        goto cleanup;
+    }
+    printf("KER_IO_READY {\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
         device_info.driver_name ? device_info.driver_name : "unknown",
-        device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc,
+        device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc, pool_count,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
         rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, eal_log_level, rte_log_get_global_level(), (unsigned long long)memory_base, (unsigned long long)rte_eal_get_physmem_size(),
