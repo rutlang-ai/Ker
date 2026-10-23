@@ -933,6 +933,17 @@ if(BUILD_TESTING)
     add_library(ker-receive-mode-failure SHARED tests/posix/receive-mode-failure.c)
     target_compile_options(ker-receive-mode-failure PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-receive-mode-failure PRIVATE ${CMAKE_DL_LIBS})
+    add_executable(ker-worker-receive-mode-identity-test
+        tests/posix/worker-receive-mode-identity.c src/posix/worker-receive-mode.c)
+    target_include_directories(ker-worker-receive-mode-identity-test PRIVATE src/posix)
+    target_compile_options(ker-worker-receive-mode-identity-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-worker-receive-mode-identity-test PRIVATE PkgConfig::DPDK)
+    target_link_options(ker-worker-receive-mode-identity-test PRIVATE
+        -Wl,--wrap=stat -Wl,--wrap=if_nametoindex -Wl,--wrap=if_indextoname
+        -Wl,--wrap=socket -Wl,--wrap=bind -Wl,--wrap=getsockname
+        -Wl,--wrap=ioctl -Wl,--wrap=close)
+    add_test(NAME native-fstack-worker-receive-mode-identity COMMAND ker-worker-receive-mode-identity-test)
+    set_tests_properties(native-fstack-worker-receive-mode-identity PROPERTIES TIMEOUT 10 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-virtio-kernel-offloads
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/virtio-kernel-offloads.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
