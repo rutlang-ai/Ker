@@ -892,3 +892,23 @@ bond 批次后为 133 scenario-adapted、22 partial、215 blocked，仍有 237 �
 拓扑不同，多队列 RSS、thash 调整、80/443 RSS 表及完整配置 ABI 仍未验证，继续由
 [#224](https://github.com/rutlang-ai/Ker/issues/224) 和 [#220](https://github.com/rutlang-ai/Ker/issues/220)
 跟踪。当前仍为 133 scenario-adapted、23 partial、214 blocked，共 237 个未完成案例。
+
+2026-10-23 多队列与 RSS 控制面批次
+
+为完整 DPDK 配置的 partial 项增加真实多队列能力：主接口和附加接口可配置
+1..16 对 RX/TX 队列，单线程公平轮询全部 RX，保留通道背压后缀，应用 TX 仍使用
+队列 0。独立原版 vhost/TAP 后端把实际主机报文送入队列 1；双向原版 Linux
+IPv4/IPv6 ICMP 和完整 PCAP 通过，真实队列计数验证队列 0 为零、队列 1 有报文。
+双队列 TAP 还验证 MTU1500/9000/1500、scatter、失败回滚及零缓冲区泄漏。
+
+RSS 适配器只调用原版 ethdev API，检查四类 TCP/UDP IPv4/IPv6 哈希能力、可读密钥、
+有限 RETA，编程并逐项读回轮换映射；不支持或读回不一致会在应用启动前失败。
+原版 null PMD 的控制面测试保留密钥并修复独立污染的128项 RETA，故障注入确认
+成功 API 返回但内容错误也会被拒绝。这不构成真实哈希流落点测试。当前 TAP 构建
+缺少 libbpf RSS、宿主禁用非特权 BPF，且全局 API 本身没有所需 RETA/密钥读回；
+当前 vhost 后端也没有 RSS 支持。未更改上游源码或宿主权限来绕过这些边界。
+
+源 `test_ff_load_config_dpdk_full` 继续为 partial；31 项 RSS/table/thash 案例没有因此
+转为完成。全局多 lcore、对称 RSS、实际流落点、原版 Linux 源端口与队列配合、
+80/443 表等由 issues224/220 继续跟踪。计数仍为133 scenario-adapted、23 partial、
+214 blocked，237 项未完成，另外8项架构专属和55项 harness-only 保留其原因。

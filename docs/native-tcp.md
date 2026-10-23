@@ -1145,8 +1145,9 @@ Unix socket 后端必须省略 iface，组合错误不会被静默转换或忽�
 重复键/section 以最终值为准。未知键、缺失 count、索引不连续和与原始 EAL --vdev
 冲突在启动前拒绝；port 必须选择一个声明的 net_virtio_userN。
 
-当前 worker 仍只使用选中设备的一对 RX/TX queue。queues 配置 PMD 可用容量，
-不承诺多队列调度、RSS 或多接口流量。内核/vDPA 后端仍受原始 DPDK 及设备权限限制。
+`[vdevN] queues` 只配置虚拟设备可提供的队列容量；实际启用的队列对数由
+`--queues` 或 `[dpdk] queues` 指定，默认仍为 1。需要多队列接收时显式设置该选项，
+行为和限制见下方“多队列接收和 RSS 配置”。内核/vDPA 后端仍受原始 DPDK 及设备权限限制。
 `io.driver`、`io.max_rx_queues`、`io.max_tx_queues` 和 `io.rx_descriptors`
 提供原始 ethdev 的诊断值；队列信息不可用时 descriptors 为 0。
 
@@ -1226,3 +1227,34 @@ mtu/max_mtu/mbuf_mode 可选，后三项默认继承最终主接口设置。每�
 `native-fstack-multiport` 验证两接口、全部主地址/VIP、跨接口 TCP/UDP 路由、独立 MTU、
 额外 worker/原始 DAD 失败及运行中退出的清理。它不代表 F-Stack 的全局多 lcore、
 每端口多队列、硬件 RSS/thash 或完整多端口 ABI 已通过。
+
+多队列接收和 RSS 配置
+
+`--queues N` 或 `[dpdk] queues=N` 配置 1..16 对真实 ethdev RX/TX 队列，默认 1。
+`[interface.NAME]` 可独立覆盖 `queues` 和 `rss`，否则继承主接口最终值。
+这与 `[vdevN] queues` 的设备容量声明不同；声明两个队列不会自动启用两个队列。
+worker 在同一线程上轮询全部 RX 队列，每次取得 burst 后轮换起点；通道拥塞时保留
+当前 burst 的完整未交付后缀。应用数据仍从 TX 队列 0 发出，没有多 lcore 调度保证。
+MTU 重配置会重建全部 RX 队列；退出先关闭设备全部队列，再核对 mempool 所有权。
+队列总描述符需求增加时 pool 会相应增长，EAL 内存不足会使启动失败。
+
+`--rss` / `[dpdk] rss=1` 要求至少两个队列，使用原版 PMD 的默认哈希算法和密钥。
+当前接口要求 IPv4/IPv6 TCP/UDP 四种 RSS 类型、40..64 字节可读密钥，以及至多
+4096 项、大小为 2 的幂的非空 RETA。启动通过原版 DPDK API 写入 `RETA[i]=i%N`，
+逐项读回，并核对类型和密钥长度；任一 API 不支持、失败或读回不一致都会阻止应用启动。
+MTU 停启后会再次核对密钥/类型和恢复、读回 RETA。`--no-rss` 保留默认关闭状态。
+这不是 `symmetric_rss` 或 F-Stack `[rss_check]` / `rss_tbl` 的兼容实现。
+
+`--stats` 的 `io.queues` 是启用的队列对数，`io.data_tx_queue` 当前为 0；
+`rx_by_queue` 记录每个 RX 队列实际从 PMD 取得的报文数，包含随后丢弃或在退出时释放的
+已取得报文，不包含启动阶段的 promiscuous backlog 丢弃；后者仍单独计数。
+`rx_rss_metadata` 是 PMD 设置 RSS hash 标志的报文数。`io.rss` 在关闭时为 null，
+启用时包含启动读回的密钥、类型、RETA 大小和已验证的映射；它不等于实际流落点认证。
+
+`native-fstack-rx-queues` 使用独立 vhost/TAP 后端将报文送入队列 1，验证两个原版
+Linux 内核的双向 IPv4/IPv6 ICMP、PCAP 和实际队列计数；该注入不依赖 RSS。
+`native-fstack-rss-control` 使用原版 net_null PMD 验证生产适配器的密钥/RETA API，
+并拒绝被故障夹具篡改的成功读回。null PMD 不提供实际流哈希落点证据。
+当前可用 virtio-user/vhost 后端不支持全局 RSS，TAP 也没有本接口要求的 RETA/密钥读回
+能力，因此 RSS 请求会明确失败。物理设备分流、对称哈希、thash 源端口调整及 80/443
+表仍由 issue 220 跟踪，不计为完成迁移。所有 socket 端口和协议行为仍由原版 Linux 实现。

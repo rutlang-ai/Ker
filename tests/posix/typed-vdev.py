@@ -44,6 +44,7 @@ def main():
     for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--startup-delay-library', type=Path, required=True)
+    parser.add_argument('--queue-one', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     modules = []
@@ -63,6 +64,8 @@ def main():
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
         for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root', 'startup-delay-library'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        if args.queue_one:
+            command.append('--queue-one')
         return subprocess.run(command, env=environment).returncode
     for command in (
         ['ip', 'link', 'set', 'lo', 'up'],
@@ -87,6 +90,8 @@ def main():
             '--no-telemetry', '--iova-mode=va', '-m', '64',
             f'--vdev=net_vhost0,iface={backend_path},queues=2',
             '--vdev=net_tap0,iface=kerbackend,remote=kerlink']
+        if args.queue_one:
+            backend += ['--', '--queue-one']
         with (root / 'bridge.log').open('w+') as backend_log:
             bridge = subprocess.Popen(backend, stdout=subprocess.PIPE, stderr=backend_log, env=bridge_environment, text=True)
             try:
@@ -107,12 +112,32 @@ def main():
                         'unsupported iface/socket tuple was silently accepted: ' + result.stderr)
                 require(json.loads(rejected_stats.read_text())['outstanding'] == 0, 'rejected vdev leaked buffers')
                 print('PASS: unsupported source iface/socket tuple fails explicitly and cleans up', flush=True)
+                if args.queue_one:
+                    for label, options, diagnostic in (
+                            ('capacity', ['--queues', '3'], 'requested queue pairs exceed ethdev capacity'),
+                            ('rss', ['--queues', '2', '--rss'], 'RSS requires IPv4/IPv6 TCP/UDP')):
+                        marker = root / (label + '-application-started')
+                        failure_stats = root / (label + '.json')
+                        eal = (f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry '
+                               f'--iova-mode=va -m 64 --vdev=net_virtio_user0,path={backend_path},queues=2,cq=1')
+                        result = subprocess.run([sys.executable, str(args.launcher),
+                            '--address', '198.18.0.2/24', '--port', 'net_virtio_user0', '--eal', eal,
+                            '--library', str(args.library), '--io-worker', str(args.worker),
+                            '--stats', str(failure_stats), *options, '--', '/usr/bin/touch', str(marker)],
+                            env=environment, capture_output=True, text=True, timeout=20)
+                        require(result.returncode == 125 and diagnostic in result.stderr and not marker.exists(),
+                                'unsupported device request reached application: ' + result.stderr)
+                        require(json.loads(failure_stats.read_text())['outstanding'] == 0,
+                                'unsupported device request leaked buffers')
+                    print('PASS: capacity/RSS requests rejected before application with zero owned buffers', flush=True)
                 for queue_size, repeated in ((512, False), (4096, True), (32768, False)):
                     name = 'repeat' if repeated else 'queue-' + str(queue_size)
                     config, stats, capture = root / (name + '.ini'), root / (name + '.json'), root / (name + '-pcap')
                     capture.mkdir()
                     # Supported vhost-user subset; iface is kernel-backend-only in pinned DPDK.
                     text = '[dpdk]\nnb_vdev=1\nport=net_virtio_user0\n'
+                    if args.queue_one:
+                        text += 'queues=2\n'
                     memory_mb = 1024 if queue_size == 32768 else 64
                     text += f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m {memory_mb}\n'
                     text += '[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\nmax_mtu=1500\n'
@@ -146,6 +171,13 @@ def main():
                                     'typed MAC/queue capacity did not reach actual PMD: ' + str(info))
                             require(info['mbuf_pool_count'] >= info['rx_descriptors'] + info['tx_descriptors'] + 320,
                                     'mbuf pool does not cover RX/TX descriptors and worker headroom: ' + str(info))
+                            if args.queue_one:
+                                require(info['queues'] == 2 and info['data_tx_queue'] == 0,
+                                        'active queue count or application TX queue differs: ' + str(info))
+                                counts = record['rx_by_queue']
+                                require(len(counts) == 2 and sum(counts) == record['rx'] + record['rx_dropped'] and
+                                        counts[0] == 0 and counts[1] > 0 and info['rss'] is None,
+                                        'frames were not received on queue 1 with RSS disabled: ' + str(record))
                             require(record['tx'] > 0 and record['rx'] > 0 and record['outstanding'] == 0,
                                     'missing actual traffic or leaked virtio buffers')
                             mtu.wire(capture, 1500)
