@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 import unittest
 
 sys.dont_write_bytecode = True
@@ -72,6 +73,36 @@ class BondTests(unittest.TestCase):
         text = BASE + '[bond0]\nmode=bad\nslave=bad\n[bond0]\n' + FIELDS
         first = self.read(text); first['bonds'][0]['slave'].append('other')
         self.assertEqual(self.read(text)['bonds'][0]['slave'], ['0', '1'])
+
+    def test_member_name_limit_is_shared_and_preflighted(self):
+        longest = 'x' * 63
+        text = BASE + '[bond0]\n' + FIELDS.replace('slave=0,1', 'slave=' + longest).replace(
+            'primary=0', 'primary=' + longest)
+        with patch.object(launcher, 'query_dpdk_max_numa_nodes', return_value=32) as query, \
+                patch.object(launcher.subprocess, 'run') as run:
+            self.assertEqual(self.read(text)['bonds'][0]['slave'], [longest])
+            query.assert_called_once_with(WORKER)
+            run.assert_not_called()
+        with patch.object(launcher, 'query_dpdk_max_numa_nodes', return_value=32):
+            self.assertEqual(self.parse(text).bonds[0]['slave'], [longest])
+        programmatic = dict(name='net_bonding0', mode=4, slave=[longest])
+        self.assertEqual(launcher.bond_device_argument(programmatic),
+            '--vdev=net_bonding0,mode=4,member=' + longest)
+
+        for member in ('x' * 64, 'x' * 128, '', 'bad/name', 'nämé'):
+            invalid_text = BASE + '[bond0]\n' + FIELDS.replace('slave=0,1', 'slave=' + member)
+            with self.subTest(length=len(member), member=member[:12]):
+                with patch.object(launcher, 'query_dpdk_max_numa_nodes') as query, \
+                        patch.object(launcher.subprocess, 'run') as run, \
+                        patch.object(launcher.subprocess, 'Popen') as popen:
+                    with self.assertRaisesRegex(ValueError, '1..63 ASCII'):
+                        self.read(invalid_text)
+                    query.assert_not_called(); run.assert_not_called(); popen.assert_not_called()
+                    with self.assertRaisesRegex(ValueError, '1..63 ASCII'):
+                        launcher.bond_device_argument(dict(name='net_bonding0', mode=4, slave=[member]))
+                    with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                        self.parse(invalid_text)
+                    query.assert_not_called(); run.assert_not_called(); popen.assert_not_called()
 
     def test_port_and_raw_bond_conflicts(self):
         for extra in (['--port', 'net_tap0'], ['--eal=--vdev=net_bonding0,mode=4,member=0']):

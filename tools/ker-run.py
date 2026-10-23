@@ -225,7 +225,15 @@ def query_dpdk_max_numa_nodes(worker_path):
     return limits['max_numa_nodes']
 
 
-def bond_devices(ini, max_numa_nodes):
+def validate_bond_member_name(member):
+    # Pinned DPDK RTE_DEV_NAME_MAX_LEN is 64 bytes including the final NUL.
+    if (not isinstance(member, str) or len(member) > 63 or
+            not re.fullmatch(r'[A-Za-z0-9_.:-]{1,63}', member)):
+        raise ValueError('[bond0] invalid member name/port (expected 1..63 ASCII characters)')
+    return member
+
+
+def bond_devices(ini, max_numa_nodes=None):
     count = ini.getint('dpdk', 'nb_bond', fallback=0)
     if count not in (0, 1):
         raise ValueError('[dpdk] nb_bond supports 0 or 1 selected bond')
@@ -246,12 +254,11 @@ def bond_devices(ini, max_numa_nodes):
             'xmit_policy': fields.get('xmit_policy', 'l2')}
     if bond['mode'] not in range(7):
         raise ValueError('[bond0] invalid mode')
-    if not -1 <= bond['socket_id'] < max_numa_nodes:
+    if max_numa_nodes is not None and not -1 <= bond['socket_id'] < max_numa_nodes:
         raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
     if not 1 <= len(bond['slave']) <= 16 or len(set(bond['slave'])) != len(bond['slave']):
         raise ValueError('[bond0] requires 1..16 distinct members')
-    if any(not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', member) for member in bond['slave']):
-        raise ValueError('[bond0] invalid member name/port')
+    bond['slave'] = [validate_bond_member_name(member) for member in bond['slave']]
     if bond['name'] in bond['slave']:
         raise ValueError('[bond0] cannot contain itself')
     if 'primary' in fields:
@@ -277,8 +284,9 @@ def bond_devices(ini, max_numa_nodes):
 
 
 def bond_device_argument(bond):
+    members = [validate_bond_member_name(member) for member in bond['slave']]
     return ('--vdev=' + bond['name'] + ',mode=' + str(bond['mode']) +
-            ''.join(',member=' + member for member in bond['slave']) +
+            ''.join(',member=' + member for member in members) +
             ''.join(',' + key + '=' + str(bond[key]) for key in
                     ('primary', 'socket_id', 'mac', 'xmit_policy') if key in bond))
 
@@ -294,13 +302,11 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None):
         raise ValueError('DEFAULT inheritance is unsupported')
     devices = virtual_devices(ini, directory)
     values = {'vdevs': devices} if devices or ini.has_option('dpdk', 'nb_vdev') else {}
-    if ini.getint('dpdk', 'nb_bond', fallback=0):
+    bonds = bond_devices(ini)
+    if bonds:
         if worker_path is None:
             raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
-        max_numa_nodes = query_dpdk_max_numa_nodes(worker_path)
-    else:
-        max_numa_nodes = None
-    bonds = bond_devices(ini, max_numa_nodes)
+        bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
     if bonds or ini.has_option('dpdk', 'nb_bond'):
         values['bonds'] = bonds
     for section in ini.sections():
