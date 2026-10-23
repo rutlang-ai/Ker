@@ -146,16 +146,20 @@
       "id": "rss-port-steering",
       "title": "Qualify RSS steering and queue-aware source-port contracts",
       "disposition": "adaptation-needed",
-      "reason": "Native Linux ephemeral range coverage does not implement F-Stack RSS tables, Toeplitz hit-rate targets, per-queue source-port adjustment or IPv6 landing behavior.",
+      "reason": "Exact source audit distinguishes configuration/table/guard assertions, standalone real-DPDK software equivalence, skipped unready microbench and actual RSS packet landing. Ker key/RETA control readback and independent vhost queue injection do not implement the original FreeBSD PCB caller source-port candidate-table integration. Original Linux allocation remains authoritative; see docs/fstack-rss-contracts.md.",
       "evidence": [
         "src/posix/io-worker.c",
         "tests/posix/ephemeral-ports.c",
-        "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c"
+        "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c",
+        "src/posix/worker-rss.c",
+        "tests/posix/rss-control.c",
+        "docs/fstack-rss-contracts.md"
       ],
       "acceptance": [
-        "Define multi-queue ownership and the supported EAL/NIC RSS capability contract.",
-        "Use original Linux port allocation and supported adapters; do not implement a Ker-owned TCP source-port/state machine or claim range checks are RSS.",
-        "Validate actual IPv4/IPv6 queue landing, null/disabled guards, range updates, rotation/miss paths and the listed performance claims with an appropriate RSS device."
+        "Qualify exact source assertions in docs/fstack-rss-contracts.md through actual Ker consumers, distinguishing early unready guards, software arithmetic and ready-context behavior; do not require a physical NIC merely for a pure helper assertion or label a skipped microbench a performance pass.",
+        "Identify an original Linux allocation extension point with real routing/conflict/range/fallback semantics before source-port steering. Preserve automatic original Linux port allocation; do not implement a Ker-owned TCP source-port/state machine or add an unused optimization API.",
+        "Separately prove real IPv4/IPv6 RSS packet landing with an appropriate original PMD/input profile, actual hash/queue observations and independent computation from queried key/algorithm/RETA. Key/RETA control readback and deliberately alternating backend queues are insufficient.",
+        "Qualify table lifecycle/hit/miss/caller-owned rotation, enabled/disabled/degraded states and ready-context recheck/range paths; record actual non-skipped performance evidence before any microbench claim."
       ],
       "cases": [
         "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",

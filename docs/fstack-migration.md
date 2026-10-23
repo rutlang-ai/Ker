@@ -1254,3 +1254,18 @@ hugepage。该环境证据不构成 secondary/PMD/网络通过，也不改变79�
 
 当前180项场景适配、19partial、164blocked、15架构专属、55harness-only；
 183项 blocked/partial 仍未完成。#229剩余9项，其他合同继续保留。
+
+## RSS 源断言与数据面证据分层
+
+[#220](https://github.com/rutlang-ai/Ker/issues/220) 的
+[31项精确合同](fstack-rss-contracts.md) 区分配置/表/guard、独立 DPDK 软件计算和
+实际 PMD 队列落点。源测试中 RETA为0会使部分具名分支未被执行，microbench还会
+直接skip；现有null PMD控制读回及人为交替后端队列不能替代RSS数据面。原生产调用
+来自FreeBSD PCB端口分配路径，须先确定原版Linux的真实扩展点，不能另写Ker TCP
+端口选择状态机。清单及通过数不变：180/19/164/15/55，183项仍未完成。
+
+同轮随后使用无NIC、512MiB的隔离QEMU虚拟机，在guest内部配置hugepage，
+原版EAL primary/secondary完成真实共享对象查找与清理，未改宿主全局设置。
+[环境记录](fstack-reload-environment.md) 明确这只解除共享内存前置条件，
+不代表双master、PMD数据面、generation或reload通过。下一步可回到#218，
+在该环境中实现真实监督会话，79项用例保持blocked。
