@@ -321,7 +321,7 @@ def main():
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-session')
     parser.add_argument('--eal', default='')
-    parser.add_argument('--standby', action='store_true', help='keep a refused consumer attached and retry admission on each P command')
+    parser.add_argument('--standby', action='store_true', help='keep a refused consumer attached; lease retries on P, run retries before application launch')
     parser.add_argument('--epoch', type=int, help='epoch to query with epoch-status; 0 names the resident')
     parser.add_argument('--generation', type=int, choices=range(2), default=0)
     parser.add_argument('--process', type=int, choices=range(4), default=0)
@@ -346,8 +346,9 @@ def main():
         parser.error('packet endpoints, library and command are only valid with run')
     if args.paired_pmd and args.action not in ('serve', 'run'):
         parser.error('--paired-pmd is only supported by serve and run')
-    if args.standby and (args.action != 'lease' or not args.ring_pmd):
-        parser.error('--standby requires lease --ring-pmd')
+    if args.standby and not ((args.action == 'lease' and args.ring_pmd) or
+                             (args.action == 'run' and args.paired_pmd)):
+        parser.error('--standby requires lease --ring-pmd or run --paired-pmd')
     if args.action == 'epoch-status' and (args.epoch is None or not 0 <= args.epoch < 2**64):
         parser.error('epoch-status requires --epoch in 0..2^64-1')
     if args.action != 'epoch-status' and args.epoch is not None:

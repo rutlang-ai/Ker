@@ -836,6 +836,33 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot); fflush(stdout);
     }
     if (ring_pmd == 2) {
+        /* A paired standby owns only its coordinate control lease. Do not
+         * inspect data leases or touch either device queue before admission.
+         * One P request receives exactly one outcome, so the supervisor never
+         * leaves a retry byte pending when the packet loop takes control. */
+        while (!device_packet && !stopping) {
+            struct pollfd waiters[] = {{.fd = control, .events = POLLIN},
+                {.fd = fd, .events = POLLIN}, {.fd = peer, .events = POLLIN}};
+            int ready = poll(waiters, 3, 100);
+            if (ready < 0) { if (errno == EINTR) continue; goto cleanup; }
+            if (waiters[2].revents || dead(peer)) {
+                fprintf(stderr, "ker session: primary process exited\n"); _Exit(125);
+            }
+            if (waiters[1].revents) goto cleanup;
+            if (!waiters[0].revents) continue;
+            char command;
+            if (!(waiters[0].revents & POLLIN) || read(control, &command, 1) != 1 || command != 'P') {
+                result = 0; goto cleanup;
+            }
+            int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet);
+            if (acquired && acquired != -EBUSY) {
+                fprintf(stderr, "ker session: standby PMD acquisition failed %d\n", acquired); goto cleanup;
+            }
+            printf("%s {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu}\n",
+                acquired ? "KER_SESSION_PMD_STANDBY" : "KER_SESSION_PMD_GRANTED",
+                (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot); fflush(stdout);
+        }
+        if (!device_packet) { result = 0; goto cleanup; }
         struct rte_mbuf *rx_packet = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire);
         if (!known_object(rx_packet) || rx_packet == device_packet || rx_packet == leased_packet || rx_packet->pool != pool) goto cleanup;
         uint64_t key = 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
@@ -951,7 +978,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: ker-io-session --role primary|secondary --socket PATH --control-fd N [--ticket-fd N --generation 0..1 --process 0..3] -- EAL_ARGS\n");
         return 2;
     }
-    if (ring_pmd == 2 && !strcmp(role, "secondary") && (standby || probe_only || probe_count ||
+    if (ring_pmd == 2 && !strcmp(role, "secondary") && (probe_only || probe_count ||
         packet_fd == wire_fd || packet_fd == mtu_fd || wire_fd == mtu_fd ||
         ker_session_packet_endpoint(packet_fd, SOCK_DGRAM) || ker_session_packet_endpoint(wire_fd, SOCK_DGRAM) ||
         ker_session_packet_endpoint(mtu_fd, SOCK_SEQPACKET))) return 2;

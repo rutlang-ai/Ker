@@ -44,6 +44,10 @@ def main():
         raise RuntimeError('SIGTERM cleanup accepted failed ' + label)
 
     cleanup.validate_interrupted_cleanup(0, {'status': 0})
+    cleanup.validate_interrupted_cleanup(0, None, packet_expected=False)
+    rejected_cleanup('acquired pre-app missing packet', 0, None)
+    rejected_cleanup('queued nonzero worker', 1, None, packet_expected=False)
+    rejected_cleanup('queued unexpected packet', 0, {'status': 0}, packet_expected=False)
     require(cleanup.validate_interrupted_cleanup(0, {'status': 0}, app_launched=True,
         app_code=-15, startup=b'KER_NATIVE_READY\n', native_stats=None) == 'signal-terminated',
         'exact SIGTERM death without destructor markers was not classified truthfully')

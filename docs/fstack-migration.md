@@ -1374,3 +1374,19 @@ resident在开放admission前验证全部128个原始坐标ring及其capacity/SP
 专属及55项harness-only保留边界。#218仍有75项未完成（73 blocked、2 partial）。
 详见[数据路径、寿命和明确边界](fstack-session-packets.md)。cross-generation
 flow drain、exception/KNI-owner协调、物理PMD/driver DMA及完整reload仍待实现。
+
+
+2026-10-24 真实 native packet 路径的 standby 接管批次
+
+`ker-session run --paired-pmd --standby` 保留被拒绝的真实 EAL secondary；
+业务程序在授权前不启动，等待期间仅占自己的 control 对象。原消费者 exact
+pidfd 死亡并归还原始设备对象后，同一 PID/EAL/epoch 获得授权，再启动新的
+original Linux 实例。两代分别经过原始 TAP peer 验证 IPv4/IPv6 TCP4097 和
+UDP512、实际 PMD/native 计数、MTU 回滚和最终511对象归还。另一个真正待机
+排队进程分别以 SIGINT 和 SIGTERM 取消，要求状态130/143、无业务启动、worker 精确死亡及 control 对象回收；SIGTERM 时仅持有 control lease 的 worker 不产生 packet completion，原消费者与 census 保持不变。
+
+本批扩展 TC-3 的 partial 证据，不增加已完成案例数。源 TC-3 还要求实际
+exception/KNI owner 与设备消费者一致；cross-generation dispatch/drain 和旧
+TCP 连接保留同样仍未完成。当前184 scenario-adapted、20 partial、159 blocked，
+179项未完成；15架构专属和55 harness-only 边界不变。详见
+[fstack-session-packets.md](fstack-session-packets.md)。
