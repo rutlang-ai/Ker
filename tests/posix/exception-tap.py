@@ -57,7 +57,8 @@ def main():
              'test_kni_process_rx_partial_drop', 'test_kni_process_tx_kernel_ratelimit',
              'test_kni_process_tx_kernel_ratelimit_exceeded', 'test_kni_enqueue_full_ring_drops', 'test_ff_kni_enqueue_no_ratelimit',
              'test_ff_kni_enqueue_console_ratelimit_over', 'test_ff_kni_enqueue_general_ratelimit_over',
-             'test_ff_kni_enqueue_filter_classification')
+             'test_ff_kni_enqueue_filter_classification',
+             'queued TAP frame blocks MTU shrink until exact old-MTU drain; retry is quiescent')
     require(all(result.stdout.count('PASS: ' + case + '\n') == 1 for case in cases),
             'missing exact source ownership markers: ' + result.stdout)
     print(result.stdout, end='', flush=True)

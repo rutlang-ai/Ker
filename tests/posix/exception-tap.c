@@ -88,7 +88,8 @@ static void admission_receive(unsigned id, unsigned kind)
 }
 static void close_bridge(void)
 {
-    CHECK(!close(peer)); CHECK(!ker_worker_exception_close(&bridge)); target_fd = -1;
+    if (peer >= 0) { CHECK(!close(peer)); peer = -1; }
+    CHECK(!ker_worker_exception_close(&bridge)); target_fd = -1;
     CHECK(!if_nametoindex("excepttest") && !rte_mempool_in_use_count(pool));
 }
 static void enqueue(unsigned count, unsigned start)
@@ -178,6 +179,18 @@ int main(void)
     CHECK(!ker_worker_exception_enqueue(&bridge,&large)&&!large);step(500,1500);host_receive(1,60,1300);
     host_send(1,61,1300);step(600,1500);wire_receive(1,61,1300);
     host_send(1,62,1400);step(700,1280);CHECK(bridge.wire_dropped==5&&bridge.malformed==1);
+    /* A host frame queued on the TAP fd must block the MTU transaction. Drain
+     * it under the old MTU, verify exact delivery, then the retry can shrink. */
+    host_send(1,63,1400);CHECK(ker_worker_exception_mtu_busy(&bridge)==1);
+    uint16_t wire_mtu=0;unsigned tap_mtu=0;
+    CHECK(!rte_eth_dev_get_mtu(port,&wire_mtu)&&wire_mtu==1500);
+    CHECK(!ker_worker_exception_mtu(&bridge,&tap_mtu,false)&&tap_mtu==1500);
+    step(800,1500);wire_receive(1,63,1400);
+    CHECK(ker_worker_exception_mtu_busy(&bridge)==0);
+    CHECK(!rte_eth_dev_get_mtu(port,&wire_mtu)&&wire_mtu==1500);
+    CHECK(!ker_worker_exception_mtu(&bridge,&tap_mtu,false)&&tap_mtu==1500);
+    CHECK(!close(peer));peer=-1;
+    puts("PASS: queued TAP frame blocks MTU shrink until exact old-MTU drain; retry is quiescent");
     close_bridge();
     open_bridge(16,2);enqueue(5,70);step(100,1500);host_receive(5,70,64);
     CHECK(bridge.window_packets==5&&bridge.to_host==5);puts("PASS: test_kni_process_tx_kernel_ratelimit");

@@ -34,6 +34,9 @@ int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *i
  * Device control stays on the opening EAL lcore. Setter verifies readback;
  * callers must roll back both devices if a setter fails after mutation. */
 int ker_worker_exception_mtu(struct ker_worker_exception *bridge, unsigned *mtu, bool set);
+/* Snapshot both exception directions on its owning lcore. Returns 1 when
+ * either adapter queue has pending work, 0 when currently quiescent. */
+int ker_worker_exception_mtu_busy(struct ker_worker_exception *bridge);
 enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *, const struct rte_mbuf *);
 /* Outer EtherType predicate; route() also handles port/control policies. */
 bool ker_worker_exception_matches(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet);

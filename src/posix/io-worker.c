@@ -199,9 +199,15 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
     int requested = message.mtu;
     message.status = 0;
     if (message.operation == KER_MTU_SET) {
+        int exception_busy = 0;
+        if (exception->pending && requested >= KER_NATIVE_MIN_MTU && requested <= maximum &&
+            message.previous == *mtu) {
+            exception_busy = ker_worker_exception_mtu_busy(exception);
+            if (exception_busy < 0) return -1;
+        }
         if (requested < KER_NATIVE_MIN_MTU || requested > maximum) message.status = -EINVAL;
         else if (message.previous != *mtu) message.status = -ESTALE;
-        else if (busy || (exception->pending && !rte_ring_empty(exception->pending))) message.status = -EBUSY;
+        else if (busy || exception_busy) message.status = -EBUSY;
         else if (scatter && scatter_mtu_supported(port, requested)) message.status = -EOPNOTSUPP;
         else if (requested != *mtu) {
             /* RX capacities can be fixed at queue setup (notably TAP scatter).

@@ -10,6 +10,7 @@
 #include <net/if.h>
 #include <net/if_arp.h>
 #include <linux/if_tun.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -87,6 +88,17 @@ int ker_worker_exception_mtu(struct ker_worker_exception *bridge, unsigned *mtu,
     }
     if (close(control) && !result) result = -errno;
     return result;
+}
+int ker_worker_exception_mtu_busy(struct ker_worker_exception *bridge)
+{
+    if (!owner(bridge)) return -EXDEV;
+    if (!rte_ring_empty(bridge->pending)) return 1;
+    struct pollfd event = {.fd = bridge->fd, .events = POLLIN};
+    int result;
+    do result = poll(&event, 1, 0); while (result < 0 && errno == EINTR);
+    if (result < 0) return -errno;
+    if (event.revents & (POLLERR | POLLHUP | POLLNVAL)) return -EIO;
+    return result > 0 && (event.revents & POLLIN) ? 1 : 0;
 }
 enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet)
 {
