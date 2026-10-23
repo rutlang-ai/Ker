@@ -1748,6 +1748,45 @@
         "native-fstack-packet-device"
       ],
       "adaptation": "Call the actual production native ops TX and RX with NULL context/NULL iovec/count0; require -1/EINVAL without descriptor/allocation side effects. Also reject a NULL context with a non-NULL borrowed vector while preserving its pointer, length and bytes, then transfer the same bytes successfully using the valid context and reclaim exactly one owned context. This completes only the source both-NULL error guard. The distinct source non-NULL-owned-FreeBSD-mbuf case stays blocked under223 because it requires disposal, whereas this borrowed-iovec boundary must not free caller memory."
+    },
+    "native-fstack-tx-offloads": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_ip_csum",
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_tso",
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-tx-offloads"
+      ],
+      "adaptation": "Actual original Linux virtio CSUM/HOST_TSO feature negotiation derives from original ethdev capability and enabled-config readback; the worker translates original metadata to mbuf lengths/flags/pseudo-header seeds and calls original TX prepare. Independent TAP/veth host kernels run IPv4/IPv6 UDP lengths0/1/511/1400 and two512KiB TCP streams. AF_PACKET sees all native TCP bytes with independent sequence/payload coverage, IPv4 header and TCP/UDP checksum validation, no omitted UDP checksums, per-segment MTU and zero socket drops; host GRO/GSO/TSO are disabled. Run off-large,checksum-large,tso-large,tso-scatter after1600/1500 native/PMD MTU restarts; verify actual request counters, configured features, IPv4 TSO requests and zero IPv6 TSO advertisement for TAP. TX-first TAP setup initializes original GSO; output segment maximum fits the pinned PMD Ethernet budget without exceeding kernel-requested size. All normal buffers are reclaimed. Original null PMD must reject missing checksum/TSO capabilities before app entry with zero owned buffers. Test-only interposition forwards a real checksum header copy then injects EAGAIN into original TAP writev: detect its orphan header, refuse retry, return125 and require all processes reaped. That fault path is characterization of issue244, not successful cleanup; physical-NIC and IPv6 TSO claims stay partial under221. Worker pre-PMD capture is not wire evidence."
+    },
+    "native-fstack-tx-offload-metadata": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_ip_csum",
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_tso",
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-tx-offload-metadata"
+      ],
+      "adaptation": "Exercise production metadata adapter with bounded packet records and original DPDK header/pseudo-header/raw-checksum APIs. Invalid flags, out-of-range checksum offsets, mismatched TCP checksum field, wrong/disabled GSO type/size/header hint and oversized non-GSO reject before changing buffer bytes/ownership/metadata. A valid IPv4 GSO request yields correct lengths/flags and a legal smaller TAP segment maximum. Generic partial checksum uses the kernel-requested range/seed via original DPDK; independent folded sums validate ICMP and unknown-protocol examples. This is adapter validation, not physical checksum/segmentation execution."
+    },
+    "native-fstack-tx-offloads-config": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_ff_dpdk_if_send_ip_csum",
+        "test_ff_dpdk_if_send_tcp_csum",
+        "test_ff_dpdk_if_send_tso",
+        "test_ff_dpdk_if_send_udp_csum"
+      ],
+      "ker_ctests": [
+        "native-fstack-tx-offloads-config"
+      ],
+      "adaptation": "Validate explicit off/checksum/tso mode, default off, final repeated INI value and CLI precedence, independent additional-interface inheritance/override and rejection of unsupported mode strings before runtime. Native extra-interface settings retain old9-field compatibility with an optional negotiated-feature field; production original Linux UAPI bit positions are compile-time checked. No full F-Stack config ABI or hardware execution is claimed."
     }
   }
 }

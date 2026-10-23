@@ -1287,3 +1287,43 @@ run_shutdown_ack 仅在使用本接口时记录监督者的实际清理结果。
 缓冲区，NULL 上下文返回 EINVAL 且不释放、修改调用方的向量或数据。原版 LKL
 设备移除/释放后才回收上下文；这些规则没有创建 F-Stack FreeBSD mbuf 所有权 ABI，
 也不构成运行期设备热插拔 API。启动会保留上下文创建的实际 errno。
+
+原版 Linux TX 校验和与分段适配
+
+`--tx-offloads off|checksum|tso` / `[dpdk] tx_offloads=...` 默认 off。
+附加 `[interface.NAME]` 可覆盖，否则继承主接口最终配置。worker 先读取原版 PMD
+能力、配置并读回实际 ethdev offload 标志，再把支持的 virtio CSUM/HOST_TSO4 特征交给原版 Linux；当前所有 PMD 均不声明
+HOST_TSO6，直到 translator 支持并验证 IPv6 extension-header GSO；不更改上游源码或实现 Ker TCP/UDP 状态机。
+checksum 要求 TCP/UDP checksum 能力；IPv4 header checksum 在 PMD 支持时启用。
+tso 还要求 TCP_TSO、MULTI_SEGS 和足够描述符容量；不满足时阻止应用启动。
+当前不支持将此选项用于 bonding PMD，因为通用能力位不能表达成员特有的限制。
+
+原版 Linux 的 CHECKSUM_PARTIAL、GSO 类型/大小、校验和起点和偏移被转换为
+原版 DPDK mbuf 元数据，调用原版 header/pseudo-header/checksum helper 和
+TX prepare API；不重写协议状态或重传逻辑。不能用 TCP/UDP 标志表达的非 GSO
+校验和请求（如 ICMP）按原版 Linux 提供的字节范围/seed 调用原版 DPDK raw checksum
+helper 完成，并单独计入 fallback。未知/越界元数据明确失败。GSO record 上限65554字节，
+因此 large 模式下的 GSO 也可能用 mbuf 链；普通非 GSO 的 MTU 限制保持原义。
+
+固定版本 TAP 通过原版 DPDK 软件 GSO/校验和执行卸载，只支持 IPv4 GSO，故不向
+Linux 声明其 HOST_TSO6；IPv6 继续由原版 Linux 软件分段。TAP 的 TSO 队列先用
+原版 API 设置 TX，再设置 RX，以免 RX 先创建共享 fd 后跳过 GSO 初始化；每个
+完整 GSO Ethernet 段还受该 PMD 的更严格 MTU 预算约束，使用不大于 Linux 请求值
+的分段上限。所有实际分段由原版 DPDK 完成。其他直接 PMD 仍不声明 HOST_TSO6；各自的 IPv4 TSO 能力需由物理 runner 验收，
+不能将 TAP 软件执行计为 NIC 硬件通过。
+
+TAP 在拒绝 checksum/GSO buffer 时存在上游所有权缺陷：复制头部后 writev 失败
+可能丢失新分配头部，GSO 拒绝还可能不恢复原输入标志，见
+[#244](https://github.com/rutlang-ai/Ker/issues/244)。当前在 TAP 卸载发送被拒绝时明确
+终止后端并报告125，不重试可能已改变的 buffer；正常路径要求零 outstanding。
+故障注入路径刻意检查非零 outstanding 的诊断和全部进程已回收，不伪报成功清理。
+安全重试需先修复/验证该依赖。默认 off 的既有重试策略保持原样。
+
+`io.tx_offload_features/flags/mode` 记录实际协商。`tx_tcp_checksum/udp_checksum/
+ip_checksum/tso4/tso6/checksum_fallback` 是构建时的元数据请求计数，不是物理线速包数，
+`tx` 统计输入 mbuf；GSO 后的线上段数可能更多。worker PCAP 是 PMD 执行前的数据，
+带部分校验和/GSO 时不能当作完整线包。`native-fstack-tx-offloads` 使用独立宿主
+AF_PACKET 抓包、禁止 GRO/GSO 聚合、检查抓包零丢包、两条各512KiB TCP 的完整
+字节覆盖、IPv4/TCP/UDP checksum 和每段 MTU，并验证1600/1500 MTU 停启后卸载
+仍有效。off/checksum/tso-large/tso-scatter 均测试；IPv6 UDP checksum 必须非零。
+四项源硬件卸载案例继续 partial，物理 NIC 和 IPv6 TSO 正向验收仍由 issue221 跟踪。

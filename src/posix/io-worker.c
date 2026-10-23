@@ -28,6 +28,7 @@
 #include "worker-rx-drain.h"
 #include "worker-scatter.h"
 #include "worker-rss.h"
+#include "worker-offload.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
@@ -254,7 +255,7 @@ int main(int argc, char **argv)
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
     int idle_sleep_us = 1000, tx_delay_us = 0;
-    int promiscuous = -1;
+    int promiscuous = -1, tx_offloads = 0;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
     const char *port_name = NULL, *mbuf_mode = "large", *bond_policy = NULL;
@@ -272,6 +273,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
+        else if (!strcmp(argv[i], "--tx-offloads")) tx_offloads = number(argv[++i]);
         else if (!strcmp(argv[i], "--queues")) queues = number(argv[++i]);
         else if (!strcmp(argv[i], "--mtu-fd")) mtu_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--max-mtu")) maximum_mtu = number(argv[++i]);
@@ -288,9 +290,9 @@ int main(int argc, char **argv)
     }
     if (!maximum_mtu) maximum_mtu = mtu;
     if (maximum_mtu < mtu || maximum_mtu > KER_NATIVE_MAX_MTU) return 1;
-    if (queues < 1 || queues > MAX_QUEUES || (rss_enabled && queues < 2) || tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
+    if (tx_offloads < 0 || tx_offloads > 2 || queues < 1 || queues > MAX_QUEUES || (rss_enabled && queues < 2) || tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
-        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--rss] [--queues 1..16] [--mtu-fd N] [--max-mtu 1280..9000] [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--tx-delay-us 0..100] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
+        fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--tx-offloads 0..2] [--rss] [--queues 1..16] [--mtu-fd N] [--max-mtu 1280..9000] [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--tx-delay-us 0..100] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
@@ -339,7 +341,10 @@ int main(int argc, char **argv)
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
     uint64_t transmitted_bytes = 0, received_bytes = 0, tx_multiseg = 0, rx_multiseg = 0;
     uint64_t rx_startup_discarded = 0, idle_waits = 0, idle_timeouts = 0;
-    unsigned char tx_bytes[sizeof(struct ker_packet_header) + WIRE_MAX], rx_bytes[WIRE_MAX];
+    struct ker_packet_header tx_header = {0};
+    struct ker_worker_offload offload = {0};
+    uint64_t tx_tcp_checksum = 0, tx_udp_checksum = 0, tx_ip_checksum = 0, tx_tso4 = 0, tx_tso6 = 0, tx_checksum_fallback = 0;
+    unsigned char tx_bytes[sizeof(struct ker_packet_header) + KER_NATIVE_MAX_GSO], rx_bytes[WIRE_MAX];
     struct ker_worker_tx batch = {0};
     uint64_t tx_flushes = 0, tx_timer_flushes = 0, tx_full_flushes = 0, tx_drain_flushes = 0;
     size_t tx_length = 0;
@@ -371,8 +376,23 @@ int main(int argc, char **argv)
     if (rss_enabled && ker_worker_rss_prepare(port, (uint16_t)queues, &conf, &rss)) {
         fprintf(stderr, "ker: RSS requires IPv4/IPv6 TCP/UDP types, a readable key and a bounded RETA\n"); goto cleanup;
     }
+    if (ker_worker_offload_prepare(port, tx_offloads, &conf, &offload)) {
+        fprintf(stderr, "ker: requested TX checksum/TSO offloads exceed original PMD capabilities or current adapter qualification\n"); goto cleanup;
+    }
+    uint16_t buffer_size = (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE :
+        RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, maximum_mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM));
+    unsigned gso_segments = (KER_NATIVE_MAX_GSO + buffer_size - RTE_PKTMBUF_HEADROOM - 1) /
+        (buffer_size - RTE_PKTMBUF_HEADROOM);
+    if (tx_offloads == 2 && offload.segment_limit && gso_segments > offload.segment_limit) {
+        fprintf(stderr, "ker: selected packet storage exceeds PMD GSO descriptor capacity\n"); goto cleanup;
+    }
     if (rte_eth_dev_configure(port, (uint16_t)queues, (uint16_t)queues, &conf)) goto device_error;
     configured = true;
+    struct rte_eth_conf observed_conf;
+    if (rte_eth_dev_conf_get(port, &observed_conf) ||
+        (observed_conf.txmode.offloads & offload.flags) != offload.flags) {
+        fprintf(stderr, "ker: ethdev TX offload configuration readback differs\n"); goto cleanup;
+    }
     if (bond_policy) {
         int result = ker_bond_policy_apply(port, bond_policy);
         if (result) {
@@ -444,14 +464,19 @@ int main(int argc, char **argv)
     /* Match F-Stack numa_on: lcore-local allocations, or explicit socket 0. */
     unsigned int allocation_socket = numa ? rte_socket_id() : 0;
     pool = rte_pktmbuf_pool_create("ker_native_packets", pool_count, 0, 0,
-        (uint16_t)(scatter ? RTE_MBUF_DEFAULT_BUF_SIZE : RTE_MAX(RTE_MBUF_DEFAULT_BUF_SIZE, maximum_mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM)), allocation_socket);
+        buffer_size, allocation_socket);
     if (!pool) {
-        fprintf(stderr, "ker: cannot allocate %u mbufs for %u RX descriptors, %u TX descriptors and worker refill/burst headroom: %s\n",
-            pool_count, pool_rx_desc, pool_tx_desc, rte_strerror(rte_errno));
+        fprintf(stderr, "ker: cannot allocate %u mbufs for %u RX descriptors, %u TX descriptors and worker refill/burst headroom: %s\n", pool_count, pool_rx_desc, pool_tx_desc, rte_strerror(rte_errno));
         goto cleanup;
     }
     for (uint16_t queue = 0; queue < queues; queue++) {
-        if (rte_eth_rx_queue_setup(port, queue, rx_desc, allocation_socket, NULL, pool) ||
+        /* Original TAP initializes its GSO context only when TX creates the
+         * shared TAP fd. RX-first setup leaves the advertised TSO path empty.
+         * Configure TX first for that path using original public APIs. */
+        if (offload.tap && tx_offloads == 2) {
+            if (rte_eth_tx_queue_setup(port, queue, tx_desc, allocation_socket, NULL) ||
+                rte_eth_rx_queue_setup(port, queue, rx_desc, allocation_socket, NULL, pool)) goto device_error;
+        } else if (rte_eth_rx_queue_setup(port, queue, rx_desc, allocation_socket, NULL, pool) ||
             rte_eth_tx_queue_setup(port, queue, tx_desc, allocation_socket, NULL)) goto device_error;
     }
     if (rte_eth_dev_start(port)) goto device_error;
@@ -573,10 +598,10 @@ int main(int argc, char **argv)
         for (unsigned index = 0; index < rss.key_length; index++) snprintf(key + index * 2, 3, "%02x", rss.key[index]);
         snprintf(rss_json, sizeof(rss_json), "{\"types\":%llu,\"key\":\"%s\",\"reta_size\":%u,\"reta_mapping\":\"index_mod_queues\",\"verified\":true}", (unsigned long long)rss.types, key, rss.reta_size);
     }
-    printf("KER_IO_READY {\"rss\":%s,\"queues\":%d,\"data_tx_queue\":0,\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    printf("KER_IO_READY {\"tx_offload_features\":%u,\"tx_offload_flags\":%llu,\"tx_offload_mode\":%d,\"tx_capture_stage\":\"before_offload\",\"rss\":%s,\"queues\":%d,\"data_tx_queue\":0,\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
-        rss_json, queues, initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
+        offload.features, (unsigned long long)offload.flags, tx_offloads, rss_json, queues, initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
         device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc,
         pool_rx_desc, pool_tx_desc, pool_count,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
@@ -627,21 +652,29 @@ int main(int argc, char **argv)
                         break;
                     }
                     if (count < (ssize_t)(sizeof(struct ker_packet_header) + RTE_ETHER_HDR_LEN) ||
-                        count > (ssize_t)(sizeof(struct ker_packet_header) + mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN)) { tx_dropped++; continue; }
-                    struct ker_packet_header header;
-                    memcpy(&header, tx_bytes, sizeof(header));
-                    if (header.flags || header.gso_type || header.header_length || header.gso_size ||
-                        header.checksum_start || header.checksum_offset) {
-                        fprintf(stderr, "ker: native device requested unsupported TX offload\n");
-                        status = 1; break;
-                    }
-                    tx_length = (size_t)count - sizeof(header);
-                    if (!frame_size_supported(tx_bytes + sizeof(header), tx_length, mtu)) {
+                        count > (ssize_t)sizeof(tx_bytes)) { tx_dropped++; continue; }
+                    memcpy(&tx_header, tx_bytes, sizeof(tx_header));
+                    tx_length = (size_t)count - sizeof(tx_header);
+                    if (!tx_header.gso_type && !frame_size_supported(tx_bytes + sizeof(tx_header), tx_length, mtu)) {
                         tx_length = 0; tx_dropped++; continue;
                     }
                 }
                 pending_tx = ker_worker_mbuf_from_bytes(pool, tx_bytes + sizeof(struct ker_packet_header), tx_length);
                 if (!pending_tx) { tx_retries++; break; }
+                struct ker_worker_offload_result translated;
+                int offload_error = ker_worker_offload_apply(&offload, &tx_header, pending_tx, (unsigned)mtu, &translated);
+                if (offload_error) {
+                    fprintf(stderr, "ker: unsupported/malformed native TX metadata (%d) flags=%u gso=%u size=%u hdr=%u csum=%u+%u length=%zu\n",
+                        offload_error, tx_header.flags, tx_header.gso_type, tx_header.gso_size,
+                        tx_header.header_length, tx_header.checksum_start, tx_header.checksum_offset, tx_length);
+                    status = 1; break;
+                }
+                if (tx_offloads && pending_tx->ol_flags && rte_eth_tx_prepare(port, 0, &pending_tx, 1) != 1) {
+                    fprintf(stderr, "ker: original PMD rejected TX offload preparation: %s\n", rte_strerror(rte_errno));
+                    status = 1; break;
+                }
+                tx_tcp_checksum += translated.tcp; tx_udp_checksum += translated.udp; tx_ip_checksum += translated.ip;
+                tx_tso4 += translated.tso4; tx_tso6 += translated.tso6; tx_checksum_fallback += translated.fallback;
                 /* Capture once before PMD ownership transfer, not on retries. */
                 if (pcap_dir) {
                     struct timespec timestamp;
@@ -671,6 +704,13 @@ int main(int argc, char **argv)
             transmitted_bytes += sent.bytes;
             tx_multiseg += sent.multiseg;
             if (batch.count) tx_retries++;
+            /* Pinned TAP can mutate an unaccepted offload buffer (and lose
+             * its prepended checksum header). Do not retry damaged metadata
+             * or report a successful session. Cleanup diagnoses ownership. */
+            if (batch.count && offload.tap && tx_offloads && sent.rejected_offload) {
+                fprintf(stderr, "ker: TAP rejected an offload buffer; retry is unsupported by the pinned PMD\n");
+                status = 1; break;
+            }
             if (sent.packets) progress = true;
         }
         if (draining) {
@@ -792,10 +832,11 @@ cleanup:
         status = 1;
     } else if (pool) rte_mempool_free(pool);
     printf("KER_IO_DONE {\"rx_by_queue\":[");
-    for (int queue = 0; queue < queues; queue++) printf("%s%llu", queue ? "," : "", (unsigned long long)rx_by_queue[queue]);
-    printf("],\"rx_rss_metadata\":%llu,\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
+    for (int queue = 0; queue < queues; queue++)
+        printf("%s%llu", queue ? "," : "", (unsigned long long)rx_by_queue[queue]);
+    printf("],\"tx_tcp_checksum\":%llu,\"tx_udp_checksum\":%llu,\"tx_ip_checksum\":%llu,\"tx_tso4\":%llu,\"tx_tso6\":%llu,\"tx_checksum_fallback\":%llu,\"rx_rss_metadata\":%llu,\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", (unsigned long long)rx_rss_metadata, bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", (unsigned long long)tx_tcp_checksum, (unsigned long long)tx_udp_checksum, (unsigned long long)tx_ip_checksum, (unsigned long long)tx_tso4, (unsigned long long)tx_tso6, (unsigned long long)tx_checksum_fallback, (unsigned long long)rx_rss_metadata, bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,

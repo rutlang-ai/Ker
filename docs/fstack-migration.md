@@ -946,3 +946,26 @@ TX/RX 对 NULL 上下文安全返回 EINVAL；借用向量的指针、长度、�
 布局、软件 LRO 或运行期热插拔兼容。上下文 roundtrip 与双 NULL 共完成2项适配，
 当前136 scenario-adapted、21 partial、213 blocked，仍有234项未完成，另有8项
 架构专属和55项 harness-only。
+
+2026-10-23 原生 TX 卸载适配批次
+
+实现 opt-in 的原版 Linux virtio CHECKSUM_PARTIAL/GSO 到原版 DPDK mbuf 转换，
+从真实 PMD 能力和配置读回协商 Linux 特征、描述符/缓冲区上限，并扩大有界 GSO
+通道。实际 TCP/UDP、分段、序号和重传仍由原版 Linux 与原版 DPDK 执行，未复制
+Ker 协议状态实现。原版 TAP 的软件 checksum/IPv4 TSO 经过独立宿主线包验证：
+两条各512KiB TCP 字节完整覆盖、四种长度的 IPv4/IPv6 UDP、全部 checksum、
+每段 MTU 和抓包零丢包。先做1600/1500 MTU 停启再传输；large/scatter 均通过。
+不支持的原版 null PMD 在应用执行前明确失败；畸形元数据在修改 buffer 前拒绝。
+
+固定版本 TAP 的 RX-first 队列顺序会跳过 TX GSO 初始化，已通过原版 API 调整
+设置顺序，无需修改依赖。其软件 GSO 不支持 IPv6，因此只声明 HOST_TSO4，
+IPv6 软件分段仍归原版 Linux。TAP 拒绝卸载发送时还有无法用公开 API 恢复的
+私有 header/标志所有权缺陷；实际 EAGAIN 注入后发现1个 outstanding mbuf，
+已建 [#244](https://github.com/rutlang-ai/Ker/issues/244)。当前失败关闭、报告125并
+回收进程，禁止重试变更过的 buffer，正常收发均为零 outstanding。
+
+四个 `test_ff_dpdk_if_send_{ip_csum,tcp_csum,tso,udp_csum}` 的新证据全部来自原版
+Linux/PMD 路径；旧 Ker 自有协议单测不再作为这些硬件案例的运行证据。
+TAP 通过的是原版 PMD 的软件实现，不是物理 NIC 硬件，IPv6 TSO 也未验证，
+因此四项仍为 partial，未增加完成计数。当前仍为136 scenario-adapted、21 partial、
+213 blocked，共234项未完成，另有8项架构专属及55项 harness-only。

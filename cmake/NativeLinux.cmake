@@ -53,7 +53,7 @@ set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
-set(ker_io_worker_sources src/posix/io-worker.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
+set(ker_io_worker_sources src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 add_executable(ker-io-worker ${ker_io_worker_sources})
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
@@ -899,6 +899,27 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-run-stop-shutdown-unit
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_run_shutdown.py")
     set_tests_properties(native-fstack-run-stop-shutdown-unit PROPERTIES TIMEOUT 10 LABELS fstack)
+    add_executable(ker-worker-offload-test tests/posix/worker-offload.c src/posix/worker-offload.c)
+    target_include_directories(ker-worker-offload-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_options(ker-worker-offload-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-worker-offload-test PRIVATE PkgConfig::DPDK)
+    add_test(NAME native-fstack-tx-offload-metadata COMMAND ker-worker-offload-test)
+    set_tests_properties(native-fstack-tx-offload-metadata PROPERTIES TIMEOUT 30 LABELS "fstack")
+    add_library(ker-tap-offload-failure SHARED tests/posix/tap-offload-failure.c)
+    target_compile_options(ker-tap-offload-failure PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-tap-offload-failure PRIVATE PkgConfig::DPDK ${CMAKE_DL_LIBS})
+    add_executable(ker-native-tx-offloads-test tests/posix/tx-offloads.c)
+    target_compile_options(ker-native-tx-offloads-test PRIVATE -Wall -Wextra -Werror)
+    list(GET DPDK_LIBRARY_DIRS 0 ker_offload_library_root)
+    add_test(NAME native-fstack-tx-offloads
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/tx-offloads.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-native-tx-offloads-test>"
+            --pmd-root "${ker_offload_library_root}" --failure-library "$<TARGET_FILE:ker-tap-offload-failure>")
+    set_tests_properties(native-fstack-tx-offloads PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-tx-offloads-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_tx_offloads_config.py")
+    set_tests_properties(native-fstack-tx-offloads-config PROPERTIES TIMEOUT 30 LABELS "fstack")
     add_executable(ker-vhost-bridge-test tests/posix/vhost-bridge.c)
     target_compile_options(ker-vhost-bridge-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-vhost-bridge-test PRIVATE PkgConfig::DPDK)

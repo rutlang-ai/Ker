@@ -54,6 +54,41 @@ static void test_tx_batch(void)
     result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
     CHECK(result.packets == 1 && result.bytes == 16 && queue.count == 0 && !queue.retrying);
     CHECK(rte_mempool_avail_count(pool) == 63);
+    /* A retained ordinary TAP suffix can be retried even when other packets
+     * in the original burst carried offload metadata. The marker is captured
+     * before the PMD call, which may mutate/free packet buffers. */
+    for (unsigned int i = 0; i < 2; ++i) {
+        input[0] = (unsigned char)i;
+        struct rte_mbuf *packet = ker_worker_mbuf_from_bytes(pool, input, 64);
+        CHECK(packet);
+        if (i == 0) packet->ol_flags = RTE_MBUF_F_TX_TCP_CKSUM;
+        CHECK(ker_worker_tx_append(&queue, packet, 3000));
+    }
+    mock = (struct tx_mock){.limit = 1, .next = 0};
+    result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(result.packets == 1 && !result.rejected_offload && queue.count == 1);
+    ker_worker_tx_discard(&queue);
+    for (unsigned int i = 0; i < 2; ++i) {
+        input[0] = (unsigned char)i;
+        struct rte_mbuf *packet = ker_worker_mbuf_from_bytes(pool, input, 64);
+        CHECK(packet);
+        if (i == 1) packet->ol_flags = RTE_MBUF_F_TX_TCP_CKSUM;
+        CHECK(ker_worker_tx_append(&queue, packet, 3500));
+    }
+    mock = (struct tx_mock){.limit = 1, .next = 0};
+    result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(result.packets == 1 && result.rejected_offload && queue.count == 1);
+    ker_worker_tx_discard(&queue);
+    for (unsigned int i = 0; i < 2; ++i) {
+        input[0] = (unsigned char)i;
+        struct rte_mbuf *packet = ker_worker_mbuf_from_bytes(pool, input, 64);
+        CHECK(packet && ker_worker_tx_append(&queue, packet, 4000));
+    }
+    mock = (struct tx_mock){.limit = 1, .next = 0};
+    result = ker_worker_tx_flush(&queue, mock_tx_burst, &mock);
+    CHECK(result.packets == 1 && !result.rejected_offload && queue.count == 1);
+    ker_worker_tx_discard(&queue);
+    CHECK(rte_mempool_avail_count(pool) == 63);
     for (unsigned int i = 0; i < KER_WORKER_TX_CAPACITY; ++i) {
         input[0] = (unsigned char)i;
         struct rte_mbuf *packet = ker_worker_mbuf_from_bytes(pool, input, 14);

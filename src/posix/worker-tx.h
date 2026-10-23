@@ -10,11 +10,12 @@ struct ker_worker_tx {
     struct rte_mbuf *packets[KER_WORKER_TX_CAPACITY];
     uint32_t lengths[KER_WORKER_TX_CAPACITY];
     bool multiseg[KER_WORKER_TX_CAPACITY];
+    bool offloaded[KER_WORKER_TX_CAPACITY];
     uint16_t count;
     int64_t first_ns;
     bool retrying;
 };
-struct ker_worker_tx_result { uint16_t packets; uint64_t bytes, multiseg; };
+struct ker_worker_tx_result { uint16_t packets; uint64_t bytes, multiseg; bool rejected_offload; };
 typedef uint16_t (*ker_worker_tx_burst)(void *, struct rte_mbuf **, uint16_t);
 static inline bool ker_worker_tx_append(struct ker_worker_tx *queue,
     struct rte_mbuf *packet, int64_t now)
@@ -25,6 +26,7 @@ static inline bool ker_worker_tx_append(struct ker_worker_tx *queue,
     queue->packets[i] = packet;
     queue->lengths[i] = packet->pkt_len;
     queue->multiseg[i] = packet->nb_segs > 1;
+    queue->offloaded[i] = (packet->ol_flags & RTE_MBUF_F_TX_OFFLOAD_MASK) != 0;
     return true;
 }
 /* Ceil to microseconds; the first retained packet fixes the batch deadline. */
@@ -48,6 +50,8 @@ static inline struct ker_worker_tx_result ker_worker_tx_flush(struct ker_worker_
         result.bytes += queue->lengths[i];
         result.multiseg += queue->multiseg[i];
     }
+    for (uint16_t i = result.packets; i < queue->count; ++i)
+        result.rejected_offload |= queue->offloaded[i];
     queue->count -= result.packets;
     memmove(queue->packets, queue->packets + result.packets,
         queue->count * sizeof(queue->packets[0]));
@@ -55,6 +59,8 @@ static inline struct ker_worker_tx_result ker_worker_tx_flush(struct ker_worker_
         queue->count * sizeof(queue->lengths[0]));
     memmove(queue->multiseg, queue->multiseg + result.packets,
         queue->count * sizeof(queue->multiseg[0]));
+    memmove(queue->offloaded, queue->offloaded + result.packets,
+        queue->count * sizeof(queue->offloaded[0]));
     queue->retrying = queue->count != 0;
     if (!queue->count) queue->first_ns = 0;
     return result;

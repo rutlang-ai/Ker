@@ -212,15 +212,19 @@
       "id": "hardware-offloads",
       "title": "Add positive hardware checksum and TSO acceptance coverage",
       "disposition": "adaptation-needed",
-      "reason": "Software checksum completion and explicit unsupported-metadata rejection are tested, but neither proves positive NIC checksum/TSO execution.",
+      "reason": "Actual original Linux virtio-to-DPDK capability/metadata adaptation and TAP PMD software checksum/IPv4 TSO wire acceptance now exist. Physical-NIC and IPv6 TSO execution remain unqualified; TAP rejected-buffer ownership prevents safe retry (issue244), so current failures are explicit.",
       "evidence": [
         "src/runtime/ethdev-tx.c",
-        "tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c"
+        "tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c",
+        "src/posix/worker-offload.c",
+        "tests/posix/tx-offloads.py",
+        "tests/posix/tap-offload-failure.c"
       ],
       "acceptance": [
         "Implement capability-negotiated ownership/metadata adaptation without changing upstream Linux/DPDK.",
         "Use an actually capable PMD/NIC and independent wire verification for IPv4/TCP/UDP checksum and TSO, including fallback/rejection boundaries.",
-        "Keep software-only runs distinct from hardware passes and document the required runner."
+        "Keep software-only runs distinct from hardware passes and document the required runner.",
+        "Qualify TAP rejected-offload buffer ownership/safe retry under https://github.com/rutlang-ai/Ker/issues/244 before removing the current fail-closed boundary."
       ],
       "cases": [
         "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
