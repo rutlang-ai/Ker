@@ -1282,9 +1282,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Despite its IPFW-style name, the pinned source body supplies -t bogus_proc_type to ff_load_config and asserts rejection. Ker needs explicit invalid-process-type rejection evidence before application entry; port selection or firewall tests do not prove this contract. Retained under issue219.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The pinned source body passes -t bogus_proc_type to ff_load_config and checks rejection, despite its IPFW-style name. Real Ker INI configurations pass both --proc-type=bogus_proc_type and --proc-type bogus_proc_type to original DPDK EAL, which rejects each before readiness, TAP creation, runtime namespace or application entry. The worker PID must be gone, no app sentinel/statistics may exist, and subsequent same-prefix primary startup completes native host TCP/UDP. Exit125 is the Ker infrastructure-failure adaptation of source rejection, not F-Stack parser/API equivalence.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-eal-file-prefix",
+          "provenance_case": "eal-invalid-process-type"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_port_cfg_handler_addr_parse",

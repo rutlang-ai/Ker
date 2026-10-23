@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 172 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 173 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 175 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 174 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 10 | FreeBSD callout/内部 kqueue filter/mbuf 头字段断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 261 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 196 项是
-21 partial + 175 blocked，另有 10 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 260 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 195 项是
+21 partial + 174 blocked，另有 10 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -62,7 +62,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
 | Design generation-aware reload, IPC and drain ownership | 81 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 9 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Define a supported host exception bridge and KNI policy adaptation | 8 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
@@ -1058,8 +1058,8 @@ IPIP 拒绝之外，还检查完整内层匹配/不匹配，避免靠一律拒�
 五种类型与非 NDP/截断帧独立核对。端口模式对分片明确丢弃计数，不增加 Ker
 重组或流状态替代实现；深层封装、自动临时端口归属仍未完成并保留在 #219。
 
-当前172 adapted、21 partial、175 blocked、10架构特定、55 harness-only，
-共196项 blocked/partial；KNI 源案例仍有9项，完整迁移门禁继续失败。
+当前173 adapted、21 partial、174 blocked、10架构特定、55 harness-only，
+共195项 blocked/partial；KNI 源案例仍有8项，完整迁移门禁继续失败。
 
 
 ## 异常队列控制/普通流量入队预算
@@ -1073,3 +1073,17 @@ OSPF/NDP 分类分别扣减预算；普通单播使用 general。零关闭对应
 host/native IPv4/IPv6 TCP/UDP 完成，并用三次 ARP channel EAGAIN 和独立抓包检查
 没有重复克隆或扣减。协议处理仍由原始 Linux 完成，未修改上游 Linux/DPDK。
 本批新增四项适配，issue219 保留九项源合同和已记录的功能缺口。
+
+
+## 无效 EAL 进程类型拒绝合同
+
+源用例 `test_ipfw_pr_cfg_handler_isolated` 名称具有误导性：其实际函数体向
+`ff_load_config` 传入 `-t bogus_proc_type` 并断言失败，并未测试 IPFW 防火墙。
+`native-fstack-eal-file-prefix` 现经真实 INI/launcher/worker 向原始 DPDK 传递
+两种 `--proc-type` 参数形式，要求来自原版 EAL 的精确错误、应用 sentinel 未创建、
+worker 已退出、无就绪统计/异常 TAP/运行目录。之后同一 file prefix 的合法 primary
+实例仍完成真实原生 TCP/UDP；现有共享锁互斥及并行独立实例也继续验证。
+这适配拒绝场景，Ker 的退出125与源函数返回-1明确区分，不声称 F-Stack parser ABI。
+新增一项适配，总计173；仍有195项 blocked/partial。另两个主核用例要求具体
+端口的 `lcore_list` 包含 primary，现有单 worker 不是该合同的完成证据，继续保留
+在 #219，连同六项跨代 owner/分配合同，共八项源缺口。
