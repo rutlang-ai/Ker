@@ -192,12 +192,19 @@ static void test_worker_wait_plan(void)
 static void test_descriptor_pool_budget(void)
 {
     uint32_t count = 0;
+    uint32_t aggregate_rx = 256, aggregate_tx = 256;
     CHECK(ker_worker_mbuf_pool_count(256, 256, &count) == 0 && count == 4095);
     CHECK(ker_worker_mbuf_pool_count(4096, 4096, &count) == 0 && count == 8512);
     CHECK(ker_worker_mbuf_pool_count(32768, 32768, &count) == 0 && count == 65856);
     CHECK(ker_worker_mbuf_pool_count(1, 1, NULL) == -EINVAL);
     CHECK(ker_worker_mbuf_pool_count(UINT32_MAX, 1, &count) == -EOVERFLOW);
     CHECK(ker_worker_mbuf_pool_count(UINT32_MAX - 319, 0, &count) == -EOVERFLOW);
+    for (unsigned member = 0; member < 16; member++)
+        CHECK(ker_worker_mbuf_budget_add(&aggregate_rx, &aggregate_tx, 256, 256) == 0);
+    CHECK(aggregate_rx == 4352 && aggregate_tx == 4352);
+    CHECK(ker_worker_mbuf_pool_count(aggregate_rx, aggregate_tx, &count) == 0 && count == 9024);
+    CHECK(ker_worker_mbuf_budget_add(&aggregate_rx, &aggregate_tx, UINT32_MAX, 0) == -EOVERFLOW);
+    CHECK(ker_worker_mbuf_budget_add(NULL, &aggregate_tx, 1, 1) == -EINVAL);
 }
 
 static void test_scatter_segment_limits(void)

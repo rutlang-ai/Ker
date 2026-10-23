@@ -87,6 +87,25 @@ static uint16_t configured_vdev_ring_size(int argc, char **argv, const char *por
     return 0;
 }
 
+static int configured_port_descriptors(uint16_t port, int argc, char **argv,
+    uint16_t minimum_rx, uint16_t minimum_tx, uint32_t *rx, uint32_t *tx)
+{
+    char name[RTE_ETH_NAME_MAX_LEN];
+    struct rte_eth_dev_info info = {0};
+    uint16_t rx_desc = 256, tx_desc = 256;
+    if (rte_eth_dev_get_name_by_port(port, name) ||
+        rte_eth_dev_info_get(port, &info) ||
+        rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) return -EIO;
+    uint16_t ring = configured_vdev_ring_size(argc, argv, name);
+    rx_desc = RTE_MAX(RTE_MAX(rx_desc, minimum_rx), ring);
+    tx_desc = RTE_MAX(RTE_MAX(tx_desc, minimum_tx), ring);
+    if ((info.rx_desc_lim.nb_max && rx_desc > info.rx_desc_lim.nb_max) ||
+        (info.tx_desc_lim.nb_max && tx_desc > info.tx_desc_lim.nb_max)) return -ERANGE;
+    *rx = rx_desc;
+    *tx = tx_desc;
+    return 0;
+}
+
 static uint16_t worker_rx_burst(void *context, struct rte_mbuf **packets,
     uint16_t capacity)
 {
@@ -316,6 +335,7 @@ int main(int argc, char **argv)
     bool control_eof = false;
     char bond_json[256] = "null";
     uint16_t bond_members[16];
+    uint32_t bond_rx_budgets[16] = {0}, bond_tx_budgets[16] = {0};
     int bond_member_count = 0;
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
@@ -345,14 +365,41 @@ int main(int argc, char **argv)
     /* A typed virtio-user ring can exceed the PMD-adjusted defaults. Use its
      * selected config value for both directions; other devices use adjusted
      * descriptors. Check PMD limits before attempting queue setup. */
-    uint16_t pool_rx_desc = RTE_MAX(rx_desc, configured_ring);
-    uint16_t pool_tx_desc = RTE_MAX(tx_desc, configured_ring);
-    if ((budget_info.rx_desc_lim.nb_max && pool_rx_desc > budget_info.rx_desc_lim.nb_max) ||
-        (budget_info.tx_desc_lim.nb_max && pool_tx_desc > budget_info.tx_desc_lim.nb_max)) {
+    uint16_t selected_rx_budget = RTE_MAX(rx_desc, configured_ring);
+    uint16_t selected_tx_budget = RTE_MAX(tx_desc, configured_ring);
+    uint32_t pool_rx_desc = selected_rx_budget, pool_tx_desc = selected_tx_budget;
+    if ((budget_info.rx_desc_lim.nb_max && selected_rx_budget > budget_info.rx_desc_lim.nb_max) ||
+        (budget_info.tx_desc_lim.nb_max && selected_tx_budget > budget_info.tx_desc_lim.nb_max)) {
         fprintf(stderr, "ker: configured descriptor budget RX=%u TX=%u exceeds ethdev limits RX=%u TX=%u\n",
-            pool_rx_desc, pool_tx_desc, budget_info.rx_desc_lim.nb_max,
+            selected_rx_budget, selected_tx_budget, budget_info.rx_desc_lim.nb_max,
             budget_info.tx_desc_lim.nb_max);
         goto cleanup;
+    }
+    if (bond_policy) {
+        int count = ker_bond_members(port, bond_members, 16);
+        if (count <= 0 || count > 16) {
+            fprintf(stderr, "ker: cannot determine configured bond members for descriptor pool budget (%d)\n", count);
+            goto cleanup;
+        }
+        bond_member_count = count;
+        for (int i = 0; i < count; i++) {
+            for (int prior = 0; prior < i; prior++) {
+                if (bond_members[i] == bond_members[prior]) {
+                    fprintf(stderr, "ker: duplicate bond member %u in descriptor pool budget\n", bond_members[i]);
+                    goto cleanup;
+                }
+            }
+            int member_result = configured_port_descriptors(bond_members[i],
+                argc - split - 1, argv + split + 1, selected_rx_budget,
+                selected_tx_budget, &bond_rx_budgets[i], &bond_tx_budgets[i]);
+            if (member_result ||
+                ker_worker_mbuf_budget_add(&pool_rx_desc, &pool_tx_desc,
+                    bond_rx_budgets[i], bond_tx_budgets[i])) {
+                fprintf(stderr, "ker: cannot prove descriptor pool budget for bond member %u (%d)\n",
+                    bond_members[i], member_result ? member_result : -EOVERFLOW);
+                goto cleanup;
+            }
+        }
     }
     uint32_t pool_count;
     int pool_result = ker_worker_mbuf_pool_count(pool_rx_desc, pool_tx_desc, &pool_count);
@@ -374,13 +421,33 @@ int main(int argc, char **argv)
         rte_eth_tx_queue_setup(port, 0, tx_desc, allocation_socket, NULL) ||
         rte_eth_dev_start(port)) goto device_error;
     started = true;
-    uint16_t rx_ring_capacity = pool_rx_desc;
+    for (int member = 0; member < bond_member_count; member++) {
+        struct rte_eth_rxq_info member_rx = {0};
+        struct rte_eth_txq_info member_tx = {0};
+        int member_rx_status = rte_eth_rx_queue_info_get(bond_members[member], 0, &member_rx);
+        int member_tx_status = rte_eth_tx_queue_info_get(bond_members[member], 0, &member_tx);
+        /* Several original PMDs (including TAP) do not report member queue
+         * geometry here. A successful bond start proves their queue setup
+         * accepted the exact descriptor arguments budgeted above; when a PMD
+         * does expose counts, still verify they fit the allocated share. */
+        if ((member_rx_status && member_rx_status != -ENOTSUP) ||
+            (member_tx_status && member_tx_status != -ENOTSUP) ||
+            (member_rx.nb_desc && member_rx.nb_desc > bond_rx_budgets[member]) ||
+            (member_tx.nb_desc && member_tx.nb_desc > bond_tx_budgets[member])) {
+            fprintf(stderr, "ker: bond member %u queue geometry is unavailable or exceeds its mbuf budget (%u/%u, status %d/%d vs %u/%u)\n",
+                bond_members[member], member_rx.nb_desc, member_tx.nb_desc,
+                member_rx_status, member_tx_status,
+                bond_rx_budgets[member], bond_tx_budgets[member]);
+            goto cleanup;
+        }
+    }
+    uint16_t rx_ring_capacity = selected_rx_budget;
     struct rte_eth_rxq_info startup_rx_info = {0};
     if (!rte_eth_rx_queue_info_get(port, 0, &startup_rx_info) &&
         startup_rx_info.nb_desc) {
-        if (startup_rx_info.nb_desc > pool_rx_desc) {
+        if (startup_rx_info.nb_desc > selected_rx_budget) {
             fprintf(stderr, "ker: RX ring capacity %u exceeds configured mbuf budget %u\n",
-                startup_rx_info.nb_desc, pool_rx_desc);
+                startup_rx_info.nb_desc, selected_rx_budget);
             goto cleanup;
         }
         rx_ring_capacity = startup_rx_info.nb_desc;
@@ -452,16 +519,18 @@ int main(int argc, char **argv)
     if (receive_status) receive_info.nb_desc = 0;
     int transmit_status = rte_eth_tx_queue_info_get(port, 0, &transmit_info);
     if (transmit_status) transmit_info.nb_desc = 0;
-    if (receive_info.nb_desc > pool_rx_desc || transmit_info.nb_desc > pool_tx_desc) {
+    if ((receive_info.nb_desc && receive_info.nb_desc > selected_rx_budget) ||
+        (transmit_info.nb_desc && transmit_info.nb_desc > selected_tx_budget)) {
         fprintf(stderr, "ker: ethdev configured RX/TX rings (%u/%u) exceed mbuf budget (%u/%u)\n",
-            receive_info.nb_desc, transmit_info.nb_desc, pool_rx_desc, pool_tx_desc);
+            receive_info.nb_desc, transmit_info.nb_desc, selected_rx_budget, selected_tx_budget);
         goto cleanup;
     }
-    printf("KER_IO_READY {\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    printf("KER_IO_READY {\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
         initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
-        device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc, pool_count,
+        device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc,
+        pool_rx_desc, pool_tx_desc, pool_count,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
         rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, eal_log_level, rte_log_get_global_level(), (unsigned long long)memory_base, (unsigned long long)rte_eal_get_physmem_size(),

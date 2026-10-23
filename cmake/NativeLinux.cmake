@@ -76,10 +76,9 @@ if(KER_WITH_NATIVE_BOND)
     if(NOT ker_bond_archive_found)
         message(FATAL_ERROR "Native bond requires pinned DPDK net/bonding with sched/ip_frag and its static archive")
     endif()
-    set(ker_saved_pkg_config_argn "${PKG_CONFIG_ARGN}")
-    set(PKG_CONFIG_ARGN --static)
+    # FindPkgConfig exposes STATIC_* results on CMake 3.20. PKG_CONFIG_ARGN
+    # was added in 3.22, so pass the static metadata directly instead.
     pkg_check_modules(DPDK_BOND REQUIRED IMPORTED_TARGET libdpdk>=26.11.0)
-    set(PKG_CONFIG_ARGN "${ker_saved_pkg_config_argn}")
     add_executable(ker-io-worker-bond ${ker_io_worker_sources})
     target_compile_features(ker-io-worker-bond PRIVATE c_std_11)
     target_compile_definitions(ker-io-worker-bond PRIVATE KER_NATIVE_STATIC_BOND=1)
@@ -87,9 +86,9 @@ if(KER_WITH_NATIVE_BOND)
     # Keep pkg-config's whole-archive boundaries around its actual archives.
     # An imported target moves these flags ahead of all libraries and loses
     # PMD constructors; raw ordered link items are required for DPDK static.
-    target_include_directories(ker-io-worker-bond SYSTEM PRIVATE ${DPDK_BOND_INCLUDE_DIRS})
-    target_compile_options(ker-io-worker-bond PRIVATE ${DPDK_BOND_CFLAGS_OTHER})
-    target_link_libraries(ker-io-worker-bond PRIVATE ${DPDK_BOND_LDFLAGS} ${CMAKE_DL_LIBS})
+    target_include_directories(ker-io-worker-bond SYSTEM PRIVATE ${DPDK_BOND_STATIC_INCLUDE_DIRS})
+    target_compile_options(ker-io-worker-bond PRIVATE ${DPDK_BOND_STATIC_CFLAGS_OTHER})
+    target_link_libraries(ker-io-worker-bond PRIVATE ${DPDK_BOND_STATIC_LDFLAGS} ${CMAKE_DL_LIBS})
     install(TARGETS ker-io-worker-bond RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(TARGETS ker-posix EXPORT kerTargets
@@ -896,6 +895,13 @@ if(BUILD_TESTING)
                 --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
                 --pmd-root "${ker_vdev_library_root}")
         set_tests_properties(native-fstack-typed-bond PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+        add_test(NAME native-fstack-typed-bond-large-member
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+                --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}"
+                --large-virtio-member)
+        set_tests_properties(native-fstack-typed-bond-large-member PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     endif()
     add_test(NAME native-fstack-typed-bond-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_bond.py")
