@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
+#include <rte_dev.h>
 #include <rte_ip.h>
 #include <rte_mempool.h>
 #include <rte_tcp.h>
@@ -32,11 +33,21 @@ static unsigned snapshot(struct rte_mbuf *packet, struct rte_mbuf *descriptors)
 }
 int main(int argc, char **argv)
 {
-    int (*abi)(uint16_t) = (int (*)(uint16_t))dlsym(RTLD_DEFAULT, "ker_dpdk_tap_tx_retry_abi");
-    if (!abi) { puts("SKIP: qualified TAP ownership PMD not installed"); return 77; }
     void (*fault)(const char *, int) = (void (*)(const char *, int))dlsym(RTLD_DEFAULT, "ker_test_tap_fault");
     bool (*fired)(void) = (bool (*)(void))dlsym(RTLD_DEFAULT, "ker_test_tap_fault_fired");
     CHECK(fault && fired && rte_eal_init(argc, argv) >= 0);
+    /* Match production: resolve through the selected driver's own, already
+     * loaded module (EAL loads PMDs RTLD_LOCAL). */
+    uint16_t selected_port;
+    CHECK(!rte_eth_dev_get_port_by_name("net_tap0", &selected_port));
+    struct rte_eth_dev_info selected_info = {0};
+    CHECK(!rte_eth_dev_info_get(selected_port, &selected_info));
+    Dl_info selected_module;
+    CHECK(dladdr(rte_dev_driver(selected_info.device), &selected_module));
+    void *tap_module = dlopen(selected_module.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+    int (*abi)(uint16_t) = tap_module ? (int (*)(uint16_t))dlsym(tap_module,
+        "ker_dpdk_tap_tx_retry_abi") : NULL;
+    if (!abi) { puts("SKIP: qualified TAP ownership PMD not installed"); return 77; }
     uint16_t port;
     CHECK(!rte_eth_dev_get_port_by_name("net_tap0", &port));
     CHECK(abi(port) == 1 && abi(RTE_MAX_ETHPORTS) == 0);

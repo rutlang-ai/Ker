@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* Translate original Linux virtio metadata; packet processing/segmentation and
  * checksum arithmetic belong to original Linux and original DPDK APIs. */
 #include "worker-offload.h"
@@ -5,10 +6,29 @@
 #include <dlfcn.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <rte_dev.h>
 #include <rte_ip.h>
 #include <rte_net.h>
 #include <rte_tcp.h>
 #include <rte_udp.h>
+
+static void *loaded_driver_symbol(const struct rte_driver *driver, const char *name)
+{
+    Dl_info module_info;
+    if (!driver || !dladdr(driver, &module_info) || !module_info.dli_fname) return NULL;
+    struct stat module_stat, executable_stat;
+    if (!stat(module_info.dli_fname, &module_stat) &&
+        !stat("/proc/self/exe", &executable_stat) &&
+        module_stat.st_dev == executable_stat.st_dev &&
+        module_stat.st_ino == executable_stat.st_ino)
+        return dlsym(RTLD_DEFAULT, name); /* Explicit static/main-binary case. */
+    void *handle = dlopen(module_info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+    if (!handle) return NULL;
+    void *symbol = dlsym(handle, name);
+    dlclose(handle);
+    return symbol;
+}
 
 uint32_t ker_worker_offload_feature_mask(int mode)
 {
@@ -41,7 +61,10 @@ int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *con
     if (state->tap) {
         /* Only the isolated, qualified TAP ownership patch may opt into
          * retries. Unmodified PMDs keep the fail-closed boundary. */
-        int (*retry_abi)(uint16_t) = (int (*)(uint16_t))dlsym(RTLD_DEFAULT, "ker_dpdk_tap_tx_retry_abi");
+        /* EAL loads PMDs RTLD_LOCAL. Resolve only the driver library owning
+         * this selected port, using its public device/driver information. */
+        int (*retry_abi)(uint16_t) = loaded_driver_symbol(
+            rte_dev_driver(info.device), "ker_dpdk_tap_tx_retry_abi");
         state->tap_retry_safe = retry_abi && retry_abi(port) == 1;
     }
     /* Map only features fully implemented by the translator. */
