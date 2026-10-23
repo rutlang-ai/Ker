@@ -15,9 +15,17 @@ spec.loader.exec_module(network6)
 require, ready, checksum, stop = network6.require, network6.ready, network6.checksum, network6.stop
 
 
+def validate_ipv4_flags(flags, echo_request=False):
+    require(not flags & 0x3fff, 'fragmented IPv4 echo')
+    if echo_request:
+        require(flags & 0x4000, 'IPv4 echo request missing DF')
+
+
 def wire(directory, mtu):
+    df_requests = {}
     for direction in ('tx', 'rx'):
         seen = set()
+        request_count = 0
         for path in directory.glob('ker-' + direction + '-*.pcap'):
             data = path.read_bytes()
             require(len(data) >= 24, 'short PCAP header')
@@ -37,7 +45,7 @@ def wire(directory, mtu):
                     header = (packet[0] & 15) * 4
                     total = int.from_bytes(packet[2:4], 'big')
                     flags = int.from_bytes(packet[6:8], 'big')
-                    require(not flags & 0x3fff, 'fragmented IPv4 echo')
+                    validate_ipv4_flags(flags)
                     require(total <= mtu and checksum(packet[:header]) == 65535, 'bad IPv4 header')
                     icmp = packet[header:total]
                     family, pseudo = 4, b''
@@ -50,6 +58,9 @@ def wire(directory, mtu):
                     continue
                 if len(icmp) < 8 or icmp[0] not in (0, 8, 128, 129) or icmp[4:6] != b'KE':
                     continue
+                if family == 4 and icmp[0] == 8:
+                    validate_ipv4_flags(flags, echo_request=True)
+                    request_count += 1
                 require(icmp[1] == 0 and checksum(pseudo + icmp) == 65535, 'bad ICMP checksum')
                 sequence = int.from_bytes(icmp[6:8], 'big')
                 require(sequence in (0, 1, 2), 'bad sequence')
@@ -63,6 +74,9 @@ def wire(directory, mtu):
         expected = {(family, kind, seq) for family, kinds in ((4, (0, 8)), (6, (128, 129)))
                     for kind in kinds for seq in range(3)}
         require(seen == expected, direction + ': missing requests/replies: ' + str(expected - seen))
+        require(request_count == 3, direction + ': expected three captured IPv4 echo requests')
+        df_requests[direction] = request_count
+    return df_requests
 
 
 def main():
@@ -125,8 +139,9 @@ def main():
                     elif mode == 'large':
                         require(record['tx_multiseg'] == record['rx_multiseg'] == 0,
                                 'large mode unexpectedly used chains')
-                    wire(capture, mtu)
-                    print('PASS: ' + name + ' bidirectional IPv4/IPv6 ICMP, full frames/checksums, zero leaks', flush=True)
+                    df_requests = wire(capture, mtu)
+                    print('PASS: ' + name + ' bidirectional IPv4/IPv6 ICMP, DF on captured IPv4 echo requests '
+                          + str(df_requests) + ', full frames/checksums, zero leaks', flush=True)
                 except Exception:
                     log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
                     raise
