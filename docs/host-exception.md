@@ -13,10 +13,13 @@ exception_iface=kerexcept0
 exception_type=34997
 exception_queue=256
 exception_rate=0
+exception_console_rate=0
+exception_general_rate=0
 ```
 
 The same options are available as `--exception-iface`, `--exception-type`,
-`--exception-queue` and `--exception-rate`. They apply to the primary worker,
+`--exception-queue`, `--exception-rate`, `--exception-console-rate` and
+`--exception-general-rate`. They apply to the primary worker,
 not additional interfaces. `34997` is experimental EtherType `0x88b5`; values
 are decimal, 1536..65535. The default selector compares the **outer** Ethernet
 type, including across mbuf segments. Destination-port mode below adds original-DPDK classification
@@ -38,8 +41,8 @@ the unchanged MTU remains supported.
 
 A power-of-two ring size4..65536 provides size-1 usable entries. A single EAL
 worker owns the queue and TAP. Enqueue consumes and NULLs a selected mbuf,
-including freeing it on a full-queue drop. An invalid/non-owner call retains
-caller ownership. Each iteration processes at most32 queued frames and32
+including freeing it on an admission-limit or full-queue drop. An invalid or
+non-owner call retains caller ownership. Each iteration processes at most32 queued frames and32
 host-originated frames. TAP writes use the complete mbuf chain with writev;
 Linux copies the frame before the adapter frees its mbufs. A short/nonblocking
 host write ends the accepted prefix and frees the remaining owned suffix.
@@ -57,8 +60,8 @@ the pinned source processing policy. Zero disables it. When the prior dequeued
 count is below the limit, the whole current burst can pass; a burst can overshoot
 the limit. Once exhausted, subsequent dequeued bursts are dropped until the
 window resets. The counter advances by dequeued packets, including limited
-ones, rather than only by accepted writes. This is not strict packet pacing or
-F-Stack's separate general/console enqueue limits.
+ones, rather than only by accepted writes. This batch gate is separate from
+the admission budgets below.
 
 Stopping discards any queued suffix with an explicit shutdown counter, closes
 the TAP and ring before the wire PMD/pool, and requires zero outstanding mbufs.
@@ -90,7 +93,7 @@ Existing `tx`/`rx`/byte/drop counters continue to describe the native-channel
 path. Separate `exception_*` counters describe this bridge:
 
 - `selected = to_host + to_host_dropped + shutdown_dropped + queued`.
-- `enqueued` excludes full-ring drops; `rate_dropped` is a subset of
+- `enqueued` excludes admission-limit and full-ring drops; `rate_dropped` is a subset of
   `to_host_dropped`.
 - `host_received = from_host + wire_dropped`; accepted `from_host` packets are
   owned by the PMD, and rejected packets have been freed.
@@ -101,8 +104,8 @@ For RX queue accounting, shared copies must be subtracted (zero in outer-type mo
 `sum(rx_by_queue) = rx + rx_dropped + exception_selected - exception_shared_selected + rx_shutdown_discarded - rx_startup_discarded`.
 At the initial TAP milestone, 30 KNI/configuration/ownership source cases
 remained incomplete. The destination-port milestone below further qualifies
-17 scenarios; issue219 remains open with 13 source cases plus the documented
-service-ownership/encapsulation gaps.
+17 scenarios and the admission milestone qualifies four more. Issue219 remains
+open with nine source cases plus the documented service-ownership/encapsulation gaps.
 
 ## Destination-port mode
 
@@ -189,6 +192,43 @@ subset of `exception_selected`; the physical RX identity in port mode is:
 
 `sum(rx_by_queue) = rx + rx_dropped + exception_selected - exception_shared_selected + rx_shutdown_discarded - rx_startup_discarded`.
 
-The earlier eight source integration scenarios remain adapted. Thirteen KNI
-cases still need enqueue-time console/general budgets, primary-lcore or IPFW
-configuration, and generation/non-owner/allocation contracts.
+## Console/general admission budgets
+
+`exception_console_rate` and `exception_general_rate` are independent per-worker
+budgets, in attempted frames per monotonic second. Each accepts 0..2147483647;
+zero disables that class and leaves its counters unchanged. Console traffic is
+ARP, L2 multicast/broadcast, OSPF or NDP; other selected traffic uses general.
+Classification uses actual mbuf reads and the existing original-DPDK parser.
+These limits apply to frames already selected for the host, including shared
+control copies; the imported-Linux original of a shared frame is unaffected.
+
+With a budget N, attempts 1..N may enter the owned ring. Attempt N+1 and later
+attempts increment the class counter, then are freed before queueing. A full
+ring also charges once, but its drop is not an admission-limit drop. The owner
+polls before each RX iteration and resets the class windows after at least one
+second, without carrying unused budget forward. The first poll does not erase
+packets enqueued before it. These are loop-granularity budgets, not packet
+pacing; the separate `exception_rate` batch gate can still reject admitted
+frames after dequeue.
+
+Lifetime counters `exception_console_charged` / `exception_general_charged`
+include all attempts for enabled classes, including excess and full-ring drops.
+`exception_console_dropped` / `exception_general_dropped` count only admission
+rejections and are subsets of `exception_to_host_dropped`. With both budgets
+enabled, the sum charged equals `exception_selected`, even across rate windows.
+The counters survive window reset; they do not count unselected native frames
+or failed control-copy allocations.
+
+Four further exact source markers in `native-fstack-exception-tap` require real
+ARP/multicast and ordinary unicast byte delivery, disabled counters, independent
+budgets, consumed/freed excess, full-ring charging, initial/subsequent poll
+behavior, clock regression rejection, and queued shutdown reclamation. The
+production `native-fstack-exception-filter` run enables both budgets for both
+accept/reject policies. It requires both charged classes, their sum equal to
+selected, no admission drops, and no repeated charge under the existing three
+ARP channel EAGAIN injections, while real host/native IPv4/IPv6 TCP/UDP completes.
+
+Nine KNI source cases remain for primary-lcore/IPFW configuration and
+generation/non-owner/allocation contracts. Fragment/encapsulation, full
+multicast/generation fanout and automatic cross-stack ephemeral ownership gaps
+remain explicit; admission limits do not implement those behaviors.

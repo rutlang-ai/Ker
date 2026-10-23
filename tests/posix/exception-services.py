@@ -181,6 +181,7 @@ def main():
                     config, stats = root / (policy + '.ini'), root / (policy + '.json')
                     config.write_text('[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\nmax_mtu=1500\n'
                         '[dpdk]\nport=net_tap0\nexception_iface=hostservices\nexception_mode=ports\n'
+                        'exception_console_rate=100000\nexception_general_rate=100000\n'
                         f'exception_policy={policy}\nexception_tcp_ports={selected}\nexception_udp_ports={selected}\n'
                         f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 96 '
                         '--vdev=net_tap0,iface=wirepeer,remote=wirelink\n'
@@ -262,6 +263,10 @@ def main():
                     require(record['native']['active_opens'] == 0 and record['native']['passive_opens'] == 2
                             and record['native']['udp_in_datagrams'] == record['native']['udp6_in_datagrams'] == 1,
                             'wrong original-native socket traffic counters: ' + str(record['native']))
+                    require(record['exception_console_charged'] > 0 and record['exception_general_charged'] > 0
+                            and record['exception_console_charged'] + record['exception_general_charged'] == record['exception_selected']
+                            and record['exception_console_dropped'] == record['exception_general_dropped'] == 0,
+                            'admission classes missing or charged more than once on backpressure: ' + str(record))
                     require(sum(record['rx_by_queue']) == record['rx'] + record['rx_dropped'] + record['exception_selected']
                             - record['exception_shared_selected'] + record['rx_shutdown_discarded'] - record['rx_startup_discarded'],
                             'shared control frames were double counted')
