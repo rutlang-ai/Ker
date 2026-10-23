@@ -195,10 +195,25 @@ This design supplies no pass/provenance entry for any of them.
 | Generation-directory integration (7 in `test_ff_gendir_mp_integration.c`) | Real original-EAL primary and secondaries under two distinct, simultaneously live masters; precreated/lookup-only rings; distinct epochs and packet tokens; exactly one queue consumer; live-coordinate probe; orphan drain; repeated slot recycle. Use a memory mode actually supporting secondaries; no-huge independent primaries do not qualify. |
 | Reload integration (7 in `test_ff_reload_integration.c`) | Boot/parked control progress, non-owner TX diversion, watermark drain and burst guard; actual original Linux half-open packets routed to the correct kernel. |
 | Config lifecycle/directory tests in `test_ff_config.c` | Valid/invalid real topology configuration, finite geometry, complete legal/illegal lifecycle table, delayed operation/epoch rejection, owner/user proof, orphan liveness and census-locked purge. Schema rejection without a valid positive configuration is insufficient. |
-| Page-array build tests (2 in `test_ff_config_pa.c`) | The source build with `FF_USE_PAGE_ARRAY` must reject graceful reload while continuing to accept the minimal reload-off configuration. Ker has no same build mode; generic unsupported-key rejection does not prove this conditional positive/negative contract. The explicit exclusion is recorded in [the page-array audit](fstack-page-array-contracts.md) under #232. |
 | DPDK glue tests in `test_ff_dpdk_if.c` | Original shared pool/cache and SP/SC rings, exact queue ownership, full-ring visibility, peer/foreign-epoch TX, missing/full/transient directory behavior, bounded flow admission and growth, dead-user purge returning the pool to baseline. |
 | IPC tests (12 in `test_ff_ipc.c`) | Coordinate parser/serialization compatibility plus two live clients, delayed/foreign replies, dead-client reclamation and non-destructive probe under concurrent real control traffic. |
 | `test_graceful_reload.sh::entrypoint` | A caller-owned server on original Linux, external traffic across repeated HUP/USR2, continued existing streams and new connections, explicit fault/timeout scenarios, process ownership and complete resource cleanup. Parse-only/harness self-tests do not qualify. |
+
+## Explicit architecture exclusions
+
+The following source assertions are outside #218's qualification sequence. They remain
+architecture-specific exclusions under #232, with no Ker pass or test mapping:
+
+- `tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload` requires
+  the optional `FF_USE_PAGE_ARRAY` source build to reject reload because staged TX
+  carries process-private FreeBSD `bsd_m_table` references.
+- `tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off` is the paired
+  assertion that the same build accepts minimal reload-off configuration; Ker has
+  no equivalent build mode or process-private FreeBSD mbuf-table representation.
+
+Both assertions are from F-Stack revision `646a641cfff77f4815e1e29829a09e1ed15a2999`.
+See [the page-array audit](fstack-page-array-contracts.md) for the source boundary and
+rationale. These exclusions add no passes and do not change the 79 actionable #218 cases.
 
 Begin implementation with the resident-session lifecycle and real secondary
 attachment/lookup, integrated with process supervision rather than a detached
