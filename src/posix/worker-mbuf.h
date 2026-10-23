@@ -5,6 +5,17 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <errno.h>
+/* Add one actual queue owner's RX/TX descriptors to the aggregate budget. */
+static inline int ker_worker_mbuf_budget_add(uint32_t *rx_total,
+    uint32_t *tx_total, uint32_t rx_descriptors, uint32_t tx_descriptors)
+{
+    if (!rx_total || !tx_total) return -EINVAL;
+    if (*rx_total > UINT32_MAX - rx_descriptors ||
+        *tx_total > UINT32_MAX - tx_descriptors) return -EOVERFLOW;
+    *rx_total += rx_descriptors;
+    *tx_total += tx_descriptors;
+    return 0;
+}
 /* Reserve one mbuf per configured RX and TX descriptor, two worker bursts,
  * and a small refill/scheduling margin. */
 static inline int ker_worker_mbuf_pool_count(uint32_t rx_descriptors,

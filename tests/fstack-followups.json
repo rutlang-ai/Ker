@@ -286,7 +286,7 @@
       "id": "dpdk-devices",
       "title": "Adapt typed vdev, bond and multi-port configuration",
       "disposition": "adaptation-needed",
-      "reason": "Typed virtio-user sections now map iface/path/queues/queue_size/MAC/cq into the original DPDK PMD. Independent vhost/TAP traffic qualifies the socket-backend subset and actual MAC/two-pair capacity/512-descriptor settings. The source iface+socket tuple is rejected by pinned DPDK (iface is kernel-backend-only); full vdev remains partial. Bond/multi-port structures, active multi-queue use and allocation-failure contracts remain incomplete.",
+      "reason": "Typed virtio-user and single selected bond now use original DPDK devices. Bond mode4, members/primary/socket/MAC/hash/timings and independent host LACP, path loss and cleanup are qualified. Remaining cases require broader DPDK configuration, kernel-backend iface compatibility, simultaneous combined bond/vdev fixture support, multi-port use and C allocation-failure contracts.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
@@ -294,7 +294,10 @@
         "tests/upstream/fstack/tests/unit/fixtures/valid_bond.ini",
         "tests/posix/test_typed_vdev.py",
         "tests/posix/typed-vdev.py",
-        "tests/posix/vhost-bridge.c"
+        "tests/posix/vhost-bridge.c",
+        "src/posix/bond-policy.c",
+        "tests/posix/typed-bond.py",
+        "tests/posix/test_typed_bond.py"
       ],
       "acceptance": [
         "Specify useful typed configuration mappings to real supported EAL/PMD options while preserving strict validation.",
@@ -304,10 +307,7 @@
       ],
       "cases": [
         "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
-        "tests/unit/test_ff_config.c::test_bond_cfg_handler_no_nb_bond",
-        "tests/unit/test_ff_config.c::test_bond_cfg_handler_bad_section",
         "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
-        "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
         "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
         "tests/unit/test_ff_config.c::test_alloc_port_cfgs_calloc_oom_returns_error",
         "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",

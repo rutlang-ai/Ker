@@ -1621,6 +1621,30 @@
         "native-fstack-typed-vdev"
       ],
       "adaptation": "Independent original DPDK net_vhost backend and TAP PMD bridge Ethernet to a separate host Linux kernel; Ker worker uses original net_virtio_user from typed INI. Normal and repeated-final-value configurations require actual net_virtio_user driver, exactly one frontend ethdev, configured MAC00:11:22:33:44:55, advertised RX/TX capacity2 and actual RX virtqueue512 descriptors. The worker still activates one RX/TX pair; no active multi-queue/RSS claim. Independent host and native original Linux both originate IPv4/IPv6 raw ICMP with exact0/1/maximum1472/1452-byte payloads and DF EMSGSIZE boundary. Native full TX/RX PCAP checks requests/replies, payload/checksums and complete1514-byte frames. Worker and independent bridge require real bidirectional traffic and zero outstanding buffers; backend socket must disappear on close. A separate actual PMD run must reject the original iface+Unix-socket tuple with the pinned driver diagnostic, status125 and zero leaked buffers; iface is never dropped to obtain a pass. Supported socket configurations omit iface because it is vhost-kernel-only. Full source fixture and combined bond/vdev cases stay partial, with issue224 tracking kernel iface, bond and allocation contracts. Missing installed virtio/vhost/TAP PMDs produces an explicit CTest skip77; qualification evidence used a new build of the exact pinned DPDK with these PMDs enabled. No Linux/DPDK sources or Ker protocol state machines are modified."
+    },
+    "native-fstack-typed-bond-config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_bond_cfg_handler_no_nb_bond",
+        "test_bond_cfg_handler_bad_section",
+        "test_ff_load_config_bond_full",
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+      ],
+      "ker_ctests": [
+        "native-fstack-typed-bond-config"
+      ],
+      "adaptation": "Read exact pinned invalid_bond_no_nb_bond.ini and invalid_bond_bad_section.ini with the actual Ker reader; both must fail status2 before resolving a deliberately missing native library. Map every valid_bond.ini bond0 field to original net_bonding0 EAL member/mode/primary/socket/MAC/hash arguments and original API timing policy. Exact valid_bond_vdev_repeat.ini bond strings retain final eth0/eth1,primaryeth1,MACcc:dd:ee:ff:00:11 and l34. Validate single selected bond/count/section, missing fields, duplicate/invalid members, primary membership, MAC, mode/socket/hash and integer timings before runtime; repeated sections/final replaced values own independent storage. Typed bonds cannot duplicate raw EAL bond instances, ordinary EAL values containing bond-like substrings remain valid, and EAL separator arguments remain untouched. This does not replicate F-Stack array/layout/allocator ABI or complete the incompatible combined vdev fixture."
+    },
+    "native-fstack-typed-bond": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_load_config_bond_full",
+        "test_ff_load_config_bond_vdev_repeat_keys_no_leak"
+      ],
+      "ker_ctests": [
+        "native-fstack-typed-bond"
+      ],
+      "adaptation": "Same pinned original DPDK bonding driver in an optional statically linked worker (KER_WITH_NATIVE_BOND), without modifying upstream sources. Static pkg-config archive ordering preserves PMD constructors and public timing APIs absent from shared exports. Worker applies and reads poll100/up100/down200 using original APIs after configuration, services original LACP with RX and zero-frame TX bursts while idle, and closes bond members before releasing its own mempool. Two real TAP/veth members connect to an independent original host Linux802.3ad bond; both host actor and partner port states must be collecting/distributing in one aggregator. Mode4, configured primary0, two members, socket0,MACaa:bb:cc:dd:ee:ff,l34 and all timings must be read back from actual driver state. Both kernels send IPv4/IPv6 raw ICMP with exact0/1/max unfragmented payloads; full native TX/RX PCAP checks all echo payloads/checksums and1514-byte frames. Disconnect host member0 without restarting either native process, wait for original LACP timeout, require continued host/native traffic and exactly one original PMD distributing member. Physical active-count is not conflated with LACP state: TAP can still report carrier up. Repeated invalid strings replaced by valid final values must produce the same actual configuration. All worker/member buffers must be freed on exit. Completes the supported single-bond source configuration scenario; no physical-NIC/LACP timing-performance guarantee, active-backup substitution, multi-bond/multi-port scheduling or combined iface+socket vdev compatibility claim."
     }
   }
 }

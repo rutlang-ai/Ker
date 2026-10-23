@@ -61,8 +61,8 @@ RA/SLAAC 部署、路由更新/故障切换及物理网卡过滤尚未验收，
 
 ```sh
 git submodule update --init --recursive --depth 1
-KER_DPDK_DRIVERS=mempool/ring,net/ring,net/tap,net/virtio,net/vhost,bus/pci,bus/vdev \
-KER_DPDK_LIBS=eal,ring,mempool,mbuf,ethdev,gso,vhost,cryptodev,dmadev \
+KER_DPDK_DRIVERS=mempool/ring,net/ring,net/tap,net/virtio,net/vhost,net/bonding,bus/pci,bus/vdev \
+KER_DPDK_LIBS=eal,ring,mempool,mbuf,ethdev,gso,vhost,cryptodev,dmadev,sched,ip_frag \
   bash tools/build-dpdk.sh
 python3 tools/build-native-linux.py --build "$PWD/build-native-linux" --jobs 16
 cmake -S . -B build-native-tcp \
@@ -1155,3 +1155,35 @@ Unix socket 后端必须省略 iface，组合错误不会被静默转换或忽�
 互通及 ownership 验证。测试需要固定 DPDK 的 net_virtio/net_vhost/net_tap PMD；
 缺少模块时明确 skip，不作为运行通过。完整 F-Stack iface+socket fixture、bond 与
 C 分配器合同尚未通过，详见迁移清单和 issue224。
+
+
+### 类型化单 bond 与 LACP
+
+`[dpdk] nb_bond=1` 启用 `[bond0]`，并要求 `port=net_bonding0`。
+必须提供 mode=0..6 和 slave（逗号分隔、1..16 个不同的原始端口 ID/设备名）；
+primary 可选但必须是成员之一。支持 socket_id=-1（`SOCKET_ID_ANY`）或
+`0..max_numa_nodes-1`，其中 `max_numa_nodes` 由选中的 `--io-worker --dpdk-limits`
+查询返回，并来自该 worker 编译时使用的 DPDK `RTE_MAX_NUMA_NODES`。launcher 会在
+启动应用和 DPDK EAL 前验证该值及 socket_id；worker 不支持查询或返回无效上限时会明确报错。
+还支持非零单播 MAC、xmit_policy=l2/l23/l34、lsc_poll_period_ms（正整数）、
+up_delay/down_delay（非负整数），
+时间最大 INT_MAX 毫秒。缺省 poll=100、up/down=0，最终重复键生效。
+成员须先由 EAL 或类型化 vdev 声明；只启用选中的一个 bond，不承诺多 bond 调度。
+`slave` 翻译成原版 PMD 的重复 `member=` 参数，其余设备设置交给原始 DPDK。
+
+固定 DPDK 的共享库未导出所有公开 timing API。因此需要以
+`-DKER_WITH_NATIVE_BOND=ON` 构建并安装额外的 `ker-io-worker-bond`，再通过
+`ker-run --io-worker /path/to/ker-io-worker-bond` 选择它；原有共享库 worker 保留。
+DPDK 必须包含 net/bonding、sched/ip_frag 及对应静态 archive。
+该 worker 按 pkg-config --static 的原始顺序链接 PMD/依赖，不要为它 LD_PRELOAD
+另一套共享 DPDK/PMD，以免混用两个 EAL 实例。缺失原始 API 会明确失败。
+延迟由原始 setter/getter 应用和校验，不绕过 API 写私有结构或修改上游源码。
+
+worker 通过原版 PMD 的 RX/零报文 TX burst 服务空闲 LACP，并将 bond 空闲等待
+上限限制为 10ms；不提供实时调度保证。`io.bond` 保留启动读回，最终 `bond`
+给出 mode、当前 primary、hash policy、timings、成员/active 数和 `lacp_distributing`。
+LACP 状态来自原始公开 API，不能用虚拟 TAP 的 carrier 或 active 数冒充。
+关闭 bond 后还会关闭其成员 queue，确保 pool 不再被成员持有。
+`native-fstack-typed-bond` 以真实独立 Linux LACP 对端验证双向 IPv4/IPv6、
+完整报文、成员路径丢失后的恢复及零 mbuf 泄漏；不是 active-backup 对 mode4 的替代测试。
+物理 NIC、严格延迟基准和多接口调度仍未资格验证。

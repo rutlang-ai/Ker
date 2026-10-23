@@ -12,11 +12,13 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include <rte_config.h>
 #include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include "packet-channel.h"
+#include "bond-policy.h"
 #include "pcap.h"
 #include "worker-log.h"
 #include "worker-clock.h"
@@ -82,6 +84,25 @@ static uint16_t configured_vdev_ring_size(int argc, char **argv, const char *por
             item = end + 1;
         }
     }
+    return 0;
+}
+
+static int configured_port_descriptors(uint16_t port, int argc, char **argv,
+    uint16_t minimum_rx, uint16_t minimum_tx, uint32_t *rx, uint32_t *tx)
+{
+    char name[RTE_ETH_NAME_MAX_LEN];
+    struct rte_eth_dev_info info = {0};
+    uint16_t rx_desc = 256, tx_desc = 256;
+    if (rte_eth_dev_get_name_by_port(port, name) ||
+        rte_eth_dev_info_get(port, &info) ||
+        rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) return -EIO;
+    uint16_t ring = configured_vdev_ring_size(argc, argv, name);
+    rx_desc = RTE_MAX(RTE_MAX(rx_desc, minimum_rx), ring);
+    tx_desc = RTE_MAX(RTE_MAX(tx_desc, minimum_tx), ring);
+    if ((info.rx_desc_lim.nb_max && rx_desc > info.rx_desc_lim.nb_max) ||
+        (info.tx_desc_lim.nb_max && tx_desc > info.tx_desc_lim.nb_max)) return -ERANGE;
+    *rx = rx_desc;
+    *tx = tx_desc;
     return 0;
 }
 
@@ -212,6 +233,12 @@ static uint16_t tx_burst(void *context, struct rte_mbuf **packets, uint16_t coun
 
 int main(int argc, char **argv)
 {
+    /* Build-matched capability query used by ker-run preflight; this path
+     * returns before EAL initialization and reflects this worker's headers. */
+    if (argc == 2 && !strcmp(argv[1], "--dpdk-limits")) {
+        printf("{\"max_numa_nodes\":%d}\n", RTE_MAX_NUMA_NODES);
+        return RTE_MAX_NUMA_NODES > 0 ? 0 : 1;
+    }
     int packet_fd = -1, control_fd = -1, mtu_fd = -1, split = 0;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL;
@@ -219,7 +246,7 @@ int main(int argc, char **argv)
     int promiscuous = -1;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
-    const char *port_name = NULL, *mbuf_mode = "large";
+    const char *port_name = NULL, *mbuf_mode = "large", *bond_policy = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
         if (!strcmp(argv[i], "--numa")) { numa = true; continue; }
@@ -232,6 +259,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
+        else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
         else if (!strcmp(argv[i], "--mtu-fd")) mtu_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--max-mtu")) maximum_mtu = number(argv[++i]);
         else if (!strcmp(argv[i], "--control-fd")) control_fd = number(argv[++i]);
@@ -305,6 +333,11 @@ int main(int argc, char **argv)
     bool draining = false;
     uint64_t stop_requests = 0, mtu_changes = 0;
     bool control_eof = false;
+    char bond_json[256] = "null";
+    uint16_t bond_members[16];
+    uint32_t bond_rx_budgets[16] = {0}, bond_tx_budgets[16] = {0};
+    uint32_t bond_rx_drain_budget = 0;
+    int bond_member_count = 0;
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
         fprintf(stderr, "ker: unknown ethdev %s\n", port_name); goto cleanup;
@@ -318,6 +351,13 @@ int main(int argc, char **argv)
     }
     if (rte_eth_dev_configure(port, 1, 1, &conf)) goto device_error;
     configured = true;
+    if (bond_policy) {
+        int result = ker_bond_policy_apply(port, bond_policy);
+        if (result) {
+            fprintf(stderr, "ker: original bond policy API unavailable/failed (%d); use a worker with complete PMD API support\n", result);
+            goto device_error;
+        }
+    }
     if (rte_eth_dev_set_mtu(port, (uint16_t)mtu)) goto device_error;
     uint16_t rx_desc = 256, tx_desc = 256;
     if (rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) goto device_error;
@@ -326,14 +366,45 @@ int main(int argc, char **argv)
     /* A typed virtio-user ring can exceed the PMD-adjusted defaults. Use its
      * selected config value for both directions; other devices use adjusted
      * descriptors. Check PMD limits before attempting queue setup. */
-    uint16_t pool_rx_desc = RTE_MAX(rx_desc, configured_ring);
-    uint16_t pool_tx_desc = RTE_MAX(tx_desc, configured_ring);
-    if ((budget_info.rx_desc_lim.nb_max && pool_rx_desc > budget_info.rx_desc_lim.nb_max) ||
-        (budget_info.tx_desc_lim.nb_max && pool_tx_desc > budget_info.tx_desc_lim.nb_max)) {
+    uint16_t selected_rx_budget = RTE_MAX(rx_desc, configured_ring);
+    uint16_t selected_tx_budget = RTE_MAX(tx_desc, configured_ring);
+    uint32_t pool_rx_desc = selected_rx_budget, pool_tx_desc = selected_tx_budget;
+    if ((budget_info.rx_desc_lim.nb_max && selected_rx_budget > budget_info.rx_desc_lim.nb_max) ||
+        (budget_info.tx_desc_lim.nb_max && selected_tx_budget > budget_info.tx_desc_lim.nb_max)) {
         fprintf(stderr, "ker: configured descriptor budget RX=%u TX=%u exceeds ethdev limits RX=%u TX=%u\n",
-            pool_rx_desc, pool_tx_desc, budget_info.rx_desc_lim.nb_max,
+            selected_rx_budget, selected_tx_budget, budget_info.rx_desc_lim.nb_max,
             budget_info.tx_desc_lim.nb_max);
         goto cleanup;
+    }
+    if (bond_policy) {
+        int count = ker_bond_members(port, bond_members, 16);
+        if (count <= 0 || count > 16) {
+            fprintf(stderr, "ker: cannot determine configured bond members for descriptor pool budget (%d)\n", count);
+            goto cleanup;
+        }
+        bond_member_count = count;
+        for (int i = 0; i < count; i++) {
+            for (int prior = 0; prior < i; prior++) {
+                if (bond_members[i] == bond_members[prior]) {
+                    fprintf(stderr, "ker: duplicate bond member %u in descriptor pool budget\n", bond_members[i]);
+                    goto cleanup;
+                }
+            }
+            int member_result = configured_port_descriptors(bond_members[i],
+                argc - split - 1, argv + split + 1, selected_rx_budget,
+                selected_tx_budget, &bond_rx_budgets[i], &bond_tx_budgets[i]);
+            int budget_result = member_result ? member_result :
+                ker_worker_mbuf_budget_add(&pool_rx_desc, &pool_tx_desc,
+                    bond_rx_budgets[i], bond_tx_budgets[i]);
+            if (!budget_result && bond_rx_budgets[i] > UINT32_MAX - bond_rx_drain_budget)
+                budget_result = -EOVERFLOW;
+            if (budget_result) {
+                fprintf(stderr, "ker: cannot prove descriptor pool budget for bond member %u (%d)\n",
+                    bond_members[i], budget_result);
+                goto cleanup;
+            }
+            bond_rx_drain_budget += bond_rx_budgets[i];
+        }
     }
     uint32_t pool_count;
     int pool_result = ker_worker_mbuf_pool_count(pool_rx_desc, pool_tx_desc, &pool_count);
@@ -355,16 +426,36 @@ int main(int argc, char **argv)
         rte_eth_tx_queue_setup(port, 0, tx_desc, allocation_socket, NULL) ||
         rte_eth_dev_start(port)) goto device_error;
     started = true;
-    uint16_t rx_ring_capacity = pool_rx_desc;
+    for (int member = 0; member < bond_member_count; member++) {
+        struct rte_eth_rxq_info member_rx = {0};
+        struct rte_eth_txq_info member_tx = {0};
+        int member_rx_status = rte_eth_rx_queue_info_get(bond_members[member], 0, &member_rx);
+        int member_tx_status = rte_eth_tx_queue_info_get(bond_members[member], 0, &member_tx);
+        /* Several original PMDs (including TAP) do not report member queue
+         * geometry here. A successful bond start proves their queue setup
+         * accepted the exact descriptor arguments budgeted above; when a PMD
+         * does expose counts, still verify they fit the allocated share. */
+        if ((member_rx_status && member_rx_status != -ENOTSUP) ||
+            (member_tx_status && member_tx_status != -ENOTSUP) ||
+            (member_rx.nb_desc && member_rx.nb_desc > bond_rx_budgets[member]) ||
+            (member_tx.nb_desc && member_tx.nb_desc > bond_tx_budgets[member])) {
+            fprintf(stderr, "ker: bond member %u queue geometry is unavailable or exceeds its mbuf budget (%u/%u, status %d/%d vs %u/%u)\n",
+                bond_members[member], member_rx.nb_desc, member_tx.nb_desc,
+                member_rx_status, member_tx_status,
+                bond_rx_budgets[member], bond_tx_budgets[member]);
+            goto cleanup;
+        }
+    }
+    uint32_t rx_ring_capacity = bond_policy ? bond_rx_drain_budget : selected_rx_budget;
     struct rte_eth_rxq_info startup_rx_info = {0};
     if (!rte_eth_rx_queue_info_get(port, 0, &startup_rx_info) &&
         startup_rx_info.nb_desc) {
-        if (startup_rx_info.nb_desc > pool_rx_desc) {
+        if (!bond_policy && startup_rx_info.nb_desc > selected_rx_budget) {
             fprintf(stderr, "ker: RX ring capacity %u exceeds configured mbuf budget %u\n",
-                startup_rx_info.nb_desc, pool_rx_desc);
+                startup_rx_info.nb_desc, selected_rx_budget);
             goto cleanup;
         }
-        rx_ring_capacity = startup_rx_info.nb_desc;
+        if (!bond_policy) rx_ring_capacity = startup_rx_info.nb_desc;
     }
     if (promiscuous >= 0) {
         int result = promiscuous ? rte_eth_promiscuous_enable(port) : rte_eth_promiscuous_disable(port);
@@ -421,6 +512,8 @@ int main(int argc, char **argv)
     if (rte_memseg_walk(memory_lowest_address, &memory_base) < 0 || memory_base == UINTPTR_MAX) {
         fprintf(stderr, "ker: cannot inspect EAL memory segments\n"); goto cleanup;
     }
+    char initial_bond_json[256] = "null";
+    if (bond_policy && ker_bond_snapshot(port, initial_bond_json, sizeof(initial_bond_json))) goto device_error;
     int link_status = rte_eth_link_get_nowait(port, &link);
     struct rte_eth_dev_info device_info = {0};
     struct rte_eth_rxq_info receive_info = {0};
@@ -431,16 +524,18 @@ int main(int argc, char **argv)
     if (receive_status) receive_info.nb_desc = 0;
     int transmit_status = rte_eth_tx_queue_info_get(port, 0, &transmit_info);
     if (transmit_status) transmit_info.nb_desc = 0;
-    if (receive_info.nb_desc > pool_rx_desc || transmit_info.nb_desc > pool_tx_desc) {
+    if ((receive_info.nb_desc && receive_info.nb_desc > selected_rx_budget) ||
+        (transmit_info.nb_desc && transmit_info.nb_desc > selected_tx_budget)) {
         fprintf(stderr, "ker: ethdev configured RX/TX rings (%u/%u) exceed mbuf budget (%u/%u)\n",
-            receive_info.nb_desc, transmit_info.nb_desc, pool_rx_desc, pool_tx_desc);
+            receive_info.nb_desc, transmit_info.nb_desc, selected_rx_budget, selected_tx_budget);
         goto cleanup;
     }
-    printf("KER_IO_READY {\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
+    printf("KER_IO_READY {\"bond\":%s,\"driver\":\"%s\",\"max_rx_queues\":%u,\"max_tx_queues\":%u,\"rx_descriptors\":%u,\"tx_descriptors\":%u,\"pool_rx_descriptors\":%u,\"pool_tx_descriptors\":%u,\"mbuf_pool_count\":%u,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"mtu\":%u,"
         "\"mbuf_mode\":\"%s\",\"port_id\":%u,\"port_count\":%u,\"socket_id\":%d,"
         "\"process_type\":\"primary\",\"numa\":%s,\"lcore_socket_id\":%u,\"allocation_socket_id\":%u,\"pool_socket_id\":%d,\"eal_log_level\":%u,\"log_level\":%u,\"memory_base\":\"0x%llx\",\"memory_bytes\":%llu,\"hugepages\":%s,\"memory_channels\":%u,\"lcore_count\":%u,\"main_lcore\":%u,\"main_cpu\":%d,\"link_up\":%s,\"promiscuous\":%s,\"idle_sleep_us\":%d,\"tx_delay_us\":%d}\n",
-        device_info.driver_name ? device_info.driver_name : "unknown",
-        device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc, pool_count,
+        initial_bond_json, device_info.driver_name ? device_info.driver_name : "unknown",
+        device_info.max_rx_queues, device_info.max_tx_queues, receive_info.nb_desc, transmit_info.nb_desc,
+        pool_rx_desc, pool_tx_desc, pool_count,
         mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2], mac.addr_bytes[3],
         mac.addr_bytes[4], mac.addr_bytes[5], (unsigned int)mtu, mbuf_mode, port, rte_eth_dev_count_avail(),
         rte_eth_dev_socket_id(port), numa ? "true" : "false", rte_socket_id(), allocation_socket, pool->socket_id, eal_log_level, rte_log_get_global_level(), (unsigned long long)memory_base, (unsigned long long)rte_eal_get_physmem_size(),
@@ -449,6 +544,9 @@ int main(int argc, char **argv)
     fflush(stdout);
     status = 0;
     while (!stopping) {
+        /* Original bonding PMD services LACP TX control rings from tx_burst,
+         * including when callers currently have no application frames. */
+        if (bond_policy) (void)rte_eth_tx_burst(port, 0, NULL, 0);
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
                 pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, &mtu_changes,
@@ -602,6 +700,7 @@ int main(int argc, char **argv)
              * channel TX and control wake ppoll; retained work uses bounded
              * retries and RX suffixes watch channel writability. Linux owns
              * protocol timers. */
+            if (bond_policy && wait_us > 10000) wait_us = 10000;
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
             int result = ppoll(fds, 3, &timeout, NULL);
@@ -617,6 +716,13 @@ clock_error:
 device_error:
     fprintf(stderr, "ker: ethdev initialization failed for %s\n", port_name);
 cleanup:
+    if (bond_policy && configured) {
+        bond_member_count = ker_bond_members(port, bond_members, 16);
+        if (bond_member_count < 0) { bond_member_count = 0; status = 1; }
+    }
+    if (bond_policy && started && ker_bond_snapshot(port, bond_json, sizeof(bond_json))) {
+        fprintf(stderr, "ker: cannot read original bond state\n"); status = 1;
+    }
     tx_capture_status = ker_pcap_close(&tx_capture);
     rx_capture_status = ker_pcap_close(&rx_capture);
     if (tx_capture_status || rx_capture_status) { perror("ker: close packet capture"); status = 1; }
@@ -625,14 +731,18 @@ cleanup:
     while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
     if (started && rte_eth_dev_stop(port)) status = 1;
     if (configured && rte_eth_dev_close(port)) status = 1;
+    /* Bond close detaches/stops members but does not release their queues.
+     * Those queues can still own this worker's mempool buffers. */
+    for (int member = 0; member < bond_member_count; member++)
+        if (rte_eth_dev_close(bond_members[member])) status = 1;
     unsigned int outstanding = pool ? rte_mempool_in_use_count(pool) : 0;
     if (outstanding) {
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
+    printf("KER_IO_DONE {\"bond\":%s,\"mtu_final\":%d,\"max_mtu\":%d,\"mtu_changes\":%llu,\"tx\":%llu,\"rx\":%llu,\"dropped\":%llu,\"tx_retries\":%llu,"
         "\"rx_retries\":%llu,\"tx_bytes\":%llu,\"rx_bytes\":%llu,\"tx_dropped\":%llu,\"rx_dropped\":%llu,\"outstanding\":%u,"
-        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
+        "\"stop_requests\":%llu,\"control_eof\":%s,\"tx_multiseg\":%llu,\"rx_multiseg\":%llu,\"rx_startup_discarded\":%llu,\"idle_waits\":%llu,\"idle_timeouts\":%llu,\"tx_flushes\":%llu,\"tx_timer_flushes\":%llu,\"tx_full_flushes\":%llu,\"tx_drain_flushes\":%llu}\n", bond_json, mtu, maximum_mtu, (unsigned long long)mtu_changes, (unsigned long long)transmitted,
         (unsigned long long)received, (unsigned long long)(tx_dropped + rx_dropped),
         (unsigned long long)tx_retries, (unsigned long long)rx_retries,
         (unsigned long long)transmitted_bytes, (unsigned long long)received_bytes,

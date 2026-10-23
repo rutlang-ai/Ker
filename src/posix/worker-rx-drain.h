@@ -11,7 +11,7 @@ typedef void (*ker_worker_rx_free_fn)(void *context, struct rte_mbuf *packet);
 /* Discard startup RX backlog until an empty burst proves the queue is clear.
  * The finite budget bounds startup work; excess backlog fails closed. */
 int ker_worker_rx_drain(ker_worker_rx_burst_fn burst,
-    ker_worker_rx_free_fn free_packet, void *context, uint16_t packet_budget,
+    ker_worker_rx_free_fn free_packet, void *context, uint32_t packet_budget,
     uint64_t *discarded);
 
 #endif
