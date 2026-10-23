@@ -118,7 +118,10 @@ def base_virtaddr(text):
     return value
 
 
-CONFIG_DEFAULTS = dict(rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+TX_OFFLOADS = {'off': 0, 'checksum': 1, 'tso': 2}
+
+
+CONFIG_DEFAULTS = dict(tx_offloads='off', rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -140,7 +143,7 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'tx_offloads': ('tx_offloads', str), 'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -296,7 +299,7 @@ def additional_interfaces(ini):
     result = []
     convert = {'address': ipaddress.IPv4Interface, 'address6': ipaddress.IPv6Interface,
                'vip_addresses': vip_addresses, 'vip_addresses6': vip_addresses6,
-               'port': str, 'eal': str, 'queues': int, 'rss': bool, 'mtu': int, 'max_mtu': int, 'mbuf_mode': str}
+               'port': str, 'eal': str, 'tx_offloads': str, 'queues': int, 'rss': bool, 'mtu': int, 'max_mtu': int, 'mbuf_mode': str}
     for section in ini.sections():
         if not section.startswith('interface.'):
             continue
@@ -392,6 +395,7 @@ def parse_arguments(argv=None):
         help='ID=IPv4 default gateway on a configured VLAN; replaces INI VLAN IPv4 gateways; one default allowed')
     parser.add_argument('--vlan-gateway6', dest='vlan_gateways6', action='append', type=vlan_gateway6,
         help='ID=IPv6 default gateway on a configured VLAN; replaces INI VLAN gateways; one default allowed')
+    parser.add_argument('--tx-offloads', choices=tuple(TX_OFFLOADS), help='negotiate original PMD TX checksum/TSO metadata (default off)')
     parser.add_argument('--rss', action=argparse.BooleanOptionalAction, help='require original PMD RSS key and round-robin RETA readback; requires at least two queues')
     parser.add_argument('--queues', type=int, help='active DPDK RX/TX pairs, 1..16; all RX queues polled, application TX uses queue 0')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
@@ -525,6 +529,8 @@ def parse_arguments(argv=None):
             parser.error('--vlan-gateway6 must not equal a local address')
     if not 0 <= args.idle_sleep_us <= 100000:
         parser.error('--idle-sleep-us must be in 0..100000 microseconds')
+    if args.tx_offloads not in TX_OFFLOADS:
+        parser.error('--tx-offloads must be off, checksum or tso')
     if args.rss and args.queues < 2:
         parser.error('--rss requires at least two queues')
     if not 1 <= args.queues <= 16:
@@ -657,10 +663,12 @@ def parse_arguments(argv=None):
             parser.error('IPv6 networks must not overlap across interfaces')
         networks6.extend(vlan_networks6)
     for interface in args.interfaces:
-        for key in ('mtu', 'max_mtu', 'mbuf_mode', 'queues', 'rss'):
+        for key in ('mtu', 'max_mtu', 'mbuf_mode', 'queues', 'rss', 'tx_offloads'):
             interface.setdefault(key, getattr(args, key))
         if not 1280 <= interface['mtu'] <= interface['max_mtu'] <= 9000:
             parser.error('additional interface MTU must satisfy 1280 <= mtu <= max_mtu <= 9000')
+        if interface['tx_offloads'] not in TX_OFFLOADS:
+            parser.error('additional interface tx_offloads must be off, checksum or tso')
         if interface['rss'] and interface['queues'] < 2:
             parser.error('additional interface RSS requires at least two queues')
         if not 1 <= interface['queues'] <= 16:
@@ -715,7 +723,7 @@ class AdditionalWorker:
         self.app_packet, self.io_packet = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
         self.app_mtu, self.io_mtu = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         self.stop_read, self.stop_write = os.pipe2(os.O_CLOEXEC)
-        options = ['--queues', str(item['queues']), '--mtu', str(item['mtu']), '--max-mtu', str(item['max_mtu']),
+        options = ['--tx-offloads', str(TX_OFFLOADS[item['tx_offloads']]), '--queues', str(item['queues']), '--mtu', str(item['mtu']), '--max-mtu', str(item['max_mtu']),
                    '--mbuf-mode', item['mbuf_mode'], '--idle-sleep-us', str(args.idle_sleep_us),
                    '--tx-delay-us', str(args.tx_delay_us), '--numa' if args.numa else '--no-numa']
         if item['rss']:
@@ -761,7 +769,7 @@ class AdditionalWorker:
         item = self.interface
         values = [*self.app_fds(), item['max_mtu'], item['mtu'], self.info['mac'], item['address'],
                   item['address6'] or '-', ','.join(map(str, item['vip_addresses'])) or '-',
-                  ','.join(map(str, item['vip_addresses6'])) or '-']
+                  ','.join(map(str, item['vip_addresses6'])) or '-', self.info['tx_offload_features']]
         return '|'.join(map(str, values))
 
     def close_app_channels(self):
@@ -870,7 +878,7 @@ def main():
             bond_options = ['--bond-policy', ','.join(str(args.bonds[0][key]) for key in
                             ('lsc_poll_period_ms', 'up_delay', 'down_delay'))]
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            *(['--rss'] if args.rss else []), '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, '--', *args.eal_args],
+            '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), *(['--rss'] if args.rss else []), '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), mtu_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         mtu_io.close()
@@ -895,7 +903,7 @@ def main():
             extra_worker.start(worker_path, args)
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
-            KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
+            KER_NATIVE_TX_FEATURES=str(info['tx_offload_features']), KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),

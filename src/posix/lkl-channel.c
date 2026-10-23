@@ -38,6 +38,8 @@
 
 _Static_assert(sizeof(struct ker_packet_header) == sizeof(struct lkl_virtio_net_hdr_v1),
     "packet channel must match the imported virtio-net ABI");
+_Static_assert(LKL_VIRTIO_NET_F_CSUM == 0 && LKL_VIRTIO_NET_F_HOST_TSO4 == 11 &&
+    LKL_VIRTIO_NET_F_HOST_TSO6 == 12, "native TX feature bits must match original virtio");
 static atomic_bool ready;
 static struct lkl_netdev *device;
 static int startup_fd = -1;
@@ -140,9 +142,13 @@ __attribute__((constructor)) static void initialize(void)
     if (!device) fail("packet device allocation", -errno);
     /* Live jumbo growth needs multiple virtio buffers even at MTU1500 startup.
      * The original LKL transport implements mergeable buffers, including num_buffers accounting; this
-     * does not enable checksum or segmentation offloads. */
-    struct lkl_netdev_args args = {.mac = mac, .offload = maximum > 1500 ?
-        (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0};
+     * RX mergeable-buffer support is separate from negotiated TX features. */
+    const char *features_text = getenv("KER_NATIVE_TX_FEATURES");
+    unsigned features = features_text ? (unsigned)parse_number(features_text, 8191) : 0;
+    if ((features & ~0x1801U) || ((features & 0x1800U) && !(features & 1U)))
+        fail("unsupported TX feature negotiation", -EINVAL);
+    struct lkl_netdev_args args = {.mac = mac, .offload = features | (maximum > 1500 ?
+        (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0)};
     result = lkl_netdev_add(device, &args);
     if (result < 0) fail("packet device registration", result);
     device->id = result;

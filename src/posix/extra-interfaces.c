@@ -50,7 +50,8 @@ int ker_extra_interfaces_register(const char *settings)
             fields[i] = strsep(&part, "|");
             if (!fields[i] || !*fields[i]) return -EINVAL;
         }
-        if (part) return -EINVAL;
+        int features = part ? number(part, 8191) : 0;
+        if (features < 0 || (features & ~0x1801U) || ((features & 0x1800U) && !(features & 1U))) return -EINVAL;
         int fd = number(fields[0], INT_MAX), control = number(fields[1], INT_MAX);
         int maximum = number(fields[2], KER_NATIVE_MAX_MTU), mtu = number(fields[3], KER_NATIVE_MAX_MTU);
         if (mtu < KER_NATIVE_MIN_MTU || maximum < mtu || channel(fd, SOCK_DGRAM) ||
@@ -65,8 +66,8 @@ int ker_extra_interfaces_register(const char *settings)
         }
         struct lkl_netdev *device = ker_packet_device_create(fd);
         if (!device) return -errno;
-        struct lkl_netdev_args args = {.mac = mac, .offload = maximum > 1500 ?
-            (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0};
+        struct lkl_netdev_args args = {.mac = mac, .offload = (unsigned)features | (maximum > 1500 ?
+            (1U << LKL_VIRTIO_NET_F_MRG_RXBUF) : 0)};
         int result = lkl_netdev_add(device, &args);
         if (result < 0) { lkl_netdev_free(device); return result; }
         device->id = result;
