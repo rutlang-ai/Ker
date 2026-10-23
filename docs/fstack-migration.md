@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 140 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 143 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 207 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 204 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 10 | FreeBSD callout/内部 kqueue filter/mbuf 头字段断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 293 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 228 项是
-21 partial + 207 blocked，另有 10 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 290 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 225 项是
+21 partial + 204 blocked，另有 10 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -72,7 +72,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 13 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 10 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | 合同差异待决策 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout and internal kqueue filter assertions | 8 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
@@ -139,13 +139,13 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 0 | 0 | 25 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 22 | 0 | 12 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 25 | 0 | 9 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 19 | 1 | 5 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 2 | 1 | 0 | 0 |
-| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 0 | 0 | 13 | 0 | 0 |
+| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 4 | 0 | 7 | 2 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
 
@@ -1016,3 +1016,17 @@ Unix packet通道零拷贝是更强的后续里程碑，不额外作为全部13�
 [13 项合同核对](fstack-zc-contracts.md) 新增 4 项真实 Linux 参数边界验收，
 2 项 FreeBSD mbuf 头字段明确为结构特定，7 项继续 blocked。当前 partial + blocked
 共 228 项；所有 293 项非 adapted 记录仍有 issue 跟踪，未声称全量完成。
+
+## 原生映射缓冲区动态调整
+
+新增 `ker_posix_buffer_realloc`，解决原始 Linux VMA 不能交给宿主 libc realloc
+的内存域边界。实际 Linux 匿名映射实现扩容/缩容，保留前缀并清零新增范围；
+失败保留旧映射，回滚释放失败的临时映射仍登记到关闭回收。零大小是 F-Stack
+源辅助函数的指针 identity/no-op，包括外部 sentinel；不会授予注册权限。
+
+`native-fstack-buffer-resize` 启动原始 Linux，验证 64 字节清零、8->32 保留、
+零大小、跨页扩缩、失效基址，以及注入 mmap ENOMEM / munmap EIO 后的恢复和
+最终完整回收。真实 virtio/vhost-kernel TCP 在原始完成通知后扩缩缓冲区，继续
+验证完整 IPv4/IPv6 512KiB 线上内容。三个源内存场景进入 adapted；累计
+143 adapted、21 partial、204 blocked、10 架构特定、55 harness-only，仍有225项
+未完成。零拷贝写游标/空链的缺口没有因此减少，issue225 保持原处置。

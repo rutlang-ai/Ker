@@ -11,28 +11,36 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <lkl.h>
 #include <lkl/linux/mman.h>
 struct mapping { struct mapping *next; void *address; size_t size; };
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mapping *mappings;
 static struct ker_native_buffer_counters totals;
-void *ker_posix_buffer_alloc(size_t size)
+/* Caller holds lock and has validated the native lifetime and size. */
+static struct mapping *allocate(size_t size)
 {
-    if (!size || size > INT_MAX) { errno = EINVAL; return NULL; }
     struct mapping *item = malloc(sizeof(*item));
     if (!item) return NULL;
-    pthread_mutex_lock(&lock);
-    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); free(item); errno = ENETDOWN; return NULL; }
     void *address = lkl_sys_mmap(NULL, size, LKL_PROT_READ | LKL_PROT_WRITE,
         LKL_MAP_PRIVATE | LKL_MAP_ANONYMOUS, -1, 0);
     if ((uintptr_t)address >= (uintptr_t)-4095) {
         int error = (int)-(long)address;
-        pthread_mutex_unlock(&lock); free(item); errno = error; return NULL;
+        free(item); errno = error; return NULL;
     }
     *item = (struct mapping){.next = mappings, .address = address, .size = size};
     mappings = item;
     totals.allocations++; totals.live++; totals.bytes += size;
+    return item;
+}
+void *ker_posix_buffer_alloc(size_t size)
+{
+    if (!size || size > INT_MAX) { errno = EINVAL; return NULL; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
+    struct mapping *item = allocate(size);
+    void *address = item ? item->address : NULL;
     pthread_mutex_unlock(&lock);
     return address;
 }
@@ -57,6 +65,39 @@ int ker_posix_buffer_free(void *address)
     if (!result) { *slot = item->next; free(item); }
     pthread_mutex_unlock(&lock);
     return (int)ker_native_result(result);
+}
+/* Keep the old mapping until both allocation and copying have succeeded.
+ * This adapts the native memory domain; libc realloc cannot resize LKL VMAs. */
+void *ker_posix_buffer_realloc(void *address, size_t size)
+{
+    /* F-Stack's zero-size helper is an identity operation even for a foreign
+     * sentinel. Do not dereference, validate ownership or grant registration. */
+    if (!size) return address;
+    if (!address) return ker_posix_buffer_alloc(size);
+    if (size > INT_MAX) { errno = EINVAL; return NULL; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
+    struct mapping *old = mappings;
+    while (old && old->address != address) old = old->next;
+    if (!old) { pthread_mutex_unlock(&lock); errno = EINVAL; return NULL; }
+    if (size == old->size) { pthread_mutex_unlock(&lock); return address; }
+    struct mapping *fresh = allocate(size);
+    if (!fresh) { pthread_mutex_unlock(&lock); return NULL; }
+    memcpy(fresh->address, old->address, size < old->size ? size : old->size);
+    long result = release(old, false);
+    struct mapping *removed = result ? fresh : old;
+    /* If releasing the old mapping fails, roll back only the fresh one. A
+     * failed rollback remains registered for shutdown reclamation. */
+    if (!result || !release(fresh, false)) {
+        struct mapping **slot = &mappings;
+        while (*slot != removed) slot = &(*slot)->next;
+        *slot = removed->next;
+        free(removed);
+    }
+    void *resized = result ? NULL : fresh->address;
+    if (result) errno = (int)-result;
+    pthread_mutex_unlock(&lock);
+    return resized;
 }
 static int zerocopy_enabled(int native)
 {

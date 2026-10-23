@@ -1856,6 +1856,30 @@
         "native-fstack-zc-validation"
       ],
       "adaptation": "Source asserts only that a non-NULL 16-byte argument passes its mirror validator. Actual registered 16-byte MSG_ZEROCOPY send reaches original Linux, delivers exact peer bytes and completes through original MSG_ERRQUEUE starting at ID zero. No claim of FreeBSD owned-chain handoff or end-to-end copy elimination. Uses actual original Linux VMAs, loopback sockets and completion control messages, with explicit native/EAL shutdown and zero live mapping/option-guard/mbuf counts. No upstream algorithm mirror is executed."
+    },
+    "native-buffer-zero-initialization": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": "test_ff_calloc_zeros_memory",
+      "ker_ctests": [
+        "native-fstack-buffer-resize"
+      ],
+      "adaptation": "Actual ker_posix_buffer_alloc(16*4) returns 64 zero bytes from original Linux anonymous VMAs, then releases the real mapping. This adapts the zero-initialized allocation scenario in the native-buffer domain; it is not a new libc calloc wrapper or a change to LKL host mem_alloc semantics. Tests boot the pinned original Linux and use the actual Ker adaptation source; only selected failing mmap/munmap return values are injected. No successful synthetic allocator or copied F-Stack mirror is used. All real allocation/release totals balance at shutdown."
+    },
+    "native-buffer-realloc-grow": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": "test_ff_realloc_grow",
+      "ker_ctests": [
+        "native-fstack-buffer-resize"
+      ],
+      "adaptation": "Actual ker_posix_buffer_realloc grows an 8-byte original-Linux VMA buffer to32 bytes and preserves every prefix byte, zeroes the new extent and unregisters the old base. Native API/VMAs replace the source ff_malloc/glibc memory domain. Additional actual 4097->32768 and completion-safe shrink/regrow run through independent virtio/vhost-kernel TCP wire acceptance. ENOMEM and old-release failure preserve the original mapping; rollback failures remain tracked for real shutdown. Tests boot the pinned original Linux and use the actual Ker adaptation source; only selected failing mmap/munmap return values are injected. No successful synthetic allocator or copied F-Stack mirror is used. All real allocation/release totals balance at shutdown."
+    },
+    "native-buffer-realloc-zero": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": "test_ff_realloc_zero_size_returns_p",
+      "ker_ctests": [
+        "native-fstack-buffer-resize"
+      ],
+      "adaptation": "Actual ker_posix_buffer_realloc(pointer,0) returns that exact pointer and preserves its bytes and errno without allocation, unmapping or granting native registration. Includes the source stack sentinel0xCAFE, native bases, NULL and inactive-runtime identity. Nonzero resize continues to reject foreign/interior/stale bases. Tests boot the pinned original Linux and use the actual Ker adaptation source; only selected failing mmap/munmap return values are injected. No successful synthetic allocator or copied F-Stack mirror is used. All real allocation/release totals balance at shutdown."
     }
   }
 }

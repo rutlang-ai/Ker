@@ -27,6 +27,15 @@ KER_API const char *ker_posix_kernel_release(void);
  * in the cross-process packet channel and is not end-to-end zero-copy. */
 KER_API void *ker_posix_buffer_alloc(size_t size);
 KER_API int ker_posix_buffer_free(void *address);
+/* Resize a native buffer while preserving min(old_size, size) bytes. A new
+ * extent is zero initialized; the address may change even when shrinking.
+ * On failure NULL/errno leaves the original mapping valid. NULL with nonzero
+ * size allocates. size==0 is a pointer identity/no-op (including NULL or an
+ * unregistered pointer): it neither frees nor registers that pointer and does
+ * not require an active instance. Other non-NULL inputs must be exact bases.
+ * Complete every outstanding send before resize, just as before free; do not
+ * race access/resize/free/shutdown. This is not libc realloc memory. */
+KER_API void *ker_posix_buffer_realloc(void *address, size_t size);
 /* Run the caller's callback on this thread until stop_run is requested.
  * NULL waits for a stop from another thread. Callback return values are ignored.
  * Exactly one run is allowed per native instance; nested/concurrent runs fail

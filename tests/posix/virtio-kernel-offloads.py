@@ -177,6 +177,9 @@ def main():
                             record = json.loads(stats.read_text())
                             info = record['io']
                             if args.native_buffers:
+                                require(output.count('BUFFER_RESIZE family=0 after_completions') == 1 and
+                                        output.count('BUFFER_RESIZE family=1 after_completions') == 1,
+                                        'native TCP buffers were not resized after actual completions')
                                 require(record.get('run_shutdown_ack') and record.get('run_shutdown'),
                                         'native buffer teardown did not receive EAL acknowledgement')
                                 native = record['native']

@@ -131,7 +131,12 @@ int main(int argc, char **argv)
         enum { block_size = 32768 };
 #ifdef KER_TEST_NATIVE_BUFFERS
         buffer_socket(fd, family, true);
-        unsigned char *block = buffer_allocate(block_size); check(block, "TCP native mapping");
+        unsigned char *block = buffer_allocate(4097); check(block, "TCP native mapping");
+        memset(block, 0x73, 4097);
+        unsigned char *grown = buffer_resize(block, block_size); check(grown, "grow TCP native mapping");
+        block = grown;
+        for (unsigned i = 0; i < block_size; i++)
+            check(block[i] == (i < 4097 ? 0x73 : 0), "resized TCP prefix and zero extension");
 #else
         unsigned char block[block_size];
 #endif
@@ -149,7 +154,20 @@ int main(int argc, char **argv)
 #endif
             }
 #ifdef KER_TEST_NATIVE_BUFFERS
-            buffer_complete(fd); /* Wait before rewriting any referenced bytes. */
+            buffer_complete(fd); /* Wait before rewriting or resizing referenced bytes. */
+            if (index == 7) {
+                unsigned char *smaller = buffer_resize(block, 4097); check(smaller, "shrink after TCP completions");
+                block = smaller;
+                for (unsigned i = 0; i < 4097; i++) {
+                    unsigned position = index * (unsigned)block_size + i;
+                    check(block[i] == (unsigned char)((position * 17) ^ (position >> 8) ^ (position >> 16) ^ family),
+                          "shrink preserves completed TCP prefix");
+                }
+                unsigned char *larger = buffer_resize(block, block_size); check(larger, "regrow after TCP completions");
+                block = larger;
+                for (unsigned i = 4097; i < block_size; i++) check(!block[i], "regrown TCP tail zeroed");
+                printf("BUFFER_RESIZE family=%u after_completions\n", family);
+            }
 #endif
             struct timespec capture_budget = {.tv_nsec = 5000000};
             nanosleep(&capture_budget, NULL);
