@@ -1187,3 +1187,42 @@ LACP 状态来自原始公开 API，不能用虚拟 TAP 的 carrier 或 active �
 `native-fstack-typed-bond` 以真实独立 Linux LACP 对端验证双向 IPv4/IPv6、
 完整报文、成员路径丢失后的恢复及零 mbuf 泄漏；不是 active-backup 对 mode4 的替代测试。
 物理 NIC、严格延迟基准和多接口调度仍未资格验证。
+
+
+### 同一原始 Linux 中的附加接口
+
+保留原来的 `[network]`/`[dpdk]` 主接口配置，再增加：
+
+```ini
+[interface.aux]
+address=198.19.0.2/24
+address6=2001:db8:2::2/64
+vip_addresses=198.19.0.3/24,198.19.0.4/24,198.19.0.5/24
+vip_addresses6=2001:db8:2::3/128,2001:db8:2::4/128
+port=net_tap1
+eal=--lcores=0@1 --no-huge --no-pci --no-shconf --iova-mode=va -m 64 --vdev=net_tap1,iface=keraux
+mtu=1500
+max_mtu=2000
+mbuf_mode=large
+```
+
+NAME 是配置/日志标签；原生 Linux 接口名由 virtio 驱动分配，可用 native ioctl 查询。
+最多 7 个附加接口。address/port/eal 必填；IPv6 主地址、各最多 32 个 VIP 及
+mtu/max_mtu/mbuf_mode 可选，后三项默认继承最终主接口设置。每个附加接口使用
+独立 EAL worker/报文/MTU 控制通道，必须选择自己独占的设备与 EAL 命名空间，
+而不是共享原始进程配置；CPU 选择、memory/file-prefix 等 EAL 参数由该 section
+显式提供。上面的 CPU 1 仅作例子，需选择允许的宿主 CPU。各原始 Linux 接口
+仍在同一个内核中，共享 socket 表、路由、sysctl、TCP/UDP 协议与全局诊断计数。
+
+地址必须唯一且为无 scope 的原生单播地址；附加接口与主接口/其他附加接口的主地址网络不得重叠。
+附加 IPv6 VIP 要求对应 address6，启动等待原始 Linux DAD。当前默认网关与 VLAN
+配置仍归主接口；附加 section 的未知选项会拒绝，不会默默当成有效配置。
+各 native 接口的 MTU ioctl 按真实 ifindex 选取控制通道，分别执行原有读回/回滚协议。
+
+任一 worker 启动失败会阻止应用运行；应用运行中任一 worker 退出会使整个后端失败。
+关闭时先通知所有 worker，再等待回收；每个 pool 必须清空。根 `--stats` 保留原主接口
+格式及唯一的 native 全局计数；`interfaces` 列表包含各附加接口的名字、PID、I/O/MTU
+与独立 worker 信息，`worker_pid` 是主 worker PID。附加日志/pcap 放在同名子目录。
+`native-fstack-multiport` 验证两接口、全部主地址/VIP、跨接口 TCP/UDP 路由、独立 MTU、
+额外 worker/原始 DAD 失败及运行中退出的清理。它不代表 F-Stack 的全局多 lcore、
+每端口多队列、硬件 RSS/thash 或完整多端口 ABI 已通过。

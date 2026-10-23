@@ -37,7 +37,7 @@ foreach(artifact config library)
         message(FATAL_ERROR "Native Linux ${artifact} differs from the build proof; rerun tools/build-native-linux.py")
     endif()
 endforeach()
-add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
+add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c
     src/posix/lifecycle.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
@@ -918,4 +918,14 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_bond.py")
     set_tests_properties(native-fstack-typed-bond-config PROPERTIES TIMEOUT 30 LABELS "fstack"
         ENVIRONMENT "KER_TEST_IO_WORKER=$<TARGET_FILE:ker-io-worker>")
+    add_executable(ker-native-multiport-test tests/posix/multiport.c)
+    target_compile_options(ker-native-multiport-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-multiport
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-multiport.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-native-multiport-test>")
+    set_tests_properties(native-fstack-multiport PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-multiport-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_multiport_config.py")
+    set_tests_properties(native-fstack-multiport-config PROPERTIES TIMEOUT 30 LABELS fstack)
 endif()

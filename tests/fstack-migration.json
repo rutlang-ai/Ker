@@ -1291,9 +1291,27 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source case asserts multi-port, bond and RSS configuration fields that remain unsupported. Related memory/no_huge fixture settings now have typed original-EAL translation and real native memory/page-policy tests, but these do not satisfy the registered source assertions, so this case remains blocked without pass bindings. Related dpdk.log_level startup filtering is exercised separately by native-fstack-eal-log-level; it does not satisfy these source assertions.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Two actual DPDK/EAL workers now attach independent devices to the same original Linux instance. Both interfaces have their own IPv4/IPv6 primary and3/2 VIPs, native TCP source bindings, per-interface MTU controls and zero-buffer/process cleanup. Asymmetric UDP leaves the second interface with the first address and returns through the first, proving a shared kernel socket/route namespace. Bond configuration fields are separately covered by original mode4 LACP acceptance.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-multiport",
+          "provenance_case": "native-fstack-multiport"
+        },
+        {
+          "ctest": "native-fstack-multiport-config",
+          "provenance_case": "native-fstack-multiport-config"
+        },
+        {
+          "ctest": "native-fstack-typed-bond",
+          "provenance_case": "native-fstack-typed-bond"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-typed-bond-config"
+        }
+      ],
+      "remaining": "This uses one independent EAL process per interface rather than the F-Stack global4-lcore/per-port2-lcore layout. Active multi-queue RSS, hardware queue verification, thash source-port adjustment, per-port80/443 RSS table contracts and exact F-Stack global/per-port config structs remain unqualified. The whole original fixture is not directly accepted by Ker; this is a partial native multi-interface adaptation tracked by issues224/220."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_lcore_mask_no_bits",

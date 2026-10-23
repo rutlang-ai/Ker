@@ -117,7 +117,7 @@ def base_virtaddr(text):
     return value
 
 
-CONFIG_DEFAULTS = dict(nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -291,6 +291,31 @@ def bond_device_argument(bond):
                     ('primary', 'socket_id', 'mac', 'xmit_policy') if key in bond))
 
 
+def additional_interfaces(ini):
+    result = []
+    convert = {'address': ipaddress.IPv4Interface, 'address6': ipaddress.IPv6Interface,
+               'vip_addresses': vip_addresses, 'vip_addresses6': vip_addresses6,
+               'port': str, 'eal': str, 'mtu': int, 'max_mtu': int, 'mbuf_mode': str}
+    for section in ini.sections():
+        if not section.startswith('interface.'):
+            continue
+        name = section[10:]
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', name):
+            raise ValueError('invalid interface section name')
+        fields = dict(ini.items(section, raw=True))
+        if set(fields) - set(convert) or not {'address', 'port', 'eal'} <= set(fields):
+            raise ValueError(f'[{section}] requires address/port/eal and only supported interface options')
+        item = {'name': name}
+        for key, value in fields.items():
+            item[key] = convert[key](value)
+        if not item['port'] or not shlex.split(item['eal']):
+            raise ValueError(f'[{section}] empty port/eal')
+        result.append(item)
+    if len(result) > 7:
+        raise ValueError('at most seven additional native interfaces are supported')
+    return result
+
+
 def read_configuration(stream, directory, source='<stream>', worker_path=None):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
@@ -307,10 +332,13 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None):
         if worker_path is None:
             raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
         bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
+    interfaces = additional_interfaces(ini)
+    if interfaces:
+        values['interfaces'] = interfaces
     if bonds or ini.has_option('dpdk', 'nb_bond'):
         values['bonds'] = bonds
     for section in ini.sections():
-        if section.startswith(('vdev', 'bond')):
+        if section.startswith(('vdev', 'bond', 'interface.')):
             continue
         if section.startswith('vlan.'):
             if 'addresses' not in ini[section] or set(ini[section]) - {'addresses', 'gateway', 'gateway6'}:
@@ -608,7 +636,131 @@ def parse_arguments(argv=None):
             parser.error('typed bond conflicts with raw EAL bonding device')
         eal_prefix += [bond_device_argument(bond) for bond in args.bonds]
     args.eal_args = eal_prefix + eal_remainder
+    seen = set(all_ips)
+    networks = [args.address.network]
+    networks6 = [args.address6.network] if args.address6 is not None else []
+    for interface in args.interfaces:
+        for key in ('mtu', 'max_mtu', 'mbuf_mode'):
+            interface.setdefault(key, getattr(args, key))
+        if not 1280 <= interface['mtu'] <= interface['max_mtu'] <= 9000:
+            parser.error('additional interface MTU must satisfy 1280 <= mtu <= max_mtu <= 9000')
+        if interface['mbuf_mode'] not in ('large', 'scatter'):
+            parser.error('additional interface mbuf_mode must be large or scatter')
+        interface.setdefault('address6', None)
+        interface.setdefault('vip_addresses', ())
+        interface.setdefault('vip_addresses6', ())
+        if len(interface['vip_addresses']) > 32 or len(interface['vip_addresses6']) > 32:
+            parser.error('each additional interface supports at most 32 IPv4/IPv6 VIPs')
+        if interface['vip_addresses6'] and interface['address6'] is None:
+            parser.error('additional IPv6 VIP requires its interface address6')
+        addresses = [interface['address'], *interface['vip_addresses']]
+        if interface['address6'] is not None:
+            addresses += [interface['address6'], *interface['vip_addresses6']]
+        for value in addresses:
+            if '%' in str(value) or value.ip.is_unspecified or value.ip.is_multicast or value.ip.is_loopback or (
+                    value.version == 6 and value.ip.ipv4_mapped is not None):
+                parser.error('additional interfaces require unscoped native unicast addresses')
+            if value.ip in seen:
+                parser.error('additional interface address duplicates an existing address')
+            seen.add(value.ip)
+        network = interface['address'].network
+        if any(network.overlaps(previous) for previous in networks):
+            parser.error('additional interface IPv4 primary networks must not overlap')
+        networks.append(network)
+        if interface['address6'] is not None:
+            network6 = interface['address6'].network
+            if any(network6.overlaps(previous) for previous in networks6):
+                parser.error('additional interface IPv6 primary networks must not overlap')
+            networks6.append(network6)
     return args
+
+
+class AdditionalWorker:
+    """Own one additional Ethernet/MTU channel and its separate EAL process."""
+
+    def __init__(self, interface):
+        self.interface = interface
+        self.process = self.app_packet = self.io_packet = self.app_mtu = self.io_mtu = None
+        self.stop_read = self.stop_write = -1
+        self.info = self.stats = None
+
+    def start(self, worker, args):
+        item = self.interface
+        self.app_packet, self.io_packet = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
+        self.app_mtu, self.io_mtu = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        self.stop_read, self.stop_write = os.pipe2(os.O_CLOEXEC)
+        options = ['--mtu', str(item['mtu']), '--max-mtu', str(item['max_mtu']),
+                   '--mbuf-mode', item['mbuf_mode'], '--idle-sleep-us', str(args.idle_sleep_us),
+                   '--tx-delay-us', str(args.tx_delay_us), '--numa' if args.numa else '--no-numa']
+        if args.all_multicast or item['address6'] is not None:
+            options.append('--all-multicast')
+        if args.promiscuous is not None:
+            options.append('--promiscuous' if args.promiscuous else '--no-promiscuous')
+        if args.log_dir is not None:
+            directory = args.log_dir.resolve() / item['name']
+            directory.mkdir(parents=True, exist_ok=True)
+            options += ['--log-dir', str(directory)]
+        if args.log_level is not None:
+            options += ['--log-level', str(args.log_level)]
+        if args.pcap_dir is not None:
+            directory = args.pcap_dir.resolve() / item['name']
+            directory.mkdir(parents=True, exist_ok=True)
+            options += ['--pcap-dir', str(directory), '--pcap-snaplen', str(args.pcap_snaplen),
+                        '--pcap-max-bytes', str(args.pcap_max_bytes)]
+            if args.pcap_nsec:
+                options.append('--pcap-nsec')
+        self.process = subprocess.Popen([str(worker), '--packet-fd', str(self.io_packet.fileno()),
+            '--mtu-fd', str(self.io_mtu.fileno()), '--control-fd', str(self.stop_read),
+            '--port', item['port'], *options, '--', *shlex.split(item['eal'])],
+            pass_fds=(self.io_packet.fileno(), self.io_mtu.fileno(), self.stop_read),
+            stdout=subprocess.PIPE, text=True)
+        self.io_packet.close(); self.io_mtu.close(); os.close(self.stop_read); self.stop_read = -1
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            if not selector.select(20):
+                raise RuntimeError('additional DPDK worker startup timed out: ' + item['name'])
+            line = self.process.stdout.readline().strip()
+        if line.startswith('KER_IO_DONE '):
+            self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+        if not line.startswith('KER_IO_READY '):
+            raise RuntimeError('additional DPDK worker failed before READY: ' + item['name'])
+        self.info = json.loads(line.removeprefix('KER_IO_READY '))
+
+    def app_fds(self):
+        return self.app_packet.fileno(), self.app_mtu.fileno()
+
+    def native_settings(self):
+        item = self.interface
+        values = [*self.app_fds(), item['max_mtu'], item['mtu'], self.info['mac'], item['address'],
+                  item['address6'] or '-', ','.join(map(str, item['vip_addresses'])) or '-',
+                  ','.join(map(str, item['vip_addresses6'])) or '-']
+        return '|'.join(map(str, values))
+
+    def close_app_channels(self):
+        if self.app_packet is not None: self.app_packet.close()
+        if self.app_mtu is not None: self.app_mtu.close()
+
+    def stop_channels(self):
+        self.close_app_channels()
+        for channel in (self.io_packet, self.io_mtu):
+            if channel is not None: channel.close()
+        for name in ('stop_read', 'stop_write'):
+            fd = getattr(self, name)
+            if fd >= 0: os.close(fd); setattr(self, name, -1)
+    def finish(self):
+        self.stop_channels()
+        failed = False
+        if self.process is not None:
+            try:
+                output, _ = self.process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill(); output, _ = self.process.communicate(); failed = True
+            for line in output.splitlines():
+                if line.startswith('KER_IO_DONE '): self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+            failed |= self.process.returncode != 0 or self.stats is None
+        if self.stats is not None:
+            self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None)
+        return failed
 
 
 def main():
@@ -621,6 +773,7 @@ def main():
     startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     signal.signal(signal.SIGTERM, interrupted)
     worker = app = None
+    additional = []
     exit_code = 125
     stats = None
     info = None
@@ -667,6 +820,10 @@ def main():
                 stats = json.loads(ready.removeprefix('KER_IO_DONE '))
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
         info = json.loads(ready.removeprefix('KER_IO_READY '))
+        for interface in args.interfaces:
+            extra_worker = AdditionalWorker(interface)
+            additional.append(extra_worker)
+            extra_worker.start(worker_path, args)
         env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
@@ -674,6 +831,8 @@ def main():
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
+        if additional:
+            env['KER_PACKET_INTERFACES'] = ';'.join(extra.native_settings() for extra in additional)
         env.pop('KER_NATIVE_VLANS', None)
         if args.vlans:
             env['KER_NATIVE_VLANS'] = ';'.join(str(tag) + '=' + ','.join(map(str, addresses))
@@ -708,9 +867,12 @@ def main():
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
         app_guard = worker_path.parent / 'ker-app'
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
-            pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write))
+            pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write,
+                      *(fd for extra in additional for fd in extra.app_fds())))
         channel_app.close()
         mtu_app.close()
+        for extra in additional:
+            extra.close_app_channels()
         os.close(startup_write)
         startup_write = -1
         with selectors.DefaultSelector() as selector:
@@ -736,7 +898,7 @@ def main():
                         stopping_at = time.monotonic()
                     if time.monotonic() - stopping_at > 5:
                         raise RuntimeError('native kernel teardown timed out')
-                elif worker.poll() is not None:
+                elif worker.poll() is not None or any(extra.process.poll() is not None for extra in additional):
                     raise RuntimeError('DPDK worker stopped while the application was running')
     except (KeyboardInterrupt, Interrupted) as interruption:
         preserve_signal = True
@@ -779,6 +941,8 @@ def main():
             infrastructure_failure = True
         if startup_write >= 0:
             os.close(startup_write)
+        for extra in additional:
+            extra.stop_channels()
         if worker:
             try:
                 output, _ = worker.communicate(timeout=10)
@@ -797,6 +961,11 @@ def main():
                 for line in startup_status.splitlines():
                     if line.startswith(b'KER_NATIVE_STATS '):
                         stats['native'] = json.loads(line.removeprefix(b'KER_NATIVE_STATS '))
+            for extra in additional:
+                infrastructure_failure |= extra.finish()
+            if stats is not None and additional:
+                stats['interfaces'] = [extra.stats for extra in additional]
+                stats['worker_pid'] = worker.pid
             if args.stats and stats:
                 args.stats.write_text(json.dumps(stats, indent=2) + '\n')
     return resolve_exit_code(exit_code, app.returncode if app else None,

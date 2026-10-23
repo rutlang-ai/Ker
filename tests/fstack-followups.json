@@ -286,7 +286,7 @@
       "id": "dpdk-devices",
       "title": "Adapt typed vdev, bond and multi-port configuration",
       "disposition": "adaptation-needed",
-      "reason": "Typed virtio-user and single selected bond now use original DPDK devices. Bond mode4, members/primary/socket/MAC/hash/timings and independent host LACP, path loss and cleanup are qualified. Remaining cases require broader DPDK configuration, kernel-backend iface compatibility, simultaneous combined bond/vdev fixture support, multi-port use and C allocation-failure contracts.",
+      "reason": "Typed vdev/single-bond settings and native multi-interface routing/VIPs now have real device and cleanup evidence. The full DPDK source fixture is partial: its global/per-port lcore topology, active multi-queue RSS/thash/tables and exact structs remain unqualified. Remaining cases also need vhost-kernel iface and C allocation-failure/combined fixture contracts.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
@@ -297,7 +297,10 @@
         "tests/posix/vhost-bridge.c",
         "src/posix/bond-policy.c",
         "tests/posix/typed-bond.py",
-        "tests/posix/test_typed_bond.py"
+        "tests/posix/test_typed_bond.py",
+        "src/posix/extra-interfaces.c",
+        "tests/posix/native-multiport.py",
+        "tests/posix/test_multiport_config.py"
       ],
       "acceptance": [
         "Specify useful typed configuration mappings to real supported EAL/PMD options while preserving strict validation.",
