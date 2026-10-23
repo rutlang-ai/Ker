@@ -46,15 +46,45 @@ static struct rte_mbuf *packet(unsigned id, unsigned size)
     unsigned char data[1500]; CHECK(size >= 14 && size <= sizeof(data)); bytes(data,size,id);
     struct rte_mbuf *p = ker_worker_mbuf_from_bytes(pool,data,size); CHECK(p); return p;
 }
-static void open_bridge(unsigned capacity, unsigned rate)
+static void open_bridge_limits(unsigned capacity, unsigned rate, unsigned console, unsigned general)
 {
     CHECK(!rte_mempool_in_use_count(pool));
-    CHECK(!ker_worker_exception_open(&bridge,"excepttest",pool,&host_mac,1500,0x88b5,capacity,rate));
+    CHECK(!ker_worker_exception_open(&bridge,"excepttest",pool,&host_mac,1500,0x88b5,capacity,rate,console,general));
     target_fd = bridge.fd;
-    peer = socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, htons(0x88b5)); CHECK(peer >= 0);
-    struct sockaddr_ll address = {.sll_family = AF_PACKET, .sll_protocol = htons(0x88b5),
+    peer = socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, htons(3)); CHECK(peer >= 0);
+    struct sockaddr_ll address = {.sll_family = AF_PACKET, .sll_protocol = htons(3),
         .sll_ifindex = (int)if_nametoindex("excepttest")};
     CHECK(address.sll_ifindex && !bind(peer,(void*)&address,sizeof(address)));
+}
+static void open_bridge(unsigned capacity, unsigned rate)
+{
+    open_bridge_limits(capacity, rate, 0, 0);
+}
+/* Raw frames cross a real TAP; a unicast experimental EtherType exercises the
+ * ordinary class, while ARP and Ethernet multicast exercise console traffic. */
+static void admission_bytes(unsigned char *data, unsigned id, unsigned kind)
+{
+    bytes(data,64,id);
+    if (kind != 2) memcpy(data,host_mac.addr_bytes,6);
+    if (kind == 1) { data[12]=0x08; data[13]=0x06; }
+    if (kind == 3) {
+        memset(data+14,0,20);data[12]=0x08;data[13]=0;data[14]=0x45;data[17]=50;data[23]=89;
+    }
+    if (kind == 4) {
+        memset(data+14,0,48);data[12]=0x86;data[13]=0xdd;data[14]=0x60;data[19]=10;data[20]=58;data[54]=135;
+    }
+}
+static void admission_enqueue(unsigned id, unsigned kind, int expected)
+{
+    unsigned char data[64]; admission_bytes(data,id,kind);
+    struct rte_mbuf *p=ker_worker_mbuf_from_bytes(pool,data,sizeof(data)); CHECK(p);
+    CHECK(ker_worker_exception_enqueue(&bridge,&p)==expected&&!p);
+}
+static void admission_receive(unsigned id, unsigned kind)
+{
+    unsigned char data[1600], expected[64]; admission_bytes(expected,id,kind);
+    struct pollfd event={peer,POLLIN,0}; CHECK(poll(&event,1,1000)==1);
+    CHECK(recv(peer,data,sizeof(data),0)==64&&!memcmp(data,expected,64));
 }
 static void close_bridge(void)
 {
@@ -162,6 +192,47 @@ int main(void)
     CHECK(bridge.selected==4&&bridge.enqueued==3&&bridge.to_host_dropped==1);
     CHECK(rte_mempool_in_use_count(pool)==3);close_bridge();CHECK(bridge.shutdown_dropped==3);
     puts("PASS: test_kni_enqueue_full_ring_drops");
+    open_bridge_limits(16,0,0,0);
+    admission_enqueue(110,1,0);admission_enqueue(111,0,0);
+    CHECK(!bridge.console_packets&&!bridge.general_packets&&!bridge.console_charged&&!bridge.general_charged);
+    step(100,1500);admission_receive(110,1);admission_receive(111,0);host_receive(0,0,64);
+    CHECK(bridge.enqueued==2&&bridge.to_host==2);close_bridge();
+    puts("PASS: test_ff_kni_enqueue_no_ratelimit");
+    open_bridge_limits(16,0,2,0);
+    admission_enqueue(120,1,0);admission_enqueue(121,2,0);
+    admission_enqueue(122,1,-ENOBUFS);
+    CHECK(bridge.console_packets==3&&bridge.console_charged==3&&bridge.console_dropped==1&&
+          !bridge.general_packets&&bridge.enqueued==2&&bridge.to_host_dropped==1&&rte_mempool_in_use_count(pool)==2);
+    step(100,1500);admission_receive(120,1);admission_receive(121,2);host_receive(0,0,64);
+    CHECK(bridge.console_packets==3); /* Initial poll must not erase admissions. */
+    admission_enqueue(123,2,-ENOBUFS);
+    bool progress=false;CHECK(!ker_worker_exception_poll(&bridge,port,1500,INT64_C(1000000100),NULL,&progress));
+    CHECK(!bridge.console_packets&&bridge.console_charged==4&&bridge.console_dropped==2);
+    admission_enqueue(124,1,0);step(INT64_C(1000000200),1500);admission_receive(124,1);host_receive(0,0,64);
+    CHECK(bridge.console_packets==1&&bridge.console_charged==5);close_bridge();
+    puts("PASS: test_ff_kni_enqueue_console_ratelimit_over");
+    open_bridge_limits(16,0,0,1);
+    admission_enqueue(130,0,0);admission_enqueue(131,0,-ENOBUFS);
+    admission_enqueue(132,1,0); /* Disabled console class does not charge. */
+    CHECK(bridge.general_packets==2&&bridge.general_charged==2&&bridge.general_dropped==1&&
+          !bridge.console_packets&&!bridge.console_charged&&bridge.to_host_dropped==1&&rte_mempool_in_use_count(pool)==2);
+    step(100,1500);admission_receive(130,0);admission_receive(132,1);host_receive(0,0,64);close_bridge();
+    puts("PASS: test_ff_kni_enqueue_general_ratelimit_over");
+    open_bridge_limits(4,0,100,100);
+    admission_enqueue(140,1,0);CHECK(bridge.console_packets==1&&!bridge.general_packets);
+    admission_enqueue(141,0,0);CHECK(bridge.console_packets==1&&bridge.general_packets==1);
+    admission_enqueue(142,2,0);admission_enqueue(143,0,-ENOBUFS); /* Full ring charges once. */
+    CHECK(bridge.console_packets==2&&bridge.general_packets==2&&bridge.selected==4&&bridge.enqueued==3&&
+          bridge.to_host_dropped==1&&!bridge.console_dropped&&!bridge.general_dropped&&rte_mempool_in_use_count(pool)==3);
+    step(100,1500);admission_receive(140,1);admission_receive(141,0);admission_receive(142,2);host_receive(0,0,64);
+    CHECK(ker_worker_exception_poll(&bridge,port,1500,99,NULL,&progress)==-EIO&&bridge.general_packets==2);
+    admission_enqueue(144,0,0);close_bridge();CHECK(bridge.shutdown_dropped==1);
+    /* Unicast OSPF and NDP must use console even without an L2 multicast bit. */
+    open_bridge_limits(16,0,2,1);
+    admission_enqueue(150,3,0);admission_enqueue(151,4,0);admission_enqueue(152,4,-ENOBUFS);
+    CHECK(bridge.console_packets==3&&bridge.console_dropped==1&&!bridge.general_packets);
+    step(100,1500);admission_receive(150,3);admission_receive(151,4);host_receive(0,0,64);close_bridge();
+    puts("PASS: test_ff_kni_enqueue_filter_classification");
     CHECK(!rte_eth_dev_stop(port)&&!rte_eth_dev_close(port));
     CHECK(!rte_mempool_in_use_count(pool));rte_mempool_free(pool);rte_ring_free(tx);rte_ring_free(rx);
     CHECK(!rte_eal_cleanup());puts("PASS: real TAP deleted; all mbufs and rings reclaimed");return 0;

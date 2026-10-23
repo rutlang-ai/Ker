@@ -2080,6 +2080,38 @@
         "native-fstack-exception-filter"
       ],
       "adaptation": "Invalid exception policy fails actual launcher configuration with exit2 before worker/application entry; no successful default or unsupported stub is substituted. This adapts the rejection scenario through the Ker loader. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "exception-admission-test_ff_kni_enqueue_no_ratelimit": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_enqueue_no_ratelimit",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "With both admission budgets disabled, real ARP and ordinary unicast frames enter the actual owned ring and reach a real host TAP unchanged. Both per-window and lifetime admission counters remain zero; all mbufs are reclaimed. This adapts the source enqueue-time classification/counter/ownership scenario through the production Ker TAP adapter and original DPDK net_ring, not F-Stack global-layout or KNI ABI equivalence. Separate native-fstack-exception-filter acceptance runs the configured budgets over original net_tap and real host/native Linux IPv4/IPv6 TCP/UDP sockets; no successful transport operation is mocked."
+    },
+    "exception-admission-test_ff_kni_enqueue_console_ratelimit_over": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_enqueue_console_ratelimit_over",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "A console budget of2 admits actual ARP/multicast attempts1 and2, then consumes/frees attempt3 before queueing and records3 charged attempts and1 drop. Initial poll preserves admissions; a further excess attempt drops and a new monotonic second resets the window while lifetime totals persist. Exact admitted bytes reach a real host TAP. This adapts the source enqueue-time classification/counter/ownership scenario through the production Ker TAP adapter and original DPDK net_ring, not F-Stack global-layout or KNI ABI equivalence. Separate native-fstack-exception-filter acceptance runs the configured budgets over original net_tap and real host/native Linux IPv4/IPv6 TCP/UDP sockets; no successful transport operation is mocked."
+    },
+    "exception-admission-test_ff_kni_enqueue_general_ratelimit_over": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_enqueue_general_ratelimit_over",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "An ordinary budget of1 admits unicast attempt1 and consumes/frees attempt2 with2 charged attempts and1 drop. Disabled console admission still accepts ARP without advancing console counters. Original DPDK pool counts and real TAP bytes prove ownership and isolation. This adapts the source enqueue-time classification/counter/ownership scenario through the production Ker TAP adapter and original DPDK net_ring, not F-Stack global-layout or KNI ABI equivalence. Separate native-fstack-exception-filter acceptance runs the configured budgets over original net_tap and real host/native Linux IPv4/IPv6 TCP/UDP sockets; no successful transport operation is mocked."
+    },
+    "exception-admission-test_ff_kni_enqueue_filter_classification": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_ff_kni_enqueue_filter_classification",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Actual ARP, Ethernet multicast, unicast OSPF and unicast NDP charge only the console budget; ordinary unicast charges only general. A full ring consumes/frees its rejected frame and charges exactly once without recording an admission-limit drop. A queued shutdown suffix is reclaimed. Production worker accept/reject profiles also require both charged classes and no duplicate charges under actual ARP channel EAGAIN backpressure. This adapts the source enqueue-time classification/counter/ownership scenario through the production Ker TAP adapter and original DPDK net_ring, not F-Stack global-layout or KNI ABI equivalence. Separate native-fstack-exception-filter acceptance runs the configured budgets over original net_tap and real host/native Linux IPv4/IPv6 TCP/UDP sockets; no successful transport operation is mocked."
     }
   }
 }

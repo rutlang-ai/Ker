@@ -55,7 +55,9 @@ def main():
     require(result.returncode == 0, 'real ownership test failed: ' + result.stdout + result.stderr)
     cases = ('test_kni_alloc_primary_happy_path', 'test_kni_process_tx_basic', 'test_kni_process_tx_partial_drop', 'test_kni_process_rx_forward',
              'test_kni_process_rx_partial_drop', 'test_kni_process_tx_kernel_ratelimit',
-             'test_kni_process_tx_kernel_ratelimit_exceeded', 'test_kni_enqueue_full_ring_drops')
+             'test_kni_process_tx_kernel_ratelimit_exceeded', 'test_kni_enqueue_full_ring_drops', 'test_ff_kni_enqueue_no_ratelimit',
+             'test_ff_kni_enqueue_console_ratelimit_over', 'test_ff_kni_enqueue_general_ratelimit_over',
+             'test_ff_kni_enqueue_filter_classification')
     require(all(result.stdout.count('PASS: ' + case + '\n') == 1 for case in cases),
             'missing exact source ownership markers: ' + result.stdout)
     print(result.stdout, end='', flush=True)

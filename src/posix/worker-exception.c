@@ -27,7 +27,7 @@ static bool owner(const struct ker_worker_exception *bridge)
     return bridge && bridge->pending && bridge->owner == rte_lcore_id();
 }
 int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *iface,
-    struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit)
+    struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit, uint32_t console_limit, uint32_t general_limit)
 {
     if (!bridge || bridge->pending || !pool || !mac || !rte_is_valid_assigned_ether_addr(mac) || !iface || !*iface || strlen(iface) >= IFNAMSIZ || !strcmp(iface, ".") || !strcmp(iface, "..") ||
         mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || ether_type < 1536 ||
@@ -62,7 +62,8 @@ int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *i
     struct rte_ring *pending = rte_ring_create(name, capacity, pool->socket_id, RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (!pending) { int result = rte_errno; close(fd); return -result; }
     *bridge = (struct ker_worker_exception){.fd = fd, .pool = pool, .pending = pending, .owner = rte_lcore_id(),
-        .ether_type = ether_type, .rate_limit = rate_limit, .window_start = -1};
+        .ether_type = ether_type, .rate_limit = rate_limit, .console_limit = console_limit,
+        .general_limit = general_limit, .window_start = -1};
     return 0;
 }
 enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet)
@@ -82,6 +83,17 @@ bool ker_worker_exception_matches(const struct ker_worker_exception *bridge, con
     const unsigned char *type = rte_pktmbuf_read(packet, 12, 2, storage);
     return type && (((unsigned)type[0] << 8) | type[1]) == bridge->ether_type;
 }
+/* Same console class as the source L2/IP classifier: ARP, multicast,
+ * OSPF and neighbor discovery. Read real mbuf geometry, including chains. */
+static bool console_packet(const struct rte_mbuf *packet)
+{
+    struct rte_ether_hdr storage;
+    const struct rte_ether_hdr *ether = rte_pktmbuf_read(packet, 0, sizeof(storage), &storage);
+    if (ether && rte_is_multicast_ether_addr(&ether->dst_addr)) return true;
+    if (ker_exception_arp(packet)) return true;
+    enum ker_exception_class kind = ker_exception_classify(NULL, packet);
+    return kind == KER_EXCEPTION_OSPF || kind == KER_EXCEPTION_NDP;
+}
 int ker_worker_exception_enqueue(struct ker_worker_exception *bridge, struct rte_mbuf **packet)
 {
     if (!owner(bridge)) return -EXDEV;
@@ -89,6 +101,23 @@ int ker_worker_exception_enqueue(struct ker_worker_exception *bridge, struct rte
     bridge->selected++;
     struct rte_mbuf *owned = *packet;
     *packet = NULL;
+    /* Charge attempts before queue admission, including over-limit and full
+     * queue drops. Disabled classes retain zero counters. Poll advances the
+     * owner's one-second window before receiving each new wire batch. */
+    if (bridge->console_limit || bridge->general_limit) {
+        bool console = console_packet(owned);
+        uint32_t limit = console ? bridge->console_limit : bridge->general_limit;
+        if (limit) {
+            uint64_t *packets = console ? &bridge->console_packets : &bridge->general_packets;
+            uint64_t *charged = console ? &bridge->console_charged : &bridge->general_charged;
+            uint64_t *dropped = console ? &bridge->console_dropped : &bridge->general_dropped;
+            (*charged)++;
+            if (++(*packets) > limit) {
+                (*dropped)++;
+                rte_pktmbuf_free(owned); bridge->to_host_dropped++; return -ENOBUFS;
+            }
+        }
+    }
     if (rte_ring_enqueue(bridge->pending, owned)) {
         rte_pktmbuf_free(owned); bridge->to_host_dropped++; return -ENOBUFS;
     }
@@ -121,9 +150,12 @@ int ker_worker_exception_poll(struct ker_worker_exception *bridge, uint16_t wire
 {
     if (!owner(bridge)) return -EXDEV;
     if (!progress || now_ns < 0 || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU) return -EINVAL;
-    if (bridge->window_start < 0 || now_ns - bridge->window_start >= INT64_C(1000000000)) {
+    if (bridge->window_start < 0) bridge->window_start = now_ns;
+    else if (now_ns < bridge->window_start) return -EIO;
+    else if (now_ns - bridge->window_start >= INT64_C(1000000000)) {
         bridge->window_start = now_ns; bridge->window_packets = 0;
-    } else if (now_ns < bridge->window_start) return -EIO;
+        bridge->console_packets = bridge->general_packets = 0;
+    }
     struct rte_mbuf *packets[EXCEPTION_BURST];
     unsigned count = rte_ring_dequeue_burst(bridge->pending, (void **)packets, EXCEPTION_BURST, NULL);
     bool limited = bridge->rate_limit && bridge->window_packets >= bridge->rate_limit;

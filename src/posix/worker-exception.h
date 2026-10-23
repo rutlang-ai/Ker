@@ -18,7 +18,9 @@ struct ker_worker_exception {
     bool port_mode, reject;
     struct ker_exception_filter filter;
     uint64_t shared_selected, shared_arp, shared_icmp_error, shared_failed, fragment_dropped;
-    uint32_t rate_limit;
+    uint32_t rate_limit, console_limit, general_limit;
+    uint64_t console_packets, general_packets;
+    uint64_t console_charged, general_charged, console_dropped, general_dropped;
     int64_t window_start;
     uint64_t window_packets, selected, enqueued, to_host, to_host_dropped;
     uint64_t host_received, from_host, wire_dropped, malformed, shutdown_dropped, rate_dropped;
@@ -27,12 +29,12 @@ struct ker_worker_exception {
  * modified. The borrowed pool outlives close; the MAC is the wire PMD MAC.
  * No vnet header/offloads; caller owns only complete Ethernet frames. */
 int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *iface,
-    struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit);
+    struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit, uint32_t console_limit, uint32_t general_limit);
 enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *, const struct rte_mbuf *);
 /* Outer EtherType predicate; route() also handles port/control policies. */
 bool ker_worker_exception_matches(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet);
 /* Same lcore as open/poll/close. Successful enqueue or -ENOBUFS consumes and
- * NULLs *packet, including freeing a full-queue drop. Other errors retain it. */
+ * NULLs *packet, including freeing an admission-limit or full-queue drop. Other errors retain it. */
 int ker_worker_exception_enqueue(struct ker_worker_exception *bridge, struct rte_mbuf **packet);
 /* Delivers one bounded burst each way. Only the accepted wire TX prefix is
  * transferred to the PMD; all unaccepted owned mbufs are freed exactly once.

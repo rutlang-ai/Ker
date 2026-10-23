@@ -21,6 +21,17 @@ class ExceptionConfigTests(unittest.TestCase):
                            ['--exception-rate', '2'])
         self.assertEqual((value.exception_iface, value.exception_type, value.exception_queue, value.exception_rate),
                          ('except0', 34997, 256, 2))
+    def test_admission_limits(self):
+        value = self.parse('exception_iface=except0\nexception_type=34997\n'
+                           'exception_console_rate=2\nexception_general_rate=3\n',
+                           ['--exception-console-rate', '4', '--exception-general-rate', '0'])
+        self.assertEqual((value.exception_console_rate, value.exception_general_rate), (4, 0))
+        for field in ('exception_console_rate', 'exception_general_rate'):
+            for number in (-1, 2147483648):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    self.parse('exception_iface=except0\nexception_type=34997\n' + field + '=' + str(number) + '\n')
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.parse(field + '=1\n')
     def test_port_mode_and_atomic_precedence(self):
         value = self.parse('exception_iface=except0\nexception_mode=ports\nexception_policy=accept\n'
                            'exception_tcp_ports=bad\nexception_tcp_ports=80,443,8000-8002\nexception_udp_ports=53\n',

@@ -1283,7 +1283,7 @@
       "id": "tests/unit/test_ff_config.c::test_ipfw_pr_cfg_handler_isolated",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Source FreeBSD IPFW PR_CFG handler and isolated mutable configuration are not implemented by Linux-TAP port selection. A Linux firewall-policy adaptation or explicit incompatible disposition remains under issue219.",
+      "reason": "Despite its IPFW-style name, the pinned source body supplies -t bogus_proc_type to ff_load_config and asserts rejection. Ker needs explicit invalid-process-type rejection evidence before application entry; port selection or firewall tests do not prove this contract. Retained under issue219.",
       "ker_tests": []
     },
     {
@@ -2688,30 +2688,50 @@
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "With both admission budgets disabled, real ARP and ordinary unicast frames enter the actual owned ring and reach a real host TAP unchanged. Both per-window and lifetime admission counters remain zero; all mbufs are reclaimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "exception-admission-test_ff_kni_enqueue_no_ratelimit"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_console_ratelimit_over",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A console budget of2 admits actual ARP/multicast attempts1 and2, then consumes/frees attempt3 before queueing and records3 charged attempts and1 drop. Initial poll preserves admissions; a further excess attempt drops and a new monotonic second resets the window while lifetime totals persist. Exact admitted bytes reach a real host TAP.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "exception-admission-test_ff_kni_enqueue_console_ratelimit_over"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_general_ratelimit_over",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "An ordinary budget of1 admits unicast attempt1 and consumes/frees attempt2 with2 charged attempts and1 drop. Disabled console admission still accepts ARP without advancing console counters. Original DPDK pool counts and real TAP bytes prove ownership and isolation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "exception-admission-test_ff_kni_enqueue_general_ratelimit_over"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_filter_classification",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source console/general limits and classification counters apply during enqueue admission. The actual kernel batch gate applies after dequeue and does not implement these separate counters, their disabled no-mutation behavior or class-specific admission. Retained under issue219; service/NDP classification alone is not this contract.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual ARP, Ethernet multicast, unicast OSPF and unicast NDP charge only the console budget; ordinary unicast charges only general. A full ring consumes/frees its rejected frame and charges exactly once without recording an admission-limit drop. A queued shutdown suffix is reclaimed. Production worker accept/reject profiles also require both charged classes and no duplicate charges under actual ARP channel EAGAIN backpressure.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-exception-tap",
+          "provenance_case": "exception-admission-test_ff_kni_enqueue_filter_classification"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_proto_filter_ipv4_short",

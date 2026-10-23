@@ -257,7 +257,7 @@ int main(int argc, char **argv)
     int queues = 1;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL, *exception_iface = NULL;
-    int exception_type = 0, exception_queue = 256, exception_rate = 0;
+    int exception_type = 0, exception_queue = 256, exception_rate = 0, exception_console_rate = 0, exception_general_rate = 0;
     const char *exception_mode = "ethertype", *exception_policy = "accept", *exception_tcp = NULL, *exception_udp = NULL;
     struct ker_exception_filter exception_filter;
     int idle_sleep_us = 1000, tx_delay_us = 0;
@@ -282,6 +282,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--exception-iface")) exception_iface = argv[++i];
         else if (!strcmp(argv[i], "--exception-type")) exception_type = number(argv[++i]);
         else if (!strcmp(argv[i], "--exception-queue")) exception_queue = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-console-rate")) exception_console_rate = number(argv[++i]);
+        else if (!strcmp(argv[i], "--exception-general-rate")) exception_general_rate = number(argv[++i]);
         else if (!strcmp(argv[i], "--exception-rate")) exception_rate = number(argv[++i]);
         else if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
@@ -308,8 +310,8 @@ int main(int argc, char **argv)
         (port_filter && (exception_type || !exception_iface || ker_exception_filter_init(&exception_filter, exception_tcp, exception_udp))) ||
         (!port_filter && (exception_tcp || exception_udp || strcmp(exception_policy, "accept"))) ||
         (exception_iface && ((!port_filter && (exception_type < 1536 || exception_type > UINT16_MAX)) ||
-        exception_queue < 4 || exception_queue > 65536 || (exception_queue & (exception_queue - 1)) || exception_rate < 0)) ||
-        (!exception_iface && (exception_type || exception_rate || exception_queue != 256))) return 1;
+        exception_queue < 4 || exception_queue > 65536 || (exception_queue & (exception_queue - 1)) || exception_rate < 0 || exception_console_rate < 0 || exception_general_rate < 0)) ||
+        (!exception_iface && (exception_type || exception_rate || exception_console_rate || exception_general_rate || exception_queue != 256))) return 1;
     if (!maximum_mtu) maximum_mtu = mtu;
     if (maximum_mtu < mtu || maximum_mtu > KER_NATIVE_MAX_MTU) return 1;
     if (tx_offloads < 0 || tx_offloads > 2 || queues < 1 || queues > MAX_QUEUES || (rss_enabled && queues < 2) || tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
@@ -575,7 +577,7 @@ int main(int argc, char **argv)
         struct rte_ether_addr exception_mac;
         if (rte_eth_macaddr_get(port, &exception_mac)) goto device_error;
         int result = ker_worker_exception_open(&exception, exception_iface, pool, &exception_mac, (unsigned)mtu,
-            (uint16_t)(port_filter ? RTE_ETHER_TYPE_IPV4 : exception_type), (unsigned)exception_queue, (uint32_t)exception_rate);
+            (uint16_t)(port_filter ? RTE_ETHER_TYPE_IPV4 : exception_type), (unsigned)exception_queue, (uint32_t)exception_rate, (uint32_t)exception_console_rate, (uint32_t)exception_general_rate);
         if (result) { fprintf(stderr, "ker: host exception TAP startup failed: %s\n", strerror(-result)); goto cleanup; }
         if (port_filter) { exception.port_mode = true; exception.reject = !strcmp(exception_policy, "reject"); exception.filter = exception_filter; }
     }
@@ -910,7 +912,11 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"exception_shared_arp\":%llu,\"exception_shared_selected\":%llu,\"exception_shared_icmp_error\":%llu,\"exception_shared_failed\":%llu,\"exception_fragment_dropped\":%llu,",
+    printf("KER_IO_DONE {\"exception_console_charged\":%llu,\"exception_general_charged\":%llu,"
+        "\"exception_console_dropped\":%llu,\"exception_general_dropped\":%llu,",
+        (unsigned long long)exception.console_charged, (unsigned long long)exception.general_charged,
+        (unsigned long long)exception.console_dropped, (unsigned long long)exception.general_dropped);
+    printf("\"exception_shared_arp\":%llu,\"exception_shared_selected\":%llu,\"exception_shared_icmp_error\":%llu,\"exception_shared_failed\":%llu,\"exception_fragment_dropped\":%llu,",
         (unsigned long long)exception.shared_arp, (unsigned long long)exception.shared_selected,
         (unsigned long long)exception.shared_icmp_error, (unsigned long long)exception.shared_failed,
         (unsigned long long)exception.fragment_dropped);
