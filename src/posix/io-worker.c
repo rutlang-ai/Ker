@@ -236,18 +236,9 @@ static bool metadata_supported(const struct rte_mbuf *packet)
         (packet->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) != RTE_MBUF_F_RX_L4_CKSUM_NONE;
 }
 
-struct ker_tx_context { uint16_t port; bool tap; bool offloads; bool rejected_offload; };
-
 static uint16_t tx_burst(void *context, struct rte_mbuf **packets, uint16_t count)
 {
-    struct ker_tx_context *tx = context;
-    uint64_t flags[BURST];
-    for (uint16_t i = 0; i < count; i++) flags[i] = packets[i]->ol_flags & RTE_MBUF_F_TX_OFFLOAD_MASK;
-    uint16_t accepted = rte_eth_tx_burst(tx->port, 0, packets, count);
-    if (tx->tap && tx->offloads)
-        for (uint16_t i = accepted; i < count; i++)
-            if (flags[i]) tx->rejected_offload = true;
-    return accepted;
+    return rte_eth_tx_burst(*(uint16_t *)context, 0, packets, count);
 }
 
 int main(int argc, char **argv)
@@ -708,8 +699,7 @@ int main(int argc, char **argv)
             if (draining) tx_drain_flushes++;
             if (batch.count == KER_WORKER_TX_CAPACITY) tx_full_flushes++;
             else if (!draining && !batch.retrying && tx_delay_us) tx_timer_flushes++;
-            struct ker_tx_context tx = { .port = port, .tap = offload.tap, .offloads = tx_offloads != 0 };
-            struct ker_worker_tx_result sent = ker_worker_tx_flush(&batch, tx_burst, &tx);
+            struct ker_worker_tx_result sent = ker_worker_tx_flush(&batch, tx_burst, &port);
             transmitted += sent.packets;
             transmitted_bytes += sent.bytes;
             tx_multiseg += sent.multiseg;
@@ -717,7 +707,7 @@ int main(int argc, char **argv)
             /* Pinned TAP can mutate an unaccepted offload buffer (and lose
              * its prepended checksum header). Do not retry damaged metadata
              * or report a successful session. Cleanup diagnoses ownership. */
-            if (batch.count && tx.rejected_offload) {
+            if (batch.count && offload.tap && tx_offloads && sent.rejected_offload) {
                 fprintf(stderr, "ker: TAP rejected an offload buffer; retry is unsupported by the pinned PMD\n");
                 status = 1; break;
             }

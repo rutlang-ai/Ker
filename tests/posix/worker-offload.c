@@ -38,6 +38,10 @@ static void reject(void)
 }
 int main(void)
 {
+    CHECK(ker_worker_offload_feature_mask(0) == 0);
+    CHECK(ker_worker_offload_feature_mask(1) == 1U);
+    CHECK(ker_worker_offload_feature_mask(2) == (1U | (1U << 11)));
+    CHECK(!(ker_worker_offload_feature_mask(2) & (1U << 12)));
     reset(); header.flags = 3; reject();
     reset(); header.flags = 0; reject();
     reset(); header.checksum_start = 65535; reject();

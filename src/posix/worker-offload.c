@@ -9,6 +9,14 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 
+uint32_t ker_worker_offload_feature_mask(int mode)
+{
+    if (mode <= 0 || mode > 2) return 0;
+    /* The translator currently handles only plain IPv4/IPv6 headers and IPv4
+     * TSO. Do not negotiate HOST_TSO6 until IPv6 extension headers are handled. */
+    return 1U | (mode == 2 ? (1U << 11) : 0U);
+}
+
 int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *config,
     struct ker_worker_offload *state)
 {
@@ -29,10 +37,8 @@ int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *con
     state->flags = required | (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM);
     state->segment_limit = info.tx_desc_lim.nb_seg_max;
     state->tap = info.driver_name && !strcmp(info.driver_name, "net_tap");
-    /* VIRTIO_NET_F_CSUM, HOST_TSO4, HOST_TSO6 in the pinned Linux UAPI.
-     * Pinned TAP uses original DPDK GSO, which implements TCPv4 only. */
-    state->features = 1U;
-    if (mode == 2) state->features |= (1U << 11);
+    /* Map only features fully implemented by the translator. */
+    state->features = ker_worker_offload_feature_mask(mode);
     config->txmode.offloads |= state->flags;
     return 0;
 }

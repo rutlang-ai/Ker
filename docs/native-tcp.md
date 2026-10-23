@@ -1292,8 +1292,8 @@ run_shutdown_ack 仅在使用本接口时记录监督者的实际清理结果。
 
 `--tx-offloads off|checksum|tso` / `[dpdk] tx_offloads=...` 默认 off。
 附加 `[interface.NAME]` 可覆盖，否则继承主接口最终配置。worker 先读取原版 PMD
-能力、配置并读回实际 ethdev offload 标志，再把支持的 virtio CSUM/HOST_TSO4/
-HOST_TSO6 特征交给原版 Linux；不更改上游源码或实现 Ker TCP/UDP 状态机。
+能力、配置并读回实际 ethdev offload 标志，再把支持的 virtio CSUM/HOST_TSO4 特征交给原版 Linux；当前所有 PMD 均不声明
+HOST_TSO6，直到 translator 支持并验证 IPv6 extension-header GSO；不更改上游源码或实现 Ker TCP/UDP 状态机。
 checksum 要求 TCP/UDP checksum 能力；IPv4 header checksum 在 PMD 支持时启用。
 tso 还要求 TCP_TSO、MULTI_SEGS 和足够描述符容量；不满足时阻止应用启动。
 当前不支持将此选项用于 bonding PMD，因为通用能力位不能表达成员特有的限制。
@@ -1309,8 +1309,8 @@ helper 完成，并单独计入 fallback。未知/越界元数据明确失败。
 Linux 声明其 HOST_TSO6；IPv6 继续由原版 Linux 软件分段。TAP 的 TSO 队列先用
 原版 API 设置 TX，再设置 RX，以免 RX 先创建共享 fd 后跳过 GSO 初始化；每个
 完整 GSO Ethernet 段还受该 PMD 的更严格 MTU 预算约束，使用不大于 Linux 请求值
-的分段上限。所有实际分段由原版 DPDK 完成。其他直接 PMD 按其声明的能力协商，
-仍需各自的物理 runner 验收；不能将 TAP 软件执行计为 NIC 硬件通过。
+的分段上限。所有实际分段由原版 DPDK 完成。其他直接 PMD 仍不声明 HOST_TSO6；各自的 IPv4 TSO 能力需由物理 runner 验收，
+不能将 TAP 软件执行计为 NIC 硬件通过。
 
 TAP 在拒绝 checksum/GSO buffer 时存在上游所有权缺陷：复制头部后 writev 失败
 可能丢失新分配头部，GSO 拒绝还可能不恢复原输入标志，见

@@ -11,6 +11,7 @@ struct ker_worker_offload {
     bool tap;
 };
 struct ker_worker_offload_result { unsigned tcp, udp, ip, tso4, tso6, fallback; };
+uint32_t ker_worker_offload_feature_mask(int mode);
 int ker_worker_offload_prepare(uint16_t port, int mode, struct rte_eth_conf *config,
     struct ker_worker_offload *state);
 int ker_worker_offload_apply(const struct ker_worker_offload *state,
