@@ -1880,6 +1880,70 @@
         "native-fstack-buffer-resize"
       ],
       "adaptation": "Actual ker_posix_buffer_realloc(pointer,0) returns that exact pointer and preserves its bytes and errno without allocation, unmapping or granting native registration. Includes the source stack sentinel0xCAFE, native bases, NULL and inactive-runtime identity. Nonzero resize continues to reject foreign/interior/stale bases. Tests boot the pinned original Linux and use the actual Ker adaptation source; only selected failing mmap/munmap return values are injected. No successful synthetic allocator or copied F-Stack mirror is used. All real allocation/release totals balance at shutdown."
+    },
+    "host-exception-alloc_primary_happy_path": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_alloc_primary_happy_path",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Actual primary EAL worker initializes an exclusive, nonpersistent host Linux TAP, owned ring and zeroed counters; query real TAP kind, UP, MTU and MAC, then verify bidirectional traffic and complete cleanup. Linux TAP ioctl allocation replaces source virtio_user/vhost-net hotplug; no ff_kni_alloc/private-global ABI or generation-owner equivalence is claimed. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "host-exception-process_tx_basic": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_process_tx_basic",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Four actual owned mbufs pass through the production exception queue into real Linux TAP writes, arrive byte-exact at independent AF_PACKET and are freed; counters and pool availability must match. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "host-exception-process_tx_kernel_ratelimit": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_process_tx_kernel_ratelimit",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Actual configured kernel batch gate limit2 permits the first5-packet burst and advances the dequeued counter to5, matching the source overshoot contract rather than imposing an invented strict cap. All five frames arrive at real host TAP/AF_PACKET. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "host-exception-process_tx_kernel_ratelimit_exceeded": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_process_tx_kernel_ratelimit_exceeded",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "After a real accepted5-packet burst exhausts limit2, the next3 queued frames are dropped without host delivery and fully freed; counter advances to8. A later monotonic window resets and permits new traffic. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "host-exception-process_tx_partial_drop": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_process_tx_partial_drop",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "A real6-packet owned queue burst encounters selected writev EAGAIN after2 successful original Linux TAP writes; accepted prefix arrives exactly, four remaining owned mbufs are freed and dropped counters/pool counts match. Only the failing write return is injected; no successful TAP/PMD operation is mocked. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "host-exception-process_rx_forward": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_process_rx_forward",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Three frames sent by actual host AF_PACKET are read from the exception TAP, copied into real owned mbufs and accepted into original net_ring PMD TX; verify exact bytes, counters and complete release. Production wire-PMD/native coexistence acceptance also verifies reverse data. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "host-exception-process_rx_partial_drop": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_process_rx_partial_drop",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Original net_ring TX is prefilled to leave one slot; five real host TAP frames produce one accepted wire prefix and four freed suffix mbufs. Verify exact accepted payload, drop counters and restored pool ownership. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
+    },
+    "host-exception-enqueue_full_ring_drops": {
+      "source_file": "tests/integration/test_ff_kni_integration.c",
+      "source_case": "test_kni_enqueue_full_ring_drops",
+      "ker_ctests": [
+        "native-fstack-exception-tap"
+      ],
+      "adaptation": "Actual size4 owned exception ring holds3 frames; the fourth enqueue returns ENOBUFS, consumes/NULLs and frees its mbuf, increments drops without delivery. Shutdown discards the remaining3 owned frames and restores the pool completely. Shared production adaptation source uses actual original host Linux TAP/AF_PACKET and DPDK APIs; the full CTest additionally requires the real wire worker, native Linux UDP, exact unicast/broadcast frames, PCAP, existing-interface rejection and zero remaining mbufs. This is a Linux-TAP scenario adaptation, not F-Stack private globals, hotplug ABI or protocol-filter equivalence."
     }
   }
 }
