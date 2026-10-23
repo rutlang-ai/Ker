@@ -105,7 +105,9 @@ int ker_worker_offload_apply(const struct ker_worker_offload *state,
     bool ipv6 = l3 == RTE_PTYPE_L3_IPV6 || l3 == RTE_PTYPE_L3_IPV6_EXT;
     unsigned start = lengths.l2_len + lengths.l3_len;
     bool tcp = l4 == RTE_PTYPE_L4_TCP, udp = l4 == RTE_PTYPE_L4_UDP;
-    if (!header->gso_type && ((!ipv4 && !ipv6) || (!tcp && !udp))) {
+    bool tap_ipv6_extensions = state->tap && l3 == RTE_PTYPE_L3_IPV6_EXT;
+    if (!header->gso_type && ((!ipv4 && !ipv6) || (!tcp && !udp) ||
+            tap_ipv6_extensions)) {
         /* Generic virtio CHECKSUM_PARTIAL (ICMP, extension headers, tunnels)
          * cannot always be expressed by an ethdev TCP/UDP flag. Its offsets
          * and pseudo-header seed come from original Linux. Complete only the
@@ -116,6 +118,8 @@ int ker_worker_offload_apply(const struct ker_worker_offload *state,
         if (rte_raw_cksum_mbuf(packet, header->checksum_start,
                 packet->pkt_len - header->checksum_start, &sum)) return -EINVAL;
         sum = (uint16_t)~sum;
+        /* Match original Linux skb_checksum_help() for CHECKSUM_PARTIAL. */
+        if (!sum) sum = 0xffffU;
         unsigned char *data = rte_pktmbuf_mtod(packet, unsigned char *);
         memcpy(data + location, &sum, sizeof(sum));
         result->fallback = 1;
