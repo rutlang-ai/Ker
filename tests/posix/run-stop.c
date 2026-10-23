@@ -108,10 +108,21 @@ int main(int argc, char **argv)
     check(run_loop && stop_loop && capabilities && release && capabilities() && release(), "native run exports/ready");
     const char *control = getenv("KER_RUN_FD");
     check(control && (fcntl(atoi(control), F_GETFD) & FD_CLOEXEC), "private run channel CLOEXEC");
-    int private_fds[6] = {atoi(getenv("KER_PACKET_FD")), atoi(getenv("KER_PACKET_CONTROL_FD")),
-        atoi(getenv("KER_STARTUP_FD")), atoi(control), -1, -1};
-    check(sscanf(getenv("KER_PACKET_INTERFACES"), "%d|%d", &private_fds[4], &private_fds[5]) == 2,
-        "additional private channels");
+    int private_fds[64] = {atoi(getenv("KER_PACKET_FD")), atoi(getenv("KER_PACKET_CONTROL_FD")),
+        atoi(getenv("KER_STARTUP_FD")), atoi(control)};
+    unsigned private_count = 4;
+    const char *setting = getenv("KER_PACKET_INTERFACES");
+    check(setting != NULL, "additional private channel settings");
+    char *settings = strdup(setting), *save = NULL;
+    check(settings != NULL, "copy additional channel settings");
+    for (char *entry = strtok_r(settings, ";", &save); entry; entry = strtok_r(NULL, ";", &save)) {
+        check(private_count + 2 <= sizeof(private_fds) / sizeof(private_fds[0]), "private channel bounds");
+        check(sscanf(entry, "%d|%d", &private_fds[private_count], &private_fds[private_count + 1]) == 2,
+            "additional private channels");
+        private_count += 2;
+    }
+    free(settings);
+    check(private_count == (!strcmp(argv[1], "worker-timeout") ? 10 : 6), "all configured private channels recorded");
     struct state state = {.mode = argv[1], .owner = pthread_self(), .port = atoi(argv[2])};
     expected = &state;
     stop_loop(); stop_loop(); /* An idle request must not poison the next run. */
@@ -126,7 +137,7 @@ int main(int argc, char **argv)
     int error = errno;
     atomic_store(&finish_thread, true);
     if (threaded) check(!pthread_join(helper, NULL), "stopper joined");
-    if (!strcmp(state.mode, "worker-failure")) check(result == -1 && error == EIO, "failed EAL acknowledgement propagated");
+    if (!strcmp(state.mode, "worker-failure") || !strcmp(state.mode, "worker-timeout")) check(result == -1 && error == EIO, "failed EAL acknowledgement propagated");
     else check(result == 0, "run completed full kernel/EAL teardown");
     check(!capabilities() && !release(), "native instance inactive before return");
     errno = 0; check(socket(AF_INET, SOCK_STREAM, 0) == -1 && errno == ENETDOWN, "native socket after halt rejected");
@@ -136,7 +147,7 @@ int main(int argc, char **argv)
     else if (!strcmp(state.mode, "null")) check(state.calls == 0, "null callback not invoked");
     else if (strcmp(state.mode, "external")) check(state.calls == 1, "exactly one callback");
     else check(state.calls >= 1, "external stop after real native callback");
-    for (unsigned index = 0; index < 6; index++) {
+    for (unsigned index = 0; index < private_count; index++) {
         errno = 0;
         check(fcntl(private_fds[index], F_GETFD) == -1 && errno == EBADF, "private channel closed before return");
     }
@@ -145,11 +156,14 @@ int main(int argc, char **argv)
     while (fscanf(pids, "%d", &pid) == 1) {
         errno = 0; check(kill(pid, 0) == -1 && errno == ESRCH, "worker fully reaped before API return"); workers++;
     }
-    fclose(pids); check(workers >= 2, "both interface workers were recorded");
+    fclose(pids); check(workers == (!strcmp(state.mode, "worker-timeout") ? 4 : 2), "all configured workers were recorded");
     printf("PASS: %s calls=%u; real dual-interface IPv4/IPv6 TCP/UDP; kernel halted and %d workers reaped before return\n",
         state.mode, state.calls, workers); fflush(stdout);
     /* Returning from run is not process exit. Keep the application alive
      * beyond the launcher's historical five-second teardown timeout. */
-    if (!strcmp(state.mode, "oneshot")) sleep(6);
+    if (!strcmp(state.mode, "oneshot") || !strcmp(state.mode, "worker-timeout")) {
+        sleep(6);
+        printf("PASS: %s application survived six seconds after acknowledged teardown\n", state.mode); fflush(stdout);
+    }
     return 0;
 }

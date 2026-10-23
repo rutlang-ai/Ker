@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import signal
 import subprocess
 import sys
 import tempfile
@@ -59,13 +60,16 @@ def main():
         root = Path(directory)
         wrapper = root / 'ker-io-worker'
         (root / 'ker-app').symlink_to(args.worker.parent / 'ker-app')
-        for phase, mode in enumerate(('oneshot', 'repeat', 'external', 'null', 'worker-failure')):
+        for phase, mode in enumerate(('oneshot', 'repeat', 'external', 'null', 'worker-failure', 'worker-timeout')):
             port = 41000 + phase
             pids, stats, config = root / (mode + '.pids'), root / (mode + '.json'), root / (mode + '.ini')
-            wrapper.write_text('#!' + sys.executable + '\nimport os, subprocess, sys\n'
+            wrapper.write_text('#!' + sys.executable + '\nimport os, subprocess, sys, time\n'
                 f'with open({str(pids)!r}, "a") as output: output.write(str(os.getpid()) + "\\n")\n'
                 + (f'result = subprocess.run([{str(args.worker)!r}, *sys.argv[1:]], close_fds=False)\n'
-                   'raise SystemExit(result.returncode or 9)\n' if mode == 'worker-failure' else
+                   + ('raise SystemExit(result.returncode or 9)\n' if mode == 'worker-failure' else
+                      'if result.returncode: raise SystemExit(result.returncode)\n'
+                      'time.sleep(60)  # The real EAL child already cleaned up; hold this worker endpoint.\n')
+                   if mode in ('worker-failure', 'worker-timeout') else
                    f'os.execv({str(args.worker)!r}, [{str(args.worker)!r}, *sys.argv[1:]])\n'))
             wrapper.chmod(0o755)
             eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64'
@@ -74,6 +78,15 @@ def main():
                 f'eal={eal} --vdev=net_tap0,iface=runpeer0,remote=runlink0\n'
                 '[interface.aux]\naddress=198.19.0.2/24\naddress6=2001:db8:2::2/64\nport=net_tap0\n'
                 f'eal={eal} --vdev=net_tap0,iface=runpeer1,remote=runlink1\n')
+            worker_count = 2
+            if mode == 'worker-timeout':
+                # Two additional real original-PMD workers make four serial
+                # ten-second waits exceed the API's thirty-second ACK bound.
+                with config.open('a') as stream:
+                    for index in (2, 3):
+                        stream.write(f'[interface.idle{index}]\naddress=198.{18 + index}.0.2/24\n'
+                                     f'port=net_null{index}\neal={eal} --vdev=net_null{index},no-rx=1\n')
+                worker_count = 4
             sockets, futures = [], []
             try:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -90,18 +103,25 @@ def main():
                             futures.append(executor.submit(peer, sock, tcp, payload))
                     result = subprocess.run([sys.executable, str(args.launcher), '--config', str(config),
                         '--library', str(args.library), '--io-worker', str(wrapper), '--stats', str(stats),
-                        '--', str(args.app), mode, str(port), str(pids)], capture_output=True, text=True, timeout=35,
+                        '--', str(args.app), mode, str(port), str(pids)], capture_output=True, text=True, timeout=45,
                         env=os.environ | {'RUNTIME_DIRECTORY': str(root)})
-                    require(result.returncode == (125 if mode == 'worker-failure' else 0),
+                    require(result.returncode == (125 if mode in ('worker-failure', 'worker-timeout') else 0),
                             mode + ': launcher failed: ' + result.stdout + result.stderr)
-                    require('PASS: ' + mode in result.stdout, 'missing native post-return evidence: ' + result.stdout)
+                    require('PASS: ' + mode in result.stdout, 'missing native post-return evidence: ' + result.stdout + result.stderr)
+                    if mode == 'worker-timeout':
+                        require('PASS: worker-timeout application survived six seconds after acknowledged teardown' in result.stdout,
+                                'continuing application died after failure ACK: ' + result.stdout)
                     outcomes = [future.result(timeout=3) for future in futures]
                     require(outcomes.count('eof') == 4 and outcomes.count('udp') == 4, 'missing independent peer evidence')
                     record = json.loads(stats.read_text())
-                    require(record['run_shutdown'] and record['run_shutdown_workers'] == 2 and
-                            record['run_shutdown_ack'] == (mode != 'worker-failure'), 'wrong supervisor ack: ' + str(record))
-                    require(record['outstanding'] == 0 and len(record['interfaces']) == 1 and
-                            record['interfaces'][0]['outstanding'] == 0, 'run returned with owned buffers')
+                    require(record['run_shutdown'] and record['run_shutdown_workers'] == worker_count and
+                            record['run_shutdown_ack'] == (mode not in ('worker-failure', 'worker-timeout')), 'wrong supervisor ack: ' + str(record))
+                    require(record['outstanding'] == 0 and len(record['interfaces']) == worker_count - 1 and
+                            all(item['outstanding'] == 0 for item in record['interfaces']), 'run returned with owned buffers')
+                    if mode == 'worker-timeout':
+                        require(all(item['shutdown_timed_out'] and item['worker_exit_code'] == -signal.SIGKILL
+                                    for item in (record, *record['interfaces'])),
+                                'four actual worker endpoint timeout reaps were not exercised')
                     require(record['io']['queues'] == 2 and record['interfaces'][0]['io']['queues'] == 2,
                             'two real queue pairs per interface were not configured')
                     require(all(record['native'][key] >= 2 for key in
