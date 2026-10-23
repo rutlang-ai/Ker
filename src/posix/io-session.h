@@ -5,7 +5,7 @@
 #include <stdatomic.h>
 #include <errno.h>
 #define KER_SESSION_MAGIC UINT64_C(0x4b45525345535331)
-#define KER_SESSION_VERSION 4U
+#define KER_SESSION_VERSION 5U
 #define KER_SESSION_SLOTS 4U
 #define KER_SESSION_GENERATIONS 2U
 #define KER_SESSION_PROCESSES 4U
@@ -53,6 +53,7 @@ struct ker_session_directory {
     /* Coordinate key, never a PID/liveness substitute. Held until exact borrower death. */
     _Atomic uint64_t pmd_owner;
     _Atomic uintptr_t pmd_lease;
+    _Atomic uintptr_t pmd_rx_lease;
     _Atomic uint64_t epoch[KER_SESSION_SLOTS];
     /* Resident assigns the original mbuf before acknowledging RESERVE; only
      * exact borrower death permits clearing this lease and returning it. */

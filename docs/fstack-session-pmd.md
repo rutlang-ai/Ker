@@ -42,9 +42,10 @@ owner 查询、死 master 与活 borrower 的排他性、新 epoch 的32帧收�
 注册、控制消息、slot 回收和保守停止测试继续独立运行。
 
 这增加了 #218 所需的原始 secondary PMD 证据，尚未完成原始 F-Stack 的固定
-network dispatch ring、物理设备/no-hardware/KNI-owner 一致性、队列中死亡
-故障注入、原始 Linux packet delivery 或完整 USR2 reload。源 TC-1/3 保持
-partial，不能把诊断帧 loopback 等同于这些源断言。TC-2 使用原始 null PMD，
+cross-generation network dispatch、物理设备/no-hardware/KNI-owner 一致性、
+队列中死亡故障注入或完整 USR2 reload。独立[paired packet profile](fstack-session-packets.md)
+现已提供原始 Linux packet delivery，并完成TC-1全部几何/端口预创建断言；
+TC-3保持partial，不能把本页诊断帧 loopback 等同于它的剩余源断言。TC-2 使用原始 null PMD，
 只要求自己的非零 epoch/slot/ring、真实 secondary 设备消费权和 primary 不消费；
 这批实际原始 PMD 验证满足该单条场景，不能扩展为整个 reload 流程完成。
 

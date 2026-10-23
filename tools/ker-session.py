@@ -15,7 +15,7 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 4
+VERSION = 5
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
           'generation', 'process', 'token', 'slot', 'status')
 WIRE = struct.Struct('=10Qq')
@@ -63,7 +63,7 @@ class Connection:
         self.socket.close()
 
 
-def role_arguments(eal, role, ring_pmd=False):
+def role_arguments(eal, role, ring_pmd=False, paired_pmd=False):
     values = shlex.split(eal)
     if '--' in values or any(v == '--proc-type' or v.startswith('--proc-type=') for v in values):
         raise ValueError('the session owns --proc-type; --eal must contain only shared EAL options')
@@ -72,7 +72,8 @@ def role_arguments(eal, role, ring_pmd=False):
         raise ValueError('registration stage does not admit devices')
     if '--no-pci' not in values:
         values.append('--no-pci')
-    return [*values, *(['--vdev=net_ring_ker'] if ring_pmd else []), '--proc-type=' + role]
+    device = ['--vdev=net_ring_ker_packet'] if paired_pmd and role == 'secondary' else (['--vdev=net_ring_ker'] if ring_pmd else [])
+    return [*values, *device, '--proc-type=' + role]
 
 
 def lease(args):
@@ -316,7 +317,7 @@ def bounded_probe_count(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe', 'device-status', 'epoch-status'))
+    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe', 'device-status', 'epoch-status', 'run'))
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-session')
     parser.add_argument('--eal', default='')
@@ -324,9 +325,27 @@ def main():
     parser.add_argument('--epoch', type=int, help='epoch to query with epoch-status; 0 names the resident')
     parser.add_argument('--generation', type=int, choices=range(2), default=0)
     parser.add_argument('--process', type=int, choices=range(4), default=0)
-    parser.add_argument('--ring-pmd', action='store_true', help='qualify the original shared ring PMD with an exclusive secondary consumer')
+    devices = parser.add_mutually_exclusive_group()
+    devices.add_argument('--paired-pmd', action='store_true', help='separate original ring-PMD RX/TX with an external Ethernet endpoint')
+    devices.add_argument('--ring-pmd', action='store_true', help='qualify the original shared ring PMD with an exclusive secondary consumer')
     parser.add_argument('--probe-count', type=bounded_probe_count, default=0)
-    args = parser.parse_args()
+    parser.add_argument('--wire-fd', type=int)
+    parser.add_argument('--library', type=Path)
+    parser.add_argument('--address')
+    parser.add_argument('--stats', type=Path)
+    parser.add_argument('--address6')
+    values = sys.argv[1:]
+    separator = values.index('--') if '--' in values else len(values)
+    command = values[separator + 1:]
+    args = parser.parse_args(values[:separator])
+    args.command = command
+    if args.action == 'run':
+        if not args.paired_pmd or args.wire_fd is None or args.library is None or not command:
+            parser.error('run requires --paired-pmd --wire-fd --library and -- COMMAND')
+    elif command or args.wire_fd is not None or args.library is not None or args.stats is not None or args.address is not None or args.address6 is not None:
+        parser.error('packet endpoints, library and command are only valid with run')
+    if args.paired_pmd and args.action not in ('serve', 'run'):
+        parser.error('--paired-pmd is only supported by serve and run')
     if args.standby and (args.action != 'lease' or not args.ring_pmd):
         parser.error('--standby requires lease --ring-pmd')
     if args.action == 'epoch-status' and (args.epoch is None or not 0 <= args.epoch < 2**64):
@@ -335,11 +354,20 @@ def main():
         parser.error('--epoch is only valid with epoch-status')
     args.socket = args.socket.absolute()
     try:
+        if args.action == 'run':
+            from ker_session_run import run_session
+            try:
+                return run_session(args, sys.modules[__name__])
+            except RuntimeError as error:
+                print('ker-session: ' + str(error), file=sys.stderr)
+                return 125
+            except KeyboardInterrupt:
+                return 130
         if args.action == 'serve':
             args.socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             worker = str(args.worker.resolve(strict=True))
             os.execv(worker, [worker, '--role', 'primary', '--socket', str(args.socket),
-                '--control-fd', str(sys.stdin.fileno()), *(['--ring-pmd'] if args.ring_pmd else []), '--', *role_arguments(args.eal, 'primary', args.ring_pmd)])
+                '--control-fd', str(sys.stdin.fileno()), *(['--ring-pmd'] if args.ring_pmd else []), *(['--paired-pmd'] if args.paired_pmd else []), '--', *role_arguments(args.eal, 'primary', args.ring_pmd, args.paired_pmd)])
         if args.action in ('lease', 'probe'):
             if args.action == 'probe' and not args.probe_count:
                 args.probe_count = 1

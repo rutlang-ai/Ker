@@ -1349,3 +1349,28 @@ DPDK hugepage guest 执行；宿主缺少 hugepages 的运行时 CTest 仍跳过
 当前183 scenario-adapted、21 partial、159 blocked，180项未完成；15项架构
 专属及55项 harness-only 保留边界。#218 仍有76项未完成（73 blocked、3 partial）。
 原始 Linux 数据包交付、排队中的 driver 崩溃注入和完整 reload 继续待实现。
+
+
+2026-10-24 resident secondary 的原始 Linux 数据面
+
+新增 `ker-session serve/run --paired-pmd`，由原始 `rte_eth_from_rings` 创建1个
+network port和两个分离的固定RX/TX queues。获授权的真实EAL secondary连接
+既有原始Linux virtio channel和调用方的raw Ethernet endpoint，resident不代理
+存活数据面；Ker只复制/管理完整帧，不实现TCP/UDP/ARP协议。control/TX/RX
+三个不同原始对象在grant ACK之前进入resident私有journal，只有exact borrower
+死亡后检查队列和lease并归还，startup失败或worker丢失不伪报成功。
+
+隔离guest内的独立原始Linux TAP peer实际完成双栈TCP4097/UDP512互通、字节/
+EOF/对端核对、双向Ethernet捕获、原始PMD和imported-Linux计数。还验证真实
+competing secondary不能启动应用、已READY worker在spawn前死亡被拦截，以及
+应用运行时的worker丢失返回125；每次最终恢复511个原始对象。固定MTU1500
+读取真实PMD值，unsupported SET由Linux事务回滚。应用stdin/stdout不被
+runtime JSON污染，诊断在stderr及显式stats文件。
+
+resident在开放admission前验证全部128个原始坐标ring及其capacity/SP/SC，
+保持epoch/slot0并配置实际network port；secondary再核对全部128对象和固定
+网络queues，补齐源TC-1 `test_it_a14_primary_precreates_all_slots` 的断言。
+当前184 scenario-adapted、20 partial、159 blocked，179项未完成；15项架构
+专属及55项harness-only保留边界。#218仍有75项未完成（73 blocked、2 partial）。
+详见[数据路径、寿命和明确边界](fstack-session-packets.md)。cross-generation
+flow drain、exception/KNI-owner协调、物理PMD/driver DMA及完整reload仍待实现。

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #define _GNU_SOURCE
 #include "io-session.h"
+#include "session-packet.h"
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -48,11 +49,12 @@ static struct rte_mbuf *message_objects[KER_SESSION_OBJECTS];
 static const struct rte_memzone *zone;
 static struct ker_session_directory *directory;
 static uint64_t next_epoch = 1;
-static bool ring_pmd;
+static unsigned ring_pmd;
 static uint16_t pmd_port;
 static bool pmd_configured;
 static int pmd_client = -1;
-static struct rte_mbuf *pmd_packet;
+static struct rte_mbuf *pmd_packet, *pmd_rx_packet;
+static struct rte_ring *packet_rx, *packet_tx;
 static uint64_t pmd_key(const struct client *client)
 {
     return 1 + ((uint64_t)client->slot * KER_SESSION_GENERATIONS + client->generation) * KER_SESSION_PROCESSES + client->process;
@@ -77,6 +79,22 @@ static int ring_name(char *name, size_t size, unsigned s, unsigned g, unsigned p
     static const char *const names[] = {"ctl", "rx", "tx", "reply"};
     int result = snprintf(name, size, "ker_s%u_g%u_p%u_%s", s, g, p, names[c]);
     return result < 0 || (size_t)result >= size ? -ENAMETOOLONG : 0;
+}
+static int validate_shared_rings(void)
+{
+    unsigned count = 0;
+    for (unsigned s = 0; s < KER_SESSION_SLOTS; s++)
+        for (unsigned g = 0; g < KER_SESSION_GENERATIONS; g++)
+            for (unsigned p = 0; p < KER_SESSION_PROCESSES; p++)
+                for (unsigned c = 0; c < KER_SESSION_CHANNELS; c++) {
+                    char name[RTE_RING_NAMESIZE];
+                    if (ring_name(name, sizeof(name), s, g, p, c)) return -EINVAL;
+                    struct rte_ring *ring = rte_ring_lookup(name);
+                    if (!ring || rte_ring_get_capacity(ring) != KER_SESSION_CAPACITY ||
+                        !rte_ring_is_prod_single(ring) || !rte_ring_is_cons_single(ring)) return -EUCLEAN;
+                    count++;
+                }
+    return (int)count;
 }
 static int random_id(uint64_t *value)
 {
@@ -108,8 +126,19 @@ static void reclaim_pmd(unsigned index)
         atomic_load_explicit(&directory->pmd_lease, memory_order_acquire) != (uintptr_t)pmd_packet) _Exit(125);
     struct rte_mbuf *packet;
     unsigned seen = 0;
+    if (ring_pmd == 2 && (!pmd_rx_packet || pmd_rx_packet == pmd_packet || !known_object(pmd_rx_packet) ||
+        pmd_rx_packet->pool != message_pool || pmd_rx_packet->nb_segs != 1 ||
+        rte_mbuf_refcnt_read(pmd_rx_packet) != 1 || (pmd_rx_packet->ol_flags & RTE_MBUF_F_EXTERNAL) ||
+        atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire) != (uintptr_t)pmd_rx_packet)) _Exit(125);
     while (rte_eth_rx_burst(pmd_port, 0, &packet, 1))
-        if (packet != pmd_packet || ++seen > 1) _Exit(125);
+        if (packet != (ring_pmd == 2 ? pmd_rx_packet : pmd_packet) || ++seen > 1) _Exit(125);
+    if (ring_pmd == 2) {
+        seen = 0;
+        while (!rte_ring_dequeue(packet_tx, (void **)&packet))
+            if (packet != pmd_packet || ++seen > 1) _Exit(125);
+        atomic_store_explicit(&directory->pmd_rx_lease, 0, memory_order_release);
+        rte_pktmbuf_reset(pmd_rx_packet); rte_pktmbuf_free(pmd_rx_packet); pmd_rx_packet = NULL;
+    }
     atomic_store_explicit(&directory->pmd_lease, 0, memory_order_release);
     rte_pktmbuf_reset(pmd_packet);
     rte_pktmbuf_free(pmd_packet);
@@ -350,8 +379,11 @@ static int handle(unsigned i, const struct ker_session_message *request,
         if (pmd_client >= 0) return -EBUSY;
         struct rte_mbuf *packet = rte_pktmbuf_alloc(message_pool);
         if (!packet) return -ENOMEM;
-        /* Journal before publishing the grant or sending its acknowledgement. */
-        pmd_client = (int)i; pmd_packet = packet;
+        struct rte_mbuf *rx = ring_pmd == 2 ? rte_pktmbuf_alloc(message_pool) : NULL;
+        if (ring_pmd == 2 && !rx) { rte_pktmbuf_free(packet); return -ENOMEM; }
+        /* Both original objects are privately journaled before the grant ACK. */
+        pmd_client = (int)i; pmd_packet = packet; pmd_rx_packet = rx;
+        atomic_store_explicit(&directory->pmd_rx_lease, (uintptr_t)rx, memory_order_release);
         atomic_store_explicit(&directory->pmd_lease, (uintptr_t)packet, memory_order_release);
         atomic_store_explicit(&directory->pmd_owner, pmd_key(client), memory_order_release);
         return 0;
@@ -433,12 +465,14 @@ static int primary(const char *path, int control)
     directory->ring_pmd = ring_pmd;
     atomic_init(&directory->pmd_owner, 0);
     atomic_init(&directory->pmd_lease, 0);
+    atomic_init(&directory->pmd_rx_lease, 0);
     for (unsigned s = 0; s < KER_SESSION_SLOTS; s++) {
         atomic_init(&directory->epoch[s], 0);
         for (unsigned g = 0; g < KER_SESSION_GENERATIONS; g++)
             for (unsigned p = 0; p < KER_SESSION_PROCESSES; p++) atomic_init(&directory->lease[s][g][p], 0);
     }
     if (!atomic_is_lock_free(&directory->pmd_owner) || !atomic_is_lock_free(&directory->pmd_lease) ||
+        !atomic_is_lock_free(&directory->pmd_rx_lease) ||
         !atomic_is_lock_free(&directory->epoch[0]) ||
         !atomic_is_lock_free(&directory->lease[0][0][0]) || random_id(&directory->session)) goto cleanup;
     for (unsigned s = 0; s < KER_SESSION_SLOTS; s++)
@@ -457,12 +491,19 @@ static int primary(const char *path, int control)
     if (rte_mempool_obj_iter(message_pool, remember_object, NULL) != KER_SESSION_OBJECTS) goto cleanup;
     if (ring_pmd) {
         struct rte_eth_conf config = {0};
-        if (rte_eth_dev_get_port_by_name("net_ring_ker", &pmd_port) || rte_eth_dev_count_avail() != 1 ||
+        if (ring_pmd == 2) {
+            if (rte_eth_dev_count_avail()) goto cleanup;
+            int created = ker_session_packet_create(&packet_rx, &packet_tx);
+            if (created < 0) goto cleanup;
+        }
+        if (rte_eth_dev_get_port_by_name(ring_pmd == 2 ? KER_SESSION_PACKET_PORT : "net_ring_ker", &pmd_port) || rte_eth_dev_count_avail() != 1 ||
             rte_eth_dev_configure(pmd_port, 1, 1, &config)) goto cleanup;
         pmd_configured = true;
         if (rte_eth_rx_queue_setup(pmd_port, 0, 128, SOCKET_ID_ANY, NULL, message_pool) ||
             rte_eth_tx_queue_setup(pmd_port, 0, 128, SOCKET_ID_ANY, NULL) || rte_eth_dev_start(pmd_port)) goto cleanup;
     }
+    int precreated = validate_shared_rings();
+    if (precreated != (int)QUEUES) goto cleanup;
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     if (strlen(path) >= sizeof(address.sun_path)) goto cleanup;
     strcpy(address.sun_path, path);
@@ -483,8 +524,9 @@ static int primary(const char *path, int control)
     bound = true;
     if (lstat(path, &socket_identity) || listen(listener, 16)) goto cleanup;
     atomic_store_explicit(&directory->state, KER_SESSION_READY, memory_order_release);
-    printf("KER_SESSION_READY {\"stage\":\"shared-control\",\"session\":%llu,\"rings\":%u,\"slots\":%u,\"ring_pmd\":%s}\n",
-        (unsigned long long)directory->session, QUEUES, KER_SESSION_SLOTS, ring_pmd ? "true" : "false"); fflush(stdout);
+    printf("KER_SESSION_READY {\"stage\":\"shared-control\",\"session\":%llu,\"rings\":%u,\"slots\":%u,\"ring_pmd\":%s,\"ports\":%u,\"epoch\":%llu,\"slot\":0}\n",
+        (unsigned long long)directory->session, (unsigned)precreated, KER_SESSION_SLOTS, ring_pmd ? "true" : "false",
+        (unsigned)rte_eth_dev_count_avail(), (unsigned long long)atomic_load_explicit(&directory->epoch[0], memory_order_acquire)); fflush(stdout);
     result = 0;
     while (!stopping) {
         reap_clients();
@@ -522,6 +564,8 @@ cleanup:
     if (pmd_configured) {
         if (rte_eth_dev_stop(pmd_port) || rte_eth_dev_close(pmd_port)) result = 1;
     }
+    if (packet_rx) { if (!rte_ring_empty(packet_rx)) _Exit(125); rte_ring_free(packet_rx); }
+    if (packet_tx) { if (!rte_ring_empty(packet_tx)) _Exit(125); rte_ring_free(packet_tx); }
     if (message_pool) {
         if (rte_mempool_in_use_count(message_pool)) {
             fprintf(stderr, "ker session: outstanding shared control objects prevent cleanup\n"); _Exit(125);
@@ -716,7 +760,7 @@ static int observe_pmd(int fd, struct ker_session_message *identity, struct ker_
     return key == owner->token ? 0 : -EPROTO;
 }
 static int secondary(const char *path, int control, int ticket, unsigned generation,
-    unsigned process, unsigned probe_count, bool probe_only, bool standby, int argc, char **argv)
+    unsigned process, unsigned probe_count, bool probe_only, bool standby, int packet_fd, int wire_fd, int mtu_fd, int argc, char **argv)
 {
     int result = 1, fd = -1, peer = -1;
     bool initialized = false;
@@ -759,13 +803,15 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         d->capacity != KER_SESSION_CAPACITY ||
         atomic_load_explicit(&d->epoch[message.slot], memory_order_acquire) != message.epoch) goto cleanup;
     if (d->ring_pmd != ring_pmd) goto cleanup;
-    if (ring_pmd && (rte_eth_dev_get_port_by_name("net_ring_ker", &pmd_port) || rte_eth_dev_count_avail() != 1)) goto cleanup;
+    if (ring_pmd && (rte_eth_dev_get_port_by_name(ring_pmd == 2 ? KER_SESSION_PACKET_PORT : "net_ring_ker", &pmd_port) || rte_eth_dev_count_avail() != 1)) goto cleanup;
     struct rte_mempool *pool = rte_mempool_lookup(KER_SESSION_POOL);
     if (!pool || pool->size != KER_SESSION_OBJECTS || pool->cache_size) goto cleanup;
     if (rte_mempool_obj_iter(pool, remember_object, NULL) != KER_SESSION_OBJECTS) goto cleanup;
     struct rte_mbuf *leased_packet = (struct rte_mbuf *)atomic_load_explicit(
         &d->lease[message.slot][generation][process], memory_order_acquire);
     if (!known_object(leased_packet) || leased_packet->pool != pool) goto cleanup;
+    int validated_rings = validate_shared_rings();
+    if (validated_rings != (int)QUEUES) goto cleanup;
     char names[KER_SESSION_CHANNELS][RTE_RING_NAMESIZE];
     struct rte_ring *channels[KER_SESSION_CHANNELS];
     for (unsigned c = 0; c < KER_SESSION_CHANNELS; c++) {
@@ -776,9 +822,9 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     }
     message.command = KER_SESSION_ATTACHED; message.sequence++;
     if (exchange(fd, &message)) goto cleanup;
-    printf("KER_SESSION_ATTACHED {\"stage\":\"shared-control\",\"pid\":%ld,\"master\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"rings\":[\"%s\",\"%s\",\"%s\",\"%s\"]}\n",
+    printf("KER_SESSION_ATTACHED {\"stage\":\"shared-control\",\"pid\":%ld,\"master\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"validated_rings\":%u,\"rings\":[\"%s\",\"%s\",\"%s\",\"%s\"]}\n",
         (long)getpid(), (long)getppid(), (unsigned long long)message.epoch,
-        (unsigned long long)message.slot, generation, process, names[0], names[1], names[2], names[3]); fflush(stdout);
+        (unsigned long long)message.slot, generation, process, (unsigned)validated_rings, names[0], names[1], names[2], names[3]); fflush(stdout);
     struct rte_mbuf *device_packet = NULL;
     if (ring_pmd) {
         int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet);
@@ -788,6 +834,14 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         printf("%s {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu}\n",
             acquired ? "KER_SESSION_PMD_STANDBY" : "KER_SESSION_PMD_GRANTED",
             (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot); fflush(stdout);
+    }
+    if (ring_pmd == 2) {
+        struct rte_mbuf *rx_packet = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire);
+        if (!known_object(rx_packet) || rx_packet == device_packet || rx_packet == leased_packet || rx_packet->pool != pool) goto cleanup;
+        uint64_t key = 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
+        result = ker_session_packet_loop(pmd_port, packet_fd, wire_fd, mtu_fd, control, peer,
+            &directory->pmd_owner, key, device_packet, rx_packet, &stopping) ? 1 : 0;
+        goto cleanup;
     }
     uint64_t device_sequence = 0;
     uint64_t probe_sequence = 0;
@@ -869,10 +923,12 @@ int main(int argc, char **argv)
     const char *path = NULL, *role = NULL;
     int control = -1, ticket = -1, generation = 0, process = 0, split = -1, probe_count = 0;
     bool probe_only = false, standby = false;
+    int packet_fd = -1, wire_fd = -1, mtu_fd = -1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
         if (!strcmp(argv[i], "--standby")) { standby = true; continue; }
-        if (!strcmp(argv[i], "--ring-pmd")) { ring_pmd = true; continue; }
+        if (!strcmp(argv[i], "--ring-pmd")) { if (ring_pmd) return 2; ring_pmd = 1; continue; }
+        if (!strcmp(argv[i], "--paired-pmd")) { if (ring_pmd) return 2; ring_pmd = 2; continue; }
         if (!strcmp(argv[i], "--probe-only")) { probe_only = true; continue; }
         if (i + 1 >= argc) break;
         if (!strcmp(argv[i], "--socket")) path = argv[++i];
@@ -881,6 +937,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--ticket-fd")) ticket = number(argv[++i]);
         else if (!strcmp(argv[i], "--generation")) generation = number(argv[++i]);
         else if (!strcmp(argv[i], "--process")) process = number(argv[++i]);
+        else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
+        else if (!strcmp(argv[i], "--wire-fd")) wire_fd = number(argv[++i]);
+        else if (!strcmp(argv[i], "--mtu-fd")) mtu_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--probe-count")) probe_count = number(argv[++i]);
         else break;
     }
@@ -892,13 +951,18 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: ker-io-session --role primary|secondary --socket PATH --control-fd N [--ticket-fd N --generation 0..1 --process 0..3] -- EAL_ARGS\n");
         return 2;
     }
+    if (ring_pmd == 2 && !strcmp(role, "secondary") && (standby || probe_only || probe_count ||
+        packet_fd == wire_fd || packet_fd == mtu_fd || wire_fd == mtu_fd ||
+        ker_session_packet_endpoint(packet_fd, SOCK_DGRAM) || ker_session_packet_endpoint(wire_fd, SOCK_DGRAM) ||
+        ker_session_packet_endpoint(mtu_fd, SOCK_SEQPACKET))) return 2;
     if (fcntl(control, F_GETFD) < 0 || (!strcmp(role, "secondary") && fcntl(ticket, F_GETFD) < 0)) {
         perror("ker session control descriptor"); return 2;
     }
     bool no_pci = false;
     for (int i = split + 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-pci")) no_pci = true;
-        if (ring_pmd && !strcmp(argv[i], "--vdev=net_ring_ker")) continue;
+        if ((ring_pmd == 1 && !strcmp(argv[i], "--vdev=net_ring_ker")) ||
+            (ring_pmd == 2 && !strcmp(role, "secondary") && !strcmp(argv[i], "--vdev=" KER_SESSION_PACKET_PORT))) continue;
         if (!strcmp(argv[i], "--vdev") || !strncmp(argv[i], "--vdev=", 7) ||
             !strcmp(argv[i], "--allow") || !strncmp(argv[i], "--allow=", 8) ||
             !strcmp(argv[i], "-a") || !strncmp(argv[i], "-a", 2)) {
@@ -924,7 +988,7 @@ int main(int argc, char **argv)
     sigemptyset(&action.sa_mask); sigaction(SIGTERM, &action, NULL); sigaction(SIGINT, &action, NULL);
     argv[split] = argv[0];
     if (!strcmp(role, "secondary"))
-        return secondary(path, control, ticket, (unsigned)generation, (unsigned)process, (unsigned)probe_count, probe_only, standby, argc - split, argv + split);
+        return secondary(path, control, ticket, (unsigned)generation, (unsigned)process, (unsigned)probe_count, probe_only, standby, packet_fd, wire_fd, mtu_fd, argc - split, argv + split);
     if (rte_eal_init(argc - split, argv + split) < 0) return 1;
     if (rte_eal_process_type() != RTE_PROC_PRIMARY) { rte_eal_cleanup(); return 1; }
     return primary(path, control);
