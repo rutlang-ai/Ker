@@ -645,6 +645,15 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-stream-io COMMAND ${ker_native_test_command}
         --stream-app "$<TARGET_FILE:ker-posix-fstack-stream-io-test>")
     set_tests_properties(native-fstack-stream-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-sendmmsg-short-test tests/posix/sendmmsg-short.c src/posix/posix-socket.c)
+    target_include_directories(ker-posix-sendmmsg-short-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-posix-sendmmsg-short-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_options(ker-posix-sendmmsg-short-test PRIVATE -Wall -Wextra -Werror -ffunction-sections)
+    target_link_options(ker-posix-sendmmsg-short-test PRIVATE -Wl,--gc-sections -Wl,--wrap=lkl_syscall)
+    target_link_libraries(ker-posix-sendmmsg-short-test PRIVATE Threads::Threads)
+    add_test(NAME fstack-sendmmsg-short-boundary COMMAND ker-posix-sendmmsg-short-test)
+    set_tests_properties(fstack-sendmmsg-short-boundary PROPERTIES TIMEOUT 10 LABELS fstack)
     add_executable(ker-posix-fstack-udp-test tests/posix/fstack-udp.c)
     target_compile_options(ker-posix-fstack-udp-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-udp-interop COMMAND ${ker_native_test_command}

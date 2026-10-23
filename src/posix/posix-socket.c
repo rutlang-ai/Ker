@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -161,6 +162,26 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
         ker_native_buffer_send_end(guard);
         if (value <= 0) break;
         done++;
+
+        /* Linux stops the original sendmmsg batch when a stream message is
+         * only partly accepted. The zerocopy adapter submits messages one at
+         * a time to guard each buffer, so reproduce that accepted-prefix rule
+         * from the successful msg_len and original iovec lengths. */
+        /* Inspect metadata only after Linux accepted the message: invalid
+         * vectors must keep the syscall's normal EFAULT path. As with the
+         * syscall, callers must keep the mmsghdr and iovecs stable until this
+         * sendmmsg call returns. */
+        size_t payload = 0;
+        bool payload_overflow = false;
+        for (size_t i = 0; i < message->msg_iovlen; i++) {
+            size_t length = message->msg_iov[i].iov_len;
+            if (length > SIZE_MAX - payload) {
+                payload_overflow = true;
+                break;
+            }
+            payload += length;
+        }
+        if (payload_overflow || messages[done - 1].msg_len < payload) break;
     }
     return (int)sent(entry, done ? (long)done : value, flags);
 }

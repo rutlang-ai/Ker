@@ -215,7 +215,7 @@ def application_compat(args, launcher, work, env):
 def stream_compat(args, launcher, work, env, log):
     if not args.stream_app:
         return
-    for index, api in enumerate(['vector', 'message', 'batch']):
+    for index, api in enumerate(['vector', 'message', 'batch', 'batch-zc']):
         for native_server in [True, False]:
             role = 'passive' if native_server else 'active'
             port = 25020 + 2 * index + (0 if native_server else 1)
@@ -224,6 +224,11 @@ def stream_compat(args, launcher, work, env, log):
             listen = [str(args.stream_app), 'server', address, str(port), api]
             connect = [str(args.stream_app), 'client', address, str(port), api]
             native = [*launcher, '--stats', str(stats_path), '--']
+            if api == 'batch-zc':
+                if native_server:
+                    listen.append('require-short')
+                else:
+                    connect.append('require-short')
             if native_server:
                 listen = native + listen
             else:
