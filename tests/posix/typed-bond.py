@@ -45,6 +45,7 @@ def main():
     parser.add_argument('--bridge', type=Path)
     parser.add_argument('--large-virtio-member', action='store_true')
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--queues', type=int, choices=(1, 3), default=1)
     args = parser.parse_args()
     modules = []
     for name in ('tap', 'bond'):
@@ -55,7 +56,7 @@ def main():
     environment = dict(os.environ)
     environment.pop('LD_PRELOAD', None)  # The bond worker links original PMDs statically.
     if not args.inside:
-        argv = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
+        argv = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside', '--queues', str(args.queues)]
         for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
             argv += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         if args.bridge:
@@ -118,7 +119,7 @@ def main():
                 'queue_size=4096,mac=02:00:00:00:00:03,cq=1,'
                 'vectorized=1,mrg_rxbuf=0,in_order=0')
         config_text = ('[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\n'
-            '[dpdk]\nnb_bond=1\nport=net_bonding0\n'
+            f'[dpdk]\nnb_bond=1\nport=net_bonding0\nqueues={args.queues}\n'
             f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m {256 if args.large_virtio_member else 64} '
             f'{eal_vdevs}\n')
         if not args.large_virtio_member:
@@ -185,6 +186,10 @@ def main():
                         (args.large_virtio_member or 1 <= bond['lacp_distributing'] <= member_count),
                         'LACP did not retire the disconnected path: ' + str(bond))
                 require(record['outstanding'] == 0 and record['tx'] > 0 and record['rx'] > 0, 'missing bond traffic or leaked member buffers')
+                require(record['io']['queues'] == args.queues and
+                        record['io']['pool_rx_descriptors'] >= 3 * args.queues * 256 and
+                        record['io']['pool_tx_descriptors'] >= 3 * args.queues * 256,
+                        'selected bond or member descriptors missing from pool budget')
                 if args.large_virtio_member:
                     require(record['io']['pool_rx_descriptors'] > 4095 and
                         record['io']['pool_tx_descriptors'] > 4095 and

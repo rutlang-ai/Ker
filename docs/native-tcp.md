@@ -1150,6 +1150,12 @@ Unix socket 后端必须省略 iface，组合错误不会被静默转换或忽�
 行为和限制见下方“多队列接收和 RSS 配置”。内核/vDPA 后端仍受原始 DPDK 及设备权限限制。
 `io.driver`、`io.max_rx_queues`、`io.max_tx_queues` 和 `io.rx_descriptors`
 提供原始 ethdev 的诊断值；队列信息不可用时 descriptors 为 0。
+`io.pool_rx_descriptors`、`io.pool_tx_descriptors` 汇总选中设备及所有 bond 成员的
+每个已启用队列；virtio-user 的原始 `queue_size` 也计入预算。
+`io.retained_rx` 记录远端 RX lcore 的 handoff 与 retained burst 容量，
+`io.pool_count` 同时包含上述预算及 native 通道/worker 余量。启动后逐队列核对
+原始 PMD 可提供的 descriptor 信息，超过预算即拒绝发布 READY。
+
 
 `native-fstack-typed-vdev-config` 检查源配置映射及失败边界；
 `native-fstack-typed-vdev` 使用独立 vhost/TAP 进程和宿主内核做真实双向 IPv4/IPv6
@@ -1383,3 +1389,12 @@ SO_ZEROCOPY 未启用时，Linux 原有的忽略标志/复制发送行为保持�
 13项源案例的owned-chain/write-cursor合同尚未等价映射，继续由issue225保留。
 当前Unix packet record和worker仍复制，不能计为端到端零拷贝；但上游默认DPDK
 路径也复制，移除这些复制并非全部13项socket快路径测试的额外前提。
+
+
+`native-fstack-typed-bond-queues` 使用原始 DPDK mode4 bond、两个 TAP 成员，
+每个成员启用 3 对队列，对接独立宿主 Linux LACP bond；它在断开成员前后
+验证 IPv4/IPv6 互通、原始配置、descriptor 总预算和零未释放 mbuf。
+抓包的 DF 请求计数按实际调用严格区分：native 发起一轮（TX 3 个），
+宿主在成员断开前后各发起一轮（RX 6 个），不以降低计数检查规避失败。
+RSS 控制测试还注入一次成功但已改变的 key readback，要求 MTU/restart 后的
+生产适配层拒绝 key 变化，而不是覆盖初始快照后误判为保留。

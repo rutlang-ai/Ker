@@ -1137,6 +1137,12 @@ if(BUILD_TESTING)
                 --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}"
                 --large-virtio-member)
         set_tests_properties(native-fstack-typed-bond-large-member PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+        add_test(NAME native-fstack-typed-bond-queues
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+                --pmd-root "${ker_vdev_library_root}" --queues 3)
+        set_tests_properties(native-fstack-typed-bond-queues PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     endif()
     add_test(NAME native-fstack-typed-bond-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_typed_bond.py")

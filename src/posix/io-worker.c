@@ -579,23 +579,25 @@ int main(int argc, char **argv)
         fprintf(stderr, "ker: original RSS key/RETA API failed or readback differs\n"); goto cleanup;
     }
     for (int member = 0; member < bond_member_count; member++) {
-        struct rte_eth_rxq_info member_rx = {0};
-        struct rte_eth_txq_info member_tx = {0};
-        int member_rx_status = rte_eth_rx_queue_info_get(bond_members[member], 0, &member_rx);
-        int member_tx_status = rte_eth_tx_queue_info_get(bond_members[member], 0, &member_tx);
-        /* Several original PMDs (including TAP) do not report member queue
-         * geometry here. A successful bond start proves their queue setup
-         * accepted the exact descriptor arguments budgeted above; when a PMD
-         * does expose counts, still verify they fit the allocated share. */
-        if ((member_rx_status && member_rx_status != -ENOTSUP) ||
-            (member_tx_status && member_tx_status != -ENOTSUP) ||
-            (member_rx.nb_desc && member_rx.nb_desc > bond_rx_budgets[member]) ||
-            (member_tx.nb_desc && member_tx.nb_desc > bond_tx_budgets[member])) {
-            fprintf(stderr, "ker: bond member %u queue geometry is unavailable or exceeds its mbuf budget (%u/%u, status %d/%d vs %u/%u)\n",
-                bond_members[member], member_rx.nb_desc, member_tx.nb_desc,
-                member_rx_status, member_tx_status,
-                bond_rx_budgets[member], bond_tx_budgets[member]);
-            goto cleanup;
+        for (uint16_t queue = 0; queue < queues; queue++) {
+            struct rte_eth_rxq_info member_rx = {0};
+            struct rte_eth_txq_info member_tx = {0};
+            int member_rx_status = rte_eth_rx_queue_info_get(bond_members[member], queue, &member_rx);
+            int member_tx_status = rte_eth_tx_queue_info_get(bond_members[member], queue, &member_tx);
+            /* Several original PMDs (including TAP) do not report member queue
+             * geometry here. A successful bond start proves their queue setup
+             * accepted the exact descriptor arguments budgeted above; when a PMD
+             * does expose counts, check every queue against its allocated share. */
+            if ((member_rx_status && member_rx_status != -ENOTSUP) ||
+                (member_tx_status && member_tx_status != -ENOTSUP) ||
+                (member_rx.nb_desc && member_rx.nb_desc > bond_rx_budgets[member]) ||
+                (member_tx.nb_desc && member_tx.nb_desc > bond_tx_budgets[member])) {
+                fprintf(stderr, "ker: bond member %u queue %u geometry is unavailable or exceeds its mbuf budget (%u/%u, status %d/%d vs %u/%u)\n",
+                    bond_members[member], queue, member_rx.nb_desc, member_tx.nb_desc,
+                    member_rx_status, member_tx_status,
+                    bond_rx_budgets[member], bond_tx_budgets[member]);
+                goto cleanup;
+            }
         }
     }
     uint32_t rx_ring_capacity = bond_policy ? bond_rx_drain_budget : selected_rx_budget;
@@ -684,11 +686,19 @@ int main(int argc, char **argv)
     if (receive_status) receive_info.nb_desc = 0;
     int transmit_status = rte_eth_tx_queue_info_get(port, 0, &transmit_info);
     if (transmit_status) transmit_info.nb_desc = 0;
-    if ((receive_info.nb_desc && receive_info.nb_desc > selected_rx_budget) ||
-        (transmit_info.nb_desc && transmit_info.nb_desc > selected_tx_budget)) {
-        fprintf(stderr, "ker: ethdev configured RX/TX rings (%u/%u) exceed mbuf budget (%u/%u)\n",
-            receive_info.nb_desc, transmit_info.nb_desc, selected_rx_budget, selected_tx_budget);
-        goto cleanup;
+    for (uint16_t queue = 0; queue < queues; queue++) {
+        struct rte_eth_rxq_info actual_rx = {0};
+        struct rte_eth_txq_info actual_tx = {0};
+        int rx_status = rte_eth_rx_queue_info_get(port, queue, &actual_rx);
+        int tx_status = rte_eth_tx_queue_info_get(port, queue, &actual_tx);
+        if ((rx_status && rx_status != -ENOTSUP) || (tx_status && tx_status != -ENOTSUP) ||
+            (actual_rx.nb_desc && actual_rx.nb_desc > selected_rx_budget) ||
+            (actual_tx.nb_desc && actual_tx.nb_desc > selected_tx_budget)) {
+            fprintf(stderr, "ker: ethdev queue %u RX/TX rings (%u/%u) exceed mbuf budget (%u/%u), status %d/%d\n",
+                queue, actual_rx.nb_desc, actual_tx.nb_desc, selected_rx_budget, selected_tx_budget,
+                rx_status, tx_status);
+            goto cleanup;
+        }
     }
     char rss_json[384] = "null";
     if (rss_enabled) {
