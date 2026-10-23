@@ -12,6 +12,7 @@ import subprocess
 import struct
 import sys
 import tempfile
+import threading
 
 
 def require(value, message):
@@ -84,9 +85,10 @@ def main():
             try:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     def echo():
-                        payload, peer = host.recvfrom(4096)
-                        require(payload == b'native-UDP-remains-on-original-Linux\0', 'native UDP bytes changed')
-                        host.sendto(payload, peer)
+                        for _ in range(32):
+                            payload, peer = host.recvfrom(4096)
+                            require(payload == b'native-UDP-remains-on-original-Linux\0', 'native UDP bytes changed')
+                            host.sendto(payload, peer)
                     echoed = executor.submit(echo)
                     process = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE, stderr=log, text=True, start_new_session=True)
@@ -123,21 +125,58 @@ def main():
                         data = frame(identifier)
                         require(exception.send(data) == len(data), 'host injection incomplete')
                         require(wire.recv(4096) == data, 'exception wire bytes differ')
+                    flood_stop = threading.Event()
+                    burst_ready = threading.Event()
+                    flood_counts = {'sent': 0, 'wire': 0, 'errors': []}
+                    def produce_exception_tx():
+                        try:
+                            for identifier in range(32, 160):
+                                if exception.send(frame(identifier)) != 64:
+                                    raise RuntimeError('short exception TAP write')
+                                flood_counts['sent'] += 1
+                            burst_ready.set()
+                            flood_stop.wait(5)
+                        except BaseException as error:
+                            flood_counts['errors'].append(str(error)); burst_ready.set()
+                    def drain_exception_wire():
+                        try:
+                            while not flood_stop.is_set():
+                                try:
+                                    wire.recv(4096)
+                                    flood_counts['wire'] += 1
+                                except socket.timeout:
+                                    continue
+                        except BaseException as error:
+                            flood_counts['errors'].append(str(error))
+                    producer = threading.Thread(target=produce_exception_tx)
+                    producer.start()
+                    require(burst_ready.wait(3) and flood_counts['sent'] == 128,
+                            'could not queue bounded exception TX burst: ' + str(flood_counts))
                     process.stdin.write('G'); process.stdin.flush()
+                    # Let the real DPDK ring fill before draining it. Both native
+                    # UDP and exception packets must resume after partial acceptance.
+                    import time
+                    time.sleep(0.05)
+                    drain = threading.Thread(target=drain_exception_wire)
+                    drain.start()
                     require(ready_line(process) == 'NATIVE_DONE', 'normal native UDP or MTU guard failed')
                     echoed.result(timeout=3)
+                    flood_stop.set(); producer.join(timeout=2); drain.join(timeout=4)
+                    require(not producer.is_alive() and not drain.is_alive() and not flood_counts['errors'] and
+                            flood_counts['sent'] == 128 and flood_counts['wire'] > 0,
+                            'native and bounded exception TX did not both progress: ' + str(flood_counts))
                     output, _ = process.communicate('Q', timeout=15)
                     require(process.returncode == 0 and 'PASS: native UDP and exception bridge coexist' in output,
                             'native runtime/worker failed: ' + output)
                     exception.close()
                 record = json.loads(stats.read_text())
                 require(record['outstanding'] == 0, 'exception path leaked owned mbufs')
-                for key in ('exception_to_host', 'exception_from_host'):
-                    require(record[key] == (5 if key == 'exception_to_host' else 4), 'missing actual worker direction: ' + str(record))
+                require(record['exception_to_host'] == 5 and record['exception_from_host'] >= 128,
+                        'missing actual worker direction or queued burst progress: ' + str(record))
                 require(record['exception_selected'] == 5 and record['exception_enqueued'] == 5 and
                         record['exception_to_host_dropped'] == record['exception_wire_dropped'] == 0,
                         'unexpected exception loss or double routing')
-                require(record['rx'] > 0 and record['tx'] > 0 and record['native']['udp_out_datagrams'] == record['native']['udp_in_datagrams'] == 1,
+                require(record['rx'] > 0 and record['tx'] > 0 and record['native']['udp_out_datagrams'] == record['native']['udp_in_datagrams'] == 32,
                         'non-selected native traffic did not run original Linux')
                 require(subprocess.run(['ip', 'link', 'show', 'hostexcept'], capture_output=True).returncode != 0,
                         'ephemeral exception TAP leaked after worker close')

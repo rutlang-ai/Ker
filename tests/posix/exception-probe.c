@@ -16,8 +16,10 @@ int main(void)
     struct timeval timeout={.tv_sec=3};check(!setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)),"receive timeout");
     struct sockaddr_in peer={.sin_family=AF_INET,.sin_port=htons(42000)};inet_pton(AF_INET,"198.18.0.1",&peer.sin_addr);
     const char payload[]="native-UDP-remains-on-original-Linux";char data[128];
-    check(sendto(fd,payload,sizeof(payload),0,(void*)&peer,sizeof(peer))==sizeof(payload),"native send");
-    check(recv(fd,data,sizeof(data),0)==sizeof(payload)&&!memcmp(data,payload,sizeof(payload)),"native independent echo");
+    for (unsigned i=0;i<32;i++) {
+        check(sendto(fd,payload,sizeof(payload),0,(void*)&peer,sizeof(peer))==sizeof(payload),"native send");
+        check(recv(fd,data,sizeof(data),0)==sizeof(payload)&&!memcmp(data,payload,sizeof(payload)),"native independent echo");
+    }
     /* Bridge MTU changes are explicitly unsupported until a two-device
      * transaction can preserve both sides; no successful one-sided change. */
     struct ifreq entries[16], request={0};struct ifconf list={.ifc_len=sizeof(entries),.ifc_req=entries};

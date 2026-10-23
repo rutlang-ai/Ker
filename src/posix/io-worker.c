@@ -192,9 +192,9 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
     if (message.operation == KER_MTU_SET) {
         if (requested < KER_NATIVE_MIN_MTU || requested > maximum) message.status = -EINVAL;
         else if (message.previous != *mtu) message.status = -ESTALE;
+        else if (fixed_mtu && requested != *mtu) message.status = -EOPNOTSUPP;
         else if (busy) message.status = -EBUSY;
         else if (scatter && scatter_mtu_supported(port, requested)) message.status = -EOPNOTSUPP;
-        else if (fixed_mtu && requested != *mtu) message.status = -EOPNOTSUPP;
         else if (requested != *mtu) {
             /* RX capacities can be fixed at queue setup (notably TAP scatter).
              * Stop before rebuilding queues with the same owned pool. Network
@@ -628,6 +628,7 @@ int main(int argc, char **argv)
         promiscuous_state < 0 ? "null" : (promiscuous_state ? "true" : "false"), idle_sleep_us, tx_delay_us);
     fflush(stdout);
     status = 0;
+    bool exception_first = false;
     while (!stopping) {
         /* Original bonding PMD services LACP TX control rings from tx_burst,
          * including when callers currently have no application frames. */
@@ -658,7 +659,8 @@ int main(int argc, char **argv)
             drain_progress = drain_started;
         }
         bool progress = false;
-        if (exception.pending && !draining) {
+        /* Alternate which traffic source gets its TX opportunity first. */
+        if (exception_first && exception.pending && !draining) {
             int64_t now;
             if (ker_worker_now_ns(&now)) goto clock_error;
             int result = ker_worker_exception_poll(&exception, port, (unsigned)mtu, now, pcap_dir ? &tx_capture : NULL, &progress);
@@ -736,6 +738,15 @@ int main(int argc, char **argv)
             }
             if (sent.packets) progress = true;
         }
+        /* On native-first turns, attempt its batch before admitting another
+         * exception burst; the next turn gives exception traffic first use. */
+        if (!exception_first && exception.pending && !draining) {
+            int64_t now;
+            if (ker_worker_now_ns(&now)) goto clock_error;
+            int result = ker_worker_exception_poll(&exception, port, (unsigned)mtu, now, pcap_dir ? &tx_capture : NULL, &progress);
+            if (result) { fprintf(stderr, "ker: host exception TAP forwarding failed: %s\n", strerror(-result)); status = 1; break; }
+        }
+        exception_first = !exception_first;
         if (draining) {
             rx_shutdown_discarded += rx_count - rx_index;
             while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
