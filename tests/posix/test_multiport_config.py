@@ -53,6 +53,45 @@ class MultiportTests(unittest.TestCase):
                      AUX + 'address6=fe80::1%host/64\n'):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): self.parse(BASE + text)
 
+    def test_additional_interface_rejects_ipv4_directed_broadcasts_before_setup(self):
+        cases = (
+            AUX.replace('address=198.19.0.2/24', 'address=198.19.0.255/24'),
+            AUX + 'vip_addresses=198.19.0.255/24\n',
+            AUX.replace('address=198.19.0.2/24', 'address=198.19.0.127/25'),
+            AUX + 'vip_addresses=198.19.0.127/25\n',
+        )
+        for text in cases:
+            with self.subTest(text=text), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as error:
+                self.parse(BASE + text)
+            self.assertEqual(error.exception.code, 2)
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'broadcast.ini'
+                path.write_text(BASE + text)
+                result = subprocess.run([sys.executable, str(ROOT / 'tools/ker-run.py'),
+                    '--config', str(path), '--library', '/missing-library',
+                    '--io-worker', '/missing-worker', '--', '/bin/true'],
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('subnet broadcast', result.stderr)
+                self.assertNotIn('missing-library', result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+
+    def test_additional_interface_keeps_valid_ipv4_prefix_boundaries_and_ipv6(self):
+        cases = (
+            AUX.replace('address=198.19.0.2/24', 'address=198.19.0.255/23') +
+            'vip_addresses=198.19.0.254/23\n',
+            AUX.replace('address=198.19.0.2/24', 'address=198.19.0.255/31') +
+            'vip_addresses=198.19.0.253/31\n',
+            AUX.replace('address=198.19.0.2/24', 'address=198.19.0.255/32') +
+            'vip_addresses=198.19.0.253/32\n',
+            AUX.replace('address6=2001:db8:2::2/64', 'address6=2001:db8:2::ffff/64') +
+            'vip_addresses6=2001:db8:2::dead/128\n',
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(len(self.parse(BASE + text).interfaces), 1)
+
     def test_missing_ipv6_primary_and_maximum_interface_count(self):
         without6 = AUX.replace('address6=2001:db8:2::2/64\n', '') + 'vip_addresses6=2001:db8:2::3/128\n'
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit): self.parse(BASE + without6)

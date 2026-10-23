@@ -670,6 +670,9 @@ def parse_arguments(argv=None):
             if '%' in str(value) or value.ip.is_unspecified or value.ip.is_multicast or value.ip.is_loopback or (
                     value.version == 6 and value.ip.ipv4_mapped is not None):
                 parser.error('additional interfaces require unscoped native unicast addresses')
+            if (value.version == 4 and value.network.prefixlen < 31 and
+                    value.ip == value.network.broadcast_address):
+                parser.error('additional IPv4 addresses must not be subnet broadcast addresses')
             if value.ip in seen:
                 parser.error('additional interface address duplicates an existing address')
             seen.add(value.ip)
