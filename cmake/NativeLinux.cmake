@@ -90,6 +90,17 @@ if(KER_WITH_NATIVE_BOND)
     target_compile_options(ker-io-worker-bond PRIVATE ${DPDK_BOND_STATIC_CFLAGS_OTHER})
     target_link_libraries(ker-io-worker-bond PRIVATE ${DPDK_BOND_STATIC_LDFLAGS} ${CMAKE_DL_LIBS})
     install(TARGETS ker-io-worker-bond RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    if(BUILD_TESTING)
+        add_executable(ker-io-worker-bond-drain-test ${ker_io_worker_sources}
+            tests/posix/bond-startup-drain-wrap.c)
+        target_compile_features(ker-io-worker-bond-drain-test PRIVATE c_std_11)
+        target_compile_definitions(ker-io-worker-bond-drain-test PRIVATE KER_NATIVE_STATIC_BOND=1)
+        target_compile_options(ker-io-worker-bond-drain-test PRIVATE -Wall -Wextra -Werror)
+        target_include_directories(ker-io-worker-bond-drain-test SYSTEM PRIVATE ${DPDK_BOND_STATIC_INCLUDE_DIRS})
+        target_compile_options(ker-io-worker-bond-drain-test PRIVATE ${DPDK_BOND_STATIC_CFLAGS_OTHER})
+        target_link_options(ker-io-worker-bond-drain-test PRIVATE -Wl,--wrap=rte_eth_promiscuous_disable)
+        target_link_libraries(ker-io-worker-bond-drain-test PRIVATE ${DPDK_BOND_STATIC_LDFLAGS} ${CMAKE_DL_LIBS})
+    endif()
 endif()
 install(TARGETS ker-posix EXPORT kerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -898,7 +909,7 @@ if(BUILD_TESTING)
         add_test(NAME native-fstack-typed-bond-large-member
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
                 --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
-                --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+                --worker "$<TARGET_FILE:ker-io-worker-bond-drain-test>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
                 --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}"
                 --large-virtio-member)
         set_tests_properties(native-fstack-typed-bond-large-member PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")

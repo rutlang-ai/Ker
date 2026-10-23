@@ -336,6 +336,7 @@ int main(int argc, char **argv)
     char bond_json[256] = "null";
     uint16_t bond_members[16];
     uint32_t bond_rx_budgets[16] = {0}, bond_tx_budgets[16] = {0};
+    uint32_t bond_rx_drain_budget = 0;
     int bond_member_count = 0;
     int64_t drain_started = 0, drain_progress = 0;
     if (rte_eth_dev_get_port_by_name(port_name, &port)) {
@@ -392,13 +393,17 @@ int main(int argc, char **argv)
             int member_result = configured_port_descriptors(bond_members[i],
                 argc - split - 1, argv + split + 1, selected_rx_budget,
                 selected_tx_budget, &bond_rx_budgets[i], &bond_tx_budgets[i]);
-            if (member_result ||
+            int budget_result = member_result ? member_result :
                 ker_worker_mbuf_budget_add(&pool_rx_desc, &pool_tx_desc,
-                    bond_rx_budgets[i], bond_tx_budgets[i])) {
+                    bond_rx_budgets[i], bond_tx_budgets[i]);
+            if (!budget_result && bond_rx_budgets[i] > UINT32_MAX - bond_rx_drain_budget)
+                budget_result = -EOVERFLOW;
+            if (budget_result) {
                 fprintf(stderr, "ker: cannot prove descriptor pool budget for bond member %u (%d)\n",
-                    bond_members[i], member_result ? member_result : -EOVERFLOW);
+                    bond_members[i], budget_result);
                 goto cleanup;
             }
+            bond_rx_drain_budget += bond_rx_budgets[i];
         }
     }
     uint32_t pool_count;
@@ -441,16 +446,16 @@ int main(int argc, char **argv)
             goto cleanup;
         }
     }
-    uint16_t rx_ring_capacity = selected_rx_budget;
+    uint32_t rx_ring_capacity = bond_policy ? bond_rx_drain_budget : selected_rx_budget;
     struct rte_eth_rxq_info startup_rx_info = {0};
     if (!rte_eth_rx_queue_info_get(port, 0, &startup_rx_info) &&
         startup_rx_info.nb_desc) {
-        if (startup_rx_info.nb_desc > selected_rx_budget) {
+        if (!bond_policy && startup_rx_info.nb_desc > selected_rx_budget) {
             fprintf(stderr, "ker: RX ring capacity %u exceeds configured mbuf budget %u\n",
                 startup_rx_info.nb_desc, selected_rx_budget);
             goto cleanup;
         }
-        rx_ring_capacity = startup_rx_info.nb_desc;
+        if (!bond_policy) rx_ring_capacity = startup_rx_info.nb_desc;
     }
     if (promiscuous >= 0) {
         int result = promiscuous ? rte_eth_promiscuous_enable(port) : rte_eth_promiscuous_disable(port);

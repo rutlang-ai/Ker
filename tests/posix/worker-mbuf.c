@@ -136,6 +136,20 @@ static void test_rx_startup_drain(void)
     CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4096,
         &discarded) == -EAGAIN);
     CHECK(discarded == 4097 && mock.freed == 4097 && mock.calls == 129);
+
+    /* Bond drains may cover all member rings and exceed UINT16_MAX. */
+    uint16_t large_ring[2189] = {0};
+    for (size_t i = 0; i < 2187; i++) large_ring[i] = 32;
+    large_ring[2187] = 16;
+    mock = (struct rx_mock){.bursts = large_ring, .burst_count = 2189};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 70000,
+        &discarded) == 0);
+    CHECK(discarded == 70000 && mock.freed == 70000 && mock.calls == 2189);
+    large_ring[2188] = 1;
+    mock = (struct rx_mock){.bursts = large_ring, .burst_count = 2189};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 70000,
+        &discarded) == -EAGAIN);
+    CHECK(discarded == 70001 && mock.freed == 70001 && mock.calls == 2189);
 }
 static void test_scatter_rx_limits(void)
 {

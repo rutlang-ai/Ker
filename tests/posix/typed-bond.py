@@ -81,6 +81,9 @@ def main():
         root = Path(directory); stats = root / 'stats.json'; capture = root / 'pcap'; capture.mkdir()
         backend = None
         backend_log = None
+        flood_trigger = root / 'startup-flood-trigger'
+        flood_ack = root / 'startup-flood-ack'
+        flood_completed = root / 'startup-flood-completed'
         if args.large_virtio_member:
             require(args.bridge is not None, '--bridge is required for a large virtio bond member')
             backend_path = root / 'vhost.sock'
@@ -88,6 +91,8 @@ def main():
             backend_environment['LD_PRELOAD'] = ':'.join(modules[:1] + [str(path) for path in
                 args.pmd_root.glob('dpdk/pmds-*/librte_net_vhost.so')])
             backend_environment['LD_LIBRARY_PATH'] = str(args.pmd_root.resolve()) + ':' + backend_environment.get('LD_LIBRARY_PATH', '')
+            backend_environment['KER_TEST_VHOST_FLOOD_TRIGGER'] = str(flood_trigger)
+            backend_environment['KER_TEST_VHOST_FLOOD_ACK'] = str(flood_ack)
             backend_log = (root / 'bridge.log').open('w+')
             backend = subprocess.Popen([str(args.bridge), f'--lcores=0@{cpu}', '--no-huge',
                 '--no-pci', '--no-shconf', '--no-telemetry', '--iova-mode=va', '-m', '64',
@@ -101,6 +106,10 @@ def main():
                 stop(backend)
                 raise
             require(backend_path.is_socket(), 'large-member vhost socket was not created')
+            command('link', 'set', 'dev', 'hostbond', 'type', 'bond', 'active_slave', 'host2')
+            host_info = json.loads(command('-d', '-j', 'link', 'show', 'hostbond').stdout)[0]
+            require(host_info.get('linkinfo', {}).get('info_data', {}).get('active_slave') == 'host2',
+                'host active-backup bond did not select the virtio member path: ' + str(host_info))
         config = root / 'bond.ini'
         eal_vdevs = ('--vdev=net_tap0,iface=bondtap0,remote=link0 '
             '--vdev=net_tap1,iface=bondtap1,remote=link1')
@@ -116,15 +125,26 @@ def main():
             config_text += '[bond0]\nmode=invalid\nslave=missing\nprimary=missing\nmac=invalid\nxmit_policy=invalid\n'
         config_text += (f'[bond0]\nmode={1 if args.large_virtio_member else 4}\n'
             f'slave={",".join(str(index) for index in range(member_count))}\n'
-            'primary=0\nsocket_id=0\nmac=AA:BB:CC:DD:EE:FF\n'
+            f'primary={2 if args.large_virtio_member else 0}\nsocket_id=0\nmac=AA:BB:CC:DD:EE:FF\n'
             + ('' if args.large_virtio_member else 'xmit_policy=l34\n')
             + 'lsc_poll_period_ms=100\nup_delay=100\ndown_delay=200\n')
         config.write_text(config_text)
         with (root / 'native.log').open('w+') as log:
-            process = subprocess.Popen([sys.executable, str(args.launcher), '--config', str(config),
+            worker_command = [sys.executable, str(args.launcher), '--config', str(config),
                 '--library', str(args.library), '--io-worker', str(args.worker), '--stats', str(stats),
-                '--pcap-dir', str(capture), '--', str(args.app), 'native', '1500', '198.18.0.1', '2001:db8:1::1'],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, env=environment, text=True)
+                '--pcap-dir', str(capture)]
+            worker_environment = environment
+            if args.large_virtio_member:
+                worker_command += ['--no-promiscuous', '--', str(args.app), 'native', '1500',
+                    '198.18.0.1', '2001:db8:1::1']
+                worker_environment = dict(environment)
+                worker_environment['KER_TEST_VHOST_FLOOD_TRIGGER'] = str(flood_trigger)
+                worker_environment['KER_TEST_VHOST_FLOOD_ACK'] = str(flood_ack)
+                worker_environment['KER_TEST_VHOST_FLOOD_COMPLETED'] = str(flood_completed)
+            else:
+                worker_command += ['--', str(args.app), 'native', '1500', '198.18.0.1', '2001:db8:1::1']
+            process = subprocess.Popen(worker_command,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, env=worker_environment, text=True)
             try:
                 ready(process)
                 if not args.large_virtio_member:
@@ -151,14 +171,17 @@ def main():
                 record = json.loads(stats.read_text()); bond = record['bond']
                 require(record['io']['driver'] == 'net_bonding' and record['io']['port_count'] == member_count + 1
                         and record['io']['mac'] == 'aa:bb:cc:dd:ee:ff' and record['io']['socket_id'] == 0, 'wrong actual bond/MAC')
-                expected = dict(mode=1 if args.large_virtio_member else 4, primary=0,
+                expected = dict(mode=1 if args.large_virtio_member else 4,
+                    primary=2 if args.large_virtio_member else 0,
                     poll_ms=100, up_ms=100, down_ms=200, members=member_count)
                 if not args.large_virtio_member:
                     expected['xmit_policy'] = 2
                 require(all(record['io']['bond'][key] == value for key, value in expected.items()),
                         'initial original DPDK bond settings differ: ' + str(record['io']['bond']))
                 require(all(bond[key] == value for key, value in expected.items() if key != 'primary')
-                        and bond['primary'] in (0, 1) and 1 <= bond['active'] <= member_count and
+                        and bond['primary'] == (2 if args.large_virtio_member else bond['primary']) and
+                        (args.large_virtio_member or bond['primary'] in (0, 1)) and
+                        1 <= bond['active'] <= member_count and
                         (args.large_virtio_member or 1 <= bond['lacp_distributing'] <= member_count),
                         'LACP did not retire the disconnected path: ' + str(bond))
                 require(record['outstanding'] == 0 and record['tx'] > 0 and record['rx'] > 0, 'missing bond traffic or leaked member buffers')
@@ -168,6 +191,11 @@ def main():
                         record['io']['mbuf_pool_count'] == record['io']['pool_rx_descriptors'] +
                         record['io']['pool_tx_descriptors'] + 320,
                         'large virtio member was not included in aggregate pool budget: ' + str(record['io']))
+                    member_rx_budget = record['io']['pool_rx_descriptors'] - 256
+                    require(record['rx_startup_discarded'] >= 1800 and
+                        256 < record['rx_startup_discarded'] <= member_rx_budget and
+                        flood_completed.is_file(),
+                        'bond did not drain the deterministic 1800-frame virtio-member backlog: ' + str(record))
                 print('DPDK bond runtime evidence: ' + json.dumps(record, sort_keys=True), flush=True)
                 # The capture includes both the initial peer exchange and the
                 # second exchange after one LACP member is removed.
@@ -180,6 +208,9 @@ def main():
             finally:
                 stop(process)
                 if backend is not None:
+                    if process.returncode not in (0, None) and backend_log is not None:
+                        backend_log.flush(); backend_log.seek(0)
+                        print(backend_log.read(), file=sys.stderr)
                     stop(backend)
                 if backend_log is not None:
                     backend_log.close()

@@ -5,11 +5,11 @@
 #define RX_DRAIN_BURST 32
 
 int ker_worker_rx_drain(ker_worker_rx_burst_fn burst,
-    ker_worker_rx_free_fn free_packet, void *context, uint16_t packet_budget,
+    ker_worker_rx_free_fn free_packet, void *context, uint32_t packet_budget,
     uint64_t *discarded)
 {
     struct rte_mbuf *packets[RX_DRAIN_BURST];
-    uint32_t consumed = 0;
+    uint64_t consumed = 0;
 
     if (!burst || !free_packet || !discarded) return -EINVAL;
     *discarded = 0;
