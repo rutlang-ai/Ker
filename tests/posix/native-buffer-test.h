@@ -5,6 +5,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <limits.h>
 static void *(*buffer_allocate)(size_t);
 static int (*buffer_release)(void *);
 static int (*buffer_run)(ker_posix_loop_func, void *);
@@ -35,6 +36,16 @@ static void buffer_init(void)
     check(buffer_allocate && buffer_release && buffer_run && buffer_stop, "native buffer API");
     errno = 0; check(!buffer_allocate(0) && errno == EINVAL, "zero allocation rejected");
     errno = 0; check(!buffer_allocate(SIZE_MAX) && errno == EINVAL, "allocation overflow rejected");
+    unsigned char *retained = buffer_allocate(16); check(retained, "retained allocation");
+    memset(retained, 0x39, 16);
+    int negative[] = {-1, INT_MIN};
+    for (unsigned i = 0; i < sizeof(negative) / sizeof(negative[0]); i++) {
+        errno = 0;
+        check(!buffer_allocate((size_t)negative[i]) && errno == EINVAL, "negative converted allocation rejected");
+        for (unsigned j = 0; j < 16; j++) check(retained[j] == 0x39, "invalid allocation preserves live bytes");
+    }
+    check(!buffer_release(retained), "retained allocation release");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_get_negative_len_returns_error");
     char foreign[8] = "owned";
     check(buffer_release(foreign) == -1 && errno == EINVAL && !strcmp(foreign, "owned"), "foreign memory preserved");
     check(buffer_release(NULL) == -1 && errno == EINVAL, "NULL release rejected");
@@ -101,6 +112,19 @@ static void buffer_complete(int fd)
         check(found, "missing zerocopy completion control message");
     }
 }
+/* Rejected inputs must neither deliver data nor consume a completion ID. */
+static void buffer_rejected(int fd, int receiver, const unsigned char *registered)
+{
+    unsigned char unused;
+    struct iovec vector = {&unused, 1};
+    char control[256];
+    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    check(recv(receiver, &unused, 1, MSG_DONTWAIT) == -1 && errno == EAGAIN, "invalid input delivered no datagram");
+    check(recvmsg(fd, &message, MSG_ERRQUEUE | MSG_DONTWAIT) == -1 && errno == EAGAIN,
+          "invalid input produced no completion");
+    for (unsigned i = 0; i < 16384; i++) check(registered[i] == 0x41, "rejected input preserves caller storage");
+}
 static void *buffer_toggle(void *opaque)
 {
     int fd = *(int *)opaque;
@@ -126,6 +150,28 @@ static void buffer_guards(void)
     check(registered, "live VMA during foreign-memory guard tests");
     memset(registered, 0x41, 16384); memset(host_bytes, 0x5b, host_size);
     buffer_socket(fd, 0, false);
+    check(send(fd, NULL, 16, MSG_ZEROCOPY) == -1 && errno == EFAULT, "NULL native send rejected");
+    struct iovec invalid = {NULL, 16};
+    struct msghdr invalid_message = {.msg_iov = &invalid, .msg_iovlen = 1};
+    check(sendmsg(fd, &invalid_message, MSG_ZEROCOPY) == -1 && errno == EFAULT, "NULL native sendmsg rejected");
+    struct mmsghdr invalid_batch = {.msg_hdr = invalid_message, .msg_len = 777};
+    check(sendmmsg(fd, &invalid_batch, 1, MSG_ZEROCOPY) == -1 && errno == EFAULT && invalid_batch.msg_len == 777,
+          "NULL native sendmmsg rejected without changing msg_len");
+    buffer_rejected(fd, receiver, registered);
+    puts("BUFFER_SOURCE_CASE test_ff_zc_send_mb_null_returns_einval");
+    /* Single native mappings cannot exceed INT_MAX. This proves one-extent
+     * validation, not an ff_zc ABI or an aggregate vector length limit. */
+    size_t oversized = (size_t)INT_MAX + 1;
+    check(send(fd, registered, oversized, MSG_ZEROCOPY) == -1 && errno == EFAULT, "oversized mapped send rejected");
+    invalid.iov_base = registered; invalid.iov_len = oversized;
+    check(sendmsg(fd, &invalid_message, MSG_ZEROCOPY) == -1 && errno == EFAULT, "oversized mapped sendmsg rejected");
+    buffer_rejected(fd, receiver, registered);
+    puts("BUFFER_SOURCE_CASE test_ff_zc_send_nbytes_overflow_returns_einval");
+    check(send(fd, registered, 16, MSG_ZEROCOPY) == 16, "valid mapped send reaches original Linux");
+    check(recv(receiver, received, sizeof(received), 0) == 16 && !memcmp(received, registered, 16),
+          "valid mapped bytes delivered exactly");
+    buffer_sent(16, true); buffer_complete(fd); /* First successful send must retain ID zero. */
+    puts("BUFFER_SOURCE_CASE test_ff_zc_send_valid_args_proceeds");
     check(send(fd, host_bytes, host_size, MSG_ZEROCOPY) == -1 && errno == EFAULT,
           "foreign zerocopy storage rejected before GUP with live VMAs");
     check(send(fd, registered + 16380, 16, MSG_ZEROCOPY) == -1 && errno == EFAULT, "mapping range overflow rejected");

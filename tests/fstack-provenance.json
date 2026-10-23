@@ -1824,6 +1824,38 @@
         "native-fstack-virtio-kernel-offloads"
       ],
       "adaptation": "Supported typed kernel-backend tuple uses path=/dev/vhost-net, explicit iface, queues1/2, queue_size512, MAC and cq1 through original virtio-user. Assert actual PMD selection, capacity/active pairs/descriptor readback and native IPv4/IPv6 TCP/UDP plus TSO4/6. Named kernel TAP receives a real verified ALLMULTI setting with rollback/teardown checks; auto-generated unsupported iface path fails before app. This does not validate the literal source iface+Unix-socket tuple, F-Stack structs/allocator ABI, combined bond/vdev topology or RSS. Those remain partial under224."
+    },
+    "native-zc-mbuf_get_negative_len_returns_error": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_mbuf_get_negative_len_returns_error",
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Real ker_posix_buffer_alloc rejects signed negative lengths converted to size_t (-1 and INT_MIN) with NULL/EINVAL, preserving a live native mapping. This adapts allocation rejection through the Linux-native API, not ff_zc_mbuf_get ABI. Uses actual original Linux VMAs, loopback sockets and completion control messages, with explicit native/EAL shutdown and zero live mapping/option-guard/mbuf counts. No upstream algorithm mirror is executed."
+    },
+    "native-zc-send_mb_null_returns_einval": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_send_mb_null_returns_einval",
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Real native SO_ZEROCOPY send/sendmsg/sendmmsg reject NULL nonempty payloads with EFAULT before GUP; no receiver data, completion or caller-byte mutation. Linux EFAULT intentionally replaces the source owned-chain EINVAL; this maps the rejection scenario, not errno/API equivalence. Uses actual original Linux VMAs, loopback sockets and completion control messages, with explicit native/EAL shutdown and zero live mapping/option-guard/mbuf counts. No upstream algorithm mirror is executed."
+    },
+    "native-zc-send_nbytes_overflow_returns_einval": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_send_nbytes_overflow_returns_einval",
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Real MSG_ZEROCOPY send/sendmsg reject one mapped extent of INT_MAX+1 bytes with EFAULT before GUP; no data, completion or caller-byte mutation. Native allocations are limited to INT_MAX. This maps single-extent rejection, not the ff_zc ABI or an aggregate iovec INT_MAX limit. Uses actual original Linux VMAs, loopback sockets and completion control messages, with explicit native/EAL shutdown and zero live mapping/option-guard/mbuf counts. No upstream algorithm mirror is executed."
+    },
+    "native-zc-send_valid_args_proceeds": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_send_valid_args_proceeds",
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Source asserts only that a non-NULL 16-byte argument passes its mirror validator. Actual registered 16-byte MSG_ZEROCOPY send reaches original Linux, delivers exact peer bytes and completes through original MSG_ERRQUEUE starting at ID zero. No claim of FreeBSD owned-chain handoff or end-to-end copy elimination. Uses actual original Linux VMAs, loopback sockets and completion control messages, with explicit native/EAL shutdown and zero live mapping/option-guard/mbuf counts. No upstream algorithm mirror is executed."
     }
   }
 }

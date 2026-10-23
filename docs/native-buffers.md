@@ -89,7 +89,7 @@ copies initial data into them and updates M_PKTHDR/m_pkthdr.len. ff_zc_send hand
 the owned chain to kern_zc_sendit/sosend. Native Linux mappings and MSG_ZEROCOPY
 retain a different ownership/completion API and do not implement those fields.
 
-All 13 source cases remain blocked under issue225 pending case-specific mapping
+At PR #248, all 13 source cases remained blocked under issue225 pending case-specific mapping
 of the owned-chain, write-cursor and validation contracts. New Linux socket
 operations are not proof of FreeBSD header-field or ownership assertions.
 
@@ -106,3 +106,9 @@ Source references: pinned F-Stack
 [ff_syscall_wrapper.c](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c), and
 [ff_dpdk_if.c](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_dpdk_if.c).
 Original Linux/LKL pins are recorded in [native-linux.json](../config/native-linux.json).
+
+The subsequent [case-specific contract audit](fstack-zc-contracts.md) qualifies
+four allocation/send validation scenarios with `native-fstack-zc-validation`.
+Two FreeBSD header-field cases are architecture-specific; seven empty-chain,
+write-cursor and zero-send cases remain blocked under issue225. These source
+scenarios do not establish ff_zc ABI equivalence or copy-free transport.
