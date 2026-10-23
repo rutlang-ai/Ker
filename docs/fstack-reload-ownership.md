@@ -2,7 +2,8 @@
 
 This is the implementation prerequisite for [issue #218](https://github.com/rutlang-ai/Ker/issues/218),
 not a supported reload feature or test-pass claim. Its 81 source cases remain
-blocked. The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
+unfinished: 80 are blocked and 1 is partial. The source pin is
+`646a641cfff77f4815e1e29829a09e1ed15a2999`.
 The retained tests are authoritative; proposed Ker mechanisms below still need
 implementation and runtime qualification.
 
