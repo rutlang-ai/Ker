@@ -355,6 +355,17 @@ int main(int argc, char **argv)
         rte_eth_tx_queue_setup(port, 0, tx_desc, allocation_socket, NULL) ||
         rte_eth_dev_start(port)) goto device_error;
     started = true;
+    uint16_t rx_ring_capacity = pool_rx_desc;
+    struct rte_eth_rxq_info startup_rx_info = {0};
+    if (!rte_eth_rx_queue_info_get(port, 0, &startup_rx_info) &&
+        startup_rx_info.nb_desc) {
+        if (startup_rx_info.nb_desc > pool_rx_desc) {
+            fprintf(stderr, "ker: RX ring capacity %u exceeds configured mbuf budget %u\n",
+                startup_rx_info.nb_desc, pool_rx_desc);
+            goto cleanup;
+        }
+        rx_ring_capacity = startup_rx_info.nb_desc;
+    }
     if (promiscuous >= 0) {
         int result = promiscuous ? rte_eth_promiscuous_enable(port) : rte_eth_promiscuous_disable(port);
         if (result) {
@@ -373,11 +384,11 @@ int main(int argc, char **argv)
          * while the PMD is promiscuous. Do not expose that backlog after READY. */
         struct ker_worker_rx_queue queue = {.port = port, .queue = 0};
         int result = ker_worker_rx_drain(worker_rx_burst, worker_rx_free,
-            &queue, rx_desc, &rx_startup_discarded);
+            &queue, rx_ring_capacity, &rx_startup_discarded);
         rx_dropped += rx_startup_discarded;
         if (result) {
             fprintf(stderr, "ker: ethdev RX queue could not be proven empty after the %u-packet startup budget: %s\n",
-                rx_desc, rte_strerror(-result));
+                rx_ring_capacity, rte_strerror(-result));
             goto cleanup;
         }
     }

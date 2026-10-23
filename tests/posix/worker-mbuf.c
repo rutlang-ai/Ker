@@ -121,6 +121,21 @@ static void test_rx_startup_drain(void)
     CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4,
         &discarded) == -EAGAIN);
     CHECK(discarded == 5 && mock.freed == 5 && mock.calls == 3);
+
+    /* A full configured virtio ring exceeds the old adjusted 256-descriptor
+     * budget. Drain all 4096 packets, then keep the one-packet overflow probe. */
+    uint16_t full_ring[130];
+    for (size_t i = 0; i < 128; ++i) full_ring[i] = 32;
+    full_ring[128] = 0;
+    mock = (struct rx_mock){.bursts = full_ring, .burst_count = 130};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4096,
+        &discarded) == 0);
+    CHECK(discarded == 4096 && mock.freed == 4096 && mock.calls == 129);
+    full_ring[128] = 1;
+    mock = (struct rx_mock){.bursts = full_ring, .burst_count = 130};
+    CHECK(ker_worker_rx_drain(mock_rx_burst, mock_rx_free, &mock, 4096,
+        &discarded) == -EAGAIN);
+    CHECK(discarded == 4097 && mock.freed == 4097 && mock.calls == 129);
 }
 static void test_scatter_rx_limits(void)
 {
