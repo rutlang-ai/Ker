@@ -1310,3 +1310,21 @@ IPv4/IPv6 TCP/UDP，另有两个原始 null PMD。每个实际 EAL 子进程完�
 这是已有 run/stop 适配的缺陷修复与回归增强，不提升原始耦合 EAL 循环用例的状态。
 当前清单保持 181 scenario-adapted、22 partial、160 blocked，仍有182项未完成；
 15项架构专属及55项 harness-only 保留原有边界，issue223继续跟踪耦合循环差异。
+
+
+2026-10-24 原始 secondary ring PMD 与独占消费者
+
+增加显式 `ker-session --ring-pmd`：resident 配置固定原始 net_ring 设备，
+真实 secondary 通过原始 TX/RX burst 往返174字节诊断帧，并核对原始设备计数。
+控制与 PMD mbuf 分别由 resident 记录后授权，第二消费者拒绝 EBUSY；master
+死亡不能撤销存活 borrower 的所有权。精确 borrower pidfd 死亡后回收，允许
+新 epoch 接管；首次 TX 前及 RX dequeue 后死亡均恢复511个原始对象。
+隔离原始 DPDK guest 的既有共享控制回归及新 PMD 验证均通过；宿主运行时
+因没有共享 hugepages 跳过，不能计为宿主通过。详见[实现、用法及边界](fstack-session-pmd.md)。
+
+本批完成 #218 的 `test_it_a14_secondary_looks_up_own_slot` 场景适配：源测试
+使用原始 null PMD，不要求物理 NIC 或 Linux 包交付；它要求真实 secondary
+找到自己的目录/ring、取得设备消费权且 primary 不消费，新路径覆盖这些断言。
+原始固定网络 dispatch、物理设备/nohw/KNI owner 协调、向原始 Linux 交付
+数据包及完整 reload 仍待实现。清单现为182 scenario-adapted、21 partial、
+160 blocked、15 architecture-specific、55 harness-only，181项未完成。

@@ -143,6 +143,10 @@ if(BUILD_TESTING)
     target_compile_options(ker-session-envelope-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-session-envelope COMMAND ker-session-envelope-test)
     set_tests_properties(native-fstack-session-envelope PROPERTIES TIMEOUT 10 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-ring-pmd
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-ring-pmd.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-ring-pmd PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "fstack;session")
     add_test(NAME native-fstack-session-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
