@@ -74,7 +74,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
 | Resolve unmapped host memory, time, environment and kqueue helpers | 10 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
-| Resolve FreeBSD thread context and join-result assertions | 3 | 合同差异待决策 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
+| Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue filter and mbuf header assertions | 10 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
 
