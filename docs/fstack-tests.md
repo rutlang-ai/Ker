@@ -422,3 +422,8 @@ TCP_WINDOW_CLAMP 扩展：`native-fstack-tcp-window-clamp` 将共享选项和初
 TCP_LINGER2 扩展：`native-fstack-tcp-linger2` 检查真实 FIN_WAIT2、保留别名的
 接收能力及最后关闭后的 RST/CLOSE_WAIT 错误，协议行为均来自原版 Linux。
 本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。
+
+
+TCP_CONGESTION 扩展：`native-fstack-tcp-congestion` 验证 Reno 选择、监听继承、
+错误恢复以及连接中恢复 CUBIC 后的真实流量，不增加 Ker 自有拥塞控制逻辑。
+本项扩展已有 socket 场景，源案例仍有 222 个 blocked、20 个 partial。

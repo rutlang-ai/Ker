@@ -1090,3 +1090,15 @@ TCP_LINGER2：`native-fstack-tcp-linger2` 在宿主参考、原生客户端和�
 原生连接、实际 DPDK 收发及零 outstanding。另查 dup 共享、正值设置、零重置
 和错误长度 EINVAL；SO_LINGER 保持关闭，避免混淆两组选项。
 测试不声明正值 LINGER2 的孤儿定时器期限、TIME_WAIT 时长、丢包重传或 IPv6。
+
+
+TCP_CONGESTION：`native-fstack-tcp-congestion` 在宿主参考及原生客户端/服务器
+中记录新 socket 或监听器的默认算法，握手前经 dup 选择 Reno，并验证监听继承
+和共享名称。空名称必须返回 EINVAL，不存在的算法返回 ENOENT，均须保留原选择。
+设置使用按明确长度传递、不含终止 NUL 的名称，以覆盖字符串选项边界。
+双方先在 Reno 下精确交换 16KiB，再通过连接中的别名恢复最初默认算法，交换
+另一组不同的 16KiB；各阶段校验算法读回、TCP_INFO 的 ESTABLISHED 和正 snd_cwnd，
+最后验证小消息恢复与半关闭 EOF。原生端必须明确报告恢复到固定内核的 CUBIC；
+宿主参考和独立宿主对端使用自身默认值，不额外要求宿主提供 CUBIC。
+原生连接、实际 DPDK TX/RX 和零 outstanding 为必需证据。算法全部来自固定的
+原版 Linux；不声明拥塞窗口公式、吞吐/公平性、丢包重传或 IPv6 覆盖。
