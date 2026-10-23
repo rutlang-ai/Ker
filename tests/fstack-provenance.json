@@ -49,6 +49,14 @@
     }
   },
   "cases": {
+    "native-fstack-config-owned-arrays": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_vlan_cfgs_calloc_oom_returns_error",
+      "ker_ctests": [
+        "native-fstack-launcher-config"
+      ],
+      "adaptation": "Test-only opcode tracing injects MemoryError immediately before BUILD_LIST creates the actual production VLAN configuration-record list in read_configuration, after real INI parsing. The real CLI fails2 before worker queries/process creation/library resolution; no app/stats marker exists. Disable the fault and rebuild the same two VLAN records, including exact IPv4/IPv6 addresses, through the actual parser. This adapts the source VLAN configuration-allocation rejection scenario, not C calloc ordinal/global layout or return-1. Separate CLI VLAN-address and INI/CLI RX-core array faults exercise the outer argument-validation failure boundary; RX-core tests do not qualify F-Stack global proc_lcore allocation. Fault injection is confined to a test child and selected CPython list-construction opcode; it handles inlined and nested comprehension code objects, forwards all normal execution, and is disabled before recovery. No production fault hook or successful parser/PMD mock is added. Old259 controls confirm VLAN INI already rejects while VLAN CLI and RX INI/CLI leak3 tracebacks; the new main argument guard closes these latter paths. No global host-OOM or F-Stack global-core-table equivalence is claimed."
+    },
     "native-fstack-config-allocation-failure": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [

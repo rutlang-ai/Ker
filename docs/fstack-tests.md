@@ -435,3 +435,9 @@ vdev、bond 配置 builder 的一次 dict 分配抛出 MemoryError，验证真�
 分配不做模拟；bond 恢复仅使用测试子进程提供的 `--dpdk-limits` JSON 合同。
 `native-fstack-launcher-config-interop` 另行使用实际 worker 和原版 Linux TCP。
 不覆盖 C calloc ABI 或整个宿主进程的持续内存耗尽。
+
+
+配置数组 OOM 扩展：同一配置 CTest 分别在真实 VLAN 记录 BUILD_LIST、CLI
+VLAN 地址数组、INI/CLI 合并后 RX 核列表分配处注入失败，检查拒绝及真实恢复。
+CPython opcode trace 只存在于测试子进程。仅 VLAN 记录对应一条新增源场景；
+RX owner 列表不等于 F-Stack 全局 proc_lcore 表，不计入该源用例迁移。

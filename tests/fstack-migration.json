@@ -1751,7 +1751,7 @@
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "The source fails allocation of the global proc_lcore array while parsing the process core mask. Ker forwards lcore_mask to original EAL and does not build that F-Stack process-to-core table. Actual RX queue-owner core-list allocation failures are now rejected before startup for INI/CLI with recovery, but this per-port list is not the source global proc_lcore array; no pass mapping is claimed. Retain issue226 for the actual global scheduling/allocation contract.",
       "ker_tests": []
     },
     {
@@ -1769,9 +1769,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Test-only opcode tracing injects MemoryError immediately before BUILD_LIST creates the actual production VLAN configuration-record list in read_configuration, after real INI parsing. The real CLI fails2 before worker queries/process creation/library resolution; no app/stats marker exists. Disable the fault and rebuild the same two VLAN records, including exact IPv4/IPv6 addresses, through the actual parser. This adapts the source VLAN configuration-allocation rejection scenario, not C calloc ordinal/global layout or return-1. Separate CLI VLAN-address and INI/CLI RX-core array faults exercise the outer argument-validation failure boundary; RX-core tests do not qualify F-Stack global proc_lcore allocation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-launcher-config",
+          "provenance_case": "native-fstack-config-owned-arrays"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vdev_cfgs_calloc_oom_returns_error",

@@ -916,7 +916,11 @@ def finish_concurrently(operations):
 
 
 def main():
-    args = parse_arguments()
+    try:
+        args = parse_arguments()
+    except MemoryError:
+        print('ker-run: configuration allocation failed', file=sys.stderr)
+        return 2
     library = args.library.resolve(strict=True)
     worker_path = args.io_worker.resolve(strict=True)
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
