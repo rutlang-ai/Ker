@@ -59,6 +59,10 @@ class MultiportTests(unittest.TestCase):
             AUX + 'vip_addresses=198.19.0.255/24\n',
             AUX.replace('address=198.19.0.2/24', 'address=198.19.0.127/25'),
             AUX + 'vip_addresses=198.19.0.127/25\n',
+            AUX.replace('address=198.19.0.2/24', 'address=255.255.255.255/31'),
+            AUX.replace('address=198.19.0.2/24', 'address=255.255.255.255/32'),
+            AUX + 'vip_addresses=255.255.255.255/31\n',
+            AUX + 'vip_addresses=255.255.255.255/32\n',
         )
         for text in cases:
             with self.subTest(text=text), contextlib.redirect_stderr(io.StringIO()), \
@@ -73,7 +77,7 @@ class MultiportTests(unittest.TestCase):
                     '--io-worker', '/missing-worker', '--', '/bin/true'],
                     capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn('subnet broadcast', result.stderr)
+                self.assertIn('broadcast addresses', result.stderr)
                 self.assertNotIn('missing-library', result.stderr)
                 self.assertNotIn('Traceback', result.stderr)
 
