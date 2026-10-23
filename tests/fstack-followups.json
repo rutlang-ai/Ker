@@ -8,6 +8,7 @@
       "disposition": "adaptation-needed",
       "reason": "Ker has independent native instances and bounded local queues, but no F-Stack process:generation:epoch directory, cross-generation admission or graceful handover protocol. Local SP/SC tests do not satisfy these contracts.",
       "evidence": [
+        "docs/fstack-reload-ownership.md",
         "src/posix/io-worker.c",
         "src/runtime/tx-ring.c",
         "tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c"

@@ -1224,3 +1224,17 @@ primary 覆盖旧 INI secondary，并保留未知 mode 的原始 EAL 拒绝及 s
 proc_id 用例要求同一全局进程核表的正负索引；三个 thread_mode 用例要求有效
 多栈/进程表、默认多进程及特定冲突。Ker 多核 RX 不是那些语义，不增加同名
 no-op 配置或虚假适配映射。清单179/19/167/13/55保持不变，186项仍未完成。
+
+## Generation/reload 所有权设计前置条件
+
+[#218](https://github.com/rutlang-ai/Ker/issues/218) 的
+[设计合同](fstack-reload-ownership.md) 明确驻留 primary、真实 secondary、
+跨 master 的 epoch/双 generation、队列独占、逐 poller 停驻证明、孤儿存活、
+带 census 锁的回收与延迟 IPC 的处理。源测试中的 nginx FSM 属于调用方编排；
+Ker 只提供运行时与设备适配。半开连接路由仍须先证明原版 Linux 的查询及生命周期
+接口，不能用 SYN 观察器或自写 TCP 状态机替代。
+
+该文档推进实现前必须明确合同的设计工作，不代表已实现 reload。81 项源案例仍为
+blocked，没有新增通过映射；总数保持 179/19/167/13/55，完整门禁仍须拒绝 186 项
+blocked/partial。下一步先实现有实际进程监督调用方的驻留会话与真实 secondary
+接入，再做两条同时存活 master 链的单消费者数据验证。
