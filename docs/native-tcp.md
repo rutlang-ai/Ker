@@ -1145,8 +1145,9 @@ Unix socket 后端必须省略 iface，组合错误不会被静默转换或忽�
 重复键/section 以最终值为准。未知键、缺失 count、索引不连续和与原始 EAL --vdev
 冲突在启动前拒绝；port 必须选择一个声明的 net_virtio_userN。
 
-当前 worker 仍只使用选中设备的一对 RX/TX queue。queues 配置 PMD 可用容量，
-不承诺多队列调度、RSS 或多接口流量。内核/vDPA 后端仍受原始 DPDK 及设备权限限制。
+`[vdevN] queues` 只配置虚拟设备可提供的队列容量；实际启用的队列对数由
+`--queues` 或 `[dpdk] queues` 指定，默认仍为 1。需要多队列接收时显式设置该选项，
+行为和限制见下方“多队列接收和 RSS 配置”。内核/vDPA 后端仍受原始 DPDK 及设备权限限制。
 `io.driver`、`io.max_rx_queues`、`io.max_tx_queues` 和 `io.rx_descriptors`
 提供原始 ethdev 的诊断值；队列信息不可用时 descriptors 为 0。
 

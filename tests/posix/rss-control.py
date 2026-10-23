@@ -22,7 +22,13 @@ result = subprocess.run(command, env=env, timeout=20)
 if result.returncode:
     raise SystemExit(result.returncode)
 env['LD_PRELOAD'] = str(args.failure_library) + ':' + str(modules[0])
+env['KER_TEST_RSS_FAILURE'] = 'reta-mismatch'
 result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
 if result.returncode != 1 or 'INJECT: successful original RETA readback corrupted' not in result.stderr or 'PASS:' in result.stdout:
     raise RuntimeError('RSS accepted a mismatched original RETA readback: ' + result.stdout + result.stderr)
 print('PASS: successful but mismatched original RETA readback is rejected')
+env['KER_TEST_RSS_FAILURE'] = 'key-change'
+result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
+if result.returncode != 1 or 'INJECT: successful original RSS key readback changed' not in result.stderr or 'PASS:' in result.stdout:
+    raise RuntimeError('RSS accepted a changed original key after restart: ' + result.stdout + result.stderr)
+print('PASS: changed original RSS key after restart is rejected')

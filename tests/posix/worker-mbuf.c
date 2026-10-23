@@ -217,6 +217,13 @@ static void test_descriptor_pool_budget(void)
         CHECK(ker_worker_mbuf_budget_add(&aggregate_rx, &aggregate_tx, 256, 256) == 0);
     CHECK(aggregate_rx == 4352 && aggregate_tx == 4352);
     CHECK(ker_worker_mbuf_pool_count(aggregate_rx, aggregate_tx, &count) == 0 && count == 9024);
+    aggregate_rx = aggregate_tx = 256;
+    for (unsigned member = 0; member < 4; member++)
+        CHECK(ker_worker_mbuf_budget_add_queues(&aggregate_rx, &aggregate_tx, 3, 512, 256) == 0);
+    CHECK(aggregate_rx == 6400 && aggregate_tx == 3328);
+    CHECK(ker_worker_mbuf_budget_add_queues(&aggregate_rx, &aggregate_tx, 0, 1, 1) == -EINVAL);
+    CHECK(ker_worker_mbuf_budget_add_queues(&aggregate_rx, &aggregate_tx, 2, UINT32_MAX, 0) == -EOVERFLOW);
+    aggregate_rx = aggregate_tx = 256;
     CHECK(ker_worker_mbuf_budget_add(&aggregate_rx, &aggregate_tx, UINT32_MAX, 0) == -EOVERFLOW);
     CHECK(ker_worker_mbuf_budget_add(NULL, &aggregate_tx, 1, 1) == -EINVAL);
 }

@@ -398,13 +398,11 @@ int main(int argc, char **argv)
             budget_info.tx_desc_lim.nb_max);
         goto cleanup;
     }
-    for (int queue = 1; queue < queues; queue++) {
-        int result = ker_worker_mbuf_budget_add(&pool_rx_desc, &pool_tx_desc,
-            selected_rx_budget, selected_tx_budget);
-        if (result) {
-            fprintf(stderr, "ker: multi-queue descriptor pool budget overflow\n");
-            goto cleanup;
-        }
+    if (queues > 1 && ker_worker_mbuf_budget_add_queues(&pool_rx_desc,
+            &pool_tx_desc, (uint32_t)queues - 1, selected_rx_budget,
+            selected_tx_budget)) {
+        fprintf(stderr, "ker: multi-queue descriptor pool budget overflow\n");
+        goto cleanup;
     }
     if (bond_policy) {
         int count = ker_bond_members(port, bond_members, 16);
@@ -424,8 +422,8 @@ int main(int argc, char **argv)
                 argc - split - 1, argv + split + 1, selected_rx_budget,
                 selected_tx_budget, &bond_rx_budgets[i], &bond_tx_budgets[i]);
             int budget_result = member_result ? member_result :
-                ker_worker_mbuf_budget_add(&pool_rx_desc, &pool_tx_desc,
-                    bond_rx_budgets[i], bond_tx_budgets[i]);
+                ker_worker_mbuf_budget_add_queues(&pool_rx_desc, &pool_tx_desc,
+                    (uint32_t)queues, bond_rx_budgets[i], bond_tx_budgets[i]);
             if (!budget_result && bond_rx_budgets[i] > UINT32_MAX - bond_rx_drain_budget)
                 budget_result = -EOVERFLOW;
             if (budget_result) {

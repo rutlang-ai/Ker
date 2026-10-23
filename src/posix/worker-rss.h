@@ -1,6 +1,7 @@
 #ifndef KER_WORKER_RSS_H
 #define KER_WORKER_RSS_H
 #include <sys/types.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <rte_ethdev.h>
 
@@ -10,6 +11,7 @@ struct ker_worker_rss {
     uint8_t key_length;
     uint8_t key[64];
     uint64_t types;
+    bool key_captured;
 };
 int ker_worker_rss_prepare(uint16_t port, uint16_t queues,
     struct rte_eth_conf *config, struct ker_worker_rss *state);

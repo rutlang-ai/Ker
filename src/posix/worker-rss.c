@@ -31,12 +31,19 @@ int ker_worker_rss_apply(uint16_t port, uint16_t queues,
 {
     if (!state->reta_size) return 0;
     if (queues < 2) return -EINVAL;
-    struct rte_eth_rss_conf actual = {.rss_key = state->key,
+    uint8_t key[sizeof(state->key)] = {0};
+    struct rte_eth_rss_conf actual = {.rss_key = key,
         .rss_key_len = state->key_length};
     int result = rte_eth_dev_rss_hash_conf_get(port, &actual);
     if (result) return result;
     if (actual.rss_hf != state->types || actual.rss_key_len != state->key_length)
         return -EIO;
+    if (state->key_captured) {
+        if (memcmp(key, state->key, state->key_length)) return -EIO;
+    } else {
+        memcpy(state->key, key, state->key_length);
+        state->key_captured = true;
+    }
     unsigned groups = (state->reta_size + RTE_ETH_RETA_GROUP_SIZE - 1) / RTE_ETH_RETA_GROUP_SIZE;
     struct rte_eth_rss_reta_entry64 *table = calloc(groups, sizeof(*table));
     if (!table) return -ENOMEM;
