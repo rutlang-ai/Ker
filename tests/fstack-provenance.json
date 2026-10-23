@@ -1707,6 +1707,26 @@
         "native-fstack-rss-control"
       ],
       "adaptation": "Control-plane prerequisite for source full-DPDK RSS configuration, not a migrated source RSS landing test. Production adapter requires original PMD IPv4/IPv6 TCP/UDP RSS bits,40..64-byte key and nonzero power-of-two RETA<=4096; keeps original default key/hash algorithm and requires exact type/key-length readback. Real original net_null PMD configures two pairs, preserves its40-byte key, programs/query-verifies every128 RETA entries as index%2, then repairs an independently poisoned table. A preload fixture corrupts one successful original query result; the adapter must reject it. No traffic, physical NIC landing, symmetric algorithm, thash or Linux source-port selection is claimed."
+    },
+    "native-fstack-run-stop-forward": {
+      "source_file": "tests/unit/test_ff_init.c",
+      "source_case": [
+        "test_ff_run_and_stop_forward"
+      ],
+      "ker_ctests": [
+        "native-fstack-run-stop"
+      ],
+      "adaptation": "Adapt the public run/stop forwarding scenario to exported ker_posix_run/ker_posix_stop_run, preserving callback function/argument identity and current-thread invocation, ignored integer return and idempotent/external stop. Five real two-interface/two-queue native instances test one callback, third-callback stop after nonzero returns, external thread stop, NULL callback waiting and original-worker shutdown failure. Nested/concurrent runs return EBUSY. Each traffic run uses four independent host TCP and UDP peers over IPv4/IPv6 across both native interfaces. Deliberately retained native TCP fds must close during run teardown; independent peers observe four EOFs. API return requires original Linux drain/device removal/halt and launcher confirmation that both actual DPDK workers exited, were reaped and own zero mbufs. All six inherited packet/MTU/startup/run channels must be closed before return, including MTU controls previously reclaimed only at process exit. Native capabilities/release disappear and later socket/run attempts return ENETDOWN. Keeping the caller process alive six seconds after return proves no destructor/exit shortcut. A wrapper reports failure only after the real original worker exits; parent sends FAIL, API returns EIO and launcher returns125. Caller must quiesce other native socket users before stopping; no cancellation/longjmp, signal-safe stop, F-Stack symbols or multi-lcore ABI claim."
+    },
+    "native-fstack-run-stop-once": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": [
+        "test_main_loop_one_iteration_then_stop"
+      ],
+      "ker_ctests": [
+        "native-fstack-run-stop"
+      ],
+      "adaptation": "Partial integration-loop adaptation: exactly one caller callback can request stop after actual original Linux traffic; complete kernel and independent EAL-worker cleanup is observed before API return, not inferred from process exit. Autonomous separate workers service the original Linux kernel while the app callback executes. This does not qualify exactly one coupled original F-Stack dispatch/RX/message/TX/accounting loop iteration or callback-on-EAL-lcore semantics. The source case stays partial under223."
     }
   }
 }

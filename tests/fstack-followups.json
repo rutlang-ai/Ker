@@ -260,11 +260,14 @@
       "id": "device-run-lifecycle",
       "title": "Resolve device/run lifecycle and upstream fault-injection contracts",
       "disposition": "contract-review",
-      "reason": "Real Ker startup, stop and several activation failures are covered, but the remaining contracts reference F-Stack callbacks, interface registration and FreeBSD m_copydata or initialization ordering.",
+      "reason": "Native callback/argument run/stop with acknowledged kernel and EAL teardown is now covered. Remaining contracts require exact coupled F-Stack EAL-loop scheduling, dynamic interface registration, FreeBSD m_copydata/invalid-context ownership or final initialization ordering.",
       "evidence": [
         "src/posix/lkl-channel.c",
         "src/posix/io-worker.c",
-        "tests/upstream/fstack/tests/unit/test_ff_init.c"
+        "tests/upstream/fstack/tests/unit/test_ff_init.c",
+        "src/posix/run-loop.c",
+        "tests/posix/run-stop.c",
+        "tests/posix/run-stop.py"
       ],
       "acceptance": [
         "Separate portable startup/ownership requirements from FreeBSD ABI/callback/ordering requirements for each listed case.",
@@ -277,7 +280,6 @@
         "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
         "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_safe",
         "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
-        "tests/unit/test_ff_init.c::test_ff_run_and_stop_forward",
         "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_if_up"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/223"

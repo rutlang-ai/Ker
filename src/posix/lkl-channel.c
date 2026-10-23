@@ -2,6 +2,7 @@
 #include "fd-table.h"
 #include "diagnostics.h"
 #include "lifecycle.h"
+#include "run-loop.h"
 #include "host-memory.h"
 #include "host-thread.h"
 #include "host-clock.h"
@@ -101,6 +102,9 @@ __attribute__((constructor)) static void initialize(void)
     if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_DGRAM)
         fail("packet descriptor is not a datagram channel", -EINVAL);
     if (syscall(SYS_fcntl, fd, F_SETFD, FD_CLOEXEC) < 0) fail("packet descriptor flags", -errno);
+    const char *run_channel = getenv("KER_RUN_FD");
+    if (run_channel && ker_run_control_init((int)parse_number(run_channel, INT_MAX)))
+        fail("run supervisor channel", -EINVAL);
     unsigned int parts[6];
     char extra;
     if (sscanf(required("LKL_HIJACK_NET_MAC"), "%x:%x:%x:%x:%x:%x%c",
@@ -297,9 +301,9 @@ __attribute__((constructor)) static void initialize(void)
         fail("startup acknowledgement", -EIO);
 
 }
-__attribute__((destructor)) static void finalize(void)
+int ker_native_finalize(void)
 {
-    if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return;
+    if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return 0;
     ker_fd_close_all();
     int drained = ker_native_drain(drain_timeout);
     if (drained) {
@@ -337,9 +341,18 @@ __attribute__((destructor)) static void finalize(void)
     ker_extra_interfaces_remove();
     lkl_netdev_remove(device->id);
     lkl_netdev_free(device);
-    lkl_sys_halt();
+    ker_mtu_control_close_all();
+    long halted = lkl_sys_halt();
     lkl_cleanup();
+    if (!drained && halted) drained = halted < 0 ? (int)halted : -EIO;
     const char *status = drained ? "KER_NATIVE_INCOMPLETE\n" : "KER_NATIVE_DONE\n";
     (void)syscall(SYS_write, startup_fd, status, strlen(status));
     syscall(SYS_close, startup_fd);
+    startup_fd = -1;
+    return drained;
+}
+__attribute__((destructor)) static void finalize(void)
+{
+    (void)ker_native_finalize();
+    ker_run_control_close();
 }

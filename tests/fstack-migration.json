@@ -891,7 +891,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "reason": "Native one-callback stop, real socket traffic, original-kernel teardown and acknowledged EAL cleanup are now executable. Separate Ethernet workers intentionally remain autonomous while the caller callback executes.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -904,9 +904,13 @@
         {
           "ctest": "ethdev-rx-fanout",
           "provenance_case": "ethdev-rx-fanout"
+        },
+        {
+          "ctest": "native-fstack-run-stop",
+          "provenance_case": "native-fstack-run-stop-once"
         }
       ],
-      "remaining": "Borrowed worker RX/budget tests do not implement the complete F-Stack run/stop callback lifecycle."
+      "remaining": "The source executes one complete F-Stack EAL main_loop iteration containing dispatch/message rings, RX, TX drain and top-status accounting, with the callback on the EAL lcore. Ker runs the callback in the native application process while separate EAL workers poll independently; one native callback does not prove exactly one original EAL main_loop turn. That coupled scheduling/ABI contract remains under issue223; do not count the new callback-once test as full source integration-loop equivalence."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
@@ -3975,15 +3979,14 @@
     {
       "id": "tests/unit/test_ff_init.c::test_ff_run_and_stop_forward",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Real Ker launcher/DPDK/imported Linux startup and shutdown scenario; distinct APIs and exit codes are documented in provenance.",
+      "status": "scenario-adapted",
+      "reason": "Native exported run/stop API forwards the caller callback and exact argument on the invoking thread, ignores callback return values, supports idempotent/external stop and rejects nested/concurrent run. Returning waits for original Linux socket/device/kernel teardown and explicit supervisor acknowledgement that both real EAL workers were reaped with zero owned mbufs. Independent host/native IPv4/IPv6 TCP/UDP traffic proves the callback runs against the original Linux stack. This is a native API adaptation, not an ff_run/ff_dpdk_run symbol or multi-lcore ABI implementation.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-startup-lifecycle",
-          "provenance_case": "native-fstack-startup-lifecycle-init"
+          "ctest": "native-fstack-run-stop",
+          "provenance_case": "native-fstack-run-stop-forward"
         }
-      ],
-      "remaining": "Worker control-channel stop and clean native teardown are exercised; F-Stack ff_run callback/argument forwarding and ff_stop_run ABI are not implemented."
+      ]
     },
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_freebsd_init",

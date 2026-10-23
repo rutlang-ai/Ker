@@ -1258,3 +1258,23 @@ Linux 内核的双向 IPv4/IPv6 ICMP、PCAP 和实际队列计数；该注入不
 当前可用 virtio-user/vhost 后端不支持全局 RSS，TAP 也没有本接口要求的 RETA/密钥读回
 能力，因此 RSS 请求会明确失败。物理设备分流、对称哈希、thash 源端口调整及 80/443
 表仍由 issue 220 跟踪，不计为完成迁移。所有 socket 端口和协议行为仍由原版 Linux 实现。
+
+调用方回调与同步运行停止
+
+`<ker/posix.h>` 导出 `int ker_posix_run(ker_posix_loop_func callback, void *arg)` 和
+`void ker_posix_stop_run(void)`。在 ker-run 已启动的原生实例内，run 在调用线程反复
+执行调用方回调，原样传递 arg；忽略回调整数返回值。NULL 回调等待另一线程请求停止。
+stop 可从回调或其他线程调用，重复调用幂等，run 之外调用不影响后续启动。它不是
+异步信号安全接口，也不会中断尚未返回的回调。嵌套/并发 run 返回 -1/EBUSY。
+
+最后一次回调返回前，调用方必须停用其他原生 socket 使用者；不要取消 run 线程、
+longjmp 或从回调跳过其返回路径。run 会关闭原生 fd、等待内核发送队列、移除接口、
+停掉原版 Linux，再请求父 launcher 关闭、回收所有 DPDK worker。只有全部 worker
+已退出、零缓冲区所有权、私有 packet/MTU/启动/确认 fd 已关闭且内核关闭完成才返回0；超时或失败返回-1/errno。一次 run
+消耗当前实例，之后 capabilities 为0、kernel_release 为NULL，socket/再次 run 返回
+ENETDOWN；应用仍可继续执行普通宿主操作。进程析构不会再次停内核。
+
+接口依赖 launcher 继承的私有 SOCK_SEQPACKET 确认通道，该 fd 在原生构造时标记
+CLOEXEC。它没有实现 F-Stack 同进程 ff_run/ff_dpdk_run 符号或多 lcore/耦合轮询 ABI；
+业务回调仍完全由调用方提供。`--stats` 的 run_shutdown、run_shutdown_workers、
+run_shutdown_ack 仅在使用本接口时记录监督者的实际清理结果。
