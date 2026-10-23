@@ -180,6 +180,16 @@ def main():
                                         'frames were not received on queue 1 with RSS disabled: ' + str(record))
                             require(record['tx'] > 0 and record['rx'] > 0 and record['outstanding'] == 0,
                                     'missing actual traffic or leaked virtio buffers')
+                            require(info['queues'] == (2 if args.queue_one else 1) and info['data_tx_queue'] == 0,
+                                    'active pairs or application TX queue differ from request')
+                            counts = record['rx_by_queue']
+                            require(len(counts) == info['queues'] and sum(counts) == record['rx'] + record['rx_dropped'] + record.get('rx_shutdown_discarded', 0) - record.get('rx_startup_discarded', 0),
+                                    'queue accounting differs from received frames')
+                            if args.queue_one:
+                                require(counts[0] == 0 and counts[1] > 0,
+                                        'independently injected queue-1 frames were not received: ' + str(counts))
+                                require(info['rss'] is None, 'queue injection was mislabeled as RSS')
+                                print('PASS: actual PMD rx_by_queue=' + str(counts) + '; RSS disabled', flush=True)
                             mtu.wire(capture, 1500)
                             print('PASS: ' + name + ' typed virtio-user queue_size=' + str(queue_size) +
                                 ', real vhost/TAP IPv4/IPv6 and zero leaks', flush=True)

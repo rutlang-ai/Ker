@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "native-buffer.h"
 #include "mtu-control.h"
 #include "syscall-result.h"
 #include <errno.h>
@@ -53,8 +54,20 @@ FD_CALL(getsockname, (int fd, struct sockaddr *address, socklen_t *length),
     (fd, address, length), (entry->native, (void *)address, (void *)length))
 FD_CALL(getpeername, (int fd, struct sockaddr *address, socklen_t *length),
     (fd, address, length), (entry->native, (void *)address, (void *)length))
-FD_CALL(setsockopt, (int fd, int level, int option, const void *value, socklen_t length),
-    (fd, level, option, value, length), (entry->native, level, option, (void *)value, length))
+int setsockopt(int fd, int level, int option, const void *value, socklen_t length)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_setsockopt, fd, level, option, value, length);
+    struct ker_native_option_guard *guard = NULL;
+    int token = level == SOL_SOCKET && option == SO_ZEROCOPY ? ker_native_buffer_option_begin(entry->native, &guard) : 0;
+    long result;
+    if (token < 0) result = token;
+    else if (guard && length >= sizeof(int) && !value) result = -EFAULT;
+    else result = lkl_sys_setsockopt(entry->native, level, option, (void *)value, length);
+    ker_native_buffer_send_end(guard);
+    ker_fd_put(entry);
+    return (int)ker_native_result(result);
+}
 FD_CALL(getsockopt, (int fd, int level, int option, void *value, socklen_t *length),
     (fd, level, option, value, length), (entry->native, level, option, value, (void *)length))
 
@@ -86,16 +99,34 @@ IO_CALL(readv, (int fd, const struct iovec *iov, int count), (fd, iov, count),
     (entry->native, (void *)iov, count), MSG_NOSIGNAL)
 IO_CALL(writev, (int fd, const struct iovec *iov, int count), (fd, iov, count),
     (entry->native, (void *)iov, count), 0)
-IO_CALL(sendto, (int fd, const void *bytes, size_t length, int flags,
-    const struct sockaddr *address, socklen_t address_length),
-    (fd, bytes, length, flags, address, address_length),
-    (entry->native, (void *)bytes, length, flags, (void *)address, address_length), flags)
+ssize_t sendto(int fd, const void *bytes, size_t length, int flags,
+    const struct sockaddr *address, socklen_t address_length)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_sendto, fd, bytes, length, flags, address, address_length);
+    struct iovec vector = {(void *)bytes, length};
+    struct ker_native_option_guard *guard = NULL;
+    int token = ker_native_buffer_send_begin(entry->native, &vector, 1, flags, &guard);
+    long result = token < 0 ? token : lkl_sys_sendto(entry->native, (void *)bytes,
+        length, flags, (void *)address, address_length);
+    ker_native_buffer_send_end(guard);
+    return sent(entry, result, flags);
+}
 IO_CALL(recvfrom, (int fd, void *bytes, size_t length, int flags,
     struct sockaddr *address, socklen_t *address_length),
     (fd, bytes, length, flags, address, address_length),
     (entry->native, bytes, length, flags, (void *)address, (void *)address_length), MSG_NOSIGNAL)
-IO_CALL(sendmsg, (int fd, const struct msghdr *message, int flags), (fd, message, flags),
-    (entry->native, (void *)message, flags), flags)
+ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_sendmsg, fd, message, flags);
+    struct ker_native_option_guard *guard = NULL;
+    int token = message ? ker_native_buffer_send_begin(entry->native,
+        message->msg_iov, message->msg_iovlen, flags, &guard) : -EFAULT;
+    long result = token < 0 ? token : lkl_sys_sendmsg(entry->native, (void *)message, flags);
+    ker_native_buffer_send_end(guard);
+    return sent(entry, result, flags);
+}
 IO_CALL(recvmsg, (int fd, struct msghdr *message, int flags), (fd, message, flags),
     (entry->native, (void *)message, flags), MSG_NOSIGNAL)
 ssize_t send(int fd, const void *bytes, size_t length, int flags)
@@ -110,8 +141,28 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_sendmmsg, fd, messages, count, flags);
-    long value = lkl_sys_sendmmsg(entry->native, (void *)messages, count, flags);
-    return sent(entry, value, flags);
+    if (!(flags & MSG_ZEROCOPY) || !count) {
+        long value = lkl_sys_sendmmsg(entry->native, (void *)messages, count, flags);
+        return (int)sent(entry, value, flags);
+    }
+    /* Validate each original Linux operation just before execution, so a late
+     * bad buffer retains sendmmsg's accepted-prefix and msg_len semantics. */
+    if (count > IOV_MAX) count = IOV_MAX;
+    if (count && !messages) return (int)sent(entry, -EFAULT, flags);
+    unsigned int done = 0;
+    long value = 0;
+    while (done < count) {
+        struct msghdr *message = &messages[done].msg_hdr;
+        struct ker_native_option_guard *guard = NULL;
+        int token = ker_native_buffer_send_begin(entry->native,
+            message->msg_iov, message->msg_iovlen, flags, &guard);
+        value = token < 0 ? token : lkl_sys_sendmmsg(entry->native,
+            (void *)&messages[done], 1, flags | (done + 1 < count ? MSG_BATCH : 0));
+        ker_native_buffer_send_end(guard);
+        if (value <= 0) break;
+        done++;
+    }
+    return (int)sent(entry, done ? (long)done : value, flags);
 }
 int recvmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags, struct timespec *timeout)
 {

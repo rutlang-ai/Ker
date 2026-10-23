@@ -26,6 +26,7 @@ def main():
     for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--native-buffers', action='store_true')
     args = parser.parse_args()
     modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_net_virtio.so'))
     if not modules:
@@ -42,6 +43,7 @@ def main():
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
         for name in ('launcher', 'library', 'worker', 'app', 'pmd-root', 'failure-library'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        if args.native_buffers: command.append('--native-buffers')
         return subprocess.run(command, env=environment).returncode
     for command in (
             ['ip', 'link', 'set', 'lo', 'up'],
@@ -151,12 +153,38 @@ def main():
                             output, _ = process.communicate('G', timeout=25)
                             require(process.returncode == 0 and output.count('PASS:') == 2,
                                     'native virtio offload execution failed: ' + output)
+                            completion_records = [json.loads(line.removeprefix('BUFFER_COMPLETIONS '))
+                                for line in output.splitlines() if line.startswith('BUFFER_COMPLETIONS ')]
+                            if args.native_buffers:
+                                require(len(completion_records) == 2, 'missing original Linux zerocopy completions')
+                                for completions in completion_records:
+                                    require(completions['copied'] + completions['direct'] >= 20,
+                                            'missing successful send completion IDs')
+                                    require(completions['copied_bytes'] + completions['direct_bytes'] == 512 * 1024 + 1912,
+                                            'completion ranges do not cover every submitted payload byte')
+                                    if mode == 'off':
+                                        require(completions['udp_copied_bytes'] == 1912,
+                                                'missing original UDP copying fallback without SG')
+                                    else:
+                                        require(completions['tcp_direct_bytes'] > 0,
+                                                'no non-COPIED original TCP page-reference completion')
+                                print('PASS: original Linux socket-stage completions=' + str(completion_records) +
+                                      '; packet-channel copies remain', flush=True)
                             for peer in peers:
                                 peer.result(timeout=2)
                             stop.set()
                             counts = recording.result(timeout=2)
                             record = json.loads(stats.read_text())
                             info = record['io']
+                            if args.native_buffers:
+                                require(record.get('run_shutdown_ack') and record.get('run_shutdown'),
+                                        'native buffer teardown did not receive EAL acknowledgement')
+                                native = record['native']
+                                require(native['buffer_allocations'] >= 75 and
+                                        native['buffer_allocations'] == native['buffer_releases'] and
+                                        native['buffer_shutdown_releases'] == 1 and
+                                        native['buffers_live'] == native['buffer_bytes'] == native['buffer_option_guards_live'] == 0,
+                                        'native VMA lifetime/reclamation failure: ' + str(native))
                             require(info['driver'] == 'net_virtio_user' and info['mac'] == '02:11:22:33:44:55',
                                     'typed kernel backend did not reach original PMD')
                             require(info['queues'] == queues and info['max_rx_queues'] == queues and info['rx_descriptors'] == 512,

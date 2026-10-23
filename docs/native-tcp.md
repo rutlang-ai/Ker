@@ -1364,3 +1364,22 @@ TAP 运行检查实际 IPv4/IPv6 TSO 请求、两条各512KiB完整 TCP 数据�
 全部校验和、分段MTU、零抓包丢失、零未归还mbuf及1600/1500原生/PMD队列停启。
 此处不宣称 host TAP 的 MTU 被 PMD MTU API 同步设置，也不将多队列流量称为 RSS。
 缺少 PMD 或可访问的 vhost 设备时，该专用验收明确跳过，不记为功能通过。
+
+
+原版 Linux VMA 缓冲区与 MSG_ZEROCOPY
+
+`ker_posix_buffer_alloc/free` 提供原版 Linux 登记的匿名 VMA，解决宿主 malloc
+内存无法直接用于 LKL 页固定的问题。启用 SO_ZEROCOPY 后，MSG_ZEROCOPY 的
+非空 iovec 必须位于已登记缓冲区内，否则在页查找前返回 EFAULT。
+SO_ZEROCOPY 未启用时，Linux 原有的忽略标志/复制发送行为保持有效。
+调用者必须处理真实 MSG_ERRQUEUE 完成编号范围，包括 COPIED 回退，再复用数据；
+完成码0也不能证明后续设备/通道没有复制。sendmmsg 的晚发错误保留已成功前缀。
+完整合同与测试边界见 [native-buffers.md](native-buffers.md)。
+
+退出先关闭/排空套接字，再释放剩余 VMA，最后停止 Linux/EAL。显式 run 返回后
+指针失效，迟到的 alloc/free 返回 ENETDOWN。`native.buffer_*` 记录映射与控制锁
+回收，不作为物理页或 NIC 零拷贝证明。`rx_shutdown_discarded` 单列停止交付后
+回收的已读 RX 后缀，避免早期 run 停止时队列计数有包却无去向。
+13项源案例的owned-chain/write-cursor合同尚未等价映射，继续由issue225保留。
+当前Unix packet record和worker仍复制，不能计为端到端零拷贝；但上游默认DPDK
+路径也复制，移除这些复制并非全部13项socket快路径测试的额外前提。

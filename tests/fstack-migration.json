@@ -4306,91 +4306,91 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_negative_len_returns_error",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "The upstream test mirrors FreeBSD mbuf algorithms. Ker has no ff_zc API; its zero-copy ownership contract cannot be replaced with this mirror.",
+      "reason": "The source mirrors FreeBSD mbuf/header and owned-chain send algorithms. Original-Linux VMA mappings and real MSG_ZEROCOPY completion/range guards now exist, but do not implement the source owned-chain/write-cursor ABI. Issue225 retains case-specific contract review. Ker packet-channel copies prevent an end-to-end claim; removing them is a separate stronger milestone, since the upstream default DPDK path also copies. No new source-case pass is claimed.",
       "ker_tests": []
     },
     {

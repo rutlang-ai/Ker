@@ -995,3 +995,18 @@ checksum、TSO4、TSO6、MTU 队列停启、持久接口标志恢复、缺少 if
 源配置的 iface+Unix socket 字面组合仍不被固定版本 DPDK 支持，不能以受支持的
 kernel tuple 冒充原例全部通过，C 分配器/combined topology 也仍由 issue224 保留。
 当前仍为136 scenario-adapted、21 partial、213 blocked，共234项未完成。
+
+
+2026-10-23 原版 Linux 登记缓冲区批次
+
+新增实际 Linux mmap/munmap 支撑的缓冲区，供原生 MSG_ZEROCOPY 固定页与完成
+通知使用。核实原版 F-Stack ff_veth.c/ff_syscall_wrapper.c 后保留 FreeBSD
+mbuf交接ABI边界，不复制其算法镜像。未登记内存在页查找前明确 EFAULT，SO未开启
+和无标志的复制发送保持原义；socket别名按原版SO_COOKIE同步选项，sendmmsg保留
+已成功前缀。测试在真实网络上消费完成编号并区分COPIED，验证跨线程VMA生命周期、
+完整TCP/UDP线包和显式run后的映射/控制锁/EAL回收。停止时RX后缀回收单独计数。
+13项源案例仍缺少等价的owned-chain/write-cursor合同，issue225保留逐项审查。
+F-Stack默认ff_dpdk_if_send同样复制；FF_USE_PAGE_ARRAY是独立可选路径。
+Unix packet通道零拷贝是更强的后续里程碑，不额外作为全部13项socket快路径测试
+的完成前提，也不能由完成码0冒充；其所有权/背压/故障停机要求另行保留。
+当前仍为136 scenario-adapted、21 partial、213 blocked，共234项未完成。

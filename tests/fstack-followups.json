@@ -335,16 +335,21 @@
       "id": "zero-copy-ownership",
       "title": "Define a Linux-native zero-copy send and ownership contract",
       "disposition": "contract-review",
-      "reason": "F-Stack ff_zc_send and FreeBSD mbuf/header mutation APIs are absent; the pinned source suite mirrors mbuf algorithms. Ker copied/borrowed chain exporters are not a substitute zero-copy socket API.",
+      "reason": "The real pinned source uses FreeBSD owned-chain sends, while unit tests mirror mbuf/header algorithms. Linux VMA buffers and original MSG_ZEROCOPY wire/completion/lifetime acceptance now exist; source owned-chain/write-cursor contracts still need case-specific review. The upstream default DPDK path also copies, so packet-copy removal is a distinct stronger milestone rather than a prerequisite for all13 socket-stage cases.",
       "evidence": [
         "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
         "src/runtime/tx-export.c",
-        "src/posix/packet-device.c"
+        "src/posix/packet-device.c",
+        "src/posix/native-buffer.c",
+        "src/posix/posix-socket.c",
+        "tests/posix/native-buffer-test.h",
+        "docs/native-buffers.md"
       ],
       "acceptance": [
         "Decide whether an actual Linux-backed zero-copy socket/export API belongs in Ker and define buffer lifetime/completion/error semantics.",
         "Use real kernel/DPDK ownership adapters and test invalid lengths, zero sends, partial sends, multisegment lifetime, reclamation and failure paths.",
-        "Do not copy a FreeBSD algorithm mirror, rename a copying path zero-copy, or return success for unsupported operations."
+        "Do not copy a FreeBSD algorithm mirror, rename a copying path zero-copy, or return success for unsupported operations.",
+        "Separate optional end-to-end payload-copy-free transport work from socket-stage case acceptance: upstream default ff_dpdk_if_send also copies and FF_USE_PAGE_ARRAY is optional. Any stronger transport claim needs actual release acknowledgements, backpressure, retained suffix, worker-failure and teardown proof; completion code zero alone is insufficient."
       ],
       "cases": [
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",

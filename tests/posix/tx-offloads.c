@@ -15,6 +15,9 @@ static void check(bool success, const char *message)
 {
     if (!success) { perror(message); exit(1); }
 }
+#ifdef KER_TEST_NATIVE_BUFFERS
+#include "native-buffer-test.h"
+#endif
 static void reconfigure(void)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -52,6 +55,9 @@ int main(int argc, char **argv)
         "usage: tx-offloads PORT [failure|wait|tap-extension]");
     if (wait_for_link) { puts("READY"); fflush(stdout); check(getchar() == 'G', "wait for independent link"); }
     int port = atoi(argv[1]);
+#ifdef KER_TEST_NATIVE_BUFFERS
+    buffer_init(); buffer_guards();
+#endif
     if (argc == 2 || wait_for_link || tap_extension) reconfigure();
     for (unsigned family = 0; family < 2; family++) {
         struct sockaddr_storage target = {0};
@@ -74,13 +80,26 @@ int main(int argc, char **argv)
             sleep(5);
             return 0;
         }
+        int send_flags = MSG_NOSIGNAL;
+#ifdef KER_TEST_NATIVE_BUFFERS
+        buffer_socket(fd, family, false); send_flags |= MSG_ZEROCOPY;
+#endif
         unsigned lengths[] = {0, 1, 511, 1400};
         for (unsigned index = 0; index < 4; index++) {
-            unsigned char bytes[1400], reply[1400];
+            unsigned char reply[1400];
+#ifdef KER_TEST_NATIVE_BUFFERS
+            unsigned char *bytes = buffer_allocate(1400); check(bytes, "UDP native mapping");
+#else
+            unsigned char bytes[1400];
+#endif
             for (unsigned i = 0; i < lengths[index]; i++) bytes[i] = (unsigned char)(i * 17 + family);
-            check(send(fd, bytes, lengths[index], 0) == lengths[index], "UDP send");
+            check(send(fd, bytes, lengths[index], send_flags) == lengths[index], "UDP send");
             check(recv(fd, reply, sizeof(reply), 0) == lengths[index] &&
                 !memcmp(bytes, reply, lengths[index]), "UDP exact reply");
+#ifdef KER_TEST_NATIVE_BUFFERS
+            buffer_sent(lengths[index], true); buffer_complete(fd);
+            check(!buffer_release(bytes), "UDP release after completion");
+#endif
         }
         if (family && tap_extension) {
             /* Linux emits CHECKSUM_PARTIAL metadata for this valid IPv6
@@ -104,25 +123,43 @@ int main(int argc, char **argv)
         check(fd >= 0 && !connect(fd, (void *)&target, size), "native TCP");
         check(!setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) &&
             !setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)), "TCP timeout");
-        unsigned char block[32768];
+        enum { block_size = 32768 };
+#ifdef KER_TEST_NATIVE_BUFFERS
+        buffer_socket(fd, family, true);
+        unsigned char *block = buffer_allocate(block_size); check(block, "TCP native mapping");
+#else
+        unsigned char block[block_size];
+#endif
         for (unsigned index = 0; index < 16; index++) {
-            for (unsigned i = 0; i < sizeof(block); i++) {
-                unsigned position = index * (unsigned)sizeof(block) + i;
+            for (unsigned i = 0; i < block_size; i++) {
+                unsigned position = index * (unsigned)block_size + i;
                 block[i] = (unsigned char)((position * 17) ^ (position >> 8) ^ (position >> 16) ^ family);
             }
             unsigned offset = 0;
-            while (offset < sizeof(block)) {
-                ssize_t count = send(fd, block + offset, sizeof(block) - offset, MSG_NOSIGNAL);
+            while (offset < block_size) {
+                ssize_t count = send(fd, block + offset, block_size - offset, send_flags);
                 check(count > 0, "TCP bulk send"); offset += (unsigned)count;
+#ifdef KER_TEST_NATIVE_BUFFERS
+                buffer_sent((size_t)count, false);
+#endif
             }
+#ifdef KER_TEST_NATIVE_BUFFERS
+            buffer_complete(fd); /* Wait before rewriting any referenced bytes. */
+#endif
             struct timespec capture_budget = {.tv_nsec = 5000000};
             nanosleep(&capture_budget, NULL);
         }
+#ifdef KER_TEST_NATIVE_BUFFERS
+        check(!buffer_release(block), "TCP mapping release after completions");
+#endif
         check(!shutdown(fd, SHUT_WR), "TCP half close");
         char ack[8];
         check(recv(fd, ack, sizeof(ack), MSG_WAITALL) == sizeof(ack) && !memcmp(ack, "ACK-DONE", sizeof(ack)), "TCP bulk ack");
         check(recv(fd, ack, sizeof(ack), 0) == 0 && !close(fd), "TCP peer EOF/close");
         printf("PASS: original Linux IPv%u TCP512KiB and UDP boundary lengths\n", family ? 6 : 4);
     }
+#ifdef KER_TEST_NATIVE_BUFFERS
+    buffer_finish();
+#endif
     return 0;
 }

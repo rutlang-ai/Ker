@@ -2,6 +2,7 @@
 #include "fd-table.h"
 #include "diagnostics.h"
 #include "lifecycle.h"
+#include "native-buffer.h"
 #include "run-loop.h"
 #include "host-memory.h"
 #include "host-thread.h"
@@ -318,16 +319,21 @@ int ker_native_finalize(void)
     }
     static const char stopping[] = "KER_NATIVE_STOPPING\n";
     (void)syscall(SYS_write, startup_fd, stopping, sizeof(stopping) - 1);
+    struct ker_native_buffer_counters buffers;
+    int unmapped = ker_native_buffers_close_all(&buffers);
+    if (!drained && unmapped) drained = unmapped;
     struct ker_native_counters counters;
     int diagnosed = ker_native_counters(&counters);
     if (!diagnosed) {
         char json[2048];
-        int length = snprintf(json, sizeof(json), "KER_NATIVE_STATS {\"active_opens\":%llu,\"passive_opens\":%llu,"
+        int length = snprintf(json, sizeof(json), "KER_NATIVE_STATS {\"buffer_allocations\":%llu,\"buffer_releases\":%llu,\"buffer_shutdown_releases\":%llu,\"buffers_live\":%llu,\"buffer_bytes\":%llu,\"buffer_option_guards_live\":%llu,\"active_opens\":%llu,\"passive_opens\":%llu,"
             "\"retransmitted_segments\":%llu,\"zero_window_probes\":%llu,\"out_of_order_queued\":%llu,"
             "\"udp_in_datagrams\":%llu,\"udp_out_datagrams\":%llu,\"udp_in_errors\":%llu,\"udp_no_ports\":%llu,"
             "\"udp6_in_datagrams\":%llu,\"udp6_out_datagrams\":%llu,\"udp6_in_errors\":%llu,\"udp6_no_ports\":%llu,"
             "\"ip6_frag_ok\":%llu,\"ip6_frag_creates\":%llu,\"ip6_reasm_ok\":%llu,\"ip6_reasm_fails\":%llu,\"ip6_reasm_timeouts\":%llu,"
             "\"ip_frag_ok\":%llu,\"ip_frag_creates\":%llu,\"ip_reasm_ok\":%llu,\"ip_reasm_fails\":%llu,\"tcp_ecn\":%llu}\n",
+            (unsigned long long)buffers.allocations, (unsigned long long)buffers.releases,
+            (unsigned long long)buffers.shutdown_releases, (unsigned long long)buffers.live, (unsigned long long)buffers.bytes, (unsigned long long)buffers.option_guards_live,
             (unsigned long long)counters.active_opens, (unsigned long long)counters.passive_opens,
             (unsigned long long)counters.retransmitted_segments, (unsigned long long)counters.zero_window_probes,
             (unsigned long long)counters.out_of_order_queued,
