@@ -57,6 +57,35 @@ def client(command, env):
     return result.stdout
 
 
+def application_environment(args, launcher, work, env):
+    if not args.environment_app:
+        return
+    case_env = dict(env, KER_TEST_ENVIRONMENT_VALUE='hello-world',
+                    KER_PRELOAD_LIBRARY='inherited-value-must-be-replaced')
+    case_env.pop('LD_PRELOAD', None)
+    for valid in (False, True):
+        stats_path = work / ('application-environment-' + str(valid) + '.json')
+        expected = str(args.library.resolve()) if valid else 'wrong-preload-value'
+        result = subprocess.run([*launcher, '--stats', str(stats_path), '--',
+            str(args.environment_app), expected], env=case_env, capture_output=True,
+            text=True, timeout=30)
+        stats = json.loads(stats_path.read_text())
+        marker = 'PASS: ker-app environment roundtrip, internal-key removal and original Linux TCP'
+        if valid:
+            if result.returncode or marker not in result.stdout:
+                raise RuntimeError('application environment contract failed: ' + result.stdout + result.stderr)
+            if stats['native']['active_opens'] != 1 or stats['native']['passive_opens'] != 1:
+                raise RuntimeError('environment app missed original Linux TCP: ' + str(stats))
+        elif (result.returncode != 1 or marker in result.stdout or
+              'strcmp(preload, argv[1])' not in result.stderr or
+              stats['native']['active_opens'] or stats['native']['passive_opens']):
+            raise RuntimeError('wrong preload expectation did not fail before application traffic: ' +
+                               result.stdout + result.stderr + str(stats))
+        if stats['outstanding']:
+            raise RuntimeError('environment app leaked packet buffers: ' + str(stats))
+    print(marker + '; mismatched value rejected before TCP', flush=True)
+
+
 def dualstack(args, launcher, work, env, log):
     if not args.dualstack_app:
         return
@@ -2022,6 +2051,7 @@ def inside(args):
                             stats['native']['udp_out_datagrams'] < 18):
                         raise RuntimeError('empty datagram scenarios missed native UDP: ' + str(stats))
                     print('native F-Stack ' + name + ': ' + json.dumps(stats), flush=True)
+                application_environment(args, launcher, work, env)
                 tcp_ecn(args, launcher, work, env, log)
                 dualstack(args, launcher, work, env, log)
                 tcp_listener_restart(args, launcher, work, env, log)
@@ -2103,6 +2133,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ['launcher', 'library', 'io-worker', 'app']:
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--environment-app', type=Path)
     parser.add_argument('--ecn-app', type=Path)
     parser.add_argument('--capture', action='store_true')
     parser.add_argument('--worker-log', action='store_true')

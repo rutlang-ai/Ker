@@ -449,7 +449,8 @@
         "tests/upstream/fstack/tests/unit/test_ff_host_interface.c",
         "src/posix/native-buffer.c",
         "tests/posix/native-buffer-resize.c",
-        "docs/native-buffers.md"
+        "docs/native-buffers.md",
+        "docs/application-environment.md"
       ],
       "acceptance": [
         "Determine an actual Ker/LKL consumer and contract for each helper, or record why the source-specific API is unsuitable.",
@@ -459,7 +460,6 @@
       "cases": [
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
         "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
-        "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",

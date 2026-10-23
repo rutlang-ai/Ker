@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 179 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 180 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 165 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 164 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 254 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 184 项是
-19 partial + 165 blocked，另有 15 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 253 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 183 项是
+19 partial + 164 blocked，另有 15 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -72,7 +72,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve remaining typed configuration and intentional schema differences | 17 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 10 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 9 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
 | Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
@@ -139,7 +139,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 15 | 0 | 10 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 25 | 0 | 9 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 26 | 0 | 8 | 0 | 0 |
 | [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 19 | 1 | 5 | 0 | 0 |
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
@@ -1240,4 +1240,17 @@ Ker 只提供运行时与设备适配。半开连接路由仍须先证明原版 
 
 [精确源合同](fstack-page-array-contracts.md)确认两项 page-array 用例检查的是 F-Stack 构建模式中 BSD mbuf 引用不能跨进程释放所引起的 reload 开关限制，不是待实现的通用 Linux page-array 分配器。两项从 #218 转到 #232 架构专属组，保留源 ID，不添加无消费者的构建开关或通过映射。当前179适配、19partial、165blocked、15架构专属、55harness-only，仍有184项未完成；#218保留79项。
 
-[实际 EAL 探针](fstack-reload-environment.md)证明本机 no-huge primary 可启动，但同命名空间 secondary 在共享内存初始化前失败；hugepage primary 则没有可用 hugepage。该环境证据不构成 secondary/PMD/网络通过，也不改变79项 reload缺口。
+[实际 EAL 探针](fstack-reload-environment.md) 证明本机 no-huge primary 可启动，
+但同命名空间 secondary 在共享内存初始化前失败；hugepage primary 则没有可用
+hugepage。该环境证据不构成 secondary/PMD/网络通过，也不改变79项 reload缺口。
+
+## 实际应用环境变量往返
+
+`native-fstack-application-environment` 将源环境变量往返场景接到现有 `ker-app`
+的 getenv/setenv/exec 消费路径。实际应用读取精确 preload 值、确认内部键删除并
+保留 hello-world 应用环境；随后在原版 Linux 中完成 TCP 收发，要求精确连接计数
+和零 outstanding mbuf。错误预期值须在 TCP 前失败。
+[适配边界](application-environment.md) 不宣称 ff_* ABI 或 libc-only 成功。
+
+当前180项场景适配、19partial、164blocked、15架构专属、55harness-only；
+183项 blocked/partial 仍未完成。#229剩余9项，其他合同继续保留。
