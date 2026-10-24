@@ -144,6 +144,7 @@ def lease(args):
             input_open = True
             stdin_eof = False
             pending = bytearray()
+            input_abandoned = False
             forwarded_signal = 0
             escalation = 0
             termination_deadline = None
@@ -206,6 +207,18 @@ def lease(args):
                                 del pending[:count]
                             except BlockingIOError:
                                 pass
+                            except BrokenPipeError:
+                                # The secondary may consume only a readiness
+                                # command and exit without draining redirected
+                                # stdin. Stop forwarding and preserve its real
+                                # exit status instead of treating EPIPE as a
+                                # supervisor failure.
+                                pending.clear()
+                                input_abandoned = True
+                                input_open = False
+                                try: selector.unregister(stdin_fd)
+                                except KeyError: pass
+                                close_child_control()
                     if stdin_eof and not pending:
                         close_child_control()
                     if forwarded_signal and worker.poll() is None and time.monotonic() >= termination_deadline:
@@ -232,6 +245,10 @@ def lease(args):
         if termination_signal:
             print('KER_SESSION_SUPERVISOR_STOP ' + json.dumps(dict(signal=termination_signal,
                 worker_status=result, escalated=shutdown_escalated)), flush=True)
+        if worker is not None:
+            print('KER_SESSION_CHILD_REAP ' + json.dumps(dict(pid=worker.pid,
+                status=result, escalated=shutdown_escalated,
+                input_abandoned=input_abandoned)), flush=True)
         if control_write >= 0:
             close_fd('control_write')
         if ticket is not None:

@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Exercise the production lease relay with stdin descriptors epoll rejects."""
+"""Exercise production lease relay EOF, large input and early child exit."""
 import argparse
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 
 
 def require(value, message):
     if not value:
         raise RuntimeError(message)
+
+
+def child_reap(output):
+    records = [line.removeprefix('KER_SESSION_CHILD_REAP ')
+        for line in output.splitlines() if line.startswith('KER_SESSION_CHILD_REAP ')]
+    require(len(records) == 1, 'expected exactly one child reap record: ' + output)
+    return json.loads(records[0])
 
 
 def main():
@@ -66,6 +76,30 @@ with open(os.environ['KER_SESSION_RELAY_CAPTURE'], 'wb') as output:
 with open(os.environ['KER_SESSION_RELAY_TICKET'], 'wb') as output:
     output.write(ticket)
 '''
+    fast_worker_source = '''#!/usr/bin/python3
+import os
+import sys
+import time
+control = int(sys.argv[sys.argv.index('--control-fd') + 1])
+ticket_fd = int(sys.argv[sys.argv.index('--ticket-fd') + 1])
+ticket = bytearray()
+while len(ticket) < 88:
+    chunk = os.read(ticket_fd, 88 - len(ticket))
+    if not chunk:
+        raise SystemExit(2)
+    ticket.extend(chunk)
+os.close(ticket_fd)
+os.close(control)
+with open(os.environ['KER_SESSION_RELAY_TICKET'], 'wb') as output:
+    output.write(ticket)
+with open(os.environ['KER_SESSION_RELAY_CLOSED'], 'w') as output:
+    output.write(str(os.getpid()))
+deadline = time.monotonic() + 10
+while not os.path.exists(os.environ['KER_SESSION_RELAY_GO']):
+    if time.monotonic() >= deadline:
+        raise SystemExit(3)
+    time.sleep(0.001)
+'''
 
     with tempfile.TemporaryDirectory(prefix='ker-lease-input-') as directory:
         root = Path(directory)
@@ -74,16 +108,17 @@ with open(os.environ['KER_SESSION_RELAY_TICKET'], 'wb') as output:
         worker.chmod(0o700)
         empty = root / 'stdin-empty'
         empty.write_bytes(b'')
-        binary = b'\x00\xff\ncontrol\x80\x00'
+        binary = bytes(index % 251 for index in range(1024 * 1024))
         data_file = root / 'stdin-binary'
         data_file.write_bytes(binary)
 
         cases = (
             ('/dev/null', lambda: open(os.devnull, 'rb'), b''),
             ('empty regular file', lambda: empty.open('rb'), b''),
-            ('binary regular file', lambda: data_file.open('rb'), binary),
+            ('1 MiB binary regular file', lambda: data_file.open('rb'), binary),
         )
         original_stdin = api.sys.stdin
+        original_stdout = api.sys.stdout
         try:
             for index, (label, open_input, expected) in enumerate(cases):
                 capture = root / f'capture-{index}'
@@ -91,10 +126,13 @@ with open(os.environ['KER_SESSION_RELAY_TICKET'], 'wb') as output:
                 os.environ['KER_SESSION_RELAY_CAPTURE'] = str(capture)
                 os.environ['KER_SESSION_RELAY_TICKET'] = str(ticket_capture)
                 api.sys.stdin = open_input()
+                stdout = io.StringIO()
+                api.sys.stdout = stdout
                 try:
                     result = api.lease(SimpleNamespace(socket=root / 'unused.sock', worker=worker,
                         generation=0, process=0, eal=''))
                 finally:
+                    api.sys.stdout = original_stdout
                     api.sys.stdin.close()
                     api.sys.stdin = original_stdin
                 require(result == 0, label + ' did not complete normally')
@@ -104,11 +142,73 @@ with open(os.environ['KER_SESSION_RELAY_TICKET'], 'wb') as output:
                         label + ' bytes were not forwarded exactly: ' + repr(capture.read_bytes()))
                 require(ticket_capture.read_bytes() == api.encode(ticket),
                         label + ' worker did not receive the exact registration ticket')
-                print('PASS: ' + label + ' EOF/relay, exact bytes, child shutdown and lease release')
+                reaped = child_reap(stdout.getvalue())
+                require(reaped['status'] == 0 and not reaped['escalated'] and
+                        not reaped['input_abandoned'],
+                        label + ' child did not exit cleanly: ' + repr(reaped))
+                print('PASS: ' + label + ' exact relay, child status and lease release')
+
+            # Force the actual adapter to write only after its child closes
+            # the control reader. The 1 MiB regular file exceeds pipe capacity.
+            fast_worker = root / 'fast-worker.py'
+            fast_worker.write_text(fast_worker_source)
+            fast_worker.chmod(0o700)
+            closed = root / 'control-closed'
+            go = root / 'allow-exit'
+            ticket_capture = root / 'fast-ticket'
+            os.environ['KER_SESSION_RELAY_CLOSED'] = str(closed)
+            os.environ['KER_SESSION_RELAY_GO'] = str(go)
+            os.environ['KER_SESSION_RELAY_TICKET'] = str(ticket_capture)
+            api.sys.stdin = data_file.open('rb')
+            stdout = io.StringIO()
+            api.sys.stdout = stdout
+            real_write = api.os.write
+            write_count = 0
+
+            def coordinated_write(fd, data):
+                nonlocal write_count
+                try:
+                    count = real_write(fd, data)
+                except BrokenPipeError:
+                    go.touch()
+                    raise
+                write_count += 1
+                if write_count == 1:
+                    require(data == api.encode(ticket), 'first relay write was not the lease ticket')
+                    deadline = time.monotonic() + 10
+                    while not closed.exists():
+                        require(time.monotonic() < deadline, 'fast worker did not close its control reader')
+                        time.sleep(0.001)
+                return count
+
+            api.os.write = coordinated_write
+            try:
+                result = api.lease(SimpleNamespace(socket=root / 'unused.sock', worker=fast_worker,
+                    generation=0, process=0, eal=''))
+            finally:
+                api.os.write = real_write
+                api.sys.stdout = original_stdout
+                api.sys.stdin.close()
+                api.sys.stdin = original_stdin
+            require(write_count >= 1 and go.exists(), 'fixture did not force control-pipe EPIPE')
+            require(result == 0, 'closed control reader changed successful child status')
+            require(state.connection.released == 1 and state.connection.closed,
+                    'closed control reader did not release the exact lease')
+            require(ticket_capture.read_bytes() == api.encode(ticket),
+                    'fast-exit worker did not receive the exact registration ticket')
+            reaped = child_reap(stdout.getvalue())
+            child_pid = int(closed.read_text())
+            require(reaped == {'pid': child_pid, 'status': 0, 'escalated': False,
+                               'input_abandoned': True},
+                    'reap marker did not identify the successful closed-reader child: ' + repr(reaped))
+            print('PASS: deterministic EPIPE stops forwarding, reaps exact child, and releases lease')
         finally:
             api.sys.stdin = original_stdin
+            api.sys.stdout = original_stdout
             os.environ.pop('KER_SESSION_RELAY_CAPTURE', None)
             os.environ.pop('KER_SESSION_RELAY_TICKET', None)
+            os.environ.pop('KER_SESSION_RELAY_CLOSED', None)
+            os.environ.pop('KER_SESSION_RELAY_GO', None)
     return 0
 
 

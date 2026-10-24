@@ -34,6 +34,17 @@ def ready(process, prefix):
     return json.loads(line[len(prefix) + 1:])
 
 
+def child_reap(output, expected_pid, input_abandoned=False):
+    records = [line.removeprefix(b'KER_SESSION_CHILD_REAP ').decode()
+        for line in output.splitlines() if line.startswith(b'KER_SESSION_CHILD_REAP ')]
+    require(len(records) == 1, 'expected exactly one exact child reap record: ' + repr(output))
+    record = json.loads(records[0])
+    require(record == dict(pid=expected_pid, status=0, escalated=False,
+                           input_abandoned=input_abandoned),
+            'child reap record did not confirm successful exact child exit: ' + repr(record))
+    return record
+
+
 def stop(process):
     if process.poll() is None:
         process.terminate()
@@ -169,22 +180,28 @@ def main():
             master.request(api.RELEASE, **coordinate); master.close()
             eventually(0, 0)
 
-            def redirected_stdin(label, source):
+            def redirected_stdin(label, source, input_abandoned=False):
                 lease = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common],
                     stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     env=environment, bufsize=0)
                 processes.append(lease)
                 entry = ready(lease, 'KER_SESSION_ATTACHED')
-                pidfd = os.pidfd_open(entry['pid'])
+                try:
+                    pidfd = os.pidfd_open(entry['pid'])
+                except ProcessLookupError:
+                    pidfd = None
                 try:
                     output, errors = lease.communicate(timeout=20)
                     require(lease.returncode == 0,
                             label + ' lease did not exit normally: ' + errors.decode() + output.decode())
-                    with selectors.PollSelector() as selector:
-                        selector.register(pidfd, selectors.EVENT_READ)
-                        require(selector.select(5), label + ' left its exact EAL secondary alive')
+                    child_reap(output, entry['pid'], input_abandoned)
+                    if pidfd is not None:
+                        with selectors.PollSelector() as selector:
+                            selector.register(pidfd, selectors.EVENT_READ)
+                            require(selector.select(5), label + ' left its exact EAL secondary alive')
                 finally:
-                    os.close(pidfd)
+                    if pidfd is not None:
+                        os.close(pidfd)
                 after = eventually(0, 0)
                 require(after['slot'] == 0 and after['epoch'] > entry['epoch'],
                         label + ' did not release and advance its exact lease epoch')
@@ -199,6 +216,10 @@ def main():
             binary_stdin.write_bytes(b'\x00\xff\ncontrol\x80\x00')
             with binary_stdin.open('rb') as source:
                 redirected_stdin('binary regular-file stdin', source)
+            large_stdin = root / 'stdin-large'
+            large_stdin.write_bytes(bytes(index % 251 for index in range(1024 * 1024)))
+            with large_stdin.open('rb') as source:
+                redirected_stdin('1 MiB regular-file stdin', source, input_abandoned=True)
 
             leases, entries = [], []
             for gen, process_id in ((0, 0), (1, 3), (0, 0)):
