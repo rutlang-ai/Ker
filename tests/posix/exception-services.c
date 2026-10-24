@@ -4,10 +4,13 @@
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+static volatile sig_atomic_t stop_requested;
+static void request_stop(int number){(void)number;stop_requested=1;}
 static void check(int ok,const char*message){if(!ok){perror(message);exit(1);}}
 static void transfer(int fd,char *bytes,size_t size,int sending)
 {
@@ -35,10 +38,13 @@ static void mtu_control(int requested,int expected_errno)
 }
 int main(int argc,char **argv)
 {
+    struct sigaction action={.sa_handler=request_stop};sigemptyset(&action.sa_mask);
+    check(!sigaction(SIGTERM,&action,NULL),"install application SIGTERM handler");
+    int signal_ready=argc==2&&!strcmp(argv[1],"--signal-ready");
     int fixed=argc==2&&!strcmp(argv[1],"--fixed-mtu");
     int live=argc==2&&!strcmp(argv[1],"--live-mtu");
     int rollback=argc==2&&!strcmp(argv[1],"--rollback-mtu");
-    check(argc==1||fixed||live||rollback,"service test arguments");
+    check(argc==1||signal_ready||fixed||live||rollback,"service test arguments");
     if(rollback)mtu_control(9000,EIO);
     if(live||rollback)mtu_control(1400,0);
     int sockets[2][2];struct timeval timeout={.tv_sec=10};
@@ -50,7 +56,17 @@ int main(int argc,char **argv)
         else{struct sockaddr_in*a=(void*)&address;a->sin_family=AF_INET;a->sin_port=htons(45000);inet_pton(AF_INET,"198.18.0.2",&a->sin_addr);length=sizeof(*a);}
         check(!bind(fd,(void*)&address,length),"native service bind");if(tcp)check(!listen(fd,4),"native listen");
     }
-    puts("READY");fflush(stdout);check(getchar()=='G',"service setup barrier");
+    puts("READY");fflush(stdout);
+    if(signal_ready){while(!stop_requested)pause();
+        for(unsigned family=0;family<2;family++)for(unsigned tcp=0;tcp<2;tcp++)close(sockets[family][tcp]);
+        return 128+SIGTERM;
+    }
+    int barrier=getchar();
+    if(barrier!='G'&&stop_requested){
+        for(unsigned family=0;family<2;family++)for(unsigned tcp=0;tcp<2;tcp++)close(sockets[family][tcp]);
+        return 128+SIGTERM;
+    }
+    check(barrier=='G',"service setup barrier");
     for(unsigned family=0;family<2;family++){
         int connection=accept(sockets[family][1],NULL,NULL);check(connection>=0,"native TCP accept");
         check(!setsockopt(connection,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)),"accepted timeout");

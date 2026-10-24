@@ -6,7 +6,8 @@ qualified. `ker-io-session` and `ker-session` implement registration and shared 
 using original DPDK EAL, memzones, mbuf pools and rings. The existing packet worker and
 `ker-run` secondary admission boundary remain unchanged. Optional device admission
 and live standby are documented separately in [the ring-PMD stage](fstack-session-pmd.md);
-the shared-control commands below do not enable them.
+the shared-control commands below do not enable them. Actual caller applications
+and directional packet transport use the separate [paired packet profile](fstack-session-packets.md).
 
 ## Running the shared-control stage
 
@@ -63,7 +64,7 @@ The resident precreates the directory and all 128 bounded original DPDK rings
 before publishing readiness: four epoch slots (slot zero reserved), two
 generations, four process indices and control/RX/TX/reply rings per coordinate.
 A 511-object original mbuf pool with no per-lcore cache is created before
-readiness; secondaries only look it up. The internal ABI is now version 3.
+readiness; secondaries only look it up. The internal ABI is now version 5, including separate directional-packet leases.
 Each ring has capacity 64 and declares single-producer/single-consumer use.
 The authenticated secondary is the sole request producer and reply consumer
 for its coordinate; the resident consumes control requests and produces replies.

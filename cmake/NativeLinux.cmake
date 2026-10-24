@@ -57,15 +57,20 @@ set(ker_io_worker_sources src/posix/worker-rx-lcores.c src/posix/worker-exceptio
 add_executable(ker-io-worker ${ker_io_worker_sources})
 # Separate resident shared-control session. This does not enable secondary mode
 # in the existing packet worker or advertise application reload support.
-add_executable(ker-io-session src/posix/io-session.c)
+find_library(ker_session_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH)
+if(NOT ker_session_ring_pmd)
+    message(FATAL_ERROR "Resident packet sessions require the original net_ring PMD")
+endif()
+add_executable(ker-io-session src/posix/io-session.c src/posix/session-packet.c)
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(ker-io-session PRIVATE PkgConfig::DPDK)
+target_link_libraries(ker-io-session PRIVATE PkgConfig::DPDK "${ker_session_ring_pmd}")
 target_link_options(ker-io-session PRIVATE -Wl,--disable-new-dtags)
 set_target_properties(ker-io-session PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}"
     INSTALL_RPATH "${DPDK_LIBRARY_DIRS}")
 install(TARGETS ker-io-session RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(PROGRAMS tools/ker-session.py DESTINATION ${CMAKE_INSTALL_BINDIR} RENAME ker-session)
+install(FILES tools/ker_session_run.py DESTINATION ${CMAKE_INSTALL_BINDIR})
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
     target_compile_options(${native_target} PRIVATE -Wall -Wextra -Werror)
@@ -143,6 +148,11 @@ if(BUILD_TESTING)
     target_compile_options(ker-session-envelope-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-session-envelope COMMAND ker-session-envelope-test)
     set_tests_properties(native-fstack-session-envelope PROPERTIES TIMEOUT 10 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-native-packets
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-native-packets.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --library "$<TARGET_FILE:ker-posix>" --app "$<TARGET_FILE:ker-exception-services-test>")
+    set_tests_properties(native-fstack-session-native-packets PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "fstack;session;native-tcp")
     add_test(NAME native-fstack-session-standby
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-standby.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
