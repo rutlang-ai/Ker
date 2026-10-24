@@ -182,10 +182,10 @@ static int configure_mtu(uint16_t port, int mtu, uint16_t descriptors,
 /* Main owns device control; join remote RX pollers before queue rebuild,
  * then resume their original assignment on success or successful rollback. */
 static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mtu,
-    bool busy, bool fixed_mtu, uint64_t *changes, struct rte_mempool *pool,
-    uint16_t descriptors, unsigned int allocation_socket, uint16_t queues,
-    struct ker_worker_rss *rss, bool *started, struct ker_worker_rx_lcores *rx_workers,
-    struct ker_pcap *capture, uint64_t *rx_dropped, uint64_t *reconfigure_discarded)
+    bool busy, struct ker_worker_exception *exception, uint64_t *changes, struct rte_mempool *pool,
+    uint16_t descriptors, unsigned int allocation_socket, uint16_t queues, struct ker_worker_rss *rss, bool *started,
+    struct ker_worker_rx_lcores *rx_workers, struct ker_pcap *capture,
+    uint64_t *rx_dropped, uint64_t *reconfigure_discarded)
 {
     struct ker_mtu_message message;
     ssize_t size = recv(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_TRUNC);
@@ -194,13 +194,20 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
     if (size != sizeof(message) || message.magic != KER_MTU_MAGIC) return -1;
     uint16_t actual;
     if (rte_eth_dev_get_mtu(port, &actual) || actual != *mtu) return -1;
+    unsigned host_mtu = 0;
+    if (exception->pending && (ker_worker_exception_mtu(exception, &host_mtu, false) || host_mtu != (unsigned)*mtu)) return -1;
     int requested = message.mtu;
     message.status = 0;
     if (message.operation == KER_MTU_SET) {
+        int exception_busy = 0;
+        if (exception->pending && requested >= KER_NATIVE_MIN_MTU && requested <= maximum &&
+            message.previous == *mtu) {
+            exception_busy = ker_worker_exception_mtu_busy(exception);
+            if (exception_busy < 0) return -1;
+        }
         if (requested < KER_NATIVE_MIN_MTU || requested > maximum) message.status = -EINVAL;
         else if (message.previous != *mtu) message.status = -ESTALE;
-        else if (fixed_mtu && requested != *mtu) message.status = -EOPNOTSUPP;
-        else if (busy) message.status = -EBUSY;
+        else if (busy || exception_busy) message.status = -EBUSY;
         else if (scatter && scatter_mtu_supported(port, requested)) message.status = -EOPNOTSUPP;
         else if (requested != *mtu) {
             /* RX capacities can be fixed at queue setup (notably TAP scatter).
@@ -216,13 +223,21 @@ static int mtu_command(int fd, uint16_t port, bool scatter, int maximum, int *mt
             if (rte_eth_dev_stop(port)) return -1;
             *started = false;
             message.status = configure_mtu(port, requested, descriptors, allocation_socket, pool, queues, rss, started);
+            if (!message.status && exception->pending) {
+                host_mtu = (unsigned)requested;
+                message.status = ker_worker_exception_mtu(exception, &host_mtu, true);
+            }
             if (message.status) {
                 /* Restore even if ethdev's cached MTU still says the old value:
                  * a PMD may fail after changing its underlying device. */
                 if (rte_eth_dev_stop(port)) return -1;
                 *started = false;
-                if (configure_mtu(port, *mtu, descriptors, allocation_socket, pool, queues, rss, started)) return -1;
-                if (rte_eth_dev_get_mtu(port, &actual) || actual != *mtu) return -1;
+                if (configure_mtu(port, *mtu, descriptors, allocation_socket, pool, queues, rss, started) ||
+                    rte_eth_dev_get_mtu(port, &actual) || actual != *mtu) return -1;
+                if (exception->pending) {
+                    host_mtu = (unsigned)*mtu;
+                    if (ker_worker_exception_mtu(exception, &host_mtu, true)) return -1;
+                }
             } else {
                 /* configure_mtu() has restarted the PMD. Cleanup owns the stop
                  * even if readback cannot prove which MTU the PMD applied. */
@@ -706,7 +721,7 @@ int main(int argc, char **argv)
         if (bond_policy) (void)rte_eth_tx_burst(port, 0, NULL, 0);
         if (mtu_fd >= 0) {
             int result = mtu_command(mtu_fd, port, scatter, maximum_mtu, &mtu,
-                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, exception.pending != NULL, &mtu_changes,
+                pending_tx != NULL || tx_length || batch.count || rx_index < rx_count, &exception, &mtu_changes,
                 pool, rx_desc, allocation_socket, (uint16_t)queues, &rss, &started,
                 &rx_workers, rx_capture.file ? &rx_capture : NULL, &rx_dropped, &rx_reconfigure_discarded);
             if (result < 0) { fprintf(stderr, "ker: MTU device transaction failed\n"); status = 1; break; }

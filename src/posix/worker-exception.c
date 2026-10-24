@@ -10,6 +10,7 @@
 #include <net/if.h>
 #include <net/if_arp.h>
 #include <linux/if_tun.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -65,6 +66,39 @@ int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *i
         .ether_type = ether_type, .rate_limit = rate_limit, .console_limit = console_limit,
         .general_limit = general_limit, .window_start = -1};
     return 0;
+}
+int ker_worker_exception_mtu(struct ker_worker_exception *bridge, unsigned *mtu, bool set)
+{
+    if (!owner(bridge)) return -EXDEV;
+    if (!mtu || (set && (*mtu < KER_NATIVE_MIN_MTU || *mtu > KER_NATIVE_MAX_MTU))) return -EINVAL;
+    struct ifreq request = {0};
+    if (ioctl(bridge->fd, TUNGETIFF, &request)) return -errno;
+    int control = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (control < 0) return -errno;
+    int result = 0;
+    unsigned requested = *mtu;
+    if (set) {
+        request.ifr_mtu = (int)requested;
+        if (ioctl(control, SIOCSIFMTU, &request)) result = -errno;
+    }
+    if (!result && ioctl(control, SIOCGIFMTU, &request)) result = -errno;
+    if (!result) {
+        *mtu = (unsigned)request.ifr_mtu;
+        if (set && *mtu != requested) result = -EIO;
+    }
+    if (close(control) && !result) result = -errno;
+    return result;
+}
+int ker_worker_exception_mtu_busy(struct ker_worker_exception *bridge)
+{
+    if (!owner(bridge)) return -EXDEV;
+    if (!rte_ring_empty(bridge->pending)) return 1;
+    struct pollfd event = {.fd = bridge->fd, .events = POLLIN};
+    int result;
+    do result = poll(&event, 1, 0); while (result < 0 && errno == EINTR);
+    if (result < 0) return -errno;
+    if (event.revents & (POLLERR | POLLHUP | POLLNVAL)) return -EIO;
+    return result > 0 && (event.revents & POLLIN) ? 1 : 0;
 }
 enum ker_exception_route ker_worker_exception_route(const struct ker_worker_exception *bridge, const struct rte_mbuf *packet)
 {

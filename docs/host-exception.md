@@ -33,9 +33,17 @@ Existing interfaces are never attached or changed; an occupied name fails
 before application entry. The process needs permission to create a TAP in its
 network namespace. IP addresses/routes and application services on the host
 interface belong to the caller. Closing the owning worker descriptor removes
-the interface. Until a two-device transaction is implemented, changing the
-native MTU while this bridge is enabled explicitly fails EOPNOTSUPP; querying
-the unchanged MTU remains supported.
+the interface. A native MTU change coordinates the wire PMD and this owned TAP.
+The worker
+checks both current MTUs, rejects busy native/exception queues with EBUSY,
+joins remote RX pollers, rebuilds original PMD queues, then sets and reads back
+the TAP MTU. Only after both devices agree does it resume RX and acknowledge
+the native change. Failure before or after mutation restores both devices;
+failed rollback or resumption terminates the session and destroys the owned
+TAP rather than continuing with mismatched MTUs. TAP lookup uses TUNGETIFF on
+its live owned fd, so an interface rename does not redirect control to a
+foreign interface. Uncoordinated external MTU changes are detected as a fatal
+ownership/configuration mismatch.
 
 ## Ownership and bounded work
 

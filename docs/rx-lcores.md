@@ -63,9 +63,12 @@ Live MTU changes pause/join remote pollers before original PMD stop, RX queue
 rebuild and restart. Queued and retained handoffs are captured and freed before
 rebuild. The same core assignment resumes after success or successful rollback,
 with lifetime counters preserved. Failed rollback or failed poller resumption
-fails the whole session and reclaims its buffers. An exception TAP still rejects
-MTU mutation until its separate two-device transaction is supported. Main-only
-live MTU retains its existing path.
+fails the whole session and reclaims its buffers. When an exception TAP is
+enabled, the transaction also verifies, updates and
+reads back its actual host MTU before resuming the same pollers. Any recoverable
+PMD or TAP failure rolls back both devices; unrecoverable rollback/resume fails
+the session. Main-only RX uses the same two-device contract without remote
+handoffs.
 
 Large-buffer storage includes the original PMD's reported RX overhead, including
 virtio's device header, so the configured maximum remains usable after queues

@@ -134,30 +134,36 @@ def main():
                             'invalid port owner created the exception TAP')
                 print('PASS: test_ff_check_config_kni_primary_lcore_missing_fails', flush=True)
                 for name, main_core, cores, exception in (('main0', 0, '0,1', True),
-                        ('main1', 1, '0,1', True), ('remote-only', 0, '1', False),
-                        ('rollback-before', 0, '1', False), ('rollback-after', 0, '1', False)):
+                        ('main1', 1, '0,1', True), ('main-only', 0, '0', True),
+                        ('remote-only', 0, '1', False),
+                        ('rollback-before', 0, '1', False), ('rollback-after', 0, '1', False),
+                        ('tap-before', 0, '0,1', True), ('tap-after', 0, '0,1', True)):
                     config, stats = root / (name + '.ini'), root / (name + '.json')
                     capture = root / (name + '-pcap'); capture.mkdir()
                     config.write_text(config_text(main_core, cores, exception) + f'\n[capture]\ndirectory={capture}\n')
                     for family in ([], ['-6']):
                         subprocess.run(['ip', *family, 'neigh', 'flush', 'dev', 'kerhost'], check=True)
                     profile_env = dict(environment)
-                    if not exception:
-                        profile_env['LD_PRELOAD'] = str(args.mtu_failure.resolve()) + ':' + profile_env['LD_PRELOAD']
+                    profile_env['LD_PRELOAD'] = str(args.mtu_failure.resolve()) + ':' + profile_env['LD_PRELOAD']
                     if name.startswith('rollback-'):
                         profile_env['KER_RX_MTU_FAILURE'] = name.removeprefix('rollback-')
-                    option = '--fixed-mtu' if exception else ('--rollback-mtu' if name.startswith('rollback-') else '--live-mtu')
+                    rollback = name.startswith(('rollback-', 'tap-'))
+                    if name.startswith('tap-'):
+                        profile_env['KER_EXCEPTION_MTU_FAILURE'] = name.removeprefix('tap-')
+                    option = '--rollback-mtu' if rollback else '--live-mtu'
                     with (root / (name + '.log')).open('w+') as log:
                         process = subprocess.Popen(command(config, stats, [str(args.app), option]), env=profile_env,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, start_new_session=True)
                         try:
                             require(line(process) == 'READY', 'native application failed before main')
                             if exception:
+                                actual = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'coreexcept']))[0]['mtu']
+                                require(actual == 1400, 'host exception TAP MTU differs from native/PMD transaction')
                                 with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x88b5)) as wire, \
                                         socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x88b5)) as tap:
                                     wire.bind(('kerhost', 0)); tap.bind(('coreexcept', 0)); wire.settimeout(5); tap.settimeout(5)
-                                    frame = bytes.fromhex('ffffffffffff02123456789a88b5') + bytes(range(50))
-                                    reply = frame[:14] + bytes(reversed(range(50)))
+                                    frame = bytes.fromhex('ffffffffffff02123456789a88b5') + bytes(i & 255 for i in range(1386))
+                                    reply = frame[:14] + bytes(255 - (i & 255) for i in range(1386))
                                     require(wire.send(frame) == len(frame) and tap.recv(2048) == frame,
                                             'remote/main RX handoff changed exception frame')
                                     require(tap.send(reply) == len(reply) and wire.recv(2048) == reply,
@@ -175,6 +181,9 @@ def main():
                                     udp.settimeout(10); udp.sendto(payload[:512], (address, 45000))
                                     require(udp.recv(2048) == b'NATIVE:' + payload[:512], 'native UDP bytes differ')
                             require(line(process) == 'NATIVE_DONE', 'native socket teardown failed')
+                            if exception:
+                                actual = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'coreexcept']))[0]['mtu']
+                                require(actual == 1500, 'exception TAP MTU restoration differs')
                             output, _ = process.communicate('Q', timeout=20)
                             require(process.returncode == 0 and 'PASS:' in output, 'native/worker shutdown failed: ' + output)
                             record = json.loads(stats.read_text()); pollers = record['rx_pollers']
@@ -195,38 +204,45 @@ def main():
                                     'original native IPv4/IPv6 TCP/UDP was not exercised')
                             rx_frames = frames(capture, 'rx')
                             require(len(rx_frames) == sum(record['rx_by_queue']) and record['mtu_final'] == 1500
-                                    and record['mtu_changes'] == (0 if exception else 2), 'RX PCAP gap/duplicate or MTU transaction failure')
+                                    and record['mtu_changes'] == 2, 'RX PCAP gap/duplicate or MTU transaction failure')
                             if exception:
                                 require(rx_frames.count(frame) == 1 and frames(capture, 'tx').count(reply) == 1,
                                         'exception RX/TX capture missing or duplicated on handoff')
                                 require(record['exception_to_host'] == record['exception_from_host'] == 1,
                                         'exception queue did not preserve its main owner: ' + str(record))
-                            if not exception:
-                                require(record['mtu_changes'] == 2 and all(p['starts'] == (4 if name.startswith('rollback-') else 3)
-                                        for p in pollers), 'MTU did not resume original queue owners/counters: ' + str(record))
-                                log.flush(); log.seek(0); trace = log.read()
-                                require('FAIL:' not in trace and trace.count('QUIESCENT: ethdev stop') >= 3
-                                        and trace.count('QUIESCENT: RX queue setup') >= 6, 'PMD reconfiguration was not quiescent: ' + trace)
-                                if name.startswith('rollback-'):
-                                    require('INJECT: remote RX MTU ' + name.removeprefix('rollback-') in trace, 'rollback fault not reached')
-                                require(sum(p['reconfigured'] for p in pollers) == record['rx_reconfigure_discarded'],
-                                        'reconfiguration loss accounting differs')
+                            expected_starts = 1 if owners == [main_core] else (4 if rollback else 3)
+                            require(record['mtu_changes'] == 2 and all(p['starts'] == expected_starts
+                                    for p in pollers), 'MTU did not resume original queue owners/counters: ' + str(record))
+                            log.flush(); log.seek(0); trace = log.read()
+                            require('FAIL:' not in trace and trace.count('QUIESCENT: ethdev stop') >= 3
+                                    and trace.count('QUIESCENT: RX queue setup') >= 6, 'PMD reconfiguration was not quiescent: ' + trace)
+                            if name.startswith('rollback-'):
+                                require('INJECT: remote RX MTU ' + name.removeprefix('rollback-') in trace, 'rollback fault not reached')
+                            if name.startswith('tap-'):
+                                require('INJECT: exception TAP MTU ' + name.removeprefix('tap-') in trace, 'TAP rollback fault not reached')
+                            require(sum(p['reconfigured'] for p in pollers) == record['rx_reconfigure_discarded'],
+                                    'reconfiguration loss accounting differs')
                             print('PASS: ' + name + ' actual RX owners=' + str(pollers) + '; original Linux IPv4/IPv6 TCP/UDP, zero mbufs', flush=True)
                         except BaseException:
                             log.flush(); log.seek(0); print(log.read(), file=sys.stderr); raise
                         finally:
                             stop(process)
-                for failure in ('rollback', 'resume'):
+                for failure in ('rollback', 'resume', 'tap-rollback', 'tap-resume'):
                     config, stats = root / (failure + '-fatal.ini'), root / (failure + '-fatal.json')
-                    config.write_text(config_text(0, '1', False))
+                    config.write_text(config_text(0, '0,1' if failure.startswith('tap-') else '1', failure.startswith('tap-')))
                     profile_env = dict(environment, KER_RX_MTU_FAILURE=failure,
                         LD_PRELOAD=str(args.mtu_failure.resolve()) + ':' + environment['LD_PRELOAD'])
-                    option = '--rollback-mtu' if failure == 'rollback' else '--live-mtu'
+                    if failure.startswith('tap-'):
+                        profile_env['KER_RX_MTU_FAILURE'] = 'resume' if failure == 'tap-resume' else ''
+                        if failure == 'tap-rollback':
+                            profile_env['KER_EXCEPTION_MTU_FAILURE'] = 'rollback'
+                    option = '--rollback-mtu' if failure.endswith('rollback') else '--live-mtu'
                     result = owned_run(command(config, stats, [str(args.app), option]),
                         capture_output=True, text=True, env=profile_env, timeout=25)
                     require(result.returncode == 125 and 'NATIVE_DONE' not in result.stdout,
                             'fatal reconfiguration did not fail the session: ' + result.stdout + result.stderr)
-                    diagnostic = 'INJECT: remote RX rollback failure' if failure == 'rollback' else 'INJECT: remote RX resume failure'
+                    diagnostic = ('INJECT: exception TAP rollback failure' if failure == 'tap-rollback' else
+                        ('INJECT: remote RX rollback failure' if failure == 'rollback' else 'INJECT: remote RX resume failure'))
                     require(diagnostic in result.stderr and 'FAIL:' not in result.stderr,
                             'fatal path did not reach the real quiescent PMD boundary: ' + result.stderr)
                     record = json.loads(stats.read_text())

@@ -93,8 +93,10 @@ int ker_worker_rx_lcores_start(struct ker_worker_rx_lcores *rx)
     for (unsigned i=0;i<rx->count;i++) if (rx->poller[i].launched) return -EBUSY;
     atomic_store_explicit(&rx->stopping,false,memory_order_release);
     atomic_store(&rx->error,0);
-    for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner==rx->main) rx->queue[q].starts++;
-    if (!rx->remote) return 0;
+    if (!rx->remote) {
+        for (uint16_t q=0;q<rx->queues;q++) rx->queue[q].starts++;
+        return 0;
+    }
     rx->notify_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
     if (rx->notify_fd<0) return -errno;
     for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner!=rx->main) {
@@ -107,6 +109,7 @@ int ker_worker_rx_lcores_start(struct ker_worker_rx_lcores *rx)
         if (result) return result;
         rx->poller[i].launched=true;
     }
+    for (uint16_t q=0;q<rx->queues;q++) if (rx->queue[q].owner==rx->main) rx->queue[q].starts++;
     return 0;
 }
 uint16_t ker_worker_rx_lcores_burst(struct ker_worker_rx_lcores *rx, uint16_t q,

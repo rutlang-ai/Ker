@@ -4,6 +4,9 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,7 +50,7 @@ int rte_eth_dev_set_mtu(uint16_t port,uint16_t mtu)
     if (injected&&mode&&!strcmp(mode,"rollback")&&mtu==1500) {
         fprintf(stderr,"INJECT: remote RX rollback failure\n");return -EIO;
     }
-    if (!injected&&mode&&mtu==9000) {
+    if (!injected&&mode&&*mode&&mtu==9000) {
         injected=1;
         if (strcmp(mode,"before")&&original(port,mtu)) abort();
         fprintf(stderr,"INJECT: remote RX MTU %s\n",mode);return -EIO;
@@ -66,4 +69,27 @@ int rte_eal_remote_launch(lcore_function_t *function,void *argument,unsigned cor
         fprintf(stderr,"INJECT: remote RX resume failure\n");return -EBUSY;
     }
     return original(function,argument,core);
+}
+
+/* Fail only the test-owned exception TAP setter. Successful writes/readback
+ * remain original host ioctls, including the post-mutation failure case. */
+int ioctl(int fd, unsigned long request, ...)
+{
+    int (*original)(int,unsigned long,...)=dlsym(RTLD_NEXT,"ioctl");
+    if (!original) abort();
+    va_list args;va_start(args,request);void *argument=va_arg(args,void *);va_end(args);
+    const char *mode=getenv("KER_EXCEPTION_MTU_FAILURE");
+    static bool injected;
+    struct ifreq *iface=argument;
+    if (mode&&request==SIOCSIFMTU&&iface&&!strcmp(iface->ifr_name,"coreexcept")) {
+        if (injected&&!strcmp(mode,"rollback")&&iface->ifr_mtu==1500) {
+            fprintf(stderr,"INJECT: exception TAP rollback failure\n");errno=EIO;return -1;
+        }
+        if (!injected&&iface->ifr_mtu==9000) {
+            injected=true;
+            if (strcmp(mode,"before")&&original(fd,request,argument)) abort();
+            fprintf(stderr,"INJECT: exception TAP MTU %s\n",mode);errno=EIO;return -1;
+        }
+    }
+    return original(fd,request,argument);
 }
