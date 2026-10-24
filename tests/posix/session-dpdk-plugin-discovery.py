@@ -79,7 +79,7 @@ def main():
                 try:
                     raise original_error
                 finally:
-                    runner.report_hugepage_cleanup_refusal('peer-death', sys.exc_info()[1], cleanup_error)
+                    native.report_hugepage_cleanup_refusal('peer-death', sys.exc_info()[1], cleanup_error)
         except ValueError as error:
             require(error is original_error,
                 'hugepage cleanup refusal replaced the active profile exception')
@@ -92,7 +92,7 @@ def main():
         cleanup_report = io.StringIO()
         try:
             with contextlib.redirect_stdout(cleanup_report):
-                runner.report_hugepage_cleanup_refusal('peer-death', None, cleanup_error)
+                native.report_hugepage_cleanup_refusal('peer-death', None, cleanup_error)
         except RuntimeError as error:
             require(error is cleanup_error, 'cleanup refusal did not propagate when no profile error existed')
         else:
