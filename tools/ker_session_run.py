@@ -231,6 +231,7 @@ def run_session(args, api):
         publish()
 
     def perform_test_handoff():
+        nonlocal control_w
         if peer_worker is None or app is None or app.poll() is not None or worker.poll() is not None:
             raise RuntimeError('live handoff fixture lost its original app/owner before transition')
         old_tun_interfaces_before = tap_interfaces_for_process(worker.pid)
