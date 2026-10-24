@@ -1508,6 +1508,10 @@
         {
           "ctest": "native-fstack-typed-bond",
           "provenance_case": "native-fstack-typed-bond"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-queues",
+          "provenance_case": "native-fstack-typed-bond"
         }
       ]
     },
