@@ -1932,7 +1932,7 @@ static int worker_handoff_request(int fd,const struct ker_session_message *ident
 }
 #ifdef KER_SESSION_TEST_HOOKS
 static int worker_handoff_expect_prepare_rejected(int fd,const struct ker_session_message *identity,
-    uint64_t *sequence,int resident,uint64_t owner_key,uint64_t tx_lease_id,uint64_t rx_lease_id)
+    uint64_t *sequence,int resident,uint64_t tx_lease_id,uint64_t rx_lease_id)
 {
     struct ker_session_message request=*identity,response,expected;
     request.command=KER_SESSION_PMD_HANDOFF_PREPARE; request.sequence=++*sequence; request.status=0;
@@ -2663,7 +2663,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             uint64_t rx_id=device_rx_lease_id;
 #ifdef KER_SESSION_TEST_HOOKS
             if(getenv("KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE") &&
-                worker_handoff_expect_prepare_rejected(fd,&message,&message.sequence,peer,key,tx_id,rx_id)) _Exit(125);
+                worker_handoff_expect_prepare_rejected(fd,&message,&message.sequence,peer,tx_id,rx_id)) _Exit(125);
 #endif
             struct ker_session_message prepared;
             int handoff=worker_handoff_request(fd,&message,&message.sequence,peer,
