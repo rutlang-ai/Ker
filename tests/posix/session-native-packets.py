@@ -111,6 +111,40 @@ def require_live_eal_mp_channels(profile, primary_stderr, runner_stderr,
     return paths
 
 
+def handoff_udp_payload(frame):
+    """Return the exact handoff UDP payload from a complete expected Ethernet frame."""
+    app_mac=bytes.fromhex('024b45520002')
+    host_mac=bytes.fromhex('024b45520001')
+    if len(frame)<14+20+8 or frame[:6]!=host_mac or frame[6:12]!=app_mac or frame[12:14]!=b'\x08\x00':
+        return None
+    ip=frame[14:]
+    ihl=(ip[0]&15)*4
+    if ip[0]>>4!=4 or ihl!=20 or len(ip)<ihl+8 or ip[9]!=17:
+        return None
+    total=struct.unpack('!H',ip[2:4])[0]
+    if total<ihl+8 or len(ip)!=total or (struct.unpack('!H',ip[6:8])[0]&0x3fff):
+        return None
+    udp=ip[ihl:total]
+    udp_len=struct.unpack('!H',udp[4:6])[0]
+    if udp_len<8 or udp_len!=len(udp):
+        return None
+    if ip[12:16]!=socket.inet_aton('198.18.0.2') or ip[16:20]!=socket.inet_aton('198.18.0.1'):
+        return None
+    if struct.unpack('!HH',udp[:4])!=(45000,45001):
+        return None
+    return udp[8:]
+
+
+def handoff_udp_test_frame(payload=b'KER-A09-HANDOFF-UDP seq=1\n'):
+    app_mac=bytes.fromhex('024b45520002')
+    host_mac=bytes.fromhex('024b45520001')
+    source=socket.inet_aton('198.18.0.2')
+    destination=socket.inet_aton('198.18.0.1')
+    udp=struct.pack('!HHHH',45000,45001,8+len(payload),0)+payload
+    ip=struct.pack('!BBHHHBBH4s4s',0x45,0,20+len(udp),0x1234,0x4000,64,17,0,source,destination)+udp
+    return host_mac+app_mac+b'\x08\x00'+ip
+
+
 def tap_interfaces_for_process(pid):
     """Read the kernel-reported interface for every original TUN file description."""
     names = []
@@ -408,29 +442,48 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             wire_thread=None
             if mode in ('frame-positive','frame-full'):
                 wire_thread=threading.Thread(target=handoff_wire_peer,daemon=True);wire_thread.start()
-            def udp_payload(frame):
-                if len(frame)<42 or frame[12:14]!=b'\x08\x00': return None
-                ip=frame[14:]; ihl=(ip[0]&15)*4
-                if ip[0]>>4!=4 or ihl!=20 or len(ip)<ihl+8 or ip[9]!=17: return None
-                total=struct.unpack('!H',ip[2:4])[0]
-                if total<ihl+8 or len(ip)!=total+14 or (struct.unpack('!H',ip[6:8])[0]&0x3fff): return None
-                udp=ip[ihl:total]; udp_len=struct.unpack('!H',udp[4:6])[0]
-                if udp_len<8 or udp_len!=len(udp): return None
-                if ip[12:16]!=socket.inet_aton('198.18.0.2') or ip[16:20]!=socket.inet_aton('198.18.0.1'):
-                    return None
-                if struct.unpack('!HH',udp[:4])!=(45000,45001): return None
-                return udp[8:]
             def wait_wire_payload(sequence):
                 payload=f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
                     with wire_lock:
-                        matches=[frame for frame in wire_frames if udp_payload(frame)==payload]
+                        matches=[frame for frame in wire_frames if handoff_udp_payload(frame)==payload]
                         errors=list(wire_errors)
                     if errors:raise RuntimeError('handoff wire peer failed: '+repr(errors))
                     if matches:return matches[0]
                     time.sleep(0.005)
-                raise RuntimeError(f'original LKL UDP sequence {sequence} did not reach the wire endpoint')
+                with wire_lock:
+                    captured=list(wire_frames)
+                    errors=list(wire_errors)
+                rendered=[]
+                for frame in captured[:64]:
+                    summary={'length':len(frame),'hex':frame[:2048].hex()}
+                    if len(frame)>=14:
+                        summary['ethertype']=frame[12:14].hex()
+                        summary['dst_mac']=frame[:6].hex()
+                        summary['src_mac']=frame[6:12].hex()
+                    if len(frame)>=42 and frame[12:14]==b'\x08\x06':
+                        summary['arp_opcode']=frame[20:22].hex()
+                        summary['arp_sender_ip']=socket.inet_ntoa(frame[28:32])
+                        summary['arp_target_ip']=socket.inet_ntoa(frame[38:42])
+                    try:
+                        parsed=handoff_udp_payload(frame)
+                        if parsed is not None:summary['udp_payload']=parsed.hex()
+                    except (IndexError,struct.error):
+                        summary['udp_parse_error']=True
+                    rendered.append(summary)
+                try: latest_stats=stats_path.read_text(errors='replace') if stats_path.exists() else ''
+                except OSError as error: latest_stats='read failed: '+repr(error)
+                try: drain_startup()
+                except (NameError,UnboundLocalError): pass
+                runner_errors=runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                raise RuntimeError('original LKL UDP sequence did not reach the wire endpoint: '+json.dumps(
+                    dict(sequence=sequence,expected_payload=payload.hex(),captured_frame_count=len(captured),
+                        captured_frames=rendered,captured_frames_truncated=len(captured)>len(rendered),
+                        wire_errors=errors,runner_pid=runner.pid if runner is not None else None,
+                        runner_returncode=runner.poll() if runner is not None else None,
+                        runner_stderr=runner_errors,stats=latest_stats,
+                        startup_bytes=startup.hex()),sort_keys=True))
             handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
             runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
             if mode in ('frame-positive','frame-full'):
@@ -453,6 +506,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             endpoint.close(); endpoint = None
 
             def startup_failure(reason):
+                with wire_lock:
+                    wire_failure_frames=[frame[:2048].hex() for frame in wire_frames[:64]]
+                    wire_failure_errors=list(wire_errors)
+                    wire_failure_count=len(wire_frames)
                 if runner is not None and runner.poll() is None:
                     runner.terminate()
                     try: runner.wait(timeout=5)
@@ -483,6 +540,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
                 diagnostic = dict(mode=mode, reason=reason, latest_stats=latest,
                     latest_stats_raw=latest_raw,
+                    wire=dict(frame_count=wire_failure_count,frames_hex=wire_failure_frames,
+                        frames_truncated=wire_failure_count>len(wire_failure_frames),errors=wire_failure_errors),
                     actors=dict(app=dict(pid=(latest or {}).get('app_pid'), returncode=(latest or {}).get('app_code')),
                         owner=dict(pid=((latest or {}).get('attached') or {}).get('pid'),
                             returncode=(latest or {}).get('worker_code')),
@@ -595,7 +654,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 first_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(first_ack==dict(sequence=1,bytes=len(b'KER-A09-HANDOFF-UDP seq=1\n')),
                     'original app did not acknowledge the pre-handoff UDP prewarm')
-                first_wire_frame=wait_wire_payload(1)
+                try: first_wire_frame=wait_wire_payload(1)
+                except RuntimeError as error: raise startup_failure(str(error)) from error
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
             if mode not in ('frame-positive','frame-full'): os.close(handoff_write); handoff_write = -1
             if mode == 'handoff-control-hup':
@@ -902,8 +962,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     wire_snapshot=list(wire_frames);wire_error_snapshot=list(wire_errors)
                 first_payload=b'KER-A09-HANDOFF-UDP seq=1\n'
                 second_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
-                seq1_count=sum(udp_payload(frame)==first_payload for frame in wire_snapshot)
-                seq2_count=sum(udp_payload(frame)==second_payload for frame in wire_snapshot)
+                seq1_count=sum(handoff_udp_payload(frame)==first_payload for frame in wire_snapshot)
+                seq2_count=sum(handoff_udp_payload(frame)==second_payload for frame in wire_snapshot)
                 require(proof.get('same_pointer') is True and proof.get('same_bytes') is True and
                     proof.get('peer_release_once') is True and proof.get('committed',{}).get('frame_hex') and
                     proof.get('committed',{}).get('object_index')==proof.get('drained',{}).get('object_index') and
@@ -927,8 +987,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 time.sleep(0.5)
                 with wire_lock:
                     full_wire_snapshot=list(wire_frames);full_wire_errors=list(wire_errors)
-                seq1_count=sum(udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n' for frame in full_wire_snapshot)
-                seq2_count=sum(udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n' for frame in full_wire_snapshot)
+                seq1_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n' for frame in full_wire_snapshot)
+                seq2_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n' for frame in full_wire_snapshot)
                 require(fullproof.get('commit_cancel',{}).get('status')==-errno.ENOBUFS and
                     fullproof.get('commit_cancel',{}).get('pool_restored') is True and
                     fullproof.get('drain',{}).get('tx_after')==0 and
