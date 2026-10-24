@@ -319,7 +319,7 @@
       "id": "zero-copy-ownership",
       "title": "Define a Linux-native zero-copy send and ownership contract",
       "disposition": "contract-review",
-      "reason": "Case-specific audit qualifies four allocation/send validation scenarios through actual original Linux VMAs/sockets/completions. Nine source cases remain: two FreeBSD mbuf layout assertions are architecture-specific; seven empty-chain/write-cursor/zero-send contracts remain blocked. Linux scatter-gather delivery and send guards do not implement a staged owned-chain writer. Default upstream DPDK copying makes end-to-end copy removal a distinct stronger milestone.",
+      "reason": "Four source allocation/send validation scenarios qualify through actual original Linux VMAs/sockets/completions. Seven empty-chain/write-cursor/zero-send contracts remain blocked. The two already architecture-specific FreeBSD mbuf header assertions are tracked separately under issue232 with the matching exclusion disposition; they are not implementation work or Ker passes. Linux scatter-gather delivery and send guards do not implement a staged owned-chain writer. Default upstream DPDK copying makes end-to-end copy removal a distinct stronger milestone.",
       "evidence": [
         "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
         "src/runtime/tx-export.c",
@@ -338,8 +338,6 @@
         "Separate optional end-to-end payload-copy-free transport work from socket-stage case acceptance: upstream default ff_dpdk_if_send also copies and FF_USE_PAGE_ARRAY is optional. Any stronger transport claim needs actual release acknowledgements, backpressure, retained suffix, worker-failure and teardown proof; completion code zero alone is insufficient."
       ],
       "cases": [
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
@@ -515,13 +513,15 @@
     },
     {
       "id": "freebsd-internals",
-      "title": "Record nonportable callout and internal kqueue filter assertions",
+      "title": "Record nonportable callout, kqueue filter and mbuf header assertions",
       "disposition": "architecture-specific",
-      "reason": "These source assertions depend on FreeBSD sbintime/hardclock/tick conversion, timer activation macros or unknown internal kqueue filter IDs; original Linux uses different internal timer and readiness representations.",
+      "reason": "These assertions depend on FreeBSD sbintime/hardclock/tick conversion, timer activation macros, internal kqueue filter IDs or mbuf M_PKTHDR/m_pkthdr.len fields. Original Linux has different timer/readiness/skb representations; a VMA payload or fabricated FreeBSD header mirror does not qualify them.",
       "evidence": [
         "tests/upstream/fstack/tests/unit/test_ff_callout.c",
         "tests/upstream/fstack/tests/unit/test_ff_epoll.c",
-        "src/posix/posix-poll.c"
+        "src/posix/posix-poll.c",
+        "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
+        "docs/fstack-zc-contracts.md"
       ],
       "acceptance": [
         "Confirm each listed assertion is FreeBSD-internal and document the supported Linux timer/readiness behavior with existing runnable evidence.",
@@ -536,7 +536,9 @@
         "tests/unit/test_ff_callout.c::test_callout_sbt_to_ticks_relative",
         "tests/unit/test_ff_callout.c::test_tcp_timer_activation_chain",
         "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_unknown_filter_yields_zero_events",
-        "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_eof_unknown_filter_only_hup"
+        "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_eof_unknown_filter_only_hup",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/232"
     },

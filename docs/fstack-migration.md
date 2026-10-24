@@ -68,14 +68,14 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
 | Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 6 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
-| Define a Linux-native zero-copy send and ownership contract | 9 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
+| Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
 | Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
 | Resolve unmapped host memory, time, environment and kqueue helpers | 10 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | 合同差异待决策 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
-| Record nonportable callout and internal kqueue filter assertions | 8 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
+| Record nonportable callout, kqueue filter and mbuf header assertions | 10 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
 
 默认审计还检查：每个非 `scenario-adapted` 案例都恰好出现一次、issue 必须是
@@ -1106,3 +1106,18 @@ IPv4/IPv6 TCP/UDP、精确异常字节、PCAP、不可变 MTU、零遗留缓冲�
 及 FIFO、关闭后缀 PCAP、命名冲突和真实 `/dev/full` 错误下的完整释放。
 本批新增两项源适配，总计175项；193项 blocked/partial 仍未完成。#219 保留六项
 跨代 owner/注入环/命名分配源合同，以及现有功能缺口，不把同代多核误记为跨代所有权。
+
+
+## 远端 RX 的 MTU 事务与审计修复同步
+
+远端 RX 现在先暂停并 join，记录/捕获/释放未交接帧，再执行原始 PMD 队列重建。
+成功或成功回滚后按原核归属恢复，累计计数不重置；回滚或恢复失败则关闭会话，
+不继续使用半配置设备。原始 DPDK 报告的 RX 头空间也用于 large 缓冲区上限，
+修正 virtio 已建队列后设置 jumbo MTU 时设备头空间不足的问题。异常 TAP 的双设备
+MTU 事务仍是独立缺口，没有用单侧修改冒充完成。
+
+同步 #235 的分组处置约束及 #236 的 DF 抓包断言；动态 MTU 检查按九个序号验证，
+静态检查按三个序号验证。严格审计发现两条已有 architecture-specific 的 FreeBSD
+mbuf 头字段断言仍在 #225 contract-review 分组，现移至 #232 架构专用分组。
+#225 保留七条 blocked 写入/空链/零发送合同；#232 共十条架构排除。
+用例状态、433 项固定分母和175项已适配计数均不改变，也没有将建单或分组修正计为通过。

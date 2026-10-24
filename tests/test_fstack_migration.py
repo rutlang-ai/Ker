@@ -144,6 +144,42 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing follow-up acceptance criteria'):
             audit.validate(self.root)
 
+    def test_architecture_specific_case_cannot_use_actionable_disposition(self):
+        group = next(group for group in self.followups['groups']
+                     if group['disposition'] == 'architecture-specific')
+        group['disposition'] = 'adaptation-needed'
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Wrong follow-up disposition for architecture-specific'):
+            audit.validate(self.root)
+
+    def test_harness_only_case_cannot_use_actionable_disposition(self):
+        group = next(group for group in self.followups['groups']
+                     if group['disposition'] == 'harness-only')
+        group['disposition'] = 'contract-review'
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Wrong follow-up disposition for harness-only'):
+            audit.validate(self.root)
+
+    def test_exclusion_group_cannot_contain_blocked_case(self):
+        exclusion = next(group for group in self.followups['groups']
+                         if group['disposition'] == 'architecture-specific')
+        blocked = next(item['id'] for item in self.manifest['cases'] if item['status'] == 'blocked')
+        actionable = next(group for group in self.followups['groups'] if blocked in group['cases'])
+        exclusion_case = exclusion['cases'][0]
+        exclusion['cases'][0] = blocked
+        actionable['cases'][actionable['cases'].index(blocked)] = exclusion_case
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Wrong follow-up disposition'):
+            audit.validate(self.root)
+
+    def test_partial_case_cannot_use_exclusion_disposition(self):
+        partial = next(item['id'] for item in self.manifest['cases'] if item['status'] == 'partial')
+        group = next(group for group in self.followups['groups'] if partial in group['cases'])
+        group['disposition'] = 'harness-only'
+        self.followup_path.write_text(json.dumps(self.followups))
+        with self.assertRaisesRegex(ValueError, 'Wrong follow-up disposition for partial'):
+            audit.validate(self.root)
+
     def test_completion_gate_fails_while_cases_are_incomplete(self):
         result = subprocess.run([sys.executable, str(ROOT / 'tests/fstack_migration.py'),
                                  '--root', str(self.root), '--require-complete'],

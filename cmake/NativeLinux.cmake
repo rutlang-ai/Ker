@@ -927,7 +927,7 @@ if(BUILD_TESTING)
     target_compile_options(ker-icmp-mtu-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-icmp-mtu-flags
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_icmp_mtu.py")
-    set_tests_properties(native-fstack-icmp-mtu-flags PROPERTIES LABELS "native-tcp;fstack")
+    set_tests_properties(native-fstack-icmp-mtu-flags PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-icmp-mtu
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
@@ -942,6 +942,12 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic
             --failure-library "$<TARGET_FILE:ker-mtu-failure>")
     set_tests_properties(native-fstack-live-mtu PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-rx-lcores-mtu
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic --queues 2 --rx-lcores 1
+            --failure-library "$<TARGET_FILE:ker-mtu-failure>")
+    set_tests_properties(native-fstack-rx-lcores-mtu PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-rx-queues-mtu
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
@@ -1064,11 +1070,15 @@ if(BUILD_TESTING)
     target_link_libraries(ker-rx-lcores-test PRIVATE PkgConfig::DPDK "${ker_exception_ring_pmd}")
     add_test(NAME native-fstack-rx-lcores-ownership COMMAND ker-rx-lcores-test)
     set_tests_properties(native-fstack-rx-lcores-ownership PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "fstack")
+    add_library(ker-rx-mtu-failure SHARED tests/posix/rx-mtu-failure.c)
+    target_compile_options(ker-rx-mtu-failure PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-rx-mtu-failure PRIVATE PkgConfig::DPDK ${CMAKE_DL_LIBS})
     add_test(NAME native-fstack-rx-lcores
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-lcores.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-exception-services-test>"
-            --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}")
+            --bridge "$<TARGET_FILE:ker-vhost-bridge-test>" --pmd-root "${ker_vdev_library_root}"
+            --mtu-failure "$<TARGET_FILE:ker-rx-mtu-failure>")
     set_tests_properties(native-fstack-rx-lcores PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;native-udp;fstack")
     add_test(NAME native-fstack-rx-queues
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-vdev.py"

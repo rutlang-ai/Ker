@@ -93,6 +93,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--queues', type=int, default=1)
+    parser.add_argument('--rx-lcores')
     parser.add_argument('--dynamic', action='store_true')
     parser.add_argument('--failure-library', type=Path)
     args = parser.parse_args()
@@ -100,6 +101,8 @@ def main():
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside', '--queues', str(args.queues)]
         for name in ('launcher', 'library', 'worker', 'app'):
             command += ['--' + name, str(getattr(args, name).resolve())]
+        if args.rx_lcores is not None:
+            command += ['--rx-lcores', args.rx_lcores]
         if args.dynamic:
             require(args.failure_library and args.failure_library.is_file(), 'missing PMD failure fixture')
             command += ['--dynamic', '--failure-library', str(args.failure_library.resolve())]
@@ -112,8 +115,11 @@ def main():
         ['ip', '-6', 'addr', 'add', '2001:db8:1::1/64', 'dev', 'kerhost', 'nodad'],
         ['ip', 'link', 'set', 'kerhost', 'up'], ['ip', 'link', 'set', 'kerlink', 'up']):
         subprocess.run(command, check=True)
-    cpu = min(os.sched_getaffinity(0))
-    eal = (f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry '
+    cpus = sorted(os.sched_getaffinity(0))
+    if args.rx_lcores is not None and len(cpus) < 2:
+        print('SKIP: two allowed CPUs required'); return 77
+    mapping = f'0@{cpus[0]},1@{cpus[1]}' if args.rx_lcores is not None else f'0@{cpus[0]}'
+    eal = (f'--lcores={mapping} --no-huge --no-pci --no-shconf --no-telemetry '
            '--iova-mode=va -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink')
     with tempfile.TemporaryDirectory(prefix='ker-icmp-mtu-') as directory:
         root = Path(directory)
@@ -136,6 +142,8 @@ def main():
                 '--mtu', str(mtu), '--max-mtu', '1500' if ceiling else '9000', '--mbuf-mode', mode,
                 '--stats', str(stats), '--pcap-dir', str(capture), '--pcap-snaplen', '65535',
                 '--', str(args.app), ('dynamic-fault' if readback_fault else ('dynamic-reject' if injected else ('dynamic-ceiling' if ceiling else 'dynamic'))) if args.dynamic else 'native', str(mtu), '198.18.0.1', '2001:db8:1::1']
+            if args.rx_lcores is not None:
+                index = command.index('--'); command[index:index] = ['--rx-lcores', args.rx_lcores]
             with (root / (name + '.log')).open('w+') as log:
                 environment = dict(os.environ)
                 environment.pop('KER_TEST_MTU_FAILURE', None)
@@ -230,6 +238,14 @@ def main():
                         require(log.read().count('INJECT: MTU ' + failure + ' PMD set') == 1,
                                 'missing actual PMD failure injection')
                     df_requests = wire(capture, mtu, args.dynamic, ceiling)
+                    if args.rx_lcores is not None:
+                        require(all(p['owner'] == p['lcore'] == 1 and p['cpu'] == cpus[1] for p in record['rx_pollers'])
+                                and sum(p['packets'] for p in record['rx_pollers']) == sum(record['rx_by_queue']),
+                                'remote RX queue assignment/counters did not survive MTU transaction')
+                        if ceiling:
+                            require(record['rx_reconfigure_discarded'] == 0 and
+                                    all(p['starts'] == 1 and p['reconfigured'] == 0 for p in record['rx_pollers']),
+                                    'MTU ceiling rejection mutated PMD or paused remote RX queues')
                     print('PASS: ' + name + ' bidirectional IPv4/IPv6 ICMP, DF on captured IPv4 echo requests '
                           + str(df_requests) + ', full frames/checksums, zero leaks', flush=True)
                 except Exception:

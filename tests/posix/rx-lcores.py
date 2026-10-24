@@ -69,7 +69,7 @@ def frames(directory, direction):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root'):
+    for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root', 'mtu-failure'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -85,7 +85,7 @@ def main():
     environment = dict(os.environ, LD_PRELOAD=':'.join(modules))
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
-        for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root'):
+        for name in ('launcher', 'library', 'worker', 'app', 'bridge', 'pmd-root', 'mtu-failure'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         return subprocess.run(command, env=environment).returncode
     for command in (
@@ -109,7 +109,7 @@ def main():
             try:
                 require(line(bridge) == 'READY' and path.is_socket(), 'vhost/TAP backend unavailable')
                 def config_text(main_core, cores, exception=True):
-                    return ('[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\nmax_mtu=1500\n'
+                    return ('[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\nmax_mtu=9000\n'
                         '[dpdk]\nnb_vdev=1\nport=net_virtio_user0\nqueues=2\n' + f'rx_lcores={cores}\n'
                         + ('exception_iface=coreexcept\nexception_type=34997\n' if exception else '')
                         + f'eal=--lcores=0@{cpus[0]},1@{cpus[1]} --main-lcore={main_core} --no-huge --no-pci '
@@ -134,14 +134,21 @@ def main():
                             'invalid port owner created the exception TAP')
                 print('PASS: test_ff_check_config_kni_primary_lcore_missing_fails', flush=True)
                 for name, main_core, cores, exception in (('main0', 0, '0,1', True),
-                        ('main1', 1, '0,1', True), ('remote-only', 0, '1', False)):
+                        ('main1', 1, '0,1', True), ('remote-only', 0, '1', False),
+                        ('rollback-before', 0, '1', False), ('rollback-after', 0, '1', False)):
                     config, stats = root / (name + '.ini'), root / (name + '.json')
                     capture = root / (name + '-pcap'); capture.mkdir()
                     config.write_text(config_text(main_core, cores, exception) + f'\n[capture]\ndirectory={capture}\n')
                     for family in ([], ['-6']):
                         subprocess.run(['ip', *family, 'neigh', 'flush', 'dev', 'kerhost'], check=True)
+                    profile_env = dict(environment)
+                    if not exception:
+                        profile_env['LD_PRELOAD'] = str(args.mtu_failure.resolve()) + ':' + profile_env['LD_PRELOAD']
+                    if name.startswith('rollback-'):
+                        profile_env['KER_RX_MTU_FAILURE'] = name.removeprefix('rollback-')
+                    option = '--fixed-mtu' if exception else ('--rollback-mtu' if name.startswith('rollback-') else '--live-mtu')
                     with (root / (name + '.log')).open('w+') as log:
-                        process = subprocess.Popen(command(config, stats, [str(args.app), '--fixed-mtu']), env=environment,
+                        process = subprocess.Popen(command(config, stats, [str(args.app), option]), env=profile_env,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, start_new_session=True)
                         try:
                             require(line(process) == 'READY', 'native application failed before main')
@@ -188,17 +195,44 @@ def main():
                                     'original native IPv4/IPv6 TCP/UDP was not exercised')
                             rx_frames = frames(capture, 'rx')
                             require(len(rx_frames) == sum(record['rx_by_queue']) and record['mtu_final'] == 1500
-                                    and record['mtu_changes'] == 0, 'RX PCAP gap/duplicate or unsafe remote MTU change')
+                                    and record['mtu_changes'] == (0 if exception else 2), 'RX PCAP gap/duplicate or MTU transaction failure')
                             if exception:
                                 require(rx_frames.count(frame) == 1 and frames(capture, 'tx').count(reply) == 1,
                                         'exception RX/TX capture missing or duplicated on handoff')
                                 require(record['exception_to_host'] == record['exception_from_host'] == 1,
                                         'exception queue did not preserve its main owner: ' + str(record))
+                            if not exception:
+                                require(record['mtu_changes'] == 2 and all(p['starts'] == (4 if name.startswith('rollback-') else 3)
+                                        for p in pollers), 'MTU did not resume original queue owners/counters: ' + str(record))
+                                log.flush(); log.seek(0); trace = log.read()
+                                require('FAIL:' not in trace and trace.count('QUIESCENT: ethdev stop') >= 3
+                                        and trace.count('QUIESCENT: RX queue setup') >= 6, 'PMD reconfiguration was not quiescent: ' + trace)
+                                if name.startswith('rollback-'):
+                                    require('INJECT: remote RX MTU ' + name.removeprefix('rollback-') in trace, 'rollback fault not reached')
+                                require(sum(p['reconfigured'] for p in pollers) == record['rx_reconfigure_discarded'],
+                                        'reconfiguration loss accounting differs')
                             print('PASS: ' + name + ' actual RX owners=' + str(pollers) + '; original Linux IPv4/IPv6 TCP/UDP, zero mbufs', flush=True)
                         except BaseException:
                             log.flush(); log.seek(0); print(log.read(), file=sys.stderr); raise
                         finally:
                             stop(process)
+                for failure in ('rollback', 'resume'):
+                    config, stats = root / (failure + '-fatal.ini'), root / (failure + '-fatal.json')
+                    config.write_text(config_text(0, '1', False))
+                    profile_env = dict(environment, KER_RX_MTU_FAILURE=failure,
+                        LD_PRELOAD=str(args.mtu_failure.resolve()) + ':' + environment['LD_PRELOAD'])
+                    option = '--rollback-mtu' if failure == 'rollback' else '--live-mtu'
+                    result = owned_run(command(config, stats, [str(args.app), option]),
+                        capture_output=True, text=True, env=profile_env, timeout=25)
+                    require(result.returncode == 125 and 'NATIVE_DONE' not in result.stdout,
+                            'fatal reconfiguration did not fail the session: ' + result.stdout + result.stderr)
+                    diagnostic = 'INJECT: remote RX rollback failure' if failure == 'rollback' else 'INJECT: remote RX resume failure'
+                    require(diagnostic in result.stderr and 'FAIL:' not in result.stderr,
+                            'fatal path did not reach the real quiescent PMD boundary: ' + result.stderr)
+                    record = json.loads(stats.read_text())
+                    require(record['outstanding'] == 0 and all(p['starts'] == 1 for p in record['rx_pollers']),
+                            'fatal path leaked buffers or left/resumed a poller: ' + str(record))
+                    print('PASS: ' + failure + ' failure closes the session with quiescent RX and zero mbufs', flush=True)
                 print('PASS: test_ff_check_config_kni_primary_lcore_present_ok', flush=True)
                 bridge.terminate(); output, _ = bridge.communicate(timeout=10)
                 require(bridge.returncode == 0, 'original vhost/TAP backend failed')

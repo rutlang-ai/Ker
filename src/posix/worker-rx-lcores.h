@@ -14,7 +14,7 @@ struct ker_rx_poll_queue {
     struct rte_ring *handoff;
     unsigned owner, observed;
     int cpu;
-    uint64_t polled, polls, stalled, shutdown;
+    uint64_t polled, polls, stalled, shutdown, reconfigured, starts;
     struct rte_mbuf *pending[KER_RX_BURST];
     uint16_t count, index;
 };
@@ -47,4 +47,7 @@ void ker_worker_rx_lcores_ack(struct ker_worker_rx_lcores *);
 /* Join all producers before touching PMD queues/pool. Frees retained/queued
  * suffixes once and preserves final statistics. Safe after partial startup. */
 int ker_worker_rx_lcores_stop(struct ker_worker_rx_lcores *, uint64_t *discarded, struct ker_pcap *capture);
+/* Same quiescence/reclamation for device reconfiguration; lifetime counters
+ * and queue assignment survive a subsequent start. */
+int ker_worker_rx_lcores_pause(struct ker_worker_rx_lcores *, uint64_t *discarded, struct ker_pcap *capture);
 #endif
