@@ -493,16 +493,17 @@
     {
       "id": "thread-context-abi",
       "title": "Resolve FreeBSD thread context and join-result assertions",
-      "disposition": "contract-review",
-      "reason": "LKL void thread starts and join callbacks do not forward FreeBSD pcurthread/per-CPU pointers or expose the F-Stack return-value transformation. Existing real pthread/TLS evidence covers a different adapter contract.",
+      "disposition": "architecture-specific",
+      "reason": "Exact source review identifies three F-Stack/FreeBSD-specific assertions: opaque pcurthread pointer inheritance, discarding a non-NULL start result through a join result slot absent from LKL, and a test-local FreeBSD PCPU_GET null-context panic mirror that never creates a thread. Preserve original Linux task/TLS and the pinned LKL void-start/handle-only-join ABI. These are explicitly excluded, not Ker passes; source IDs and executable alternative boundaries are documented.",
       "evidence": [
         "src/posix/host-thread.c",
-        "tests/upstream/fstack/tests/unit/test_ff_thread.c"
+        "tests/upstream/fstack/tests/unit/test_ff_thread.c",
+        "docs/fstack-thread-contracts.md"
       ],
       "acceptance": [
-        "Record the exact differences for context propagation, non-NULL start return and the FreeBSD curcpu failure setup.",
-        "Preserve original Linux scheduling/TLS semantics; do not synthesize pcurthread or change LKL callback signatures to fake equivalence.",
-        "Add any needed real adapter failure coverage and explicitly dispose of incompatible assertions."
+        "Retain each exact source assertion and pinned provenance; do not count Linux thread/TLS tests as these FreeBSD ABI passes.",
+        "Keep the real native-fstack-thread-runtime argument/allocation-failure adaptations and runtime extensions separately qualified.",
+        "Reopen adaptation only if an actual Ker consumer requires the source-specific ABI; do not synthesize FreeBSD task/PCPU pointers or alter upstream LKL callback signatures merely for a test."
       ],
       "cases": [
         "tests/unit/test_ff_thread.c::test_ff_pthread_create_basic",

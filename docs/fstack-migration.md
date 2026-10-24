@@ -15,9 +15,9 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 175 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 172 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
-| architecture-specific | 10 | FreeBSD callout/内部 kqueue filter/mbuf 头字段断言，不适用于 Linux 内部结构 |
+| partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 171 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| architecture-specific | 13 | FreeBSD callout、kqueue filter、mbuf 头及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
@@ -49,8 +49,8 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 ## 剩余案例的 issue 追踪
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配的 258 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 193 项是
-21 partial + 172 blocked，另有 10 项架构专用和 55 项上游工具链自测。
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 190 项是
+19 partial + 171 blocked，另有 13 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -74,7 +74,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
 | Resolve unmapped host memory, time, environment and kqueue helpers | 10 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
-| Resolve FreeBSD thread context and join-result assertions | 3 | 合同差异待决策 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
+| Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue filter and mbuf header assertions | 10 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
 
@@ -144,7 +144,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
 | [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
-| [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 2 | 1 | 0 | 0 |
+| [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 0 | 0 | 3 | 0 |
 | [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 4 | 0 | 7 | 2 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
@@ -204,7 +204,8 @@ SIGSEGV。Ker 在 `host-thread.c` 提供完整且私有的 pthread TLS key 适�
 分配失败返回 NULL；pthread key 用尽时释放中间分配并报告 EAGAIN。
 真实 key 耗尽测试检查所有分配回收。上游 LKL 源码保持不变。
 
-`test_ff_pthread_create_basic` 和 `test_ff_pthread_join_retval` 只计部分覆盖：
+`test_ff_pthread_create_basic` 和 `test_ff_pthread_join_retval` 的原始断言已在
+[线程合同审计](fstack-thread-contracts.md) 中明确为架构专用排除，不能计为 Linux 通过：
 LKL 不继承 FreeBSD 的 pcurthread，且 void 线程入口和无返回值槽的 join 无法表达
 F-Stack 丢弃非 NULL 线程返回值的断言。本批不模拟 FreeBSD 上下文，也不对应用的
 pthread API 做拦截；cancel、detach 生命周期及析构重新设置 TLS 等仍未覆盖。
@@ -1141,3 +1142,15 @@ TAP 的1500→1400→1500读回。仅主核 RX 没有远端 poller 重启，保�
 这是已有适配场景的运行时缺口补全，不增加源用例适配计数。固定分母433项、
 175项 scenario-adapted 和193项 blocked/partial 均保持不变；#219 的六项
 跨代 owner、注入环及命名分配合同仍待完成，没有用同代双设备事务替代它们。
+
+
+## 线程源合同的架构处置
+
+逐项审计发现 `test_ff_pthread_create_failfast` 只调用测试文件自建的 FreeBSD
+PCPU 空上下文访问器，并不创建线程或注入 malloc 失败。另两条源断言分别要求
+继承 `pcurthread` 指针，以及把非空 start 返回值变为 join 的 NULL 输出；原版
+Linux/LKL 的 task/TLS 和 void-start、handle-only join ABI 不表达这些合同。
+详见[源断言、回调签名及实际边界证据](fstack-thread-contracts.md)及 #231。
+三项改列架构专用，删除歧义 pass 映射；不添加无消费者的 FreeBSD 模拟层。
+175项已适配数不变，清单为19 partial、171 blocked、13架构专用、55 harness-only，
+固定分母433；190项 blocked/partial 尚未完成，完整迁移门禁必须继续失败。
