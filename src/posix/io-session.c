@@ -448,11 +448,42 @@ static uint64_t monotonic_ms(void)
     if (clock_gettime(CLOCK_MONOTONIC, &now)) return 0;
     return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
 }
+static void require_resident_alive(int resident)
+{
+    if (dead(resident)) { fprintf(stderr, "ker session: primary process exited\n"); _Exit(125); }
+}
+/* Observe cancellation commands while preserving queued probe requests. */
+static int probe_control(int control, unsigned *deferred_probes)
+{
+    if (stopping) return -ECANCELED;
+    struct pollfd event = {.fd = control, .events = POLLIN};
+    int ready;
+    do ready = poll(&event, 1, 0); while (ready < 0 && errno == EINTR && !stopping);
+    if (stopping) return -ECANCELED;
+    if (ready < 0) return -errno;
+    if (!ready) return 0;
+    if (event.revents & (POLLERR | POLLNVAL)) return -ECANCELED;
+    if (event.revents & POLLIN) {
+        char command;
+        ssize_t count;
+        do count = read(control, &command, 1); while (count < 0 && errno == EINTR && !stopping);
+        if (stopping || count == 0) return -ECANCELED;
+        if (count < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -errno;
+        if (command != 'P') return -ECANCELED;
+        if (*deferred_probes == UINT_MAX) return -EOVERFLOW;
+        (*deferred_probes)++;
+    }
+    if (event.revents & POLLHUP) return -ECANCELED;
+    return 0;
+}
 static int shared_probe(struct rte_ring *input, struct rte_ring *output,
-    struct rte_mempool *pool, const struct ker_session_message *identity,
-    unsigned count, uint64_t *next_sequence, int resident)
+    struct rte_mempool *pool, const struct ker_session_message *identity, int control,
+    unsigned *deferred_probes, unsigned count, uint64_t *next_sequence, int resident)
 {
     for (unsigned sequence = 1; sequence <= count; sequence++) {
+        require_resident_alive(resident);
+        int cancelled = probe_control(control, deferred_probes);
+        if (cancelled) { require_resident_alive(resident); return cancelled; }
         struct rte_mbuf *packet = rte_pktmbuf_alloc(pool);
         if (!packet) return -ENOMEM;
         struct ker_session_probe expected = {.identity = *identity};
@@ -464,14 +495,20 @@ static int shared_probe(struct rte_ring *input, struct rte_ring *output,
         void *data = rte_pktmbuf_append(packet, sizeof(expected));
         if (!data) { rte_pktmbuf_free(packet); return -EMSGSIZE; }
         memcpy(data, &expected, sizeof(expected));
+        require_resident_alive(resident);
+        cancelled = probe_control(control, deferred_probes);
+        if (cancelled) { rte_pktmbuf_free(packet); require_resident_alive(resident); return cancelled; }
         if (rte_ring_enqueue(input, packet)) { rte_pktmbuf_free(packet); return -ENOBUFS; }
-        /* Once published, a timeout never frees an object another process may
-         * own. The resident recovers queued objects after exact borrower death. */
+        /* After publication, cancellation leaves ownership with whichever ring
+         * holds the mbuf. The resident reclaims it after exact borrower death. */
         uint64_t deadline = monotonic_ms() + 5000;
         struct rte_mbuf *reply;
-        while (rte_ring_dequeue(output, (void **)&reply)) {
-            if (dead(resident)) { fprintf(stderr, "ker session: primary process exited\n"); _Exit(125); }
-            if (stopping || monotonic_ms() >= deadline) return -ETIMEDOUT;
+        for (;;) {
+            require_resident_alive(resident);
+            cancelled = probe_control(control, deferred_probes);
+            if (cancelled) { require_resident_alive(resident); return cancelled; }
+            if (!rte_ring_dequeue(output, (void **)&reply)) break;
+            if (monotonic_ms() >= deadline) return -ETIMEDOUT;
             poll(NULL, 0, 1);
         }
         if (reply != packet || reply->nb_segs != 1 || reply->data_len != sizeof(expected)) return -EPROTO;
@@ -542,11 +579,13 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         (long)getpid(), (long)getppid(), (unsigned long long)message.epoch,
         (unsigned long long)message.slot, generation, process, names[0], names[1], names[2], names[3]); fflush(stdout);
     uint64_t probe_sequence = 0;
+    unsigned deferred_probes = 0;
     bool probe_pending = probe_only;
     while (!stopping) {
         if (probe_pending) {
             int probe_result = shared_probe(channels[0], channels[3], pool, &message,
-                probe_count, &probe_sequence, peer);
+                control, &deferred_probes, probe_count, &probe_sequence, peer);
+            if (probe_result == -ECANCELED) { result = 0; goto cleanup; }
             if (probe_result) { fprintf(stderr, "ker session: shared probe failed %d\n", probe_result); goto cleanup; }
             printf("KER_SESSION_PROBED {\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"count\":%u,\"sequence\":%llu,\"primary_pid\":%u,\"payload_bytes\":%u}\n",
                 (unsigned long long)message.epoch, (unsigned long long)message.slot,
@@ -554,6 +593,11 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 directory->primary_pid, KER_SESSION_PROBE_PAYLOAD); fflush(stdout);
             probe_pending = false;
             if (probe_only) break;
+            if (deferred_probes) {
+                deferred_probes--;
+                probe_pending = true;
+                continue;
+            }
         }
         struct pollfd fds[] = {{.fd = control, .events = POLLIN}, {.fd = fd, .events = POLLIN},
                               {.fd = peer, .events = POLLIN}};

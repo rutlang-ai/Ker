@@ -221,7 +221,7 @@ def lease(args):
                                 try: selector.unregister(stdin_fd)
                                 except KeyError: pass
                                 close_child_control()
-                    if stdin_eof and not pending:
+                    if stdin_eof and not pending and args.action != 'probe':
                         close_child_control()
                     if forwarded_signal and worker.poll() is None and time.monotonic() >= termination_deadline:
                         if escalation == 0:
