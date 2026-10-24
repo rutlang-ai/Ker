@@ -122,6 +122,7 @@ static unsigned pmd_rx_queues, pmd_tx_queues;
 static bool generation_empty_cleanup_test;
 static bool generation_test_corrupt_after_collection;
 static bool generation_frame_drain_test;
+static bool generation_frame_source_test;
 static bool tc3_probe_gate;
 static bool tc3_drain_requested;
 static bool tc3_observer;
@@ -472,6 +473,21 @@ static int generation_frame_drain_control(char command, void *opaque)
 {
     if(command!='G')return 0;
     struct generation_frame_drain_context *context=opaque;
+    if(getenv("KER_SESSION_TEST_FRAME_DRAIN_FULL")) {
+        uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
+        if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||!tx_before)return -EUCLEAN;
+        uint32_t capacity=tx_before;
+        for(uint32_t i=0;i<capacity;i++) {
+            struct rte_mbuf *queued=NULL;
+            if(ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&queued)!=1||!queued||
+                ker_generation_test_packet_object_index(context->rings,queued,&(uint32_t){0})||
+                queued->pkt_len||queued->nb_segs!=1||ker_generation_packet_release(context->rings,&context->identity,queued))return -EUCLEAN;
+        }
+        if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||tx_after||
+            pool_before-pool_after!=capacity)return -EUCLEAN;
+        printf("KER_SESSION_FRAME_FULL_DRAINED {\"count\":%u,\"tx_after\":%u,\"pool_before\":%u,\"pool_after\":%u}\n",
+            capacity,tx_after,pool_before,pool_after);fflush(stdout);return 1;
+    }
     uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
     if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||tx_before!=1)
         return -EUCLEAN;
@@ -2282,6 +2298,17 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
                 char command; ssize_t count=read(control,&command,1);
                 if(count==0)return 0;
                 if(count<0&&errno==EINTR)continue;
+#ifdef KER_SESSION_TEST_HOOKS
+                if(count==1&&command=='F'&&generation_frame_source_test) {
+                    struct ker_generation_identity source=*identity;
+                    source.pid=(uint32_t)getpid();
+                    uint32_t filled=0;
+                    int fill=ker_generation_test_fill_tx_capacity(rings,&source,0,0,&filled);
+                    if(fill)return fill;
+                    printf("KER_SESSION_FRAME_FULL_FILLED {\"count\":%u}\n",filled);fflush(stdout);
+                    continue;
+                }
+#endif
                 return -EPROTO; /* Parked workers accept no device/control commands. */
             }
         }
@@ -2655,7 +2682,7 @@ static int frame_negative_prepares_leave_datagram(int packet_fd,int fd,int resid
 {
     uint64_t tag=ker_generation_packet_pool_tag(rings);
     uint32_t ring_before,pool_before,ring_after,pool_after;
-    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_before,&pool_before)||ring_before)return -EUCLEAN;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_before,&pool_before))return -EUCLEAN;
     for(unsigned variant=0;variant<12;variant++) {
         int result=frame_negative_prepare(fd,resident,identity,sequence,capability,tag,variant);
         if(result)return result;
@@ -2676,7 +2703,7 @@ static int frame_prepare_cancel_replay(int packet_fd,int fd,int resident,
     const uint8_t *peek_bytes,size_t peek_length,uint64_t tag)
 {
     uint32_t ring_before,pool_before,ring_after,pool_after;
-    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_before,&pool_before)||ring_before)return -EUCLEAN;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_before,&pool_before))return -EUCLEAN;
     struct ker_session_message prepared,cancelled;
     int result=worker_frame_request(fd,identity,sequence,resident,capability,
         KER_SESSION_FRAME_PREPARE,tag,UINT32_MAX,0,0,0,heartbeat,&prepared);
@@ -2721,6 +2748,11 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     if(drained)return drained;
     uint64_t tag=ker_generation_packet_pool_tag(rings);
     if(!tag)return -EUCLEAN;
+#ifdef KER_SESSION_TEST_HOOKS
+    uint32_t tx_initial=0,pool_before=0;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&tx_initial,&pool_before))return -EUCLEAN;
+    if(getenv("KER_SESSION_TEST_FRAME_FULL")?!tx_initial:tx_initial!=0)return -EUCLEAN;
+#endif
 #ifdef KER_SESSION_TEST_HOOKS
     if(getenv("KER_SESSION_TEST_FRAME_NEGATIVES")) {
         int negatives=frame_negative_prepares_leave_datagram(packet_fd,fd,resident,identity,sequence,
@@ -2773,7 +2805,18 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     result=worker_frame_request(fd,identity,sequence,resident,capability,
         KER_SESSION_FRAME_COMMIT,prepared.packet_pool_tag,prepared.packet_object_index,
         prepared.packet_port,prepared.packet_queue,prepared.tx_lease_id,heartbeat,&committed);
-    if(result)return result;
+    if(result) {
+#ifdef KER_SESSION_TEST_HOOKS
+        if(result==-ENOBUFS&&getenv("KER_SESSION_TEST_FRAME_FULL")) {
+            uint32_t tx_after=0,pool_after=0;
+            if(ker_generation_test_tx_snapshot(rings,0,0,0,&tx_after,&pool_after)||
+                tx_after!=tx_initial||pool_after!=pool_before)return -EUCLEAN;
+            printf("KER_SESSION_FRAME_FULL_COMMIT_CANCELLED {\"status\":%d,\"tx_after\":%u,\"pool_restored\":true}\n",
+                result,tx_after);fflush(stdout);return 1;
+        }
+#endif
+        return result;
+    }
     char frame_hex[1518*2+1];
     static const char hex[]="0123456789abcdef";
     const uint8_t *committed_bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
@@ -3715,6 +3758,7 @@ int main(int argc, char **argv)
 #ifdef KER_SESSION_TEST_HOOKS
         if (!strcmp(argv[i], "--generation-rings-test")) { generation_test = true; continue; }
         if (!strcmp(argv[i], "--test-generation-frame-drain")) { generation_frame_drain_test = true; continue; }
+        if (!strcmp(argv[i], "--test-generation-frame-source")) { generation_frame_source_test = true; continue; }
         if (!strcmp(argv[i], "--generation-detach-test")) { generation_detach_test=true; continue; }
         if (!strcmp(argv[i], "--generation-tx-full-test")) { generation_tx_full_test=true; continue; }
         if (!strcmp(argv[i], "--generation-empty-cleanup-test")) { empty_cleanup_test=true; continue; }
@@ -3794,6 +3838,8 @@ int main(int argc, char **argv)
     if (tc3_observer_arg && (ring_pmd != 2 || strcmp(role, "secondary") || probe_only || probe_count)) return 2;
     if (generation_frame_drain_test && (!generation_rings || ring_pmd!=2 || strcmp(role,"secondary") ||
         generation!=1)) return 2;
+    if (generation_frame_source_test && (!generation_rings || ring_pmd!=2 || strcmp(role,"secondary") ||
+        generation!=0)) return 2;
     if ((directory_test_gate_fd >= 0 || directory_test_replay_attached || generation_rings_test_replay) && strcmp(role, "secondary")) return 2;
     if (generation_rings_test_replay && !generation_rings) return 2;
     if (directory_test_gate_fd >= 0 && fcntl(directory_test_gate_fd, F_GETFD) < 0) return 2;

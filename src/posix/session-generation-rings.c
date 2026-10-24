@@ -354,6 +354,23 @@ int ker_generation_test_tx_snapshot(struct ker_generation_rings *r,uint16_t port
     *packet_pool_in_use=rte_mempool_in_use_count(r->packet_pool);
     return 0;
 }
+int ker_generation_test_fill_tx_capacity(struct ker_generation_rings *r,
+    const struct ker_generation_identity *producer,uint16_t port,uint16_t queue,uint32_t *filled)
+{
+    if(filled)*filled=0;
+    if(!r||!producer||!filled||port>=r->ports||queue>=r->queues||
+        producer->generation>=KER_GENERATION_RING_GENERATIONS||!identity_valid(r,producer))return -EINVAL;
+    uint32_t capacity=rte_ring_get_capacity(r->tx[ring_index(r,port,queue,producer->generation)]);
+    for(uint32_t i=0;i<capacity;i++){
+        struct rte_mbuf *packet=rte_pktmbuf_alloc(r->packet_pool);
+        if(!packet)return -ENOMEM;
+        rte_pktmbuf_reset(packet);
+        int result=ker_generation_tx_enqueue(r,producer,port,queue,packet);
+        if(result){rte_pktmbuf_free(packet);return result;}
+        (*filled)++;
+    }
+    return 0;
+}
 int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *r,
     uint32_t index,uint32_t duplicate_index,uintptr_t *original)
 {

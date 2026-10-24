@@ -137,7 +137,7 @@ def run_session(args, api):
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
-    handoff_modes = {'positive', 'frame-positive', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    handoff_modes = {'positive', 'frame-positive', 'frame-full', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
         'handoff-control-hup',
         'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
         'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
@@ -258,6 +258,8 @@ def run_session(args, api):
             '--generation-rings']
         if os.environ.get('KER_SESSION_TEST_FRAME_DRAIN') == '1':
             peer_arguments.append('--test-generation-frame-drain')
+        if os.environ.get('KER_SESSION_TEST_FRAME_DRAIN_FULL') == '1':
+            peer_environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
         peer_arguments.extend(['--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)])
         peer_worker = subprocess.Popen(peer_arguments,
@@ -470,7 +472,7 @@ def run_session(args, api):
                 quiesced_sent=quiesced_sent, peer=metrics.get('handoff_negative_peer')))
             publish()
             raise RuntimeError('resident failed closed after the expected invalid QUIESCED')
-        if handoff_mode not in (None, 'positive', 'frame-positive'):
+        if handoff_mode not in (None, 'positive', 'frame-positive', 'frame-full'):
             raise RuntimeError('test handoff mode is not a fatal profile')
         parked = wait_marker(worker, 'KER_SESSION_PMD_PARKED')
         if (boundary.get('idle') is not True or boundary.get('owner_key') != metrics['grant']['queue_owner_key'] or
@@ -516,6 +518,12 @@ def run_session(args, api):
         metrics['stage'] = 'handoff-complete'
         handoff_udp_ready = True
         publish()
+        if handoff_mode=='frame-full':
+            if os.write(control_w,b'F')!=1: raise RuntimeError('could not request actual generation TX ring fill')
+            filled=wait_marker(worker,'KER_SESSION_FRAME_FULL_FILLED')
+            if not isinstance(filled.get('count'),int) or filled['count']<=0:
+                raise RuntimeError('actual generation TX ring fill did not report a positive capacity')
+            metrics['frame_full_capacity']=filled['count'];publish()
 
     def finish_signal_before_app(packet_expected):
         nonlocal completed
@@ -570,6 +578,7 @@ def run_session(args, api):
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', str(args.generation), '--process', str(args.process),
             *(['--generation-rings'] if getattr(args, 'generation_rings', False) else []),
+            *(['--test-generation-frame-source'] if os.environ.get('KER_SESSION_TEST_FRAME_FULL')=='1' else []),
             '--packet-fd', str(packet_worker.fileno()), '--wire-fd', str(args.wire_fd),
             '--mtu-fd', str(mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
@@ -649,7 +658,7 @@ def run_session(args, api):
 
         def trigger_handoff_udp():
             nonlocal handoff_udp_sequence
-            if handoff_mode != 'frame-positive' or app is None or app_pidfd < 0 or app.poll() is not None:
+            if handoff_mode not in ('frame-positive','frame-full') or app is None or app_pidfd < 0 or app.poll() is not None:
                 raise RuntimeError('UDP handoff trigger is available only for the live positive app')
             sequence = handoff_udp_sequence + 1
             if (sequence == 1 and handoff_udp_ready) or (sequence == 2 and not handoff_udp_ready):
@@ -677,6 +686,17 @@ def run_session(args, api):
                 bytes=len(payload))), flush=True)
             if sequence != 2:
                 return
+            if handoff_mode=='frame-full':
+                full=ready(worker,'KER_SESSION_FRAME_FULL_COMMIT_CANCELLED')
+                if full.get('status')!=-errno.ENOBUFS or full.get('pool_restored') is not True:
+                    raise RuntimeError('full TX ring did not cancel the prepared original frame exactly')
+                if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
+                    raise RuntimeError('could not request full-ring peer drain')
+                drained_full=ready(peer_worker,'KER_SESSION_FRAME_FULL_DRAINED')
+                if drained_full.get('tx_after')!=0 or drained_full.get('count')!=metrics.get('frame_full_capacity'):
+                    raise RuntimeError('peer did not drain the exact filled generation TX ring')
+                metrics['handoff_frame_full']=dict(commit_cancel=full,drain=drained_full)
+                publish();return
             committed = ready(worker, 'KER_SESSION_FRAME_COMMITTED')
             if (committed.get('queue') != 0 or committed.get('generation') != 0 or
                 committed.get('packet_pointer') is None or committed.get('object_index') is None or
@@ -714,7 +734,7 @@ def run_session(args, api):
                     if data == b'U':
                         trigger_handoff_udp()
                     elif data == b'H':
-                        if handoff_mode != 'frame-positive':
+                        if handoff_mode not in ('frame-positive','frame-full'):
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
                     else:
