@@ -902,20 +902,23 @@
           "provenance_case": "native-fstack-session-directory"
         }
       ],
-      "remaining": "The source also requires a configured network port, every source-coordinate lookup and one fixed queue dispatch ring protected by hardware arbitration. Those network/dispatch contracts are not implemented or qualified."
+      "remaining": "A configured original network PMD is now qualified separately. Exhaustive lookup of every source-coordinate/drain object and the fixed queue dispatch/admission contract remain unqualified."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_secondary_looks_up_own_slot",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "A real EAL secondary under a different plain master validates a nonzero epoch, nonzero reusable slot and its directory/rings/pool, then exchanges authenticated shared control mbufs.",
+      "status": "scenario-adapted",
+      "reason": "A real EAL secondary under a different plain master validates a nonzero epoch/slot, shared directory/pool and exact coordinate ring names. It attaches the resident-configured original net_ring PMD, obtains the sole journaled consumer grant and performs actual TX/RX bursts with exact frame bytes and original counter deltas. The primary only drains data after exact consumer death and never consumes network data while this borrower lives. The source uses an original null PMD and does not require a physical NIC or Linux packet delivery; those broader boundaries remain tracked separately.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-registration",
           "provenance_case": "native-fstack-session-directory"
+        },
+        {
+          "ctest": "native-fstack-session-ring-pmd",
+          "provenance_case": "native-fstack-session-directory"
         }
-      ],
-      "remaining": "The source also requires the secondary to claim the hardware and the resident to park from network consumption. No secondary network PMD or hardware-owner grant is implemented yet."
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
@@ -928,7 +931,7 @@
           "provenance_case": "native-fstack-session-directory"
         }
       ],
-      "remaining": "The source single dispatch-ring consumer, no-hardware arbitration, hardware-owner/KNI-owner agreement and packet delivery remain unimplemented. Shared control isolation is not hardware exclusivity."
+      "remaining": "A real secondary ring-PMD consumer grant is now qualified separately, but this source case requires two distinct master/worker chains to remain alive through synchronized post-admission samples, agreeing on the fixed dispatch owner and exception/KNI owner word. The current rejected secondary exits instead of staying as a no-hardware observer; those simultaneous-sampling/dispatch/exception-owner assertions remain unqualified."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",

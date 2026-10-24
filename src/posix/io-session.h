@@ -5,7 +5,7 @@
 #include <stdatomic.h>
 #include <errno.h>
 #define KER_SESSION_MAGIC UINT64_C(0x4b45525345535331)
-#define KER_SESSION_VERSION 3U
+#define KER_SESSION_VERSION 4U
 #define KER_SESSION_SLOTS 4U
 #define KER_SESSION_GENERATIONS 2U
 #define KER_SESSION_PROCESSES 4U
@@ -16,7 +16,7 @@
 #define KER_SESSION_PROBE_PAYLOAD 64U
 #define KER_SESSION_ZONE "ker_session_directory"
 enum ker_session_command { KER_SESSION_MASTER = 1, KER_SESSION_RESERVE,
-    KER_SESSION_RELEASE, KER_SESSION_STATUS, KER_SESSION_ATTACHED, KER_SESSION_PROBE };
+    KER_SESSION_RELEASE, KER_SESSION_STATUS, KER_SESSION_ATTACHED, KER_SESSION_PROBE, KER_SESSION_PMD_ACQUIRE, KER_SESSION_PMD_STATUS };
 enum ker_session_state { KER_SESSION_PREPARING, KER_SESSION_READY, KER_SESSION_STOPPING };
 /* Internal same-host ABI, not a public F-Stack wire or ring-name ABI. */
 struct ker_session_message {
@@ -49,6 +49,10 @@ struct ker_session_directory {
     uint64_t magic, version, size, session;
     uint32_t primary_pid, slots, generations, processes, channels, capacity;
     _Atomic unsigned state;
+    uint32_t ring_pmd;
+    /* Coordinate key, never a PID/liveness substitute. Held until exact borrower death. */
+    _Atomic uint64_t pmd_owner;
+    _Atomic uintptr_t pmd_lease;
     _Atomic uint64_t epoch[KER_SESSION_SLOTS];
     /* Resident assigns the original mbuf before acknowledging RESERVE; only
      * exact borrower death permits clearing this lease and returning it. */

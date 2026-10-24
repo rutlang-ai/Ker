@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Registration-only resident EAL session; does not execute applications or own a PMD."""
+"""Resident EAL session with optional original ring-PMD single-consumer qualification."""
 import argparse
 import errno
 import json
@@ -15,11 +15,11 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 3
+VERSION = 4
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
           'generation', 'process', 'token', 'slot', 'status')
 WIRE = struct.Struct('=10Qq')
-MASTER, RESERVE, RELEASE, STATUS, ATTACHED = range(1, 6)
+MASTER, RESERVE, RELEASE, STATUS, ATTACHED, PROBE, PMD_ACQUIRE, PMD_STATUS = range(1, 9)
 
 
 def packet(command, sequence=1, **values):
@@ -63,7 +63,7 @@ class Connection:
         self.socket.close()
 
 
-def role_arguments(eal, role):
+def role_arguments(eal, role, ring_pmd=False):
     values = shlex.split(eal)
     if '--' in values or any(v == '--proc-type' or v.startswith('--proc-type=') for v in values):
         raise ValueError('the session owns --proc-type; --eal must contain only shared EAL options')
@@ -72,10 +72,11 @@ def role_arguments(eal, role):
         raise ValueError('registration stage does not admit devices')
     if '--no-pci' not in values:
         values.append('--no-pci')
-    return [*values, '--proc-type=' + role]
+    return [*values, *(['--vdev=net_ring_ker'] if ring_pmd else []), '--proc-type=' + role]
 
 
 def lease(args):
+    ring_pmd = getattr(args, 'ring_pmd', False)
     connection = Connection(args.socket)
     worker = None
     read_fd = write_fd = control_read = control_write = -1
@@ -128,9 +129,10 @@ def lease(args):
             worker = subprocess.Popen([str(args.worker.resolve(strict=True)), '--role', 'secondary',
                 '--socket', str(args.socket), '--control-fd', str(control), '--ticket-fd', str(read_fd),
                 '--generation', str(args.generation), '--process', str(args.process),
+                *(['--ring-pmd'] if ring_pmd else []),
                 '--probe-count', str(args.probe_count),
                 *(['--probe-only'] if args.action == 'probe' else []), '--',
-                *role_arguments(args.eal, 'secondary')], stdin=subprocess.DEVNULL,
+                *role_arguments(args.eal, 'secondary', ring_pmd)], stdin=subprocess.DEVNULL,
                 pass_fds=(read_fd, control_read))
             close_fd('read_fd'); close_fd('control_read')
             data = encode(ticket)
@@ -313,12 +315,13 @@ def bounded_probe_count(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe'))
+    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe', 'device-status'))
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-session')
     parser.add_argument('--eal', default='')
     parser.add_argument('--generation', type=int, choices=range(2), default=0)
     parser.add_argument('--process', type=int, choices=range(4), default=0)
+    parser.add_argument('--ring-pmd', action='store_true', help='qualify the original shared ring PMD with an exclusive secondary consumer')
     parser.add_argument('--probe-count', type=bounded_probe_count, default=0)
     args = parser.parse_args()
     args.socket = args.socket.absolute()
@@ -327,13 +330,18 @@ def main():
             args.socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             worker = str(args.worker.resolve(strict=True))
             os.execv(worker, [worker, '--role', 'primary', '--socket', str(args.socket),
-                '--control-fd', str(sys.stdin.fileno()), '--', *role_arguments(args.eal, 'primary')])
+                '--control-fd', str(sys.stdin.fileno()), *(['--ring-pmd'] if args.ring_pmd else []), '--', *role_arguments(args.eal, 'primary', args.ring_pmd)])
         if args.action in ('lease', 'probe'):
             if args.action == 'probe' and not args.probe_count:
                 args.probe_count = 1
             return lease(args)
         connection = Connection(args.socket)
         try:
+            if args.action == 'device-status':
+                reply = connection.request(PMD_STATUS)
+                print(json.dumps(dict(stage='ring-pmd', session=reply['session'], owner=reply['token'],
+                    epoch=reply['epoch'], slot=reply['slot'], generation=reply['generation'], process=reply['process'])))
+                return 0
             reply = connection.request(STATUS)
             print(json.dumps(dict(stage='shared-control', session=reply['session'],
                 registered_epochs=reply['slot'], eal_processes=reply['process'],
