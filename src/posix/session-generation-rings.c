@@ -378,6 +378,13 @@ int ker_generation_test_packet_drop_count(struct ker_generation_rings *r,uint16_
     *count=atomic_load_explicit(&r->stats[full_index(r,p,q,g)].packet_drop,memory_order_relaxed);
     return 0;
 }
+int ker_generation_test_packet_full_count(struct ker_generation_rings *r,uint16_t p,
+    uint16_t q,uint32_t g,uint64_t *count)
+{
+    if(!r||!r->primary||!count||p>=r->ports||q>=r->queues||g>=2)return -EINVAL;
+    *count=atomic_load_explicit(&r->stats[full_index(r,p,q,g)].packet_full,memory_order_relaxed);
+    return 0;
+}
 int ker_generation_rings_test_directory_present(void)
 {
     int saved_errno = rte_errno;

@@ -140,6 +140,8 @@ int ker_generation_test_reopen_after_failed_detach(struct ker_generation_rings *
     uint32_t generation);
 int ker_generation_test_packet_drop_count(struct ker_generation_rings *rings,uint16_t port,
     uint16_t queue,uint32_t generation,uint64_t *count);
+int ker_generation_test_packet_full_count(struct ker_generation_rings *rings,uint16_t port,
+    uint16_t queue,uint32_t generation,uint64_t *count);
 /* Test-only: observe the same generation-directory lookup used by attach. */
 int ker_generation_rings_test_directory_present(void);
 /* Test-only: repeat the production secondary attach and require identical objects. */

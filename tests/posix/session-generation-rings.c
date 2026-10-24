@@ -44,7 +44,8 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
 {
     const uint32_t capacity=KER_GENERATION_RING_CAPACITY;
     uint32_t baseline=ker_generation_packet_pool_in_use(rings);
-    if(baseline==UINT32_MAX||baseline||!ker_generation_packet_pool_tag(rings))return -1;
+    struct rte_ring *packet_ring=rte_ring_lookup("drain_tx_p0_q1_g0");
+    if(baseline==UINT32_MAX||baseline||!packet_ring||!ker_generation_packet_pool_tag(rings))return -1;
     uintptr_t original=0;
     if(ker_generation_test_packet_table_duplicate(rings,1,0,&original))return -1;
     struct ker_generation_rings *rejected=NULL;
@@ -98,9 +99,23 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
             packet->pkt_len!=14||packet->data_len!=14)return -1;
         const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
         for(uint32_t k=0;k<14;k++)if(bytes[k]!=(uint8_t)(0x80U+i+k))return -1;
+        uint32_t pool_before=ker_generation_packet_pool_in_use(rings);
+        unsigned ring_before=rte_ring_count(packet_ring);
+        uint64_t drops_before=0,full_before=0,drops_after=0,full_after=0;
+        if(pool_before==UINT32_MAX||ker_generation_test_packet_drop_count(rings,0,1,0,&drops_before)||
+            ker_generation_test_packet_full_count(rings,0,1,0,&full_before))return -1;
         if(ker_generation_packet_pmd_accepted(rings,consumer,packet)!=-EOPNOTSUPP||
             ker_generation_packet_wire_pending(rings,consumer,packet)!=-EOPNOTSUPP||
-            ker_generation_packet_release(rings,consumer,packet))return -1;
+            ker_generation_packet_pool_in_use(rings)!=pool_before||
+            rte_ring_count(packet_ring)!=ring_before||
+            ker_generation_test_packet_drop_count(rings,0,1,0,&drops_after)||drops_after!=drops_before||
+            ker_generation_test_packet_full_count(rings,0,1,0,&full_after)||full_after!=full_before||
+            ker_generation_packet_release(rings,consumer,packet)||
+            ker_generation_packet_release(rings,consumer,packet)!=-ESTALE||
+            ker_generation_packet_cancel(rings,producer,indices[i],leases[i])!=-ESTALE||
+            ker_generation_packet_commit(rings,producer,0,1,indices[i],leases[i])!=-ESTALE||
+            ker_generation_packet_resolve(rings,producer,indices[i],leases[i])!=NULL||
+            ker_generation_packet_pool_in_use(rings)!=pool_before-1)return -1;
     }
     struct rte_mbuf *empty=NULL;
     if(ker_generation_tx_dequeue_peer(rings,consumer,0,1,&empty)!=0||empty||
@@ -190,6 +205,23 @@ static struct rte_mbuf *packet(struct rte_mempool*pool,uint8_t value)
 {
     struct rte_mbuf*m=rte_pktmbuf_alloc(pool);if(!m)return NULL;
     uint8_t*p=(uint8_t*)rte_pktmbuf_append(m,1);if(!p){rte_pktmbuf_free(m);return NULL;}*p=value;return m;
+}
+static int ring_snapshot_verify(struct rte_ring *ring,unsigned count,
+    struct rte_mbuf *const *expected,const uint8_t *values,const uint16_t *lengths)
+{
+    if(!ring||count>KER_GENERATION_RING_CAPACITY||rte_ring_count(ring)!=count)return -1;
+    struct rte_mbuf *observed[KER_GENERATION_RING_CAPACITY];
+    for(unsigned i=0;i<count;i++){
+        if(rte_ring_dequeue(ring,(void **)&observed[i]))return -1;
+        if(observed[i]!=expected[i])return -1; /* Do not dereference an unknown object. */
+        if(!observed[i]||observed[i]->nb_segs!=1||observed[i]->pkt_len!=lengths[i]||
+            observed[i]->data_len!=lengths[i])return -1;
+        const uint8_t *bytes=rte_pktmbuf_mtod(observed[i],const uint8_t *);
+        for(uint16_t k=0;k<lengths[i];k++)if(bytes[k]!=values[i])return -1;
+    }
+    if(!rte_ring_empty(ring))return -1;
+    for(unsigned i=0;i<count;i++)if(rte_ring_enqueue(ring,observed[i]))return -1;
+    return 0;
 }
 static struct rte_mbuf *packet_pair(struct rte_mempool *pool,uint8_t first,uint8_t second)
 {
@@ -768,6 +800,9 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
         uint8_t *bytes=packet_out?rte_pktmbuf_append(packet_out,14):NULL;
         struct rte_mbuf *message_tx=NULL,*message_rx=NULL;
         struct rte_ring *rx_ring=rte_ring_lookup("drain_rx_p0_q1_g1");
+        struct rte_mbuf *expected_tx[2]={0},*expected_rx[1]={0};
+        const uint8_t tx_values[2]={0xb6,0xc1},rx_values[1]={0xc2};
+        const uint16_t tx_lengths[2]={14,1},rx_lengths[1]={1};
         uint64_t drop_before=0,drop_after=0,packet_drop_before=0,packet_drop_after=0;
         if(!bytes||!rx_ring)PACKET_CASE_FAIL();
         memset(bytes,0xb6,14);
@@ -779,17 +814,22 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
             ker_generation_rx_enqueue(rings,&actors[0],0,1,1,message_rx)||
             ker_generation_test_tx_drop_count(rings,0,1,0,&drop_before)||
             ker_generation_test_packet_drop_count(rings,0,1,0,&packet_drop_before))PACKET_CASE_FAIL();
+        expected_tx[0]=packet_out;expected_tx[1]=message_tx;expected_rx[0]=message_rx;
         if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
             syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0))PACKET_CASE_FAIL();
         for(unsigned g=0;g<2;g++)if(wait_child_bounded(pids[g],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)PACKET_CASE_FAIL();
         if(rte_ring_count(tx)!=2||rte_ring_count(rx_ring)!=1||
             ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||
-            rte_mempool_in_use_count(pool)!=2)PACKET_CASE_FAIL();
+            rte_mempool_in_use_count(pool)!=2||
+            ring_snapshot_verify(tx,2,expected_tx,tx_values,tx_lengths)||
+            ring_snapshot_verify(rx_ring,1,expected_rx,rx_values,rx_lengths))PACKET_CASE_FAIL();
         ker_generation_test_corrupt_next_reap();
         if(ker_generation_reap_dead(rings,&actors[0])!=-EUCLEAN||rte_ring_count(tx)!=2||
             rte_ring_count(rx_ring)!=1||
             ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||
             rte_mempool_in_use_count(pool)!=2||
+            ring_snapshot_verify(tx,2,expected_tx,tx_values,tx_lengths)||
+            ring_snapshot_verify(rx_ring,1,expected_rx,rx_values,rx_lengths)||
             ker_generation_test_tx_drop_count(rings,0,1,0,&drop_after)||drop_after!=drop_before||
             ker_generation_test_packet_drop_count(rings,0,1,0,&packet_drop_after)||packet_drop_after!=packet_drop_before)PACKET_CASE_FAIL();
         ker_generation_test_restore_reap_corruption();
@@ -843,11 +883,19 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
             ker_generation_reap_dead(rings,&actors[0]))PACKET_CASE_FAIL();
         close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
     }else if(profile==4){
-        if(syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0)||wait_child_bounded(pids[1],&status)||
+        struct rte_mbuf *stale_packet=ker_generation_packet_resolve(rings,&actors[0],index,lease);
+        uint8_t *stale_bytes=stale_packet?rte_pktmbuf_append(stale_packet,14):NULL;
+        if(!stale_bytes)PACKET_CASE_FAIL();
+        memset(stale_bytes,0x44,14);
+        if(ker_generation_packet_write_complete(rings,&actors[0],index,lease)||
+            syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0)||wait_child_bounded(pids[1],&status)||
             !WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||ker_generation_reap_dead(rings,&actors[1])||
             ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||
             ker_generation_packet_cancel(rings,&actors[0],index,lease)||
             ker_generation_packet_resolve(rings,&actors[0],index,lease)!=NULL||
+            ker_generation_packet_cancel(rings,&actors[0],index,lease)!=-ESTALE||
+            ker_generation_packet_commit(rings,&actors[0],0,1,index,lease)!=-ESTALE||
+            ker_generation_packet_release(rings,&actors[0],stale_packet)!=-ESTALE||
             ker_generation_packet_pool_in_use(rings)!=packet_baseline)PACKET_CASE_FAIL();
         close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
         atomic_store_explicit(&c->packet_go,2,memory_order_release);
