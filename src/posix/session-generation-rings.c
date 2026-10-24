@@ -418,6 +418,31 @@ static int operation_enter(struct ker_generation_rings *r, const struct ker_gene
     }
     return 0;
 }
+/* A TX peer consumes a producer-generation ring using its own authenticated
+ * identity. Reaping the producer intentionally clears that generation's
+ * admission while preserving queued packets owned by a live consumer, so
+ * this path gates the producer ring but authenticates and counts only the
+ * exact admitted consumer. */
+static int operation_enter_tx_peer(struct ker_generation_rings *r,
+    const struct ker_generation_identity *consumer,uint16_t p,uint16_t q,
+    uint32_t producer_generation)
+{
+    if(!r||!identity_valid(r,consumer)||p>=r->ports||q>=r->queues||
+        producer_generation>=2||producer_generation==consumer->generation||
+        !admitted(r,consumer,p,q,consumer->generation)) return -EINVAL;
+    if(atomic_load_explicit(&r->gate[producer_generation],memory_order_acquire))return -EBUSY;
+    unsigned active_index=consumer->generation*2U+producer_generation;
+    atomic_fetch_add_explicit(&r->active[active_index],1,memory_order_acq_rel);
+    if(!admitted(r,consumer,p,q,consumer->generation)){
+        atomic_fetch_sub_explicit(&r->active[active_index],1,memory_order_release);
+        return -EHOSTDOWN;
+    }
+    if(atomic_load_explicit(&r->gate[producer_generation],memory_order_acquire)){
+        atomic_fetch_sub_explicit(&r->active[active_index],1,memory_order_release);
+        return -EBUSY;
+    }
+    return 0;
+}
 static void operation_leave(struct ker_generation_rings *r,
     const struct ker_generation_identity *id,uint32_t ring_generation)
 { atomic_fetch_sub_explicit(&r->active[id->generation*2U+ring_generation],1,memory_order_release); }
@@ -456,6 +481,15 @@ int ker_generation_admit(struct ker_generation_rings *r, const struct ker_genera
     }
     if(r->pidfd[g]>=0&&!same_identity(&r->registered[g],id)){
         rte_spinlock_unlock(&r->directory->lock);close(owned_pidfd);return -EBUSY;
+    }
+    /* pidfd identity matching alone does not prove the registered process is
+     * still live. Reaping clears the old registration; reject a ready pidfd
+     * rather than allowing a caller to re-admit that dead identity. */
+    struct pollfd liveness={.fd=owned_pidfd,.events=POLLIN};
+    int live;do live=poll(&liveness,1,0);while(live<0&&errno==EINTR);
+    if(live<0){int error=-errno;rte_spinlock_unlock(&r->directory->lock);close(owned_pidfd);return error;}
+    if(live||(liveness.revents&(POLLIN|POLLHUP|POLLERR|POLLNVAL))){
+        rte_spinlock_unlock(&r->directory->lock);close(owned_pidfd);return -ESTALE;
     }
     if(r->pidfd[g]<0){r->pidfd[g]=owned_pidfd;r->registered[g]=*id;owned_pidfd=-1;}
     for (uint16_t p=0;p<r->ports;p++) for(uint16_t q=0;q<r->queues;q++) {
@@ -795,7 +829,9 @@ static int dequeue(struct ker_generation_rings*r,const struct ker_generation_ide
     /* TX peer dequeue receives g as the producer/ring generation; the
      * consumer identity remains id->generation. */
     uint32_t ring_generation=g;
-    int enter=operation_enter(r,id,p,q,ring_generation);if(enter)return enter;
+    int enter=tx?operation_enter_tx_peer(r,id,p,q,ring_generation):
+        operation_enter(r,id,p,q,ring_generation);
+    if(enter)return enter;
     size_t i=ring_index(r,p,q,g); struct rte_mbuf*m=NULL;
     int rc=tx?rte_ring_dequeue(r->tx[i],(void**)&m):rte_ring_dequeue(r->rx[i],(void**)&m);
     if(rc){operation_leave(r,id,ring_generation);return 0;}

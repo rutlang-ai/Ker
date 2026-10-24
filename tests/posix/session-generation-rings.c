@@ -2,8 +2,10 @@
 #define _GNU_SOURCE
 #include "session-generation-rings.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <limits.h>
+#include <poll.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +23,7 @@
 #define TEST_ZONE "ker_nr19_test_control"
 #define TEST_POOL "ker_nr19_test_pool"
 #define TEST_SESSION UINT64_C(0x4e523139a4d0b117)
-struct test_control { _Atomic unsigned stage, gen0_ready, crash_ready, producer_ready, consumer_ready, transition_release; _Atomic int failed; };
+struct test_control { _Atomic unsigned stage, gen0_ready, crash_ready, producer_ready, consumer_ready, transition_release, producer_pid; uintptr_t retained_tx[3]; _Atomic int failed; };
 
 static struct test_control *control(void)
 {
@@ -238,10 +240,13 @@ static int secondary_dequeue_crash(const char *mode)
     bool producer=!strncmp(mode,"producer-",9);
     bool enqueue_prepare=!strcmp(mode,"producer-enqueue");
     bool standby=!strcmp(mode,"standby");
-    bool live_release=!strcmp(mode,"dequeue-pre-live");
+    bool tx_live=!strcmp(mode,"producer-tx-live")||!strcmp(mode,"dequeue-tx-live");
+    bool retained_tx=!strcmp(mode,"producer-tx-retain")||!strcmp(mode,"consumer-tx-retain");
+    bool live_release=!strcmp(mode,"dequeue-pre-live")||!strcmp(mode,"dequeue-tx-live");
     bool cas=!strcmp(mode,"dequeue-cas")||!strcmp(mode,"producer-cas");
     unsigned generation=producer?0:1;
-    uint64_t epoch=(enqueue_prepare||standby?24U:(cas?22U:20U))+generation;
+    uint64_t epoch=retained_tx?40U+generation:
+        (enqueue_prepare||standby?24U:(cas?22U:(tx_live?26U:20U)))+generation;
     uint32_t slot=1U+generation;
     struct ker_generation_rings*r=NULL;
     int rc=ker_generation_rings_attach(TEST_SESSION,1,2,pool,&r);
@@ -251,10 +256,25 @@ static int secondary_dequeue_crash(const char *mode)
     atomic_store_explicit(producer?&c->producer_ready:&c->consumer_ready,1,memory_order_release);
     if(producer){
         wait_stage(c,20);
+        if(retained_tx){
+            static const uint8_t payloads[]={0x71,0x72,0x73};
+            for(size_t i=0;i<sizeof(payloads);i++){
+                struct rte_mbuf *packet_out=packet(pool,payloads[i]);
+                if(!packet_out)return fail(c,"dead-producer TX packet allocation failed");
+                if(ker_generation_tx_enqueue(r,&id,0,0,packet_out)){
+                    rte_pktmbuf_free(packet_out);return fail(c,"dead-producer TX enqueue failed");
+                }
+                c->retained_tx[i]=(uintptr_t)packet_out;
+            }
+            atomic_store_explicit(&c->stage,21,memory_order_release);
+            return atomic_load(&c->failed)?1:0;
+        }
         if(enqueue_prepare)ker_generation_test_hold_after_enqueue_prepare(&c->crash_ready);
         struct rte_mbuf*m=packet(pool,enqueue_prepare?0x63:(cas?0x62:0x61));
         if(!m)return fail(c,"crash-window packet allocation failed");
-        if(ker_generation_rx_enqueue(r,&id,0,0,1,m)){rte_pktmbuf_free(m);return fail(c,"crash-window enqueue failed");}
+        int enqueue_rc=tx_live?ker_generation_tx_enqueue(r,&id,0,0,m):
+            ker_generation_rx_enqueue(r,&id,0,0,1,m);
+        if(enqueue_rc){rte_pktmbuf_free(m);return fail(c,"crash-window enqueue failed");}
         if(!enqueue_prepare&&!cas&&!strcmp(mode,"producer-pre-tx")){
             struct rte_mbuf *tx=packet(pool,0x65);
             if(!tx)return fail(c,"late-corruption TX fixture allocation failed");
@@ -263,12 +283,54 @@ static int secondary_dequeue_crash(const char *mode)
         atomic_store_explicit(&c->stage,21,memory_order_release);wait_stage(c,22);
         return atomic_load(&c->failed)?1:0;
     }
+    if(retained_tx){
+        wait_stage(c,22);
+        struct ker_generation_identity dead_producer={.session=TEST_SESSION,.epoch=40,
+            .slot=1,.generation=0,.process=0,.pid=0};
+        /* The parent has filled in the exact dead producer PID in shared
+         * control before releasing this consumer. */
+        dead_producer.pid=atomic_load_explicit(&c->producer_pid,memory_order_acquire);
+        struct rte_mbuf *attempt=packet(pool,0x7f),*out=NULL;
+        if(!attempt)return fail(c,"dead-producer rejection allocation failed");
+        if(ker_generation_tx_enqueue(r,&dead_producer,0,0,attempt)!=-EINVAL||
+            rte_mbuf_refcnt_read(attempt)!=1){rte_pktmbuf_free(attempt);return fail(c,"dead producer admitted a new TX enqueue");}
+        rte_pktmbuf_free(attempt);
+        if(ker_generation_tx_dequeue_peer(r,&dead_producer,0,0,&out)!=-EINVAL||out)
+            return fail(c,"dead producer identity accessed peer TX ring");
+        if(ker_generation_rx_dequeue(r,&dead_producer,0,0,&out)!=-EINVAL||out)
+            return fail(c,"dead producer identity accessed RX ring");
+        struct ker_generation_identity forged=id;forged.epoch++;
+        if(ker_generation_tx_dequeue_peer(r,&forged,0,0,&out)!=-EINVAL||out)
+            return fail(c,"forged consumer accessed retained TX ring");
+        out=NULL;
+        if(ker_generation_rx_dequeue(r,&id,0,0,&out)!=0||out)
+            return fail(c,"live consumer RX empty-ring behavior changed");
+        struct rte_ring *retained_ring=rte_ring_lookup("drain_tx_p0_q0_g0");
+        if(!retained_ring||rte_ring_count(retained_ring)!=3||rte_mempool_in_use_count(pool)!=3)
+            return fail(c,"rejected peer requests changed retained TX objects");
+        static const uint8_t payloads[]={0x71,0x72,0x73};
+        for(size_t i=0;i<sizeof(payloads);i++){
+            out=NULL;
+            if(ker_generation_tx_dequeue_peer(r,&id,0,0,&out)!=1||!out||
+                (uintptr_t)out!=c->retained_tx[i]||
+                rte_pktmbuf_mtod(out,uint8_t*)[0]!=payloads[i]||
+                ker_generation_packet_release(r,&id,out))
+                return fail(c,"live peer did not drain/release retained TX FIFO exactly once");
+        }
+        out=NULL;
+        if(ker_generation_tx_dequeue_peer(r,&id,0,0,&out)!=0||out||
+            rte_mempool_in_use_count(pool)!=0)
+            return fail(c,"retained TX ring was not empty or pool did not return to baseline");
+        atomic_store_explicit(&c->stage,23,memory_order_release);
+        return atomic_load(&c->failed)?1:0;
+    }
     if(standby){wait_stage(c,22);return atomic_load(&c->failed)?1:0;}
     wait_stage(c,21);
     if(cas)ker_generation_test_hold_after_dequeue_cas(&c->crash_ready);
     else ker_generation_test_hold_after_ring_remove(&c->crash_ready,live_release?&c->transition_release:NULL);
     struct rte_mbuf*m=NULL;
-    rc=ker_generation_rx_dequeue(r,&id,0,0,&m);
+    rc=tx_live?ker_generation_tx_dequeue_peer(r,&id,0,0,&m):
+        ker_generation_rx_dequeue(r,&id,0,0,&m);
     if(live_release&&rc==1&&m&&rte_pktmbuf_mtod(m,uint8_t*)[0]==0x61&&
         !ker_generation_packet_release(r,&id,m))return atomic_load(&c->failed)?1:0;
     if(rc==1&&m)ker_generation_packet_release(r,&id,m);
@@ -279,8 +341,9 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
 {
     struct test_control*c=control();pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};int status=0,failed=0;
     bool cas=!strcmp(mode,"cas"),enqueue_prepare=!strcmp(mode,"enqueue");
-    bool live_other=!strcmp(mode,"live"),late_corruption=!strcmp(mode,"pre");
-    uint64_t base_epoch=enqueue_prepare?24U:(cas?22U:20U);uint32_t base_slot=1;
+    bool tx_live=!strcmp(mode,"tx-live");
+    bool live_other=!strcmp(mode,"live")||tx_live,late_corruption=!strcmp(mode,"pre");
+    uint64_t base_epoch=enqueue_prepare?24U:(cas?22U:(tx_live?26U:20U));uint32_t base_slot=1;
     struct ker_generation_identity producer={.session=TEST_SESSION,.epoch=base_epoch,
         .slot=base_slot,.generation=0,.process=0,.pid=0};
     struct ker_generation_identity consumer={.session=TEST_SESSION,.epoch=base_epoch+1,
@@ -295,11 +358,13 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
 #define CRASH_FAIL() do { failed=1;goto cleanup; } while(0)
     pids[0]=fork();if(pids[0]<0)CRASH_FAIL();
     if(!pids[0]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--",
-        enqueue_prepare?"producer-enqueue":(cas?"producer-cas":(late_corruption?"producer-pre-tx":"producer-pre")),(char*)NULL);_Exit(127);}
+        enqueue_prepare?"producer-enqueue":(tx_live?"producer-tx-live":
+            (cas?"producer-cas":(late_corruption?"producer-pre-tx":"producer-pre"))),(char*)NULL);_Exit(127);}
     pidfds[0]=syscall(SYS_pidfd_open,pids[0],0);if(pidfds[0]<0)CRASH_FAIL();producer.pid=(uint32_t)pids[0];
     pids[1]=fork();if(pids[1]<0)CRASH_FAIL();
     if(!pids[1]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--",
-        enqueue_prepare?"standby":(live_other?"dequeue-pre-live":(cas?"dequeue-cas":"dequeue-pre")),(char*)NULL);_Exit(127);}
+        enqueue_prepare?"standby":(tx_live?"dequeue-tx-live":
+            (live_other?"dequeue-pre-live":(cas?"dequeue-cas":"dequeue-pre"))),(char*)NULL);_Exit(127);}
     pidfds[1]=syscall(SYS_pidfd_open,pids[1],0);if(pidfds[1]<0)CRASH_FAIL();consumer.pid=(uint32_t)pids[1];
     if(ker_generation_admit(r,&producer,pidfds[0])||ker_generation_admit(r,&consumer,pidfds[1]))CRASH_FAIL();
     for(unsigned tick=0;tick<10000&&
@@ -335,7 +400,8 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
         if(wait_child_bounded(pids[1],&status)||!WIFEXITED(status)||WEXITSTATUS(status))CRASH_FAIL();
         pids[1]=-1;
         if(ker_generation_reap_dead(r,&producer)||rte_mempool_in_use_count(pool)!=pool_before||
-            rte_ring_count(rx)||ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
+            rte_ring_count(rx)||rte_ring_count(tx)||
+            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
         if(ker_generation_reap_dead(r,&consumer))CRASH_FAIL();
         close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
     }else{
@@ -391,6 +457,104 @@ cleanup:
 #undef CRASH_FAIL
     return failed?-1:0;
 }
+static int run_dead_producer_tx(struct ker_generation_rings*r,struct rte_mempool*pool,
+    const char *prefix,const char *exe)
+{
+    struct test_control*c=control();pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};
+    int status=0,result=-1;uint64_t drop_before=0,drop_after=0;
+    struct ker_generation_identity producer={.session=TEST_SESSION,.epoch=40,.slot=1,
+        .generation=0,.process=0,.pid=0};
+    struct ker_generation_identity consumer={.session=TEST_SESSION,.epoch=41,.slot=2,
+        .generation=1,.process=0,.pid=0};
+    struct rte_ring *tx=rte_ring_lookup("drain_tx_p0_q0_g0");
+    unsigned pool_before=rte_mempool_in_use_count(pool);
+    if(!c||!tx||pool_before||rte_ring_count(tx)||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_before))return -1;
+    atomic_store(&c->stage,0);atomic_store(&c->producer_ready,0);
+    atomic_store(&c->consumer_ready,0);atomic_store(&c->producer_pid,0);
+    memset(c->retained_tx,0,sizeof(c->retained_tx));
+    atomic_store(&c->failed,0);
+#define DEAD_TX_FAIL() do { fprintf(stderr,"NR19 dead-producer TX failure at line %d stage=%u\n",__LINE__,atomic_load(&c->stage)); goto cleanup; } while(0)
+    pids[0]=fork();if(pids[0]<0)DEAD_TX_FAIL();
+    if(!pids[0]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--","producer-tx-retain",(char*)NULL);_Exit(127);}
+    pidfds[0]=syscall(SYS_pidfd_open,pids[0],0);if(pidfds[0]<0)DEAD_TX_FAIL();
+    producer.pid=(uint32_t)pids[0];
+    atomic_store_explicit(&c->producer_pid,producer.pid,memory_order_release);
+    pids[1]=fork();if(pids[1]<0)DEAD_TX_FAIL();
+    if(!pids[1]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--","consumer-tx-retain",(char*)NULL);_Exit(127);}
+    pidfds[1]=syscall(SYS_pidfd_open,pids[1],0);if(pidfds[1]<0)DEAD_TX_FAIL();
+    consumer.pid=(uint32_t)pids[1];
+    if(ker_generation_admit(r,&producer,pidfds[0])||ker_generation_admit(r,&consumer,pidfds[1]))DEAD_TX_FAIL();
+    for(unsigned tick=0;tick<10000&&
+        (!atomic_load_explicit(&c->producer_ready,memory_order_acquire)||
+         !atomic_load_explicit(&c->consumer_ready,memory_order_acquire));tick++){
+        for(unsigned i=0;i<2;i++){
+            siginfo_t info={0};
+            if(waitid(P_PID,(id_t)pids[i],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[i])DEAD_TX_FAIL();
+        }
+        usleep(1000);
+    }
+    if(!atomic_load(&c->producer_ready)||!atomic_load(&c->consumer_ready))DEAD_TX_FAIL();
+    atomic_store_explicit(&c->stage,20,memory_order_release);
+    siginfo_t exited={0};
+    for(unsigned tick=0;tick<10000;tick++){
+        if(waitid(P_PID,(id_t)pids[0],&exited,WEXITED|WNOHANG|WNOWAIT))DEAD_TX_FAIL();
+        if(exited.si_pid==pids[0])break;
+        usleep(1000);
+    }
+    if(exited.si_pid!=pids[0]||exited.si_code!=CLD_EXITED||exited.si_status!=0)DEAD_TX_FAIL();
+    struct pollfd dead={.fd=pidfds[0],.events=POLLIN};
+    int ready;do ready=poll(&dead,1,0);while(ready<0&&errno==EINTR);
+    char fdinfo_path[64],fdinfo[256];
+    if(ready!=1||!(dead.revents&POLLIN)||
+        snprintf(fdinfo_path,sizeof(fdinfo_path),"/proc/self/fdinfo/%d",pidfds[0])<0)DEAD_TX_FAIL();
+    int fdinfo_fd=open(fdinfo_path,O_RDONLY|O_CLOEXEC);
+    if(fdinfo_fd<0)DEAD_TX_FAIL();
+    ssize_t fdinfo_size=read(fdinfo_fd,fdinfo,sizeof(fdinfo)-1);close(fdinfo_fd);
+    if(fdinfo_size<=0)DEAD_TX_FAIL();
+    fdinfo[fdinfo_size]='\0';char *pid_line=strstr(fdinfo,"Pid:");int fd_pid=-1;
+    if(!pid_line||sscanf(pid_line+4,"%d",&fd_pid)!=1||(uint32_t)fd_pid!=producer.pid||
+        rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||rte_ring_count(tx)!=3||
+        rte_mempool_in_use_count(pool)!=pool_before+3)DEAD_TX_FAIL();
+    if(ker_generation_reap_dead(r,&producer)||rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||
+        rte_ring_count(tx)!=3||rte_mempool_in_use_count(pool)!=pool_before+3||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)DEAD_TX_FAIL();
+    /* The PIDFD still names the unreaped zombie, so fdinfo identity matches;
+     * only the liveness poll prevents re-admitting the retired generation. */
+    if(ker_generation_admit(r,&producer,pidfds[0])!=-ESTALE||
+        rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||rte_ring_count(tx)!=3||
+        rte_mempool_in_use_count(pool)!=pool_before+3||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)DEAD_TX_FAIL();
+    if(wait_child_bounded(pids[0],&status)||!WIFEXITED(status)||WEXITSTATUS(status))DEAD_TX_FAIL();
+    close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+    atomic_store_explicit(&c->stage,22,memory_order_release);
+    if(parent_wait_stage(c,23,pids+1,1)||wait_child_bounded(pids[1],&status)||
+        !WIFEXITED(status)||WEXITSTATUS(status)||rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||
+        rte_ring_count(tx)||rte_mempool_in_use_count(pool)!=pool_before||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)DEAD_TX_FAIL();
+    if(ker_generation_reap_dead(r,&consumer))DEAD_TX_FAIL();
+    close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+    result=0;
+    printf("NR19_LIVE_PEER_DRAINS_RETAINED_TX_PASS packets=3 fifo=true pool_restored=true tx_drop_delta=0\n");
+cleanup:
+    if(result){
+        for(unsigned i=0;i<2;i++)if(pidfds[i]>=0){
+            siginfo_t info={0};
+            if(waitid(P_PIDFD,(id_t)pidfds[i],&info,WEXITED|WNOHANG|WNOWAIT)==0&&info.si_pid==0)
+                (void)syscall(SYS_pidfd_send_signal,pidfds[i],SIGKILL,NULL,0);
+        }
+        for(unsigned i=0;i<2;i++)if(pids[i]>0){
+            (void)wait_child_bounded(pids[i],&status);
+            if(pidfds[i]>=0){
+                const struct ker_generation_identity *identity=i?&consumer:&producer;
+                (void)ker_generation_reap_dead(r,identity);
+            }
+        }
+        for(unsigned i=0;i<2;i++)if(pidfds[i]>=0)close(pidfds[i]);
+    }
+#undef DEAD_TX_FAIL
+    return result;
+}
 static int primary(const char *prefix,const char *exe)
 {
     struct rte_mempool*pool=rte_pktmbuf_pool_create(TEST_POOL,256,0,0,2048,SOCKET_ID_ANY);
@@ -398,7 +562,7 @@ static int primary(const char *prefix,const char *exe)
     const struct rte_memzone*mz=rte_memzone_reserve(TEST_ZONE,sizeof(struct test_control),SOCKET_ID_ANY,0);
     if(!mz)return 1;
     struct test_control*c=mz->addr;memset(c,0,sizeof(*c));atomic_init(&c->stage,0);
-    atomic_init(&c->gen0_ready,0);atomic_init(&c->crash_ready,0);
+    atomic_init(&c->gen0_ready,0);atomic_init(&c->crash_ready,0);atomic_init(&c->producer_pid,0);
     atomic_init(&c->producer_ready,0);atomic_init(&c->consumer_ready,0);
     atomic_init(&c->transition_release,0);atomic_init(&c->failed,0);
     struct ker_generation_rings*r=NULL;if(ker_generation_rings_create(TEST_SESSION,1,2,pool,&r))return 1;
@@ -501,9 +665,11 @@ static int primary(const char *prefix,const char *exe)
     close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
     struct ker_generation_ring_stats stats;
     if(run_dequeue_crash_window(r,pool,file_prefix,exe,"live")||
+        run_dequeue_crash_window(r,pool,file_prefix,exe,"tx-live")||
         run_dequeue_crash_window(r,pool,file_prefix,exe,"enqueue")||
         run_dequeue_crash_window(r,pool,file_prefix,exe,"pre")||
-        run_dequeue_crash_window(r,pool,file_prefix,exe,"cas"))FAIL_CHILDREN();
+        run_dequeue_crash_window(r,pool,file_prefix,exe,"cas")||
+        run_dead_producer_tx(r,pool,file_prefix,exe))FAIL_CHILDREN();
     if(atomic_load(&c->failed)||rte_mempool_in_use_count(pool)!=0||
         ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.tx_drop!=3||
         stats.rx_full!=1||stats.tx_peak<2||stats.rx_peak<KER_GENERATION_RING_CAPACITY)
@@ -525,6 +691,8 @@ int main(int argc,char**argv)
     }else if(!strcmp(mode,"0")||!strcmp(mode,"1"))rc=secondary((unsigned)atoi(mode),0);
     else if(!strcmp(mode,"r"))rc=secondary(1,1);
     else if(!strcmp(mode,"producer-enqueue")||!strcmp(mode,"producer-pre")||!strcmp(mode,"producer-pre-tx")||
+        !strcmp(mode,"producer-tx-live")||!strcmp(mode,"dequeue-tx-live")||
+        !strcmp(mode,"producer-tx-retain")||!strcmp(mode,"consumer-tx-retain")||
         !strcmp(mode,"dequeue-pre")||!strcmp(mode,"dequeue-pre-live")||!strcmp(mode,"producer-cas")||
         !strcmp(mode,"dequeue-cas")||!strcmp(mode,"standby"))rc=secondary_dequeue_crash(mode);
     else rc=2;
