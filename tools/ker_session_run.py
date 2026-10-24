@@ -690,8 +690,14 @@ def run_session(args, api):
                     raise RuntimeError('peer TX drain changed committed packet ' + field)
             if drained.get('sequence') != 2:
                 raise RuntimeError('peer TX drain returned the wrong original app datagram')
+            if (drained.get('tx_before') != 1 or drained.get('tx_after') != 0 or
+                not isinstance(drained.get('pool_in_use_before'), int) or
+                drained.get('pool_in_use_after') + 1 != drained.get('pool_in_use_before')):
+                raise RuntimeError('peer TX drain did not report the exact one-object ring/pool release')
             metrics['handoff_frame'] = dict(committed=committed, drained=drained,
-                same_pointer=True, same_bytes=True, peer_release_once=True)
+                same_pointer=True, same_bytes=True, peer_release_once=True,
+                ring_empty_after=drained['tx_after']==0,
+                packet_pool_released_once=(drained['pool_in_use_before']-drained['pool_in_use_after']==1))
             publish()
 
         while app.poll() is None:

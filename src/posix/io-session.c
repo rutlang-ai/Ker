@@ -269,13 +269,6 @@ static bool frame_consumer_matches(const struct client *producer)
         atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)!=pmd_key(consumer)) return false;
     return true;
 }
-static void frame_store_identity(struct ker_session_message *message,
-    const struct ker_generation_identity *identity)
-{
-    message->session=identity->session; message->epoch=identity->epoch;
-    message->slot=identity->slot; message->generation=identity->generation;
-    message->process=identity->process;
-}
 static int handle_frame_request(struct client *client,const struct ker_session_message *request,
     struct ker_session_message *reply)
 {
@@ -492,9 +485,10 @@ static int generation_frame_drain_control(char command, void *opaque)
     const uint8_t app_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x02};
     const uint8_t host_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x01};
     const size_t payload_length=sizeof(expected)-1, frame_length=14+20+8+payload_length;
+    uint16_t fragment=(uint16_t)((bytes[20]<<8)|bytes[21]);
     if(packet->pkt_len!=frame_length||memcmp(bytes,host_mac,6)||memcmp(bytes+6,app_mac,6)||
         bytes[12]!=0x08||bytes[13]!=0x00||bytes[14]!=0x45||bytes[23]!=17||
-        bytes[20]!=0||bytes[21]!=0||bytes[26]!=198||bytes[27]!=18||bytes[28]!=0||bytes[29]!=2||
+        (fragment&0x3fff)||bytes[26]!=198||bytes[27]!=18||bytes[28]!=0||bytes[29]!=2||
         bytes[30]!=198||bytes[31]!=18||bytes[32]!=0||bytes[33]!=1||
         bytes[34]!=0xaf||bytes[35]!=0xc8||bytes[36]!=0xaf||bytes[37]!=0xc9||
         memcmp(bytes+42,expected,payload_length))return -EPROTO;
@@ -2557,13 +2551,13 @@ static int worker_frame_request(int fd,const struct ker_session_message *identit
 #endif
     require_resident_alive(resident);
     ssize_t n;
-    do n=recv(fd,response,sizeof(*response),MSG_TRUNC); while(n<0&&errno==EINTR&&alive(resident));
+    do n=recv(fd,response,sizeof(*response),MSG_TRUNC); while(n<0&&errno==EINTR&&!dead(resident));
     require_resident_alive(resident);
     if(n<0)return -errno;
     if(n!=sizeof(*response))return -EPROTO;
     if(replay_test) {
         struct ker_session_message replay;
-        do n=recv(fd,&replay,sizeof(replay),MSG_TRUNC); while(n<0&&errno==EINTR&&alive(resident));
+        do n=recv(fd,&replay,sizeof(replay),MSG_TRUNC); while(n<0&&errno==EINTR&&!dead(resident));
         require_resident_alive(resident);
         if(n!=(ssize_t)sizeof(replay)||memcmp(response,&replay,sizeof(replay)))return -EPROTO;
     }
@@ -2598,6 +2592,83 @@ static int parked_frame_cancel(int fd,int resident,const struct ker_session_mess
         prepared->packet_port,prepared->packet_queue,prepared->tx_lease_id,heartbeat,&reply);
     return result;
 }
+#ifdef KER_SESSION_TEST_HOOKS
+static int frame_negative_prepare(int fd,int resident,const struct ker_session_message *identity,
+    uint64_t *sequence,uint64_t capability,uint64_t tag,unsigned variant)
+{
+    struct ker_session_message request=*identity,response,expected;
+    request.command=KER_SESSION_FRAME_PREPARE;request.sequence=++*sequence;request.status=0;
+    request.capability=capability;request.token=identity->token;request.packet_pool_tag=tag;
+    request.packet_object_index=UINT32_MAX;request.packet_port=0;request.packet_queue=0;
+    request.tx_lease_id=0;request.rx_lease_id=0;
+    int expected_status=-EPERM;
+    switch(variant){
+    case 0: request.capability^=1; break;
+    case 1: request.token^=1;expected_status=-ESTALE;break;
+    case 2: request.packet_pool_tag^=1;expected_status=-EOPNOTSUPP;break;
+    case 3: request.packet_object_index=0;expected_status=-EBUSY;break;
+    case 4: request.packet_queue=2;expected_status=-EOPNOTSUPP;break;
+    case 5: request.tx_lease_id=1;expected_status=-EBUSY;break;
+    case 6: request.version--;expected_status=-EPROTO;break;
+    default:return -EINVAL;
+    }
+    require_resident_alive(resident);
+    if(send(fd,&request,sizeof(request),MSG_NOSIGNAL)!=(ssize_t)sizeof(request))return -EIO;
+    ssize_t n;
+    do n=recv(fd,&response,sizeof(response),MSG_TRUNC);while(n<0&&errno==EINTR&&!dead(resident));
+    require_resident_alive(resident);
+    if(n!=(ssize_t)sizeof(response))return n<0?-errno:-EPROTO;
+    expected=request;expected.status=expected_status;
+    if(memcmp(&response,&expected,sizeof(expected)))return -EPROTO;
+    return 0;
+}
+static int frame_negative_prepares_leave_datagram(int packet_fd,int fd,int resident,
+    const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
+    struct ker_generation_rings *rings,const uint8_t *peek_bytes,size_t peek_length)
+{
+    uint64_t tag=ker_generation_packet_pool_tag(rings);
+    uint32_t ring_before,pool_before,ring_after,pool_after;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_before,&pool_before)||ring_before)return -EUCLEAN;
+    for(unsigned variant=0;variant<7;variant++) {
+        int result=frame_negative_prepare(fd,resident,identity,sequence,capability,tag,variant);
+        if(result)return result;
+        if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_after,&pool_after)||
+            ring_after!=ring_before||pool_after!=pool_before)return -EUCLEAN;
+        uint8_t observed[sizeof(struct ker_packet_header)+1518];
+        struct iovec iov={.iov_base=observed,.iov_len=sizeof(observed)};
+        struct msghdr msg={.msg_iov=&iov,.msg_iovlen=1};
+        ssize_t n=recvmsg(packet_fd,&msg,MSG_PEEK|MSG_TRUNC|MSG_DONTWAIT);
+        if(n!=(ssize_t)peek_length||memcmp(observed,peek_bytes,peek_length))return -EUCLEAN;
+    }
+    printf("KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS {\"variants\":7,\"datagram_queued\":true,\"ring_unchanged\":true,\"pool_unchanged\":true}\n");
+    fflush(stdout);return 0;
+}
+static int frame_prepare_cancel_replay(int packet_fd,int fd,int resident,
+    const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
+    struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings,
+    const uint8_t *peek_bytes,size_t peek_length,uint64_t tag)
+{
+    uint32_t ring_before,pool_before,ring_after,pool_after;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_before,&pool_before)||ring_before)return -EUCLEAN;
+    struct ker_session_message prepared,cancelled;
+    int result=worker_frame_request(fd,identity,sequence,resident,capability,
+        KER_SESSION_FRAME_PREPARE,tag,UINT32_MAX,0,0,0,heartbeat,&prepared);
+    if(result)return result;
+    result=worker_frame_request(fd,identity,sequence,resident,capability,
+        KER_SESSION_FRAME_CANCEL,prepared.packet_pool_tag,prepared.packet_object_index,
+        prepared.packet_port,prepared.packet_queue,prepared.tx_lease_id,heartbeat,&cancelled);
+    if(result)return result;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_after,&pool_after)||ring_after!=ring_before||
+        pool_after!=pool_before)return -EUCLEAN;
+    uint8_t observed[sizeof(struct ker_packet_header)+1518];
+    struct iovec iov={.iov_base=observed,.iov_len=sizeof(observed)};
+    struct msghdr msg={.msg_iov=&iov,.msg_iovlen=1};
+    ssize_t n=recvmsg(packet_fd,&msg,MSG_PEEK|MSG_TRUNC|MSG_DONTWAIT);
+    if(n!=(ssize_t)peek_length||memcmp(observed,peek_bytes,peek_length))return -EUCLEAN;
+    printf("KER_SESSION_FRAME_CANCEL_REPLAY_PASS {\"prepared_replay\":true,\"cancel_replay\":true,\"datagram_queued\":true,\"pool_restored\":true}\n");
+    fflush(stdout);return 0;
+}
+#endif
 static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
     struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings)
@@ -2617,6 +2688,16 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     if(drained)return drained;
     uint64_t tag=ker_generation_packet_pool_tag(rings);
     if(!tag)return -EUCLEAN;
+#ifdef KER_SESSION_TEST_HOOKS
+    if(getenv("KER_SESSION_TEST_FRAME_NEGATIVES")) {
+        int negatives=frame_negative_prepares_leave_datagram(packet_fd,fd,resident,identity,sequence,
+            capability,rings,peek_bytes,(size_t)peek);
+        if(negatives)return negatives;
+        int canceled=frame_prepare_cancel_replay(packet_fd,fd,resident,identity,sequence,
+            capability,heartbeat,rings,peek_bytes,(size_t)peek,tag);
+        if(canceled)return canceled;
+    }
+#endif
     struct ker_session_message prepared;
     int result=worker_frame_request(fd,identity,sequence,resident,capability,
         KER_SESSION_FRAME_PREPARE,tag,UINT32_MAX,0,0,0,heartbeat,&prepared);
