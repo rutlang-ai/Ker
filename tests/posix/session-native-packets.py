@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shlex
 import signal
 import selectors
 import socket
@@ -36,6 +37,48 @@ def line(process, timeout=25):
     return value.decode().strip()
 
 
+def resolve_dpdk_plugin_dir(plugin_dir, environ=None):
+    environment = os.environ if environ is None else environ
+    configured = plugin_dir if plugin_dir is not None else environment.get('KER_DPDK_PLUGIN_DIR')
+    if not configured:
+        raise RuntimeError('configured DPDK PMD directory is required (--dpdk-plugin-dir or KER_DPDK_PLUGIN_DIR)')
+    try:
+        root = Path(configured).expanduser().resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError('configured DPDK PMD directory is unavailable: ' + str(configured)) from error
+    if not root.is_dir():
+        raise RuntimeError('configured DPDK PMD path is not a directory: ' + str(root))
+    return root
+
+
+def resolve_dpdk_plugin_paths(plugin_dir, modules, environ=None):
+    root = resolve_dpdk_plugin_dir(plugin_dir, environ)
+    resolved = []
+    for module in modules:
+        requested = root / ('librte_' + module + '.so')
+        try:
+            library = requested.resolve(strict=True)
+        except OSError as error:
+            raise RuntimeError('configured DPDK PMD is missing: ' + str(requested)) from error
+        if not library.is_file() or not os.access(library, os.R_OK):
+            raise RuntimeError('configured DPDK PMD is not a readable regular file: ' + str(library))
+        resolved.append(str(library))
+    return resolved
+
+
+def dpdk_plugin_eal_options(paths):
+    return ' '.join('-d ' + shlex.quote(path) for path in paths)
+
+
+def namespace_reexec_command(args, plugin_dir, script=None):
+    script_path = Path(__file__).resolve() if script is None else Path(script).resolve()
+    command = ['unshare', '-Urn', sys.executable, str(script_path), '--inside',
+        '--huge-dir', str(args.huge_dir), '--dpdk-plugin-dir', str(plugin_dir)]
+    command.extend(value for name in ('worker', 'tool', 'library', 'app')
+        for value in ('--' + name, str(getattr(args, name).resolve())))
+    return command
+
+
 def record(process, prefix):
     value = line(process)
     if not value.startswith(prefix + ' '):
@@ -53,15 +96,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('worker', 'tool', 'library', 'app'): parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--dpdk-plugin-dir', type=Path)
     parser.add_argument('--huge-dir', type=Path, default=Path('/dev/hugepages'))
     args = parser.parse_args()
+    plugin_dir = resolve_dpdk_plugin_dir(args.dpdk_plugin_dir)
+    plugin_paths = resolve_dpdk_plugin_paths(plugin_dir, ('mempool_ring',))
     reason = hugepage_capacity_error(args.huge_dir, 64 * 1024 * 1024)
     if reason:
         print('SKIP: ' + reason + '; no host settings changed'); return 77
     if not args.inside:
-        return subprocess.run(['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside',
-            '--huge-dir', str(args.huge_dir),
-            *[value for name in ('worker', 'tool', 'library', 'app') for value in ('--' + name, str(getattr(args, name).resolve()))]]).returncode
+        return subprocess.run(namespace_reexec_command(args, plugin_dir)).returncode
     require(Path('/dev/net/tun').exists(), 'original host TAP driver is required')
     subprocess.run(['ip', 'link', 'set', 'lo', 'up'], check=True)
     tap = os.open('/dev/net/tun', os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -115,9 +159,10 @@ def main():
     exception_capture = None
     with tempfile.TemporaryDirectory(prefix='ker-session-packets-') as directory:
         root = Path(directory); path = root / 'control.sock'; stats_path = root / 'stats.json'
+        plugin_options = dpdk_plugin_eal_options(plugin_paths)
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
-            f'-m 64 -d /home/hurricane/.local/state/ker-compat-work/dpdk-tap-retry-install/lib64/dpdk/pmds-27.0/librte_mempool_ring.so '
-            f'--huge-dir={args.huge_dir} --file-prefix=packets-{os.getpid()}-{os.urandom(4).hex()}')
+            f'-m 64 {plugin_options} --huge-dir={shlex.quote(str(args.huge_dir))} '
+            f'--file-prefix=packets-{os.getpid()}-{os.urandom(4).hex()}')
         common = ['--socket', str(path), '--worker', str(args.worker), '--eal', eal, '--paired-pmd']
         environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1'}
         try:

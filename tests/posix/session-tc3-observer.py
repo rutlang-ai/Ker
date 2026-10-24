@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shlex
 import socket
 import subprocess
 import sys
@@ -18,6 +19,39 @@ from hugepage_preflight import hugepage_capacity_error
 def require(value, message):
     if not value:
         raise RuntimeError(message)
+
+
+def resolve_dpdk_plugin_dir(plugin_dir, environ=None):
+    environment = os.environ if environ is None else environ
+    configured = plugin_dir if plugin_dir is not None else environment.get('KER_DPDK_PLUGIN_DIR')
+    if not configured:
+        raise RuntimeError('configured DPDK PMD directory is required (--dpdk-plugin-dir or KER_DPDK_PLUGIN_DIR)')
+    try:
+        root = Path(configured).expanduser().resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError('configured DPDK PMD directory is unavailable: ' + str(configured)) from error
+    if not root.is_dir():
+        raise RuntimeError('configured DPDK PMD path is not a directory: ' + str(root))
+    return root
+
+
+def resolve_dpdk_plugin_paths(plugin_dir, modules, environ=None):
+    root = resolve_dpdk_plugin_dir(plugin_dir, environ)
+    resolved = []
+    for module in modules:
+        requested = root / ('librte_' + module + '.so')
+        try:
+            library = requested.resolve(strict=True)
+        except OSError as error:
+            raise RuntimeError('configured DPDK PMD is missing: ' + str(requested)) from error
+        if not library.is_file() or not os.access(library, os.R_OK):
+            raise RuntimeError('configured DPDK PMD is not a readable regular file: ' + str(library))
+        resolved.append(str(library))
+    return resolved
+
+
+def dpdk_plugin_eal_options(paths):
+    return ' '.join('-d ' + shlex.quote(path) for path in paths)
 
 
 def line(process, prefix, timeout=30):
@@ -65,8 +99,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--tool', type=Path, required=True)
+    parser.add_argument('--dpdk-plugin-dir', type=Path)
     parser.add_argument('--huge-dir', type=Path, default=Path('/dev/hugepages'))
     args = parser.parse_args()
+    plugin_dir = resolve_dpdk_plugin_dir(args.dpdk_plugin_dir)
+    plugin_paths = resolve_dpdk_plugin_paths(plugin_dir, ('mempool_ring', 'net_ring'))
     reason = hugepage_capacity_error(args.huge_dir, 64 * 1024 * 1024)
     if reason:
         print('SKIP: ' + reason + '; no host settings changed')
@@ -77,10 +114,10 @@ def main():
     helpers = []
     run_id = f'{os.getpid()}-{os.urandom(5).hex()}'
     cpu = min(os.sched_getaffinity(0))
-    prefix = Path('/home/hurricane/.local/state/ker-compat-work/dpdk-tap-retry-install/lib64/dpdk/pmds-27.0')
+    plugin_options = dpdk_plugin_eal_options(plugin_paths)
     eal = (f'--lcores=0@{cpu} --no-pci --no-telemetry --iova-mode=va -m 64 '
-           f'--huge-dir={args.huge_dir} --file-prefix=tc3-observer-{run_id} '
-           f'-d {prefix / "librte_mempool_ring.so.27.0"} -d {prefix / "librte_net_ring.so.27.0"}')
+           f'--huge-dir={shlex.quote(str(args.huge_dir))} --file-prefix=tc3-observer-{run_id} '
+           f'{plugin_options}')
     with tempfile.TemporaryDirectory(prefix='ker-tc3-observer-') as name:
         runtime = Path(name)
         path = runtime / 'control.sock'
