@@ -251,7 +251,8 @@ def run_session(args, api):
             raise RuntimeError('control EOF correctly prevented PREPARE after the handoff boundary')
         negative_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
         prepare_rejected_mode = handoff_mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm') or \
-            (handoff_mode is not None and handoff_mode.startswith('bad-prepare-error'))
+            (handoff_mode is not None and (handoff_mode.startswith('bad-prepare-error') or
+                handoff_mode == 'bad-prepare-success'))
         if prepare_rejected_mode:
             # The explicit invalid-lease replay hook above has already proved
             # idempotency and reports same_replay on this marker. The

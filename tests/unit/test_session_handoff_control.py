@@ -173,13 +173,13 @@ class HandoffControlPathTests(unittest.TestCase):
             os.close(read_fd)
             os.close(write_fd)
 
-    def test_malformed_error_does_not_wait_for_success_replay_marker(self):
+    def exercise_malformed_rejection(self, mode):
         metrics = {'exception_endpoint_name': 'ker_test0'}
         markers = [
             ('KER_SESSION_HANDOFF_BOUNDARY', {'idle': True}),
             ('KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED', {'status': -errno.EPERM, 'same_replay': True}),
         ]
-        function, calls, read_fd, write_fd = self.marker_function('bad-prepare-error-generation', markers, metrics)
+        function, calls, read_fd, write_fd = self.marker_function(mode, markers, metrics)
         function.__closure__[self.function_code.co_freevars.index('worker')].cell_contents.returncode = 125
         try:
             with self.assertRaisesRegex(RuntimeError, 'malformed PREPARE reply'):
@@ -191,6 +191,12 @@ class HandoffControlPathTests(unittest.TestCase):
         finally:
             os.close(read_fd)
             os.close(write_fd)
+
+    def test_malformed_error_does_not_wait_for_success_replay_marker(self):
+        self.exercise_malformed_rejection('bad-prepare-error-generation')
+
+    def test_malformed_success_does_not_wait_for_success_replay_marker(self):
+        self.exercise_malformed_rejection('bad-prepare-success')
 
 
 if __name__ == '__main__':
