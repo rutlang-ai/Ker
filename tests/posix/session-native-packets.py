@@ -429,9 +429,16 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     if page_pattern.fullmatch(page_path.name)}
                 recorded_pages = set(owned_pages)
                 unrecorded = current_pages - recorded_pages
-                require(not unrecorded,
-                    'unexpected exact-prefix hugepage files appeared; refusing all cleanup: ' +
-                    repr(sorted(str(path) for path in unrecorded)))
+                missing = recorded_pages - current_pages
+                if mode == 'positive':
+                    require(not unrecorded,
+                        'unexpected exact-prefix hugepage files appeared; refusing all cleanup: ' +
+                        repr(sorted(str(path) for path in unrecorded)))
+                else:
+                    require(not unrecorded and not missing,
+                        'fatal profile hugepage file set changed; refusing all cleanup: ' +
+                        repr(dict(unrecorded=sorted(str(path) for path in unrecorded),
+                            missing=sorted(str(path) for path in missing))))
                 leftovers = []
                 validated = []
                 for page_path, identity in owned_pages.items():
@@ -447,7 +454,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 if mode == 'positive':
                     leak = bool(leftovers)
                 else:
-                    require(leftovers, f'{mode} did not leave exact-prefix files for harness cleanup')
+                    require(len(leftovers) == len(owned_pages),
+                        f'{mode} did not preserve the complete exact-prefix file set for cleanup')
                     leak = False
                 # Recheck the full set above before deleting any file so a
                 # replaced or unexpected path cannot cause partial cleanup.
