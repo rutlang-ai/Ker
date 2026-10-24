@@ -1919,6 +1919,14 @@ static int worker_handoff_request(int fd,const struct ker_session_message *ident
         response->tx_lease_id!=tx_lease_id || response->rx_lease_id!=rx_lease_id) return -EPROTO;
     return 0;
 }
+struct worker_heartbeat {
+    bool pending;
+    struct ker_session_message request;
+    uint64_t sent_ms, last_ack_ms;
+};
+static int pump_worker_heartbeat(int fd, struct worker_heartbeat *heartbeat, int resident);
+static int heartbeat_tick(int fd, const struct ker_session_message *identity,
+    uint64_t *sequence, int resident, struct worker_heartbeat *heartbeat);
 static int parked_owner_wait(int control,int fd,int resident,
     const struct ker_session_message *identity,uint64_t *sequence,
     struct worker_heartbeat *heartbeat)
@@ -1929,7 +1937,7 @@ static int parked_owner_wait(int control,int fd,int resident,
         require_resident_alive(resident);
         int tick=heartbeat_tick(fd,identity,sequence,resident,heartbeat);
         if(tick<0)return tick;
-        if(!alive(resident))_Exit(125);
+        if(dead(resident))_Exit(125);
         struct pollfd waiters[]={{.fd=control,.events=POLLIN},{.fd=fd,.events=POLLIN},{.fd=resident,.events=POLLIN}};
         int ready=poll(waiters,3,100);
         if(ready<0){if(errno==EINTR)continue;return -errno;}
@@ -2038,11 +2046,6 @@ static int probe_control(int control, unsigned *deferred_probes)
     if (event.revents & POLLHUP) return -ECANCELED;
     return 0;
 }
-struct worker_heartbeat {
-    bool pending;
-    struct ker_session_message request;
-    uint64_t sent_ms, last_ack_ms;
-};
 static int pump_worker_heartbeat(int fd, struct worker_heartbeat *heartbeat, int resident)
 {
     if (!heartbeat->pending) return 0;

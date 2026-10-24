@@ -83,8 +83,9 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     uint64_t exception_to_wire = 0, exception_from_wire = 0;
     struct rte_eth_stats before, after;
     if (rte_eth_stats_get(port, &before)) return -EIO;
-    printf("KER_SESSION_PACKET_READY {\"mtu\":1500,\"tx_features\":0,\"rx_ring\":\"%s\",\"tx_ring\":\"%s\",\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_ifindex\":%u}\n",
-        KER_SESSION_PACKET_RX, KER_SESSION_PACKET_TX, (unsigned long long)expected_owner, exception->endpoint_ifindex); fflush(stdout);
+    printf("KER_SESSION_PACKET_READY {\"mtu\":1500,\"tx_features\":0,\"rx_ring\":\"%s\",\"tx_ring\":\"%s\",\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_ifindex\":%u,\"exception_endpoint_fd_number\":%d}\n",
+        KER_SESSION_PACKET_RX, KER_SESSION_PACKET_TX, (unsigned long long)expected_owner,
+        exception->endpoint_ifindex, exception->fd); fflush(stdout);
     int status = 0;
     for (; !*stopping;) {
         if (!alive(resident_pidfd)) _Exit(125); /* Never clean shared state after resident loss. */
