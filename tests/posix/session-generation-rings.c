@@ -79,7 +79,7 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
         }
         struct rte_mbuf *packet=ker_generation_packet_resolve(rings,producer,indices[i],leases[i]);
         if(!packet||packet->pool==message_pool)return -1;
-        uint8_t *bytes=rte_pktmbuf_append(packet,14);
+        uint8_t *bytes=(uint8_t *)rte_pktmbuf_append(packet,14);
         if(!bytes)return -1;
         for(uint32_t k=0;k<14;k++)bytes[k]=(uint8_t)(0x80U+i+k);
         if(ker_generation_packet_write_complete(rings,producer,indices[i],leases[i]))return -1;
@@ -361,7 +361,7 @@ static int secondary_packet_worker(unsigned generation)
         uint64_t lease=atomic_load_explicit(&c->packet_lease,memory_order_acquire);
         struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&id,index,lease);
         if(!packet_out)return fail(c,"packet writer could not resolve prepared lease");
-        uint8_t *bytes=rte_pktmbuf_append(packet_out,14);
+        uint8_t *bytes=(uint8_t *)rte_pktmbuf_append(packet_out,14);
         if(!bytes)return fail(c,"packet writer could not append bytes");
         memset(bytes,0xa9,14);
         atomic_store_explicit(&c->packet_writer_ready,1,memory_order_release);
@@ -373,7 +373,7 @@ static int secondary_packet_worker(unsigned generation)
         uint32_t index=atomic_load_explicit(&c->packet_index,memory_order_acquire);
         uint64_t lease=atomic_load_explicit(&c->packet_lease,memory_order_acquire);
         struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&id,index,lease);
-        uint8_t *bytes=packet_out?rte_pktmbuf_append(packet_out,14):NULL;
+        uint8_t *bytes=packet_out?(uint8_t *)rte_pktmbuf_append(packet_out,14):NULL;
         if(!bytes)return fail(c,"detach-race writer could not append bytes");
         memset(bytes,0x77,14);
         atomic_store_explicit(&c->packet_writer_ready,1,memory_order_release);
@@ -777,7 +777,7 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
     }
     if(profile==3){
         struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&actors[0],index,lease);
-        uint8_t *bytes=packet_out?rte_pktmbuf_append(packet_out,14):NULL;
+        uint8_t *bytes=packet_out?(uint8_t *)rte_pktmbuf_append(packet_out,14):NULL;
         if(!bytes)PACKET_CASE_FAIL();
         memset(bytes,0xa9,14);
         if(ker_generation_packet_write_complete(rings,&actors[0],index,lease))PACKET_CASE_FAIL();
@@ -797,7 +797,7 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
         close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
     }else if(profile==6){
         struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&actors[0],index,lease);
-        uint8_t *bytes=packet_out?rte_pktmbuf_append(packet_out,14):NULL;
+        uint8_t *bytes=packet_out?(uint8_t *)rte_pktmbuf_append(packet_out,14):NULL;
         struct rte_mbuf *message_tx=NULL,*message_rx=NULL;
         struct rte_ring *rx_ring=rte_ring_lookup("drain_rx_p0_q1_g1");
         struct rte_mbuf *expected_tx[2]={0},*expected_rx[1]={0};
@@ -884,7 +884,7 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
         close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
     }else if(profile==4){
         struct rte_mbuf *stale_packet=ker_generation_packet_resolve(rings,&actors[0],index,lease);
-        uint8_t *stale_bytes=stale_packet?rte_pktmbuf_append(stale_packet,14):NULL;
+        uint8_t *stale_bytes=stale_packet?(uint8_t *)rte_pktmbuf_append(stale_packet,14):NULL;
         if(!stale_bytes)PACKET_CASE_FAIL();
         memset(stale_bytes,0x44,14);
         if(ker_generation_packet_write_complete(rings,&actors[0],index,lease)||
