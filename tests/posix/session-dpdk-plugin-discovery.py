@@ -33,6 +33,18 @@ def expect_error(call, label):
     raise RuntimeError(label + ' unexpectedly resolved')
 
 
+def runner_script_path():
+    sibling = Path(__file__).with_name('ker_session_run.py')
+    if sibling.is_file():
+        return sibling
+    source = Path(__file__).resolve()
+    for parent in list(source.parents)[:5]:
+        candidate = parent / 'tools' / 'ker_session_run.py'
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError('cannot locate the launcher helper beside this fixture or in its repository parents')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--configured-dir', type=Path, required=True)
@@ -41,7 +53,7 @@ def main():
     observer = load_fixture('tc3_observer_fixture', Path(__file__).with_name('session-tc3-observer.py'))
     coordinate = load_fixture('coordinate_fixture', Path(__file__).with_name('session-coordinate.py'))
     drain_peer = load_fixture('drain_peer_fixture', Path(__file__).with_name('session-drain-peer.py'))
-    runner = load_fixture('ker_session_run_fixture', Path(__file__).parents[2] / 'tools' / 'ker_session_run.py')
+    runner = load_fixture('ker_session_run_fixture', runner_script_path())
     configured = args.configured_dir.resolve(strict=True)
 
     native_paths = native.resolve_dpdk_plugin_paths(configured, ('mempool_ring',), {})
