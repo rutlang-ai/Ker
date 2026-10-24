@@ -1,4 +1,4 @@
-"""Real launcher INI parsing and pre-launch rejection; no worker mocks."""
+"""Real launcher INI parsing and pre-launch rejection; no production fault hooks."""
 import configparser
 import importlib.util
 import io
@@ -806,8 +806,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_device_configuration_allocation_failure(self):
         # Replace only the actual dict allocation in one selected production
-        # builder. All earlier parsing/copies use real dict; no successful
-        # parser, worker, PMD or application behavior is mocked.
+        # builder. The failure path forbids process creation; recovery uses a
+        # bounded --dpdk-limits responder only for bond schema validation.
         probe = r"""
 import builtins
 import importlib.util
@@ -816,8 +816,11 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('allocation_probe', sys.argv[1])
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
-stage, configuration, marker, stats = sys.argv[2:]
+stage, configuration, marker, stats, worker = sys.argv[2:]
 real_dict = builtins.dict
+real_popen = launcher.subprocess.Popen
+real_run = launcher.subprocess.run
+real_check_output = launcher.subprocess.check_output
 injected = False
 def allocate(*args, **kwargs):
     global injected
@@ -834,7 +837,7 @@ launcher.subprocess.run = forbidden
 launcher.subprocess.check_output = forbidden
 arguments = ['--config', configuration, '--address', '198.18.0.2/24',
              '--port', 'net_tap0', '--eal=--no-pci --no-huge',
-             '--library', '/missing-library', '--io-worker', '/missing-worker',
+             '--library', '/missing-library', '--io-worker', worker,
              '--stats', stats, '--', '/bin/touch', marker]
 sys.argv = [sys.argv[1], *arguments]
 try:
@@ -844,8 +847,12 @@ except SystemExit as error:
     # The failure must not leave global loader state poisoned. With the fault
     # disarmed, the same real configuration must build its typed objects.
     launcher.dict = real_dict
+    launcher.subprocess.Popen = real_popen
+    launcher.subprocess.run = real_run
+    launcher.subprocess.check_output = real_check_output
     with Path(configuration).open() as stream:
-        values = launcher.read_configuration(stream, Path(configuration).parent)
+        values = launcher.read_configuration(stream, Path(configuration).parent,
+                                             worker_path=worker)
     field = {'additional_interfaces': 'interfaces', 'virtual_devices': 'vdevs',
              'bond_devices': 'bonds'}[stage]
     assert len(values[field]) == 1
@@ -862,12 +869,17 @@ raise AssertionError('allocation failure was accepted')
             root = Path(directory)
             helper = root / 'allocation_probe.py'
             helper.write_text(probe)
+            worker = root / 'dpdk-limits-worker'
+            worker.write_text('#!/usr/bin/env python3\nimport json, sys\n'
+                'if sys.argv[1:] != ["--dpdk-limits"]: sys.exit(2)\n'
+                'print(json.dumps({"max_numa_nodes": 1}))\n')
+            worker.chmod(0o755)
             for stage, text in fixtures.items():
                 with self.subTest(stage=stage):
                     config, marker, stats = root / 'config.ini', root / 'entered', root / 'stats.json'
                     config.write_text(text)
                     result = subprocess.run([sys.executable, str(helper), str(SOURCE), stage,
-                        str(config), str(marker), str(stats)], capture_output=True, text=True, timeout=5)
+                        str(config), str(marker), str(stats), str(worker)], capture_output=True, text=True, timeout=5)
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                     self.assertIn('INJECT: configuration ' + stage, result.stdout)
                     self.assertIn('RECOVERED:', result.stdout)

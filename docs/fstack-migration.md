@@ -1164,6 +1164,8 @@ MemoryError，其他解析及分配继续执行原实现；旧 launcher 三个�
 未捕获 traceback。修复后 CLI 明确返回2，在 worker limit 查询、库路径解析、
 进程创建和应用入口之前结束；不产生统计或应用 marker。撤销故障后，同一
 输入必须经真实 loader 成功构造一个对应 typed 对象，验证全局状态未被污染。
+bond 恢复阶段使用仅实现 `--dpdk-limits` JSON 合同的测试子进程，以隔离 schema
+恢复；`native-fstack-launcher-config-interop` 使用实际 worker 和原版 Linux TCP。
 
 这适配源测试的“配置分配失败使加载失败”，不声称 C calloc 次序、NULL 指针、
 全局结构布局或 ff_load_config 返回-1等价，也不承诺宿主全局 OOM 时仍能分配

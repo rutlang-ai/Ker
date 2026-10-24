@@ -432,4 +432,6 @@ TCP_CONGESTION 扩展：`native-fstack-tcp-congestion` 验证 Reno 选择、监�
 配置分配失败：`native-fstack-launcher-config` 在测试专用子进程中分别使实际接口、
 vdev、bond 配置 builder 的一次 dict 分配抛出 MemoryError，验证真实 CLI
 返回2且没有 worker/应用动作，随后相同输入的无故障加载恢复成功。成功解析和
-分配不做模拟；不覆盖 C calloc ABI 或整个宿主进程的持续内存耗尽。
+分配不做模拟；bond 恢复仅使用测试子进程提供的 `--dpdk-limits` JSON 合同。
+`native-fstack-launcher-config-interop` 另行使用实际 worker 和原版 Linux TCP。
+不覆盖 C calloc ABI 或整个宿主进程的持续内存耗尽。
