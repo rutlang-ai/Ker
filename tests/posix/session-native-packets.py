@@ -46,6 +46,7 @@ def cleanup_handoff_hugepages(args, mode, page_pattern, owned_pages, pidfds,
                               resident_pidfd, primary, runner):
     if not owned_pages:
         return
+    require(page_pattern is not None, 'recorded hugepage files have no exact-prefix matcher')
     for pidfd in pidfds:
         require(select.select([pidfd], [], [], 5)[0],
             'refuse hugepage cleanup while an exact handoff child remains alive')
@@ -220,6 +221,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         pidfds = []
         resident_pidfd = -1
         owned_pages = {}
+        page_pattern = None
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
