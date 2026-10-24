@@ -14,13 +14,16 @@ import time
 
 
 
-def validate_interrupted_cleanup(worker_code, packet_stats, *, app_launched=False,
+def validate_interrupted_cleanup(worker_code, packet_stats, *, packet_expected=True, app_launched=False,
                                  app_code=None, startup=b'', native_stats=None):
     """Validate signal cleanup without overriding the application's signal semantics."""
     if worker_code != 0:
-        raise RuntimeError('secondary packet cleanup failed during SIGTERM')
-    if not isinstance(packet_stats, dict) or packet_stats.get('status') != 0:
-        raise RuntimeError('secondary packet worker did not report clean SIGTERM teardown')
+        raise RuntimeError('secondary packet cleanup failed during signal cancellation')
+    if packet_expected:
+        if not isinstance(packet_stats, dict) or packet_stats.get('status') != 0:
+            raise RuntimeError('secondary packet worker did not report clean signal teardown')
+    elif packet_stats is not None:
+        raise RuntimeError('control-only standby unexpectedly reported packet activity')
     if not app_launched:
         return None
     if app_code not in (-signal.SIGTERM, 128 + signal.SIGTERM):
@@ -70,12 +73,14 @@ def run_session(args, api):
     completed = False
     received_signal = None
     previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
 
-    def record_sigterm(signum, _frame):
+    def record_signal(signum, _frame):
         # Keep the handler async and non-reentrant; child cleanup stays in the
         # ordinary control flow and finally block.
         nonlocal received_signal
-        received_signal = signum
+        if received_signal is None:
+            received_signal = signum
 
     def publish():
         if args.stats is None: return
@@ -108,25 +113,49 @@ def run_session(args, api):
                     raise
                 time.sleep(0.02)
 
-    def ready(prefix):
+    def ready(*prefixes):
         with selectors.DefaultSelector() as selector:
             selector.register(worker.stdout, selectors.EVENT_READ)
             if not selector.select(20):
                 raise RuntimeError('secondary packet startup timed out')
         line = worker.stdout.readline()
-        if not line.startswith(prefix.encode() + b' '):
+        prefix = next((value for value in prefixes if line.startswith(value.encode() + b' ')), None)
+        if prefix is None:
             raise RuntimeError('secondary packet startup failed: ' + line.decode(errors='replace'))
         value = json.loads(line[len(prefix) + 1:])
-        print(line.decode().rstrip(), file=sys.stderr, flush=True)
-        return value
+        if prefix != 'KER_SESSION_PMD_STANDBY' or 'standby' not in metrics:
+            print(line.decode().rstrip(), file=sys.stderr, flush=True)
+        return (prefix, value) if len(prefixes) > 1 else value
 
-    signal.signal(signal.SIGTERM, record_sigterm)
+    def finish_signal_before_app(packet_expected):
+        nonlocal completed
+        close(control_w)
+        try: output, _ = worker.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            worker.kill(); worker.communicate()
+            raise RuntimeError('secondary packet worker did not exit after launcher signal')
+        decoded = output.decode()
+        print(decoded.rstrip(), file=sys.stderr, flush=True)
+        packet_lines = [line.removeprefix('KER_SESSION_PACKET_DONE ')
+            for line in decoded.splitlines() if line.startswith('KER_SESSION_PACKET_DONE ')]
+        if len(packet_lines) > 1:
+            raise RuntimeError('secondary packet worker reported duplicate completion')
+        packet_stats = json.loads(packet_lines[0]) if packet_lines else None
+        metrics.update(packet=packet_stats, worker_code=worker.returncode, app_code=None, signal=received_signal)
+        release(ticket)
+        validate_interrupted_cleanup(worker.returncode, packet_stats, packet_expected=packet_expected)
+        metrics.update(native_cleanup=None, stage='interrupted'); publish(); completed = True
+        return 128 + received_signal
+
+    signal.signal(signal.SIGTERM, record_signal)
+    signal.signal(signal.SIGINT, record_signal)
     try:
         ticket = connection.request(api.MASTER)
         ticket_r, ticket_w = pipe(os.O_CLOEXEC)
         control_r, control_w = pipe(os.O_CLOEXEC)
         startup_r, startup_w = pipe(os.O_CLOEXEC | os.O_NONBLOCK)
         worker = subprocess.Popen([str(worker_path), '--role', 'secondary', '--paired-pmd',
+            *(['--standby'] if args.standby else []),
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', str(args.generation), '--process', str(args.process),
             '--packet-fd', str(packet_worker.fileno()), '--wire-fd', str(args.wire_fd),
@@ -141,27 +170,34 @@ def run_session(args, api):
             raise RuntimeError('short secondary ticket write')
         close(ticket_w)
         metrics['attached'] = ready('KER_SESSION_ATTACHED')
-        metrics['grant'] = ready('KER_SESSION_PMD_GRANTED')
+        outcome, grant = ready('KER_SESSION_PMD_GRANTED', 'KER_SESSION_PMD_STANDBY')
+        while outcome == 'KER_SESSION_PMD_STANDBY':
+            if not args.standby:
+                raise RuntimeError('unexpected standby admission')
+            metrics.update(stage='standby', standby=grant,
+                standby_samples=metrics.get('standby_samples', 0) + 1)
+            publish()
+            if received_signal is not None:
+                return finish_signal_before_app(packet_expected=False)
+            time.sleep(0.1)
+            if received_signal is not None:
+                return finish_signal_before_app(packet_expected=False)
+            if worker.poll() is not None:
+                raise RuntimeError('secondary packet standby exited before admission')
+            if received_signal is not None:
+                return finish_signal_before_app(packet_expected=False)
+            if os.write(control_w, b'P') != 1:
+                raise RuntimeError('short standby admission request')
+            outcome, grant = ready('KER_SESSION_PMD_GRANTED', 'KER_SESSION_PMD_STANDBY')
+        metrics['grant'] = grant
+        if grant['pid'] != metrics['attached']['pid'] or grant['epoch'] != metrics['attached']['epoch']:
+            raise RuntimeError('secondary packet identity changed during admission')
         info = metrics['geometry'] = ready('KER_SESSION_PACKET_READY')
         if info['mtu'] != 1500 or info['tx_features'] != 0 or info['rx_ring'] == info['tx_ring']:
             raise RuntimeError('unsupported secondary packet geometry')
         metrics['stage'] = 'worker-ready'; publish()
         if received_signal is not None:
-            close(control_w)
-            try: output, _ = worker.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                worker.kill(); worker.communicate()
-                raise RuntimeError('secondary packet worker did not exit after launcher SIGTERM')
-            print(output.decode().rstrip(), file=sys.stderr, flush=True)
-            packet_stats = None
-            for line in output.decode().splitlines():
-                if line.startswith('KER_SESSION_PACKET_DONE '):
-                    packet_stats = json.loads(line.removeprefix('KER_SESSION_PACKET_DONE '))
-            metrics.update(packet=packet_stats, worker_code=worker.returncode, app_code=None)
-            release(ticket)
-            validate_interrupted_cleanup(worker.returncode, packet_stats)
-            metrics.update(native_cleanup=None, stage='interrupted'); publish(); completed = True
-            return 128 + received_signal
+            return finish_signal_before_app(packet_expected=True)
         environment = {k: v for k, v in os.environ.items() if not k.startswith(
             ('LKL_', 'KER_PACKET_', 'KER_NATIVE_', 'KER_RUN_', 'KER_STARTUP_', 'KER_PRELOAD_'))}
         environment.update(KER_PRELOAD_LIBRARY=(environment.pop('LD_PRELOAD') + ':' if environment.get('LD_PRELOAD') else '') + str(library),
@@ -264,3 +300,4 @@ def run_session(args, api):
                 publish()
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
+            signal.signal(signal.SIGINT, previous_sigint)
