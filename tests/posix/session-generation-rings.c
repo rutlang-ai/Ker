@@ -23,7 +23,15 @@
 #define TEST_ZONE "ker_nr19_test_control"
 #define TEST_POOL "ker_nr19_test_pool"
 #define TEST_SESSION UINT64_C(0x4e523139a4d0b117)
-struct test_control { _Atomic unsigned stage, gen0_ready, crash_ready, producer_ready, consumer_ready, transition_release, producer_pid; uintptr_t retained_tx[3]; _Atomic int failed; };
+struct test_control {
+    _Atomic unsigned stage, gen0_ready, crash_ready, producer_ready, consumer_ready, transition_release, producer_pid;
+    _Atomic unsigned packet_case,packet_go,packet_ready[2],packet_writer_ready,packet_writer_complete,packet_commit_ready,packet_commit_release;
+    _Atomic unsigned packet_index;
+    _Atomic uint64_t packet_lease;
+    _Atomic int packet_producer_pid;
+    uintptr_t retained_tx[3];
+    _Atomic int failed;
+};
 
 static struct test_control *control(void)
 {
@@ -48,6 +56,13 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
     struct rte_mbuf *invalid=ker_generation_packet_resolve(rings,producer,invalid_index,invalid_lease);
     if(!invalid||!rte_pktmbuf_append(invalid,13)||
         ker_generation_packet_write_complete(rings,producer,invalid_index,invalid_lease)!=-EMSGSIZE||
+        ker_generation_packet_cancel(rings,producer,invalid_index,invalid_lease)||
+        ker_generation_packet_pool_in_use(rings)!=baseline)return -1;
+    if(ker_generation_packet_prepare(rings,producer,consumer,0,1,&invalid_index,&invalid_lease)||
+        ker_generation_test_packet_force_untracked_send(rings,invalid_index,invalid_lease)||
+        ker_generation_packet_commit(rings,producer,0,1,invalid_index,invalid_lease)!=-EUCLEAN||
+        ker_generation_packet_pool_in_use(rings)!=baseline+1||
+        ker_generation_test_packet_restore_prepared(rings,invalid_index,invalid_lease)||
         ker_generation_packet_cancel(rings,producer,invalid_index,invalid_lease)||
         ker_generation_packet_pool_in_use(rings)!=baseline)return -1;
     struct rte_mbuf *packets[KER_GENERATION_RING_CAPACITY]={0};
@@ -294,6 +309,69 @@ static int secondary(unsigned generation,int replacement)
         atomic_store_explicit(&c->stage,12,memory_order_release);wait_stage(c,14);
     }
     return atomic_load(&c->failed)?1:0;
+}
+static int secondary_packet_worker(unsigned generation)
+{
+    struct test_control *c=control();
+    struct rte_mempool *pool=rte_mempool_lookup(TEST_POOL);
+    if(!c||!pool||generation>1)return fail(c,"packet worker control/pool lookup failed");
+    unsigned profile=atomic_load_explicit(&c->packet_case,memory_order_acquire);
+    if(profile<1||profile>7)return fail(c,"packet worker profile invalid");
+    struct ker_generation_rings *rings=NULL;
+    if(ker_generation_rings_attach(TEST_SESSION,1,2,pool,&rings))
+        return fail(c,"packet worker generation attach failed");
+    struct ker_generation_identity id={.session=TEST_SESSION,.epoch=100+profile*2+generation,
+        .slot=1+generation,.generation=generation,.process=0,.pid=(uint32_t)getpid()};
+    atomic_store_explicit(&c->packet_ready[generation],1,memory_order_release);
+    if(generation==0&&profile==2){
+        while(!atomic_load_explicit(&c->packet_go,memory_order_acquire))usleep(1000);
+        uint32_t index=atomic_load_explicit(&c->packet_index,memory_order_acquire);
+        uint64_t lease=atomic_load_explicit(&c->packet_lease,memory_order_acquire);
+        struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&id,index,lease);
+        if(!packet_out)return fail(c,"packet writer could not resolve prepared lease");
+        uint8_t *bytes=rte_pktmbuf_append(packet_out,14);
+        if(!bytes)return fail(c,"packet writer could not append bytes");
+        memset(bytes,0xa9,14);
+        atomic_store_explicit(&c->packet_writer_ready,1,memory_order_release);
+        while(atomic_load_explicit(&c->packet_go,memory_order_acquire)<2)usleep(1000);
+        return fail(c,"packet writer escaped its intentional death barrier");
+    }
+    if(generation==0&&profile==7){
+        while(!atomic_load_explicit(&c->packet_go,memory_order_acquire))usleep(1000);
+        uint32_t index=atomic_load_explicit(&c->packet_index,memory_order_acquire);
+        uint64_t lease=atomic_load_explicit(&c->packet_lease,memory_order_acquire);
+        struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&id,index,lease);
+        uint8_t *bytes=packet_out?rte_pktmbuf_append(packet_out,14):NULL;
+        if(!bytes)return fail(c,"detach-race writer could not append bytes");
+        memset(bytes,0x77,14);
+        atomic_store_explicit(&c->packet_writer_ready,1,memory_order_release);
+        while(atomic_load_explicit(&c->packet_go,memory_order_acquire)<2)usleep(1000);
+        if(ker_generation_packet_write_complete(rings,&id,index,lease))
+            return fail(c,"write completion did not release operation through detach gate");
+        atomic_store_explicit(&c->packet_writer_complete,1,memory_order_release);
+        while(atomic_load_explicit(&c->packet_go,memory_order_acquire)<3)usleep(1000);
+        return 0;
+    }
+    if(generation==1&&profile==3){
+        while(!atomic_load_explicit(&c->packet_commit_ready,memory_order_acquire))usleep(1000);
+        int producer=atomic_load_explicit(&c->packet_producer_pid,memory_order_acquire);
+        if(producer<=0||kill((pid_t)producer,SIGKILL))return fail(c,"could not kill producer at COMMITTING barrier");
+        atomic_store_explicit(&c->packet_commit_release,1,memory_order_release);
+        while(atomic_load_explicit(&c->packet_go,memory_order_acquire)<3)usleep(1000);
+        struct rte_mbuf *out=NULL;
+        if(ker_generation_tx_dequeue_peer(rings,&id,0,1,&out)!=1||!out||
+            out->pkt_len!=14||rte_pktmbuf_mtod(out,uint8_t*)[0]!=0xa9||
+            ker_generation_packet_release(rings,&id,out))
+            return fail(c,"live peer did not drain committed packet exactly once");
+        atomic_store_explicit(&c->packet_go,4,memory_order_release);
+        return 0;
+    }
+    if(generation==1&&profile!=3){
+        while(atomic_load_explicit(&c->packet_go,memory_order_acquire)<2)usleep(1000);
+        return 0;
+    }
+    while(atomic_load_explicit(&c->packet_go,memory_order_acquire)<2)usleep(1000);
+    return 0;
 }
 static int secondary_dequeue_crash(const char *mode)
 {
@@ -617,6 +695,192 @@ cleanup:
 #undef DEAD_TX_FAIL
     return result;
 }
+static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_mempool *pool,
+    const char *prefix,const char *exe,unsigned profile)
+{
+    struct test_control *c=control();pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};
+    int status=0,result=-1;uint32_t index=0;uint64_t lease=0;
+    struct ker_generation_identity actors[2]={
+        {.session=TEST_SESSION,.epoch=100+profile*2,.slot=1,.generation=0,.process=0,.pid=0},
+        {.session=TEST_SESSION,.epoch=101+profile*2,.slot=2,.generation=1,.process=0,.pid=0}};
+    struct rte_ring *tx=rte_ring_lookup("drain_tx_p0_q1_g0");
+    uint32_t packet_baseline=ker_generation_packet_pool_in_use(rings);
+    if(!c||!tx||rte_ring_count(tx)||packet_baseline!=0||rte_mempool_in_use_count(pool))return -1;
+    atomic_store(&c->packet_case,profile);atomic_store(&c->packet_go,0);
+    atomic_store(&c->packet_ready[0],0);atomic_store(&c->packet_ready[1],0);
+    atomic_store(&c->packet_writer_ready,0);atomic_store(&c->packet_writer_complete,0);
+    atomic_store(&c->packet_commit_ready,0);
+    atomic_store(&c->packet_commit_release,0);atomic_store(&c->packet_index,0);
+    atomic_store(&c->packet_lease,0);atomic_store(&c->packet_producer_pid,0);
+#define PACKET_CASE_FAIL() do { fprintf(stderr,"NR19 packet death profile=%u failure line=%d stage=%u\n",profile,__LINE__,atomic_load(&c->packet_go));goto cleanup; } while(0)
+    for(unsigned g=0;g<2;g++){
+        pids[g]=fork();if(pids[g]<0)PACKET_CASE_FAIL();
+        if(!pids[g]){char mode[32];snprintf(mode,sizeof(mode),"packet-worker-%u",g);
+            execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--",mode,(char*)NULL);_Exit(127);}
+        pidfds[g]=syscall(SYS_pidfd_open,pids[g],0);if(pidfds[g]<0)PACKET_CASE_FAIL();
+        actors[g].pid=(uint32_t)pids[g];
+    }
+    atomic_store_explicit(&c->packet_producer_pid,(int)pids[0],memory_order_release);
+    if(ker_generation_admit(rings,&actors[0],pidfds[0])||ker_generation_admit(rings,&actors[1],pidfds[1]))PACKET_CASE_FAIL();
+    for(unsigned tick=0;tick<10000&&(!atomic_load(&c->packet_ready[0])||!atomic_load(&c->packet_ready[1]));tick++){
+        for(unsigned g=0;g<2;g++){
+            siginfo_t info={0};if(waitid(P_PID,(id_t)pids[g],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[g])PACKET_CASE_FAIL();
+        }
+        usleep(1000);
+    }
+    if(!atomic_load(&c->packet_ready[0])||!atomic_load(&c->packet_ready[1]))PACKET_CASE_FAIL();
+    if(ker_generation_packet_prepare(rings,&actors[0],&actors[1],0,1,&index,&lease)||!lease)PACKET_CASE_FAIL();
+    atomic_store_explicit(&c->packet_index,index,memory_order_release);
+    atomic_store_explicit(&c->packet_lease,lease,memory_order_release);
+    if(profile==2){
+        atomic_store_explicit(&c->packet_go,1,memory_order_release);
+        for(unsigned tick=0;tick<10000&&!atomic_load(&c->packet_writer_ready);tick++){
+            siginfo_t info={0};if(waitid(P_PID,(id_t)pids[0],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[0])PACKET_CASE_FAIL();
+            usleep(1000);
+        }
+        struct ker_generation_cleanup_config empty={.version=KER_GENERATION_CLEANUP_CONFIG_VERSION,
+            .size=sizeof(empty),.ports=1,.queues=2,.rx_queue_mask=0,.tx_queue_mask=0};
+        if(!atomic_load(&c->packet_writer_ready)||
+            ker_generation_orderly_detach_ready(rings,&actors[0],&empty)!=-EBUSY)PACKET_CASE_FAIL();
+    }
+    if(profile==3){
+        struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&actors[0],index,lease);
+        uint8_t *bytes=packet_out?rte_pktmbuf_append(packet_out,14):NULL;
+        if(!bytes)PACKET_CASE_FAIL();
+        memset(bytes,0xa9,14);
+        if(ker_generation_packet_write_complete(rings,&actors[0],index,lease))PACKET_CASE_FAIL();
+        ker_generation_test_hold_packet_commit(&c->packet_commit_ready,&c->packet_commit_release);
+        if(ker_generation_packet_commit(rings,&actors[0],0,1,index,lease))PACKET_CASE_FAIL();
+        ker_generation_test_hold_packet_commit(NULL,NULL);
+        if(wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||
+            rte_ring_count(tx)!=1||ker_generation_packet_pool_in_use(rings)!=packet_baseline+1)PACKET_CASE_FAIL();
+        if(ker_generation_reap_dead(rings,&actors[0])||rte_ring_lookup("drain_tx_p0_q1_g0")!=tx||
+            rte_ring_count(tx)!=1||ker_generation_packet_pool_in_use(rings)!=packet_baseline+1)PACKET_CASE_FAIL();
+        close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+        atomic_store_explicit(&c->packet_go,3,memory_order_release);
+        for(unsigned tick=0;tick<10000&&atomic_load(&c->packet_go)<4;tick++)usleep(1000);
+        if(atomic_load(&c->packet_go)!=4||wait_child_bounded(pids[1],&status)||!WIFEXITED(status)||WEXITSTATUS(status)||
+            rte_ring_count(tx)||ker_generation_packet_pool_in_use(rings)!=packet_baseline)PACKET_CASE_FAIL();
+        if(ker_generation_reap_dead(rings,&actors[1]))PACKET_CASE_FAIL();
+        close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+    }else if(profile==6){
+        struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&actors[0],index,lease);
+        uint8_t *bytes=packet_out?rte_pktmbuf_append(packet_out,14):NULL;
+        struct rte_mbuf *message_tx=NULL,*message_rx=NULL;
+        struct rte_ring *rx_ring=rte_ring_lookup("drain_rx_p0_q1_g1");
+        uint64_t drop_before=0,drop_after=0,packet_drop_before=0,packet_drop_after=0;
+        if(!bytes||!rx_ring)PACKET_CASE_FAIL();
+        memset(bytes,0xb6,14);
+        if(ker_generation_packet_write_complete(rings,&actors[0],index,lease)||
+            ker_generation_packet_commit(rings,&actors[0],0,1,index,lease))PACKET_CASE_FAIL();
+        message_tx=packet(pool,0xc1);message_rx=packet(pool,0xc2);
+        if(!message_tx||!message_rx||
+            ker_generation_tx_enqueue(rings,&actors[0],0,1,message_tx)||
+            ker_generation_rx_enqueue(rings,&actors[0],0,1,1,message_rx)||
+            ker_generation_test_tx_drop_count(rings,0,1,0,&drop_before)||
+            ker_generation_test_packet_drop_count(rings,0,1,0,&packet_drop_before))PACKET_CASE_FAIL();
+        if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
+            syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0))PACKET_CASE_FAIL();
+        for(unsigned g=0;g<2;g++)if(wait_child_bounded(pids[g],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)PACKET_CASE_FAIL();
+        if(rte_ring_count(tx)!=2||rte_ring_count(rx_ring)!=1||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||
+            rte_mempool_in_use_count(pool)!=2)PACKET_CASE_FAIL();
+        ker_generation_test_corrupt_next_reap();
+        if(ker_generation_reap_dead(rings,&actors[0])!=-EUCLEAN||rte_ring_count(tx)!=2||
+            rte_ring_count(rx_ring)!=1||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||
+            rte_mempool_in_use_count(pool)!=2||
+            ker_generation_test_tx_drop_count(rings,0,1,0,&drop_after)||drop_after!=drop_before||
+            ker_generation_test_packet_drop_count(rings,0,1,0,&packet_drop_after)||packet_drop_after!=packet_drop_before)PACKET_CASE_FAIL();
+        ker_generation_test_restore_reap_corruption();
+        if(ker_generation_reap_dead(rings,&actors[0])||rte_ring_count(tx)||
+            rte_ring_count(rx_ring)||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline||
+            rte_mempool_in_use_count(pool)||
+            ker_generation_test_tx_drop_count(rings,0,1,0,&drop_after)||drop_after!=drop_before+1||
+            ker_generation_test_packet_drop_count(rings,0,1,0,&packet_drop_after)||packet_drop_after!=packet_drop_before+1)PACKET_CASE_FAIL();
+        for(unsigned g=0;g<2;g++){close(pidfds[g]);pidfds[g]=-1;pids[g]=-1;}
+    }else if(profile==7){
+        struct ker_generation_cleanup_config empty={.version=KER_GENERATION_CLEANUP_CONFIG_VERSION,
+            .size=sizeof(empty),.ports=1,.queues=2,.rx_queue_mask=0,.tx_queue_mask=0};
+        unsigned rx_reclaimed=UINT_MAX,tx_reclaimed=UINT_MAX;
+        atomic_store_explicit(&c->packet_go,1,memory_order_release);
+        for(unsigned tick=0;tick<10000&&!atomic_load(&c->packet_writer_ready);tick++){
+            siginfo_t info={0};if(waitid(P_PID,(id_t)pids[0],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[0])PACKET_CASE_FAIL();
+            usleep(1000);
+        }
+        if(!atomic_load(&c->packet_writer_ready)||
+            ker_generation_orderly_detach(rings,&actors[0],&empty,0,&rx_reclaimed,&tx_reclaimed)!=-EBUSY||
+            rx_reclaimed||tx_reclaimed)PACKET_CASE_FAIL();
+        atomic_store_explicit(&c->packet_go,2,memory_order_release);
+        for(unsigned tick=0;tick<10000&&!atomic_load(&c->packet_writer_complete);tick++)usleep(1000);
+        if(!atomic_load(&c->packet_writer_complete)||
+            ker_generation_test_reopen_after_failed_detach(rings,0)||
+            ker_generation_admit(rings,&actors[0],pidfds[0])||
+            ker_generation_packet_cancel(rings,&actors[0],index,lease)||
+            ker_generation_packet_write_complete(rings,&actors[0],index,lease)!=-ESTALE||
+            ker_generation_unregister(rings,&actors[0])||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline)PACKET_CASE_FAIL();
+        atomic_store_explicit(&c->packet_go,3,memory_order_release);
+        for(unsigned g=0;g<2;g++)if(wait_child_bounded(pids[g],&status)||!WIFEXITED(status)||WEXITSTATUS(status))PACKET_CASE_FAIL();
+        if(ker_generation_reap_dead(rings,&actors[0]))PACKET_CASE_FAIL();
+        for(unsigned g=0;g<2;g++){close(pidfds[g]);pidfds[g]=-1;pids[g]=-1;}
+    }else if(profile==5){
+        struct rte_mbuf *denied=NULL;
+        if(ker_generation_test_packet_force_untracked_send(rings,index,lease)||
+            syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0)||wait_child_bounded(pids[1],&status)||
+            !WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||
+            ker_generation_reap_dead(rings,&actors[1])!=-EUCLEAN||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||rte_ring_count(tx)||
+            ker_generation_tx_dequeue_peer(rings,&actors[1],0,1,&denied)!=-EINVAL||denied||
+            ker_generation_test_reopen_after_failclosed_reap(rings)||
+            ker_generation_test_packet_restore_prepared(rings,index,lease)||
+            ker_generation_packet_cancel(rings,&actors[0],index,lease)||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline)PACKET_CASE_FAIL();
+        close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+        atomic_store_explicit(&c->packet_go,2,memory_order_release);
+        if(wait_child_bounded(pids[0],&status)||!WIFEXITED(status)||WEXITSTATUS(status)||
+            ker_generation_reap_dead(rings,&actors[0]))PACKET_CASE_FAIL();
+        close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+    }else if(profile==4){
+        if(syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0)||wait_child_bounded(pids[1],&status)||
+            !WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||ker_generation_reap_dead(rings,&actors[1])||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||
+            ker_generation_packet_cancel(rings,&actors[0],index,lease)||
+            ker_generation_packet_resolve(rings,&actors[0],index,lease)!=NULL||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline)PACKET_CASE_FAIL();
+        close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+        atomic_store_explicit(&c->packet_go,2,memory_order_release);
+        if(wait_child_bounded(pids[0],&status)||!WIFEXITED(status)||WEXITSTATUS(status)||ker_generation_reap_dead(rings,&actors[0]))PACKET_CASE_FAIL();
+        close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+    }else{
+        unsigned victim=0;
+        if(syscall(SYS_pidfd_send_signal,pidfds[victim],SIGKILL,NULL,0)||wait_child_bounded(pids[victim],&status)||
+            !WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||ker_generation_reap_dead(rings,&actors[victim])||
+            ker_generation_packet_pool_in_use(rings)!=packet_baseline||
+            ker_generation_packet_cancel(rings,&actors[0],index,lease)!=-ESTALE)PACKET_CASE_FAIL();
+        close(pidfds[victim]);pidfds[victim]=-1;pids[victim]=-1;
+        atomic_store_explicit(&c->packet_go,2,memory_order_release);
+        if(wait_child_bounded(pids[1],&status)||!WIFEXITED(status)||WEXITSTATUS(status)||ker_generation_reap_dead(rings,&actors[1]))PACKET_CASE_FAIL();
+        close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+    }
+    if(ker_generation_packet_pool_in_use(rings)!=packet_baseline||rte_ring_count(tx)||
+        rte_mempool_in_use_count(pool))PACKET_CASE_FAIL();
+    printf("NR19_PACKET_LEASE_DEATH_PASS profile=%u queued_retained=%u pool_baseline=true\n",profile,profile==3?1U:0U);
+    result=0;
+cleanup:
+    ker_generation_test_hold_packet_commit(NULL,NULL);
+    if(result){
+        for(unsigned g=0;g<2;g++)if(pidfds[g]>=0){siginfo_t info={0};
+            if(waitid(P_PIDFD,(id_t)pidfds[g],&info,WEXITED|WNOHANG|WNOWAIT)==0&&info.si_pid==0)
+                (void)syscall(SYS_pidfd_send_signal,pidfds[g],SIGKILL,NULL,0);}
+        for(unsigned g=0;g<2;g++)if(pids[g]>0){(void)wait_child_bounded(pids[g],&status);
+            if(pidfds[g]>=0)(void)ker_generation_reap_dead(rings,&actors[g]);}
+    }
+    for(unsigned g=0;g<2;g++)if(pidfds[g]>=0)close(pidfds[g]);
+#undef PACKET_CASE_FAIL
+    return result;
+}
 static int primary(const char *prefix,const char *exe)
 {
     struct rte_mempool*pool=rte_pktmbuf_pool_create(TEST_POOL,256,0,0,2048,SOCKET_ID_ANY);
@@ -627,6 +891,12 @@ static int primary(const char *prefix,const char *exe)
     atomic_init(&c->gen0_ready,0);atomic_init(&c->crash_ready,0);atomic_init(&c->producer_pid,0);
     atomic_init(&c->producer_ready,0);atomic_init(&c->consumer_ready,0);
     atomic_init(&c->transition_release,0);atomic_init(&c->failed,0);
+    atomic_init(&c->packet_case,0);atomic_init(&c->packet_go,0);
+    atomic_init(&c->packet_ready[0],0);atomic_init(&c->packet_ready[1],0);
+    atomic_init(&c->packet_writer_ready,0);atomic_init(&c->packet_writer_complete,0);
+    atomic_init(&c->packet_commit_ready,0);
+    atomic_init(&c->packet_commit_release,0);atomic_init(&c->packet_index,0);
+    atomic_init(&c->packet_lease,0);atomic_init(&c->packet_producer_pid,0);
     struct ker_generation_rings*r=NULL;if(ker_generation_rings_create(TEST_SESSION,1,2,pool,&r))return 1;
     const struct rte_memzone *directory=rte_memzone_lookup("ker_gen_ring_directory");
     if(!directory)return 1;
@@ -732,9 +1002,16 @@ static int primary(const char *prefix,const char *exe)
         run_dequeue_crash_window(r,pool,file_prefix,exe,"enqueue")||
         run_dequeue_crash_window(r,pool,file_prefix,exe,"pre")||
         run_dequeue_crash_window(r,pool,file_prefix,exe,"cas")||
-        run_dead_producer_tx(r,pool,file_prefix,exe))FAIL_CHILDREN();
+        run_dead_producer_tx(r,pool,file_prefix,exe)||
+        run_packet_death_case(r,pool,file_prefix,exe,1)||
+        run_packet_death_case(r,pool,file_prefix,exe,2)||
+        run_packet_death_case(r,pool,file_prefix,exe,3)||
+        run_packet_death_case(r,pool,file_prefix,exe,4)||
+        run_packet_death_case(r,pool,file_prefix,exe,5)||
+        run_packet_death_case(r,pool,file_prefix,exe,6)||
+        run_packet_death_case(r,pool,file_prefix,exe,7))FAIL_CHILDREN();
     if(atomic_load(&c->failed)||rte_mempool_in_use_count(pool)!=0||
-        ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.packet_full!=1||stats.packet_drop!=0||stats.tx_drop!=3||
+        ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.packet_full!=1||stats.packet_drop!=1||stats.tx_drop!=4||
         stats.rx_full!=1||stats.tx_peak<2||stats.rx_peak<KER_GENERATION_RING_CAPACITY)
         FAIL_CHILDREN();
     if(ker_generation_rings_destroy(r))FAIL_CHILDREN();
@@ -753,6 +1030,7 @@ int main(int argc,char**argv)
         if(!prefix)rc=2;else{char exe[PATH_MAX];if(!realpath(argv[0],exe))rc=2;else rc=primary(prefix,exe);}
     }else if(!strcmp(mode,"0")||!strcmp(mode,"1"))rc=secondary((unsigned)atoi(mode),0);
     else if(!strcmp(mode,"r"))rc=secondary(1,1);
+    else if(!strncmp(mode,"packet-worker-",14))rc=secondary_packet_worker((unsigned)atoi(mode+14));
     else if(!strcmp(mode,"producer-enqueue")||!strcmp(mode,"producer-pre")||!strcmp(mode,"producer-pre-tx")||
         !strcmp(mode,"producer-tx-live")||!strcmp(mode,"dequeue-tx-live")||
         !strcmp(mode,"producer-tx-retain")||!strcmp(mode,"consumer-tx-retain")||

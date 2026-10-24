@@ -131,6 +131,15 @@ int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *ring
     uint32_t index,uint32_t duplicate_index,uintptr_t *original);
 int ker_generation_test_packet_table_restore(struct ker_generation_rings *rings,
     uint32_t index,uintptr_t original);
+int ker_generation_test_packet_force_untracked_send(struct ker_generation_rings *rings,
+    uint32_t index,uint64_t lease_id);
+int ker_generation_test_packet_restore_prepared(struct ker_generation_rings *rings,
+    uint32_t index,uint64_t lease_id);
+int ker_generation_test_reopen_after_failclosed_reap(struct ker_generation_rings *rings);
+int ker_generation_test_reopen_after_failed_detach(struct ker_generation_rings *rings,
+    uint32_t generation);
+int ker_generation_test_packet_drop_count(struct ker_generation_rings *rings,uint16_t port,
+    uint16_t queue,uint32_t generation,uint64_t *count);
 /* Test-only: observe the same generation-directory lookup used by attach. */
 int ker_generation_rings_test_directory_present(void);
 /* Test-only: repeat the production secondary attach and require identical objects. */
@@ -143,6 +152,7 @@ void ker_generation_test_corrupt_next_reap(void);
 void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready, _Atomic unsigned *release);
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready);
 void ker_generation_test_hold_after_enqueue_prepare(_Atomic unsigned *ready);
+void ker_generation_test_hold_packet_commit(_Atomic unsigned *ready,_Atomic unsigned *release);
 /* Test-only late journal corruption and raw metric observation for reaper rollback. */
 int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *rings,
     const struct ker_generation_identity *owner, uint32_t after_ring_slot);
