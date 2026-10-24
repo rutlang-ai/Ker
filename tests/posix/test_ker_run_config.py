@@ -1084,6 +1084,29 @@ raise AssertionError('allocation failure was accepted')
                 self.read(text)
             self.assertIn(str(line), str(caught.exception))
 
+    def test_stack_coexistence_flag_is_not_silently_accepted(self):
+        base = ['--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-huge']
+        # Absence has no synthetic F-Stack boolean; real runtime acceptance
+        # separately proves simultaneous host/native traffic in this mode.
+        absent = launcher.parse_arguments(base + ['--', '/bin/true'])
+        self.assertFalse(hasattr(absent, 'kernel_coexist'))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, marker, stats = root / 'stack.ini', root / 'entered', root / 'stats.json'
+            for value in ('1', '0', 'garbage'):
+                with self.subTest(value=value):
+                    path.write_text('[stack]\nkernel_coexist=' + value + '\n')
+                    rejected = subprocess.run([sys.executable, str(SOURCE), *base,
+                        '--config', str(path), '--library', '/missing-library',
+                        '--io-worker', '/missing-worker', '--stats', str(stats),
+                        '--', '/bin/touch', str(marker)], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                    self.assertIn('unknown section [stack]', rejected.stderr)
+                    self.assertNotIn('Traceback', rejected.stderr)
+                    self.assertNotIn('missing-library', rejected.stderr)
+                    self.assertFalse(marker.exists())
+                    self.assertFalse(stats.exists())
+
     def test_explicit_boundaries(self):
         self.assertEqual(self.read('[dpdk]\nport=a\nport=b\n'), {'port': 'b'})
         for text in ('port=x\n', '[unknown]\nport=x\n', '[dpdk]\nunknown=x\n',

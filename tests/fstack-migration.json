@@ -2159,28 +2159,28 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source asserts ff_global_cfg.stack.kernel_coexist==1 after loading a fixture. Ker rejects supplied [stack]/kernel_coexist before startup; normal native INET sockets and actual host descriptors coexist by descriptor ownership without that flag. Real same-tuple UDP/mixed epoll traffic is a Ker extension, not evidence of this parsed field. See docs/stack-coexistence.md and issue228.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_absent_defaults_disabled",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source asserts absent [stack] defaults a F-Stack global kernel_coexist field to0. Ker accepts no section but has no disabled-mode field: original host/native descriptor coexistence remains active, as real same-tuple UDP traffic demonstrates. Do not infer a parsed false default or count the runtime extension as this source assertion. See docs/stack-coexistence.md and issue228.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_garbage_defaults_disabled",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source accepts an unrecognized kernel_coexist value and silently leaves a global field0. Ker deliberately rejects any supplied unsupported [stack] section, including garbage, with status2 before worker/app entry. Explicit rejection is not equivalent to permissive false-default parsing. See docs/stack-coexistence.md and issue228.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_disabled_explicit",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source asserts explicit kernel_coexist=0 produces a F-Stack global field0. Ker rejects supplied [stack] rather than installing a no-op boolean or disabling safe host-fd dispatch. Native/host same-tuple UDP, mixed epoll, flags and independent close lifetimes are qualified separately; no source config-field pass is claimed. See docs/stack-coexistence.md and issue228.",
       "ker_tests": []
     },
     {

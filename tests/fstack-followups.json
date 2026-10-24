@@ -412,11 +412,14 @@
       "id": "stack-coexistence",
       "title": "Document and qualify host/native stack coexistence configuration",
       "disposition": "contract-review",
-      "reason": "Ker host/native descriptors coexist through exported placeholders and dispatch, while F-Stack stack.coexist flags and garbage/default handling describe a different global configuration contract.",
+      "reason": "Actual Ker descriptor-based coexistence now has real host/native identical-UDP-tuple traffic, mixed epoll full64-bit tags, independent close orders and exact native-only UDP counters. The four pinned assertions instead inspect a F-Stack global boolean:1/0/garbage supplied sections are explicitly rejected by Ker, while section absence keeps coexistence active without a synthetic default field. These source configuration contracts remain blocked, not runtime passes.",
       "evidence": [
         "src/posix/fd-table.c",
         "tests/posix/fstack-fd-map.c",
-        "tests/upstream/fstack/tests/unit/test_ff_config.c"
+        "tests/upstream/fstack/tests/unit/test_ff_config.c",
+        "docs/stack-coexistence.md",
+        "tests/posix/fstack-socket-contracts.c",
+        "tests/posix/test_ker_run_config.py"
       ],
       "acceptance": [
         "Record the supported Ker coexistence contract and whether a global mode flag is needed.",

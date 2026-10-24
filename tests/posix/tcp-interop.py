@@ -2064,8 +2064,13 @@ def inside(args):
                 udp_cork(args, launcher, work, env, log)
                 if args.fd_app:
                     stats_path = work / 'fd-app.json'
-                    client([*launcher, '--stats', str(stats_path), '--', str(args.fd_app)], env)
+                    fd_output = client([*launcher, '--stats', str(stats_path), '--', str(args.fd_app)], env)
                     stats = json.loads(stats_path.read_text())
+                    if args.fd_coexistence:
+                        if ('PASS: independent host/native UDP same tuple, mixed epoll and both close orders' not in fd_output
+                                or stats['native']['udp_in_datagrams'] != 3
+                                or stats['native']['udp_out_datagrams'] != 3):
+                            raise RuntimeError('host/native coexistence missed isolated kernel UDP accounting: ' + str(stats))
                     if (stats['outstanding'] or not stats['native']['active_opens'] or
                             not stats['native']['passive_opens']):
                         raise RuntimeError('fd scenarios did not use native TCP or leaked: ' + str(stats))
@@ -2109,6 +2114,7 @@ def main():
     parser.add_argument('--zero-window', action='store_true')
     parser.add_argument('--udp-cork-app', type=Path)
     parser.add_argument('--fd-app', type=Path)
+    parser.add_argument('--fd-coexistence', action='store_true')
     parser.add_argument('--dualstack-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)
