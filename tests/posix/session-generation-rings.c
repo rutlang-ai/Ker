@@ -83,8 +83,8 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
             packet->pkt_len!=14||packet->data_len!=14)return -1;
         const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
         for(uint32_t k=0;k<14;k++)if(bytes[k]!=(uint8_t)(0x80U+i+k))return -1;
-        if(ker_generation_packet_pmd_accepted(rings,consumer,packet)||
-            ker_generation_packet_wire_pending(rings,consumer,packet)||
+        if(ker_generation_packet_pmd_accepted(rings,consumer,packet)!=-EOPNOTSUPP||
+            ker_generation_packet_wire_pending(rings,consumer,packet)!=-EOPNOTSUPP||
             ker_generation_packet_release(rings,consumer,packet))return -1;
     }
     struct rte_mbuf *empty=NULL;

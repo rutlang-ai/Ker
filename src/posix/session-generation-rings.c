@@ -1147,28 +1147,16 @@ int ker_generation_packet_cancel(struct ker_generation_rings *r,
 int ker_generation_packet_pmd_accepted(struct ker_generation_rings *r,
     const struct ker_generation_identity *consumer,struct rte_mbuf *packet)
 {
-    if(!r||!consumer||!packet||packet->pool!=r->packet_pool)return -EINVAL;
-    struct journal_entry *j=journal_find(r,packet);
-    if(!j||!packet_lease_identity(r,j,consumer,0))return -ESTALE;
-    uint16_t p,q;if(packet_lease_coordinates(r,j,&p,&q))return -ESTALE;
-    int enter=operation_enter_tx_peer(r,consumer,p,q,j->ring_generation);if(enter)return enter;
-    unsigned expected=JOURNAL_INFLIGHT;
-    int rc=atomic_compare_exchange_strong_explicit(&j->state,&expected,JOURNAL_PACKET_PMD_ACCEPTED,
-        memory_order_release,memory_order_acquire)?0:-ESTALE;
-    operation_leave(r,consumer,j->ring_generation);return rc;
+    (void)r;(void)consumer;(void)packet;
+    /* No external PMD completion registry is connected to this API yet. */
+    return -EOPNOTSUPP;
 }
 int ker_generation_packet_wire_pending(struct ker_generation_rings *r,
     const struct ker_generation_identity *consumer,struct rte_mbuf *packet)
 {
-    if(!r||!consumer||!packet||packet->pool!=r->packet_pool)return -EINVAL;
-    struct journal_entry *j=journal_find(r,packet);
-    if(!j||!packet_lease_identity(r,j,consumer,0))return -ESTALE;
-    uint16_t p,q;if(packet_lease_coordinates(r,j,&p,&q))return -ESTALE;
-    int enter=operation_enter_tx_peer(r,consumer,p,q,j->ring_generation);if(enter)return enter;
-    unsigned expected=JOURNAL_PACKET_PMD_ACCEPTED;
-    int rc=atomic_compare_exchange_strong_explicit(&j->state,&expected,JOURNAL_PACKET_WIRE_PENDING,
-        memory_order_release,memory_order_acquire)?0:-ESTALE;
-    operation_leave(r,consumer,j->ring_generation);return rc;
+    (void)r;(void)consumer;(void)packet;
+    /* A syscall/driver send outcome must be journaled by a real adapter. */
+    return -EOPNOTSUPP;
 }
 static int dequeue(struct ker_generation_rings*r,const struct ker_generation_identity*id,uint16_t p,uint16_t q,uint32_t g,struct rte_mbuf**out,int tx)
 {
@@ -1263,8 +1251,7 @@ int ker_generation_packet_release(struct ker_generation_rings*r,const struct ker
     struct journal_entry*j=journal_find(r,m);
     unsigned state=j?atomic_load_explicit(&j->state,memory_order_acquire):JOURNAL_FREE;
     if(!j||!same_identity(&j->owner,owner)||
-        (state!=JOURNAL_INFLIGHT&&!(j->dedicated_packet&&
-            (state==JOURNAL_PACKET_PMD_ACCEPTED||state==JOURNAL_PACKET_WIRE_PENDING)))||
+        state!=JOURNAL_INFLIGHT||
         !packet_reclaimable(r,m))return -ESTALE;
     uint8_t ring_generation=j->ring_generation;unsigned expected=state;
     if(!atomic_compare_exchange_strong_explicit(&j->state,&expected,JOURNAL_RELEASING,memory_order_acq_rel,memory_order_acquire))return -ESTALE;
@@ -1494,9 +1481,12 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
             if(j->direction&&(!identity_valid(r,&j->consumer)||
                 !same_identity(&j->consumer,&j->owner))) REAP_ABORT(-EUCLEAN);
             reclaim=1;
-        }else if(state==JOURNAL_INFLIGHT||
-            (j->dedicated_packet&&(state==JOURNAL_PACKET_PMD_ACCEPTED||
-                state==JOURNAL_PACKET_WIRE_PENDING))){
+        }else if(j->dedicated_packet&&
+            (state==JOURNAL_PACKET_PMD_ACCEPTED||state==JOURNAL_PACKET_WIRE_PENDING)){
+            /* These states require a real external-send completion ledger.
+             * Until one exists, freeing could duplicate or lose a frame. */
+            REAP_ABORT(-EUCLEAN);
+        }else if(state==JOURNAL_INFLIGHT){
             if(j->seen||!identity_valid(r,&j->consumer)||!same_identity(&j->consumer,&j->owner)||
                 j->actor_generation!=j->consumer.generation) REAP_ABORT(-EUCLEAN);
             reclaim=dead_owner;

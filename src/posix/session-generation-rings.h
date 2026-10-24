@@ -112,6 +112,8 @@ int ker_generation_packet_commit(struct ker_generation_rings *rings,
 int ker_generation_packet_cancel(struct ker_generation_rings *rings,
     const struct ker_generation_identity *producer, uint32_t object_index,
     uint64_t lease_id);
+/* Reserved for a future external-send ledger. These remain fail-closed until
+ * the PMD and wire completion boundaries are journaled by the real adapter. */
 int ker_generation_packet_pmd_accepted(struct ker_generation_rings *rings,
     const struct ker_generation_identity *consumer, struct rte_mbuf *packet);
 int ker_generation_packet_wire_pending(struct ker_generation_rings *rings,
