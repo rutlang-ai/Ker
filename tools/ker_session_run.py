@@ -61,6 +61,9 @@ def run_session(args, api):
     if not guard.is_file():
         raise ValueError('ker-app is required beside ker-io-session')
     library = args.library.resolve(strict=True)
+    handoff_fd = getattr(args, 'test_live_handoff_fd', None)
+    if handoff_fd is not None and not getattr(args, 'generation_rings', False):
+        raise ValueError('test live handoff requires the generation-ring adapter')
     # Validation does not mutate file-description flags. The caller transfers
     # this endpoint; the launcher closes its own copy after the child starts.
     with socket.socket(fileno=os.dup(args.wire_fd)) as endpoint:
@@ -71,11 +74,11 @@ def run_session(args, api):
     worker = peer_worker = app = None
     peer_control_w = peer_wire_fd = -1
     peer_packet_worker = peer_packet_app = peer_mtu_worker = peer_mtu_app = None
-    handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     owned = {args.wire_fd}
     if handoff_fd is not None:
         owned.add(handoff_fd)
     metrics = {'stage': 'starting', 'app_started': False}
+    metrics['generation_rings'] = bool(getattr(args, 'generation_rings', False))
     completed = False
     received_signal = None
     previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -165,6 +168,7 @@ def run_session(args, api):
         peer_worker = subprocess.Popen([str(worker_path), '--role', 'secondary', '--paired-pmd', '--standby',
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', '1', '--process', str(args.process), '--packet-fd', str(peer_packet_worker.fileno()),
+            '--generation-rings',
             '--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
             pass_fds=(control_r, ticket_r, peer_packet_worker.fileno(), peer_wire_fd, peer_mtu_worker.fileno()),
@@ -309,6 +313,7 @@ def run_session(args, api):
             *(['--standby'] if args.standby else []),
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', str(args.generation), '--process', str(args.process),
+            *(['--generation-rings'] if getattr(args, 'generation_rings', False) else []),
             '--packet-fd', str(packet_worker.fileno()), '--wire-fd', str(args.wire_fd),
             '--mtu-fd', str(mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],

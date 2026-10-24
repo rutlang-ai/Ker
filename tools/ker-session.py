@@ -400,8 +400,8 @@ def main():
         parser.error('--test-generation-rings-replay requires --generation-rings')
     if args.test_directory_gate_fd is not None and args.test_directory_gate_fd < 0:
         parser.error('directory test gate fd must be nonnegative')
-    if args.generation_rings and args.action not in ('serve','lease'):
-        parser.error('--generation-rings is only supported by serve and lease')
+    if args.generation_rings and args.action not in ('serve','lease','run'):
+        parser.error('--generation-rings is only supported by serve, lease, and run')
     cleanup_masks = (args.generation_cleanup_rx_mask, args.generation_cleanup_tx_mask)
     if any(mask is not None for mask in cleanup_masks):
         if args.action != 'serve' or not args.generation_rings or any(mask is None for mask in cleanup_masks):
