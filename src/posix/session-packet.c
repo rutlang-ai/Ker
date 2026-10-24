@@ -62,7 +62,7 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet,
     struct ker_worker_exception *exception, const volatile sig_atomic_t *stopping,
     ker_session_heartbeat_fn heartbeat_tick, ker_session_heartbeat_fn heartbeat_pump,
-    void *heartbeat_context)
+    void *heartbeat_context, struct ker_session_packet_stats *stats)
 {
     struct rte_ring *rx = rte_ring_lookup(KER_SESSION_PACKET_RX), *tx = rte_ring_lookup(KER_SESSION_PACKET_TX);
     uint16_t actual_mtu;
@@ -76,6 +76,7 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     bool exception_reply_queued = false;
     bool rx_queued = false, rx_pending = false, rx_output = false, exception_pending = false;
     bool shared_native_pending = false, shared_native_queued = false;
+    bool handoff_requested=false;
     bool rx_fragment = false;
     uint64_t exception_to_native = 0, fragment_to_native = 0;
     uint64_t sent = 0, received = 0, to_wire = 0, from_wire = 0;
@@ -100,7 +101,35 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         int ready = poll(fds, 6, 0);
         if (ready < 0) { if (errno == EINTR) continue; status = -errno; break; }
         if (fds[5].revents) _Exit(125);
-        if (fds[0].revents) break;
+        if (fds[0].revents) {
+            char command=0;
+            ssize_t count=(fds[0].revents&POLLIN)?read(control,&command,1):0;
+            if (count==1 && command=='H') handoff_requested=true;
+            else break;
+        }
+        if (handoff_requested) {
+            bool local_idle=!tx_pending&&!tx_queued&&!tx_output&&!rx_pending&&!rx_queued&&!rx_output&&
+                !exception_pending&&!exception_reply_queued&&!shared_native_pending&&!shared_native_queued&&
+                !exception->session_busy&&!exception->session_tx_pending&&!exception->session_native_pending&&
+                !exception->session_to_native&&(!exception->session_phase||
+                atomic_load_explicit(exception->session_phase,memory_order_acquire)==0)&&
+                rte_ring_empty(rx)&&rte_ring_empty(tx)&&exception->pending&&rte_ring_empty(exception->pending);
+            bool inputs_idle=!(fds[2].revents&POLLIN)&&!(fds[3].revents&POLLIN)&&!(fds[4].revents&POLLIN);
+            if(local_idle&&inputs_idle) {
+                if (!alive(resident_pidfd) || atomic_load_explicit(owner,memory_order_acquire)!=expected_owner) _Exit(125);
+                if (heartbeat_pump) { int ack=heartbeat_pump(heartbeat_context); if (ack<0) { status=ack; break; } }
+                printf("KER_SESSION_HANDOFF_BOUNDARY {\"owner_key\":%llu,\"tx\":%llu,\"rx\":%llu,\"idle\":true}\n",
+                    (unsigned long long)expected_owner,(unsigned long long)sent,(unsigned long long)received); fflush(stdout);
+                if (rte_eth_stats_get(port,&after) || after.opackets-before.opackets!=sent ||
+                    after.ipackets-before.ipackets!=received) _Exit(125);
+                if (stats) *stats=(struct ker_session_packet_stats){.tx=sent,.rx=received,
+                    .to_wire=to_wire,.from_wire=from_wire,.exception_to_wire=exception_to_wire,
+                    .exception_from_wire=exception_from_wire,.exception_to_native=exception_to_native,
+                    .fragment_to_native=fragment_to_native,.exception_endpoint_owner_key=expected_owner,
+                    .retained=0,.status=0};
+                return 1;
+            }
+        }
         if (fds[1].revents & (POLLHUP | POLLERR | POLLNVAL)) break;
         if (fds[1].revents & POLLIN) {
             /* Only a pending worker heartbeat may produce data on this
@@ -247,6 +276,12 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     }
     if (rte_eth_stats_get(port, &after) || after.opackets - before.opackets != sent ||
         after.ipackets - before.ipackets != received) status = -EUCLEAN;
+    if (stats) *stats=(struct ker_session_packet_stats){.tx=sent,.rx=received,.to_wire=to_wire,
+        .from_wire=from_wire,.exception_to_wire=exception_to_wire,.exception_from_wire=exception_from_wire,
+        .exception_to_native=exception_to_native,.fragment_to_native=fragment_to_native,
+        .exception_endpoint_owner_key=expected_owner,
+        .retained=(unsigned)(tx_pending + tx_queued + tx_output + rx_pending + rx_queued + rx_output +
+            exception_pending + exception_reply_queued + exception->session_busy + shared_native_pending),.status=status};
     printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"exception_to_wire\":%llu,\"exception_from_wire\":%llu,\"exception_to_native\":%llu,\"fragment_to_native\":%llu,\"exception_endpoint_owner_key\":%llu,\"retained\":%u,\"status\":%d}\n",
         (unsigned long long)sent, (unsigned long long)received, (unsigned long long)to_wire,
         (unsigned long long)from_wire, (unsigned long long)exception_to_wire, (unsigned long long)exception_from_wire,

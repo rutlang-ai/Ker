@@ -6,9 +6,11 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "line %u: %s\n", __LINE__, #x); exit(1); } } while (0)
 int main(void)
 {
+    CHECK(sizeof(struct ker_session_message)==112 && sizeof(struct ker_session_probe)==184);
     struct ker_session_message identity = {.magic = KER_SESSION_MAGIC, .version = KER_SESSION_VERSION,
         .command = KER_SESSION_PROBE, .sequence = 1, .session = 123, .epoch = 9,
-        .slot = 2, .generation = 1, .process = 3, .status = -EINPROGRESS};
+        .slot = 2, .generation = 1, .process = 3, .status = -EINPROGRESS,
+        .tx_lease_id = UINT64_C(0x8000000000000042), .rx_lease_id = 0x123456789abcdef0};
     struct ker_session_probe request = {.identity = identity};
     CHECK(!ker_session_probe_check(&request, &identity, 0));
     CHECK(ker_session_probe_check(&request, &identity, 1) == -ESTALE);
@@ -17,7 +19,9 @@ int main(void)
         offsetof(struct ker_session_message, command), offsetof(struct ker_session_message, sequence),
         offsetof(struct ker_session_message, session), offsetof(struct ker_session_message, epoch),
         offsetof(struct ker_session_message, generation), offsetof(struct ker_session_message, process),
-        offsetof(struct ker_session_message, token), offsetof(struct ker_session_message, slot)};
+        offsetof(struct ker_session_message, token), offsetof(struct ker_session_message, slot),
+        offsetof(struct ker_session_message, capability), offsetof(struct ker_session_message, tx_lease_id),
+        offsetof(struct ker_session_message, rx_lease_id)};
     for (unsigned field = 0; field < sizeof(offsets) / sizeof(offsets[0]); field++) {
         struct ker_session_probe foreign = request;
         uint64_t value;

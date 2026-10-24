@@ -15,13 +15,15 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 8
+VERSION = 9
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
-          'generation', 'process', 'token', 'slot', 'capability', 'status')
-WIRE = struct.Struct('=11Qq')
+          'generation', 'process', 'token', 'slot', 'capability', 'status',
+          'tx_lease_id', 'rx_lease_id')
+WIRE = struct.Struct('=11Qq2Q')
 MASTER, RESERVE, RELEASE, STATUS, ATTACHED, PROBE, PMD_ACQUIRE, PMD_STATUS, EPOCH_LIVE = range(1, 10)
 DRAIN_MODE, HEARTBEAT, PEER_STATUS, COORDINATE_QUERY = 10, 11, 12, 13
 PEER_RESERVE, RING_DETACH, RING_DETACH_ARM = 14, 15, 16
+PMD_HANDOFF_PREPARE, PMD_HANDOFF_QUIESCED = 17, 18
 
 
 def packet(command, sequence=1, **values):

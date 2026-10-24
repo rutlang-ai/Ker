@@ -60,6 +60,24 @@ struct client {
     uint64_t detach_owner_epoch;
     struct ker_generation_cleanup_config detach_cleanup;
     uint64_t detach_peer_epoch, detach_sequence;
+    unsigned handoff_state, handoff_peer;
+    int handoff_peer_pidfd, handoff_peer_client_pidfd;
+    pid_t handoff_peer_pid;
+    unsigned handoff_peer_slot, handoff_peer_generation, handoff_peer_process;
+    uint64_t handoff_peer_epoch;
+    uint64_t handoff_capability, handoff_owner_key, handoff_tx_lease_id, handoff_rx_lease_id;
+    uint64_t handoff_started_ms;
+    uintptr_t handoff_tx_pointer, handoff_rx_pointer, handoff_exception_ring;
+    uintptr_t handoff_packet_rx_ring, handoff_packet_tx_ring;
+    int handoff_owner_pidfd, handoff_exception_fd;
+    pid_t handoff_owner_pid;
+    unsigned handoff_owner_slot, handoff_owner_generation, handoff_owner_process;
+    uint64_t handoff_owner_epoch;
+    unsigned handoff_exception_ifindex, handoff_ring_pmd;
+    unsigned handoff_rx_queues, handoff_tx_queues;
+    uint16_t handoff_port;
+    bool handoff_pmd_configured, pmd_parked;
+    uint64_t pmd_tx_lease_id, pmd_rx_lease_id;
     uint64_t peer_capability, detach_capability;
     unsigned detach_peer_slot, detach_rx_count, detach_tx_count;
     struct rte_mbuf *leased_packet;
@@ -90,6 +108,7 @@ static uint64_t next_epoch = 1;
 static unsigned ring_pmd;
 static uint16_t pmd_port;
 static bool pmd_configured;
+static unsigned pmd_rx_queues, pmd_tx_queues;
 #ifdef KER_SESSION_TEST_HOOKS
 static bool generation_empty_cleanup_test;
 static bool generation_test_corrupt_after_collection;
@@ -105,10 +124,30 @@ struct directory_test_header {
 static struct directory_test_header directory_test_original;
 #endif
 static int pmd_client = -1;
+static int handoff_client = -1, handoff_peer = -1;
+static unsigned handoff_state;
+static uint64_t handoff_capability, next_pmd_lease_id = 1;
+enum { HANDOFF_NONE, HANDOFF_PREPARED, HANDOFF_PARKED };
+#define KER_SESSION_HANDOFF_TIMEOUT_MS 5000U
 static struct rte_mbuf *pmd_packet, *pmd_rx_packet;
 static struct rte_ring *packet_rx, *packet_tx;
 static bool generation_rings_enabled;
 static struct ker_generation_rings *generation_rings;
+/* Live ownership transfer is proven only for the one-queue net_ring port
+ * created by ker_session_packet_create(). Other PMDs need their own stop and
+ * queue-ownership contract before they can use this operation. */
+static bool exact_handoff_ring_port(void)
+{
+    uint16_t named_port = UINT16_MAX;
+    struct rte_eth_dev_info info = {0};
+    return ring_pmd == 2 && pmd_configured && pmd_rx_queues == 1 && pmd_tx_queues == 1 && packet_rx && packet_tx &&
+        packet_rx != packet_tx && rte_eth_dev_count_avail() == 1 &&
+        !rte_eth_dev_get_port_by_name(KER_SESSION_PACKET_PORT, &named_port) &&
+        named_port == pmd_port && !rte_eth_dev_info_get(pmd_port, &info) &&
+        info.driver_name && !strcmp(info.driver_name, "net_ring") &&
+        rte_ring_lookup(KER_SESSION_PACKET_RX) == packet_rx &&
+        rte_ring_lookup(KER_SESSION_PACKET_TX) == packet_tx;
+}
 static bool generation_cleanup_equal(const struct ker_generation_cleanup_config *a,
     const struct ker_generation_cleanup_config *b)
 {
@@ -298,6 +337,8 @@ static void reclaim_pmd(unsigned index)
     rte_pktmbuf_free(pmd_packet);
     pmd_packet = NULL; pmd_client = -1;
     atomic_store_explicit(&directory->pmd_owner, 0, memory_order_release);
+    atomic_store_explicit(&directory->pmd_tx_lease_id, 0, memory_order_release);
+    atomic_store_explicit(&directory->pmd_rx_lease_id, 0, memory_order_release);
 }
 static void reclaim_control(unsigned index)
 {
@@ -645,6 +686,8 @@ static int generation_test_step(struct ker_generation_rings *rings,
 #endif
 static void drop_client(unsigned i)
 {
+    if (clients[i].handoff_state!=HANDOFF_NONE && clients[i].handoff_peer_pidfd>=0)
+        close(clients[i].handoff_peer_pidfd);
     for(unsigned s=1;s<KER_SESSION_SLOTS;s++)
         if(slots[s].peer_child==(int)i){
             slots[s].peer_capability=0;slots[s].peer_epoch=0;slots[s].peer_master=-1;
@@ -693,6 +736,8 @@ static void reap_clients(void)
     /* EOF is not proof that an EAL borrower has stopped. Retain its pidfd. */
     for (unsigned i = 0; i < CLIENTS; i++)
         if (clients[i].kind != UNUSED && dead(clients[i].pidfd)) {
+            if ((int)i == handoff_client && handoff_state != HANDOFF_NONE) _Exit(125);
+            if ((int)i == handoff_peer && handoff_state != HANDOFF_NONE) _Exit(125);
             if (clients[i].kind == MASTER) {
                 if (!release_slot(clients[i].slot)) drop_client(i);
             } else {
@@ -822,9 +867,11 @@ static int handle(unsigned i, const struct ker_session_message *request,
     if (request->magic != KER_SESSION_MAGIC || request->version != KER_SESSION_VERSION ||
         (request->status && request->command != KER_SESSION_PEER_STATUS) ||
         request->status < 0 || request->status > 1 || !request->sequence) return -EPROTO;
+    if (client->pmd_parked && request->command!=KER_SESSION_HEARTBEAT) return -EPERM;
     if (request->capability && request->command!=KER_SESSION_RESERVE &&
         request->command!=KER_SESSION_ATTACHED && request->command!=KER_SESSION_PEER_RESERVE &&
-        request->command!=KER_SESSION_RING_DETACH && request->command!=KER_SESSION_RING_DETACH_ARM)
+        request->command!=KER_SESSION_RING_DETACH && request->command!=KER_SESSION_RING_DETACH_ARM &&
+        request->command!=KER_SESSION_PMD_HANDOFF_QUIESCED)
         return -EINVAL;
     if (request->command == KER_SESSION_EPOCH_LIVE && client->kind == UNBOUND) {
         if (request->session || request->token || request->slot || request->generation || request->process || request->capability) return -EINVAL;
@@ -1115,10 +1162,156 @@ static int handle(unsigned i, const struct ker_session_message *request,
         atomic_store_explicit(lease, (uintptr_t)packet, memory_order_release);
         return 0;
     }
+    if (request->command == KER_SESSION_PMD_HANDOFF_PREPARE) {
+        if (ring_pmd != 2) return -EOPNOTSUPP;
+        if (!exact_handoff_ring_port()) return -EUCLEAN;
+        if (client->slot >= KER_SESSION_SLOTS) return -EPERM;
+        if (client->kind != ATTACHED || client->peer_only || !client->generation_admitted ||
+            request->session != directory->session || request->epoch != slots[client->slot].epoch ||
+            request->slot != client->slot || request->generation != client->generation ||
+            request->process != client->process || request->token != slots[client->slot].token || request->capability ||
+            client->slot>=KER_SESSION_SLOTS || pmd_client != (int)i || client->pmd_parked ||
+            handoff_state != HANDOFF_NONE || !pmd_packet || dead(client->pidfd) ||
+            atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) != pmd_key(client) ||
+            atomic_load_explicit(&directory->pmd_lease, memory_order_acquire) != (uintptr_t)pmd_packet ||
+            atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire) != (uintptr_t)pmd_rx_packet ||
+            request->tx_lease_id != client->pmd_tx_lease_id ||
+            request->rx_lease_id != client->pmd_rx_lease_id ||
+            atomic_load_explicit(&directory->pmd_exception_phase,memory_order_acquire)!=0) return -EPERM;
+        int target = -1;
+        for (unsigned k=0;k<CLIENTS;k++) {
+            struct client *candidate=&clients[k];
+            if (candidate->kind==ATTACHED && !candidate->peer_only && candidate->generation_admitted &&
+                candidate->slot==client->slot && candidate->generation==(client->generation^1U) &&
+                candidate->process==client->process && !dead(candidate->pidfd) &&
+                candidate->pid==(pid_t)slots[candidate->slot].worker_pid[candidate->generation][candidate->process]) {
+                if (target>=0) return -EUCLEAN;
+                target=(int)k;
+            }
+        }
+        if (target<0 || !atomic_load_explicit(&directory->pmd_tx_lease_id,memory_order_acquire) ||
+            (ring_pmd==2 && !atomic_load_explicit(&directory->pmd_rx_lease_id,memory_order_acquire))) return -ENOENT;
+        uint64_t capability=0;
+        int result=random_id(&capability);
+        if (result) return result;
+        int peer_pidfd=fcntl(clients[target].pidfd,F_DUPFD_CLOEXEC,3);
+        if(peer_pidfd<0)return -errno;
+        struct rte_ring *prepare_rx=rte_ring_lookup(KER_SESSION_PACKET_RX);
+        struct rte_ring *prepare_tx=rte_ring_lookup(KER_SESSION_PACKET_TX);
+        if(!prepare_rx||!prepare_tx||prepare_rx!=packet_rx||prepare_tx!=packet_tx||prepare_rx==prepare_tx||
+            !session_exception_keeper.pending ||
+            atomic_load_explicit(&directory->pmd_exception_phase,memory_order_acquire)!=0) {
+            close(peer_pidfd); return -EBUSY;
+        }
+        client->handoff_peer=(unsigned)target;
+        client->handoff_peer_pidfd=peer_pidfd; client->handoff_peer_client_pidfd=clients[target].pidfd;
+        client->handoff_peer_pid=clients[target].pid;
+        client->handoff_peer_slot=clients[target].slot; client->handoff_peer_generation=clients[target].generation;
+        client->handoff_peer_process=clients[target].process; client->handoff_peer_epoch=slots[clients[target].slot].epoch;
+        client->handoff_capability=capability; client->handoff_owner_key=pmd_key(client);
+        client->handoff_tx_pointer=(uintptr_t)pmd_packet; client->handoff_rx_pointer=(uintptr_t)pmd_rx_packet;
+        client->handoff_tx_lease_id=client->pmd_tx_lease_id; client->handoff_rx_lease_id=client->pmd_rx_lease_id;
+        client->handoff_owner_pidfd=client->pidfd; client->handoff_owner_pid=client->pid;
+        client->handoff_owner_slot=client->slot; client->handoff_owner_generation=client->generation;
+        client->handoff_owner_process=client->process; client->handoff_owner_epoch=slots[client->slot].epoch;
+        client->handoff_port=pmd_port;
+        client->handoff_pmd_configured=pmd_configured; client->handoff_ring_pmd=ring_pmd;
+        client->handoff_rx_queues=pmd_rx_queues; client->handoff_tx_queues=pmd_tx_queues;
+        client->handoff_exception_fd=session_exception_keeper.fd;
+        client->handoff_exception_ring=(uintptr_t)session_exception_keeper.pending;
+        client->handoff_packet_rx_ring=(uintptr_t)prepare_rx;
+        client->handoff_packet_tx_ring=(uintptr_t)prepare_tx;
+        client->handoff_exception_ifindex=atomic_load_explicit(&directory->exception_ifindex,memory_order_acquire);
+        client->handoff_started_ms=monotonic_ms();
+        handoff_client=(int)i; handoff_peer=target; handoff_state=HANDOFF_PREPARED;
+        handoff_capability=capability; client->handoff_state=HANDOFF_PREPARED;
+        reply->token=client->handoff_owner_key; reply->capability=capability;
+        reply->tx_lease_id=client->handoff_tx_lease_id; reply->rx_lease_id=client->handoff_rx_lease_id;
+        reply->epoch=client->handoff_peer_epoch; reply->slot=client->handoff_peer_slot;
+        reply->generation=client->handoff_peer_generation; reply->process=client->handoff_peer_process;
+        return 0;
+    }
+    if (request->command == KER_SESSION_PMD_HANDOFF_QUIESCED) {
+        if (ring_pmd != 2 || !exact_handoff_ring_port()) _Exit(125);
+        if (client->kind!=ATTACHED || client->peer_only || handoff_state!=HANDOFF_PREPARED ||
+            handoff_client!=(int)i || handoff_peer<0 || request->session!=directory->session ||
+            request->epoch!=slots[client->slot].epoch || request->slot!=client->slot ||
+            request->generation!=client->generation || request->process!=client->process ||
+            request->token!=client->handoff_owner_key || request->capability!=client->handoff_capability ||
+            request->tx_lease_id!=client->handoff_tx_lease_id || request->rx_lease_id!=client->handoff_rx_lease_id ||
+            dead(client->pidfd) || dead(clients[handoff_peer].pidfd) || pmd_client!=(int)i || !pmd_packet ||
+            !pmd_rx_packet ||
+            atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)!=client->handoff_owner_key ||
+            atomic_load_explicit(&directory->pmd_lease,memory_order_acquire)!=(uintptr_t)pmd_packet ||
+            atomic_load_explicit(&directory->pmd_rx_lease,memory_order_acquire)!=(uintptr_t)pmd_rx_packet ||
+            atomic_load_explicit(&directory->pmd_tx_lease_id,memory_order_acquire)!=client->handoff_tx_lease_id ||
+            atomic_load_explicit(&directory->pmd_rx_lease_id,memory_order_acquire)!=client->handoff_rx_lease_id ||
+            atomic_load_explicit(&directory->pmd_exception_phase,memory_order_acquire)!=0) return -EPERM;
+        if (monotonic_ms()-client->handoff_started_ms>KER_SESSION_HANDOFF_TIMEOUT_MS) _Exit(125);
+        struct client *target=&clients[handoff_peer];
+        if (target->kind!=ATTACHED || target->peer_only || !target->generation_admitted ||
+            target->slot!=client->handoff_peer_slot || target->generation!=client->handoff_peer_generation ||
+            target->process!=client->handoff_peer_process || target->pid!=client->handoff_peer_pid ||
+            target->pidfd!=client->handoff_peer_client_pidfd || slots[target->slot].epoch!=client->handoff_peer_epoch ||
+            dead(target->pidfd) || dead(client->handoff_peer_pidfd) ||
+            target->pid!=(pid_t)slots[target->slot].worker_pid[target->generation][target->process]) _Exit(125);
+        /* All authority-bearing checks precede the irreversible lease release. */
+        if (client->handoff_owner_pidfd!=client->pidfd || client->handoff_owner_pid!=client->pid ||
+            client->handoff_owner_slot!=client->slot || client->handoff_owner_generation!=client->generation ||
+            client->handoff_owner_process!=client->process || client->handoff_owner_epoch!=slots[client->slot].epoch ||
+            client->handoff_tx_pointer!=(uintptr_t)pmd_packet ||
+            client->handoff_rx_pointer!=(uintptr_t)pmd_rx_packet || client->handoff_port!=pmd_port ||
+            client->handoff_pmd_configured!=pmd_configured || client->handoff_ring_pmd!=ring_pmd ||
+            client->handoff_rx_queues!=pmd_rx_queues || client->handoff_tx_queues!=pmd_tx_queues ||
+            client->handoff_exception_fd!=session_exception_keeper.fd ||
+            client->handoff_exception_ring!=(uintptr_t)session_exception_keeper.pending ||
+            client->handoff_exception_ifindex!=atomic_load_explicit(&directory->exception_ifindex,memory_order_acquire) ||
+            !known_object(pmd_packet) || pmd_packet->pool!=message_pool || pmd_packet->nb_segs!=1 ||
+            rte_mbuf_refcnt_read(pmd_packet)!=1 || (pmd_packet->ol_flags&RTE_MBUF_F_EXTERNAL)) _Exit(125);
+        if (!known_object(pmd_rx_packet) || pmd_rx_packet==pmd_packet ||
+            pmd_rx_packet->pool!=message_pool || pmd_rx_packet->nb_segs!=1 ||
+            rte_mbuf_refcnt_read(pmd_rx_packet)!=1 || (pmd_rx_packet->ol_flags&RTE_MBUF_F_EXTERNAL) ||
+            atomic_load_explicit(&directory->pmd_rx_lease,memory_order_acquire)!=(uintptr_t)pmd_rx_packet ||
+            atomic_load_explicit(&directory->pmd_exception_phase,memory_order_acquire)!=0 ||
+            !session_exception_keeper.pending || !rte_ring_empty(session_exception_keeper.pending)) _Exit(125);
+        struct rte_ring *handoff_rx=rte_ring_lookup(KER_SESSION_PACKET_RX);
+        struct rte_ring *handoff_tx=rte_ring_lookup(KER_SESSION_PACKET_TX);
+        if (!handoff_rx || !handoff_tx || handoff_rx!=packet_rx || handoff_tx!=packet_tx || handoff_rx==handoff_tx ||
+            (uintptr_t)handoff_rx!=client->handoff_packet_rx_ring ||
+            (uintptr_t)handoff_tx!=client->handoff_packet_tx_ring ||
+            !rte_ring_empty(handoff_rx) || !rte_ring_empty(handoff_tx)) _Exit(125);
+        if (ring_pmd==2) {
+            atomic_store_explicit(&directory->pmd_rx_lease,0,memory_order_release);
+            atomic_store_explicit(&directory->pmd_rx_lease_id,0,memory_order_release);
+            rte_pktmbuf_reset(pmd_rx_packet); rte_pktmbuf_free(pmd_rx_packet); pmd_rx_packet=NULL;
+        }
+        atomic_store_explicit(&directory->pmd_lease,0,memory_order_release);
+        atomic_store_explicit(&directory->pmd_tx_lease_id,0,memory_order_release);
+        rte_pktmbuf_reset(pmd_packet); rte_pktmbuf_free(pmd_packet); pmd_packet=NULL; pmd_client=-1;
+        atomic_store_explicit(&directory->pmd_owner,0,memory_order_release);
+        handoff_state=HANDOFF_PARKED; client->handoff_state=HANDOFF_PARKED; client->pmd_parked=true;
+        reply->token=client->handoff_owner_key; reply->capability=client->handoff_capability;
+        reply->tx_lease_id=client->handoff_tx_lease_id; reply->rx_lease_id=client->handoff_rx_lease_id;
+        reply->epoch=client->handoff_peer_epoch; reply->slot=client->handoff_peer_slot;
+        reply->generation=client->handoff_peer_generation; reply->process=client->handoff_peer_process;
+        return 0;
+    }
     if (request->command == KER_SESSION_PMD_ACQUIRE) {
         if (!ring_pmd) return -EOPNOTSUPP;
-        if (client->kind != ATTACHED || client->peer_only || client->slot != s || client->generation != request->generation ||
+        if (client->kind != ATTACHED || client->peer_only || client->pmd_parked || client->slot != s || client->generation != request->generation ||
             client->process != request->process) return -EPERM;
+        if (handoff_state==HANDOFF_PREPARED) return -EBUSY;
+        if (handoff_state==HANDOFF_PARKED) {
+            if ((int)i!=handoff_peer || handoff_client<0 || dead(clients[handoff_client].pidfd) ||
+                handoff_peer!= (int)i || clients[i].pid!=clients[handoff_client].handoff_peer_pid ||
+                clients[i].pidfd!=clients[handoff_client].handoff_peer_client_pidfd ||
+                clients[i].slot!=clients[handoff_client].handoff_peer_slot ||
+                clients[i].generation!=clients[handoff_client].handoff_peer_generation ||
+                clients[i].process!=clients[handoff_client].handoff_peer_process ||
+                clients[i].slot>=KER_SESSION_SLOTS ||
+                slots[clients[i].slot].epoch!=clients[handoff_client].handoff_peer_epoch ||
+                dead(clients[handoff_client].handoff_peer_pidfd)) return -EPERM;
+        }
         if (pmd_client >= 0) return -EBUSY;
         struct rte_mbuf *packet = rte_pktmbuf_alloc(message_pool);
         if (!packet) return -ENOMEM;
@@ -1126,9 +1319,21 @@ static int handle(unsigned i, const struct ker_session_message *request,
         if (ring_pmd == 2 && !rx) { rte_pktmbuf_free(packet); return -ENOMEM; }
         /* Both original objects are privately journaled before the grant ACK. */
         pmd_client = (int)i; pmd_packet = packet; pmd_rx_packet = rx;
+        uint64_t tx_id=next_pmd_lease_id++,rx_id=ring_pmd==2?next_pmd_lease_id++:0;
+        if (!tx_id || (ring_pmd==2&&!rx_id) || !next_pmd_lease_id) _Exit(125);
+        atomic_store_explicit(&directory->pmd_rx_lease_id,rx_id,memory_order_release);
+        atomic_store_explicit(&directory->pmd_tx_lease_id,tx_id,memory_order_release);
         atomic_store_explicit(&directory->pmd_rx_lease, (uintptr_t)rx, memory_order_release);
         atomic_store_explicit(&directory->pmd_lease, (uintptr_t)packet, memory_order_release);
         atomic_store_explicit(&directory->pmd_owner, pmd_key(client), memory_order_release);
+        client->pmd_tx_lease_id=tx_id; client->pmd_rx_lease_id=rx_id;
+        reply->tx_lease_id=tx_id; reply->rx_lease_id=rx_id;
+        if (handoff_state==HANDOFF_PARKED) {
+            if (handoff_client<0 || (int)i!=handoff_peer || dead(clients[handoff_client].pidfd)) _Exit(125);
+            if(clients[handoff_client].handoff_peer_pidfd>=0)close(clients[handoff_client].handoff_peer_pidfd);
+            clients[handoff_client].handoff_peer_pidfd=-1;
+            handoff_state=HANDOFF_NONE; handoff_client=handoff_peer=-1; handoff_capability=0;
+        }
         return 0;
     }
     if (request->command == KER_SESSION_ATTACHED) {
@@ -1318,6 +1523,8 @@ static int primary(const char *path, int control)
     atomic_init(&directory->exception_ifindex, 0);
     atomic_init(&directory->pmd_lease, 0);
     atomic_init(&directory->pmd_rx_lease, 0);
+    atomic_init(&directory->pmd_tx_lease_id, 0);
+    atomic_init(&directory->pmd_rx_lease_id, 0);
     atomic_init(&directory->pmd_exception_phase, 0);
     atomic_init(&directory->pmd_exception_discarded, 0);
     for (unsigned s = 0; s < KER_SESSION_SLOTS; s++) {
@@ -1332,7 +1539,8 @@ static int primary(const char *path, int control)
             }
     }
     if (!atomic_is_lock_free(&directory->pmd_owner) || !atomic_is_lock_free(&directory->exception_ifindex) || !atomic_is_lock_free(&directory->pmd_lease) ||
-        !atomic_is_lock_free(&directory->pmd_rx_lease) || !atomic_is_lock_free(&directory->pmd_exception_phase) || !atomic_is_lock_free(&directory->pmd_exception_discarded) ||
+        !atomic_is_lock_free(&directory->pmd_rx_lease) || !atomic_is_lock_free(&directory->pmd_tx_lease_id) ||
+        !atomic_is_lock_free(&directory->pmd_rx_lease_id) || !atomic_is_lock_free(&directory->pmd_exception_phase) || !atomic_is_lock_free(&directory->pmd_exception_discarded) ||
         !atomic_is_lock_free(&directory->epoch[0]) ||
         !atomic_is_lock_free(&directory->peer_version[1][0][0]) ||
         !atomic_is_lock_free(&directory->peer_epoch[1][0][0]) ||
@@ -1368,7 +1576,7 @@ static int primary(const char *path, int control)
         }
         if (rte_eth_dev_get_port_by_name(ring_pmd == 2 ? KER_SESSION_PACKET_PORT : "net_ring_ker", &pmd_port) || rte_eth_dev_count_avail() != 1 ||
             rte_eth_dev_configure(pmd_port, 1, 1, &config)) goto cleanup;
-        pmd_configured = true;
+        pmd_rx_queues = 1; pmd_tx_queues = 1; pmd_configured = true;
         if (rte_eth_rx_queue_setup(pmd_port, 0, 128, SOCKET_ID_ANY, NULL, message_pool) ||
             rte_eth_tx_queue_setup(pmd_port, 0, 128, SOCKET_ID_ANY, NULL) || rte_eth_dev_start(pmd_port)) goto cleanup;
         if (ring_pmd == 2) {
@@ -1415,6 +1623,8 @@ static int primary(const char *path, int control)
     result = 0;
     while (!stopping) {
         reap_clients();
+        if (handoff_state!=HANDOFF_NONE && handoff_client>=0 &&
+            monotonic_ms()-clients[handoff_client].handoff_started_ms>KER_SESSION_HANDOFF_TIMEOUT_MS) _Exit(125);
 #ifdef KER_SESSION_TEST_HOOKS
         if (tc3_probe_gate && tc3_drain_requested) {
             int verified = verify_tc3_probe_barrier();
@@ -1551,6 +1761,11 @@ static int receive_exact(int fd, void *data, size_t length)
     return 0;
 }
 static void require_resident_alive(int resident);
+static bool message_equal_except_status(const struct ker_session_message *a,const struct ker_session_message *b)
+{
+    struct ker_session_message left=*a,right=*b; left.status=right.status=0;
+    return !memcmp(&left,&right,sizeof(left));
+}
 static int exchange(int fd, struct ker_session_message *message, int resident)
 {
     struct ker_session_message response, expected=*message;
@@ -1560,9 +1775,13 @@ static int exchange(int fd, struct ker_session_message *message, int resident)
     if (recv(fd, &response, sizeof(response), MSG_TRUNC) != sizeof(response)) return -EIO;
     require_resident_alive(resident);
     if (expected.command==KER_SESSION_ATTACHED) expected.capability=0;
-    if (memcmp(&response, &expected, sizeof(response) - sizeof(response.status)) ||
-        response.status > 0 || response.status < -4095) return -EPROTO;
-    *message = response;
+    if (response.status > 0 || response.status < -4095) return -EPROTO;
+    if (expected.command==KER_SESSION_PMD_ACQUIRE && !response.status) {
+        if (!response.tx_lease_id || (ring_pmd==2 ? !response.rx_lease_id : response.rx_lease_id!=0)) return -EPROTO;
+        expected.tx_lease_id=response.tx_lease_id; expected.rx_lease_id=response.rx_lease_id;
+    }
+    if (!message_equal_except_status(&response,&expected)) return -EPROTO;
+    *message=response;
     return (int)response.status;
 }
 static int exchange_exception_fd(int fd, struct ker_session_message *message, int resident, int *received_fd)
@@ -1591,9 +1810,15 @@ static int exchange_exception_fd(int fd, struct ker_session_message *message, in
         int *fds=(int *)CMSG_DATA(cmsg);
         for (size_t i=0;i<count;i++) { if (!descriptors++) *received_fd=fds[i]; else close(fds[i]); }
     }
+    bool identity_bad=false;
+    if (response.status>=-4095 && response.status<=0 && message->command==KER_SESSION_PMD_ACQUIRE && !response.status) {
+        struct ker_session_message expected=*message;
+        if(!response.tx_lease_id || !response.rx_lease_id) identity_bad=true;
+        expected.tx_lease_id=response.tx_lease_id; expected.rx_lease_id=response.rx_lease_id;
+        identity_bad|=!message_equal_except_status(&response,&expected);
+    } else identity_bad=!message_equal_except_status(&response,message);
     if (received != sizeof(response) || header.msg_flags & (MSG_TRUNC | MSG_CTRUNC) || ancillary_invalid ||
-        memcmp(&response, message, sizeof(response) - sizeof(response.status)) ||
-        response.status > 0 || response.status < -4095) {
+        identity_bad || response.status > 0 || response.status < -4095) {
         if (*received_fd >= 0) { close(*received_fd); *received_fd=-1; }
         return -EPROTO;
     }
@@ -1643,12 +1868,67 @@ static int worker_request(int fd, const struct ker_session_message *identity,
         return -EPROTO;
     if (response->status) return (int)response->status;
     if (command != KER_SESSION_PEER_STATUS && command != KER_SESSION_RING_DETACH &&
-        memcmp(response, &request, sizeof(request) - sizeof(request.status))) return -EPROTO;
+        !message_equal_except_status(response,&request)) return -EPROTO;
     if (command == KER_SESSION_PEER_STATUS &&
         (!response->epoch || response->generation >= KER_SESSION_GENERATIONS || response->token > 1)) return -EPROTO;
     if (command == KER_SESSION_RING_DETACH && (response->token>1 ||
         (response->token && (!response->epoch || !response->generation)) ||
         (!response->token && (response->epoch || response->generation)))) return -EPROTO;
+    return 0;
+}
+static int worker_handoff_request(int fd,const struct ker_session_message *identity,
+    uint64_t *sequence,int resident,uint64_t command,uint64_t owner_key,uint64_t capability,
+    uint64_t tx_lease_id,uint64_t rx_lease_id,struct ker_session_message *response)
+{
+    struct ker_session_message request=*identity;
+    request.command=command; request.sequence=++*sequence; request.status=0;
+    request.token=command==KER_SESSION_PMD_HANDOFF_PREPARE?identity->token:owner_key;
+    request.capability=capability; request.tx_lease_id=tx_lease_id; request.rx_lease_id=rx_lease_id;
+    require_resident_alive(resident);
+    if(send(fd,&request,sizeof(request),MSG_NOSIGNAL)!=sizeof(request))return -EIO;
+    require_resident_alive(resident);
+    if(recv(fd,response,sizeof(*response),MSG_TRUNC)!=sizeof(*response))return -EIO;
+    require_resident_alive(resident);
+    if(response->magic!=request.magic || response->version!=request.version ||
+        response->command!=request.command || response->sequence!=request.sequence ||
+        response->session!=request.session || response->epoch!=identity->epoch ||
+        response->slot!=identity->slot || response->generation!=(identity->generation^1U) ||
+        response->process!=identity->process) return -EPROTO;
+    if(response->status) return (int)response->status;
+    if(response->token!=owner_key ||
+        (command==KER_SESSION_PMD_HANDOFF_PREPARE ? !response->capability : response->capability!=capability) ||
+        response->tx_lease_id!=tx_lease_id || response->rx_lease_id!=rx_lease_id) return -EPROTO;
+    return 0;
+}
+static int parked_owner_wait(int control,int fd,int resident,
+    const struct ker_session_message *identity,uint64_t *sequence,
+    struct worker_heartbeat *heartbeat)
+{
+    printf("KER_SESSION_PMD_PARKED {\"pid\":%ld,\"owner_key\":%llu}\n",
+        (long)getpid(),(unsigned long long)atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)); fflush(stdout);
+    while(!stopping) {
+        require_resident_alive(resident);
+        int tick=heartbeat_tick(fd,identity,sequence,resident,heartbeat);
+        if(tick<0)return tick;
+        if(!alive(resident))_Exit(125);
+        struct pollfd waiters[]={{.fd=control,.events=POLLIN},{.fd=fd,.events=POLLIN},{.fd=resident,.events=POLLIN}};
+        int ready=poll(waiters,3,100);
+        if(ready<0){if(errno==EINTR)continue;return -errno;}
+        if(waiters[2].revents)_Exit(125);
+        if(waiters[1].revents) {
+            int ack=heartbeat->pending?pump_worker_heartbeat(fd,heartbeat,resident):-EPROTO;
+            if(ack<=0 || heartbeat->pending)return ack<0?ack:-EPROTO;
+        }
+        if(waiters[0].revents) {
+            if(waiters[0].revents&(POLLHUP|POLLERR|POLLNVAL))return 0;
+            if(waiters[0].revents&POLLIN) {
+                char command; ssize_t count=read(control,&command,1);
+                if(count==0)return 0;
+                if(count<0&&errno==EINTR)continue;
+                return -EPROTO; /* Parked workers accept no device/control commands. */
+            }
+        }
+    }
     return 0;
 }
 #ifdef KER_SESSION_TEST_HOOKS
@@ -1753,7 +2033,7 @@ static int pump_worker_heartbeat(int fd, struct worker_heartbeat *heartbeat, int
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
     require_resident_alive(resident);
     if (n != sizeof(reply) || reply.status ||
-        memcmp(&reply, &heartbeat->request, sizeof(reply) - sizeof(reply.status))) return -EPROTO;
+        !message_equal_except_status(&reply,&heartbeat->request)) return -EPROTO;
     heartbeat->pending = false;
     heartbeat->last_ack_ms = monotonic_ms();
     return 1;
@@ -1956,6 +2236,8 @@ static int acquire_pmd(int fd, struct ker_session_message *identity, int residen
     uint64_t key = 1 + (identity->slot * KER_SESSION_GENERATIONS + identity->generation) * KER_SESSION_PROCESSES + identity->process;
     return !known_object(*packet) || (*packet)->pool != pool || *packet == control_packet ||
         atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) != key ||
+        identity->tx_lease_id!=atomic_load_explicit(&directory->pmd_tx_lease_id,memory_order_acquire) ||
+        identity->rx_lease_id!=atomic_load_explicit(&directory->pmd_rx_lease_id,memory_order_acquire) ||
         ((ring_pmd == 2) != (atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire) != 0)) ? -EUCLEAN : 0;
 }
 /* Use the resident's serialized snapshot; separately reading the owner key and
@@ -2303,11 +2585,77 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         struct rte_mbuf *rx_packet = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire);
         if (!known_object(rx_packet) || rx_packet == device_packet || rx_packet == leased_packet || rx_packet->pool != pool) goto cleanup;
         uint64_t key = 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
-        result = ker_session_packet_loop(pmd_port, packet_fd, wire_fd, mtu_fd, control, fd, peer,
-            &directory->pmd_owner, key, device_packet, rx_packet,
-            &exception_bridge, &stopping, service_worker_heartbeat,
-            pump_worker_heartbeat_context, &heartbeat_context) ? 1 : 0;
-        goto cleanup;
+        struct ker_session_packet_stats packet_stats={0};
+        int packet_result=ker_session_packet_loop(pmd_port,packet_fd,wire_fd,mtu_fd,control,fd,peer,
+            &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
+            service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,&packet_stats);
+        if(packet_result<0){result=1;goto cleanup;}
+        if(packet_result==1) {
+            /* Keep the lease IDs returned by the original grant. A late
+             * shared-directory read could instead observe a successor lease. */
+            uint64_t tx_id=message.tx_lease_id;
+            uint64_t rx_id=message.rx_lease_id;
+            struct ker_session_message prepared;
+            int handoff=worker_handoff_request(fd,&message,&message.sequence,peer,
+                KER_SESSION_PMD_HANDOFF_PREPARE,key,0,tx_id,rx_id,&prepared);
+            if(handoff){
+                if(handoff==-EBUSY||handoff==-ENOENT||handoff==-EPERM){
+                    int resumed=ker_session_packet_loop(pmd_port,packet_fd,wire_fd,mtu_fd,control,fd,peer,
+                        &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
+                        service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,&packet_stats);
+                    if(resumed<0){result=1;goto cleanup;}
+                    if(resumed==1)_Exit(125); /* A second transfer is not an implicit retry. */
+                    printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"exception_to_wire\":%llu,\"exception_from_wire\":%llu,\"exception_to_native\":%llu,\"fragment_to_native\":%llu,\"exception_endpoint_owner_key\":%llu,\"retained\":%u,\"status\":0}\n",
+                        (unsigned long long)packet_stats.tx,(unsigned long long)packet_stats.rx,
+                        (unsigned long long)packet_stats.to_wire,(unsigned long long)packet_stats.from_wire,
+                        (unsigned long long)packet_stats.exception_to_wire,(unsigned long long)packet_stats.exception_from_wire,
+                        (unsigned long long)packet_stats.exception_to_native,(unsigned long long)packet_stats.fragment_to_native,
+                        (unsigned long long)key,packet_stats.retained); fflush(stdout);
+                    result=0;goto cleanup;
+                }
+                _Exit(125);
+            }
+            uint64_t owner_key=prepared.token,capability=prepared.capability;
+            unsigned successor_slot=(unsigned)prepared.slot,successor_generation=(unsigned)prepared.generation;
+            tx_id=prepared.tx_lease_id; rx_id=prepared.rx_lease_id;
+            if(owner_key!=key||!capability||!tx_id||(ring_pmd==2&&!rx_id)||
+                atomic_load_explicit(&directory->pmd_lease,memory_order_acquire)!=(uintptr_t)device_packet||
+                (ring_pmd==2&&atomic_load_explicit(&directory->pmd_rx_lease,memory_order_acquire)!=(uintptr_t)rx_packet))_Exit(125);
+            if(exception_bridge.session_busy||exception_bridge.session_tx_pending||
+                exception_bridge.session_native_pending||exception_bridge.session_to_native||
+                atomic_load_explicit(&directory->pmd_exception_phase,memory_order_acquire)!=0||
+                !exception_bridge.pending||!rte_ring_empty(exception_bridge.pending))_Exit(125);
+            if(ker_worker_exception_close(&exception_bridge))_Exit(125);
+            close(wire_fd); close(mtu_fd); wire_fd=mtu_fd=-1;
+            device_packet=NULL; rx_packet=NULL; exception_fd=-1;
+            struct ker_session_message quiesced;
+            if(worker_handoff_request(fd,&message,&message.sequence,peer,
+                KER_SESSION_PMD_HANDOFF_QUIESCED,owner_key,capability,tx_id,rx_id,&quiesced) ||
+                quiesced.slot!=successor_slot || quiesced.generation!=successor_generation ||
+                quiesced.process!=message.process || quiesced.epoch!=message.epoch)_Exit(125);
+            uint64_t current_owner=atomic_load_explicit(&directory->pmd_owner,memory_order_acquire);
+            uint64_t successor_key=1+(successor_slot*KER_SESSION_GENERATIONS+successor_generation)*KER_SESSION_PROCESSES+message.process;
+            uint64_t current_tx_id=atomic_load_explicit(&directory->pmd_tx_lease_id,memory_order_acquire);
+            uint64_t current_rx_id=atomic_load_explicit(&directory->pmd_rx_lease_id,memory_order_acquire);
+            if(current_owner==key || (current_owner && current_owner!=successor_key) ||
+                (!current_owner && (current_tx_id || current_rx_id ||
+                    atomic_load_explicit(&directory->pmd_lease,memory_order_acquire) ||
+                    atomic_load_explicit(&directory->pmd_rx_lease,memory_order_acquire))) ||
+                (current_owner==successor_key && (!current_tx_id || current_tx_id==tx_id ||
+                    !current_rx_id || current_rx_id==rx_id)))_Exit(125);
+            printf("KER_SESSION_PMD_PARKED {\"pid\":%ld,\"old_owner_key\":%llu,\"successor_slot\":%u,\"successor_generation\":%u,\"current_owner_key\":%llu}\n",
+                (long)getpid(),(unsigned long long)key,successor_slot,successor_generation,
+                (unsigned long long)atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)); fflush(stdout);
+            if(parked_owner_wait(control,fd,peer,&message,&message.sequence,&heartbeat))_Exit(125);
+            printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"exception_to_wire\":%llu,\"exception_from_wire\":%llu,\"exception_to_native\":%llu,\"fragment_to_native\":%llu,\"exception_endpoint_owner_key\":%llu,\"retained\":0,\"status\":0}\n",
+                (unsigned long long)packet_stats.tx,(unsigned long long)packet_stats.rx,
+                (unsigned long long)packet_stats.to_wire,(unsigned long long)packet_stats.from_wire,
+                (unsigned long long)packet_stats.exception_to_wire,(unsigned long long)packet_stats.exception_from_wire,
+                (unsigned long long)packet_stats.exception_to_native,(unsigned long long)packet_stats.fragment_to_native,
+                (unsigned long long)key); fflush(stdout);
+            result=0; goto cleanup;
+        }
+        result=0; goto cleanup;
     }
     uint64_t device_sequence = 0;
     uint64_t probe_sequence = 0;
