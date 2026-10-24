@@ -65,6 +65,29 @@ def main():
                 history.extend(chunk)
             return bytes(history)
 
+        def stderr_marker_count(process, marker, count, timeout=10):
+            history = stderr_history.setdefault(process, bytearray())
+            needle = marker.encode()
+            deadline = time.monotonic() + timeout
+            while history.count(needle) < count:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError('worker stderr marker count timed out: ' + marker +
+                                       ' expected=' + str(count) +
+                                       ' observed=' + str(history.count(needle)))
+                readable, _, _ = select.select([process.stderr], [], [], remaining)
+                if not readable:
+                    raise RuntimeError('worker stderr marker count timed out: ' + marker +
+                                       ' expected=' + str(count) +
+                                       ' observed=' + str(history.count(needle)))
+                chunk = os.read(process.stderr.fileno(), 4096)
+                if not chunk:
+                    raise RuntimeError('worker stderr closed before marker count: ' + marker +
+                                       ' expected=' + str(count) +
+                                       ' observed=' + str(history.count(needle)))
+                history.extend(chunk)
+            return bytes(history)
+
         def launch(action, *extra, ring_pmd=True, extra_env=None):
             options = common if ring_pmd else common[:-1]
             process = subprocess.Popen([sys.executable, str(args.tool), action, *options, *extra],
@@ -208,12 +231,24 @@ def main():
             resume_resident()
             sample1, _ = round_sample(zero, 0, False, one['epoch'])
             sample2, _ = round_sample(zero, 0, False, one['epoch'])
-            zero_errors = bytes(stderr_history[zero])
-            require(sample1['owner_slot'] == sample2['owner_slot'] == one['slot'] and
-                    zero_errors.count(b'KER_SESSION_TEST_DQ_PROBE_PMD_ACQUIRE') == 2 and
-                    status() == before_zero_status and query(api.PMD_STATUS) == before_zero_owner and
-                    zero.poll() is None,
-                    'two consumed zero-count P requests were reordered or changed the live PMD owner/pool')
+            zero_errors = stderr_marker_count(zero, 'KER_SESSION_TEST_DQ_PROBE_PMD_ACQUIRE', 2)
+            require(sample1['owner_slot'] == one['slot'] and sample2['owner_slot'] == one['slot'],
+                    'zero-count P samples changed owner slot: expected=' + str(one['slot']) +
+                    ' sample1=' + str(sample1['owner_slot']) + ' sample2=' + str(sample2['owner_slot']))
+            acquire_count = zero_errors.count(b'KER_SESSION_TEST_DQ_PROBE_PMD_ACQUIRE')
+            require(acquire_count == 2,
+                    'zero-count P requests did not each reach PMD acquire: count=' + str(acquire_count))
+            after_zero_status = status()
+            require(after_zero_status == before_zero_status,
+                    'zero-count P requests changed resident status: before=' + repr(before_zero_status) +
+                    ' after=' + repr(after_zero_status))
+            after_zero_owner = query(api.PMD_STATUS)
+            require(after_zero_owner == before_zero_owner,
+                    'zero-count P requests changed PMD owner: before=' + repr(before_zero_owner) +
+                    ' after=' + repr(after_zero_owner))
+            require(zero.poll() is None,
+                    'zero-count standby exited before both ordered P outcomes were checked: ' +
+                    str(zero.returncode))
             print('PASS: pending heartbeat with pipelined PP produced two ordered PROBED/PMD_SAMPLED outcomes without changing ownership', flush=True)
             zero.stdin.write(b'x'); zero.stdin.flush()
             output, errors = zero.communicate(timeout=15)
