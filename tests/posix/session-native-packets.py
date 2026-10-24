@@ -597,25 +597,43 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 require(all(marker in runner_text for marker in (
                     'KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING',
                     'KER_SESSION_HANDOFF_BOUNDARY',
-                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DEFERRED',
                     'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED',
                     'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED',
                     'KER_SESSION_HANDOFF_BOUNDARY')),
                     'pending ACK, PREPARE, and queued H were not observed: ' + runner_text)
                 marker_lines = runner_text.splitlines()
-                marker_positions = [next(i for i, line in enumerate(marker_lines) if line.startswith(marker))
-                    for marker in ('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING', 'KER_SESSION_HANDOFF_BOUNDARY',
-                        'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DEFERRED',
-                        'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED',
-                        'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED')]
+                pending_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING ')]
+                drained_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED ')]
+                deferred_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_HEARTBEAT_DEFERRED ')]
                 boundary_positions = [i for i, line in enumerate(marker_lines)
                     if line.startswith('KER_SESSION_HANDOFF_BOUNDARY ')]
+                rejected_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED ')]
                 resumed_positions = [i for i, line in enumerate(marker_lines)
                     if line.startswith('KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED ')]
-                require(len(boundary_positions) == 2 and len(resumed_positions) == 2 and
-                    marker_positions[0] < marker_positions[1] < marker_positions[2] < marker_positions[3] <
-                    marker_positions[4] < boundary_positions[1] < resumed_positions[1],
+                packet_ready_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_PACKET_READY ')]
+                rejected_records = [json.loads(marker_lines[i].split(' ', 1)[1]) for i in rejected_positions]
+                require(len(pending_positions) == 1 and len(drained_positions) == 1 and
+                    len(boundary_positions) == 2 and len(rejected_positions) == 2 and
+                    len(resumed_positions) == 2 and
+                    pending_positions[0] < boundary_positions[0] < drained_positions[0] <
+                    rejected_positions[0] < resumed_positions[0] < boundary_positions[1] and
+                    any(resumed_positions[0] < ready < boundary_positions[1] for ready in packet_ready_positions) and
+                    boundary_positions[1] < rejected_positions[1] < resumed_positions[1] and
+                    all(record.get('same_replay') is True for record in rejected_records) and
+                    all(json.loads(marker_lines[i].split(' ', 1)[1]).get('status') ==
+                        {'prepare-enoent': -errno.ENOENT, 'prepare-ebusy': -errno.EBUSY,
+                         'prepare-eperm': -errno.EPERM}[mode] for i in resumed_positions) and
+                    not any(line.startswith(('KER_SESSION_TEST_HANDOFF_PREPARED ',
+                        'KER_SESSION_PMD_PARKED ', 'KER_SESSION_PACKET_DONE ')) for line in marker_lines),
                     'pending ACK, first PREPARE, and pipelined second H were not serviced in order: ' + runner_text)
+                require(all(any(boundary < deferred < drained for boundary in boundary_positions
+                                for drained in drained_positions) for deferred in deferred_positions),
+                    'HEARTBEAT_DEFERRED diagnostic fell outside a handoff boundary/drain interval: ' + runner_text)
                 connection = api.Connection(control_path)
                 try:
                     rejected_census = connection.request(api.STATUS)
