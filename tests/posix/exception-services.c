@@ -43,21 +43,21 @@ static int termination_pending(void)
 {
     sigset_t pending;
     if(stop_requested)return 1;
-    if(sigpending(&pending)<0)return -1;
+    if(sigpending(&pending)<0)return -errno;
     int member=sigismember(&pending,SIGTERM);
-    return member<0?-1:member;
+    return member<0?-errno:member;
 }
 
 static int wait_for_udp_trigger(const sigset_t *wait_mask)
 {
     for(;;){
         int terminating=termination_pending();
-        if(terminating<0)return -1;
+        if(terminating<0)return terminating;
         if(terminating)return 0;
         if(udp_trigger_requested)return 1;
         int result=sigsuspend(wait_mask);
         if(result<0&&errno==EINTR)continue;
-        return -1;
+        return result<0?-errno:-EIO;
     }
 }
 
