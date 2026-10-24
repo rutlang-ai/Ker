@@ -266,8 +266,7 @@ static size_t layout_size(uint16_t ports, uint16_t queues, uint32_t journal_coun
 {
     size_t n = coordinates(ports, queues), j = journal_count;
     if (n > SIZE_MAX / sizeof(struct ring_stats_shared) || n > SIZE_MAX / sizeof(struct ker_generation_identity) ||
-        n > SIZE_MAX / sizeof(_Atomic unsigned char) || j > SIZE_MAX / sizeof(struct journal_entry) ||
-        packet_object_count>SIZE_MAX/sizeof(uintptr_t)) return 0;
+        n > SIZE_MAX / sizeof(_Atomic unsigned char) || j > SIZE_MAX / sizeof(struct journal_entry)) return 0;
     size_t off = ALIGN_UP(sizeof(struct ring_directory), _Alignof(struct ring_stats_shared));
     off += n * sizeof(struct ring_stats_shared); off = ALIGN_UP(off, _Alignof(struct ker_generation_identity));
     off += n * sizeof(struct ker_generation_identity); off += n * sizeof(_Atomic unsigned char);
@@ -276,7 +275,8 @@ static size_t layout_size(uint16_t ports, uint16_t queues, uint32_t journal_coun
     off = ALIGN_UP(off, _Alignof(struct journal_entry));
     if(j>(SIZE_MAX-off)/sizeof(struct journal_entry))return 0;
     off+=j*sizeof(struct journal_entry);off=ALIGN_UP(off,_Alignof(uintptr_t));
-    if(packet_object_count>(SIZE_MAX-off)/sizeof(uintptr_t))return 0;
+    /* Include the current offset so this checks packet-table multiplication too. */
+    if (packet_object_count > (SIZE_MAX - off) / sizeof(uintptr_t)) return 0;
     return off+(size_t)packet_object_count*sizeof(uintptr_t);
 }
 static int ring_name(char *name, size_t size, const char *dir, uint16_t p, uint16_t q, uint32_t g)
