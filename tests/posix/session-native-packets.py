@@ -2,16 +2,19 @@
 """Original Linux TCP/UDP peers over a real secondary directional ring PMD."""
 import argparse
 import ctypes
+import errno
 import fcntl
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shlex
 import signal
 import selectors
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -27,13 +30,255 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
-def line(process, timeout=25):
+def dpdk_mp_socket_paths(runtime_directory, file_prefix):
+    """Return pinned primary/maximum-secondary paths from DPDK's EAL formula."""
+    require(isinstance(file_prefix, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', file_prefix) and
+        file_prefix not in ('.', '..'),
+        'DPDK file prefix must be a bounded ASCII-safe single path component')
+    primary = Path(runtime_directory) / 'dpdk' / file_prefix / 'mp_socket'
+    # Pinned eal_common_proc.c appends _<decimal pid>_<hex rte_rdtsc()>.
+    # Bound pid_t by signed 32-bit and the uint64 TSC suffix by 16 hex digits.
+    secondary = Path(str(primary) + '_2147483647_ffffffffffffffff')
+    return primary, secondary
+
+
+def prepare_handoff_hugepage_dir(runtime_directory, huge_parent, file_prefix):
+    primary_socket, secondary_socket = validate_dpdk_mp_socket_paths(runtime_directory, file_prefix)
+    directory_name = file_prefix + '-h'
+    parent_fd, directory_fd, parent_identity, directory_identity = \
+        create_handoff_hugepage_dir(huge_parent, directory_name)
+    return primary_socket, secondary_socket, directory_name, parent_fd, directory_fd, \
+        parent_identity, directory_identity
+
+
+def validate_dpdk_mp_socket_paths(runtime_directory, file_prefix):
+    primary, secondary = dpdk_mp_socket_paths(runtime_directory, file_prefix)
+    limit = 108  # Linux sockaddr_un.sun_path includes its terminating NUL.
+    lengths = (len(os.fsencode(primary)), len(os.fsencode(secondary)))
+    require(max(lengths) < limit,
+        f'pinned DPDK multiprocess socket path exceeds sun_path: primary={lengths[0]} '
+        f'bytes secondary_worst_case={lengths[1]} bytes limit={limit - 1}')
+    return primary, secondary
+
+
+def eal_mp_channel_errors(*streams):
+    patterns = (
+        re.compile(r'socket path too long', re.IGNORECASE),
+        re.compile(r'failed to init mp channel', re.IGNORECASE),
+        re.compile(r'failed to send to .*due to bad file descriptor', re.IGNORECASE),
+        re.compile(r'fail to send request .*:bus_vdev_mp', re.IGNORECASE),
+        re.compile(r'vdev_scan\(\): failed to request vdev from primary', re.IGNORECASE),
+    )
+    return [line for stream in streams for line in stream.splitlines()
+        if any(pattern.search(line) for pattern in patterns)]
+
+
+def require_healthy_eal_mp_channel(profile, *streams):
+    errors = eal_mp_channel_errors(*streams)
+    require(not errors, f'{profile} EAL multiprocess channel failed: {errors!r}')
+
+
+def require_live_eal_mp_channels(profile, primary_stderr, runner_stderr,
+                                 primary_socket, owner_pid, peer_pid):
+    require_healthy_eal_mp_channel(profile, primary_stderr, runner_stderr)
+    primary_base = str(primary_socket)
+    primary_lines = [line for line in primary_stderr.splitlines()
+        if line.startswith('EAL: Multi-process socket ')]
+    require(primary_lines == ['EAL: Multi-process socket ' + primary_base],
+        f'{profile} primary did not bind the exact EAL multiprocess endpoint: {primary_lines!r}')
+    prefix = re.compile(r'^EAL: Multi-process socket (.+)$')
+    suffix = re.compile(r'^' + re.escape(primary_base) + r'_([0-9]+)_([0-9a-fA-F]{1,16})$')
+    paths = []
+    for line in runner_stderr.splitlines():
+        match = prefix.fullmatch(line)
+        if match:
+            paths.append(match.group(1))
+    identities = []
+    path_by_pid = {}
+    for path in paths:
+        match = suffix.fullmatch(path)
+        require(match is not None,
+            f'{profile} secondary used an unexpected multiprocess socket path: {path!r}')
+        pid = int(match.group(1))
+        identities.append(pid)
+        path_by_pid[pid] = path
+    require(len(identities) == 2 and sorted(identities) == sorted((owner_pid, peer_pid)),
+        f'{profile} did not initialize exactly the owner and peer EAL channels: {paths!r}; '
+        f'expected pids={(owner_pid, peer_pid)!r}')
+    print('KER_SESSION_HANDOFF_EAL_CHANNELS ' + json.dumps(dict(profile=profile,
+        primary=primary_base, owner=dict(pid=owner_pid, socket=path_by_pid[owner_pid]),
+        peer=dict(pid=peer_pid, socket=path_by_pid[peer_pid])), sort_keys=True), flush=True)
+    return paths
+
+
+def tap_interfaces_for_process(pid):
+    """Read the kernel-reported interface for every original TUN file description."""
+    names = []
+    for path in Path(f'/proc/{pid}/fdinfo').iterdir():
+        try:
+            information = path.read_text()
+        except FileNotFoundError:
+            continue
+        names.extend(line.split(':', 1)[1].strip() for line in information.splitlines()
+            if line.startswith('iff:'))
+    return names
+
+
+def create_handoff_hugepage_dir(parent, name):
+    parent = Path(parent).resolve(strict=True)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    directory_fd = -1
+    created = False
+    try:
+        parent_stat = os.fstat(parent_fd)
+        parent_path_stat = os.stat(parent, follow_symlinks=False)
+        require((parent_stat.st_dev, parent_stat.st_ino) ==
+            (parent_path_stat.st_dev, parent_path_stat.st_ino) and
+            stat.S_ISDIR(parent_stat.st_mode), 'hugepage parent path changed during open')
+        parent_vfs = os.fstatvfs(parent_fd)
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        created = True
+        directory_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+            os.O_CLOEXEC, dir_fd=parent_fd)
+        os.fchmod(directory_fd, 0o700)
+        directory_stat = os.fstat(directory_fd)
+        directory_vfs = os.fstatvfs(directory_fd)
+        entry_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        require(stat.S_ISDIR(directory_stat.st_mode) and directory_stat.st_uid == os.geteuid() and
+            stat.S_IMODE(directory_stat.st_mode) == 0o700 and
+            directory_stat.st_dev == parent_stat.st_dev and
+            (directory_stat.st_dev, directory_stat.st_ino) == (entry_stat.st_dev, entry_stat.st_ino) and
+            int(directory_vfs.f_bsize or directory_vfs.f_frsize) ==
+                int(parent_vfs.f_bsize or parent_vfs.f_frsize),
+            'private handoff hugepage directory has unexpected owner, mode, device, or page class')
+        require(not os.listdir(directory_fd), 'new private hugepage directory was not empty')
+        page_class = int(directory_vfs.f_bsize or directory_vfs.f_frsize)
+        return parent_fd, directory_fd, (parent_stat.st_dev, parent_stat.st_ino), \
+            (directory_stat.st_dev, directory_stat.st_ino, directory_stat.st_uid,
+                stat.S_IMODE(directory_stat.st_mode), page_class)
+    except BaseException:
+        if directory_fd >= 0:
+            try:
+                directory_stat = os.fstat(directory_fd)
+                entry_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if created and (directory_stat.st_dev, directory_stat.st_ino) == \
+                        (entry_stat.st_dev, entry_stat.st_ino) and not os.listdir(directory_fd):
+                    os.close(directory_fd)
+                    directory_fd = -1
+                    os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            try: os.close(directory_fd)
+            except OSError: pass
+        try: os.close(parent_fd)
+        except OSError: pass
+        raise
+
+
+def _private_hugepage_entries(directory_fd, file_prefix, expected_dev, expected_uid):
+    pattern = re.compile(re.escape(file_prefix) + r'map_[0-9]+(?:_[0-9]+)?')
+    names = sorted(os.listdir(directory_fd))
+    invalid = [name for name in names if not pattern.fullmatch(name)]
+    require(not invalid, 'private hugepage directory contains unexpected entries: ' + repr(invalid))
+    entries = {}
+    for name in names:
+        value = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        identity = (value.st_dev, value.st_ino, value.st_uid, stat.S_IFMT(value.st_mode),
+            stat.S_IMODE(value.st_mode), value.st_nlink, value.st_size)
+        require(stat.S_ISREG(value.st_mode) and value.st_uid == expected_uid and
+            value.st_dev == expected_dev and value.st_nlink == 1,
+            f'private hugepage entry has unsafe identity: {name!r} {identity!r}')
+        entries[name] = identity
+    return entries
+
+
+def cleanup_private_hugepage_dir(parent, parent_fd, parent_identity, directory_name,
+                                 directory_fd, directory_identity, file_prefix,
+                                 pidfds, resident_pidfd, primary, runner,
+                                 actor_proof_ready, before_second_pass=None):
+    for pidfd in pidfds:
+        require(select.select([pidfd], [], [], 5)[0],
+            'refuse hugepage cleanup while an exact handoff child remains alive')
+    if resident_pidfd >= 0:
+        require(select.select([resident_pidfd], [], [], 5)[0],
+            'refuse hugepage cleanup while the exact handoff resident remains alive')
+    require((primary is None or primary.poll() is not None) and
+        (runner is None or runner.poll() is not None),
+        'refuse hugepage cleanup before resident and launcher reaping')
+    def validate_directory_binding():
+        parent_stat = os.fstat(parent_fd)
+        parent_path_stat = os.stat(parent, follow_symlinks=False)
+        require((parent_stat.st_dev, parent_stat.st_ino) == parent_identity and
+            (parent_path_stat.st_dev, parent_path_stat.st_ino) == parent_identity and
+            stat.S_ISDIR(parent_stat.st_mode),
+            'private hugepage parent path was replaced; refusing cleanup')
+        directory_stat = os.fstat(directory_fd)
+        directory_vfs = os.fstatvfs(directory_fd)
+        parent_vfs = os.fstatvfs(parent_fd)
+        entry_stat = os.stat(directory_name, dir_fd=parent_fd, follow_symlinks=False)
+        page_class = int(directory_vfs.f_bsize or directory_vfs.f_frsize)
+        require((directory_stat.st_dev, directory_stat.st_ino, directory_stat.st_uid,
+                stat.S_IMODE(directory_stat.st_mode), page_class) == directory_identity and
+            (entry_stat.st_dev, entry_stat.st_ino) == directory_identity[:2] and
+            stat.S_ISDIR(directory_stat.st_mode) and directory_stat.st_dev == parent_stat.st_dev and
+            stat.S_IMODE(directory_stat.st_mode) == 0o700 and
+            page_class == int(parent_vfs.f_bsize or parent_vfs.f_frsize),
+            'private hugepage directory path, owner, mode, device, or page class changed; refusing cleanup')
+
+    validate_directory_binding()
+    entries = _private_hugepage_entries(directory_fd, file_prefix,
+        directory_identity[0], os.geteuid())
+    require(actor_proof_ready or not entries,
+        'refuse private hugepage cleanup with backing files before all exact actor identities were captured')
+    if before_second_pass is not None:
+        before_second_pass()
+    # Revalidate the entire directory and every entry immediately before the
+    # first unlink. A single mismatch refuses the whole cleanup batch.
+    validate_directory_binding()
+    second = _private_hugepage_entries(directory_fd, file_prefix,
+        directory_identity[0], os.geteuid())
+    require(second == entries, 'private hugepage contents changed before cleanup commit; refusing all unlink')
+    for name in sorted(second):
+        os.unlink(name, dir_fd=directory_fd)
+    require(not os.listdir(directory_fd), 'private hugepage directory is not empty after exact cleanup')
+    current_entry = os.stat(directory_name, dir_fd=parent_fd, follow_symlinks=False)
+    require((current_entry.st_dev, current_entry.st_ino) == directory_identity[:2],
+        'private hugepage directory entry changed before rmdir')
+    os.rmdir(directory_name, dir_fd=parent_fd)
+    try:
+        os.stat(directory_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise RuntimeError('private hugepage directory remains after exact cleanup')
+    return len(entries)
+
+
+def report_hugepage_cleanup_refusal(mode, original_error, cleanup_error):
+    def describe(error):
+        if error is None:
+            return None
+        return dict(type=type(error).__name__, message=str(error))
+    print('KER_SESSION_HANDOFF_HUGEPAGE_CLEANUP_REFUSED ' + json.dumps(dict(
+        mode=mode, original=describe(original_error), cleanup=describe(cleanup_error)),
+        sort_keys=True), flush=True)
+    if original_error is None:
+        raise cleanup_error.with_traceback(cleanup_error.__traceback__)
+
+
+def line(process, timeout=25, stderr_path=None):
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
         require(selector.select(timeout), 'packet-session output timed out')
     value = process.stdout.readline()
     if not value:
-        raise RuntimeError('packet-session exited early: ' + process.stderr.read().decode())
+        if stderr_path is not None:
+            diagnostic = Path(stderr_path).read_text(errors='replace') if Path(stderr_path).exists() else ''
+        elif process.stderr is not None:
+            diagnostic = process.stderr.read().decode(errors='replace')
+        else:
+            diagnostic = ''
+        raise RuntimeError('packet-session exited early: ' + diagnostic)
     return value.decode().strip()
 
 
@@ -74,6 +319,8 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     script_path = Path(__file__).resolve() if script is None else Path(script).resolve()
     command = ['unshare', '-Urn', sys.executable, str(script_path), '--inside',
         '--huge-dir', str(args.huge_dir), '--dpdk-plugin-dir', str(plugin_dir)]
+    if getattr(args, 'handoff_negative_profiles', False):
+        command.append('--handoff-negative-profiles')
     command.extend(value for name in ('worker', 'tool', 'library', 'app')
         for value in ('--' + name, str(getattr(args, name).resolve())))
     return command
@@ -92,10 +339,603 @@ def record(process, prefix):
     return json.loads(value[len(prefix) + 1:])
 
 
+def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
+    with tempfile.TemporaryDirectory(prefix='a9-') as directory:
+        root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
+        plugin_options = dpdk_plugin_eal_options(plugin_paths)
+        file_prefix = f'a9-{os.urandom(16).hex()}'
+        huge_parent_path = args.huge_dir.resolve(strict=True)
+        (primary_mp_socket, _, huge_dir_name, huge_parent_fd, huge_dir_fd,
+            huge_parent_identity, huge_dir_identity) = prepare_handoff_hugepage_dir(
+                root, huge_parent_path, file_prefix)
+        private_huge_dir = huge_parent_path / huge_dir_name
+        eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
+            f'-m 64 {plugin_options} --huge-dir={shlex.quote(str(private_huge_dir))} '
+            f'--file-prefix={file_prefix}')
+        common = ['--socket', str(control_path), '--worker', str(args.worker), '--eal', eal,
+            '--paired-pmd', '--generation-rings']
+        environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1',
+            'KER_SESSION_TEST_HANDOFF_PENDING_HB': '1'}
+        if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
+            environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = mode.removeprefix('prepare-').upper()
+        elif mode.startswith('bad-prepare-error'):
+            environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = 'ENOENT'
+            field = mode.removeprefix('bad-prepare-error-') if mode != 'bad-prepare-error' else 'generation'
+            environment['KER_SESSION_TEST_HANDOFF_BAD_ERROR_FIELD'] = field
+        if mode == 'handoff-control-hup': environment['KER_SESSION_TEST_HANDOFF_CONTROL_HUP'] = '1'
+        if mode is not None: environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
+        primary = runner = None
+        runner_stderr_handle = None
+        wire = endpoint = None
+        handoff_read = handoff_write = -1
+        pidfds = []
+        resident_pidfd = -1
+        actor_proof_ready = False
+        handoff_census_before = handoff_owner_before = None
+        rejection_timeout_snapshot = None
+        try:
+            primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            resident_pidfd = os.pidfd_open(primary.pid)
+            ready = record(primary, 'KER_SESSION_READY')
+            require(ready['ring_pmd'] and ready['ports'] == 1 and ready['slot'] == 0,
+                'handoff resident did not start the selected paired PMD/generation adapter')
+            wire, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
+            runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
+            if mode != 'positive':
+                runner_environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
+            runner_stderr_path = root / 'runner.stderr.log'
+            runner_stderr_handle = runner_stderr_path.open('wb')
+            runner = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
+                '--wire-fd', str(endpoint.fileno()), '--library', str(args.library), '--stats', str(stats_path),
+                '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
+                '--test-live-handoff-fd', str(handoff_read), '--', str(args.app), '--signal-ready'],
+                pass_fds=(endpoint.fileno(), handoff_read), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=runner_stderr_handle, env=runner_environment, bufsize=0)
+            runner_stderr_handle.close(); runner_stderr_handle = None
+            os.close(handoff_read); handoff_read = -1
+            endpoint.close(); endpoint = None
+
+            def startup_failure(reason):
+                if runner is not None and runner.poll() is None:
+                    runner.terminate()
+                    try: runner.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner.wait()
+                runner_output = b''
+                if runner is not None and runner.stdout is not None:
+                    try: runner_output, _ = runner.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner_output, _ = runner.communicate()
+                latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
+                try: latest = json.loads(latest_raw) if latest_raw else None
+                except json.JSONDecodeError: latest = None
+                if primary is not None and primary.poll() is None:
+                    if primary.stdin is not None:
+                        primary.stdin.close(); primary.stdin = None
+                    try: resident_output, resident_errors = primary.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        primary.terminate()
+                        try: resident_output, resident_errors = primary.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            primary.kill(); resident_output, resident_errors = primary.communicate()
+                else:
+                    resident_output, resident_errors = primary.communicate(timeout=5)
+                runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                mp_errors = eal_mp_channel_errors(runner_errors, resident_errors.decode(errors='replace'))
+                if mp_errors:
+                    reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
+                diagnostic = dict(mode=mode, reason=reason, latest_stats=latest,
+                    latest_stats_raw=latest_raw,
+                    actors=dict(app=dict(pid=(latest or {}).get('app_pid'), returncode=(latest or {}).get('app_code')),
+                        owner=dict(pid=((latest or {}).get('attached') or {}).get('pid'),
+                            returncode=(latest or {}).get('worker_code')),
+                        peer=dict(pid=((latest or {}).get('handoff_peer_attached') or {}).get('pid'),
+                            returncode=(latest or {}).get('handoff_peer_code'))),
+                    runner_returncode=runner.returncode if runner is not None else None,
+                    runner_stdout=runner_output.decode(errors='replace'),
+                    runner_stderr=runner_errors, eal_mp_channel_errors=mp_errors,
+                    resident_pid=primary.pid, resident_returncode=primary.returncode,
+                    resident_stdout=resident_output.decode(errors='replace'),
+                    resident_stderr=resident_errors.decode(errors='replace'))
+                rendered = json.dumps(diagnostic, sort_keys=True)
+                print('KER_SESSION_HANDOFF_STARTUP_FAILURE ' + rendered, flush=True)
+                return RuntimeError('handoff profile startup failed with diagnostics: ' + rendered)
+
+            try:
+                ready_line = line(runner, stderr_path=runner_stderr_path)
+            except RuntimeError as error:
+                raise startup_failure(str(error)) from error
+            if ready_line != 'READY':
+                raise startup_failure('handoff application did not reach its quiescent signal barrier: ' + ready_line)
+            deadline = time.monotonic() + 15
+            while True:
+                before = json.loads(stats_path.read_text()) if stats_path.exists() else {}
+                if before.get('stage') == 'application-started' and before.get('handoff_peer_attached'):
+                    break
+                if runner.poll() is not None:
+                    raise startup_failure('handoff workers exited before the application barrier')
+                if time.monotonic() >= deadline:
+                    raise startup_failure('handoff workers did not attach before the application barrier')
+                time.sleep(0.01)
+            require(before['generation_rings'] is True and before['attached']['generation'] == 0 and
+                before['grant']['generation'] == 0 and before['handoff_peer_attached']['generation'] == 1 and
+                before['handoff_peer_attached']['slot'] == before['attached']['slot'] and
+                before['handoff_peer_attached']['epoch'] == before['attached']['epoch'] and
+                before['handoff_peer_early_denial']['queue_owner_key'] == 0 and
+                before['handoff_peer_early_denial']['exception_endpoint_fd'] is False,
+                'resident-admitted same-slot peer or pre-handoff denial differs')
+            app_pidfd = os.pidfd_open(before['app_pid']); pidfds.append(app_pidfd)
+            owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
+            peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
+            actor_proof_ready = True
+            initial_pages = _private_hugepage_entries(huge_dir_fd, file_prefix,
+                huge_dir_identity[0], os.geteuid())
+            require(initial_pages, 'handoff resident created no private hugepage backing files')
+
+            def fatal_profile_diagnostics(reason):
+                if runner is not None and runner.poll() is None:
+                    runner.terminate()
+                    try: runner.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner.wait()
+                runner_output = b''
+                if runner is not None and runner.stdout is not None:
+                    try: runner_output, _ = runner.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner_output, _ = runner.communicate()
+                latest = None
+                latest_raw = ''
+                if stats_path.exists():
+                    latest_raw = stats_path.read_text(errors='replace')
+                    try: latest = json.loads(latest_raw)
+                    except json.JSONDecodeError: pass
+                stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                primary_output = primary_errors = b''
+                if primary is not None and primary.poll() is None:
+                    if primary.stdin is not None:
+                        primary.stdin.close(); primary.stdin = None
+                    try: primary_output, primary_errors = primary.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        primary.terminate()
+                        try: primary_output, primary_errors = primary.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            primary.kill(); primary_output, primary_errors = primary.communicate()
+                elif primary is not None and primary.stdout is not None:
+                    try: primary_output, primary_errors = primary.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        primary.kill(); primary_output, primary_errors = primary.communicate()
+                mp_errors = eal_mp_channel_errors(stderr, primary_errors.decode(errors='replace'))
+                if mp_errors:
+                    reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
+                actors = dict(resident=dict(pid=primary.pid, returncode=primary.poll()),
+                    app=dict(pid=before['app_pid'], returncode=(latest or {}).get('app_code'),
+                        pidfd_dead=bool(select.select([app_pidfd], [], [], 0)[0])),
+                    owner=dict(pid=before['attached']['pid'], returncode=(latest or {}).get('worker_code'),
+                        pidfd_dead=bool(select.select([owner_pidfd], [], [], 0)[0])),
+                    peer=dict(pid=before['handoff_peer_attached']['pid'],
+                        returncode=(latest or {}).get('handoff_peer_code'),
+                        pidfd_dead=bool(select.select([peer_pidfd], [], [], 0)[0])))
+                diagnostic = dict(mode=mode, reason=reason, latest_stats=latest, latest_stats_raw=latest_raw,
+                    actors=actors,
+                    runner_returncode=runner.returncode if runner is not None else None,
+                    runner_stdout=runner_output.decode(errors='replace'), runner_stderr=stderr,
+                    eal_mp_channel_errors=mp_errors,
+                    resident_stdout=primary_output.decode(errors='replace'),
+                    resident_stderr=primary_errors.decode(errors='replace'))
+                rendered = json.dumps(diagnostic, sort_keys=True)
+                print('KER_SESSION_HANDOFF_PROFILE_FAILURE ' + rendered, flush=True)
+                return RuntimeError('live handoff profile failed with diagnostics: ' + rendered)
+
+            require(not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
+                'an app or worker exited before live handoff')
+            connection = api.Connection(control_path)
+            try:
+                handoff_census_before = connection.request(api.STATUS)
+                handoff_owner_before = connection.request(api.PMD_STATUS)
+            finally: connection.close()
+            require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
+            os.close(handoff_write); handoff_write = -1
+            if mode == 'handoff-control-hup':
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    try: current = json.loads(stats_path.read_text())
+                    except (OSError, json.JSONDecodeError): current = {}
+                    if current.get('stage') == 'handoff-control-hup': break
+                    if runner.poll() is not None: break
+                    time.sleep(0.005)
+                runner_output, _ = runner.communicate(timeout=20)
+                runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                failure = json.loads(stats_path.read_text())
+                require(runner.returncode != 0 and failure.get('stage') == 'failed' and
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
+                    'KER_SESSION_HANDOFF_BOUNDARY ' in runner_text and
+                    'KER_SESSION_HANDOFF_WORKER_STOPPED ' in runner_text and
+                    'KER_SESSION_HANDOFF_CONTROL_CLOSED ' in runner_text and
+                    'KER_SESSION_HANDOFF_WORKER_RESUMED ' in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_CONTROL_HUP' in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED' not in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_PREPARED' not in runner_text and
+                    'KER_SESSION_PMD_PARKED ' not in runner_text,
+                    f'control HUP did not fail closed before PREPARE: {failure!r}; {runner_text}')
+                hup = failure.get('handoff_control_hup') or {}
+                require(isinstance(hup.get('stopped_snapshot'), dict) and
+                    hup.get('stopped_snapshot') == hup.get('closed_snapshot') and
+                    hup['stopped_snapshot'].get('status', {}).get('process') ==
+                        handoff_census_before.get('process') and
+                    hup['stopped_snapshot'].get('pmd_status', {}).get('token') ==
+                        handoff_owner_before.get('token'),
+                    f'control EOF changed the stopped owner/census: {hup!r}')
+                marker_order = [runner_text.index(marker) for marker in (
+                    'KER_SESSION_HANDOFF_BOUNDARY ', 'KER_SESSION_HANDOFF_WORKER_STOPPED ',
+                    'KER_SESSION_HANDOFF_CONTROL_CLOSED ', 'KER_SESSION_HANDOFF_WORKER_RESUMED ',
+                    'KER_SESSION_TEST_HANDOFF_CONTROL_HUP ')]
+                require(marker_order == sorted(marker_order),
+                    f'control HUP did not close at the stopped boundary in order: {runner_text}')
+                require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                    'control HUP profile left an exact child alive')
+                primary.stdin.close(); primary.stdin = None
+                primary_output, primary_errors = primary.communicate(timeout=20)
+                require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
+                    primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
+                drained = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                    for line in primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+                require(primary.returncode == 0 and drained and drained[-1].get('objects') == 511,
+                    'control HUP changed resident ownership or prevented exact cleanup: ' + primary_errors.decode())
+                print('PASS: control HUP with a pending ACK aborted before PREPARE and drained the unchanged owner')
+                return
+            if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    try: current = json.loads(stats_path.read_text())
+                    except (OSError, json.JSONDecodeError): current = {}
+                    if current.get('stage') == 'handoff-rejected': break
+                    if runner.poll() is not None: raise RuntimeError('runner exited before rejection recovery')
+                    time.sleep(0.005)
+                else:
+                    latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
+                    try: latest = json.loads(latest_raw) if latest_raw else None
+                    except json.JSONDecodeError: latest = None
+                    runner_stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                    rejection_timeout_snapshot = dict(mode=mode,
+                        reason='worker did not publish handoff-rejected before the bounded deadline',
+                        latest_stats=latest, latest_stats_raw=latest_raw,
+                        runner_stderr=runner_stderr,
+                        runner_returncode=runner.poll(), resident_returncode=primary.poll(),
+                        actor_pids=dict(app=before['app_pid'], owner=before['attached']['pid'],
+                            peer=before['handoff_peer_attached']['pid']),
+                        census_before=handoff_census_before, owner_before=handoff_owner_before)
+                    print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_SNAPSHOT ' +
+                        json.dumps(rejection_timeout_snapshot, sort_keys=True), flush=True)
+                    raise RuntimeError('worker did not resume after its valid PREPARE rejection; '
+                        'bounded diagnostic snapshot captured')
+                runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                require(all(marker in runner_text for marker in (
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING',
+                    'KER_SESSION_HANDOFF_BOUNDARY',
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED',
+                    'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED',
+                    'KER_SESSION_HANDOFF_BOUNDARY')),
+                    'pending ACK, PREPARE, and queued H were not observed: ' + runner_text)
+                marker_lines = runner_text.splitlines()
+                pending_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING ')]
+                drained_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED ')]
+                deferred_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_HEARTBEAT_DEFERRED ')]
+                boundary_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_HANDOFF_BOUNDARY ')]
+                rejected_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED ')]
+                resumed_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED ')]
+                packet_ready_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_PACKET_READY ')]
+                rejected_records = [json.loads(marker_lines[i].split(' ', 1)[1]) for i in rejected_positions]
+                require(len(pending_positions) == 1 and len(drained_positions) == 1 and
+                    len(boundary_positions) == 2 and len(rejected_positions) == 2 and
+                    len(resumed_positions) == 2 and
+                    pending_positions[0] < boundary_positions[0] < drained_positions[0] <
+                    rejected_positions[0] < resumed_positions[0] < boundary_positions[1] and
+                    any(resumed_positions[0] < ready < boundary_positions[1] for ready in packet_ready_positions) and
+                    boundary_positions[1] < rejected_positions[1] < resumed_positions[1] and
+                    all(record.get('same_replay') is True for record in rejected_records) and
+                    all(json.loads(marker_lines[i].split(' ', 1)[1]).get('status') ==
+                        {'prepare-enoent': -errno.ENOENT, 'prepare-ebusy': -errno.EBUSY,
+                         'prepare-eperm': -errno.EPERM}[mode] for i in resumed_positions) and
+                    not any(line.startswith(('KER_SESSION_TEST_HANDOFF_PREPARED ',
+                        'KER_SESSION_PMD_PARKED ', 'KER_SESSION_PACKET_DONE ')) for line in marker_lines),
+                    'pending ACK, first PREPARE, and pipelined second H were not serviced in order: ' + runner_text)
+                require(all(any(boundary < deferred < drained for boundary in boundary_positions
+                                for drained in drained_positions) for deferred in deferred_positions),
+                    'HEARTBEAT_DEFERRED diagnostic fell outside a handoff boundary/drain interval: ' + runner_text)
+                connection = api.Connection(control_path)
+                try:
+                    rejected_census = connection.request(api.STATUS)
+                    rejected_owner = connection.request(api.PMD_STATUS)
+                    require(rejected_census == handoff_census_before and
+                        rejected_owner == handoff_owner_before and
+                        rejected_owner['token'] == before['grant']['queue_owner_key'] and
+                        rejected_owner['generation'] == 0,
+                        'valid PREPARE rejection changed owner, lease census, or pool state')
+                finally: connection.close()
+                runner.send_signal(signal.SIGTERM)
+                runner_output, _ = runner.communicate(timeout=20)
+                errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
+                finished = json.loads(stats_path.read_text())
+                require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
+                    finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and
+                    finished.get('handoff_peer_code') == 0 and finished.get('native', {}).get('buffers_live') == 0,
+                    'worker failed cleanup after PREPARE rejection: ' + repr(finished) + errors.decode())
+                require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                    'PREPARE rejection profile left an exact actor alive')
+                connection = api.Connection(control_path)
+                try:
+                    census = connection.request(api.STATUS); owner = connection.request(api.PMD_STATUS)
+                    require(census['generation'] == 511 and census['token'] == 0 and owner['token'] == 0,
+                        'PREPARE rejection cleanup did not restore pool/PMD ownership')
+                finally: connection.close()
+                primary.stdin.close(); primary.stdin = None
+                primary_output, primary_errors = primary.communicate(timeout=20)
+                require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
+                    primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
+                require(primary.returncode == 0 and any(line.startswith('KER_SESSION_DRAINED ')
+                    for line in primary_output.decode().splitlines()),
+                    'PREPARE rejection did not cleanly drain the resident: ' + primary_errors.decode())
+                print('KER_SESSION_PREPARE_REJECTION_RAW ' + json.dumps(dict(
+                    mode=mode,
+                    runner_stderr=errors.decode(errors='replace'),
+                    primary_stdout=primary_output.decode(errors='replace'),
+                    primary_stderr=primary_errors.decode(errors='replace'),
+                    census_before=handoff_census_before,
+                    owner_before=handoff_owner_before,
+                    census_after_rejection=rejected_census,
+                    owner_after_rejection=rejected_owner,
+                    census_after_cleanup=census,
+                    owner_after_cleanup=owner,
+                    actor_pids=dict(owner=before['attached']['pid'], peer=before['handoff_peer_attached']['pid']),
+                    runner_returncode=runner.returncode,
+                    resident_returncode=primary.returncode), sort_keys=True), flush=True)
+                print(f'PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, and resumed the packet loop')
+                return
+            if mode != 'positive':
+                try:
+                    runner_output, _ = runner.communicate(timeout=20)
+                except subprocess.TimeoutExpired as error:
+                    runner.kill(); runner_output, _ = runner.communicate()
+                    raise RuntimeError('fatal handoff fixture did not terminate: ' +
+                        (runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else '')) from error
+                runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                require_healthy_eal_mp_channel(mode, runner_text)
+                failure = json.loads(stats_path.read_text())
+                malformed_prepare = mode.startswith('bad-prepare-error') or mode == 'bad-prepare-success'
+                require((runner.returncode != 0 if malformed_prepare else runner.returncode == 125) and
+                    failure.get('stage') == 'failed' and
+                    failure.get('worker_code') == 125 and failure.get('app_code') is not None,
+                    f'{mode} did not fail closed through the launcher: {failure!r}; '
+                    f'runner stdout={runner_output.decode(errors="replace")!r}; stderr={runner_text!r}')
+                if malformed_prepare:
+                    expected_kind = 'error' if mode.startswith('bad-prepare-error') else 'success'
+                    require('KER_SESSION_TEST_HANDOFF_PREPARED' not in runner_text and
+                        'KER_SESSION_PMD_PARKED ' not in runner_text and
+                        'KER_SESSION_PACKET_DONE ' not in runner_text,
+                        f'{mode} accepted a malformed PREPARE reply: {runner_text}')
+                else:
+                    require('KER_SESSION_TEST_HANDOFF_PREPARED' in runner_text and
+                        'KER_SESSION_PMD_PARKED ' not in runner_text and
+                        'KER_SESSION_PACKET_DONE ' not in runner_text,
+                        f'{mode} emitted a post-failure success marker: {runner_text}')
+                require('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED' in runner_text and
+                    sum(line.startswith('KER_SESSION_PMD_GRANTED ') for line in runner_text.splitlines()) == 1 and
+                    'KER_SESSION_HANDOFF_BOUNDARY ' in runner_text,
+                    f'{mode} did not complete the pending-heartbeat boundary: {runner_text}')
+                if mode == 'timeout':
+                    require('KER_SESSION_TEST_HANDOFF_FDS_CLOSED' not in runner_text and
+                        'KER_SESSION_TEST_HANDOFF_QUIESCED_SENT' not in runner_text,
+                        'timeout profile reached QUIESCED despite resident timeout')
+                elif mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease'):
+                    require('KER_SESSION_TEST_HANDOFF_FDS_CLOSED' in runner_text and
+                        'KER_SESSION_TEST_HANDOFF_QUIESCED_SENT' in runner_text,
+                        f'{mode} did not reach the intended closed-descriptor QUIESCED boundary')
+                if mode == 'peer-death':
+                    killed_peer = failure.get('handoff_negative_peer', {})
+                    handoff_failure = failure.get('handoff_failure', {})
+                    require(killed_peer.get('pid') == before['handoff_peer_attached']['pid'] and
+                        killed_peer.get('returncode') == -signal.SIGKILL and killed_peer.get('pidfd_dead') is True,
+                        f'peer-death profile did not kill the exact reserved peer: {failure!r}')
+                    fatal_stage = handoff_failure.get('fatal_stage')
+                    require(fatal_stage in ('resident-preempted-before-fd-close',
+                            'resident-preempted-after-fd-close', 'quiesced-peer-revalidation') and
+                        ((fatal_stage == 'resident-preempted-before-fd-close' and
+                            handoff_failure.get('fds_closed') is None and handoff_failure.get('quiesced_sent') is None) or
+                         (fatal_stage == 'resident-preempted-after-fd-close' and
+                            handoff_failure.get('fds_closed') is not None and handoff_failure.get('quiesced_sent') is None) or
+                         (fatal_stage == 'quiesced-peer-revalidation' and
+                            handoff_failure.get('fds_closed') is not None and handoff_failure.get('quiesced_sent') is not None)),
+                        f'peer-death failure stage markers disagree: {failure!r}')
+                require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                    f'{mode} fixture left an app, worker, or resident alive')
+                primary.stdin.close(); primary.stdin = None
+                primary_output, primary_errors = primary.communicate(timeout=20)
+                require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'),
+                    runner_text, primary_mp_socket, before['attached']['pid'],
+                    before['handoff_peer_attached']['pid'])
+                if malformed_prepare:
+                    expected_field = (mode.removeprefix('bad-prepare-error-') if mode != 'bad-prepare-error'
+                        else 'generation') if expected_kind == 'error' else 'token'
+                    require(any(line.startswith('KER_SESSION_TEST_HANDOFF_REPLY_CORRUPTED ') and
+                        f'"kind":"{expected_kind}"' in line and f'"field":"{expected_field}"' in line
+                        for line in primary_output.decode().splitlines()),
+                        f'{mode} resident did not inject the intended malformed reply')
+                    if mode == 'bad-prepare-success':
+                        require(primary.returncode == 125 and b'KER_SESSION_DRAINED ' not in primary_output and
+                            select.select([resident_pidfd], [], [], 0)[0],
+                            'malformed successful PREPARE did not leave the prepared session fail-closed')
+                    else:
+                        drained = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                            for line in primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+                        require(primary.returncode == 0 and drained and drained[-1].get('objects') == 511,
+                            'malformed failed PREPARE changed resident ownership or prevented cleanup')
+                else:
+                    require(primary.returncode == 125 and b'KER_SESSION_DRAINED ' not in primary_output and
+                        select.select([resident_pidfd], [], [], 0)[0],
+                        f'{mode} resident did not fail without a successful drain: {primary.returncode}; '
+                        f'{primary_errors.decode(errors="replace")}')
+                print('KER_SESSION_HANDOFF_FATAL_RESULT ' + json.dumps(dict(mode=mode, failure=failure,
+                    runner_returncode=runner.returncode, runner_stdout=runner_output.decode(errors='replace'),
+                    runner_stderr=runner_text, resident_returncode=primary.returncode,
+                    resident_stdout=primary_output.decode(errors='replace'),
+                    resident_stderr=primary_errors.decode(errors='replace')), sort_keys=True), flush=True)
+                print(f'PASS: {mode} after PREPARE terminates exact actors with status125 and no PARKED/grant/DRAINED success')
+                return
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    after = json.loads(stats_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    if runner.poll() is not None:
+                        raise fatal_profile_diagnostics('runner exited before publishing a complete handoff result')
+                    after = {}
+                if after.get('stage') == 'handoff-complete': break
+                if runner.poll() is not None:
+                    raise fatal_profile_diagnostics('runner exited before same-session handoff completed')
+                if time.monotonic() >= deadline:
+                    raise fatal_profile_diagnostics('same-session handoff exceeded its bounded completion deadline')
+                time.sleep(0.01)
+            handoff = after['handoff']; protocol = after['handoff_protocol']
+            endpoint_name = ready['exception_endpoint_name']
+            require(handoff['app_pid'] == before['app_pid'] and
+                handoff['old_worker_pid'] == before['attached']['pid'] and
+                handoff['peer_worker_pid'] == before['handoff_peer_attached']['pid'] and
+                handoff['old_exception_fd_closed'] and handoff['old_owner_key'] != handoff['new_owner_key'] and
+                endpoint_name in handoff['old_tun_interfaces_before'] and
+                endpoint_name not in handoff['old_tun_interfaces_after'] and
+                endpoint_name in handoff['successor_tun_interfaces'] and
+                handoff['resident']['token'] == handoff['new_owner_key'] and
+                handoff['successor']['generation'] == 1 and
+                protocol['negative_prepare']['status'] == -1 and protocol['negative_prepare']['same_replay'] and
+                protocol['replay_prepare']['same_response'] and
+                not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
+                'handoff changed process/endpoint identity or failed exact PREPARE/replay validation')
+            runner.send_signal(signal.SIGTERM)
+            output, _ = runner.communicate(timeout=20)
+            errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
+            finished = json.loads(stats_path.read_text())
+            require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
+                finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and
+                finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and
+                finished.get('handoff_peer_code') == 0 and finished.get('handoff_peer_packet', {}).get('status') == 0 and
+                finished.get('native', {}).get('buffers_live') == 0,
+                'live handoff application/worker teardown failed: ' + repr(finished) + errors.decode())
+            require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                'handoff app or either worker survived orderly launcher cleanup')
+            connection = api.Connection(control_path)
+            try:
+                census = connection.request(api.STATUS); owner = connection.request(api.PMD_STATUS)
+                require(census['generation'] == 511 and census['token'] == 0 and census['process'] == 0 and
+                    owner['token'] == 0, 'handoff normal cleanup did not restore the pool/owner baseline')
+            finally: connection.close()
+            primary.stdin.close(); primary.stdin = None
+            primary_output, primary_errors = primary.communicate(timeout=20)
+            runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+            require('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
+                'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED' in runner_text,
+                'positive handoff did not drain its real pending heartbeat before PREPARE')
+            require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
+                primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
+            require(primary.returncode == 0, 'handoff resident did not exit cleanly: ' + primary_errors.decode())
+            drained = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                for line in primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+            require(drained and drained[-1]['objects'] == 511 and drained[-1]['outstanding'] == 0,
+                'handoff resident did not report exact final pool cleanup')
+        finally:
+            original_error = sys.exc_info()[1]
+            cleanup_error = None
+            finalization_errors = []
+            cleaned_hugepage_files = None
+            try:
+                for name, value in (('handoff_read', handoff_read),
+                                    ('handoff_write', handoff_write)):
+                    if value >= 0:
+                        try: os.close(value)
+                        except BaseException as error: finalization_errors.append(error)
+                        if name == 'handoff_read': handoff_read = -1
+                        else: handoff_write = -1
+                cleanup_outputs = {}
+                for label, process in (('launcher', runner), ('resident', primary)):
+                    if process is None:
+                        continue
+                    try:
+                        if process.poll() is None:
+                            process.terminate()
+                            try: process.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                process.kill(); process.wait(timeout=10)
+                        if process.poll() is not None:
+                            cleanup_outputs[label] = process.communicate(timeout=5)
+                        else:
+                            raise RuntimeError(f'{label} did not exit during fixture cleanup')
+                    except BaseException as error:
+                        finalization_errors.append(RuntimeError(f'{label} cleanup failed: {error}'))
+                if rejection_timeout_snapshot is not None:
+                    runner_out, runner_err = cleanup_outputs.get('launcher', (b'', b''))
+                    resident_out, resident_err = cleanup_outputs.get('resident', (b'', b''))
+                    runner_stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                    final_snapshot = dict(rejection_timeout_snapshot,
+                        runner_returncode=runner.poll(), resident_returncode=primary.poll(),
+                        runner_stdout=runner_out.decode(errors='replace'),
+                        runner_stderr=runner_stderr,
+                        resident_stdout=resident_out.decode(errors='replace'),
+                        resident_stderr=resident_err.decode(errors='replace'))
+                    print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_FINAL ' +
+                        json.dumps(final_snapshot, sort_keys=True), flush=True)
+                if finalization_errors:
+                    raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
+                        repr([str(error) for error in finalization_errors]))
+                cleaned_hugepage_files = cleanup_private_hugepage_dir(huge_parent_path, huge_parent_fd,
+                    huge_parent_identity, huge_dir_name, huge_dir_fd, huge_dir_identity,
+                    file_prefix, pidfds, resident_pidfd, primary, runner, actor_proof_ready)
+            except BaseException as error:
+                cleanup_error = error
+            finally:
+                # Always release process and directory descriptors, even when
+                # private-directory validation or reporting refuses deletion.
+                closers = []
+                if endpoint is not None: closers.append(endpoint.close)
+                if wire is not None: closers.append(wire.close)
+                for process in (runner, primary):
+                    if process is not None:
+                        for stream in (process.stdin, process.stdout, process.stderr):
+                            if stream is not None: closers.append(stream.close)
+                closers.extend(lambda fd=fd: os.close(fd) for fd in pidfds)
+                if resident_pidfd >= 0: closers.append(lambda: os.close(resident_pidfd))
+                if runner_stderr_handle is not None: closers.append(runner_stderr_handle.close)
+                closers.extend((lambda: os.close(huge_dir_fd), lambda: os.close(huge_parent_fd)))
+                for close in closers:
+                    try: close()
+                    except BaseException as error: finalization_errors.append(error)
+            if finalization_errors:
+                close_error = RuntimeError('handoff descriptor finalization failed: ' +
+                    repr([str(error) for error in finalization_errors]))
+                if cleanup_error is None:
+                    cleanup_error = close_error
+                else:
+                    cleanup_error = RuntimeError(str(cleanup_error) + '; ' + str(close_error))
+            if cleanup_error is not None:
+                report_hugepage_cleanup_refusal(mode, original_error, cleanup_error)
+            if cleaned_hugepage_files is not None:
+                print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED profile={mode} mode=private '
+                    f'files={cleaned_hugepage_files}', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('worker', 'tool', 'library', 'app'): parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--handoff-negative-profiles', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--dpdk-plugin-dir', type=Path)
     parser.add_argument('--huge-dir', type=Path, default=Path('/dev/hugepages'))
     args = parser.parse_args()
@@ -409,7 +1249,7 @@ def main():
                 if queued_term.poll() is None: queued_term.kill(); queued_term.wait()
             print('CHECK: live paired standby and canceled standby have no native application', flush=True)
 
-            def exchange_native(process):
+            def exchange_native(process, *, finish=True):
                 process.stdin.write(b'G'); process.stdin.flush()
                 payload = bytes((i * 17 + (i >> 8)) & 255 for i in range(4097))
                 for family, address in ((socket.AF_INET, '198.18.0.2'), (socket.AF_INET6, '2001:db8:1::2')):
@@ -426,7 +1266,8 @@ def main():
                         data, peer = client.recvfrom(8192)
                         require(data == b'NATIVE:' + payload[:512] and peer[0] == address, 'native UDP reply/peer differ')
                 require(line(process) == 'NATIVE_DONE', 'native MTU rollback/service completion failed')
-                process.stdin.write(b'Q'); process.stdin.flush()
+                if finish:
+                    process.stdin.write(b'Q'); process.stdin.flush()
 
             def graceful_signal_release(process, stats_file, control_path):
                 before = json.loads(stats_file.read_text())
@@ -456,7 +1297,6 @@ def main():
                     os.close(app_fd); os.close(worker_fd)
 
             exchange_native(app)
-            print('CHECK: first original Linux generation completed real TCP/UDP traffic', flush=True)
             output, stderr = app.communicate(timeout=20)
             require(app.returncode == 0, 'packet-session application failed: ' + output.decode() + stderr.decode())
             require(b'PASS: original native IPv4/IPv6 TCP/UDP services' in output, 'native application proof absent')
@@ -1029,6 +1869,15 @@ def main():
                 except subprocess.TimeoutExpired: primary.kill(); primary.wait()
             stop.set(); thread.join(timeout=3); wire.close(); endpoint.close(); os.close(tap)
             if exception_capture is not None: exception_capture.close()
+    run_live_handoff_profile(args, api, plugin_paths)
+    print('PASS: a generation-admitted same-process peer takes the PMD/exception grant while the original Linux app and parked worker remain alive, then both workers drain cleanly')
+    if args.handoff_negative_profiles:
+        for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+                'handoff-control-hup',
+                'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
+                'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
+                'bad-prepare-error-rx-lease', 'bad-prepare-error-sequence', 'bad-prepare-success'):
+            run_live_handoff_profile(args, api, plugin_paths, mode)
     return 0
 
 

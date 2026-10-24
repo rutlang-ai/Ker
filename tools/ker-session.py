@@ -15,13 +15,15 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 8
+VERSION = 9
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
-          'generation', 'process', 'token', 'slot', 'capability', 'status')
-WIRE = struct.Struct('=11Qq')
+          'generation', 'process', 'token', 'slot', 'capability', 'status',
+          'tx_lease_id', 'rx_lease_id')
+WIRE = struct.Struct('=11Qq2Q')
 MASTER, RESERVE, RELEASE, STATUS, ATTACHED, PROBE, PMD_ACQUIRE, PMD_STATUS, EPOCH_LIVE = range(1, 10)
 DRAIN_MODE, HEARTBEAT, PEER_STATUS, COORDINATE_QUERY = 10, 11, 12, 13
 PEER_RESERVE, RING_DETACH, RING_DETACH_ARM = 14, 15, 16
+PMD_HANDOFF_PREPARE, PMD_HANDOFF_QUIESCED = 17, 18
 
 
 def packet(command, sequence=1, **values):
@@ -378,6 +380,7 @@ def main():
     parser.add_argument('--address')
     parser.add_argument('--stats', type=Path)
     parser.add_argument('--address6')
+    parser.add_argument('--test-live-handoff-fd', type=int, help=argparse.SUPPRESS)
     values = sys.argv[1:]
     separator = values.index('--') if '--' in values else len(values)
     command = values[separator + 1:]
@@ -388,6 +391,8 @@ def main():
             parser.error('run requires --paired-pmd --wire-fd --library and -- COMMAND')
     elif command or args.wire_fd is not None or args.library is not None or args.stats is not None or args.address is not None or args.address6 is not None:
         parser.error('packet endpoints, library and command are only valid with run')
+    if args.test_live_handoff_fd is not None and (args.action != 'run' or args.test_live_handoff_fd < 0):
+        parser.error('--test-live-handoff-fd requires run and a nonnegative descriptor')
     if (args.test_directory_gate_fd is not None or args.test_directory_replay_attached or
             args.test_generation_rings_replay) and args.action != 'lease':
         parser.error('directory test options are only valid with lease')
@@ -395,8 +400,8 @@ def main():
         parser.error('--test-generation-rings-replay requires --generation-rings')
     if args.test_directory_gate_fd is not None and args.test_directory_gate_fd < 0:
         parser.error('directory test gate fd must be nonnegative')
-    if args.generation_rings and args.action not in ('serve','lease'):
-        parser.error('--generation-rings is only supported by serve and lease')
+    if args.generation_rings and args.action not in ('serve','lease','run'):
+        parser.error('--generation-rings is only supported by serve, lease, and run')
     cleanup_masks = (args.generation_cleanup_rx_mask, args.generation_cleanup_tx_mask)
     if any(mask is not None for mask in cleanup_masks):
         if args.action != 'serve' or not args.generation_rings or any(mask is None for mask in cleanup_masks):
