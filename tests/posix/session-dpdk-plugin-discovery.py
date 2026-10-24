@@ -113,6 +113,8 @@ def private_hugepage_cleanup_checks(native):
                 'incomplete actor proof changed private files')
         finally:
             os.close(directory_fd); os.close(parent_fd)
+
+
     refusal('mutation between validation passes', mutate=lambda parent: Path(parent, 'owned',
         prefix + 'map_0_2').write_bytes(b'raced'))
     refusal('directory mode change', mutate=lambda parent: os.chmod(Path(parent, 'owned'), 0o755))
@@ -186,6 +188,58 @@ def private_hugepage_cleanup_checks(native):
             os.close(directory_fd); os.close(parent_fd)
 
 
+def handoff_socket_budget_checks(native):
+    prefix = 'a9-' + 'c' * 32
+    primary, secondary = native.validate_dpdk_mp_socket_paths('/tmp/a9-12345678', prefix)
+    require(str(primary) == f'/tmp/a9-12345678/dpdk/{prefix}/mp_socket' and
+        str(secondary) == str(primary) + '_2147483647_ffffffffffffffff' and
+        len(os.fsencode(primary)) < 108 and len(os.fsencode(secondary)) <= 107,
+        'maximum DPDK primary/secondary socket path geometry is wrong')
+    long_runtime = '/' + 'runtime-component-' * 8
+    with tempfile.TemporaryDirectory(prefix='a09-path-budget-') as raw:
+        huge_parent = Path(raw) / 'huge'
+        huge_parent.mkdir()
+        try:
+            native.prepare_handoff_hugepage_dir(long_runtime, huge_parent, prefix)
+        except RuntimeError as error:
+            require('multiprocess socket path exceeds sun_path' in str(error) and
+                'secondary_worst_case=' in str(error), 'long TMPDIR rejection lacked byte-budget diagnostics')
+        else:
+            raise RuntimeError('overlong TMPDIR was accepted for EAL startup')
+        require(not list(huge_parent.iterdir()) and not (Path(long_runtime) / 'dpdk').exists(),
+            'overlong TMPDIR preflight left hugepage or runtime-directory state')
+    for unsafe in ('', '.', '..', 'a/b', 'a%b', 'a\x00b', 'x' * 65):
+        expect_error(lambda value=unsafe: native.validate_dpdk_mp_socket_paths('/tmp', value),
+            'unsafe DPDK prefix')
+    known = ('EAL: peer 123_ffffffff socket path too long\n'
+        'EAL: failed to init mp channel\n'
+        'EAL: failed to send to (/tmp/dpdk/mp_socket) due to Bad file descriptor\n'
+        'EAL: Fail to send request /tmp/dpdk/mp_socket:bus_vdev_mp\n'
+        'VDEV_BUS: vdev_scan(): Failed to request vdev from primary')
+    require(len(native.eal_mp_channel_errors(known)) == 5,
+        'fixture did not recognize the pinned EAL multiprocess path/init failure chain')
+    require(not native.eal_mp_channel_errors('ker-session: resident failed closed after expected QUIESCED'),
+        'EAL diagnostic guard misclassified an intended Ker handoff fatal result')
+    base = '/tmp/a9-test/dpdk/' + prefix + '/mp_socket'
+    owner, peer = 12345, 12346
+    runner_log = (f'EAL: Multi-process socket {base}_{owner}_aabbcc\n'
+        f'EAL: Multi-process socket {base}_{peer}_0123456789abcdef\n')
+    with contextlib.redirect_stdout(io.StringIO()):
+        accepted = native.require_live_eal_mp_channels('host-check',
+            f'EAL: Multi-process socket {base}\n', runner_log,
+            Path(base), owner, peer)
+    require(len(accepted) == 2, 'full primary/secondary EAL channel proof was not accepted')
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            native.require_live_eal_mp_channels('host-check',
+                f'EAL: Multi-process socket {base}\n', runner_log.splitlines()[0],
+                Path(base), owner, peer)
+    except RuntimeError as error:
+        require('exactly the owner and peer' in str(error),
+            'missing secondary channel did not report exact actor mismatch')
+    else:
+        raise RuntimeError('missing secondary EAL channel was accepted')
+
 def runner_script_path():
     sibling = Path(__file__).with_name('ker_session_run.py')
     if sibling.is_file():
@@ -204,6 +258,7 @@ def main():
     args = parser.parse_args()
     native = load_fixture('native_packets_fixture', Path(__file__).with_name('session-native-packets.py'))
     private_hugepage_cleanup_checks(native)
+    handoff_socket_budget_checks(native)
     observer = load_fixture('tc3_observer_fixture', Path(__file__).with_name('session-tc3-observer.py'))
     coordinate = load_fixture('coordinate_fixture', Path(__file__).with_name('session-coordinate.py'))
     drain_peer = load_fixture('drain_peer_fixture', Path(__file__).with_name('session-drain-peer.py'))

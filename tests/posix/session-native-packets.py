@@ -29,6 +29,87 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def dpdk_mp_socket_paths(runtime_directory, file_prefix):
+    """Return pinned primary/maximum-secondary paths from DPDK's EAL formula."""
+    require(isinstance(file_prefix, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', file_prefix) and
+        file_prefix not in ('.', '..'),
+        'DPDK file prefix must be a bounded ASCII-safe single path component')
+    primary = Path(runtime_directory) / 'dpdk' / file_prefix / 'mp_socket'
+    # Pinned eal_common_proc.c appends _<decimal pid>_<hex rte_rdtsc()>.
+    # Bound pid_t by signed 32-bit and the uint64 TSC suffix by 16 hex digits.
+    secondary = Path(str(primary) + '_2147483647_ffffffffffffffff')
+    return primary, secondary
+
+
+def prepare_handoff_hugepage_dir(runtime_directory, huge_parent, file_prefix):
+    primary_socket, secondary_socket = validate_dpdk_mp_socket_paths(runtime_directory, file_prefix)
+    directory_name = file_prefix + '-h'
+    parent_fd, directory_fd, parent_identity, directory_identity = \
+        create_handoff_hugepage_dir(huge_parent, directory_name)
+    return primary_socket, secondary_socket, directory_name, parent_fd, directory_fd, \
+        parent_identity, directory_identity
+
+
+def validate_dpdk_mp_socket_paths(runtime_directory, file_prefix):
+    primary, secondary = dpdk_mp_socket_paths(runtime_directory, file_prefix)
+    limit = 108  # Linux sockaddr_un.sun_path includes its terminating NUL.
+    lengths = (len(os.fsencode(primary)), len(os.fsencode(secondary)))
+    require(max(lengths) < limit,
+        f'pinned DPDK multiprocess socket path exceeds sun_path: primary={lengths[0]} '
+        f'bytes secondary_worst_case={lengths[1]} bytes limit={limit - 1}')
+    return primary, secondary
+
+
+def eal_mp_channel_errors(*streams):
+    patterns = (
+        re.compile(r'socket path too long', re.IGNORECASE),
+        re.compile(r'failed to init mp channel', re.IGNORECASE),
+        re.compile(r'failed to send to .*due to bad file descriptor', re.IGNORECASE),
+        re.compile(r'fail to send request .*:bus_vdev_mp', re.IGNORECASE),
+        re.compile(r'vdev_scan\(\): failed to request vdev from primary', re.IGNORECASE),
+    )
+    return [line for stream in streams for line in stream.splitlines()
+        if any(pattern.search(line) for pattern in patterns)]
+
+
+def require_healthy_eal_mp_channel(profile, *streams):
+    errors = eal_mp_channel_errors(*streams)
+    require(not errors, f'{profile} EAL multiprocess channel failed: {errors!r}')
+
+
+def require_live_eal_mp_channels(profile, primary_stderr, runner_stderr,
+                                 primary_socket, owner_pid, peer_pid):
+    require_healthy_eal_mp_channel(profile, primary_stderr, runner_stderr)
+    primary_base = str(primary_socket)
+    primary_lines = [line for line in primary_stderr.splitlines()
+        if line.startswith('EAL: Multi-process socket ')]
+    require(primary_lines == ['EAL: Multi-process socket ' + primary_base],
+        f'{profile} primary did not bind the exact EAL multiprocess endpoint: {primary_lines!r}')
+    prefix = re.compile(r'^EAL: Multi-process socket (.+)$')
+    suffix = re.compile(r'^' + re.escape(primary_base) + r'_([0-9]+)_([0-9a-fA-F]{1,16})$')
+    paths = []
+    for line in runner_stderr.splitlines():
+        match = prefix.fullmatch(line)
+        if match:
+            paths.append(match.group(1))
+    identities = []
+    path_by_pid = {}
+    for path in paths:
+        match = suffix.fullmatch(path)
+        require(match is not None,
+            f'{profile} secondary used an unexpected multiprocess socket path: {path!r}')
+        pid = int(match.group(1))
+        identities.append(pid)
+        path_by_pid[pid] = path
+    require(len(identities) == 2 and sorted(identities) == sorted((owner_pid, peer_pid)),
+        f'{profile} did not initialize exactly the owner and peer EAL channels: {paths!r}; '
+        f'expected pids={(owner_pid, peer_pid)!r}')
+    print('KER_SESSION_HANDOFF_EAL_CHANNELS ' + json.dumps(dict(profile=profile,
+        primary=primary_base, owner=dict(pid=owner_pid, socket=path_by_pid[owner_pid]),
+        peer=dict(pid=peer_pid, socket=path_by_pid[peer_pid])), sort_keys=True), flush=True)
+    return paths
+
+
 def tap_interfaces_for_process(pid):
     """Read the kernel-reported interface for every original TUN file description."""
     names = []
@@ -258,14 +339,14 @@ def record(process, prefix):
 
 
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
-    with tempfile.TemporaryDirectory(prefix='ker-a09-live-handoff-') as directory:
+    with tempfile.TemporaryDirectory(prefix='a9-') as directory:
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
-        file_prefix = f'a09-handoff-{os.getpid()}-{os.urandom(16).hex()}'
-        huge_dir_name = f'{file_prefix}-huge'
+        file_prefix = f'a9-{os.urandom(16).hex()}'
         huge_parent_path = args.huge_dir.resolve(strict=True)
-        huge_parent_fd, huge_dir_fd, huge_parent_identity, huge_dir_identity = \
-            create_handoff_hugepage_dir(huge_parent_path, huge_dir_name)
+        (primary_mp_socket, _, huge_dir_name, huge_parent_fd, huge_dir_fd,
+            huge_parent_identity, huge_dir_identity) = prepare_handoff_hugepage_dir(
+                root, huge_parent_path, file_prefix)
         private_huge_dir = huge_parent_path / huge_dir_name
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
             f'-m 64 {plugin_options} --huge-dir={shlex.quote(str(private_huge_dir))} '
@@ -329,6 +410,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                             primary.kill(); resident_output, resident_errors = primary.communicate()
                 else:
                     resident_output, resident_errors = primary.communicate(timeout=5)
+                runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                mp_errors = eal_mp_channel_errors(runner_errors, resident_errors.decode(errors='replace'))
+                if mp_errors:
+                    reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
                 diagnostic = dict(mode=mode, reason=reason, latest_stats=latest,
                     latest_stats_raw=latest_raw,
                     actors=dict(app=dict(pid=(latest or {}).get('app_pid'), returncode=(latest or {}).get('app_code')),
@@ -338,7 +423,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                             returncode=(latest or {}).get('handoff_peer_code'))),
                     runner_returncode=runner.returncode if runner is not None else None,
                     runner_stdout=runner_output.decode(errors='replace'),
-                    runner_stderr=(runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''),
+                    runner_stderr=runner_errors, eal_mp_channel_errors=mp_errors,
                     resident_pid=primary.pid, resident_returncode=primary.returncode,
                     resident_stdout=resident_output.decode(errors='replace'),
                     resident_stderr=resident_errors.decode(errors='replace'))
@@ -409,6 +494,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     try: primary_output, primary_errors = primary.communicate(timeout=5)
                     except subprocess.TimeoutExpired:
                         primary.kill(); primary_output, primary_errors = primary.communicate()
+                mp_errors = eal_mp_channel_errors(stderr, primary_errors.decode(errors='replace'))
+                if mp_errors:
+                    reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
                 actors = dict(resident=dict(pid=primary.pid, returncode=primary.poll()),
                     app=dict(pid=before['app_pid'], returncode=(latest or {}).get('app_code'),
                         pidfd_dead=bool(select.select([app_pidfd], [], [], 0)[0])),
@@ -421,6 +509,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     actors=actors,
                     runner_returncode=runner.returncode if runner is not None else None,
                     runner_stdout=runner_output.decode(errors='replace'), runner_stderr=stderr,
+                    eal_mp_channel_errors=mp_errors,
                     resident_stdout=primary_output.decode(errors='replace'),
                     resident_stderr=primary_errors.decode(errors='replace'))
                 rendered = json.dumps(diagnostic, sort_keys=True)
@@ -439,6 +528,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     raise RuntimeError('fatal handoff fixture did not terminate: ' +
                         (runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else '')) from error
                 runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                require_healthy_eal_mp_channel(mode, runner_text)
                 failure = json.loads(stats_path.read_text())
                 require(runner.returncode == 125 and failure.get('stage') == 'failed' and
                     failure.get('worker_code') == 125 and failure.get('app_code') is not None,
@@ -477,6 +567,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     f'{mode} fixture left an app, worker, or resident alive')
                 primary.stdin.close(); primary.stdin = None
                 primary_output, primary_errors = primary.communicate(timeout=20)
+                require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'),
+                    runner_text, primary_mp_socket, before['attached']['pid'],
+                    before['handoff_peer_attached']['pid'])
                 require(primary.returncode == 125 and b'KER_SESSION_DRAINED ' not in primary_output and
                     select.select([resident_pidfd], [], [], 0)[0],
                     f'{mode} resident did not fail without a successful drain: {primary.returncode}; '
@@ -537,6 +630,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             finally: connection.close()
             primary.stdin.close(); primary.stdin = None
             primary_output, primary_errors = primary.communicate(timeout=20)
+            runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+            require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
+                primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
             require(primary.returncode == 0, 'handoff resident did not exit cleanly: ' + primary_errors.decode())
             drained = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
                 for line in primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
