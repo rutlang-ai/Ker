@@ -642,6 +642,30 @@ def main():
                     'production one-shot shared probe failed: ' + probe.stderr.decode())
             eventually(0, 0)
 
+            # The automatic --probe-only path has no consumed P whose outcome
+            # can be deferred. Queue an ordinary cancellation before startup;
+            # the worker must observe it inside the active probe loop and exit
+            # cleanly without publishing a PROBED result or leaking its lease.
+            automatic = subprocess.Popen([sys.executable, str(args.tool), 'probe', *common,
+                '--probe-count', '4096'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=environment | {'KER_SESSION_TEST_PROBE_ONLY_CANCEL': '1'}, bufsize=0)
+            processes.append(automatic)
+            automatic.stdin.write(b'x'); automatic.stdin.flush(); automatic.stdin.close()
+            automatic.stdin = None
+            automatic_info = ready(automatic, 'KER_SESSION_ATTACHED')
+            output, errors = automatic.communicate(timeout=20)
+            require(automatic.returncode == 0 and
+                    b'KER_SESSION_TEST_PROBE_ONLY_STARTED' in errors and
+                    b'KER_SESSION_TEST_PROBE_ONLY_CANCELLED' in errors and
+                    b'KER_SESSION_PROBED ' not in output,
+                    'automatic probe-only cancellation lost its active-loop control semantics: ' +
+                    output.decode(errors='replace') + errors.decode(errors='replace'))
+            child_reap(output, automatic_info['pid'])
+            census = eventually(0, 0)
+            require(census['generation'] == 511 and census['token'] == 0,
+                    'automatic probe-only cancellation leaked its control lease')
+            print('PASS: automatic probe-only batch observed queued cancellation without publishing a probe result')
+
             # Cancel a deliberately large active batch after observing its
             # first published mbuf. The request remains ring-owned until the
             # exact secondary exits and the resident reclaims it.

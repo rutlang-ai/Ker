@@ -2316,8 +2316,12 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     unsigned generation_test_step_index=generation_detach_test?3U:0U;
 #endif
     bool probe_pending = probe_only;
+    /* Only a consumed P owns a response that must finish before a queued
+     * control byte. Startup --probe-only work remains cancellable. */
+    bool probe_from_consumed_command = false;
 #ifdef KER_SESSION_TEST_HOOKS
     bool test_dq_pending_reported = false;
+    bool test_probe_only_started = false;
 #endif
     while (!stopping) {
         if (heartbeat_tick(fd, &message, &message.sequence, peer, &heartbeat) < 0) {
@@ -2331,9 +2335,23 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         }
 #endif
         if (probe_pending) {
+            bool consumed_probe = probe_from_consumed_command;
+#ifdef KER_SESSION_TEST_HOOKS
+            if (probe_only && getenv("KER_SESSION_TEST_PROBE_ONLY_CANCEL") && !test_probe_only_started) {
+                test_probe_only_started = true;
+                fprintf(stderr, "KER_SESSION_TEST_PROBE_ONLY_STARTED {\"automatic\":true}\n");
+                fflush(stderr);
+            }
+#endif
             int probe_result = shared_probe(channels[0], channels[3], leased_packet, &message,
                 control, &deferred_probes, probe_count, &probe_sequence, peer, fd,
                 &message.sequence, &heartbeat);
+#ifdef KER_SESSION_TEST_HOOKS
+            if (probe_result == -ECANCELED && probe_only && getenv("KER_SESSION_TEST_PROBE_ONLY_CANCEL")) {
+                fprintf(stderr, "KER_SESSION_TEST_PROBE_ONLY_CANCELLED {\"status\":0}\n");
+                fflush(stderr);
+            }
+#endif
             if (probe_result == -ECANCELED) { result = 0; goto cleanup; }
             if (probe_result) { fprintf(stderr, "ker session: shared probe failed %d\n", probe_result); goto cleanup; }
             printf("KER_SESSION_PROBED {\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"count\":%u,\"sequence\":%llu,\"primary_pid\":%u,\"payload_bytes\":%u}\n",
@@ -2342,15 +2360,27 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 directory->primary_pid, KER_SESSION_PROBE_PAYLOAD); fflush(stdout);
             if (ring_pmd && standby && !peer_only) {
                 if (!device_packet) {
-                    if (drain_worker_heartbeat(fd, &heartbeat, peer, control_open ? control : -1)) goto cleanup;
+                    int heartbeat_result = consumed_probe ?
+                        drain_worker_heartbeat_after_command(fd, &heartbeat, peer, control_open ? control : -1) :
+                        drain_worker_heartbeat(fd, &heartbeat, peer, control_open ? control : -1);
+                    if (heartbeat_result) goto cleanup;
+#ifdef KER_SESSION_TEST_HOOKS
+                    if (getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+                        fprintf(stderr, "KER_SESSION_TEST_DQ_PROBE_PMD_ACQUIRE {\"consumed_p\":%s}\n",
+                            consumed_probe ? "true" : "false");
+                        fflush(stderr);
+                    }
+#endif
                     int acquired = acquire_pmd(fd, &message, peer, pool, leased_packet, &device_packet, &exception_fd);
                     if (acquired && acquired != -EBUSY) {
                         fprintf(stderr, "ker session: standby PMD acquisition failed %d\n", acquired); goto cleanup;
                     }
                 }
                 struct ker_session_message owner;
-                if (drain_worker_heartbeat(fd, &heartbeat, peer, control_open ? control : -1) ||
-                    observe_pmd(fd, &message, peer, &owner)) goto cleanup;
+                int heartbeat_result = consumed_probe ?
+                    drain_worker_heartbeat_after_command(fd, &heartbeat, peer, control_open ? control : -1) :
+                    drain_worker_heartbeat(fd, &heartbeat, peer, control_open ? control : -1);
+                if (heartbeat_result || observe_pmd(fd, &message, peer, &owner)) goto cleanup;
                 bool owns = owner.epoch == message.epoch && owner.slot == message.slot &&
                     owner.generation == message.generation && owner.process == message.process;
                 if (owns != (device_packet != NULL)) goto cleanup;
@@ -2371,10 +2401,12 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                     (long)getpid(), (unsigned long long)device_sequence, probe_count, 14 + sizeof(struct ker_session_probe)); fflush(stdout);
             }
             probe_pending = false;
+            probe_from_consumed_command = false;
             if (probe_only) break;
             if (deferred_probes) {
                 deferred_probes--;
                 probe_pending = true;
+                probe_from_consumed_command = true;
                 continue;
             }
         }
@@ -2430,7 +2462,16 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                     (unsigned long long)peer_status.epoch, (unsigned long long)peer_status.generation,
                     peer_status.token ? "true" : "false", (unsigned long long)mirror_epoch,
                     (unsigned long long)mirror_generation, mirror_draining ? "true" : "false"); fflush(stdout);
-            } else if (count == 1 && command == 'P' && (probe_count || standby)) probe_pending = true;
+            } else if (count == 1 && command == 'P' && (probe_count || standby)) {
+                probe_pending = true;
+                probe_from_consumed_command = true;
+#ifdef KER_SESSION_TEST_HOOKS
+                if (getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+                    fprintf(stderr, "KER_SESSION_TEST_DQ_P_CONSUMED {\"command\":\"P\"}\n");
+                    fflush(stderr);
+                }
+#endif
+            }
 #ifdef KER_SESSION_TEST_HOOKS
             else if (count == 1 && command == 'h' && getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
                 heartbeat.last_ack_ms = 0;

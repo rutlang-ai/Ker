@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
@@ -39,17 +40,37 @@ def main():
     expected_frame_bytes = 14 + api.WIRE.size + 8 + 64
     require(ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0, 'subreaper setup')
     processes, workers = [], []
+    resident_stopped = False
     with tempfile.TemporaryDirectory(prefix='ker-standby-') as directory:
         root = Path(directory); path = root / 'control.sock'
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
                f'-m 64 --huge-dir={args.huge_dir} --file-prefix=standby-{os.getpid()}-{os.urandom(4).hex()}')
         common = ['--socket', str(path), '--worker', str(args.worker), '--eal', eal, '--ring-pmd']
 
-        def launch(action, *extra):
-            process = subprocess.Popen([sys.executable, str(args.tool), action, *common, *extra],
+        stderr_history = {}
+
+        def stderr_marker(process, marker, timeout=10):
+            history = stderr_history.setdefault(process, bytearray())
+            deadline = time.monotonic() + timeout
+            while marker.encode() not in history:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError('worker stderr marker timed out: ' + marker)
+                readable, _, _ = select.select([process.stderr], [], [], remaining)
+                if not readable:
+                    raise RuntimeError('worker stderr marker timed out: ' + marker)
+                chunk = os.read(process.stderr.fileno(), 4096)
+                if not chunk:
+                    raise RuntimeError('worker stderr closed before marker: ' + marker)
+                history.extend(chunk)
+            return bytes(history)
+
+        def launch(action, *extra, ring_pmd=True, extra_env=None):
+            options = common if ring_pmd else common[:-1]
+            process = subprocess.Popen([sys.executable, str(args.tool), action, *options, *extra],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                 env=os.environ | {'RUNTIME_DIRECTORY': str(root),
-                                  'KER_SESSION_TEST_DIRECTORY_HOOKS': '1'})
+                                  'KER_SESSION_TEST_DIRECTORY_HOOKS': '1'} | (extra_env or {}))
             processes.append(process)
             return process
 
@@ -64,6 +85,39 @@ def main():
             return bool(response['token'])
 
         def status(): return query(api.STATUS)
+
+        def stop_resident():
+            nonlocal resident_stopped
+            os.kill(primary.pid, signal.SIGSTOP)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    state = Path('/proc', str(primary.pid), 'stat').read_text().rsplit(')', 1)[1].split()[0]
+                except FileNotFoundError:
+                    state = ''
+                if state in ('T', 't'):
+                    resident_stopped = True
+                    return
+                require(time.monotonic() < deadline, 'resident did not stop before pending-heartbeat fixture')
+                time.sleep(0.01)
+
+        def resume_resident():
+            nonlocal resident_stopped
+            if resident_stopped:
+                os.kill(primary.pid, signal.SIGCONT)
+                resident_stopped = False
+
+        def wait_epoch_released(epoch):
+            deadline = time.monotonic() + 6
+            while live(epoch):
+                require(time.monotonic() < deadline, 'test worker epoch was not released')
+                time.sleep(0.02)
+
+        def wait_worker_dead(fd):
+            deadline = time.monotonic() + 5
+            while not dead(fd):
+                require(time.monotonic() < deadline, 'test worker pidfd did not become readable')
+                time.sleep(0.01)
 
         def resident_snapshot():
             primary.stdin.write(b'S'); primary.stdin.flush()
@@ -110,7 +164,7 @@ def main():
                     'standby allocated a PMD object or lost its control lease')
             # Default count zero still performs admission/owner control on P;
             # it must remain a live standby and never pretend frames were sent.
-            zero = launch('lease', '--standby')
+            zero = launch('lease', '--standby', extra_env={'KER_SESSION_TEST_DQ_PENDING_HB': '1'})
             zero_entry = ready(zero, 'KER_SESSION_ATTACHED'); ready(zero, 'KER_SESSION_PMD_STANDBY')
             workers.append((zero_entry['pid'], os.pidfd_open(zero_entry['pid'])))
 
@@ -141,14 +195,64 @@ def main():
                         'fourth MASTER denial changed the three live registrations')
             print('PASS: two full-directory denials preserved one live PMD owner, two standbys, leases, mirrors and pool')
 
-            zero.stdin.write(b'P'); zero.stdin.flush()
-            no_probe = ready(zero, 'KER_SESSION_PROBED'); census_only = ready(zero, 'KER_SESSION_PMD_SAMPLED')
-            require(no_probe['count'] == 0 and no_probe['sequence'] == 0 and
-                    not census_only['owns_device'] and census_only['owner_epoch'] == one['epoch'] and
-                    zero.poll() is None, 'zero-count standby exited or fabricated traffic')
+            stderr_marker(zero, 'KER_SESSION_TEST_DQ_INITIAL_HEARTBEAT_ACKED')
+            before_zero_status = status()
+            before_zero_owner = query(api.PMD_STATUS)
+            stop_resident()
+            zero.stdin.write(b'h'); zero.stdin.flush()
+            stderr_marker(zero, 'KER_SESSION_TEST_DQ_HEARTBEAT_REQUESTED')
+            stderr_marker(zero, 'KER_SESSION_TEST_DQ_HEARTBEAT_PENDING')
+            zero.stdin.write(b'PP'); zero.stdin.flush()
+            stderr_marker(zero, 'KER_SESSION_TEST_DQ_P_CONSUMED')
+            stderr_marker(zero, 'KER_SESSION_TEST_DQ_HEARTBEAT_DEFERRED')
+            resume_resident()
+            sample1, _ = round_sample(zero, 0, False, one['epoch'])
+            sample2, _ = round_sample(zero, 0, False, one['epoch'])
+            zero_errors = bytes(stderr_history[zero])
+            require(sample1['owner_slot'] == sample2['owner_slot'] == one['slot'] and
+                    zero_errors.count(b'KER_SESSION_TEST_DQ_PROBE_PMD_ACQUIRE') == 2 and
+                    status() == before_zero_status and query(api.PMD_STATUS) == before_zero_owner and
+                    zero.poll() is None,
+                    'two consumed zero-count P requests were reordered or changed the live PMD owner/pool')
+            print('PASS: pending heartbeat with pipelined PP produced two ordered PROBED/PMD_SAMPLED outcomes without changing ownership', flush=True)
             zero.stdin.write(b'x'); zero.stdin.flush()
             output, errors = zero.communicate(timeout=15)
             require(zero.returncode == 0 and not live(zero_entry['epoch']), 'zero-count standby did not retire')
+
+            # If a consumed P is followed by control EOF while its heartbeat
+            # ACK is pending, it may emit PROBED but must not start PMD acquire
+            # or observation. The resident is stopped to make the ordering
+            # deterministic; the exact child and master lease are then reaped.
+            before_hup_status = status(); before_hup_owner = query(api.PMD_STATUS)
+            hup = launch('lease', '--standby', extra_env={'KER_SESSION_TEST_DQ_PENDING_HB': '1'})
+            hup_entry = ready(hup, 'KER_SESSION_ATTACHED'); ready(hup, 'KER_SESSION_PMD_STANDBY')
+            hup_pidfd = os.pidfd_open(hup_entry['pid']); workers.append((hup_entry['pid'], hup_pidfd))
+            stderr_marker(hup, 'KER_SESSION_TEST_DQ_INITIAL_HEARTBEAT_ACKED')
+            stop_resident()
+            hup.stdin.write(b'h'); hup.stdin.flush()
+            stderr_marker(hup, 'KER_SESSION_TEST_DQ_HEARTBEAT_REQUESTED')
+            stderr_marker(hup, 'KER_SESSION_TEST_DQ_HEARTBEAT_PENDING')
+            hup.stdin.write(b'P'); hup.stdin.flush()
+            stderr_marker(hup, 'KER_SESSION_TEST_DQ_P_CONSUMED')
+            hup.stdin.close()
+            probed = ready(hup, 'KER_SESSION_PROBED')
+            stderr_marker(hup, 'KER_SESSION_TEST_DQ_CONTROL_HUP')
+            resume_resident()
+            hup.wait(timeout=15)
+            hup_tail = hup.stdout.read().decode(errors='replace')
+            wait_worker_dead(hup_pidfd); wait_epoch_released(hup_entry['epoch'])
+            hup_errors = bytes(stderr_history[hup]) + hup.stderr.read()
+            require(hup.returncode != 0 and probed['count'] == 0 and
+                    'KER_SESSION_PMD_SAMPLED ' not in hup_tail and
+                    b'KER_SESSION_TEST_DQ_PROBE_PMD_ACQUIRE' not in hup_errors and
+                    status()['generation'] == before_hup_status['generation'] and
+                    status()['token'] == before_hup_status['token'] and
+                    status()['slot'] == before_hup_status['slot'] and
+                    status()['process'] == before_hup_status['process'] and
+                    query(api.PMD_STATUS) == before_hup_owner,
+                    'control EOF after consumed P acquired/observed PMD or leaked the lease/pool')
+            print('PASS: consumed P plus control EOF rejected PMD acquire/observation and reaped the exact lease', flush=True)
+
             # A frozen orphan cannot heartbeat, but it is still an exact live
             # borrower and its grant must never be preempted by the standby.
             signal.pidfd_send_signal(workers[0][1], signal.SIGSTOP)
@@ -223,6 +327,7 @@ def main():
             print('PASS: original PMD frame/counter proof before and after takeover; all511 original objects restored')
             print('BOUNDARY: no fixed network dispatch, exception-owner routing, original-Linux delivery or full reload proof')
         finally:
+            resume_resident()
             for process in reversed(processes): stop(process)
             for pid, fd in workers:
                 if not dead(fd):
