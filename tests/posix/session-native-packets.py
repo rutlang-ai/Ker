@@ -95,7 +95,7 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     script_path = Path(__file__).resolve() if script is None else Path(script).resolve()
     command = ['unshare', '-Urn', sys.executable, str(script_path), '--inside',
         '--huge-dir', str(args.huge_dir), '--dpdk-plugin-dir', str(plugin_dir)]
-    if args.handoff_negative_profiles:
+    if getattr(args, 'handoff_negative_profiles', False):
         command.append('--handoff-negative-profiles')
     command.extend(value for name in ('worker', 'tool', 'library', 'app')
         for value in ('--' + name, str(getattr(args, name).resolve())))
