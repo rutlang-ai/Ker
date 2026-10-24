@@ -67,9 +67,10 @@ def main():
             expected.append(str(versioned.resolve(strict=True)))
         fallback_env = {'KER_DPDK_PLUGIN_DIR': str(custom)}
         forwarded = native.resolve_dpdk_plugin_dir(custom, {})
-        command = native.namespace_reexec_command(SimpleNamespace(
+        namespace_args = dict(
             huge_dir=custom / 'huge pages', worker=custom / 'worker', tool=custom / 'tool',
-            library=custom / 'library', app=custom / 'app'), forwarded,
+            library=custom / 'library', app=custom / 'app')
+        command = native.namespace_reexec_command(SimpleNamespace(**namespace_args), forwarded,
             script=custom / 'session-native-packets.py')
         require(command[0:3] == ['unshare', '-Urn', os.sys.executable] and
                 command[3] == str(custom / 'session-native-packets.py') and
@@ -77,6 +78,16 @@ def main():
                 'native namespace re-exec did not preserve explicit canonical plugin paths')
         require(command[command.index('--huge-dir') + 1] == str(custom / 'huge pages'),
                 'native namespace re-exec split a path containing spaces')
+        explicit_false = native.namespace_reexec_command(SimpleNamespace(
+            **namespace_args, handoff_negative_profiles=False), forwarded,
+            script=custom / 'session-native-packets.py')
+        require('--handoff-negative-profiles' not in explicit_false,
+                'explicit false handoff profile option was forwarded')
+        explicit_true = native.namespace_reexec_command(SimpleNamespace(
+            **namespace_args, handoff_negative_profiles=True), forwarded,
+            script=custom / 'session-native-packets.py')
+        require(explicit_true.count('--handoff-negative-profiles') == 1,
+                'enabled handoff negative profiles were not forwarded exactly once')
         fallback = observer.resolve_dpdk_plugin_paths(None, module_names, fallback_env)
         native_fallback = native.resolve_dpdk_plugin_paths(None, ('mempool_ring',), fallback_env)
         explicit = native.resolve_dpdk_plugin_paths(custom, ('mempool_ring',),
