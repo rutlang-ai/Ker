@@ -83,6 +83,8 @@ def main():
             script=custom / 'session-native-packets.py')
         require('--handoff-negative-profiles' not in explicit_false,
                 'explicit false handoff profile option was forwarded')
+        require(command == explicit_false,
+                'omitted and explicit false handoff profile options changed the re-exec command')
         explicit_true = native.namespace_reexec_command(SimpleNamespace(
             **namespace_args, handoff_negative_profiles=True), forwarded,
             script=custom / 'session-native-packets.py')
