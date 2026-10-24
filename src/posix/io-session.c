@@ -2622,6 +2622,28 @@ static int frame_negative_prepare(int fd,int resident,const struct ker_session_m
     if(memcmp(&response,&expected,sizeof(expected)))return -EPROTO;
     return 0;
 }
+static int frame_negative_pending_request(int fd,int resident,
+    const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
+    const struct ker_session_message *prepared,uint64_t command,unsigned variant)
+{
+    struct ker_session_message request=*identity,response,expected;
+    request.command=command;request.sequence=++*sequence;request.status=0;
+    request.capability=capability;request.packet_pool_tag=prepared->packet_pool_tag;
+    request.packet_object_index=prepared->packet_object_index;request.packet_port=prepared->packet_port;
+    request.packet_queue=prepared->packet_queue;request.tx_lease_id=prepared->tx_lease_id;
+    request.rx_lease_id=0;
+    int status;
+    if(variant==0){request.capability^=1;status=-EPERM;}
+    else {request.tx_lease_id^=1;status=-ESTALE;}
+    require_resident_alive(resident);
+    if(send(fd,&request,sizeof(request),MSG_NOSIGNAL)!=(ssize_t)sizeof(request))return -EIO;
+    ssize_t n;
+    do n=recv(fd,&response,sizeof(response),MSG_TRUNC);while(n<0&&errno==EINTR&&!dead(resident));
+    require_resident_alive(resident);
+    if(n!=(ssize_t)sizeof(response))return n<0?-errno:-EPROTO;
+    expected=request;expected.status=status;
+    return memcmp(&response,&expected,sizeof(expected))?-EPROTO:0;
+}
 static int frame_negative_prepares_leave_datagram(int packet_fd,int fd,int resident,
     const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
     struct ker_generation_rings *rings,const uint8_t *peek_bytes,size_t peek_length)
@@ -2654,6 +2676,12 @@ static int frame_prepare_cancel_replay(int packet_fd,int fd,int resident,
     int result=worker_frame_request(fd,identity,sequence,resident,capability,
         KER_SESSION_FRAME_PREPARE,tag,UINT32_MAX,0,0,0,heartbeat,&prepared);
     if(result)return result;
+    if(frame_negative_pending_request(fd,resident,identity,sequence,capability,&prepared,
+        KER_SESSION_FRAME_COMMIT,0)||
+        frame_negative_pending_request(fd,resident,identity,sequence,capability,&prepared,
+        KER_SESSION_FRAME_CANCEL,1))return -EPROTO;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_after,&pool_after)||
+        ring_after!=ring_before||pool_after!=pool_before+1)return -EUCLEAN;
     result=worker_frame_request(fd,identity,sequence,resident,capability,
         KER_SESSION_FRAME_CANCEL,prepared.packet_pool_tag,prepared.packet_object_index,
         prepared.packet_port,prepared.packet_queue,prepared.tx_lease_id,heartbeat,&cancelled);
@@ -2665,7 +2693,7 @@ static int frame_prepare_cancel_replay(int packet_fd,int fd,int resident,
     struct msghdr msg={.msg_iov=&iov,.msg_iovlen=1};
     ssize_t n=recvmsg(packet_fd,&msg,MSG_PEEK|MSG_TRUNC|MSG_DONTWAIT);
     if(n!=(ssize_t)peek_length||memcmp(observed,peek_bytes,peek_length))return -EUCLEAN;
-    printf("KER_SESSION_FRAME_CANCEL_REPLAY_PASS {\"prepared_replay\":true,\"cancel_replay\":true,\"datagram_queued\":true,\"pool_restored\":true}\n");
+    printf("KER_SESSION_FRAME_CANCEL_REPLAY_PASS {\"prepared_replay\":true,\"bad_commit_denied\":true,\"bad_cancel_denied\":true,\"cancel_replay\":true,\"datagram_queued\":true,\"pool_restored\":true}\n");
     fflush(stdout);return 0;
 }
 #endif
@@ -3759,7 +3787,8 @@ int main(int argc, char **argv)
     }
 #ifdef KER_SESSION_TEST_HOOKS
     if (tc3_observer_arg && (ring_pmd != 2 || strcmp(role, "secondary") || probe_only || probe_count)) return 2;
-    if (generation_frame_drain_test && (!generation_rings || ring_pmd!=2 || strcmp(role,"secondary"))) return 2;
+    if (generation_frame_drain_test && (!generation_rings || ring_pmd!=2 || strcmp(role,"secondary") ||
+        generation!=1)) return 2;
     if ((directory_test_gate_fd >= 0 || directory_test_replay_attached || generation_rings_test_replay) && strcmp(role, "secondary")) return 2;
     if (generation_rings_test_replay && !generation_rings) return 2;
     if (directory_test_gate_fd >= 0 && fcntl(directory_test_gate_fd, F_GETFD) < 0) return 2;

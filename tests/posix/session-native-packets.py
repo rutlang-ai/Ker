@@ -384,7 +384,6 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             wire, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
             wire.setblocking(False)
             wire_stop=threading.Event(); wire_frames=[]; wire_errors=[]; wire_lock=threading.Lock()
-            wire_last_activity=[time.monotonic()]
             host_mac=bytes.fromhex('024b45520001')
             def handoff_wire_peer():
                 try:
@@ -392,8 +391,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         readable,_,_=select.select([wire],[],[],0.02)
                         if not readable:continue
                         frame=wire.recv(65536)
-                        with wire_lock:
-                            wire_frames.append(frame);wire_last_activity[0]=time.monotonic()
+                        with wire_lock:wire_frames.append(frame)
                         if(len(frame)>=42 and frame[12:14]==b'\x08\x06' and frame[20:22]==b'\x00\x01' and
                             frame[28:32]==socket.inet_aton('198.18.0.2') and
                             frame[38:42]==socket.inet_aton('198.18.0.1')):
@@ -891,11 +889,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     require(runner.poll() is None,'runner exited before exact peer frame drain')
                     time.sleep(0.005)
                 proof=after.get('handoff_frame') or {}
-                quiet_deadline=time.monotonic()+2
-                while time.monotonic()<quiet_deadline:
-                    with wire_lock:
-                        quiet=time.monotonic()-wire_last_activity[0]>=0.05
-                    if quiet:break
+                capture_deadline=time.monotonic()+0.5
+                while time.monotonic()<capture_deadline:
+                    require(runner.poll() is None,'runner exited during bounded post-G wire observation')
                     time.sleep(0.005)
                 with wire_lock:
                     wire_snapshot=list(wire_frames);wire_error_snapshot=list(wire_errors)
