@@ -390,11 +390,24 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             '--paired-pmd', '--generation-rings']
         environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1',
             'KER_SESSION_TEST_HANDOFF_PENDING_HB': '1'}
-        if mode in ('frame-positive','frame-full'):
+        if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-queued',
+                'frame-death-consumer-prepared','frame-death-consumer-writing'):
             environment['KER_SESSION_TEST_FRAME_DRAIN'] = '1'
-        if mode=='frame-full':
+        if mode in ('frame-full','frame-death-queued'):
             environment['KER_SESSION_TEST_FRAME_FULL']='1'
             environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
+        if mode=='frame-death-prepared':
+            environment['KER_SESSION_TEST_FRAME_DEATH_PREPARED']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
+        if mode=='frame-death-consumer-prepared':
+            environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_PREPARED']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
+        if mode=='frame-death-consumer-writing':
+            environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_WRITING']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
+        if mode=='frame-death-queued':
+            environment['KER_SESSION_TEST_FRAME_DEATH_QUEUED']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT']='1'
         if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
             environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = mode.removeprefix('prepare-').upper()
         elif mode.startswith('bad-prepare-error'):
@@ -440,7 +453,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 except BaseException as error:
                     wire_errors.append(str(error));wire_stop.set()
             wire_thread=None
-            if mode in ('frame-positive','frame-full'):
+            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-consumer-prepared',
+                    'frame-death-consumer-writing'):
                 wire_thread=threading.Thread(target=handoff_wire_peer,daemon=True);wire_thread.start()
             def wait_wire_payload(sequence):
                 payload=f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
@@ -486,10 +500,17 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         startup_bytes=startup.hex()),sort_keys=True))
             handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
             runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
-            if mode in ('frame-positive','frame-full'):
+            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-queued',
+                    'frame-death-consumer-prepared','frame-death-consumer-writing'):
                 runner_environment['KER_SESSION_TEST_FRAME_REPLAY']='1'
                 runner_environment['KER_SESSION_TEST_FRAME_NEGATIVES']='1'
-            if mode=='frame-full': runner_environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
+            if mode in ('frame-full','frame-death-queued'):
+                runner_environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
+            if mode=='frame-death-queued': runner_environment['KER_SESSION_TEST_FRAME_DEATH_QUEUED']='1'
+            if mode=='frame-death-queued': runner_environment['KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT']='1'
+            if mode=='frame-death-prepared': runner_environment['KER_SESSION_TEST_FRAME_DEATH_PREPARED']='1'
+            if mode=='frame-death-consumer-prepared': runner_environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_PREPARED']='1'
+            if mode=='frame-death-consumer-writing': runner_environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_WRITING']='1'
             if mode != 'positive':
                 runner_environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
             runner_stderr_path = root / 'runner.stderr.log'
@@ -498,7 +519,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 '--wire-fd', str(endpoint.fileno()), '--library', str(args.library), '--stats', str(stats_path),
                 '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
                 '--test-live-handoff-fd', str(handoff_read), '--', str(args.app),
-                *(('--handoff-udp-trigger',) if mode in ('frame-positive','frame-full') else ('--signal-ready',))],
+                *(('--handoff-udp-trigger',) if mode in ('frame-positive','frame-full','frame-death-prepared',
+                    'frame-death-consumer-prepared','frame-death-consumer-writing') else ('--signal-ready',))],
                 pass_fds=(endpoint.fileno(), handoff_read), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=runner_stderr_handle, env=runner_environment, bufsize=0)
             runner_stderr_handle.close(); runner_stderr_handle = None
@@ -649,7 +671,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 handoff_census_before = connection.request(api.STATUS)
                 handoff_owner_before = connection.request(api.PMD_STATUS)
             finally: connection.close()
-            if mode in ('frame-positive','frame-full'):
+            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-consumer-prepared',
+                    'frame-death-consumer-writing'):
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP prewarm')
                 first_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(first_ack==dict(sequence=1,bytes=len(b'KER-A09-HANDOFF-UDP seq=1\n')),
@@ -657,7 +680,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 try: first_wire_frame=wait_wire_payload(1)
                 except RuntimeError as error: raise startup_failure(str(error)) from error
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
-            if mode not in ('frame-positive','frame-full'): os.close(handoff_write); handoff_write = -1
+            if mode not in ('frame-positive','frame-full','frame-death-prepared','frame-death-consumer-prepared',
+                    'frame-death-consumer-writing'): os.close(handoff_write); handoff_write = -1
             if mode == 'handoff-control-hup':
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
@@ -941,7 +965,135 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 protocol['replay_prepare']['same_response'] and
                 not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'handoff changed process/endpoint identity or failed exact PREPARE/replay validation')
-            if mode == 'frame-positive':
+            if mode=='frame-death-prepared':
+                require(os.write(handoff_write,b'U')==1,'could not queue original LKL PREPARED-death datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge the PREPARED-death datagram')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    try: after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError): after={}
+                    if after.get('handoff_frame_death'):break
+                    require(runner.poll() is None,'runner exited before PREPARED-death recovery proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                require(proof.get('stage')=='prepared' and proof.get('pidfd_dead') is True and
+                    proof.get('producer_status')==-signal.SIGKILL and
+                    proof.get('prepared',{}).get('packet_still_queued') is True and
+                    proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
+                    proof.get('owner_after_reap',{}).get('generation')==1 and
+                    proof.get('reap',{}).get('tx')==proof.get('prepared',{}).get('tx_before') and
+                    proof.get('reap',{}).get('packet_pool_in_use')==proof.get('prepared',{}).get('pool_before') and
+                    proof.get('reap',{}).get('counters')==proof.get('prepared',{}).get('counters_before'),
+                    'PREPARED producer death did not reclaim exactly one pending packet lease')
+            elif mode=='frame-death-consumer-prepared':
+                require(os.write(handoff_write,b'U')==1,'could not queue original LKL consumer-death datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge consumer-death datagram')
+                deadline=time.monotonic()+12
+                while time.monotonic()<deadline:
+                    try: after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError): after={}
+                    if after.get('handoff_frame_death'):break
+                    require(runner.poll() is None,'runner exited before consumer-death recovery proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                prepared=proof.get('prepared',{}); preserved=proof.get('preserved',{}); cancelled=proof.get('cancelled',{})
+                require(proof.get('stage')=='consumer-prepared' and
+                    prepared.get('packet_still_queued') is True and
+                    prepared.get('tx_prepared')==prepared.get('tx_before') and
+                    prepared.get('pool_prepared')==prepared.get('pool_before')+1 and
+                    prepared.get('counters_prepared')==prepared.get('counters_before') and
+                    proof.get('consumer_pidfd_dead') is True and proof.get('consumer_status')==-signal.SIGKILL and
+                    proof.get('producer_status')==1 and
+                    proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
+                    proof.get('pmd_owner_after_reap',{}).get('token')==0 and
+                    preserved.get('tx')==prepared.get('tx_before') and
+                    preserved.get('packet_pool_in_use')==prepared.get('pool_before')+1 and
+                    preserved.get('counters')==prepared.get('counters_before') and
+                    cancelled.get('tx')==prepared.get('tx_before') and
+                    cancelled.get('packet_pool_in_use')==prepared.get('pool_before') and
+                    cancelled.get('counters')==prepared.get('counters_before') and
+                    proof.get('final_census',{}).get('process')==0 and
+                    proof.get('producer_pid')==before['attached']['pid'] and
+                    proof.get('consumer_pid')==before['handoff_peer_attached']['pid'],
+                    'consumer death did not preserve then exactly cancel its pending packet lease: '+repr(proof))
+            elif mode=='frame-death-consumer-writing':
+                snapshot=api.Connection(control_path)
+                try: writing_census_before=snapshot.request(api.STATUS);writing_owner_before=snapshot.request(api.PMD_STATUS)
+                finally:snapshot.close()
+                require(os.write(handoff_write,b'U')==1,'could not queue original LKL WRITING-death datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge WRITING-death datagram')
+                deferred=record(primary,'KER_SESSION_TEST_REAP_DEFERRED')
+                require(deferred.get('generation')==1 and deferred.get('pid')==before['handoff_peer_attached']['pid'] and
+                    deferred.get('status')==-errno.EBUSY and deferred.get('attempt')==1 and
+                    deferred.get('full_reap_attempts')==0 and deferred.get('tx_before')==deferred.get('tx_after') and
+                    deferred.get('pool_before')==deferred.get('pool_after') and
+                    deferred.get('counters_before')==deferred.get('counters_after'),
+                    'dead consumer WRITING reap did not defer with unchanged ring/pool/counters: '+repr(deferred))
+                snapshot=api.Connection(control_path)
+                try: writing_census_after=snapshot.request(api.STATUS);writing_owner_after=snapshot.request(api.PMD_STATUS)
+                finally:snapshot.close()
+                require(writing_census_after==writing_census_before and writing_owner_after==writing_owner_before and
+                    writing_owner_after.get('token')==after['handoff']['new_owner_key'],
+                    'EBUSY defer changed exact registered actors or the dead consumer PMD owner snapshot')
+                require(not select.select([primary.stdout],[],[],0)[0],
+                    'resident retried the deferred dead-consumer reaper before the producer completion event')
+                require(os.write(handoff_write,b'R')==1,'could not release WRITING actor after verifying EBUSY defer')
+                retry=record(primary,'KER_SESSION_TEST_FRAME_REAP_RETRY')
+                require(isinstance(retry.get('producer'),int) and retry.get('producer')>=0 and
+                    retry.get('consumer')==deferred.get('client') and retry.get('sequence',0)>0 and
+                    retry.get('command')==api.FRAME_COMMIT and retry.get('attempt')==2 and
+                    retry.get('full_reap_attempts')==1 and
+                    retry.get('status')==1 and retry.get('resolved') is True,
+                    'exact queued COMMIT did not produce one bounded successful dead-consumer retry: '+repr(retry))
+                deadline=time.monotonic()+12
+                while time.monotonic()<deadline:
+                    try:after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError):after={}
+                    if after.get('handoff_frame_death',{}).get('stage')=='consumer-writing':break
+                    require(runner.poll() is None,'runner exited before WRITING recovery proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                write_complete=proof.get('write_complete',{});cancelled=proof.get('cancelled',{})
+                require(proof.get('stage')=='consumer-writing' and
+                    proof.get('consumer_pidfd_dead') is True and proof.get('consumer_status')==-signal.SIGKILL and
+                    proof.get('producer_status')==1 and write_complete.get('pool')==deferred.get('pool_before')+1 and
+                    write_complete.get('counters')==deferred.get('counters_after') and
+                    cancelled.get('status')==-errno.ESTALE and cancelled.get('tx')==deferred.get('tx_after') and
+                    cancelled.get('pool')==deferred.get('pool_before') and
+                    cancelled.get('counters')==deferred.get('counters_after') and
+                    proof.get('final_census',{}).get('process')==0 and proof.get('final_pmd_owner',{}).get('token')==0,
+                    'consumer WRITING death did not defer, complete, then stale-cancel exactly: '+repr(proof))
+            elif mode=='frame-death-queued':
+                deadline=time.monotonic()+15
+                while time.monotonic()<deadline:
+                    try: after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError): after={}
+                    if after.get('handoff_frame_death'):break
+                    require(runner.poll() is None,'runner exited before queued-death peer drain proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                fill=proof.get('fill',{});drain=proof.get('drain',{})
+                require(proof.get('stage')=='queued' and proof.get('pidfd_dead') is True and
+                    proof.get('producer_status')==-signal.SIGKILL and
+                    proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
+                    proof.get('owner_after_reap',{}).get('generation')==1 and
+                    fill.get('count')==64 and fill.get('pool_after')==64 and
+                    proof.get('retained',{}).get('tx')==64 and proof.get('retained',{}).get('packet_pool_in_use')==64 and
+                    proof.get('retained',{}).get('counters')==fill.get('counters_after') and
+                    drain.get('count')==64 and drain.get('tx_after')==0 and
+                    drain.get('pool_before')==64 and drain.get('pool_after')==0 and
+                    drain.get('objects')==fill.get('objects') and
+                    drain.get('counters_before')==fill.get('counters_after') and
+                    drain.get('counters_after')==drain.get('counters_before'),
+                    'live consumer did not drain the exact retained TX journal after producer death')
+                if handoff_write>=0: os.close(handoff_write);handoff_write=-1
+            elif mode == 'frame-positive':
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP post-PARKED frame')
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
@@ -1021,10 +1173,18 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             output, _ = runner.communicate(timeout=20)
             errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
             finished = json.loads(stats_path.read_text())
+            expected_worker_code=(1 if mode=='frame-death-consumer-prepared' else
+                -signal.SIGKILL if mode in ('frame-death-prepared','frame-death-queued') else 0)
+            expected_peer_code=-signal.SIGKILL if mode=='frame-death-consumer-prepared' else 0
+            expected_worker_cleanup=(finished.get('worker_code')==expected_worker_code and finished.get('packet') is None
+                if mode in ('frame-death-prepared','frame-death-queued','frame-death-consumer-prepared') else
+                finished.get('worker_code')==0 and finished.get('packet',{}).get('status')==0)
             require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
                 finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and
-                finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and
-                finished.get('handoff_peer_code') == 0 and finished.get('handoff_peer_packet', {}).get('status') == 0 and
+                expected_worker_cleanup and
+                finished.get('handoff_peer_code') == expected_peer_code and
+                (finished.get('handoff_peer_packet') is None if expected_peer_code else
+                    finished.get('handoff_peer_packet', {}).get('status') == 0) and
                 finished.get('native', {}).get('buffers_live') == 0,
                 'live handoff application/worker teardown failed: ' + repr(finished) + errors.decode())
             require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
@@ -2081,6 +2241,14 @@ def main():
     print('PASS: original LKL post-PARKED UDP frame is journaled before prepare and drained by the admitted peer as the exact mbuf pointer/bytes once')
     run_live_handoff_profile(args, api, plugin_paths, mode='frame-full')
     print('PASS: a full actual generation TX ring rejects/cancels the frame and returns the ring/pool to measured ownership')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-prepared')
+    print('PASS: exact producer pidfd death after PREPARE reclaims the pending lease once')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-consumer-prepared')
+    print('PASS: exact consumer pidfd death preserves a prepared lease until producer cancellation')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-consumer-writing')
+    print('PASS: consumer death during packet WRITING defers reap without mutation, then cancels after write completion')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-queued')
+    print('PASS: live opposite-generation consumer drains exact queued objects after producer death')
     if args.handoff_negative_profiles:
         for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
                 'handoff-control-hup',

@@ -76,11 +76,13 @@ def tap_interfaces_for_process(pid, *, fdinfo_dir=None):
 
 
 def validate_interrupted_cleanup(worker_code, packet_stats, *, packet_expected=True, app_launched=False,
-                                 app_code=None, startup=b'', native_stats=None):
+                                 app_code=None, startup=b'', native_stats=None, worker_expected_code=None):
     """Validate signal cleanup without overriding the application's signal semantics."""
-    if worker_code != 0:
+    if worker_expected_code is not None and worker_code == worker_expected_code and packet_stats is None:
+        pass
+    elif worker_code != 0:
         raise RuntimeError('secondary packet cleanup failed during signal cancellation')
-    if packet_expected:
+    elif packet_expected:
         if not isinstance(packet_stats, dict) or packet_stats.get('status') != 0:
             raise RuntimeError('secondary packet worker did not report clean signal teardown')
     elif packet_stats is not None:
@@ -137,7 +139,7 @@ def run_session(args, api):
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
-    handoff_modes = {'positive', 'frame-positive', 'frame-full', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    handoff_modes = {'positive', 'frame-positive', 'frame-full', 'frame-death-prepared', 'frame-death-queued', 'frame-death-consumer-prepared', 'frame-death-consumer-writing', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
         'handoff-control-hup',
         'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
         'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
@@ -156,7 +158,10 @@ def run_session(args, api):
     worker = peer_worker = app = None
     worker_pidfd = -1
     app_pidfd = -1
+    peer_worker_pidfd = -1
     handoff_udp_ready = False
+    frame_death_complete = False
+    frame_death_worker_expected_code = None
     peer_control_w = peer_wire_fd = -1
     peer_packet_worker = peer_packet_app = peer_mtu_worker = peer_mtu_app = None
     owned = {args.wire_fd}
@@ -239,7 +244,7 @@ def run_session(args, api):
         raise RuntimeError('timed out waiting for ' + prefix)
 
     def start_handoff_peer(ticket):
-        nonlocal peer_worker, peer_control_w, peer_packet_worker, peer_packet_app
+        nonlocal peer_worker, peer_control_w, peer_packet_worker, peer_packet_app, peer_worker_pidfd
         nonlocal peer_mtu_worker, peer_mtu_app
         if handoff_fd is None:
             return
@@ -260,11 +265,16 @@ def run_session(args, api):
             peer_arguments.append('--test-generation-frame-drain')
         if os.environ.get('KER_SESSION_TEST_FRAME_DRAIN_FULL') == '1':
             peer_environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
+        if os.environ.get('KER_SESSION_TEST_FRAME_DEATH_EMPTY') == '1':
+            peer_environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
+        if os.environ.get('KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT') == '1':
+            peer_environment['KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT']='1'
         peer_arguments.extend(['--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)])
         peer_worker = subprocess.Popen(peer_arguments,
             pass_fds=(control_r, ticket_r, peer_packet_worker.fileno(), peer_wire_fd, peer_mtu_worker.fileno()),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, env=peer_environment, bufsize=0)
+        peer_worker_pidfd=os.pidfd_open(peer_worker.pid)
         close(control_r); close(ticket_r)
         peer_packet_worker.close(); peer_packet_worker = None
         peer_mtu_worker.close(); peer_mtu_worker = None
@@ -299,7 +309,7 @@ def run_session(args, api):
         publish()
 
     def perform_test_handoff():
-        nonlocal control_w, handoff_udp_ready
+        nonlocal control_w, handoff_udp_ready, frame_death_complete, frame_death_worker_expected_code
         if peer_worker is None or app is None or app.poll() is not None or worker.poll() is not None:
             raise RuntimeError('live handoff fixture lost its original app/owner before transition')
         old_tun_interfaces_before = tap_interfaces_for_process(worker.pid)
@@ -472,7 +482,9 @@ def run_session(args, api):
                 quiesced_sent=quiesced_sent, peer=metrics.get('handoff_negative_peer')))
             publish()
             raise RuntimeError('resident failed closed after the expected invalid QUIESCED')
-        if handoff_mode not in (None, 'positive', 'frame-positive', 'frame-full'):
+        if handoff_mode not in (None, 'positive', 'frame-positive', 'frame-full',
+                'frame-death-prepared','frame-death-queued','frame-death-consumer-prepared',
+                'frame-death-consumer-writing'):
             raise RuntimeError('test handoff mode is not a fatal profile')
         parked = wait_marker(worker, 'KER_SESSION_PMD_PARKED')
         if (boundary.get('idle') is not True or boundary.get('owner_key') != metrics['grant']['queue_owner_key'] or
@@ -518,7 +530,7 @@ def run_session(args, api):
         metrics['stage'] = 'handoff-complete'
         handoff_udp_ready = True
         publish()
-        if handoff_mode=='frame-full':
+        if handoff_mode in ('frame-full','frame-death-queued'):
             if os.write(control_w,b'F')!=1: raise RuntimeError('could not request actual generation TX ring fill')
             filled=wait_marker(worker,'KER_SESSION_FRAME_FULL_FILLED')
             if (not isinstance(filled.get('count'),int) or filled['count']<=0 or
@@ -533,6 +545,51 @@ def run_session(args, api):
                 raise RuntimeError('actual generation TX ring fill did not report a positive capacity')
             metrics['frame_full_capacity']=filled['count']
             metrics['frame_full_fill']=filled;publish()
+            if handoff_mode=='frame-death-queued':
+                wait_pidfd_process_stopped(worker_pidfd,worker.pid)
+                if select.select([worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('queued producer pidfd became readable before SIGKILL')
+                signal.pidfd_send_signal(worker_pidfd,signal.SIGKILL)
+                dead_output,_=worker.communicate(timeout=10)
+                if worker.returncode!=-signal.SIGKILL or not select.select([worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('queued producer did not die on its captured pidfd')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    snapshot_connection=api.Connection(args.socket)
+                    try: census=snapshot_connection.request(api.STATUS)
+                    finally: snapshot_connection.close()
+                    if census['process']==1 and census['slot']==1:break
+                    time.sleep(0.01)
+                else:raise RuntimeError('resident did not reap the exact queued producer')
+                snapshot_connection=api.Connection(args.socket)
+                try: reap_owner=snapshot_connection.request(api.PMD_STATUS)
+                finally: snapshot_connection.close()
+                if (reap_owner['token']!=expected_key or reap_owner['generation']!=1 or
+                    reap_owner['slot']!=metrics['handoff_peer_attached']['slot']):
+                    raise RuntimeError('producer reaping changed the exact live consumer owner')
+                if peer_control_w<0 or os.write(peer_control_w,b'S')!=1:
+                    raise RuntimeError('could not request queued-object snapshot before drain')
+                retained=ready('KER_SESSION_FRAME_DEATH_SNAPSHOT',process=peer_worker)
+                if (retained.get('tx')!=filled['count'] or retained.get('packet_pool_in_use')!=filled['count'] or
+                    retained.get('counters')!=filled.get('counters_after')):
+                    raise RuntimeError('reaping changed queued TX objects/counters before live consumer drain')
+                if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
+                    raise RuntimeError('could not request live-consumer drain after producer death')
+                drained_full=ready('KER_SESSION_FRAME_FULL_DRAINED',process=peer_worker)
+                if (drained_full.get('count')!=filled['count'] or drained_full.get('tx_after')!=0 or
+                    drained_full.get('pool_before')!=filled['count'] or drained_full.get('pool_after')!=0 or
+                    drained_full.get('objects')!=filled.get('objects') or
+                    drained_full.get('counters_before')!=filled.get('counters_after') or
+                    drained_full.get('counters_after')!=drained_full.get('counters_before')):
+                    raise RuntimeError('live consumer did not drain exact retained objects after producer death')
+                metrics['handoff_frame_death']=dict(stage='queued',producer_pid=worker.pid,
+                    producer_status=worker.returncode,pidfd_dead=True,census=census,
+                    stopped=True,owner_after_reap=reap_owner,retained=retained,
+                    output=dead_output.decode(errors='replace'),fill=filled,drain=drained_full)
+                frame_death_complete=True
+                frame_death_worker_expected_code=-signal.SIGKILL
+                metrics['stage']='handoff-complete';publish()
+                return
 
     def finish_signal_before_app(packet_expected):
         nonlocal completed
@@ -587,7 +644,11 @@ def run_session(args, api):
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', str(args.generation), '--process', str(args.process),
             *(['--generation-rings'] if getattr(args, 'generation_rings', False) else []),
-            *(['--test-generation-frame-source'] if os.environ.get('KER_SESSION_TEST_FRAME_FULL')=='1' else []),
+            *(['--test-generation-frame-source'] if os.environ.get('KER_SESSION_TEST_FRAME_FULL')=='1' or
+                os.environ.get('KER_SESSION_TEST_FRAME_DEATH_PREPARED')=='1' or
+                os.environ.get('KER_SESSION_TEST_FRAME_DEATH_QUEUED')=='1' or
+                os.environ.get('KER_SESSION_TEST_FRAME_DEATH_CONSUMER_PREPARED')=='1' or
+                os.environ.get('KER_SESSION_TEST_FRAME_DEATH_CONSUMER_WRITING')=='1' else []),
             '--packet-fd', str(packet_worker.fileno()), '--wire-fd', str(args.wire_fd),
             '--mtu-fd', str(mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
@@ -666,8 +727,9 @@ def run_session(args, api):
                     raise RuntimeError('native startup/control output exceeded its bound')
 
         def trigger_handoff_udp():
-            nonlocal handoff_udp_sequence
-            if handoff_mode not in ('frame-positive','frame-full') or app is None or app_pidfd < 0 or app.poll() is not None:
+            nonlocal handoff_udp_sequence, frame_death_complete, frame_death_worker_expected_code, peer_control_w
+            if handoff_mode not in ('frame-positive','frame-full','frame-death-prepared',
+                    'frame-death-consumer-prepared','frame-death-consumer-writing') or app is None or app_pidfd < 0 or app.poll() is not None:
                 raise RuntimeError('UDP handoff trigger is available only for the live positive app')
             sequence = handoff_udp_sequence + 1
             if (sequence == 1 and handoff_udp_ready) or (sequence == 2 and not handoff_udp_ready):
@@ -695,8 +757,142 @@ def run_session(args, api):
                 bytes=len(payload))), flush=True)
             if sequence != 2:
                 return
+            if handoff_mode=='frame-death-consumer-writing':
+                writing=ready('KER_SESSION_FRAME_WRITING_HELD')
+                wait_pidfd_process_stopped(worker_pidfd,worker.pid)
+                if select.select([worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('WRITING producer pidfd became readable before consumer death')
+                if peer_worker_pidfd<0 or select.select([peer_worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('opposite-generation consumer pidfd was not live before SIGKILL')
+                signal.pidfd_send_signal(peer_worker_pidfd,signal.SIGKILL)
+                peer_output,peer_errors=peer_worker.communicate(timeout=10)
+                if peer_worker.returncode!=-signal.SIGKILL or not select.select([peer_worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('WRITING consumer did not die on its captured pidfd')
+                if peer_control_w>=0:close(peer_control_w);peer_control_w=-1
+                metrics['handoff_frame_death']={
+                    'stage':'consumer-writing-waiting','producer_pid':worker.pid,
+                    'consumer_pid':peer_worker.pid,'consumer_status':peer_worker.returncode,
+                    'consumer_pidfd_dead':True,'writing':writing,
+                    'consumer_output':peer_output.decode(errors='replace'),
+                    'consumer_stderr':peer_errors.decode(errors='replace')}
+                publish()
+                continue_deadline=time.monotonic()+10
+                while time.monotonic()<continue_deadline:
+                    readable,_,_=select.select([handoff_fd],[],[],0.05)
+                    if not readable:
+                        if app.poll() is not None:raise RuntimeError('application exited while WRITING recovery was paused')
+                        continue
+                    command=os.read(handoff_fd,1)
+                    if command!=b'R':raise RuntimeError('invalid WRITING recovery continuation command')
+                    break
+                else:raise RuntimeError('launcher did not receive bounded WRITING recovery continuation')
+                signal.pidfd_send_signal(worker_pidfd,signal.SIGCONT)
+                write_complete=ready('KER_SESSION_FRAME_CONSUMER_DEATH_WRITE_COMPLETE')
+                cancelled=ready('KER_SESSION_FRAME_CONSUMER_DEATH_CANCELLED')
+                producer_output,_=worker.communicate(timeout=10)
+                if worker.returncode!=1:raise RuntimeError('WRITING producer did not fail stale COMMIT closed')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    snap=api.Connection(args.socket)
+                    try:final_census=snap.request(api.STATUS);final_owner=snap.request(api.PMD_STATUS)
+                    finally:snap.close()
+                    if final_census['process']==0 and final_owner['token']==0:break
+                    time.sleep(0.01)
+                else:raise RuntimeError('WRITING actor recovery did not retire both dead registrations')
+                metrics['handoff_frame_death'].update(stage='consumer-writing',
+                    producer_status=worker.returncode,write_complete=write_complete,cancelled=cancelled,
+                    producer_output=producer_output.decode(errors='replace'),final_census=final_census,
+                    final_pmd_owner=final_owner)
+                frame_death_complete=True
+                frame_death_worker_expected_code=1
+                metrics['stage']='handoff-complete';publish()
+                return
+            if handoff_mode in ('frame-death-prepared','frame-death-consumer-prepared'):
+                prepared=ready('KER_SESSION_FRAME_PREPARED_FOR_DEATH')
+                wait_pidfd_process_stopped(worker_pidfd,worker.pid)
+                if select.select([worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('PREPARED producer pidfd became readable before SIGKILL')
+                if handoff_mode=='frame-death-consumer-prepared':
+                    if peer_worker_pidfd<0 or select.select([peer_worker_pidfd],[],[],0)[0]:
+                        raise RuntimeError('opposite-generation consumer pidfd was not live before SIGKILL')
+                    signal.pidfd_send_signal(peer_worker_pidfd,signal.SIGKILL)
+                    peer_output,peer_errors=peer_worker.communicate(timeout=10)
+                    if peer_worker.returncode!=-signal.SIGKILL or not select.select([peer_worker_pidfd],[],[],0)[0]:
+                        raise RuntimeError('consumer did not die on its captured pidfd')
+                    if peer_control_w>=0:close(peer_control_w);peer_control_w=-1
+                    deadline=time.monotonic()+10
+                    while time.monotonic()<deadline:
+                        snapshot_connection=api.Connection(args.socket)
+                        try: census=snapshot_connection.request(api.STATUS)
+                        finally:snapshot_connection.close()
+                        if census['process']==1 and census['slot']==1:break
+                        time.sleep(0.01)
+                    else:raise RuntimeError('resident did not reap exact dead consumer')
+                    snapshot_connection=api.Connection(args.socket)
+                    try: owner_after_reap=snapshot_connection.request(api.PMD_STATUS)
+                    finally:snapshot_connection.close()
+                    if owner_after_reap['token']!=0:
+                        raise RuntimeError('dead consumer PMD lease was not reclaimed')
+                    signal.pidfd_send_signal(worker_pidfd,signal.SIGCONT)
+                    preserved=wait_marker(worker,'KER_SESSION_FRAME_CONSUMER_DEATH_PENDING_PRESERVED')
+                    cancelled=wait_marker(worker,'KER_SESSION_FRAME_CONSUMER_DEATH_CANCELLED')
+                    worker_output,_=worker.communicate(timeout=10)
+                    if worker.returncode!=1:
+                        raise RuntimeError('producer did not return after the exact stale-consumer cancellation')
+                    deadline=time.monotonic()+10
+                    while time.monotonic()<deadline:
+                        snapshot_connection=api.Connection(args.socket)
+                        try: final_census=snapshot_connection.request(api.STATUS)
+                        finally:snapshot_connection.close()
+                        if final_census['process']==0:break
+                        time.sleep(0.01)
+                    else:raise RuntimeError('resident did not reap the producer after stale-consumer cancellation')
+                    metrics['handoff_frame_death']=dict(stage='consumer-prepared',producer_pid=worker.pid,
+                        producer_status=worker.returncode,consumer_pid=peer_worker.pid,
+                        consumer_status=peer_worker.returncode,consumer_pidfd_dead=True,
+                        census=census,final_census=final_census,pmd_owner_after_reap=owner_after_reap,
+                        prepared=prepared,preserved=preserved,cancelled=cancelled,
+                        consumer_output=peer_output.decode(errors='replace'),consumer_stderr=peer_errors.decode(errors='replace'),
+                        producer_output=worker_output.decode(errors='replace'))
+                    frame_death_complete=True
+                    frame_death_worker_expected_code=1
+                    metrics['stage']='handoff-complete';publish()
+                    return
+                signal.pidfd_send_signal(worker_pidfd,signal.SIGKILL)
+                dead_output,_=worker.communicate(timeout=10)
+                if worker.returncode!=-signal.SIGKILL or not select.select([worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('PREPARED producer did not die on its captured pidfd')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    snapshot_connection=api.Connection(args.socket)
+                    try: census=snapshot_connection.request(api.STATUS)
+                    finally: snapshot_connection.close()
+                    if census['process']==1 and census['slot']==1:break
+                    time.sleep(0.01)
+                else:raise RuntimeError('resident did not reap the exact PREPARED producer')
+                snapshot_connection=api.Connection(args.socket)
+                try: reap_owner=snapshot_connection.request(api.PMD_STATUS)
+                finally: snapshot_connection.close()
+                if (reap_owner['token']!=expected_key or reap_owner['generation']!=1 or
+                    reap_owner['slot']!=metrics['handoff_peer_attached']['slot']):
+                    raise RuntimeError('PREPARED producer reap changed the exact live consumer owner')
+                if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
+                    raise RuntimeError('could not request PREPARED lease recovery snapshot')
+                reaped=ready('KER_SESSION_FRAME_DEATH_REAPED',process=peer_worker)
+                if reaped.get('tx')!=prepared.get('tx_before') or \
+                    reaped.get('packet_pool_in_use')!=prepared.get('pool_before') or \
+                    reaped.get('counters')!=prepared.get('counters_before'):
+                    raise RuntimeError('PREPARED producer death did not restore packet-pool baseline')
+                metrics['handoff_frame_death']=dict(stage='prepared',producer_pid=worker.pid,
+                    producer_status=worker.returncode,pidfd_dead=True,prepared=prepared,
+                    stopped=True,owner_after_reap=reap_owner,census=census,
+                    output=dead_output.decode(errors='replace'),reap=reaped)
+                frame_death_complete=True
+                frame_death_worker_expected_code=-signal.SIGKILL
+                metrics['stage']='handoff-complete';publish()
+                return
             if handoff_mode=='frame-full':
-                full=ready(worker,'KER_SESSION_FRAME_FULL_COMMIT_CANCELLED')
+                full=ready('KER_SESSION_FRAME_FULL_COMMIT_CANCELLED')
                 if (full.get('status')!=-errno.ENOBUFS or full.get('pool_restored') is not True or
                     full.get('tx_after')!=metrics.get('frame_full_capacity') or
                     full.get('tx_capacity')!=metrics.get('frame_full_capacity') or
@@ -709,7 +905,7 @@ def run_session(args, api):
                     raise RuntimeError('full TX ring did not cancel the prepared original frame exactly')
                 if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
                     raise RuntimeError('could not request full-ring peer drain')
-                drained_full=ready(peer_worker,'KER_SESSION_FRAME_FULL_DRAINED')
+                drained_full=ready('KER_SESSION_FRAME_FULL_DRAINED',process=peer_worker)
                 if (drained_full.get('tx_after')!=0 or drained_full.get('count')!=metrics.get('frame_full_capacity') or
                     drained_full.get('pool_before')!=metrics.get('frame_full_capacity') or
                     drained_full.get('pool_after')!=0 or
@@ -720,14 +916,14 @@ def run_session(args, api):
                 metrics['handoff_frame_full']=dict(fill=metrics['frame_full_fill'],
                     commit_cancel=full,drain=drained_full)
                 publish();return
-            committed = ready(worker, 'KER_SESSION_FRAME_COMMITTED')
+            committed = ready('KER_SESSION_FRAME_COMMITTED')
             if (committed.get('queue') != 0 or committed.get('generation') != 0 or
                 committed.get('packet_pointer') is None or committed.get('object_index') is None or
                 committed.get('pool_tag') is None or payload.hex() not in committed.get('frame_hex', '')):
                 raise RuntimeError('parked original LKL endpoint did not commit the exact second UDP frame')
             if peer_control_w < 0 or os.write(peer_control_w, b'G') != 1:
                 raise RuntimeError('could not request exact admitted-peer TX journal drain')
-            drained = ready(peer_worker, 'KER_SESSION_FRAME_DRAINED')
+            drained = ready('KER_SESSION_FRAME_DRAINED', process=peer_worker)
             for field in ('object_index', 'pool_tag', 'packet_pointer', 'length', 'frame_hex'):
                 if drained.get(field) != committed.get(field):
                     raise RuntimeError('peer TX drain changed committed packet ' + field)
@@ -745,6 +941,8 @@ def run_session(args, api):
 
         while app.poll() is None:
             if received_signal is not None:
+                if handoff_fd is not None:
+                    close(handoff_fd); handoff_fd=None
                 app.terminate()
                 try: app.wait(timeout=5)
                 except subprocess.TimeoutExpired:
@@ -757,7 +955,8 @@ def run_session(args, api):
                     if data == b'U':
                         trigger_handoff_udp()
                     elif data == b'H':
-                        if handoff_mode not in ('frame-positive','frame-full'):
+                        if handoff_mode not in ('frame-positive','frame-full','frame-death-prepared',
+                                'frame-death-consumer-prepared'):
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
                     else:
@@ -770,7 +969,7 @@ def run_session(args, api):
                 if stopping_at is None: stopping_at = time.monotonic()
                 if time.monotonic() - stopping_at > 5:
                     raise RuntimeError('native Linux teardown timed out')
-            elif worker.poll() is not None and app.poll() is None:
+            elif worker.poll() is not None and app.poll() is None and not frame_death_complete:
                 # Consume a destructor notification before classifying loss.
                 drain_startup()
                 if b'KER_NATIVE_STOPPING\n' not in startup:
@@ -813,12 +1012,21 @@ def run_session(args, api):
         metrics.update(packet=packet_stats, native=native_stats, worker_code=worker.returncode, app_code=code,
             handoff_peer_packet=peer_packet_stats, handoff_peer_code=peer_code)
         release(ticket)
-        validate_handoff_peer_cleanup(metrics, peer_worker is not None, peer_code, peer_packet_stats)
-        if worker.returncode or packet_stats is None or packet_stats['status']:
+        if handoff_mode == 'frame-death-consumer-prepared':
+            if peer_code != -signal.SIGKILL or peer_packet_stats is not None:
+                raise RuntimeError('intentional consumer death lost its exact pidfd outcome')
+        else:
+            validate_handoff_peer_cleanup(metrics, peer_worker is not None, peer_code, peer_packet_stats)
+        if frame_death_complete:
+            if worker.returncode!=frame_death_worker_expected_code or packet_stats is not None:
+                raise RuntimeError('intentional actor-death profile lost its exact pidfd outcome')
+        elif worker.returncode or packet_stats is None or packet_stats['status']:
             raise RuntimeError('secondary packet cleanup failed')
         if received_signal is not None:
-            native_cleanup = validate_interrupted_cleanup(worker.returncode, packet_stats, app_launched=True,
-                app_code=code, startup=startup, native_stats=native_stats)
+            native_cleanup = validate_interrupted_cleanup(worker.returncode, packet_stats,
+                packet_expected=not frame_death_complete, app_launched=True,
+                app_code=code, startup=startup, native_stats=native_stats,
+                worker_expected_code=frame_death_worker_expected_code if frame_death_complete else None)
             metrics.update(native_cleanup=native_cleanup, stage='interrupted'); publish(); completed = True
             return 128 + received_signal
         if code:
@@ -831,28 +1039,36 @@ def run_session(args, api):
         return 0
     finally:
         try:
-            if app_pidfd >= 0:
-                os.close(app_pidfd)
-                app_pidfd = -1
             if worker_pidfd >= 0:
                 if worker is not None and pidfd_process_stopped(worker_pidfd, worker.pid):
                     resume_pidfd_if_live(worker_pidfd)
-                os.close(worker_pidfd)
-                worker_pidfd = -1
             if app is not None and app.poll() is None:
-                app.terminate()
+                if app_pidfd >= 0: signal.pidfd_send_signal(app_pidfd, signal.SIGTERM)
+                else: app.terminate()
                 try: app.wait(timeout=5)
-                except subprocess.TimeoutExpired: app.kill(); app.wait()
+                except subprocess.TimeoutExpired:
+                    if app_pidfd >= 0: signal.pidfd_send_signal(app_pidfd, signal.SIGKILL)
+                    else: app.kill()
+                    app.wait()
             for fd in tuple(owned): close(fd)
             if worker is not None and worker.poll() is None:
                 try: worker.wait(timeout=5)
-                except subprocess.TimeoutExpired: worker.kill(); worker.wait()
+                except subprocess.TimeoutExpired:
+                    if worker_pidfd >= 0: signal.pidfd_send_signal(worker_pidfd, signal.SIGKILL)
+                    else: worker.kill()
+                    worker.wait()
             if peer_worker is not None and peer_worker.poll() is None:
                 try: peer_worker.wait(timeout=5)
-                except subprocess.TimeoutExpired: peer_worker.kill(); peer_worker.wait()
+                except subprocess.TimeoutExpired:
+                    if peer_worker_pidfd >= 0: signal.pidfd_send_signal(peer_worker_pidfd, signal.SIGKILL)
+                    else: peer_worker.kill()
+                    peer_worker.wait()
             for endpoint in (packet_worker, packet_app, mtu_worker, mtu_app): endpoint.close()
             for endpoint in (peer_packet_worker, peer_packet_app, peer_mtu_worker, peer_mtu_app):
                 if endpoint is not None: endpoint.close()
+            for pidfd_name in ('worker_pidfd','peer_worker_pidfd','app_pidfd'):
+                exact_pidfd=locals()[pidfd_name]
+                if exact_pidfd>=0: os.close(exact_pidfd)
             connection.close()
             if not completed:
                 metrics.update(stage='failed', worker_code=worker.poll() if worker is not None else None,

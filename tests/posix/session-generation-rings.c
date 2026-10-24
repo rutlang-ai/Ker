@@ -591,14 +591,15 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
     if(live_other){
         if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
             wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||
-            ker_generation_reap_dead(r,&producer)!=-EBUSY||
+            ker_generation_reap_ready(r,&producer)!=-EBUSY||
             rte_mempool_in_use_count(pool)!=pool_before+1||rte_ring_count(rx)||rte_ring_count(tx)||
             ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
         close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
         atomic_store_explicit(&c->transition_release,1,memory_order_release);
         if(wait_child_bounded(pids[1],&status)||!WIFEXITED(status)||WEXITSTATUS(status))CRASH_FAIL();
         pids[1]=-1;
-        if(ker_generation_reap_dead(r,&producer)||rte_mempool_in_use_count(pool)!=pool_before||
+        if(ker_generation_reap_ready(r,&producer)||ker_generation_reap_dead(r,&producer)||
+            rte_mempool_in_use_count(pool)!=pool_before||
             rte_ring_count(rx)||rte_ring_count(tx)||
             ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
         if(ker_generation_reap_dead(r,&consumer))CRASH_FAIL();

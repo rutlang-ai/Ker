@@ -178,6 +178,9 @@ int ker_generation_test_active_counts(struct ker_generation_rings *rings,uint32_
 #endif
 
 /* Reclaim only after the exact registered PIDFD is readable. */
+/* Read-only preflight: returns -EBUSY while any live actor is active. */
+int ker_generation_reap_ready(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *owner);
 int ker_generation_reap_dead(struct ker_generation_rings *rings,
     const struct ker_generation_identity *owner);
 int ker_generation_rings_destroy(struct ker_generation_rings *rings);
