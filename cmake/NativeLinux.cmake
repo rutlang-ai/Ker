@@ -152,6 +152,10 @@ if(BUILD_TESTING)
     target_compile_options(ker-session-envelope-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-session-envelope COMMAND ker-session-envelope-test)
     set_tests_properties(native-fstack-session-envelope PROPERTIES TIMEOUT 10 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-tc3-observer
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-tc3-observer.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-tc3-observer PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77 LABELS "fstack;session")
     add_test(NAME native-fstack-session-native-packets
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-native-packets.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"

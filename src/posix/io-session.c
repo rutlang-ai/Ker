@@ -25,6 +25,9 @@
 #include <rte_errno.h>
 #include <rte_memzone.h>
 #include <rte_ring.h>
+#ifdef KER_SESSION_TEST_HOOKS
+#include <rte_ring_peek.h>
+#endif
 #include <rte_mbuf.h>
 #include <time.h>
 #ifndef SO_PEERPIDFD
@@ -54,6 +57,11 @@ static uint64_t next_epoch = 1;
 static unsigned ring_pmd;
 static uint16_t pmd_port;
 static bool pmd_configured;
+#ifdef KER_SESSION_TEST_HOOKS
+static bool tc3_probe_gate;
+static bool tc3_drain_requested;
+static bool tc3_observer;
+#endif
 static int pmd_client = -1;
 static struct rte_mbuf *pmd_packet, *pmd_rx_packet;
 static struct rte_ring *packet_rx, *packet_tx;
@@ -197,8 +205,55 @@ static void reclaim_control(unsigned index)
     rte_pktmbuf_free(owned);
     client->leased_packet = NULL;
 }
+#ifdef KER_SESSION_TEST_HOOKS
+static int verify_tc3_probe_barrier(void)
+{
+    struct client *pair[2] = {0};
+    unsigned count = 0;
+    for (unsigned i = 0; i < CLIENTS; i++) {
+        struct client *client = &clients[i];
+        if (client->kind != ATTACHED || client->generation != 0 || client->process != 0 || dead(client->pidfd)) continue;
+        if (count == 2) return -E2BIG;
+        pair[count++] = client;
+    }
+    if (count != 2 || pair[0]->slot == pair[1]->slot || slots[pair[0]->slot].epoch == slots[pair[1]->slot].epoch) return -EAGAIN;
+    struct rte_ring *input[2] = {0};
+    struct rte_mbuf *packet[2] = {0};
+    for (unsigned n = 0; n < 2; n++) {
+        input[n] = rings[ring_index(pair[n]->slot, 0, 0, 0)];
+        if (!input[n] || rte_ring_count(input[n]) != 1 ||
+            rte_ring_get_capacity(input[n]) != KER_SESSION_CAPACITY) return -EAGAIN;
+        if (!rte_ring_is_prod_single(input[n]) || !rte_ring_is_cons_single(input[n])) return -EUCLEAN;
+        unsigned started = rte_ring_dequeue_bulk_start(input[n], (void **)&packet[n], 1, NULL);
+        if (started != 1) return -EAGAIN;
+        /* The preview API above must not remove a token. Cancel the dequeue reservation. */
+        rte_ring_dequeue_finish(input[n], 0);
+        if (packet[n] != pair[n]->leased_packet || !known_object(packet[n]) ||
+            packet[n]->pool != message_pool || packet[n]->nb_segs != 1 ||
+            packet[n]->data_len != sizeof(struct ker_session_probe) || packet[n]->pkt_len != packet[n]->data_len) return -EUCLEAN;
+        const struct ker_session_probe *probe = rte_pktmbuf_mtod(packet[n], const struct ker_session_probe *);
+        struct ker_session_message expected = {.session=directory->session, .epoch=slots[pair[n]->slot].epoch,
+            .slot=pair[n]->slot, .generation=0, .process=0};
+        if (ker_session_probe_check(probe, &expected, pair[n]->probe_sequence)) return -EPROTO;
+    }
+    if (input[0] == input[1]) return -EUCLEAN;
+    if (atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) == 0 ||
+        atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire) == 0 || pmd_client < 0 ||
+        (clients[pmd_client].generation != 0 || clients[pmd_client].process != 0 ||
+         (clients[pmd_client].slot != pair[0]->slot && clients[pmd_client].slot != pair[1]->slot)) ||
+        atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) != pmd_key(&clients[pmd_client])) return -EUCLEAN;
+    printf("KER_SESSION_TC3_TOKENS_PENDING {\"generation\":0,\"process\":0,\"count\":2,\"slots\":[%u,%u],\"epochs\":[%llu,%llu],\"rings_distinct\":true,\"owner_epoch\":%llu,\"exception_ifindex\":%u}\n",
+        pair[0]->slot, pair[1]->slot, (unsigned long long)slots[pair[0]->slot].epoch, (unsigned long long)slots[pair[1]->slot].epoch,
+        (unsigned long long)slots[clients[pmd_client].slot].epoch,
+        atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire)); fflush(stdout);
+    return 0;
+}
+#endif
 static void serve_probes(void)
 {
+#ifdef KER_SESSION_TEST_HOOKS
+    if (tc3_probe_gate) return;
+#endif
     for (unsigned i = 0; i < CLIENTS; i++) {
         struct client *client = &clients[i];
         if (client->kind != ATTACHED || dead(client->pidfd)) continue;
@@ -476,6 +531,9 @@ static int all_eal_users(void)
 static int primary(const char *path, int control)
 {
     int result = 1, listener = -1;
+#ifdef KER_SESSION_TEST_HOOKS
+    tc3_probe_gate = getenv("KER_SESSION_TEST_PROBE_GATE") != NULL;
+#endif
     struct stat socket_identity = {0};
     bool bound = false;
     for (unsigned i = 0; i < CLIENTS; i++) clients[i] = (struct client){.fd = -1, .pidfd = -1};
@@ -576,6 +634,18 @@ static int primary(const char *path, int control)
     result = 0;
     while (!stopping) {
         reap_clients();
+#ifdef KER_SESSION_TEST_HOOKS
+        if (tc3_probe_gate && tc3_drain_requested) {
+            int verified = verify_tc3_probe_barrier();
+            if (!verified) {
+                tc3_probe_gate = false;
+                serve_probes();
+            } else if (verified != -EAGAIN) {
+                fprintf(stderr, "ker session: TC-3 pending-token barrier failed: %d\n", verified);
+                result = 1; break;
+            }
+        }
+#endif
         serve_probes();
         struct pollfd fds[CLIENTS + 2];
         fds[0] = (struct pollfd){.fd = control, .events = POLLIN};
@@ -583,7 +653,18 @@ static int primary(const char *path, int control)
         for (unsigned i = 0; i < CLIENTS; i++) fds[i + 2] = (struct pollfd){.fd = clients[i].fd, .events = POLLIN};
         int ready = poll(fds, CLIENTS + 2, 50);
         if (ready < 0) { if (errno == EINTR) continue; result = 1; break; }
-        if (fds[0].revents) break;
+        if (fds[0].revents) {
+#ifdef KER_SESSION_TEST_HOOKS
+            if (tc3_probe_gate && (fds[0].revents & POLLIN)) {
+                char command;
+                if (read(control, &command, 1) == 1 && command == 'D') {
+                    tc3_drain_requested = true;
+                    continue;
+                }
+            }
+#endif
+            break;
+        }
         if (fds[1].revents & POLLIN) if (accept_client(listener)) { result = 1; break; }
         for (unsigned i = 0; i < CLIENTS; i++) {
             if (clients[i].fd < 0) continue;
@@ -849,6 +930,58 @@ static int observe_pmd(int fd, struct ker_session_message *identity, struct ker_
     return key == owner->token && ((ring_pmd == 2) ==
         (atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire) != 0)) ? 0 : -EPROTO;
 }
+#ifdef KER_SESSION_TEST_HOOKS
+static int tc3_observer_loop(int control, int fd, int peer, struct rte_ring **channels,
+    struct rte_mbuf *leased_packet, struct ker_session_message *identity,
+    unsigned generation, unsigned process, struct rte_mbuf *device_packet, int exception_fd)
+{
+    unsigned samples = 0, deferred = 0;
+    uint64_t sequence = 0;
+    struct ker_session_message owner;
+    bool owns = device_packet != NULL;
+    if (observe_pmd(fd, identity, &owner)) return 1;
+    uint64_t key = 1 + (identity->slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
+    if ((owner.token == key) != owns || (ring_pmd == 2 && owns != (exception_fd >= 0))) return 1;
+    printf("KER_SESSION_TC3_OBSERVER_READY {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"owns_device\":%s,\"owner_epoch\":%llu,\"owner_generation\":%llu,\"owner_slot\":%llu,\"owner_process\":%llu,\"queue_owner_key\":%llu,\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_fd\":%s,\"exception_ifindex\":%u}\n",
+        (long)getpid(), (unsigned long long)identity->epoch, (unsigned long long)identity->slot, generation, process,
+        owns ? "true" : "false", (unsigned long long)owner.epoch, (unsigned long long)owner.generation,
+        (unsigned long long)owner.slot, (unsigned long long)owner.process, (unsigned long long)owner.token,
+        (unsigned long long)(owner.token && ring_pmd == 2 ? owner.token : 0), exception_fd >= 0 ? "true" : "false",
+        atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire)); fflush(stdout);
+    while (!stopping) {
+        struct pollfd waiters[] = {{.fd=control,.events=POLLIN},{.fd=fd,.events=POLLIN},{.fd=peer,.events=POLLIN}};
+        int ready = poll(waiters, 3, 100);
+        if (ready < 0) { if (errno == EINTR) continue; return 1; }
+        if (waiters[2].revents || dead(peer)) _Exit(125);
+        if (waiters[1].revents) return 1;
+        if (!(waiters[0].revents & POLLIN)) continue;
+        char command;
+        if (read(control, &command, 1) != 1) return 1;
+        if (command == 'Q') return 0;
+        if (command == 'S') {
+            if (samples >= 2 || observe_pmd(fd, identity, &owner)) return 1;
+            bool current_owner = owner.token == key;
+            printf("KER_SESSION_TC3_SAMPLE {\"pid\":%ld,\"sample\":%u,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"nohw\":%u,\"owner_epoch\":%llu,\"owner_generation\":%llu,\"owner_slot\":%llu,\"owner_process\":%llu,\"queue_owner_key\":%llu,\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_fd\":%s,\"exception_ifindex\":%u}\n",
+                (long)getpid(), samples, (unsigned long long)identity->epoch, (unsigned long long)identity->slot,
+                generation, process, current_owner ? 0u : 1u, (unsigned long long)owner.epoch,
+                (unsigned long long)owner.generation, (unsigned long long)owner.slot,
+                (unsigned long long)owner.process, (unsigned long long)owner.token,
+                (unsigned long long)(owner.token && ring_pmd == 2 ? owner.token : 0),
+                exception_fd >= 0 ? "true" : "false", atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire)); fflush(stdout);
+            samples++;
+        } else if (command == 'P') {
+            if (samples != 2) return 1;
+            int status = shared_probe(channels[0], channels[3], leased_packet, identity,
+                control, &deferred, 1, &sequence, peer);
+            if (status) return 1;
+            printf("KER_SESSION_TC3_PROBE_DONE {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"count\":1,\"sequence\":%llu,\"primary_pid\":%u}\n",
+                (long)getpid(), (unsigned long long)identity->epoch, (unsigned long long)identity->slot,
+                generation, process, (unsigned long long)sequence, directory->primary_pid); fflush(stdout);
+        } else return 1;
+    }
+    return 0;
+}
+#endif
 static int secondary(const char *path, int control, int ticket, unsigned generation,
     unsigned process, unsigned probe_count, bool probe_only, bool standby, int packet_fd, int wire_fd, int mtu_fd, int argc, char **argv)
 {
@@ -929,6 +1062,26 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             (unsigned long long)key, (unsigned long long)(ring_pmd == 2 ? key : 0),
             atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire), exception_fd >= 0 ? "true" : "false"); fflush(stdout);
     }
+#ifdef KER_SESSION_TEST_HOOKS
+    if (ring_pmd == 2 && tc3_observer) {
+        bool endpoint_granted = exception_fd >= 0;
+        if (device_packet) {
+            char exception_iface[IFNAMSIZ], exception_ring[RTE_RING_NAMESIZE];
+            snprintf(exception_iface, sizeof(exception_iface), "kex%08x", (unsigned)directory->session);
+            snprintf(exception_ring, sizeof(exception_ring), "ker_se_%08x", (unsigned)directory->session);
+            if (ker_worker_exception_attach_session(&exception_bridge, exception_fd, exception_iface, exception_ring,
+                    pool, atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire),
+                    (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire),
+                    &directory->pmd_exception_phase)) goto cleanup;
+            exception_fd = -1;
+            struct rte_mbuf *rx = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire);
+            if (!known_object(rx) || rx == device_packet || rx == leased_packet || rx->pool != pool) goto cleanup;
+        }
+        result = tc3_observer_loop(control, fd, peer, channels, leased_packet, &message,
+            generation, process, device_packet, endpoint_granted ? 1 : -1);
+        goto cleanup;
+    }
+#endif
     if (ring_pmd == 2) {
         /* A paired standby owns only its coordinate control lease. Do not
          * inspect data leases or touch either device queue before admission.
@@ -1060,6 +1213,9 @@ int main(int argc, char **argv)
     const char *path = NULL, *role = NULL;
     int control = -1, ticket = -1, generation = 0, process = 0, split = -1, probe_count = 0;
     bool probe_only = false, standby = false;
+#ifdef KER_SESSION_TEST_HOOKS
+    bool tc3_observer_arg = false;
+#endif
     int packet_fd = -1, wire_fd = -1, mtu_fd = -1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--")) { split = i; break; }
@@ -1067,6 +1223,9 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--ring-pmd")) { if (ring_pmd) return 2; ring_pmd = 1; continue; }
         if (!strcmp(argv[i], "--paired-pmd")) { if (ring_pmd) return 2; ring_pmd = 2; continue; }
         if (!strcmp(argv[i], "--probe-only")) { probe_only = true; continue; }
+#ifdef KER_SESSION_TEST_HOOKS
+        if (!strcmp(argv[i], "--tc3-observer")) { tc3_observer_arg = true; continue; }
+#endif
         if (i + 1 >= argc) break;
         if (!strcmp(argv[i], "--socket")) path = argv[++i];
         else if (!strcmp(argv[i], "--role")) role = argv[++i];
@@ -1088,6 +1247,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: ker-io-session --role primary|secondary --socket PATH --control-fd N [--ticket-fd N --generation 0..1 --process 0..3] -- EAL_ARGS\n");
         return 2;
     }
+#ifdef KER_SESSION_TEST_HOOKS
+    if (tc3_observer_arg && (ring_pmd != 2 || strcmp(role, "secondary") || probe_only || probe_count)) return 2;
+    tc3_observer = tc3_observer_arg;
+#endif
     if (ring_pmd == 2 && !strcmp(role, "secondary") && (probe_only || probe_count ||
         packet_fd == wire_fd || packet_fd == mtu_fd || wire_fd == mtu_fd ||
         ker_session_packet_endpoint(packet_fd, SOCK_DGRAM) || ker_session_packet_endpoint(wire_fd, SOCK_DGRAM) ||
