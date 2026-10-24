@@ -1,0 +1,700 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#define _GNU_SOURCE
+#include "session-generation-rings.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <limits.h>
+#include <poll.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/pidfd.h>
+#include <sys/wait.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <unistd.h>
+#include <rte_eal.h>
+#include <rte_memzone.h>
+#include <rte_mempool.h>
+#include <rte_ring.h>
+
+#define TEST_ZONE "ker_nr19_test_control"
+#define TEST_POOL "ker_nr19_test_pool"
+#define TEST_SESSION UINT64_C(0x4e523139a4d0b117)
+struct test_control { _Atomic unsigned stage, gen0_ready, crash_ready, producer_ready, consumer_ready, transition_release, producer_pid; uintptr_t retained_tx[3]; _Atomic int failed; };
+
+static struct test_control *control(void)
+{
+    const struct rte_memzone *mz=rte_memzone_lookup(TEST_ZONE);
+    return mz ? mz->addr : NULL;
+}
+static int fail(struct test_control *c, const char *what)
+{
+    fprintf(stderr,"NR19 secondary %d: %s\n",getpid(),what);
+    if(c) atomic_store(&c->failed,1);
+    return 1;
+}
+static void wait_stage(struct test_control*c,unsigned stage)
+{
+    for(unsigned tick=0;tick<20000;tick++){
+        if(atomic_load_explicit(&c->stage,memory_order_acquire)>=stage||atomic_load(&c->failed))return;
+        usleep(1000);
+    }
+    fprintf(stderr,"NR19 secondary %ld timed out waiting for stage %u; current=%u\n",
+        (long)getpid(),stage,atomic_load(&c->stage));
+    atomic_store(&c->failed,1);
+}
+static int parent_wait_stage(struct test_control*c,unsigned stage,const pid_t*pids,unsigned count)
+{
+    for(unsigned tick=0;tick<20000;tick++){
+        if(atomic_load(&c->failed))return -1;
+        if(atomic_load_explicit(&c->stage,memory_order_acquire)>=stage)return 0;
+        for(unsigned i=0;i<count;i++){
+            siginfo_t info={0};
+            if(waitid(P_PID,(id_t)pids[i],&info,WEXITED|WNOHANG|WNOWAIT))return -1;
+            if(info.si_pid==pids[i]){
+                fprintf(stderr,"NR19 primary: child %ld exited before stage %u (current=%u, waitid_code=%d, status=%d)\n",
+                    (long)pids[i],stage,atomic_load(&c->stage),info.si_code,info.si_status);return -1;
+            }
+        }
+        usleep(1000);
+    }
+    fprintf(stderr,"NR19 primary: timed out waiting for stage %u (current=%u)\n",
+        stage,atomic_load(&c->stage));return -1;
+}
+static int parent_wait_gen0_ready(struct test_control*c,const pid_t*pids,unsigned count)
+{
+    for(unsigned tick=0;tick<20000;tick++){
+        if(atomic_load(&c->failed))return -1;
+        if(atomic_load_explicit(&c->gen0_ready,memory_order_acquire))return 0;
+        for(unsigned i=0;i<count;i++){
+            siginfo_t info={0};
+            if(waitid(P_PID,(id_t)pids[i],&info,WEXITED|WNOHANG|WNOWAIT))return -1;
+            if(info.si_pid==pids[i]){
+                fprintf(stderr,"NR19 primary: child %ld exited before gen0 readiness (stage=%u, waitid_code=%d, status=%d)\n",
+                    (long)pids[i],atomic_load(&c->stage),info.si_code,info.si_status);return -1;
+            }
+        }
+        usleep(1000);
+    }
+    fprintf(stderr,"NR19 primary: timed out waiting for gen0 readiness (stage=%u)\n",atomic_load(&c->stage));
+    return -1;
+}
+static int stop_children(const pid_t*pids,unsigned count,int*pidfds)
+{
+    int result=0;
+    for(unsigned i=0;i<count;i++)if(pids[i]>0){
+        kill(pids[i],SIGKILL);bool reaped=false;
+        for(unsigned tick=0;tick<2000;tick++){
+            pid_t got=waitpid(pids[i],NULL,WNOHANG);
+            if(got==pids[i]){reaped=true;break;}
+            if(got<0&&errno==ECHILD){reaped=true;break;}
+            usleep(1000);
+        }
+        if(!reaped){fprintf(stderr,"NR19 primary: child %ld did not stop within 2s\n",(long)pids[i]);result=-ETIMEDOUT;}
+        if(pidfds[i]>=0)close(pidfds[i]);
+    }
+    return result;
+}
+static int wait_child_bounded(pid_t pid,int*status)
+{
+    for(unsigned tick=0;tick<10000;tick++){
+        pid_t got=waitpid(pid,status,WNOHANG);
+        if(got==pid)return 0;
+        if(got<0&&errno!=EINTR){int error=errno;fprintf(stderr,"NR19 primary: waitpid(%ld) failed: %s\n",(long)pid,strerror(error));return -error;}
+        usleep(1000);
+    }
+    fprintf(stderr,"NR19 primary: child %ld did not exit within 10s\n",(long)pid);
+    return -ETIMEDOUT;
+}
+static struct rte_mbuf *packet(struct rte_mempool*pool,uint8_t value)
+{
+    struct rte_mbuf*m=rte_pktmbuf_alloc(pool);if(!m)return NULL;
+    uint8_t*p=(uint8_t*)rte_pktmbuf_append(m,1);if(!p){rte_pktmbuf_free(m);return NULL;}*p=value;return m;
+}
+static struct rte_mbuf *packet_pair(struct rte_mempool *pool,uint8_t first,uint8_t second)
+{
+    struct rte_mbuf *head=packet(pool,first),*tail=packet(pool,second);
+    if(!head||!tail){if(head)rte_pktmbuf_free(head);if(tail)rte_pktmbuf_free(tail);return NULL;}
+    if(rte_pktmbuf_chain(head,tail)){rte_pktmbuf_free(head);rte_pktmbuf_free(tail);return NULL;}
+    return head;
+}
+static int secondary(unsigned generation,int replacement)
+{
+    struct test_control*c=control();struct rte_mempool*pool=rte_mempool_lookup(TEST_POOL);
+    if(!c||!pool)return fail(c,"shared control or pool lookup failed");
+    struct ker_generation_rings*r=NULL;
+    int attach=ker_generation_rings_attach(TEST_SESSION,1,2,pool,&r);
+    if(attach){fprintf(stderr,"NR19 attach rc=%d gen=%u\n",attach,generation);return fail(c,"adapter attach failed");}
+    struct ker_generation_identity id={.session=TEST_SESSION,
+        .epoch=replacement?9:(generation?8:7),.slot=replacement?3:(generation?2:1),
+        .generation=generation,.process=0,.pid=(uint32_t)getpid()};
+    unsigned old_avail=rte_mempool_avail_count(pool);
+    if(replacement){
+        atomic_store_explicit(&c->stage,15,memory_order_release);wait_stage(c,16);
+        struct rte_mbuf*m=NULL;
+        if(ker_generation_rx_dequeue(r,&id,0,0,&m)!=0||m)
+            return fail(c,"recycled target consumed a stale generation packet");
+        atomic_store_explicit(&c->stage,17,memory_order_release);
+        return 0;
+    }
+    if(generation==0){
+        struct rte_mbuf*m=packet(pool,0x41);if(!m)return fail(c,"allocation failed");
+        if(ker_generation_rx_enqueue(r,&id,0,0,0,m)!=-EINVAL){rte_pktmbuf_free(m);return fail(c,"self-generation RX was accepted");}
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,m)!=-EHOSTDOWN){rte_pktmbuf_free(m);return fail(c,"unadmitted target accepted RX");}
+        if(ker_generation_rx_enqueue(r,&id,0,2,1,m)!=-EINVAL||rte_mbuf_refcnt_read(m)!=1)
+            return fail(c,"invalid queue changed caller ownership");
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,(struct rte_mbuf *)(uintptr_t)1)!=-EINVAL)
+            return fail(c,"unknown pool address was dereferenced or accepted");
+        rte_pktmbuf_free(m);
+        struct rte_mbuf *chain=packet_pair(pool,0x46,0x47);if(!chain)return fail(c,"chain allocation failed");
+        struct rte_mbuf *tail=chain->next;uint16_t original_data_off=tail->data_off;
+        tail->data_off=(uint16_t)(tail->buf_len+1);
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,chain)!=-EINVAL||
+            rte_mbuf_refcnt_read(chain)!=1||rte_mbuf_refcnt_read(tail)!=1){
+            tail->data_off=original_data_off;rte_pktmbuf_free(chain);return fail(c,"malformed chain changed caller ownership");
+        }
+        tail->data_off=original_data_off;rte_pktmbuf_free(chain);
+        atomic_store_explicit(&c->stage,1,memory_order_release);wait_stage(c,2);
+        m=packet(pool,0x42);if(!m)return fail(c,"RX packet allocation failed");
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,m))return fail(c,"RX target enqueue failed");
+        chain=packet_pair(pool,0x46,0x47);if(!chain)return fail(c,"valid chain allocation failed");
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,chain))return fail(c,"valid multisegment chain was rejected");
+        if(ker_generation_rx_dequeue(r,&id,0,0,&m)!=0)return fail(c,"source generation consumed peer RX");
+        atomic_store_explicit(&c->stage,3,memory_order_release);wait_stage(c,4);
+        m=packet(pool,0x43);if(!m)return fail(c,"TX packet allocation failed");
+        if(ker_generation_tx_enqueue(r,&id,0,0,m))return fail(c,"TX enqueue failed");
+        m=packet(pool,0x45);if(!m)return fail(c,"TX cleanup sentinel allocation failed");
+        if(ker_generation_tx_enqueue(r,&id,0,0,m))return fail(c,"TX cleanup sentinel enqueue failed");
+        atomic_store_explicit(&c->stage,5,memory_order_release);wait_stage(c,7);
+        m=packet(pool,0x44);if(!m)return fail(c,"persistence sentinel allocation failed");
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,m))return fail(c,"persistence sentinel enqueue failed");
+        m=packet(pool,0x46);if(!m)return fail(c,"reaper TX sentinel allocation failed");
+        if(ker_generation_tx_enqueue(r,&id,0,0,m))return fail(c,"reaper TX sentinel enqueue failed");
+        atomic_store_explicit(&c->gen0_ready,1,memory_order_release);wait_stage(c,10);
+        uint64_t before=ker_generation_rx_full_count(r,0,0,1);
+        for(unsigned i=0;i<KER_GENERATION_RING_CAPACITY;i++){
+            m=packet(pool,(uint8_t)i);if(!m)return fail(c,"ring fill allocation failed");
+            if(ker_generation_rx_enqueue(r,&id,0,0,1,m))return fail(c,"RX ring filled early");
+        }
+        m=packet(pool,0xee);if(!m)return fail(c,"full sentinel allocation failed");
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,m)!=-ENOBUFS||rte_mbuf_refcnt_read(m)!=1||
+            ker_generation_rx_full_count(r,0,0,1)!=before+1)return fail(c,"full ring lost caller ownership or exact counter");
+        rte_pktmbuf_free(m);atomic_store_explicit(&c->stage,11,memory_order_release);wait_stage(c,12);
+        m=packet(pool,0x55);if(!m)return fail(c,"stale-target sentinel allocation failed");
+        if(ker_generation_rx_enqueue(r,&id,0,0,1,m))return fail(c,"stale-target sentinel enqueue failed");
+        atomic_store_explicit(&c->stage,13,memory_order_release);
+    }else{
+        atomic_store_explicit(&c->stage,2,memory_order_release);
+        wait_stage(c,3);
+        struct rte_mbuf*m=NULL;
+        if(ker_generation_rx_dequeue(r,&id,0,0,&m)!=1||!m||rte_pktmbuf_mtod(m,uint8_t*)[0]!=0x42)
+            return fail(c,"RX object identity or payload mismatch");
+        struct rte_mbuf *owned=m, *probe=NULL;
+        if(ker_generation_rx_dequeue(r,&id,0,1,&probe)!=0||probe)
+            return fail(c,"RX queue isolation failed");
+        if(ker_generation_packet_release(r,&id,owned))return fail(c,"RX release failed");
+        m=NULL;if(ker_generation_rx_dequeue(r,&id,0,0,&m)!=1||!m||m->nb_segs!=2||m->pkt_len!=2||
+            rte_pktmbuf_mtod(m,uint8_t*)[0]!=0x46||!m->next||rte_pktmbuf_mtod(m->next,uint8_t*)[0]!=0x47)
+            return fail(c,"multisegment RX identity/payload mismatch");
+        if(ker_generation_packet_release(r,&id,m))return fail(c,"multisegment RX release failed");
+        m=NULL;
+        if(ker_generation_tx_dequeue_peer(r,&id,0,0,&m)!=0||m)
+            return fail(c,"empty peer TX drain was not empty");
+        if(ker_generation_tx_dequeue_peer(r,&id,0,1,&m)!=0||m)
+            return fail(c,"empty peer TX queue isolation failed");
+        atomic_store_explicit(&c->stage,4,memory_order_release);wait_stage(c,5);
+        m=NULL;if(ker_generation_tx_dequeue_peer(r,&id,0,0,&m)!=1||!m||rte_pktmbuf_mtod(m,uint8_t*)[0]!=0x43)
+            return fail(c,"peer TX object mismatch");
+        if(ker_generation_packet_release(r,&id,m))return fail(c,"TX release failed");
+        atomic_store_explicit(&c->stage,6,memory_order_release);wait_stage(c,7);
+        atomic_store_explicit(&c->stage,8,memory_order_release);wait_stage(c,9);
+        m=NULL;if(ker_generation_rx_dequeue(r,&id,0,0,&m)!=1||!m||rte_pktmbuf_mtod(m,uint8_t*)[0]!=0x44)
+            return fail(c,"unregister/re-admit did not preserve queued sentinel");
+        if(ker_generation_packet_release(r,&id,m))return fail(c,"persistence sentinel release failed");
+        if(ker_generation_rx_dequeue(r,&id,0,0,&m)!=0||m)
+            return fail(c,"persistent sentinel was delivered more than once");
+        atomic_store_explicit(&c->stage,10,memory_order_release);wait_stage(c,11);
+        for(unsigned i=0;i<KER_GENERATION_RING_CAPACITY;i++){
+            m=NULL;if(ker_generation_rx_dequeue(r,&id,0,0,&m)!=1||!m||rte_pktmbuf_mtod(m,uint8_t*)[0]!=(uint8_t)i)
+                return fail(c,"RX full-ring FIFO mismatch");
+            if(ker_generation_packet_release(r,&id,m))return fail(c,"RX full-ring release failed");
+        }
+        struct rte_ring *reaper_tx=rte_ring_lookup("drain_tx_p0_q0_g0");
+        unsigned available=rte_mempool_avail_count(pool);
+        if(old_avail==0||available!=old_avail-1||!reaper_tx||rte_ring_count(reaper_tx)!=1){
+            fprintf(stderr,"NR19 secondary %ld: retained TX sentinel checkpoint baseline=%u available=%u tx_q0_g0=%u\n",
+                (long)getpid(),old_avail,available,reaper_tx?rte_ring_count(reaper_tx):UINT_MAX);
+            return fail(c,"expected one queued reaper TX sentinel after RX drain");
+        }
+        atomic_store_explicit(&c->stage,12,memory_order_release);wait_stage(c,14);
+    }
+    return atomic_load(&c->failed)?1:0;
+}
+static int secondary_dequeue_crash(const char *mode)
+{
+    struct test_control*c=control();struct rte_mempool*pool=rte_mempool_lookup(TEST_POOL);
+    if(!c||!pool)return fail(c,"crash-window control or pool lookup failed");
+    bool producer=!strncmp(mode,"producer-",9);
+    bool enqueue_prepare=!strcmp(mode,"producer-enqueue");
+    bool standby=!strcmp(mode,"standby");
+    bool tx_live=!strcmp(mode,"producer-tx-live")||!strcmp(mode,"dequeue-tx-live");
+    bool retained_tx=!strcmp(mode,"producer-tx-retain")||!strcmp(mode,"consumer-tx-retain");
+    bool live_release=!strcmp(mode,"dequeue-pre-live")||!strcmp(mode,"dequeue-tx-live");
+    bool cas=!strcmp(mode,"dequeue-cas")||!strcmp(mode,"producer-cas");
+    unsigned generation=producer?0:1;
+    uint64_t epoch=retained_tx?40U+generation:
+        (enqueue_prepare||standby?24U:(cas?22U:(tx_live?26U:20U)))+generation;
+    uint32_t slot=1U+generation;
+    struct ker_generation_rings*r=NULL;
+    int rc=ker_generation_rings_attach(TEST_SESSION,1,2,pool,&r);
+    if(rc)return fail(c,"crash-window secondary attach failed");
+    struct ker_generation_identity id={.session=TEST_SESSION,.epoch=epoch,.slot=slot,
+        .generation=generation,.process=0,.pid=(uint32_t)getpid()};
+    atomic_store_explicit(producer?&c->producer_ready:&c->consumer_ready,1,memory_order_release);
+    if(producer){
+        wait_stage(c,20);
+        if(retained_tx){
+            static const uint8_t payloads[]={0x71,0x72,0x73};
+            for(size_t i=0;i<sizeof(payloads);i++){
+                struct rte_mbuf *packet_out=packet(pool,payloads[i]);
+                if(!packet_out)return fail(c,"dead-producer TX packet allocation failed");
+                if(ker_generation_tx_enqueue(r,&id,0,0,packet_out)){
+                    rte_pktmbuf_free(packet_out);return fail(c,"dead-producer TX enqueue failed");
+                }
+                c->retained_tx[i]=(uintptr_t)packet_out;
+            }
+            atomic_store_explicit(&c->stage,21,memory_order_release);
+            return atomic_load(&c->failed)?1:0;
+        }
+        if(enqueue_prepare)ker_generation_test_hold_after_enqueue_prepare(&c->crash_ready);
+        struct rte_mbuf*m=packet(pool,enqueue_prepare?0x63:(cas?0x62:0x61));
+        if(!m)return fail(c,"crash-window packet allocation failed");
+        int enqueue_rc=tx_live?ker_generation_tx_enqueue(r,&id,0,0,m):
+            ker_generation_rx_enqueue(r,&id,0,0,1,m);
+        if(enqueue_rc){rte_pktmbuf_free(m);return fail(c,"crash-window enqueue failed");}
+        if(!enqueue_prepare&&!cas&&!strcmp(mode,"producer-pre-tx")){
+            struct rte_mbuf *tx=packet(pool,0x65);
+            if(!tx)return fail(c,"late-corruption TX fixture allocation failed");
+            if(ker_generation_tx_enqueue(r,&id,0,0,tx)){rte_pktmbuf_free(tx);return fail(c,"late-corruption TX fixture enqueue failed");}
+        }
+        atomic_store_explicit(&c->stage,21,memory_order_release);wait_stage(c,22);
+        return atomic_load(&c->failed)?1:0;
+    }
+    if(retained_tx){
+        wait_stage(c,22);
+        struct ker_generation_identity dead_producer={.session=TEST_SESSION,.epoch=40,
+            .slot=1,.generation=0,.process=0,.pid=0};
+        /* The parent has filled in the exact dead producer PID in shared
+         * control before releasing this consumer. */
+        dead_producer.pid=atomic_load_explicit(&c->producer_pid,memory_order_acquire);
+        struct rte_mbuf *attempt=packet(pool,0x7f),*out=NULL;
+        if(!attempt)return fail(c,"dead-producer rejection allocation failed");
+        if(ker_generation_tx_enqueue(r,&dead_producer,0,0,attempt)!=-EINVAL||
+            rte_mbuf_refcnt_read(attempt)!=1){rte_pktmbuf_free(attempt);return fail(c,"dead producer admitted a new TX enqueue");}
+        rte_pktmbuf_free(attempt);
+        if(ker_generation_tx_dequeue_peer(r,&dead_producer,0,0,&out)!=-EINVAL||out)
+            return fail(c,"dead producer identity accessed peer TX ring");
+        if(ker_generation_rx_dequeue(r,&dead_producer,0,0,&out)!=-EINVAL||out)
+            return fail(c,"dead producer identity accessed RX ring");
+        struct ker_generation_identity forged=id;forged.epoch++;
+        if(ker_generation_tx_dequeue_peer(r,&forged,0,0,&out)!=-EINVAL||out)
+            return fail(c,"forged consumer accessed retained TX ring");
+        out=NULL;
+        if(ker_generation_rx_dequeue(r,&id,0,0,&out)!=0||out)
+            return fail(c,"live consumer RX empty-ring behavior changed");
+        struct rte_ring *retained_ring=rte_ring_lookup("drain_tx_p0_q0_g0");
+        if(!retained_ring||rte_ring_count(retained_ring)!=3||rte_mempool_in_use_count(pool)!=3)
+            return fail(c,"rejected peer requests changed retained TX objects");
+        static const uint8_t payloads[]={0x71,0x72,0x73};
+        for(size_t i=0;i<sizeof(payloads);i++){
+            out=NULL;
+            if(ker_generation_tx_dequeue_peer(r,&id,0,0,&out)!=1||!out||
+                (uintptr_t)out!=c->retained_tx[i]||
+                rte_pktmbuf_mtod(out,uint8_t*)[0]!=payloads[i]||
+                ker_generation_packet_release(r,&id,out))
+                return fail(c,"live peer did not drain/release retained TX FIFO exactly once");
+        }
+        out=NULL;
+        if(ker_generation_tx_dequeue_peer(r,&id,0,0,&out)!=0||out||
+            rte_mempool_in_use_count(pool)!=0)
+            return fail(c,"retained TX ring was not empty or pool did not return to baseline");
+        atomic_store_explicit(&c->stage,23,memory_order_release);
+        return atomic_load(&c->failed)?1:0;
+    }
+    if(standby){wait_stage(c,22);return atomic_load(&c->failed)?1:0;}
+    wait_stage(c,21);
+    if(cas)ker_generation_test_hold_after_dequeue_cas(&c->crash_ready);
+    else ker_generation_test_hold_after_ring_remove(&c->crash_ready,live_release?&c->transition_release:NULL);
+    struct rte_mbuf*m=NULL;
+    rc=tx_live?ker_generation_tx_dequeue_peer(r,&id,0,0,&m):
+        ker_generation_rx_dequeue(r,&id,0,0,&m);
+    if(live_release&&rc==1&&m&&rte_pktmbuf_mtod(m,uint8_t*)[0]==0x61&&
+        !ker_generation_packet_release(r,&id,m))return atomic_load(&c->failed)?1:0;
+    if(rc==1&&m)ker_generation_packet_release(r,&id,m);
+    return fail(c,"crash-window hook did not stop dequeue at requested point");
+}
+static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mempool*pool,
+    const char *prefix,const char *exe,const char *mode)
+{
+    struct test_control*c=control();pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};int status=0,failed=0;
+    bool cas=!strcmp(mode,"cas"),enqueue_prepare=!strcmp(mode,"enqueue");
+    bool tx_live=!strcmp(mode,"tx-live");
+    bool live_other=!strcmp(mode,"live")||tx_live,late_corruption=!strcmp(mode,"pre");
+    uint64_t base_epoch=enqueue_prepare?24U:(cas?22U:(tx_live?26U:20U));uint32_t base_slot=1;
+    struct ker_generation_identity producer={.session=TEST_SESSION,.epoch=base_epoch,
+        .slot=base_slot,.generation=0,.process=0,.pid=0};
+    struct ker_generation_identity consumer={.session=TEST_SESSION,.epoch=base_epoch+1,
+        .slot=base_slot+1,.generation=1,.process=0,.pid=0};
+    struct rte_ring*rx=rte_ring_lookup("drain_rx_p0_q0_g1");
+    unsigned pool_before=rte_mempool_in_use_count(pool);uint64_t drop_before=0,drop_after=0;
+    if(!c||!rx||rte_ring_count(rx)||pool_before||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_before))return -1;
+    atomic_store(&c->stage,0);atomic_store(&c->crash_ready,0);
+    atomic_store(&c->producer_ready,0);atomic_store(&c->consumer_ready,0);
+    atomic_store(&c->transition_release,0);atomic_store(&c->failed,0);
+#define CRASH_FAIL() do { failed=1;goto cleanup; } while(0)
+    pids[0]=fork();if(pids[0]<0)CRASH_FAIL();
+    if(!pids[0]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--",
+        enqueue_prepare?"producer-enqueue":(tx_live?"producer-tx-live":
+            (cas?"producer-cas":(late_corruption?"producer-pre-tx":"producer-pre"))),(char*)NULL);_Exit(127);}
+    pidfds[0]=syscall(SYS_pidfd_open,pids[0],0);if(pidfds[0]<0)CRASH_FAIL();producer.pid=(uint32_t)pids[0];
+    pids[1]=fork();if(pids[1]<0)CRASH_FAIL();
+    if(!pids[1]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--",
+        enqueue_prepare?"standby":(tx_live?"dequeue-tx-live":
+            (live_other?"dequeue-pre-live":(cas?"dequeue-cas":"dequeue-pre"))),(char*)NULL);_Exit(127);}
+    pidfds[1]=syscall(SYS_pidfd_open,pids[1],0);if(pidfds[1]<0)CRASH_FAIL();consumer.pid=(uint32_t)pids[1];
+    if(ker_generation_admit(r,&producer,pidfds[0])||ker_generation_admit(r,&consumer,pidfds[1]))CRASH_FAIL();
+    for(unsigned tick=0;tick<10000&&
+        (!atomic_load_explicit(&c->producer_ready,memory_order_acquire)||
+         !atomic_load_explicit(&c->consumer_ready,memory_order_acquire));tick++){
+        for(unsigned i=0;i<2;i++){
+            siginfo_t info={0};
+            if(waitid(P_PID,(id_t)pids[i],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[i])CRASH_FAIL();
+        }
+        usleep(1000);
+    }
+    if(!atomic_load(&c->producer_ready)||!atomic_load(&c->consumer_ready))CRASH_FAIL();
+    atomic_store_explicit(&c->stage,20,memory_order_release);
+    if(!enqueue_prepare&&parent_wait_stage(c,21,pids,2))CRASH_FAIL();
+    for(unsigned tick=0;tick<10000&&!atomic_load_explicit(&c->crash_ready,memory_order_acquire);tick++){
+        siginfo_t info={0};
+        if(waitid(P_PID,(id_t)pids[1],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[1])CRASH_FAIL();
+        usleep(1000);
+    }
+    struct rte_ring *tx=rte_ring_lookup("drain_tx_p0_q0_g0");
+    unsigned expected_objects=1U+(late_corruption?1U:0U);
+    if(!atomic_load_explicit(&c->crash_ready,memory_order_acquire)||!tx||
+        rte_ring_count(rx)!=0||rte_mempool_in_use_count(pool)!=pool_before+expected_objects||
+        rte_ring_count(tx)!=(late_corruption?1U:0U))CRASH_FAIL();
+    if(live_other){
+        if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
+            wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||
+            ker_generation_reap_dead(r,&producer)!=-EBUSY||
+            rte_mempool_in_use_count(pool)!=pool_before+1||rte_ring_count(rx)||rte_ring_count(tx)||
+            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
+        close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+        atomic_store_explicit(&c->transition_release,1,memory_order_release);
+        if(wait_child_bounded(pids[1],&status)||!WIFEXITED(status)||WEXITSTATUS(status))CRASH_FAIL();
+        pids[1]=-1;
+        if(ker_generation_reap_dead(r,&producer)||rte_mempool_in_use_count(pool)!=pool_before||
+            rte_ring_count(rx)||rte_ring_count(tx)||
+            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
+        if(ker_generation_reap_dead(r,&consumer))CRASH_FAIL();
+        close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+    }else{
+        /* Both registrations are exact-dead before the first reap. `pre`
+         * deliberately reaps the idle producer first while the consumer's
+         * active counter is stuck in a real dequeue transition. */
+        if(syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0)||
+            wait_child_bounded(pids[1],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)CRASH_FAIL();
+        if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
+            wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)CRASH_FAIL();
+        if(late_corruption){
+            ker_generation_test_corrupt_next_reap();
+            if(ker_generation_reap_dead(r,&producer)!=-EUCLEAN||
+                rte_mempool_in_use_count(pool)!=pool_before+2||rte_ring_count(tx)!=1||rte_ring_count(rx)||
+                ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
+            struct rte_mbuf *restored_tx=NULL;
+            if(rte_ring_dequeue(tx,(void **)&restored_tx)||!restored_tx||
+                rte_pktmbuf_mtod(restored_tx,uint8_t*)[0]!=0x65||rte_ring_enqueue(tx,restored_tx))CRASH_FAIL();
+            ker_generation_test_restore_reap_corruption();
+        }
+        bool consumer_first=!strcmp(mode,"cas");
+        const struct ker_generation_identity *first=consumer_first?&consumer:&producer;
+        const struct ker_generation_identity *second=consumer_first?&producer:&consumer;
+        if(ker_generation_reap_dead(r,first)||rte_ring_lookup("drain_rx_p0_q0_g1")!=rx||
+            rte_ring_count(rx)||rte_ring_count(tx)||rte_mempool_in_use_count(pool)!=pool_before||
+            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||
+            drop_after!=drop_before+(late_corruption?1U:0U))CRASH_FAIL();
+        unsigned first_index=consumer_first?1U:0U;
+        close(pidfds[first_index]);pidfds[first_index]=-1;pids[first_index]=-1;
+        if(ker_generation_reap_dead(r,second)||rte_mempool_in_use_count(pool)!=pool_before||
+            rte_ring_count(rx)||rte_ring_count(tx)||
+            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||
+            drop_after!=drop_before+(late_corruption?1U:0U))CRASH_FAIL();
+        unsigned second_index=consumer_first?0U:1U;
+        close(pidfds[second_index]);pidfds[second_index]=-1;pids[second_index]=-1;
+    }
+    if(rte_mempool_in_use_count(pool)!=pool_before||ker_generation_rings_stats(r,&(struct ker_generation_ring_stats){0}))CRASH_FAIL();
+    printf("NR19_REAPER_CRASH_WINDOW_PASS mode=%s dead_mask_recovery=true tx_drop_delta=%u\n",mode,late_corruption?1U:0U);
+    goto cleanup;
+cleanup:
+    if(failed){
+        for(unsigned i=0;i<2;i++)if(pidfds[i]>=0){
+            siginfo_t info={0};
+            if(waitid(P_PIDFD,(id_t)pidfds[i],&info,WEXITED|WNOHANG|WNOWAIT)==0&&info.si_pid==0)
+                (void)syscall(SYS_pidfd_send_signal,pidfds[i],SIGKILL,NULL,0);
+        }
+        for(unsigned i=0;i<2;i++)if(pids[i]>0){
+            (void)wait_child_bounded(pids[i],&status);
+            if(pidfds[i]>=0){(void)ker_generation_reap_dead(r,i?&consumer:&producer);close(pidfds[i]);pidfds[i]=-1;}
+        }
+        for(unsigned i=0;i<2;i++)if(pidfds[i]>=0){close(pidfds[i]);pidfds[i]=-1;}
+    }
+#undef CRASH_FAIL
+    return failed?-1:0;
+}
+static int run_dead_producer_tx(struct ker_generation_rings*r,struct rte_mempool*pool,
+    const char *prefix,const char *exe)
+{
+    struct test_control*c=control();pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};
+    int status=0,result=-1;uint64_t drop_before=0,drop_after=0;
+    struct ker_generation_identity producer={.session=TEST_SESSION,.epoch=40,.slot=1,
+        .generation=0,.process=0,.pid=0};
+    struct ker_generation_identity consumer={.session=TEST_SESSION,.epoch=41,.slot=2,
+        .generation=1,.process=0,.pid=0};
+    struct rte_ring *tx=rte_ring_lookup("drain_tx_p0_q0_g0");
+    unsigned pool_before=rte_mempool_in_use_count(pool);
+    if(!c||!tx||pool_before||rte_ring_count(tx)||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_before))return -1;
+    atomic_store(&c->stage,0);atomic_store(&c->producer_ready,0);
+    atomic_store(&c->consumer_ready,0);atomic_store(&c->producer_pid,0);
+    memset(c->retained_tx,0,sizeof(c->retained_tx));
+    atomic_store(&c->failed,0);
+#define DEAD_TX_FAIL() do { fprintf(stderr,"NR19 dead-producer TX failure at line %d stage=%u\n",__LINE__,atomic_load(&c->stage)); goto cleanup; } while(0)
+    pids[0]=fork();if(pids[0]<0)DEAD_TX_FAIL();
+    if(!pids[0]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--","producer-tx-retain",(char*)NULL);_Exit(127);}
+    pidfds[0]=syscall(SYS_pidfd_open,pids[0],0);if(pidfds[0]<0)DEAD_TX_FAIL();
+    producer.pid=(uint32_t)pids[0];
+    atomic_store_explicit(&c->producer_pid,producer.pid,memory_order_release);
+    pids[1]=fork();if(pids[1]<0)DEAD_TX_FAIL();
+    if(!pids[1]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--","consumer-tx-retain",(char*)NULL);_Exit(127);}
+    pidfds[1]=syscall(SYS_pidfd_open,pids[1],0);if(pidfds[1]<0)DEAD_TX_FAIL();
+    consumer.pid=(uint32_t)pids[1];
+    if(ker_generation_admit(r,&producer,pidfds[0])||ker_generation_admit(r,&consumer,pidfds[1]))DEAD_TX_FAIL();
+    for(unsigned tick=0;tick<10000&&
+        (!atomic_load_explicit(&c->producer_ready,memory_order_acquire)||
+         !atomic_load_explicit(&c->consumer_ready,memory_order_acquire));tick++){
+        for(unsigned i=0;i<2;i++){
+            siginfo_t info={0};
+            if(waitid(P_PID,(id_t)pids[i],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[i])DEAD_TX_FAIL();
+        }
+        usleep(1000);
+    }
+    if(!atomic_load(&c->producer_ready)||!atomic_load(&c->consumer_ready))DEAD_TX_FAIL();
+    atomic_store_explicit(&c->stage,20,memory_order_release);
+    siginfo_t exited={0};
+    for(unsigned tick=0;tick<10000;tick++){
+        if(waitid(P_PID,(id_t)pids[0],&exited,WEXITED|WNOHANG|WNOWAIT))DEAD_TX_FAIL();
+        if(exited.si_pid==pids[0])break;
+        usleep(1000);
+    }
+    if(exited.si_pid!=pids[0]||exited.si_code!=CLD_EXITED||exited.si_status!=0)DEAD_TX_FAIL();
+    struct pollfd dead={.fd=pidfds[0],.events=POLLIN};
+    int ready;do ready=poll(&dead,1,0);while(ready<0&&errno==EINTR);
+    char fdinfo_path[64],fdinfo[256];
+    if(ready!=1||!(dead.revents&POLLIN)||
+        snprintf(fdinfo_path,sizeof(fdinfo_path),"/proc/self/fdinfo/%d",pidfds[0])<0)DEAD_TX_FAIL();
+    int fdinfo_fd=open(fdinfo_path,O_RDONLY|O_CLOEXEC);
+    if(fdinfo_fd<0)DEAD_TX_FAIL();
+    ssize_t fdinfo_size=read(fdinfo_fd,fdinfo,sizeof(fdinfo)-1);close(fdinfo_fd);
+    if(fdinfo_size<=0)DEAD_TX_FAIL();
+    fdinfo[fdinfo_size]='\0';char *pid_line=strstr(fdinfo,"Pid:");int fd_pid=-1;
+    if(!pid_line||sscanf(pid_line+4,"%d",&fd_pid)!=1||(uint32_t)fd_pid!=producer.pid||
+        rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||rte_ring_count(tx)!=3||
+        rte_mempool_in_use_count(pool)!=pool_before+3)DEAD_TX_FAIL();
+    if(ker_generation_reap_dead(r,&producer)||rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||
+        rte_ring_count(tx)!=3||rte_mempool_in_use_count(pool)!=pool_before+3||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)DEAD_TX_FAIL();
+    /* The PIDFD still names the unreaped zombie, so fdinfo identity matches;
+     * only the liveness poll prevents re-admitting the retired generation. */
+    if(ker_generation_admit(r,&producer,pidfds[0])!=-ESTALE||
+        rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||rte_ring_count(tx)!=3||
+        rte_mempool_in_use_count(pool)!=pool_before+3||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)DEAD_TX_FAIL();
+    if(wait_child_bounded(pids[0],&status)||!WIFEXITED(status)||WEXITSTATUS(status))DEAD_TX_FAIL();
+    close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+    atomic_store_explicit(&c->stage,22,memory_order_release);
+    if(parent_wait_stage(c,23,pids+1,1)||wait_child_bounded(pids[1],&status)||
+        !WIFEXITED(status)||WEXITSTATUS(status)||rte_ring_lookup("drain_tx_p0_q0_g0")!=tx||
+        rte_ring_count(tx)||rte_mempool_in_use_count(pool)!=pool_before||
+        ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)DEAD_TX_FAIL();
+    if(ker_generation_reap_dead(r,&consumer))DEAD_TX_FAIL();
+    close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+    result=0;
+    printf("NR19_LIVE_PEER_DRAINS_RETAINED_TX_PASS packets=3 fifo=true pool_restored=true tx_drop_delta=0\n");
+cleanup:
+    if(result){
+        for(unsigned i=0;i<2;i++)if(pidfds[i]>=0){
+            siginfo_t info={0};
+            if(waitid(P_PIDFD,(id_t)pidfds[i],&info,WEXITED|WNOHANG|WNOWAIT)==0&&info.si_pid==0)
+                (void)syscall(SYS_pidfd_send_signal,pidfds[i],SIGKILL,NULL,0);
+        }
+        for(unsigned i=0;i<2;i++)if(pids[i]>0){
+            (void)wait_child_bounded(pids[i],&status);
+            if(pidfds[i]>=0){
+                const struct ker_generation_identity *identity=i?&consumer:&producer;
+                (void)ker_generation_reap_dead(r,identity);
+            }
+        }
+        for(unsigned i=0;i<2;i++)if(pidfds[i]>=0)close(pidfds[i]);
+    }
+#undef DEAD_TX_FAIL
+    return result;
+}
+static int primary(const char *prefix,const char *exe)
+{
+    struct rte_mempool*pool=rte_pktmbuf_pool_create(TEST_POOL,256,0,0,2048,SOCKET_ID_ANY);
+    if(!pool)return 77;
+    const struct rte_memzone*mz=rte_memzone_reserve(TEST_ZONE,sizeof(struct test_control),SOCKET_ID_ANY,0);
+    if(!mz)return 1;
+    struct test_control*c=mz->addr;memset(c,0,sizeof(*c));atomic_init(&c->stage,0);
+    atomic_init(&c->gen0_ready,0);atomic_init(&c->crash_ready,0);atomic_init(&c->producer_pid,0);
+    atomic_init(&c->producer_ready,0);atomic_init(&c->consumer_ready,0);
+    atomic_init(&c->transition_release,0);atomic_init(&c->failed,0);
+    struct ker_generation_rings*r=NULL;if(ker_generation_rings_create(TEST_SESSION,1,2,pool,&r))return 1;
+    const struct rte_memzone *directory=rte_memzone_lookup("ker_gen_ring_directory");
+    if(!directory)return 1;
+    uint32_t directory_version,old_directory_version=3;
+    memcpy(&directory_version,(char*)directory->addr+2*sizeof(uint64_t),sizeof(directory_version));
+    memcpy((char*)directory->addr+2*sizeof(uint64_t),&old_directory_version,sizeof(old_directory_version));
+    struct ker_generation_rings *old_abi=NULL;
+    int old_abi_result=ker_generation_rings_attach(TEST_SESSION,1,2,pool,&old_abi);
+    memcpy((char*)directory->addr+2*sizeof(uint64_t),&directory_version,sizeof(directory_version));
+    if(old_abi_result!=-EPROTO||old_abi) return 1;
+    pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};char file_prefix[128];
+#define FAIL_CHILDREN() do { \
+    fprintf(stderr,"NR19 primary: failure at line %d, stage=%u\n",__LINE__,atomic_load(&c->stage)); \
+    for(unsigned failed_i=0;failed_i<2;failed_i++)if(pids[failed_i]>0){ \
+        siginfo_t failed_info={0}; \
+        if(waitid(P_PID,(id_t)pids[failed_i],&failed_info,WEXITED|WNOHANG|WNOWAIT)==0&&failed_info.si_pid==pids[failed_i]) \
+            fprintf(stderr,"NR19 primary: child[%u]=%ld exited code=%d status=%d\n",failed_i,(long)pids[failed_i],failed_info.si_code,failed_info.si_status); \
+        else fprintf(stderr,"NR19 primary: child[%u]=%ld still running\n",failed_i,(long)pids[failed_i]); \
+    } \
+    if(stop_children(pids,2,pidfds)) { _Exit(1); } \
+    return 1; } while(0)
+    snprintf(file_prefix,sizeof(file_prefix),"--file-prefix=%s",prefix);
+    pids[0]=fork();if(pids[0]<0)FAIL_CHILDREN();
+    if(!pids[0]){execl(exe,exe,"--no-pci",file_prefix,"--proc-type=secondary","--","0",(char*)NULL);_Exit(127);}
+    pidfds[0]=syscall(SYS_pidfd_open,pids[0],0);if(pidfds[0]<0)FAIL_CHILDREN();
+    struct ker_generation_identity id0={.session=TEST_SESSION,.epoch=7,.slot=1,.generation=0,.process=0,.pid=(uint32_t)pids[0]};
+    if(ker_generation_admit(r,&id0,pidfds[0]))FAIL_CHILDREN();
+    if(parent_wait_stage(c,1,pids,1))FAIL_CHILDREN();
+    pids[1]=fork();if(pids[1]<0)FAIL_CHILDREN();
+    if(!pids[1]){execl(exe,exe,"--no-pci",file_prefix,"--proc-type=secondary","--","1",(char*)NULL);_Exit(127);}
+    pidfds[1]=syscall(SYS_pidfd_open,pids[1],0);if(pidfds[1]<0)FAIL_CHILDREN();
+    struct ker_generation_identity id1={.session=TEST_SESSION,.epoch=8,.slot=2,.generation=1,.process=0,.pid=(uint32_t)pids[1]};
+    if(ker_generation_admit(r,&id1,pidfds[1]))FAIL_CHILDREN();
+    if(parent_wait_stage(c,6,pids,2))FAIL_CHILDREN();
+    struct ker_generation_cleanup_config cleanup={.version=KER_GENERATION_CLEANUP_CONFIG_VERSION,
+        .size=sizeof(cleanup),.ports=1,.queues=2,.rx_queue_mask=0,.tx_queue_mask=1};
+    unsigned rx_reclaimed=0,tx_reclaimed=0;
+    struct rte_ring *tx_ring=rte_ring_lookup("drain_tx_p0_q0_g0");
+    if(!tx_ring||ker_generation_orderly_detach(r,&id0,&cleanup,1,&rx_reclaimed,&tx_reclaimed)||
+        rx_reclaimed!=0||tx_reclaimed!=1||rte_ring_count(tx_ring)!=0||
+        ker_generation_admit(r,&id0,pidfds[0]))FAIL_CHILDREN();
+    atomic_store_explicit(&c->stage,7,memory_order_release);
+    if(parent_wait_stage(c,8,pids,2)||parent_wait_gen0_ready(c,pids,2))FAIL_CHILDREN();
+    if(ker_generation_unregister(r,&id1)||ker_generation_unregister(r,&id1))FAIL_CHILDREN();
+    struct rte_ring*stable=rte_ring_lookup("drain_rx_p0_q0_g1");if(!stable)FAIL_CHILDREN();
+    if(rte_ring_count(stable)!=1)FAIL_CHILDREN();
+    struct rte_mbuf*held=NULL;
+    if(ker_generation_rx_dequeue(r,&id1,0,0,&held)!=-EINVAL||held)FAIL_CHILDREN();
+    if(ker_generation_admit(r,&id1,pidfds[1]))FAIL_CHILDREN();
+    if(rte_ring_lookup("drain_rx_p0_q0_g1")!=stable)FAIL_CHILDREN();
+    atomic_store_explicit(&c->stage,9,memory_order_release);
+    if(parent_wait_stage(c,12,pids,2))FAIL_CHILDREN();
+    if(parent_wait_stage(c,13,pids,2))FAIL_CHILDREN();
+    int status=0;
+    if(wait_child_bounded(pids[0],&status)||!WIFEXITED(status)||WEXITSTATUS(status))FAIL_CHILDREN();
+    if(ker_generation_reap_dead(r,&id0))FAIL_CHILDREN();
+    struct rte_ring *reaper_tx=rte_ring_lookup("drain_tx_p0_q0_g0");
+    if(!reaper_tx||rte_ring_count(reaper_tx)!=1)FAIL_CHILDREN();
+    close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+    if(rte_ring_lookup("drain_rx_p0_q0_g1")!=stable||rte_ring_count(stable)!=1)FAIL_CHILDREN();
+    if(kill(pids[1],SIGKILL)||wait_child_bounded(pids[1],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)FAIL_CHILDREN();
+    unsigned in_use_before_failed_reap=rte_mempool_in_use_count(pool);
+    uint64_t tx_drop_before_failed_reap=0,tx_drop_after_failed_reap=0;
+    struct rte_mbuf *expected_tx=NULL,*expected_rx=NULL;
+    if(ker_generation_test_tx_drop_count(r,0,0,0,&tx_drop_before_failed_reap)||
+        rte_ring_count(reaper_tx)!=1||rte_ring_count(stable)!=1||
+        rte_ring_dequeue(reaper_tx,(void **)&expected_tx)||!expected_tx||
+        rte_pktmbuf_mtod(expected_tx,uint8_t*)[0]!=0x46||rte_ring_enqueue(reaper_tx,expected_tx)||
+        rte_ring_dequeue(stable,(void **)&expected_rx)||!expected_rx||
+        rte_pktmbuf_mtod(expected_rx,uint8_t*)[0]!=0x55||rte_ring_enqueue(stable,expected_rx))FAIL_CHILDREN();
+    ker_generation_test_corrupt_next_reap();
+    if(ker_generation_reap_dead(r,&id1)!=-EUCLEAN||
+        rte_mempool_in_use_count(pool)!=in_use_before_failed_reap||
+        rte_ring_count(reaper_tx)!=1||rte_ring_count(stable)!=1||
+        ker_generation_test_tx_drop_count(r,0,0,0,&tx_drop_after_failed_reap)||
+        tx_drop_after_failed_reap!=tx_drop_before_failed_reap)FAIL_CHILDREN();
+    struct rte_mbuf *retained=NULL;
+    if(rte_ring_dequeue(reaper_tx,(void **)&retained)||retained!=expected_tx||
+        rte_pktmbuf_mtod(retained,uint8_t*)[0]!=0x46||rte_ring_enqueue(reaper_tx,retained))FAIL_CHILDREN();
+    retained=NULL;
+    if(rte_ring_dequeue(stable,(void **)&retained)||retained!=expected_rx||
+        rte_pktmbuf_mtod(retained,uint8_t*)[0]!=0x55||rte_ring_enqueue(stable,retained))FAIL_CHILDREN();
+    ker_generation_test_restore_reap_corruption();
+    if(ker_generation_reap_dead(r,&id1))FAIL_CHILDREN();
+    close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
+    if(rte_ring_count(stable)!=0||rte_ring_count(reaper_tx)!=0||
+        atomic_load(&c->failed)||rte_mempool_in_use_count(pool)!=0)FAIL_CHILDREN();
+    pids[0]=fork();if(pids[0]<0)FAIL_CHILDREN();
+    if(!pids[0]){execl(exe,exe,"--no-pci",file_prefix,"--proc-type=secondary","--","r",(char*)NULL);_Exit(127);}
+    pidfds[0]=syscall(SYS_pidfd_open,pids[0],0);if(pidfds[0]<0)FAIL_CHILDREN();
+    if(parent_wait_stage(c,15,pids,1))FAIL_CHILDREN();
+    struct ker_generation_identity recycled={.session=TEST_SESSION,.epoch=9,.slot=3,.generation=1,.process=0,.pid=(uint32_t)pids[0]};
+    if(ker_generation_admit(r,&recycled,pidfds[0]))FAIL_CHILDREN();
+    atomic_store_explicit(&c->stage,16,memory_order_release);
+    if(parent_wait_stage(c,17,pids,1))FAIL_CHILDREN();
+    if(wait_child_bounded(pids[0],&status)||!WIFEXITED(status)||WEXITSTATUS(status))FAIL_CHILDREN();
+    if(ker_generation_reap_dead(r,&recycled))FAIL_CHILDREN();
+    close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+    struct ker_generation_ring_stats stats;
+    if(run_dequeue_crash_window(r,pool,file_prefix,exe,"live")||
+        run_dequeue_crash_window(r,pool,file_prefix,exe,"tx-live")||
+        run_dequeue_crash_window(r,pool,file_prefix,exe,"enqueue")||
+        run_dequeue_crash_window(r,pool,file_prefix,exe,"pre")||
+        run_dequeue_crash_window(r,pool,file_prefix,exe,"cas")||
+        run_dead_producer_tx(r,pool,file_prefix,exe))FAIL_CHILDREN();
+    if(atomic_load(&c->failed)||rte_mempool_in_use_count(pool)!=0||
+        ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.tx_drop!=3||
+        stats.rx_full!=1||stats.tx_peak<2||stats.rx_peak<KER_GENERATION_RING_CAPACITY)
+        FAIL_CHILDREN();
+    if(ker_generation_rings_destroy(r))FAIL_CHILDREN();
+    rte_memzone_free(mz);rte_mempool_free(pool);
+    puts("NR19 two-secondary ring contract passed");return 0;
+#undef FAIL_CHILDREN
+}
+int main(int argc,char**argv)
+{
+    if(argc<2)return 2;
+    char mode[32];snprintf(mode,sizeof(mode),"%s",argv[argc-1]);
+    int consumed=rte_eal_init(argc,argv);if(consumed<0)return 77;
+    int rc;
+    if(!strcmp(mode,"primary")){
+        const char*prefix=NULL;for(int i=1;i<argc;i++)if(!strncmp(argv[i],"--file-prefix=",14))prefix=argv[i]+14;
+        if(!prefix)rc=2;else{char exe[PATH_MAX];if(!realpath(argv[0],exe))rc=2;else rc=primary(prefix,exe);}
+    }else if(!strcmp(mode,"0")||!strcmp(mode,"1"))rc=secondary((unsigned)atoi(mode),0);
+    else if(!strcmp(mode,"r"))rc=secondary(1,1);
+    else if(!strcmp(mode,"producer-enqueue")||!strcmp(mode,"producer-pre")||!strcmp(mode,"producer-pre-tx")||
+        !strcmp(mode,"producer-tx-live")||!strcmp(mode,"dequeue-tx-live")||
+        !strcmp(mode,"producer-tx-retain")||!strcmp(mode,"consumer-tx-retain")||
+        !strcmp(mode,"dequeue-pre")||!strcmp(mode,"dequeue-pre-live")||!strcmp(mode,"producer-cas")||
+        !strcmp(mode,"dequeue-cas")||!strcmp(mode,"standby"))rc=secondary_dequeue_crash(mode);
+    else rc=2;
+    rte_eal_cleanup();return rc;
+}

@@ -58,10 +58,11 @@ static int mtu_control(int fd, uint16_t port)
     return send(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_NOSIGNAL) == sizeof(message) ? 0 : -EIO;
 }
 int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_fd,
-    int control, int registration_fd, int resident_pidfd, _Atomic uint64_t *owner,
-    uint64_t expected_owner,
+    int control, int registration_fd, int resident_pidfd, _Atomic uint64_t *owner, uint64_t expected_owner,
     struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet,
-    struct ker_worker_exception *exception, const volatile sig_atomic_t *stopping)
+    struct ker_worker_exception *exception, const volatile sig_atomic_t *stopping,
+    ker_session_heartbeat_fn heartbeat_tick, ker_session_heartbeat_fn heartbeat_pump,
+    void *heartbeat_context)
 {
     struct rte_ring *rx = rte_ring_lookup(KER_SESSION_PACKET_RX), *tx = rte_ring_lookup(KER_SESSION_PACKET_TX);
     uint16_t actual_mtu;
@@ -86,6 +87,9 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     int status = 0;
     for (; !*stopping;) {
         if (!alive(resident_pidfd)) _Exit(125); /* Never clean shared state after resident loss. */
+        int heartbeat_status = heartbeat_tick ? heartbeat_tick(heartbeat_context) : 0;
+        if (heartbeat_status < 0) { status = heartbeat_status; break; }
+        if (!alive(resident_pidfd)) _Exit(125);
         if (atomic_load_explicit(owner, memory_order_acquire) != expected_owner) { status = -ESTALE; break; }
         short packet_events = (!tx_pending && !tx_queued && !tx_output ? POLLIN : 0) | (rx_output ? POLLOUT : 0);
         short wire_events = (!rx_pending && !rx_queued && !rx_output && !exception_pending && !tx_queued && !tx_output && !exception->session_busy ? POLLIN : 0) | (tx_output ? POLLOUT : 0);
@@ -99,12 +103,13 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         if (fds[0].revents) break;
         if (fds[1].revents & (POLLHUP | POLLERR | POLLNVAL)) break;
         if (fds[1].revents & POLLIN) {
-            /* The resident closes this exact registration socket on graceful
-             * shutdown. Any queued command here is outside the idle packet loop. */
-            uint8_t unexpected;
-            ssize_t n = recv(registration_fd, &unexpected, sizeof(unexpected), MSG_PEEK | MSG_DONTWAIT);
-            if (n <= 0) break;
-            status = -EPROTO; break;
+            /* Only a pending worker heartbeat may produce data on this
+             * authenticated registration socket in the packet loop. */
+            if (!alive(resident_pidfd)) _Exit(125);
+            heartbeat_status = heartbeat_pump ? heartbeat_pump(heartbeat_context) : 0;
+            if (!alive(resident_pidfd)) _Exit(125);
+            if (atomic_load_explicit(owner, memory_order_acquire) != expected_owner) { status = -ESTALE; break; }
+            if (heartbeat_status != 1) { status = heartbeat_status < 0 ? heartbeat_status : -EPROTO; break; }
         }
         if (fds[4].revents & POLLIN) {
             int result = mtu_control(mtu_fd, port);

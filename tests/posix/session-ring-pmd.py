@@ -54,6 +54,7 @@ def main():
         return 77
     spec = importlib.util.spec_from_file_location('ker_session_tool', args.tool)
     api = importlib.util.module_from_spec(spec); spec.loader.exec_module(api)
+    expected_frame_bytes = 14 + api.WIRE.size + 8 + 64
     require(ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0, 'subreaper setup')
     processes, orphan_pidfds = [], []
     with tempfile.TemporaryDirectory(prefix='ker-pmd-') as directory:
@@ -104,7 +105,8 @@ def main():
             control = ready(process, 'KER_SESSION_PROBED')
             data = ready(process, 'KER_SESSION_PMD_PROBED')
             require(control['sequence'] == sequence and data['sequence'] == sequence and
-                    data['count'] == count and data['frame_bytes'] == 174, 'original PMD frame/sequence evidence differs')
+                    data['count'] == count and data['frame_bytes'] == expected_frame_bytes,
+                    'original PMD frame/sequence evidence differs')
 
         primary = launch('serve')
         try:
@@ -177,7 +179,7 @@ def main():
                     primary_output.decode(errors='replace') + ' stderr=' + primary_errors.decode(errors='replace'))
             require(primary.returncode == 0, 'resident EAL/device cleanup failed: ' + primary_errors.decode())
             require(b'KER_SESSION_DRAINED' in primary_output, 'pool cleanup proof missing')
-            print('PASS: original secondary net_ring TX/RX174-byte frames and exact original PMD counter deltas')
+            print('PASS: original secondary net_ring TX/RX frames with exact ABI-sized payloads and PMD counter deltas')
             print('PASS: single consumer, active owner query, dead-master/live-secondary exclusion, newer-epoch takeover')
             print('PASS: private PMD lease recovered after borrower death before TX and after RX;511 objects restored')
             print('BOUNDARY: ring PMD qualification; no physical NIC, imported-Linux delivery or full reload assertion')

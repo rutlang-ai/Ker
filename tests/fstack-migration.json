@@ -684,118 +684,98 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
+      "status": "scenario-adapted",
+      "reason": "The pinned net_null smoke case sets synthetic ip_csum metadata and accepts send success or failure. Ker adapts that scenario through original Linux virtio CHECKSUM_PARTIAL, the production TX metadata translator, and original DPDK. Fresh TAP and virtio/vhost acceptance passed with independent IPv4-header and transport-checksum capture; the TAP checksum profile recorded IP checksum requests and all normal profiles passed payload, MTU, capture-drop, and buffer-accounting assertions. This maps the source scenario, not a hardware checksum claim; physical-NIC qualification remains a separate issue221 goal.",
       "ker_tests": [
-        {
-          "ctest": "native-fstack-tx-offloads",
-          "provenance_case": "native-fstack-tx-offloads"
-        },
         {
           "ctest": "native-fstack-tx-offload-metadata",
           "provenance_case": "native-fstack-tx-offload-metadata"
+        },
+        {
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "native-fstack-tx-offloads"
         },
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
         },
         {
-          "ctest": "native-fstack-tap-offload-retry",
-          "provenance_case": "native-fstack-tap-offload-retry"
-        },
-        {
           "ctest": "native-fstack-virtio-kernel-offloads",
           "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
-      ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tcp_csum",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
+      "status": "scenario-adapted",
+      "reason": "The pinned net_null smoke case enables synthetic tcp_csum metadata and accepts send success or failure. Ker adapts that scenario through original Linux TCP CHECKSUM_PARTIAL, the production translator and original DPDK TX prepare path. Fresh TAP checksum/TSO and virtio/vhost profiles independently verified TCP checksums and complete 512-KiB TCP byte coverage within MTU, with zero capture drops and normal-profile buffer cleanup. This maps the source scenario, not a physical-NIC claim; physical hardware qualification remains separate under issue221.",
       "ker_tests": [
-        {
-          "ctest": "native-fstack-tx-offloads",
-          "provenance_case": "native-fstack-tx-offloads"
-        },
         {
           "ctest": "native-fstack-tx-offload-metadata",
           "provenance_case": "native-fstack-tx-offload-metadata"
+        },
+        {
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "native-fstack-tx-offloads"
         },
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
         },
         {
-          "ctest": "native-fstack-tap-offload-retry",
-          "provenance_case": "native-fstack-tap-offload-retry"
-        },
-        {
           "ctest": "native-fstack-virtio-kernel-offloads",
           "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
-      ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tso",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
+      "status": "scenario-adapted",
+      "reason": "The pinned net_null smoke case supplies synthetic TCP checksum/TSO metadata and only accepts a send result of zero or minus one. Ker adapts that scenario through original Linux GSO metadata and original DPDK segmentation. Fresh TAP large/scatter TSO and virtio/vhost IPv4/IPv6 TSO profiles passed independent wire payload/checksum/MTU checks; TSO request counters were observed and capture drops were zero. Shutdown-discard accounting is checked per profile, including the allowed one-packet rename-profile discard. This is software-PMD adaptation, not physical-NIC qualification (issue221).",
       "ker_tests": [
-        {
-          "ctest": "native-fstack-tx-offloads",
-          "provenance_case": "native-fstack-tx-offloads"
-        },
         {
           "ctest": "native-fstack-tx-offload-metadata",
           "provenance_case": "native-fstack-tx-offload-metadata"
+        },
+        {
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "native-fstack-tx-offloads"
         },
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
         },
         {
-          "ctest": "native-fstack-tap-offload-retry",
-          "provenance_case": "native-fstack-tap-offload-retry"
-        },
-        {
           "ctest": "native-fstack-virtio-kernel-offloads",
           "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
-      ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_udp_csum",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Original Linux virtio CHECKSUM_PARTIAL/GSO is now capability-negotiated and translated to original DPDK TX checksum/segmentation metadata. Real TAP PMD software execution, after live MTU restarts, validates native IPv4/IPv6 TCP512KiB and UDP boundary lengths through an independent capture with zero drops, full TCP byte coverage, correct IPv4/L4 checksums and bounded segments. Default off and large/scatter TSO are covered; unsupported PMD and malformed metadata fail explicitly. An isolated, justified TAP ownership patch now qualifies copy/write rejection retries with exact caller-state and independent wire evidence; unmodified PMDs retain fail-closed offload rejection. Original virtio-user/vhost-kernel now executes IPv4 and IPv6 TSO plus checksum paths with full independent wire/payload coverage, actual typed iface/queue settings, live MTU restarts and receive-mode restoration.",
+      "status": "scenario-adapted",
+      "reason": "The pinned net_null smoke case enables synthetic udp_csum metadata and accepts send success or failure. Ker adapts that scenario through original Linux UDP CHECKSUM_PARTIAL, the production translator and original DPDK. Fresh TAP and virtio/vhost acceptance covered UDP payload lengths 0, 1, 511 and 1400 with independent wire checksum validation, nonzero UDP checksums, bounded frames, zero capture drops, and normal-profile buffer cleanup. This maps the source scenario, not physical-NIC offload; hardware qualification remains separately tracked by issue221.",
       "ker_tests": [
-        {
-          "ctest": "native-fstack-tx-offloads",
-          "provenance_case": "native-fstack-tx-offloads"
-        },
         {
           "ctest": "native-fstack-tx-offload-metadata",
           "provenance_case": "native-fstack-tx-offload-metadata"
+        },
+        {
+          "ctest": "native-fstack-tx-offloads",
+          "provenance_case": "native-fstack-tx-offloads"
         },
         {
           "ctest": "native-fstack-tx-offloads-config",
           "provenance_case": "native-fstack-tx-offloads-config"
         },
         {
-          "ctest": "native-fstack-tap-offload-retry",
-          "provenance_case": "native-fstack-tap-offload-retry"
-        },
-        {
           "ctest": "native-fstack-virtio-kernel-offloads",
           "provenance_case": "native-fstack-virtio-kernel-offloads"
         }
-      ],
-      "remaining": "Actual physical-NIC checksum/TSO execution and a qualified hardware runner remain missing under issue221. TAP and virtio/vhost-kernel acceptance exercise original software implementations, not physical hardware. IPv6 TSO is qualified through virtio/vhost-kernel; pinned TAP GSO itself remains IPv4-only. TAP safe rejection retries require the isolated patch under issue244. No legacy Ker-owned protocol test substitutes for hardware proof."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
@@ -869,8 +849,8 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Native one-callback stop, real socket traffic, original-kernel teardown and acknowledged EAL cleanup are now executable. Separate Ethernet workers intentionally remain autonomous while the caller callback executes.",
+      "status": "scenario-adapted",
+      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker’s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker’s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -888,8 +868,7 @@
           "ctest": "native-fstack-run-stop",
           "provenance_case": "native-fstack-run-stop-once"
         }
-      ],
-      "remaining": "The source executes one complete F-Stack EAL main_loop iteration containing dispatch/message rings, RX, TX drain and top-status accounting, with the callback on the EAL lcore. Ker runs the callback in the native application process while separate EAL workers poll independently; one native callback does not prove exactly one original EAL main_loop turn. That coupled scheduling/ABI contract remains under issue223; do not count the new callback-once test as full source integration-loop equivalence."
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
@@ -950,16 +929,26 @@
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The resident now provides real EAL registration, shared-control leases and namespace recycling. This source case still lacks its actual epoch-liveness, hardware-owner query or drain-peer implementation; control health probes do not qualify it.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The focused native EAL adapter sends an unseeded typed coordinate query only after the real secondary is authenticated and ATTACHED. The resident answers only for that live peer while its exact original control mbuf remains journaled; the worker uses only the returned live nonzero coordinate with the existing production ring_name helper to look up the proc-1 RX ring and prove it differs from slot-zero. The guest also rejects an unbound query with EPERM and no coordinate data, then proves exact worker/supervisor pidfd cleanup, 511-object baseline and DRAINED. This adapts the source test's coordinate-query/ring-name selection assertion only. It does not implement or claim FF_RELOAD_CMD_QUERY/ff_ipc wire compatibility, cookies, multi-candidate discovery, fallback semantics, TCP/flow migration or full reload.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-coordinate",
+          "provenance_case": "native-fstack-session-coordinate"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The resident now provides real EAL registration, shared-control leases and namespace recycling. This source case still lacks its actual epoch-liveness, hardware-owner query or drain-peer implementation; control health probes do not qualify it.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The Ker resident authenticates an explicitly drain-authorized EAL secondary and accepts only its worker-origin heartbeat after the master exits. A second real EAL worker with a distinct epoch/slot but the same generation/process sees the fresh orphan as its peer; after that worker exits and the 2-second freshness window elapses, peer selection falls back to the caller epoch/opposite generation. The SHA-bound native guest run checks the source peer1=1/peer2=0 assertions, exact process cleanup and the 511-object pool baseline. This maps only this peer-liveness/drain-semantics case; DPDK drain-TX cases, flow-map, external packet TX, TCP continuity and full reload remain unqualified.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-drain-peer",
+          "provenance_case": "native-fstack-session-drain-peer"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_chain_slot_recycle",
@@ -1753,7 +1742,7 @@
           "provenance_case": "native-fstack-eal-base-virtaddr"
         }
       ],
-      "remaining": "Full vdev completion queues, bond down_delay and F-Stack global configuration layout remain unsupported. Ker forwards the literal file prefix instead of adding container-. Virtual addresses remain original EAL hints; collision fallback, exact placement, shared hugepages and secondary processes are not qualified."
+      "remaining": "The complete source fixture is not an exact Ker runtime configuration: `[dpdk] allow` and numeric `port_list` are not represented in the typed schema, and its `iface=net_pcap0` plus Unix-socket `path=/tmp/x` tuple is rejected by the pinned DPDK virtio-user PMD. Ker already validates and forwards vdev `cq` to the original DPDK argument and applies bond poll/up/down timing through original PMD setter/getter APIs; the qualified bond runtime profile read back down_delay=200, while the source fixture sets 300 and that exact value is not separately runtime-verified. The source F-Stack global config layout is not reproduced. Ker uses the literal file prefix rather than adding container-, and the base-virtual-address option remains an original-EAL hint: exact placement, collision fallback, shared hugepage mapping and secondary use are not claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
@@ -2585,9 +2574,17 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "The resident-created original-DPDK ring adapter and real-EAL tests cover every assertion in this pinned ring/ownership scenario. Component and resident-authenticated secondary probes verify generation/queue names and flags, exact RX/TX ownership, rejection and full-ring accounting, FIFO drain, unregister/re-admission persistence and final object recovery. This mapping adapts only the pinned NR-19 helper contract; broader worker packet dispatch, flow-map, external TX, TCP/UDP and full reload scenarios remain separate.",
       "ker_tests": [
+        {
+          "ctest": "native-fstack-session-generation-rings",
+          "provenance_case": "nr19-generation-aware-rings"
+        },
+        {
+          "ctest": "native-fstack-session-generation-rings-registration",
+          "provenance_case": "nr19-generation-aware-rings"
+        },
         {
           "ctest": "fstack-queue-isolation",
           "provenance_case": "queue-isolation"
@@ -2600,8 +2597,7 @@
           "ctest": "ethdev-multiqueue",
           "provenance_case": "ethdev-multiqueue"
         }
-      ],
-      "remaining": "Local FIFO/multiqueue isolation does not implement F-Stack generation-aware multiprocess drain rings."
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
@@ -2627,30 +2623,50 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_f_m4_1_drain_ring_full_visible",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The actual original-DPDK EAL resident test fills the configured generation TX ring, observes one enqueue-full event, verifies the rejected caller-owned packet remains owned by the caller, then drains accepted FIFO packets and checks cleanup. The typed resident summary reports tx_full=1, tx_drop=0, event-time tx_peak=64 at capacity 64, and rx_peak=0; this maps only the pinned full-ring visibility scenario. It does not claim physical NIC behavior, external TX, payload semantics beyond the tested ring path, or broader reload behavior.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-generation-tx-full",
+          "provenance_case": "native-fstack-session-generation-tx-full"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_queue_ownership",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The real EAL P1_DETACH fixture exercises orderly ring unregister with the exact authenticated data owner and no foreign peer. Eight known-pool mbufs are journaled in the original RX/TX ring matrix; only configured RX q0/g0 and TX q1/g0 are drained (+2), while six other ring sentinels retain their identities. Repeated unregister is idempotent and reinitialization finds the same persistent ring. Teardown restores all 511 objects and clears registrations and PMD ownership. The integrated source candidate `5f9055e28782ad4cdf86cc363f2e8cbfd3ef2c15` passed all 13 suites in one guest image. Its actual-result manifest is `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-drain-modes-integrated-guest6-actual-result.json` (SHA-256 `5749c34d7bbb76ee2e51902feffc93f2eb9022c37625cbe1dc5ae84334bc2407`); that manifest binds the package, image and serial-log hashes listed in the current migration documentation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-generation-detach",
+          "provenance_case": "native-fstack-session-generation-detach"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_nonowner_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The real EAL P1_DETACH fixture proves the bounded non-owner detach policy: within one authenticated master slot/epoch, the live generation-1 worker holds the actual PMD/RX hardware-owner lease while its registered generation-0 peer is detached. The resident validates the exact live owner identity and lease before cleanup; it reclaims only configured RX q0/g0 (+1 object), retains TX q1/g0 and all six other journaled ring objects, preserves the generation-1 owner, and re-admits the same generation-0 identity on the same persistent ring. Wrong-master ARM is denied without state change; owner death/replacement invalidates the old detach capability with ESTALE and replay with EPERM before the replacement owner or pool changes. Positive teardown restores all 511 pool objects. A separate held-dequeue safety case terminates the resident fail-closed on bounded active-operation timeout; it is not an extra source assertion. The earlier evidence is retained as a split historical record: guest5 passed ten parent suites but failed at P1, and guest9 ran P1 only; those runs did not constitute an eleven-suite pass in one image. The later combined guest proof is recorded below. Evidence is bound to runtime commit 67bfc5b652f76d36fdf827657fa48dde223a76ec by aggregate manifest SHA-256 71e23ac944f6958db88f956742a4bbe2e654a68963525f43b2147ee508cd12ce. This maps only test_p1_drain_nonowner_tx; it does not claim foreign-epoch TX, empty-qconf, TX burst/payload, flow-map, external TX, TCP continuity, or full reload. The integrated source candidate `5f9055e28782ad4cdf86cc363f2e8cbfd3ef2c15` passed all 13 suites in one guest image. Its actual-result manifest is `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-drain-modes-integrated-guest6-actual-result.json` (SHA-256 `5749c34d7bbb76ee2e51902feffc93f2eb9022c37625cbe1dc5ae84334bc2407`); that manifest binds the package, image and serial-log hashes listed in the current migration documentation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-generation-detach",
+          "provenance_case": "native-fstack-session-generation-detach"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_peer_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The real EAL P1_DETACH fixture adds a resident-authorized, same-generation foreign peer selector (slot 2/epoch 2) with no ring or PMD capability. With that peer live, production unregister drains only configured RX q0/g0 (+1) and retains TX q1/g0 plus the six other journaled ring sentinels. It checks exact replay, re-admission and same-ring identity; the positive path restores all 511 objects and clears registrations and PMD ownership. A separate held-dequeue fatal subcase verifies fail-closed timeout and exact child/resident death. This mapping does not claim TX burst/payload, nonowner or foreign-epoch TX, flow-map, external TX, TCP, or reload. The integrated source candidate `5f9055e28782ad4cdf86cc363f2e8cbfd3ef2c15` passed all 13 suites in one guest image. Its actual-result manifest is `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-drain-modes-integrated-guest6-actual-result.json` (SHA-256 `5749c34d7bbb76ee2e51902feffc93f2eb9022c37625cbe1dc5ae84334bc2407`); that manifest binds the package, image and serial-log hashes listed in the current migration documentation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-generation-detach",
+          "provenance_case": "native-fstack-session-generation-detach"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
@@ -2662,51 +2678,81 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_empty_qconf",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The real original-DPDK EAL session test runs production detach with the primary-owned empty RX/TX cleanup masks. It proves orderly unregister/re-admission while retaining all eight populated generation-ring objects, exact pointer identity, and the unchanged 511-object pool; invalid-selected-entry fatal behavior is a separate safety regression, not part of this source-case mapping. Earlier profile-specific evidence is retained across immutable guest runs; the later combined all-profile guest proof is recorded below. The integrated source candidate `5f9055e28782ad4cdf86cc363f2e8cbfd3ef2c15` passed all 13 suites in one guest image. Its actual-result manifest is `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-drain-modes-integrated-guest6-actual-result.json` (SHA-256 `5749c34d7bbb76ee2e51902feffc93f2eb9022c37625cbe1dc5ae84334bc2407`); that manifest binds the package, image and serial-log hashes listed in the current migration documentation.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-generation-empty-config",
+          "provenance_case": "native-fstack-session-generation-empty-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Pinned F-Stack refuses an occupied epoch-derived candidate slot without fallback. Ker's authenticated resident instead selects any free slot; duplicate/live-borrower denial does not prove the source's fixed-slot no-fallback boundary. See issue218.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_full",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "One live original ring-PMD owner and two live control-only EAL standbys fill all three Ker master slots. Two additional MASTER attempts are refused before ATTACHED; resident snapshots prove the PMD owner/identity, header, pool, slots, leases and peer mirrors remain unchanged, followed by exact borrower-death takeover and slot recycling.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-standby",
+          "provenance_case": "native-fstack-session-directory-validation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_missing",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The actual Ker secondary runs original DPDK EAL in a separate live EAL namespace with no Ker directory; production memzone lookup fails before ATTACHED, and the resident header, pool, PMD identity, slots, leases and mirrors remain unchanged.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory-validation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_invalid",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A gated real EAL secondary is held after RESERVE while the resident mutates the shared header, then released. Actual production validation rejects bad magic, version, size, session, generation geometry and capacity before ATTACHED; restoring the header and comparing resident snapshots proves owner, lease, pool and ring state stayed unchanged.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory-validation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_success",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The real Ker session has two observed configurations in the same production adapter domain. With --generation-rings omitted, the generation memzone is absent before/during/after a real secondary registration while the generic control memzone remains present and registration/accounting succeeds. In a separate generation-rings-enabled EAL primary/secondary namespace, the generation memzone is present for that same session; the real secondary attaches, then a BUILD_TESTING-only action repeats ker_generation_rings_attach and verifies the same directory plus all eight RX/TX ring pointers. Resident snapshots confirm one control lease while attached and restored pool, PMD, lease and peer state after exact child cleanup. This is a scenario adaptation of default-off and enabled directory behavior, not a literal graceful_reload switch or F-Stack ABI equivalence. Guest result manifest SHA-256 40e67429eee326cd2253832b06bd7418c010e33ac5212eda5dfc4a4388ab4523 binds package eec8f41a68145442a18748da33d00e6ab6f3a40741715f5be83282dbb9a849c2 and image cb0c73789ed9c0c2e6b87b50386fd0529c37370f685161b6a67d479b5e87e04d.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory-validation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_primary_slot_busy",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A second real DPDK EAL primary using the active resident's exact file prefix is refused. Before/after resident snapshots prove the primary identity, directory, PMD state, pool, slots, leases, mirrors and next epoch remain unchanged.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory-validation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_window",
@@ -4232,15 +4278,14 @@
     {
       "id": "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_if_up",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Actual original Linux rejects an off-subnet gateway and a real worker rejects an unknown ethdev. A non-installed preload variant built from the same Ker sources and original liblkl additionally injects negative lkl_if_up returns at loopback/device activation. Exact traces prove real loopback success before device EIO and no device activation after loopback EIO. Both fail125 before native READY/application main and preserve real worker/EAL cleanup with zero outstanding mbufs; the wrapped success control uses real activation.",
+      "status": "scenario-adapted",
+      "reason": "Scenario adaptation limited to a late interface-activation failure. The pinned mock test asserts that config, DPDK init and FreeBSD init succeeded, ff_dpdk_if_up ran once, and initialization called exit(1). Ker instead injects EIO into the real original-Linux lkl_if_up adapter: the device failure follows real loopback activation, stops before native READY/application main, returns infrastructure status 125, and still completes worker/EAL cleanup with zero outstanding mbufs. This adapts the observable late-activation failure/no-app-cleanup scenario; it does not claim the F-Stack function/exit ABI, its multi-port attachment or rollback behavior, or naturally occurring hardware faults.",
       "ker_tests": [
         {
           "ctest": "native-fstack-startup-failures",
           "provenance_case": "native-fstack-startup-failures"
         }
-      ],
-      "remaining": "F-Stack ff_dpdk_if_up ABI and precise FreeBSD-to-DPDK initialization ordering are not Ker APIs. Injected lkl_if_up errors exercise the Ker adapter failure path, not naturally occurring kernel/NIC faults or full F-Stack equivalence."
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",

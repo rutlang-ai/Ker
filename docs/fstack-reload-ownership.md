@@ -1,12 +1,20 @@
 # Generation reload ownership contract
 
 This is the implementation prerequisite for [issue #218](https://github.com/rutlang-ai/Ker/issues/218),
-not a claim of full reload support. Of its original 79 actionable cases,
-four A4 scenarios are now adapted: complete primary precreation, namespace
-recycling, own-slot secondary lookup/device claim and epoch liveness.
-75 remain incomplete (73 blocked and 2 partial). The two page-array build assertions
-are separately excluded in #232.
-The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
+not a claim of full reload support. Of its 79 actionable cases, 18 have bounded
+scenario adaptations: four A4 cases (complete primary precreation, namespace
+recycling, own-slot secondary lookup/device claim and epoch liveness), NR-19
+generation-ring ownership, the narrow TC-3 same-generation observer, the TC-5
+live-coordinate/ring-name query, TC-7 drain-peer semantics, three P1 configured-ring detach
+cases, the empty-queue-configuration cleanup case, the F-M4-1 TX full-ring visibility case, and five directory admission cases (full,
+missing, invalid, primary-slot-busy and success). Directory success observes default-off and
+generation-rings-enabled configurations in the same production adapter domain,
+including real secondary attach replay; it does not claim a literal graceful_reload
+switch or F-Stack ABI equivalence. The TC-5 adapter uses Ker's authenticated internal typed
+control command; it does not implement the original FF_RELOAD_CMD_QUERY/ff_ipc ABI or
+packet/flow migration. F-M4-1 adapts only actual enqueue-full visibility, caller ownership of the rejected object, FIFO drain/cleanup, and typed full/drop/peak counters; it does not claim hardware NIC behavior or broader TX semantics. Another 61 cases remain incomplete, all blocked.
+The two page-array build assertions are separately excluded in #232. The source
+pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
 The retained tests are authoritative; proposed Ker mechanisms below still need
 implementation and runtime qualification.
 
@@ -235,7 +243,14 @@ architecture-specific exclusions under #232, with no Ker pass or test mapping:
 
 Both assertions are from F-Stack revision `646a641cfff77f4815e1e29829a09e1ed15a2999`.
 See [the page-array audit](fstack-page-array-contracts.md) for the source boundary and
-rationale. These exclusions add no passes and do not change the 79 actionable #218 cases.
+rationale. These exclusions add no passes. The current branch catalog records 61 remaining #218 cases
+(all blocked); the three bounded P1 detach-retention cases, the empty-queue-
+configuration adaptation and five directory-admission adaptations are mapped separately,
+while broader drain and reload behavior remains open. The added non-owner case covers a live
+generation-1 PMD/RX owner while generation 0 is detached under the same authenticated master
+epoch: only RX q0/g0 is reclaimed, while TX q1/g0 and the six other ring entries remain owned.
+
+The current integrated candidate `0ac28b8973b1f79e5fdbb9a86335531d9f71fd14` passed all 13 suites in one fresh guest image. The actual-result manifest is `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-directory-modes-integrated-guest2/actual-result-attemptmodes-integrated1.json` (SHA-256 `30f449b0762efa5fd0f953103aed2ee3c7f11368cf72b4ec624b9cef67e51571`); it binds package manifest SHA-256 `4d87ed42fe94ed1c45736a62701779fe2683511dd933115105c5d07d4bd45cbb`, image SHA-256 `32750d8b2c2648edf6abe56287d18723b030cad79a7879ebf954d2a9ed5d6149`, and serial SHA-256 `d2c258cc7feedca27e0becc0a83d17bf901dcb29763fef6e93106898b6022d44`. The run includes current default-off and enabled generation-directory registration, TC-3 observer, live coordinate, USR2 drain-peer, P1 detach, empty-mask retention and invalid-entry fail-closed profiles. All suite exits were zero, all 511 pool objects were restored with zero outstanding, and QEMU exited 0 after normal power-down. Earlier guest6 and split runs remain historical evidence; the current manifest is the latest combined qualification.
 
 Begin implementation with the resident-session lifecycle and real secondary
 attachment/lookup, integrated with process supervision rather than a detached
@@ -246,9 +261,9 @@ park/publication and crash/recycle evidence; qualify the Linux connection hook
 before enabling application reload or attempting the flow-map cases. Keep
 hardware-dependent PMD profiles explicit and unqualified profiles unsupported.
 
-The current catalog records 181 scenario-adapted, 22 partial, 160 blocked,
+The current branch catalog records 204 scenario-adapted, 12 partial, 147 blocked,
 15 architecture-specific and 55 harness-only (433 total).
-The 182 blocked/partial cases, including the remaining 78 tracked here, remain unfinished;
+The 159 blocked/partial cases, including the 61 remaining here, remain unfinished;
 `--require-complete` must continue to fail.
 
 For the actual local EAL attachment precondition and its observed failure, see

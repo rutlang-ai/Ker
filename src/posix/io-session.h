@@ -2,10 +2,11 @@
 #ifndef KER_IO_SESSION_H
 #define KER_IO_SESSION_H
 #include <stdint.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <errno.h>
 #define KER_SESSION_MAGIC UINT64_C(0x4b45525345535331)
-#define KER_SESSION_VERSION 6U
+#define KER_SESSION_VERSION 8U
 #define KER_SESSION_SLOTS 4U
 #define KER_SESSION_GENERATIONS 2U
 #define KER_SESSION_PROCESSES 4U
@@ -15,16 +16,63 @@
 #define KER_SESSION_OBJECTS 511U
 #define KER_SESSION_PROBE_PAYLOAD 64U
 #define KER_SESSION_ZONE "ker_session_directory"
-enum ker_session_command { KER_SESSION_MASTER = 1, KER_SESSION_RESERVE,
-    KER_SESSION_RELEASE, KER_SESSION_STATUS, KER_SESSION_ATTACHED, KER_SESSION_PROBE, KER_SESSION_PMD_ACQUIRE, KER_SESSION_PMD_STATUS, KER_SESSION_EPOCH_LIVE };
+enum ker_session_command {
+    KER_SESSION_MASTER = 1, KER_SESSION_RESERVE = 2, KER_SESSION_RELEASE = 3,
+    KER_SESSION_STATUS = 4, KER_SESSION_ATTACHED = 5, KER_SESSION_PROBE = 6,
+    KER_SESSION_PMD_ACQUIRE = 7, KER_SESSION_PMD_STATUS = 8, KER_SESSION_EPOCH_LIVE = 9,
+    KER_SESSION_DRAIN_MODE = 10, KER_SESSION_HEARTBEAT = 11, KER_SESSION_PEER_STATUS = 12,
+    KER_SESSION_COORDINATE_QUERY = 13, KER_SESSION_PEER_RESERVE = 14,
+    KER_SESSION_RING_DETACH = 15, KER_SESSION_RING_DETACH_ARM = 16
+};
 enum ker_session_state { KER_SESSION_PREPARING, KER_SESSION_READY, KER_SESSION_STOPPING };
 /* Internal same-host ABI, not a public F-Stack wire or ring-name ABI. */
+/* The resident publishes one advisory peer tuple to a worker. A versioned
+ * snapshot prevents readers from combining fields across true->true peer
+ * replacement; only the resident serializes writers. */
+static inline void ker_session_peer_write_begin(_Atomic uint64_t *version)
+{
+    atomic_fetch_add_explicit(version, 1, memory_order_seq_cst);
+}
+static inline void ker_session_peer_write_end(_Atomic uint64_t *version)
+{
+    atomic_fetch_add_explicit(version, 1, memory_order_seq_cst);
+}
+static inline int ker_session_peer_read_observed(_Atomic uint64_t *version,
+    _Atomic uint64_t *epoch, _Atomic uint64_t *generation, _Atomic uint64_t *draining,
+    uint64_t *epoch_out, uint64_t *generation_out, uint64_t *draining_out,
+    void (*odd_retry)(void *), void *context)
+{
+    for (unsigned attempt = 0; attempt < 100000; attempt++) {
+        uint64_t before = atomic_load_explicit(version, memory_order_seq_cst);
+        if (before & 1) {
+            if (odd_retry) odd_retry(context);
+            continue;
+        }
+        uint64_t e = atomic_load_explicit(epoch, memory_order_seq_cst);
+        uint64_t g = atomic_load_explicit(generation, memory_order_seq_cst);
+        uint64_t d = atomic_load_explicit(draining, memory_order_seq_cst);
+        uint64_t after = atomic_load_explicit(version, memory_order_seq_cst);
+        if (before == after && !(after & 1)) {
+            *epoch_out = e; *generation_out = g; *draining_out = d;
+            return 0;
+        }
+        if (odd_retry) odd_retry(context);
+    }
+    return -EAGAIN;
+}
+static inline int ker_session_peer_read(_Atomic uint64_t *version,
+    _Atomic uint64_t *epoch, _Atomic uint64_t *generation, _Atomic uint64_t *draining,
+    uint64_t *epoch_out, uint64_t *generation_out, uint64_t *draining_out)
+{
+    return ker_session_peer_read_observed(version, epoch, generation, draining,
+        epoch_out, generation_out, draining_out, NULL, NULL);
+}
 struct ker_session_message {
     uint64_t magic, version, command, sequence, session, epoch;
-    uint64_t generation, process, token, slot;
+    uint64_t generation, process, token, slot, capability;
     int64_t status;
 };
-_Static_assert(sizeof(struct ker_session_message) == 88, "session wire ABI");
+_Static_assert(sizeof(struct ker_session_message) == 96, "session wire ABI");
 /* Shared control transport: request producer owns the mbuf until enqueue,
  * resident owns it until reply enqueue, then the same secondary owns it.
  * The object remains allocated under its coordinate lease throughout. */
@@ -33,7 +81,7 @@ struct ker_session_probe {
     uint64_t responder;
     uint8_t payload[KER_SESSION_PROBE_PAYLOAD];
 };
-_Static_assert(sizeof(struct ker_session_probe) == 160, "shared control envelope ABI");
+_Static_assert(sizeof(struct ker_session_probe) == 168, "shared control envelope ABI");
 static inline int ker_session_probe_check(const struct ker_session_probe *probe,
     const struct ker_session_message *expected, uint64_t previous_sequence)
 {
@@ -64,6 +112,11 @@ struct ker_session_directory {
     _Atomic uint32_t pmd_exception_phase;
     _Atomic uint64_t pmd_exception_discarded;
     _Atomic uint64_t epoch[KER_SESSION_SLOTS];
+    /* Advisory per-caller peer snapshot: coordinates remain populated on fallback. */
+    _Atomic uint64_t peer_version[KER_SESSION_SLOTS][KER_SESSION_GENERATIONS][KER_SESSION_PROCESSES];
+    _Atomic uint64_t peer_epoch[KER_SESSION_SLOTS][KER_SESSION_GENERATIONS][KER_SESSION_PROCESSES];
+    _Atomic uint64_t peer_generation[KER_SESSION_SLOTS][KER_SESSION_GENERATIONS][KER_SESSION_PROCESSES];
+    _Atomic uint64_t peer_draining[KER_SESSION_SLOTS][KER_SESSION_GENERATIONS][KER_SESSION_PROCESSES];
     /* Resident assigns the original mbuf before acknowledging RESERVE; only
      * exact borrower death permits clearing this lease and returning it. */
     _Atomic uintptr_t lease[KER_SESSION_SLOTS][KER_SESSION_GENERATIONS][KER_SESSION_PROCESSES];

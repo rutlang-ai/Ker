@@ -1342,7 +1342,7 @@ ip_checksum/tso4/tso6/checksum_fallback` 是构建时的元数据请求计数，
 AF_PACKET 抓包、禁止 GRO/GSO 聚合、检查抓包零丢包、两条各512KiB TCP 的完整
 字节覆盖、IPv4/TCP/UDP checksum 和每段 MTU，并验证1600/1500 MTU 停启后卸载
 仍有效。off/checksum/tso-large/tso-scatter 均测试；IPv6 UDP checksum 必须非零。
-四项源硬件卸载案例继续 partial，物理 NIC 正向验收仍由 issue221 跟踪；
+四项 pinned DPDK TX checksum/TSO 源 smoke 案例现为 scenario-adapted：它们验证的 Linux 元数据路径已有原版 TAP/virtio 软件 PMD 与独立线包证据。物理 NIC 正向验收仍由 issue221 单独跟踪，不能由这些软件路径替代；
 virtio/vhost-kernel 的 IPv6 TSO 软件路径见下文。
 
 原版 virtio-user/vhost-kernel 卸载与接收模式

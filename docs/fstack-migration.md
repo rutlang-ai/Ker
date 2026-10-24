@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 180 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 164 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| scenario-adapted | 204 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 147 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。**
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为204 scenario-adapted、12 partial、147 blocked，共159项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -48,9 +48,11 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 253 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 183 项是
-19 partial + 164 blocked，另有 15 项架构专用和 55 项上游工具链自测。
+下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
+
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共229项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：159项行为未完成
+（12 partial + 147 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -61,7 +63,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 79 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Design generation-aware reload, IPC and drain ownership | 64 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
 | Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
@@ -350,8 +352,9 @@ F-Stack 的 CPU TSC/频率换算和 `ff_get_tsc_ns` ABI 没有移植，不将此
 `native-fstack-startup-failures` 运行真实 launcher、原生 preload/guard 和 DPDK net_tap。
 原生内核启动后的宿主 realtime EIO 必须在 native READY 和应用 main 前终止初始化，
 迁移 `test_ff_init_fail_freebsd_init` 的初始化失败顺序场景；不是 FreeBSD 初始化 API 等价。
-原始 Linux 拒绝非本子网网关时也不能执行应用，但这只是 `test_ff_init_fail_dpdk_if_up`
-的部分覆盖，直接 `lkl_if_up` 错误及 F-Stack 精确阶段顺序仍未测试。
+`test_ff_init_fail_dpdk_if_up` 现为场景适配：真实 `lkl_if_up` 设备激活 EIO 紧随成功 loopback，
+在 native READY/main 前失败，并验证实际 worker/EAL 清理与零 outstanding。非本子网网关
+另行验证原始 Linux 路由拒绝；不声称 `ff_dpdk_if_up` ABI、exit(1) 或多端口回滚等价。
 另外测试未知 ethdev 的提前失败，保留其首行 DONE 快照供 `--stats` 使用。
 正常及失败路径均检查实际 EAL cleanup 成功、零 outstanding，以及应用执行标记。
 
@@ -639,17 +642,25 @@ pattern/regex 规则共存，并用七个实例走通原始 Linux TCP/UDP。
 blocked，不增加迁移通过计数。
 
 
-`test_ff_load_config_dpdk_extra_keys` 的 file_prefix 断言已有 typed 配置与真实 EAL
-运行目录、同名 primary 排他、异名并发 native 生命周期和宿主 TCP/UDP 证据，
-现标为 partial。其 base_virtaddr、vdev completion queues 和 bond down_delay
-断言仍缺失；Ker 原样使用 prefix，不采用 F-Stack 的 container- 装饰。
-未将源案例计为完整迁移，也不声称 shared hugepage/secondary 支持。
+`test_ff_load_config_dpdk_extra_keys` 仍为 partial。较早的记录曾将 vdev `cq` 和
+bond `down_delay` 称为缺失；后续 typed adapters 已补上配置路径：vdev 的 `cq`
+被校验并传给原始 DPDK `--vdev` 参数，真实 typed-vdev 运行 profile 使用 `cq=1`
+通过原始 PMD 收发流量；bond 的 poll/up/down timing 经原始 PMD setter/getter 应用和
+回读，已测运行 profile 的 `down_delay=200`。源 fixture 的 `down_delay=300` 没有单独
+用该精确值复测，因此这里不声称该数值的 runtime readback。
+
+该完整 source fixture 仍不适合作为 Ker runtime profile：[dpdk] `allow` 和数字
+`port_list` 不在 Ker typed schema 中；其 `iface=net_pcap0` 与 Unix socket `path=/tmp/x`
+组合也被固定版本 DPDK 的 virtio-user PMD 拒绝。Ker 的命名设备选择和 strict schema
+不是 F-Stack numeric port list / global config structure 的复刻。Ker 仍原样使用
+`file_prefix`，不添加 F-Stack 的 `container-` 装饰；`base_virtaddr` 是原始 EAL hint，
+不保证固定映射、冲突 fallback、shared hugepage 映射或该 source profile 的 secondary
+使用。以上差异维持 partial，清单计数不变。
 
 
-extra-keys 的 `base_virtaddr` 子集现有 typed 配置、真实 EAL 内存段地址回读和
-五组宿主TCP/UDP证据，补充已有 file_prefix 子集。地址提示及16MiB对齐由原始
-DPDK处理；不保证固定地址或地址冲突回退。源用例仍因 vdev completion queues、
-bond down_delay 与配置 ABI 缺口保持 partial，清单计数不变。
+extra-keys 的 `base_virtaddr` 子集已有 typed 配置、真实 EAL 内存段地址回读和五组
+宿主 TCP/UDP 证据，补充已有 `file_prefix` 子集。地址提示及 16 MiB 对齐由原始 DPDK
+处理；该运行证据不消除完整 source fixture 的上述边界。
 
 
 `native-fstack-tcp-fastopen` 补齐原始 Linux Fast Open 的独立宿主互通与线路证据：
@@ -925,10 +936,10 @@ socket、等待发送队列、移除设备并停掉内核，再由 launcher 停�
 真实 worker 退出后的失败码会反馈为 API 的 EIO 和 launcher 的125，不会伪报清理成功。
 
 `test_ff_run_and_stop_forward` 完成原生 API 场景适配。`test_main_loop_one_iteration_then_stop`
-仍为 partial：一次应用回调不等于原始 F-Stack EAL dispatch/RX/message/TX/accounting
-只运行一次；独立 worker 与原版 Linux 调度器仍自主运行，未实现原始耦合循环/lcore ABI。
-该差异继续在 issue223 中保留。当前为134 scenario-adapted、22 partial、214 blocked，
-仍有236项未完成，另有8项架构专属及55项 harness-only。
+现为场景适配，仅对应 callback stop、run 返回和清理 smoke：Ker 的 one-shot 回调在原版 Linux
+真实流量后停止，等待 worker ACK/reap 并检查零 outstanding。原测试源码注释描述的单次
+EAL-lcore 耦合 dispatch/RX/message/TX/accounting 轮次不是其显式断言，也不是 Ker 实现；
+该架构边界继续由 issue223 跟踪。上文数量是2026-10-23该批次的历史计数。
 
 2026-10-23 接口上下文与空上下文批次
 
@@ -1234,15 +1245,15 @@ no-op 配置或虚假适配映射。清单179/19/167/13/55保持不变，186项�
 Ker 只提供运行时与设备适配。半开连接路由仍须先证明原版 Linux 的查询及生命周期
 接口，不能用 SYN 观察器或自写 TCP 状态机替代。
 
-该文档推进实现前必须明确合同的设计工作，不代表已实现 reload。原 #218 的81项源案例中，两项 page-array 条件断言现作为架构专属排除转至 #232；其余79项仍是 actionable：其中 `test_ut_nr_19_drain_ring_sp_sc` 保留部分本地 FIFO/多队列隔离覆盖但仍为 partial，其余78项 blocked。没有新增通过映射；总数保持179/19/165/15/55，完整门禁仍须拒绝184项 blocked/partial。下一步先实现有实际进程监督调用方的驻留会话与真实 secondary 接入，再做两条同时存活 master 链的单消费者数据验证。
+该设计合同先于实现，用于明确驻留会话、真实 secondary、队列所有权及回收边界，并不代表实现完整 reload。此前该文档将 NR-19 记为 partial；现在其固定 ring/ownership 断言由 generation-aware adapter 及真实 EAL 测试适配。#218 当前保留71个 blocked/partial 案例；生产 packet dispatch、flow-map、排空及 reload 场景仍未完成，完整门禁仍须拒绝175项行为案例。
 
 ## Page-array 精确排除与真实 secondary 环境核验
 
-[精确源合同](fstack-page-array-contracts.md)确认两项 page-array 用例检查的是 F-Stack 构建模式中 BSD mbuf 引用不能跨进程释放所引起的 reload 开关限制，不是待实现的通用 Linux page-array 分配器。两项从 #218 转到 #232 架构专属组，保留源 ID，不添加无消费者的构建开关或通过映射。当前179适配、19partial、165blocked、15架构专属、55harness-only，仍有184项未完成；#218保留79项。
+[精确源合同](fstack-page-array-contracts.md)确认两项 page-array 用例检查的是 F-Stack 构建模式中 BSD mbuf 引用不能跨进程释放所引起的 reload 开关限制，不是待实现的通用 Linux page-array 分配器。两项从 #218 转到 #232 架构专属组，保留源 ID，不添加无消费者的构建开关或通过映射。当前 #218 的剩余案例不包括现已适配的 NR-19 ring helper；page-array 排除也不改变其余 reload 缺口。
 
 [实际 EAL 探针](fstack-reload-environment.md) 证明本机 no-huge primary 可启动，
 但同命名空间 secondary 在共享内存初始化前失败；hugepage primary 则没有可用
-hugepage。该环境证据不构成 secondary/PMD/网络通过，也不改变79项 reload缺口。
+hugepage。该环境证据不构成 secondary/PMD/网络通过；该历史记录时 #218 有74项未完成。
 
 ## 实际应用环境变量往返
 
@@ -1268,7 +1279,7 @@ hugepage。该环境证据不构成 secondary/PMD/网络通过，也不改变79�
 原版EAL primary/secondary完成真实共享对象查找与清理，未改宿主全局设置。
 [环境记录](fstack-reload-environment.md) 明确这只解除共享内存前置条件，
 不代表双master、PMD数据面、generation或reload通过。下一步可回到#218，
-在该环境中实现真实监督会话，79项用例保持blocked。
+在该环境中实现真实监督会话；该历史记录时 #218 有74项未完成（73 blocked、1 partial）。
 
 
 ## Journaled control leases and source A4 namespace recycling
@@ -1280,7 +1291,7 @@ borrower prevents cleanup. The isolated original-DPDK guest runs the production
 session binary and commands, restores all511pool objects, and leaves no test
 hugepage files after exact process-death proof.
 
-The pinned `test_it_a14_usr2_chain_slot_recycle` scenario is now adapted: three
+该历史批次记录时，pinned `test_it_a14_usr2_chain_slot_recycle` scenario was adapted: three
 plain masters occupy all reusable slots and die without retirement, their real
 EAL secondaries keep the slots protected until cleanup, then a fourth master
 and secondary get a strictly newer nonzero epoch and nonzero slot with valid
@@ -1289,9 +1300,9 @@ cases are partial, with network dispatch/hardware-owner assertions explicitly
 remaining. This does not qualify hardware handover, actual application USR2,
 generation network packet transport or full reload.
 
-Current inventory:181scenario-adapted,22partial,160blocked,15architecture-specific,
-55harness-only (433total). The completion gate still fails for182unfinished
-cases. Issue#218 remains open for78incomplete cases (74blocked/4partial).
+Historical inventory at that batch:181scenario-adapted,22partial,160blocked,15architecture-specific,
+55harness-only (433total). At that time the completion gate failed for182unfinished
+cases. Issue#218 then tracked78incomplete cases (74blocked/4partial).
 
 
 2026-10-24 多 worker 停止 ACK 回归
@@ -1346,7 +1357,7 @@ worker 进行真实 TX/RX。owner 快照由 resident 串行返回，避免将旧
 owner 协调仍为 partial。既有控制/PMD 套件和新 standby 接管套件在隔离
 DPDK hugepage guest 执行；宿主缺少 hugepages 的运行时 CTest 仍跳过。
 
-当前183 scenario-adapted、21 partial、159 blocked，180项未完成；15项架构
+该历史批次快照为183 scenario-adapted、21 partial、159 blocked，180项未完成；15项架构
 专属及55项 harness-only 保留边界。#218 仍有76项未完成（73 blocked、3 partial）。
 原始 Linux 数据包交付、排队中的 driver 崩溃注入和完整 reload 继续待实现。
 
@@ -1370,8 +1381,8 @@ runtime JSON污染，诊断在stderr及显式stats文件。
 resident在开放admission前验证全部128个原始坐标ring及其capacity/SP/SC，
 保持epoch/slot0并配置实际network port；secondary再核对全部128对象和固定
 网络queues，补齐源TC-1 `test_it_a14_primary_precreates_all_slots` 的断言。
-当前184 scenario-adapted、20 partial、159 blocked，179项未完成；15项架构
-专属及55项harness-only保留边界。#218仍有75项未完成（73 blocked、2 partial）。
+该批次完成时清单为184 scenario-adapted、20 partial、159 blocked，179项未完成；15项架构
+专属及55项harness-only保留边界；该批次当时 #218 有75项未完成（73 blocked、2 partial）。
 详见[数据路径、寿命和明确边界](fstack-session-packets.md)。cross-generation
 flow drain、exception/KNI-owner协调、物理PMD/driver DMA及完整reload仍待实现。
 
@@ -1387,6 +1398,93 @@ UDP512、实际 PMD/native 计数、MTU 回滚和最终511对象归还。另一�
 
 本批扩展 TC-3 的 partial 证据，不增加已完成案例数。源 TC-3 还要求实际
 exception/KNI owner 与设备消费者一致；cross-generation dispatch/drain 和旧
-TCP 连接保留同样仍未完成。当前184 scenario-adapted、20 partial、159 blocked，
+TCP 连接保留同样仍未完成。该批次完成时为184 scenario-adapted、20 partial、159 blocked，
 179项未完成；15架构专属和55 harness-only 边界不变。详见
 [fstack-session-packets.md](fstack-session-packets.md)。
+
+2026-10-24 NR-19 generation-aware ring ownership adapter
+
+为固定源用例 `tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc`
+增加 resident 创建的原始 DPDK generation ring adapter。稳定 ring 名称按
+`{port, queue, generation}` 区分，RX 使用 MP/SC、TX 使用 SP/SC；resident
+从已认证的 ATTACHED 记录绑定身份及私有 pidfd，跨代 owner 可使用独立 slot 和
+epoch。适配器校验 mbuf 所属 pool 及完整 segment chain，拒绝操作时保留调用者
+所有权；unregister/re-admit 保留同一 ring 与排队对象，只有精确进程死亡后
+resident 才能回收已证明归属的对象，含糊状态保持 fail-closed。
+
+隔离的原始 DPDK EAL guest 中，组件测试由一个 primary 和两个真实 secondary
+检查两个 queues/两个 generations 的真实 ring：RX 精确对象传递和错误 owner 拒绝、
+multisegment mbuf、peer TX、满 ring 的单次计数及调用者所有权、FIFO 排空、同一
+ring 的 unregister/re-admit、精确死亡恢复和最终 pool baseline。另一项 guest 测试
+让两个 resident-authenticated ATTACHED secondary（不同 slot/epoch）执行六个实际
+adapter probe，覆盖 RX payload/queue 隔离、空与成功 peer TX、满 ring 拒绝和计数、
+FIFO 释放及 pool delta；第三个同时存活的 generation-0 owner 被拒绝，最终清理通过。
+完整 bindings、guest 日志及各失败尝试分类见外部 evidence manifest
+`nr19-generation-rings-build.json`。这只适配 generation-ring ownership helper 场景；
+adapter 尚未接入 worker 的生产 packet dispatch/flow-map，不声称外部 TX burst、TCP/UDP
+流量或完整 reload。
+
+TC-3 observer 场景 `tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer`
+以两条真实 master 链、相同 generation/process、同步状态采样和各自 typed control-ring token
+场景适配。它只验证所记录 observer 合同，不代表更广的 cross-generation packet dispatch、
+exception-owner/flow agreement 或完整 reload。
+
+TC-5 `test_it_a14_probe_roundtrip_tools_contract` 的窄 coordinate-query/ring-name 选择场景
+由 `native-fstack-session-coordinate` 适配：实际 EAL worker 在 authenticated ATTACHED 后发送
+unseeded typed query，resident 校验 live pidfd peer 和 exact journaled control object，再由 worker
+仅用返回坐标调用 production `ring_name` helper 并查找 proc1 RX ring。unbound query 返回 EPERM
+及全零身份/坐标；guest 验证精确 pidfd 清理、511 个 pool 对象和 resident DRAINED。Ker internal
+command 13 不兼容 FF_RELOAD_CMD_QUERY/ff_ipc ABI，不声称 cookies、多候选发现、fallback、packet
+transport、TCP/flow migration 或 full reload。host CTest 因 hugepage preflight 跳过；运行证据来自
+隔离的 original-DPDK guest。
+
+截至 TC-5 coordinate adapter 批次的历史 inventory 为190 scenario-adapted、18 partial、155 blocked、15 architecture-specific、
+55 harness-only（433 total）；当时173 项仍未完成。该快照早于 TC-7、P1 detach 与 directory admission 更新；其余 reload、flow-map、external-TX、TCP-continuity、
+ff_ipc cookie/multi-candidate/no-fallback、crash-matrix 和 physical-handover 合同仍未完成。
+
+2026-10-24 TC-7 USR2 drain-peer semantics
+
+`test_it_a14_usr2_drain_peer_semantics` 现标为 scenario-adapted。Ker resident 对 exact ATTACHED worker 作 drain-mode 授权，并只接受该 worker 发出的心跳；旧 master 已被回收、worker 仍存活且 stamp 新鲜时，另一真实 EAL secondary 观察到 peer1=1。worker 精确死亡且两秒 freshness 窗口届满后，查询回退到 caller-epoch/opposite-generation，peer1=0。guest5 的 SHA 绑定证据同时检查 reload-active fallback、镜像一致性、普通 worker 的 parent-death 退出和511对象清理。这个映射只覆盖该 TC-7 源用例；F-M5-1 是辅助 mirror oracle，不单独增加映射。TC-7 的 guest5 证据是早期 ABI v7 的独立历史运行；其余 nonowner/foreign TX、flow-map、外部 TX、TCP 连续性及完整 reload 仍未完成。
+
+2026-10-24 P1 configured-ring detach and empty-queue cleanup
+
+`test_p1_drain_queue_ownership`, `test_p1_drain_peer_tx` and `test_p1_drain_nonowner_tx` are
+scenario-adapted through `native-fstack-session-generation-detach`. The real original-DPDK EAL
+fixture journals one known-pool object in each of eight RX/TX, queue and generation rings. With
+no foreign peer and an owner in the source generation, it drains configured RX q0/g0 and TX
+q1/g0 (+2); with the resident-authorized foreign selector, it drains only RX q0/g0 (+1) and
+retains TX plus the other six objects. The non-owner case uses an authenticated same-master
+slot/epoch where generation 1 holds the real PMD/RX lease and generation 0 detaches; only RX
+q0/g0 is reclaimed (+1), with TX and all other objects retained. Tests cover exact owner
+snapshot rejection and replay denial, repeated detach, same-identity re-admission, persistent
+ring identity, and positive cleanup to 511 available objects with no remaining users or PMD
+owner. A separate held-dequeue case verifies bounded fail-closed status 125 with no detach ACK.
+The earlier mode-1 evidence is bound to commit `67bfc5b652f76d36fdf827657fa48dde223a76ec` and aggregate
+manifest SHA-256 `71e23ac944f6958db88f956742a4bbe2e654a68963525f43b2147ee508cd12ce`. Those historical runs were split: guest5 passed ten parent suites but failed at P1; guest9 passed the P1 fixture. The later integrated run below supplies the full single-image result.
+
+`test_p1_drain_empty_qconf` is scenario-adapted through
+`native-fstack-session-generation-empty-config`. With primary-owned RX/TX cleanup masks zero,
+a real EAL guest proves that orderly detach and same-ring re-admission retain all eight
+populated objects and exact ring pointers, restoring 511 available objects with zero in use
+and no PMD owner. Its invalid-selected-entry fatal path is separate safety evidence. Historically, the empty
+profile and invalid-only profile passed in separate immutable runs using identical production
+binaries; those split runs did not provide an all-profile image. Full historical bindings are in
+`/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-drain-empty-config-invalid-only1/aggregate-evidence.json`.
+
+The integrated candidate `0ea4bcb1bfa9fe28f07444aba7b0ad6d417d0c13` passed all 14 suites in one fresh guest image. The actual-result manifest `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-tx-full-visibility-guest2/actual-result-txfull-normal2.json` (SHA-256 `c25a5ead4dad477852db7800f4c0a69c772d08448e5d21989f28a51ccb723721`) binds package `e3fc692ba4172a5c810dd056ae5d908245db5fd5a7478ba40190995f83d2da02`, image `fb5a1029bce203cf934a7c2e9c7dadcefbdbad1fa9bb6c8058f60fae9b611a38`, and serial `cb00c7379594ea6813fdd41921373ead1528c107066c082ea1a6658d24384b13`. The full-ring test reported `tx_full=1`, `tx_drop=0`, `tx_peak=64` at capacity 64, and `rx_peak=0`; all inherited session suites also passed, the pool was fully reclaimed, and QEMU exited 0 after normal power-down. A separate private negative-control guest disabled event-time peak updates and failed specifically with `tx_full=1`, `tx_peak=0`, `capacity=64`, `tx_drop=0`, `rx_peak=0` after drain and cleanup. Its result `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-tx-full-visibility-mutation1/actual-result-txfull-peakmutation1.json` (SHA-256 `984609cd9b30c6da02f4b4473ded3a55421c4e9ca287247fcf0eb6b4fb83dab4`) records the mutation build lineage from `476d20bae93691c5c1e1f0dd880b1c996e26a5b0`; production code and the registration fixture were byte-identical to the normal candidate. The initial normal attempt failure remains preserved separately. This evidence does not claim physical-NIC behavior or broader TX semantics.
+
+A later portability validation at candidate `16f27ed0f13b3a5e424d9082cad6f3b0a59fa0fe` passed the complete 15-suite guest matrix, including the configured/custom-prefix DPDK plugin-path discovery fixture. The result manifest `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-driver-paths-integrated-guest1/actual-result-driverpaths-full15-1.json` (SHA-256 `c48fbaf75164d971ac92e802a206a401495770fc2a2d0c528cd534d65002e224`) binds package manifest `4a6490542312d7854b1d837b9a809f6a07e6fcaf3bde6b209d9532e229a978a3`, image `a602222a63ca719321c7cec6b87596c1f3e8c04a9304df63bc93ffed5b0d0699`, and serial `5cda0488a8c5ca455bc465c73c29d1abcddc113bc818bad7f881c65be00ee11c`. Every suite exited zero, the combined matrix marker was present, and QEMU exited zero after normal power-down. The run adds a fixture portability regression check and does not change migration counts or source-case classifications. It is separate from the host-only 4/4 offload result below; no physical-NIC behavior is claimed.
+
+The F-M4-1 mapping covers only real ring-full visibility and caller ownership. These mappings do
+not qualify foreign-epoch TX, TX burst/payload, flow-map, external TX, TCP continuity or full
+reload. Current totals are 204 scenario-adapted, 12 partial and 147 blocked (159 behavior cases
+unfinished); #218 has 61 remaining cases (all blocked).
+Directory full/missing/invalid/primary-slot-busy/success are adapted; live-slot remains
+blocked.
+
+TX checksum/TSO software-path evidence is separate: the approved host-only result
+`/home/hurricane/.local/state/ker-compat-work/native-offload-source-qualification-result-v2.json`
+(SHA-256 `67509c905134f20c858845f9dcb2d8ca02bf5653e66e4de7e3b318516351581e`) records 4/4 host
+CTest profiles on TAP and virtio/vhost-kernel. The tested offload source blobs are byte-identical
+to qualified parent `87a705d96a368dfa30606df830b81a756b9c08f5`; the 13-suite session guest adds no
+offload run. No physical-NIC result is claimed; issue #221 remains open.

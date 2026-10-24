@@ -35,17 +35,24 @@ def main():
     args = parser.parse_args()
     native = load_fixture('native_packets_fixture', Path(__file__).with_name('session-native-packets.py'))
     observer = load_fixture('tc3_observer_fixture', Path(__file__).with_name('session-tc3-observer.py'))
+    coordinate = load_fixture('coordinate_fixture', Path(__file__).with_name('session-coordinate.py'))
+    drain_peer = load_fixture('drain_peer_fixture', Path(__file__).with_name('session-drain-peer.py'))
     configured = args.configured_dir.resolve(strict=True)
 
     native_paths = native.resolve_dpdk_plugin_paths(configured, ('mempool_ring',), {})
     observer_paths = observer.resolve_dpdk_plugin_paths(configured, ('mempool_ring', 'net_ring'), {})
+    coordinate_paths = coordinate.resolve_dpdk_plugin_paths(configured, ('mempool_ring',), {})
+    drain_paths = drain_peer.resolve_dpdk_plugin_paths(configured, ('mempool_ring', 'net_ring'), {})
     env_paths = native.resolve_dpdk_plugin_paths(None, ('mempool_ring',),
         {'KER_DPDK_PLUGIN_DIR': str(configured)})
-    require(len(native_paths) == 1 and len(observer_paths) == 2,
+    require(len(native_paths) == 1 and len(observer_paths) == 2 and
+            len(coordinate_paths) == 1 and len(drain_paths) == 2,
             'fixtures did not request their exact module sets')
-    require(native_paths[0] == observer_paths[0] == env_paths[0],
-            'fixtures selected different configured mempool_ring files')
-    require(all(Path(path).is_file() and os.access(path, os.R_OK) for path in native_paths + observer_paths),
+    require(native_paths[0] == observer_paths[0] == coordinate_paths[0] ==
+            drain_paths[0] == env_paths[0] and observer_paths[1] == drain_paths[1],
+            'fixtures selected different configured PMD files')
+    require(all(Path(path).is_file() and os.access(path, os.R_OK) for path in
+                native_paths + observer_paths + coordinate_paths + drain_paths),
             'configured PMD selection is not readable regular files')
 
     with tempfile.TemporaryDirectory(prefix='ker-session-pmd-custom-') as directory:
@@ -80,20 +87,36 @@ def main():
         require(native_fallback == expected[:1], 'native fixture environment fallback selected wrong prefix')
         require(explicit == expected[:1], 'native fixture explicit prefix did not override environment fallback')
         require(observer_explicit == expected, 'observer fixture explicit prefix did not override environment fallback')
+        coordinate_explicit = coordinate.resolve_dpdk_plugin_paths(custom, ('mempool_ring',),
+            {'KER_DPDK_PLUGIN_DIR': str(configured)})
+        drain_explicit = drain_peer.resolve_dpdk_plugin_paths(custom, module_names,
+            {'KER_DPDK_PLUGIN_DIR': str(configured)})
         native_eal = shlex.split(native.dpdk_plugin_eal_options(explicit))
         observer_eal = shlex.split(observer.dpdk_plugin_eal_options(observer_explicit))
+        coordinate_eal = shlex.split(coordinate.dpdk_plugin_eal_options(coordinate_explicit))
+        drain_eal = shlex.split(drain_peer.dpdk_plugin_eal_options(drain_explicit))
         require(native_eal == ['-d', expected[0]], 'native EAL -d path with spaces was not quoted')
         require(observer_eal == ['-d', expected[0], '-d', expected[1]],
                 'observer EAL -d paths with spaces were not quoted')
-        expect_error(lambda: observer.resolve_dpdk_plugin_paths(custom, ('mempool_ring', 'net_ring', 'net_null'), {}),
-            'missing module')
-        expect_error(lambda: native.resolve_dpdk_plugin_paths(None, ('mempool_ring',), {}),
-            'missing configuration')
+        require(coordinate_eal == ['-d', expected[0]],
+                'coordinate EAL -d path with spaces was not quoted')
+        require(drain_eal == ['-d', expected[0], '-d', expected[1]],
+                'drain-peer EAL -d paths with spaces were not quoted')
+        for fixture, modules in ((native, ('mempool_ring', 'net_null')),
+                                 (observer, ('mempool_ring', 'net_ring', 'net_null')),
+                                 (coordinate, ('mempool_ring', 'net_null')),
+                                 (drain_peer, ('mempool_ring', 'net_ring', 'net_null'))):
+            expect_error(lambda fixture=fixture, modules=modules:
+                fixture.resolve_dpdk_plugin_paths(custom, modules, {}), 'missing module')
+        for fixture in (native, observer, coordinate, drain_peer):
+            expect_error(lambda fixture=fixture:
+                fixture.resolve_dpdk_plugin_paths(None, ('mempool_ring',), {}), 'missing configuration')
         expect_error(lambda: native.resolve_dpdk_plugin_paths(custom / 'missing', ('mempool_ring',), {}),
             'missing directory')
 
     print('SESSION_DPDK_PLUGIN_DISCOVERY_PASS configured=' + str(configured) +
-          ' native=mempool_ring observer=mempool_ring,net_ring custom-prefix=PASS missing-module=FAIL-CLOSED')
+          ' native=mempool_ring observer=mempool_ring,net_ring coordinate=mempool_ring '
+          'drain-peer=mempool_ring,net_ring custom-prefix=PASS missing-module/config=FAIL-CLOSED')
     return 0
 
 

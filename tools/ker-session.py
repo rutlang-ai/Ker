@@ -15,11 +15,13 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 6
+VERSION = 8
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
-          'generation', 'process', 'token', 'slot', 'status')
-WIRE = struct.Struct('=10Qq')
+          'generation', 'process', 'token', 'slot', 'capability', 'status')
+WIRE = struct.Struct('=11Qq')
 MASTER, RESERVE, RELEASE, STATUS, ATTACHED, PROBE, PMD_ACQUIRE, PMD_STATUS, EPOCH_LIVE = range(1, 10)
+DRAIN_MODE, HEARTBEAT, PEER_STATUS, COORDINATE_QUERY = 10, 11, 12, 13
+PEER_RESERVE, RING_DETACH, RING_DETACH_ARM = 14, 15, 16
 
 
 def packet(command, sequence=1, **values):
@@ -117,6 +119,9 @@ def lease(args):
                     raise
                 time.sleep(0.05)
 
+    test_directory_gate_fd = getattr(args, 'test_directory_gate_fd', None)
+    test_directory_replay_attached = getattr(args, 'test_directory_replay_attached', False)
+    test_generation_rings_replay = getattr(args, 'test_generation_rings_replay', False)
     cleanup_error = None
     try:
         for number in (signal.SIGINT, signal.SIGTERM):
@@ -130,13 +135,35 @@ def lease(args):
             worker = subprocess.Popen([str(args.worker.resolve(strict=True)), '--role', 'secondary',
                 '--socket', str(args.socket), '--control-fd', str(control), '--ticket-fd', str(read_fd),
                 '--generation', str(args.generation), '--process', str(args.process),
+                *(['--generation-rings'] if getattr(args, 'generation_rings', False) else []),
                 *(['--ring-pmd'] if ring_pmd else []),
                 *(['--standby'] if getattr(args, 'standby', False) else []),
                 '--probe-count', str(args.probe_count),
-                *(['--probe-only'] if args.action == 'probe' else []), '--',
-                *role_arguments(args.eal, 'secondary', ring_pmd)], stdin=subprocess.DEVNULL,
-                pass_fds=(read_fd, control_read))
+                *(['--probe-only'] if args.action == 'probe' else []),
+                *(['--coordinate-probe'] if args.action == 'coordinate-probe' else []),
+                *(['--directory-test-gate-fd', str(test_directory_gate_fd)]
+                    if test_directory_gate_fd is not None else []),
+                *(['--directory-test-replay-attached'] if test_directory_replay_attached else []),
+                *(['--generation-rings-test-replay'] if test_generation_rings_replay else []),
+                '--', *role_arguments(args.eal, 'secondary', ring_pmd)],
+                stdin=subprocess.DEVNULL,
+                pass_fds=(read_fd, control_read, *(
+                    (test_directory_gate_fd,) if test_directory_gate_fd is not None else ())))
             close_fd('read_fd'); close_fd('control_read')
+            if getattr(args, 'peer_only', False):
+                deadline = time.monotonic() + 5
+                while True:
+                    try:
+                        reservation = connection.request(PEER_RESERVE,
+                            session=ticket['session'], epoch=ticket['epoch'], token=ticket['token'],
+                            slot=ticket['slot'], generation=args.generation, process=args.process,
+                            capability=worker.pid)
+                        ticket['capability'] = reservation['capability']
+                        break
+                    except OSError as error:
+                        if error.errno != errno.EAGAIN or time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.01)
             data = encode(ticket)
             if os.write(write_fd, data) != len(data):
                 raise RuntimeError('short ticket write')
@@ -305,6 +332,16 @@ def lease(args):
             raise cleanup_error
 
 
+def bounded_generation_cleanup_mask(value):
+    try:
+        mask = int(value, 0)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('cleanup mask must be an integer') from error
+    if not 0 <= mask <= 3:
+        raise argparse.ArgumentTypeError('cleanup mask must select only queues 0..1')
+    return mask
+
+
 def bounded_probe_count(value):
     try:
         count = int(value)
@@ -317,11 +354,15 @@ def bounded_probe_count(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe', 'device-status', 'epoch-status', 'run'))
+    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe', 'coordinate-probe', 'device-status', 'epoch-status', 'run'))
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-session')
     parser.add_argument('--eal', default='')
     parser.add_argument('--standby', action='store_true', help='keep a refused consumer attached; lease retries on P, run retries before application launch')
+    parser.add_argument('--generation-rings', action='store_true', help='enable the resident-authenticated two-generation DPDK packet-ring adapter')
+    parser.add_argument('--generation-cleanup-rx-mask', type=bounded_generation_cleanup_mask)
+    parser.add_argument('--generation-cleanup-tx-mask', type=bounded_generation_cleanup_mask)
+    parser.add_argument('--peer-only', action='store_true', help='request a resident-authorized peer-selector-only worker reservation')
     parser.add_argument('--epoch', type=int, help='epoch to query with epoch-status; 0 names the resident')
     parser.add_argument('--generation', type=int, choices=range(2), default=0)
     parser.add_argument('--process', type=int, choices=range(4), default=0)
@@ -329,6 +370,9 @@ def main():
     devices.add_argument('--paired-pmd', action='store_true', help='separate original ring-PMD RX/TX with an external Ethernet endpoint')
     devices.add_argument('--ring-pmd', action='store_true', help='qualify the original shared ring PMD with an exclusive secondary consumer')
     parser.add_argument('--probe-count', type=bounded_probe_count, default=0)
+    parser.add_argument('--test-directory-gate-fd', type=int)
+    parser.add_argument('--test-directory-replay-attached', action='store_true')
+    parser.add_argument('--test-generation-rings-replay', action='store_true')
     parser.add_argument('--wire-fd', type=int)
     parser.add_argument('--library', type=Path)
     parser.add_argument('--address')
@@ -344,6 +388,21 @@ def main():
             parser.error('run requires --paired-pmd --wire-fd --library and -- COMMAND')
     elif command or args.wire_fd is not None or args.library is not None or args.stats is not None or args.address is not None or args.address6 is not None:
         parser.error('packet endpoints, library and command are only valid with run')
+    if (args.test_directory_gate_fd is not None or args.test_directory_replay_attached or
+            args.test_generation_rings_replay) and args.action != 'lease':
+        parser.error('directory test options are only valid with lease')
+    if args.test_generation_rings_replay and not args.generation_rings:
+        parser.error('--test-generation-rings-replay requires --generation-rings')
+    if args.test_directory_gate_fd is not None and args.test_directory_gate_fd < 0:
+        parser.error('directory test gate fd must be nonnegative')
+    if args.generation_rings and args.action not in ('serve','lease'):
+        parser.error('--generation-rings is only supported by serve and lease')
+    cleanup_masks = (args.generation_cleanup_rx_mask, args.generation_cleanup_tx_mask)
+    if any(mask is not None for mask in cleanup_masks):
+        if args.action != 'serve' or not args.generation_rings or any(mask is None for mask in cleanup_masks):
+            parser.error('both cleanup masks require serve --generation-rings')
+    if args.peer_only and (args.action != 'lease' or not args.generation_rings):
+        parser.error('--peer-only requires a generation-rings lease')
     if args.paired_pmd and args.action not in ('serve', 'run'):
         parser.error('--paired-pmd is only supported by serve and run')
     if args.standby and not ((args.action == 'lease' and args.ring_pmd) or
@@ -367,9 +426,19 @@ def main():
         if args.action == 'serve':
             args.socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             worker = str(args.worker.resolve(strict=True))
+            cleanup_args = []
+            if args.generation_cleanup_rx_mask is not None:
+                cleanup_args = ['--generation-cleanup-rx-mask', str(args.generation_cleanup_rx_mask),
+                    '--generation-cleanup-tx-mask', str(args.generation_cleanup_tx_mask)]
             os.execv(worker, [worker, '--role', 'primary', '--socket', str(args.socket),
-                '--control-fd', str(sys.stdin.fileno()), *(['--ring-pmd'] if args.ring_pmd else []), *(['--paired-pmd'] if args.paired_pmd else []), '--', *role_arguments(args.eal, 'primary', args.ring_pmd, args.paired_pmd)])
-        if args.action in ('lease', 'probe'):
+                '--control-fd', str(sys.stdin.fileno()), *(['--generation-rings'] if args.generation_rings else []),
+                *cleanup_args, *(['--ring-pmd'] if args.ring_pmd else []),
+                *(['--paired-pmd'] if args.paired_pmd else []), '--',
+                *role_arguments(args.eal, 'primary', args.ring_pmd, args.paired_pmd)])
+        if args.action in ('lease', 'probe', 'coordinate-probe'):
+            if args.action == 'coordinate-probe' and (args.probe_count or args.ring_pmd or args.paired_pmd or
+                    args.standby or args.generation or args.process):
+                parser.error('coordinate-probe requires generation/process 0 and cannot use probes or a PMD')
             if args.action == 'probe' and not args.probe_count:
                 args.probe_count = 1
             return lease(args)

@@ -6,7 +6,7 @@
       "id": "reload-generations",
       "title": "Design generation-aware reload, IPC and drain ownership",
       "disposition": "adaptation-needed",
-      "reason": "Ker now has resident EAL registration and authenticated cross-process shared control probes with bounded mbuf pools/rings, exact borrower-lifetime retention and resident-journaled control leases. The A4 complete primary precreation/lookup, three-abandoned-master/fourth-secondary recycling, own-slot secondary lookup/device-claim and epoch-liveness source scenarios are qualified. Optional original ring-PMD bursts use a single journaled consumer grant retained through exact borrower death; TX-before-first-enqueue and RX-after-dequeue deaths recover its original mbuf. The named same-generation two-masters/single-consumer observer scenario is now scenario-adapted; broader cross-generation packet dispatch and full reload requirements remain incomplete. Live standby now samples the actual PMD owner while both chains remain alive and takes over in the same PID/EAL/epoch only after exact consumer death. A granted secondary now transports actual original-Linux TCP/UDP through independent original PMD RX/TX queues and an external byte-only Ethernet endpoint, with resident-journaled TX/RX objects. This directional profile now also keeps a denied real secondary attached and starts its native app only after same-PID/EAL/epoch admission; both generations carry independently verified original-Linux IPv4/IPv6 TCP/UDP, and queued cancellation recovers its control lease without app creation. Cross-generation fixed dispatch/exception-owner agreement, physical PMD handover, queued packet crash injection, general hardware-driver packet journals, cross-generation admission and graceful handover remain unqualified. Registration or control echoes do not satisfy the complete source generation contracts.",
+      "reason": "The A4 primary-precreation/lookup, namespace-recycling, own-slot and epoch-liveness cases are adapted. NR-19 adapts only the generation-ring ownership helper through stable original-DPDK ring names and resident-authenticated pidfd ownership; it does not claim production packet dispatch or external TCP/UDP. TC-3 adapts only the named same-generation two-masters/single-consumer observer scenario. TC-5 adapts only the live coordinate-query/ring-name selection scenario using Ker's authenticated typed control request; it does not implement FF_RELOAD_CMD_QUERY or ff_ipc ABI. Optional ring-PMD bursts and live standby/reclaim tests retain their documented bounded scopes. Production generation-aware packet dispatch/flow-map and cross-generation flow drain remain unqualified. The paired TC-3 profile proves only that its selected exception endpoint and fixed packet queues share the resident-authenticated owner key; it does not establish full F-Stack exception/KNI behavior. Physical PMD handover, queued-packet crash matrix, general hardware-driver packet journals, graceful handover and full reload remain unqualified. Registration/control probes do not satisfy the remaining complete source generation contracts. TC-7 adapts only `test_it_a14_usr2_drain_peer_semantics` through authenticated drain authorization and worker-origin freshness, peer selection/fallback, and exact cleanup; it does not claim drain-TX, external TX, flow-map, TCP continuity, or full reload. The P1 directory cases missing, invalid, full, primary_slot_busy and success are scenario-adapted. Success covers the real default-off and generation-rings-enabled directory behavior in separate EAL namespaces, plus production attach replay for all eight ring pointers; it does not claim a literal graceful_reload switch or F-Stack ABI equivalence. live_slot remains blocked because Ker selects any free slot. P1 now additionally adapts only test_p1_drain_queue_ownership and test_p1_drain_peer_tx: the real EAL fixture proves the no-peer +2 and foreign-peer +1 configured-RX cleanup policies, retains the other six ring objects, checks exact replay/idempotence and same-ring re-admission, and restores the 511-object pool. The held-operation fatal case is a fail-closed safety check, not broader packet/TX or reload coverage. Nonowner TX, foreign-epoch TX, flow-map, external TX and full reload remain under this issue. Since this earlier scope note, test_p1_drain_nonowner_tx has been adapted only for the authenticated same-master/epoch mode where a live generation-1 PMD/RX owner coexists with generation-0 detach; the actual EAL evidence proves RX q0/g0 +1 reclamation, retention of TX q1/g0 and six other ring objects, exact owner-snapshot rejection/replay denial, same-ring re-admission, and final pool 511. This does not qualify TX burst or payload behavior. Foreign-epoch TX, flow-map, external TX and full reload remain tracked here. P1 additionally adapts only test_p1_drain_empty_qconf through the real EAL empty-cleanup-mask test: it retains all eight populated ring objects and restores the pool, while the invalid-selected-entry failure remains safety evidence only. The pinned `test_f_m4_1_drain_ring_full_visible` is now scenario-adapted only for actual TX ring-full visibility: one real enqueue-full event, caller ownership of the rejected object, FIFO drain/cleanup, and typed counters `tx_full=1`, `tx_drop=0`, `tx_peak=64` at capacity 64, `rx_peak=0`. The full 14-suite guest and event-peak negative control are bound in `tests/fstack-provenance.json`; no physical NIC, external TX, payload/flow behavior or full reload is claimed. ",
       "evidence": [
         "docs/fstack-reload-ownership.md",
         "src/posix/io-worker.c",
@@ -19,7 +19,22 @@
         "tests/posix/session-standby.py",
         "src/posix/session-packet.c",
         "tools/ker_session_run.py",
-        "tests/posix/session-native-packets.py"
+        "tests/posix/session-native-packets.py",
+        "src/posix/io-session.h",
+        "tools/ker-session.py",
+        "tests/posix/session-coordinate.py",
+        "tests/posix/session-drain-peer.py",
+        "tests/posix/session-peer-mirror.c",
+        "tests/fstack-provenance.json",
+        "cmake/NativeLinux.cmake",
+        "docs/fstack-directory-adapter.md",
+        "tests/posix/session-registration.py",
+        "tests/fstack-migration.json",
+        "tests/fstack-followups.json",
+        "tests/posix/session-generation-detach.py",
+        "src/posix/session-generation-rings.c",
+        "/home/hurricane/.local/state/ker-compat-work/fstack-followups/peer-detach-final-evidence-4cf3a98.json",
+        "/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-directory-disabled-guest4/result-attemptdirectoryDisabled4.json"
       ],
       "acceptance": [
         "Specify generation lifecycle, single-consumer admission, peer liveness, failure recovery and ownership before adding implementation.",
@@ -27,8 +42,6 @@
         "Qualify each listed case, including delayed/foreign epochs, bounded growth, overflow, purge and the external reload acceptance flow; do not substitute a same-process FIFO."
       ],
       "cases": [
-        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
-        "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
         "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
         "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",
         "tests/integration/test_ff_reload_integration.c::test_it_a09_drain_ring_tx_watermark",
@@ -67,21 +80,10 @@
         "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
-        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
-        "tests/unit/test_ff_dpdk_if.c::test_f_m4_1_drain_ring_full_visible",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_queue_ownership",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_nonowner_tx",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_peer_tx",
         "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_drain_empty_qconf",
         "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_full",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_missing",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_invalid",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_success",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_primary_slot_busy",
         "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_window",
         "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_exhausted",
         "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",
@@ -199,37 +201,6 @@
       "issue": "https://github.com/rutlang-ai/Ker/issues/220"
     },
     {
-      "id": "hardware-offloads",
-      "title": "Add positive hardware checksum and TSO acceptance coverage",
-      "disposition": "adaptation-needed",
-      "reason": "Actual Linux/DPDK metadata, TAP software checksum/IPv4 TSO, and original virtio/vhost-kernel checksum/IPv4+IPv6 TSO have independent wire/payload acceptance. TAP rejection retry requires optional isolated patch244. Physical-NIC offload execution remains unqualified.",
-      "evidence": [
-        "src/runtime/ethdev-tx.c",
-        "tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c",
-        "src/posix/worker-offload.c",
-        "tests/posix/tx-offloads.py",
-        "tests/posix/tap-offload-failure.c",
-        "compat/dpdk/tap-tx-retry.patch",
-        "tests/posix/tap-offload-retry.c",
-        "tools/prepare-dpdk-tap-retry.py",
-        "src/posix/worker-receive-mode.c",
-        "tests/posix/virtio-kernel-offloads.py"
-      ],
-      "acceptance": [
-        "Preserve upstream Linux protocol behavior and prefer DPDK adapters; isolate and document any unavoidable minimal driver ownership fix.",
-        "Use an actually capable PMD/NIC and independent wire verification for IPv4/TCP/UDP checksum and TSO, including fallback/rejection boundaries.",
-        "Keep software-only runs distinct from hardware passes and document the required runner.",
-        "Require per-port qualification of the isolated TAP rejection-ownership fix before enabling retries; original PMDs must retain the fail-closed boundary. Issue244 records the patch and acceptance."
-      ],
-      "cases": [
-        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_ip_csum",
-        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tcp_csum",
-        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_tso",
-        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_udp_csum"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/221"
-    },
-    {
       "id": "packet-dispatch-hooks",
       "title": "Define packet-dispatch and PCB callback adaptation boundaries",
       "disposition": "contract-review",
@@ -259,7 +230,7 @@
       "id": "device-run-lifecycle",
       "title": "Resolve device/run lifecycle and upstream fault-injection contracts",
       "disposition": "contract-review",
-      "reason": "Actual native context allocation/free/fd ownership and both-NULL TX/RX rejection are now qualified, including real Linux registration/removal and traffic. Remaining cases require coupled F-Stack EAL-loop scheduling, owned FreeBSD mbuf/m_copydata disposal semantics or exact final initialization ordering; borrowed iovecs must never be freed as an mbuf substitute.",
+      "reason": "Actual native context allocation/free/fd ownership and both-NULL TX/RX rejection are now qualified, including real Linux registration/removal and traffic. The bounded late interface activation failure/no-app cleanup case and callback-stop-return-teardown smoke case are also scenario-adapted; neither claims the F-Stack ABI, exit(1), multi-port rollback, or coupled EAL-lcore main-loop implementation. Remaining cases require owned FreeBSD mbuf/m_copydata disposal semantics or that unimplemented coupled-loop architecture; borrowed iovecs must never be freed as an mbuf substitute.",
       "evidence": [
         "src/posix/lkl-channel.c",
         "src/posix/io-worker.c",
@@ -277,9 +248,7 @@
       ],
       "cases": [
         "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
-        "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
-        "tests/unit/test_ff_init.c::test_ff_init_fail_dpdk_if_up"
+        "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/223"
     },

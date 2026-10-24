@@ -71,6 +71,8 @@ def main():
     print('PASS: SIGTERM returns success only after worker, packet and native cleanup validation')
 
     ticket = api.packet(api.MASTER, session=17, epoch=23, token=31, slot=1)
+    ticket_data = api.encode(ticket)
+    ticket_size = len(ticket_data)
     state = SimpleNamespace(connection=None)
 
     class FakeConnection:
@@ -92,14 +94,14 @@ def main():
             self.closed = True
 
     api.Connection = FakeConnection
-    worker_source = '''#!/usr/bin/python3
+    worker_source = f'''#!/usr/bin/python3
 import os
 import sys
 control = int(sys.argv[sys.argv.index('--control-fd') + 1])
 ticket_fd = int(sys.argv[sys.argv.index('--ticket-fd') + 1])
 ticket = bytearray()
-while len(ticket) < 88:
-    chunk = os.read(ticket_fd, 88 - len(ticket))
+while len(ticket) < {ticket_size}:
+    chunk = os.read(ticket_fd, {ticket_size} - len(ticket))
     if not chunk:
         raise SystemExit(2)
     ticket.extend(chunk)
@@ -115,15 +117,15 @@ with open(os.environ['KER_SESSION_RELAY_CAPTURE'], 'wb') as output:
 with open(os.environ['KER_SESSION_RELAY_TICKET'], 'wb') as output:
     output.write(ticket)
 '''
-    fast_worker_source = '''#!/usr/bin/python3
+    fast_worker_source = f'''#!/usr/bin/python3
 import os
 import sys
 import time
 control = int(sys.argv[sys.argv.index('--control-fd') + 1])
 ticket_fd = int(sys.argv[sys.argv.index('--ticket-fd') + 1])
 ticket = bytearray()
-while len(ticket) < 88:
-    chunk = os.read(ticket_fd, 88 - len(ticket))
+while len(ticket) < {ticket_size}:
+    chunk = os.read(ticket_fd, {ticket_size} - len(ticket))
     if not chunk:
         raise SystemExit(2)
     ticket.extend(chunk)
@@ -139,14 +141,14 @@ while not os.path.exists(os.environ['KER_SESSION_RELAY_GO']):
         raise SystemExit(3)
     time.sleep(0.001)
 '''
-    early_exit_worker_source = '''#!/usr/bin/python3
+    early_exit_worker_source = f'''#!/usr/bin/python3
 import os
 import sys
 control = int(sys.argv[sys.argv.index('--control-fd') + 1])
 ticket_fd = int(sys.argv[sys.argv.index('--ticket-fd') + 1])
 ticket = bytearray()
-while len(ticket) < 88:
-    chunk = os.read(ticket_fd, 88 - len(ticket))
+while len(ticket) < {ticket_size}:
+    chunk = os.read(ticket_fd, {ticket_size} - len(ticket))
     if not chunk:
         raise SystemExit(2)
     ticket.extend(chunk)
@@ -196,7 +198,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
                         label + ' did not release the exact lease and close the connection')
                 require(capture.read_bytes() == expected,
                         label + ' bytes were not forwarded exactly: ' + repr(capture.read_bytes()))
-                require(ticket_capture.read_bytes() == api.encode(ticket),
+                require(ticket_capture.read_bytes() == ticket_data,
                         label + ' worker did not receive the exact registration ticket')
                 reaped = child_reap(stdout.getvalue())
                 require(reaped['status'] == 0 and not reaped['escalated'] and
@@ -230,7 +232,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
                     raise
                 write_count += 1
                 if write_count == 1:
-                    require(data == api.encode(ticket), 'first relay write was not the lease ticket')
+                    require(data == ticket_data, 'first relay write was not the lease ticket')
                     deadline = time.monotonic() + 10
                     while not closed.exists():
                         require(time.monotonic() < deadline, 'fast worker did not close its control reader')
@@ -250,7 +252,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
             require(result == 0, 'closed control reader changed successful child status')
             require(state.connection.released == 1 and state.connection.closed,
                     'closed control reader did not release the exact lease')
-            require(ticket_capture.read_bytes() == api.encode(ticket),
+            require(ticket_capture.read_bytes() == ticket_data,
                     'fast-exit worker did not receive the exact registration ticket')
             reaped = child_reap(stdout.getvalue())
             child_pid = int(closed.read_text())
@@ -287,7 +289,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
                 count = real_write(fd, data)
                 write_count += 1
                 if write_count == 1:
-                    require(data == api.encode(ticket), 'first early-exit write was not the lease ticket')
+                    require(data == ticket_data, 'first early-exit write was not the lease ticket')
                     require(child_process.wait(timeout=10) == 0,
                             'early-exit child did not finish successfully before relay polling')
                 return count
@@ -306,7 +308,7 @@ with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
             require(write_count == 1, 'relay wrote control data after child exited before polling')
             require(result == 0 and state.connection.released == 1 and state.connection.closed,
                     'early child exit did not preserve status0 and release the exact lease')
-            require(ticket_capture.read_bytes() == api.encode(ticket),
+            require(ticket_capture.read_bytes() == ticket_data,
                     'early-exit child did not receive the exact ticket')
             reaped = child_reap(stdout.getvalue())
             require(reaped == {'pid': int(early_pid_file.read_text()), 'status': 0,

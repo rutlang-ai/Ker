@@ -167,10 +167,33 @@ their live EAL secondaries still protect the slots. After those secondaries
 leave original EAL, a fourth master and real secondary must receive a fresh
 nonzero epoch/slot and validate shared-object lookup through actual control
 roundtrips. This qualifies only namespace recycling, not application USR2 or
-packet handover. Precreation, own-slot lookup and cross-master isolation source
-cases remain partial because their fixed network dispatch and hardware-owner
-assertions are missing. Issue #218 retains 78 incomplete cases: 74 blocked and
-4 partial (including the pre-existing local SP/SC partial case).
+packet handover. The exact precreation, own-slot lookup, and same-generation
+cross-master observer assertions are now scenario-adapted in their documented
+scopes; broader fixed network dispatch and hardware-owner agreement remain
+unqualified. The narrow TC-5 coordinate-query/ring-name scenario is also adapted
+through the authenticated session-control endpoint; it does not implement the
+F-Stack ff_ipc ABI or TCP/reload behavior. Issue #218 now retains 69 blocked
+cases; NR-19 ownership, TC-3 observer and the two bounded P1 detach-retention
+scenarios are adapted, while broader reload requirements remain open.
+
+## P1 configured-ring detach retention
+
+`native-fstack-session-generation-detach` maps only
+`test_p1_drain_queue_ownership` and `test_p1_drain_peer_tx`. A real original-DPDK
+EAL resident and authenticated secondary chains seed one known-pool mbuf into
+each of eight journaled RX/TX, queue and generation rings. With no foreign peer,
+orderly unregister drains configured RX q0/g0 and TX q1/g0 (+2 pool objects).
+With a live resident-authorized foreign same-generation peer-only selector, it
+drains only RX q0/g0 (+1), retaining configured TX and the other six ring
+objects. The peer-only role has no ring or PMD capability. The test checks exact
+retained-object identity, replay, idempotent unregister, re-admission on the same
+persistent ring, and full 511-object cleanup with no registrations or PMD owner.
+A separate held-dequeue failure case requires bounded fail-closed resident exit
+125, no successful detach acknowledgement and exact pidfd death. Guest evidence
+is bound by `/home/hurricane/.local/state/ker-compat-work/fstack-followups/peer-detach-final-evidence-4cf3a98.json`
+(SHA256 `71558769db2d6e1d3e41d77939df5e90fca55c22d71292973b4b6ff0fc36372c`); it does not qualify
+nonowner/foreign-epoch TX, empty queue configuration, TX burst or payload,
+flow-map, external TX, TCP continuity or complete reload.
 
 Shared packet envelopes,
 packet-pool ownership journals, generation admission and grants, PMD secondary compatibility,
