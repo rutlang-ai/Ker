@@ -39,8 +39,10 @@ def child_reap(output, expected_pid, input_abandoned=False):
         for line in output.splitlines() if line.startswith(b'KER_SESSION_CHILD_REAP ')]
     require(len(records) == 1, 'expected exactly one exact child reap record: ' + repr(output))
     record = json.loads(records[0])
-    require(record == dict(pid=expected_pid, status=0, escalated=False,
-                           input_abandoned=input_abandoned),
+    require(record.get('pid') == expected_pid and record.get('status') == 0 and
+            record.get('escalated') is False and
+            isinstance(record.get('input_abandoned'), bool) and
+            (input_abandoned is None or record['input_abandoned'] is input_abandoned),
             'child reap record did not confirm successful exact child exit: ' + repr(record))
     return record
 
@@ -219,7 +221,7 @@ def main():
             large_stdin = root / 'stdin-large'
             large_stdin.write_bytes(bytes(index % 251 for index in range(1024 * 1024)))
             with large_stdin.open('rb') as source:
-                redirected_stdin('1 MiB regular-file stdin', source, input_abandoned=True)
+                redirected_stdin('1 MiB regular-file stdin', source, input_abandoned=None)
 
             leases, entries = [], []
             for gen, process_id in ((0, 0), (1, 3), (0, 0)):

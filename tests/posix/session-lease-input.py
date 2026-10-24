@@ -100,6 +100,23 @@ while not os.path.exists(os.environ['KER_SESSION_RELAY_GO']):
         raise SystemExit(3)
     time.sleep(0.001)
 '''
+    early_exit_worker_source = '''#!/usr/bin/python3
+import os
+import sys
+control = int(sys.argv[sys.argv.index('--control-fd') + 1])
+ticket_fd = int(sys.argv[sys.argv.index('--ticket-fd') + 1])
+ticket = bytearray()
+while len(ticket) < 88:
+    chunk = os.read(ticket_fd, 88 - len(ticket))
+    if not chunk:
+        raise SystemExit(2)
+    ticket.extend(chunk)
+os.close(ticket_fd)
+with open(os.environ['KER_SESSION_RELAY_TICKET'], 'wb') as output:
+    output.write(ticket)
+with open(os.environ['KER_SESSION_RELAY_EARLY_PID'], 'w') as output:
+    output.write(str(os.getpid()))
+'''
 
     with tempfile.TemporaryDirectory(prefix='ker-lease-input-') as directory:
         root = Path(directory)
@@ -202,6 +219,61 @@ while not os.path.exists(os.environ['KER_SESSION_RELAY_GO']):
                                'input_abandoned': True},
                     'reap marker did not identify the successful closed-reader child: ' + repr(reaped))
             print('PASS: deterministic EPIPE stops forwarding, reaps exact child, and releases lease')
+
+            # Let a separate child consume the ticket and exit before lease()
+            # reaches its first worker.poll(). The production adapter must
+            # collect that exact success without attempting a control write.
+            early_worker = root / 'early-exit-worker.py'
+            early_worker.write_text(early_exit_worker_source)
+            early_worker.chmod(0o700)
+            early_pid_file = root / 'early-pid'
+            ticket_capture = root / 'early-ticket'
+            os.environ['KER_SESSION_RELAY_EARLY_PID'] = str(early_pid_file)
+            os.environ['KER_SESSION_RELAY_TICKET'] = str(ticket_capture)
+            api.sys.stdin = data_file.open('rb')
+            stdout = io.StringIO()
+            api.sys.stdout = stdout
+            real_write = api.os.write
+            real_popen = api.subprocess.Popen
+            write_count = 0
+            child_process = None
+
+            def capture_popen(*args, **kwargs):
+                nonlocal child_process
+                child_process = real_popen(*args, **kwargs)
+                return child_process
+
+            def wait_after_ticket_write(fd, data):
+                nonlocal write_count
+                count = real_write(fd, data)
+                write_count += 1
+                if write_count == 1:
+                    require(data == api.encode(ticket), 'first early-exit write was not the lease ticket')
+                    require(child_process.wait(timeout=10) == 0,
+                            'early-exit child did not finish successfully before relay polling')
+                return count
+
+            api.os.write = wait_after_ticket_write
+            api.subprocess.Popen = capture_popen
+            try:
+                result = api.lease(SimpleNamespace(socket=root / 'unused.sock', worker=early_worker,
+                    generation=0, process=0, eal=''))
+            finally:
+                api.os.write = real_write
+                api.subprocess.Popen = real_popen
+                api.sys.stdout = original_stdout
+                api.sys.stdin.close()
+                api.sys.stdin = original_stdin
+            require(write_count == 1, 'relay wrote control data after child exited before polling')
+            require(result == 0 and state.connection.released == 1 and state.connection.closed,
+                    'early child exit did not preserve status0 and release the exact lease')
+            require(ticket_capture.read_bytes() == api.encode(ticket),
+                    'early-exit child did not receive the exact ticket')
+            reaped = child_reap(stdout.getvalue())
+            require(reaped == {'pid': int(early_pid_file.read_text()), 'status': 0,
+                               'escalated': False, 'input_abandoned': False},
+                    'reap marker did not identify the pre-poll successful child: ' + repr(reaped))
+            print('PASS: child exits before first poll, no control write, exact reap and lease release')
         finally:
             api.sys.stdin = original_stdin
             api.sys.stdout = original_stdout
@@ -209,6 +281,7 @@ while not os.path.exists(os.environ['KER_SESSION_RELAY_GO']):
             os.environ.pop('KER_SESSION_RELAY_TICKET', None)
             os.environ.pop('KER_SESSION_RELAY_CLOSED', None)
             os.environ.pop('KER_SESSION_RELAY_GO', None)
+            os.environ.pop('KER_SESSION_RELAY_EARLY_PID', None)
     return 0
 
 
