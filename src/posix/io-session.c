@@ -1125,8 +1125,12 @@ static int handle(unsigned i, const struct ker_session_message *request,
         return 0;
     }
     unsigned s = (unsigned)request->slot;
+    /* QUIESCED is authenticated by the one-shot owner key minted by PREPARE,
+     * then checked against the private handoff snapshot below. All ordinary
+     * commands, including PREPARE itself, continue to require the slot token. */
     if (request->session != directory->session || request->slot >= KER_SESSION_SLOTS || !s ||
-        request->epoch != slots[s].epoch || !request->epoch || request->token != slots[s].token)
+        request->epoch != slots[s].epoch || !request->epoch ||
+        (request->command != KER_SESSION_PMD_HANDOFF_QUIESCED && request->token != slots[s].token))
         return -ESTALE;
     if (request->generation >= KER_SESSION_GENERATIONS || request->process >= KER_SESSION_PROCESSES)
         return -EINVAL;
