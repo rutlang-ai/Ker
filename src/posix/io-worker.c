@@ -505,18 +505,22 @@ int main(int argc, char **argv)
             pool_rx_desc, pool_tx_desc);
         goto cleanup;
     }
-    /* The descriptor helper covers queue descriptors and two worker bursts.
-     * Reserve one complete ring and producer-retained burst for each remote
-     * queue, with checked arithmetic before creating the shared pool. */
+    /* The descriptor helper covers descriptor mbufs and worker bursts. A
+     * remote handoff may retain a chained packet while RX refills, so reserve
+     * every segment of the largest frame the worker may accept. */
     uint32_t remote_queues = 0;
     for (uint16_t queue = 0; queue < queues; queue++)
         if (rx_workers.queue[queue].owner != rx_workers.main) remote_queues++;
     const uint32_t handoff_budget = KER_RX_HANDOFF_CAPACITY + KER_RX_BURST;
-    if (remote_queues && remote_queues > (UINT32_MAX - pool_count) / handoff_budget) {
-        fprintf(stderr, "ker: RX lcore handoff pool budget overflow\n");
+    uint32_t handoff_segments;
+    uint32_t rx_overhead = ker_worker_rx_eth_overhead(&budget_info);
+    if (ker_worker_mbuf_frame_segments((uint32_t)maximum_mtu, rx_overhead,
+            buffer_size, &handoff_segments) ||
+        ker_worker_mbuf_handoff_pool_count(pool_count, remote_queues,
+            handoff_budget, handoff_segments, &pool_count)) {
+        fprintf(stderr, "ker: RX lcore handoff mbuf pool budget overflow or invalid frame geometry\n");
         goto cleanup;
     }
-    pool_count += remote_queues * handoff_budget;
     /* Match F-Stack numa_on: lcore-local allocations, or explicit socket 0. */
     unsigned int allocation_socket = numa ? rte_socket_id() : 0;
     pool = rte_pktmbuf_pool_create("ker_native_packets", pool_count, 0, 0,

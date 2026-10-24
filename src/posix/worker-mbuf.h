@@ -44,6 +44,34 @@ static inline int ker_worker_mbuf_pool_count(uint32_t rx_descriptors,
     *count = needed < 4095 ? 4095 : needed;
     return 0;
 }
+/* Bound the largest frame by the actual mbuf data room and PMD RX overhead. */
+static inline int ker_worker_mbuf_frame_segments(uint32_t mtu,
+    uint32_t rx_overhead, uint32_t buffer_size, uint32_t *segments)
+{
+    if (!segments || buffer_size <= RTE_PKTMBUF_HEADROOM) return -EINVAL;
+    uint64_t payload = buffer_size - RTE_PKTMBUF_HEADROOM;
+    uint64_t frame = (uint64_t)mtu + rx_overhead;
+    uint64_t required = frame / payload + (frame % payload != 0);
+    if (!required || required > UINT32_MAX) return -EOVERFLOW;
+    *segments = (uint32_t)required;
+    return 0;
+}
+/* Add the mbufs retained by remote RX handoff rings and producer bursts. */
+static inline int ker_worker_mbuf_handoff_pool_count(uint32_t base_count,
+    uint32_t remote_queues, uint32_t packets_per_queue,
+    uint32_t segments_per_packet, uint32_t *count)
+{
+    if (!count || !segments_per_packet) return -EINVAL;
+    if (remote_queues && packets_per_queue > UINT32_MAX / remote_queues)
+        return -EOVERFLOW;
+    uint32_t packets = remote_queues * packets_per_queue;
+    if (packets && segments_per_packet > UINT32_MAX / packets)
+        return -EOVERFLOW;
+    uint32_t extra = packets * segments_per_packet;
+    if (base_count > UINT32_MAX - extra) return -EOVERFLOW;
+    *count = base_count + extra;
+    return 0;
+}
 /* Copy one complete Ethernet frame into a pool-sized mbuf chain. On failure,
  * reclaim every allocated segment. The caller owns the returned chain. */
 struct rte_mbuf *ker_worker_mbuf_from_bytes(struct rte_mempool *pool,

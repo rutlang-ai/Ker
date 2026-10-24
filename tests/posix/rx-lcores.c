@@ -17,6 +17,9 @@
 #include <rte_pause.h>
 #define CHECK(x) do {if(!(x)){fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x);exit(1);}}while(0)
 static struct rte_mempool *pool;
+#define JUMBO_FRAME_BYTES 9018
+#define JUMBO_FRAME_COUNT (KER_RX_HANDOFF_CAPACITY - 1 + KER_RX_BURST)
+static struct rte_mempool *jumbo_pool;
 static struct rte_mbuf *packet(unsigned id)
 {
     unsigned char bytes[1000];
@@ -30,6 +33,27 @@ static void verify(struct rte_mbuf *p,unsigned id)
     const unsigned char *bytes=rte_pktmbuf_read(p,0,sizeof(storage),storage);CHECK(bytes&&p->pkt_len==sizeof(storage));
     for(unsigned i=0;i<sizeof(expected);i++)expected[i]=(unsigned char)(id*13+i*17+(i>>8));
     memcpy(expected,&id,sizeof(id));CHECK(!memcmp(bytes,expected,sizeof(expected)));rte_pktmbuf_free(p);
+}
+static struct rte_mbuf *jumbo_packet(unsigned id)
+{
+    unsigned char bytes[JUMBO_FRAME_BYTES];
+    for (unsigned i = 0; i < sizeof(bytes); i++)
+        bytes[i] = (unsigned char)(id * 19 + i * 23 + (i >> 8));
+    memcpy(bytes, &id, sizeof(id));
+    struct rte_mbuf *p = ker_worker_mbuf_from_bytes(jumbo_pool, bytes, sizeof(bytes));
+    CHECK(p && p->nb_segs == 5 && p->pkt_len == sizeof(bytes));
+    return p;
+}
+static void verify_jumbo(struct rte_mbuf *p, unsigned id)
+{
+    unsigned char storage[JUMBO_FRAME_BYTES], expected[JUMBO_FRAME_BYTES];
+    const unsigned char *bytes = rte_pktmbuf_read(p, 0, sizeof(storage), storage);
+    CHECK(bytes && p->pkt_len == sizeof(storage) && p->nb_segs == 5);
+    for (unsigned i = 0; i < sizeof(expected); i++)
+        expected[i] = (unsigned char)(id * 19 + i * 23 + (i >> 8));
+    memcpy(expected, &id, sizeof(id));
+    CHECK(!memcmp(bytes, expected, sizeof(expected)));
+    rte_pktmbuf_free(p);
 }
 static uint64_t deadline(void){return rte_get_timer_cycles()+rte_get_timer_hz()*3;}
 static void full(struct ker_worker_rx_lcores *rx)
@@ -98,6 +122,45 @@ int main(void)
     for(unsigned q=0;q<2;q++)CHECK(rx.queue[q].owner==q&&rx.queue[q].observed==q&&rx.queue[q].cpu==cpu[q]&&rx.queue[q].polls>0);
     CHECK(!ker_worker_rx_lcores_stop(&rx,&abandoned,NULL)&&!abandoned);
     for(unsigned q=0;q<2;q++){struct rte_mbuf *p;while(!rte_ring_dequeue(input[q],(void**)&p))rte_pktmbuf_free(p);}
+    /* Exercise the real remote RX handoff with jumbo chains. The exact pool
+     * includes five mbufs for each retained packet; the old one-mbuf reserve
+     * cannot construct this full admitted burst. */
+    uint32_t jumbo_segments = 0, jumbo_pool_count = 0, old_packet_bound = 0;
+    CHECK(ker_worker_mbuf_frame_segments(9000,
+        RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN,
+        RTE_MBUF_DEFAULT_BUF_SIZE, &jumbo_segments) == 0 && jumbo_segments == 5);
+    CHECK(ker_worker_mbuf_handoff_pool_count(0, 1,
+        KER_RX_HANDOFF_CAPACITY + KER_RX_BURST, jumbo_segments,
+        &jumbo_pool_count) == 0 && jumbo_pool_count == 1440);
+    CHECK(ker_worker_mbuf_handoff_pool_count(0, 1,
+        KER_RX_HANDOFF_CAPACITY + KER_RX_BURST, 1,
+        &old_packet_bound) == 0 && old_packet_bound == 288);
+    CHECK(old_packet_bound < JUMBO_FRAME_COUNT * jumbo_segments);
+    jumbo_pool = rte_pktmbuf_pool_create("rx_jumbo_pool", jumbo_pool_count,
+        0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+    CHECK(jumbo_pool);
+    CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));
+    for (unsigned i = 0; i < JUMBO_FRAME_COUNT; i++)
+        CHECK(!rte_ring_enqueue(input[1], jumbo_packet(4000 + i)));
+    full(&rx);
+    CHECK(rte_mempool_in_use_count(jumbo_pool) ==
+        JUMBO_FRAME_COUNT * jumbo_segments);
+    CHECK(rte_mempool_avail_count(jumbo_pool) ==
+        jumbo_pool_count - JUMBO_FRAME_COUNT * jumbo_segments);
+    unsigned jumbo_received = 0; end = deadline();
+    while (jumbo_received < JUMBO_FRAME_COUNT) {
+        struct rte_mbuf *jumbo_packets[KER_RX_BURST];
+        uint16_t count = ker_worker_rx_lcores_burst(&rx, 1, jumbo_packets, KER_RX_BURST);
+        for (unsigned i = 0; i < count; i++)
+            verify_jumbo(jumbo_packets[i], 4000 + jumbo_received++);
+        CHECK(rte_get_timer_cycles() < end);
+        if (!count) rte_pause();
+    }
+    CHECK(rx.queue[1].stalled > 0);
+    CHECK(!ker_worker_rx_lcores_stop(&rx,&abandoned,NULL)&&!abandoned);
+    CHECK(!rte_mempool_in_use_count(jumbo_pool) &&
+        rte_mempool_avail_count(jumbo_pool) == jumbo_pool_count);
+    rte_mempool_free(jumbo_pool); jumbo_pool = NULL;
     /* A real ENOSPC capture failure must report failure and still free every
      * queued/retained mbuf after joining its original EAL producer. */
     CHECK(!ker_worker_rx_lcores_plan(&rx,port,2,"0,1",true)&&!ker_worker_rx_lcores_start(&rx));
