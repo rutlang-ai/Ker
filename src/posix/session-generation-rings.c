@@ -982,7 +982,7 @@ static int enqueue(struct ker_generation_rings *r, const struct ker_generation_i
 {
     if (!r || !m || !producer || !admitted(r,producer,p,q,producer->generation) ||
         (tx ? g!=producer->generation : g==producer->generation)) return -EINVAL;
-    if (m->pool!=r->pool || !packet_reclaimable(r,m)) return -EINVAL;
+    if (!known_pool_object(r,m) || m->pool!=r->pool || !packet_reclaimable(r,m)) return -EINVAL;
     uint32_t ring_generation=g;
     int enter=operation_enter(r,producer,p,q,ring_generation);if(enter)return enter;
     bool peer_entered=false;
