@@ -627,9 +627,25 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 finally: connection.close()
                 primary.stdin.close(); primary.stdin = None
                 primary_output, primary_errors = primary.communicate(timeout=20)
+                require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
+                    primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
                 require(primary.returncode == 0 and any(line.startswith('KER_SESSION_DRAINED ')
                     for line in primary_output.decode().splitlines()),
                     'PREPARE rejection did not cleanly drain the resident: ' + primary_errors.decode())
+                print('KER_SESSION_PREPARE_REJECTION_RAW ' + json.dumps(dict(
+                    mode=mode,
+                    runner_stderr=errors.decode(errors='replace'),
+                    primary_stdout=primary_output.decode(errors='replace'),
+                    primary_stderr=primary_errors.decode(errors='replace'),
+                    census_before=handoff_census_before,
+                    owner_before=handoff_owner_before,
+                    census_after_rejection=rejected_census,
+                    owner_after_rejection=rejected_owner,
+                    census_after_cleanup=census,
+                    owner_after_cleanup=owner,
+                    actor_pids=dict(owner=before['attached']['pid'], peer=before['handoff_peer_attached']['pid']),
+                    runner_returncode=runner.returncode,
+                    resident_returncode=primary.returncode), sort_keys=True), flush=True)
                 print(f'PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, and resumed the packet loop')
                 return
             if mode != 'positive':
