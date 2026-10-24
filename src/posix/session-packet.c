@@ -114,6 +114,14 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
             char command=0;
             ssize_t count=(fds[0].revents&POLLIN)?read(control,&command,1):0;
             if (count==1 && command=='H') handoff_requested=true;
+#ifdef KER_SESSION_TEST_HOOKS
+            else if (count==1 && test_control) {
+                int handled=test_control(command,test_control_context);
+                if (handled<0) { status=handled; break; }
+                if (handled==1) continue;
+                break;
+            }
+#endif
             else break;
         }
         if (handoff_requested) {

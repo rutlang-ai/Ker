@@ -81,6 +81,7 @@ class HandoffControlPathTests(unittest.TestCase):
             'close': close,
             'control_w': write_fd,
             'handoff_mode': mode,
+            'handoff_udp_ready': False,
             'metrics': metrics,
             'peer_control_w': -1,
             'peer_worker': Actor(),
@@ -129,6 +130,7 @@ class HandoffControlPathTests(unittest.TestCase):
             'close': os.close,
             'control_w': write_fd,
             'handoff_mode': mode,
+            'handoff_udp_ready': False,
             'metrics': metrics,
             'peer_control_w': -1,
             'peer_worker': Actor(),
@@ -182,6 +184,7 @@ class HandoffControlPathTests(unittest.TestCase):
         values = {
             'api': None, 'app': Actor(), 'args': None, 'close': close,
             'control_w': write_fd, 'handoff_mode': 'handoff-control-hup',
+            'handoff_udp_ready': False,
             'metrics': metrics, 'peer_control_w': -1, 'peer_worker': Actor(),
             'publish': lambda: None, 'ready': lambda *_args, **_kwargs: None,
             'wait_marker': wait_marker, 'worker': child, 'worker_pidfd': pidfd,

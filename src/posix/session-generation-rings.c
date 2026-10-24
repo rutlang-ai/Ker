@@ -331,6 +331,29 @@ static const struct rte_memzone *lookup_directory(void)
 #ifdef KER_SESSION_TEST_HOOKS
 uint32_t ker_generation_packet_pool_in_use(struct ker_generation_rings *r)
 { return r&&r->primary&&r->packet_pool?rte_mempool_in_use_count(r->packet_pool):UINT32_MAX; }
+int ker_generation_test_packet_object_index(struct ker_generation_rings *r,
+    const struct rte_mbuf *packet,uint32_t *object_index)
+{
+    if(object_index)*object_index=UINT32_MAX;
+    if(!r||!r->directory||!packet||!object_index||!known_pool_object(r,packet))return -EINVAL;
+    if(packet->pool!=r->packet_pool)return -EPROTO;
+    for(uint32_t i=0;i<r->packet_object_count;i++)
+        if(r->objects[r->packet_object_base+i]==packet&&r->packet_object_table[i]==(uintptr_t)packet){
+            *object_index=i;return 0;
+        }
+    return -EUCLEAN;
+}
+int ker_generation_test_tx_snapshot(struct ker_generation_rings *r,uint16_t port,
+    uint16_t queue,uint32_t generation,uint32_t *count,uint32_t *packet_pool_in_use)
+{
+    if(!r||!r->directory||!count||!packet_pool_in_use||port>=r->ports||queue>=r->queues||
+        generation>=KER_GENERATION_RING_GENERATIONS)return -EINVAL;
+    struct rte_ring *ring=r->tx[ring_index(r,port,queue,generation)];
+    if(!ring||!r->packet_pool)return -EUCLEAN;
+    *count=rte_ring_count(ring);
+    *packet_pool_in_use=rte_mempool_in_use_count(r->packet_pool);
+    return 0;
+}
 int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *r,
     uint32_t index,uint32_t duplicate_index,uintptr_t *original)
 {

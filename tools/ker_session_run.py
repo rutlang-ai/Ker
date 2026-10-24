@@ -137,7 +137,7 @@ def run_session(args, api):
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
-    handoff_modes = {'positive', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    handoff_modes = {'positive', 'frame-positive', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
         'handoff-control-hup',
         'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
         'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
@@ -155,6 +155,8 @@ def run_session(args, api):
     connection = api.Connection(args.socket)
     worker = peer_worker = app = None
     worker_pidfd = -1
+    app_pidfd = -1
+    handoff_udp_ready = False
     peer_control_w = peer_wire_fd = -1
     peer_packet_worker = peer_packet_app = peer_mtu_worker = peer_mtu_app = None
     owned = {args.wire_fd}
@@ -250,12 +252,15 @@ def run_session(args, api):
         os.set_blocking(peer_control_w, False)
         peer_environment = os.environ.copy()
         peer_environment.pop('KER_SESSION_TEST_HANDOFF_PENDING_HB', None)
-        peer_worker = subprocess.Popen([str(worker_path), '--role', 'secondary', '--paired-pmd', '--standby',
+        peer_arguments = [str(worker_path), '--role', 'secondary', '--paired-pmd', '--standby',
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', '1', '--process', str(args.process), '--packet-fd', str(peer_packet_worker.fileno()),
-            '--generation-rings',
-            '--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
-            *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
+            '--generation-rings']
+        if os.environ.get('KER_SESSION_TEST_FRAME_DRAIN') == '1':
+            peer_arguments.append('--test-generation-frame-drain')
+        peer_arguments.extend(['--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
+            *api.role_arguments(args.eal, 'secondary', paired_pmd=True)])
+        peer_worker = subprocess.Popen(peer_arguments,
             pass_fds=(control_r, ticket_r, peer_packet_worker.fileno(), peer_wire_fd, peer_mtu_worker.fileno()),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, env=peer_environment, bufsize=0)
         close(control_r); close(ticket_r)
@@ -292,7 +297,7 @@ def run_session(args, api):
         publish()
 
     def perform_test_handoff():
-        nonlocal control_w
+        nonlocal control_w, handoff_udp_ready
         if peer_worker is None or app is None or app.poll() is not None or worker.poll() is not None:
             raise RuntimeError('live handoff fixture lost its original app/owner before transition')
         old_tun_interfaces_before = tap_interfaces_for_process(worker.pid)
@@ -465,7 +470,7 @@ def run_session(args, api):
                 quiesced_sent=quiesced_sent, peer=metrics.get('handoff_negative_peer')))
             publish()
             raise RuntimeError('resident failed closed after the expected invalid QUIESCED')
-        if handoff_mode not in (None, 'positive'):
+        if handoff_mode not in (None, 'positive', 'frame-positive'):
             raise RuntimeError('test handoff mode is not a fatal profile')
         parked = wait_marker(worker, 'KER_SESSION_PMD_PARKED')
         if (boundary.get('idle') is not True or boundary.get('owner_key') != metrics['grant']['queue_owner_key'] or
@@ -509,6 +514,7 @@ def run_session(args, api):
             successor=successor, geometry=geometry, resident=observed)
         metrics['handoff_protocol'] = dict(negative_prepare=negative_prepare, replay_prepare=replay_prepare)
         metrics['stage'] = 'handoff-complete'
+        handoff_udp_ready = True
         publish()
 
     def finish_signal_before_app(packet_expected):
@@ -623,9 +629,11 @@ def run_session(args, api):
             raise RuntimeError('secondary packet worker exited before application launch')
         app = subprocess.Popen([str(guard), *args.command], env=environment,
             pass_fds=(packet_app.fileno(), mtu_app.fileno(), startup_w))
+        app_pidfd = os.pidfd_open(app.pid)
         metrics.update(stage='application-started', app_started=True, app_pid=app.pid); publish()
         packet_app.close(); mtu_app.close(); close(startup_w)
         startup = b''
+        handoff_udp_sequence = 0
         deadline = time.monotonic() + 20
         stopping_at = None
 
@@ -639,6 +647,53 @@ def run_session(args, api):
                 if len(startup) > 65536:
                     raise RuntimeError('native startup/control output exceeded its bound')
 
+        def trigger_handoff_udp():
+            nonlocal handoff_udp_sequence
+            if handoff_mode != 'frame-positive' or app is None or app_pidfd < 0 or app.poll() is not None:
+                raise RuntimeError('UDP handoff trigger is available only for the live positive app')
+            sequence = handoff_udp_sequence + 1
+            if (sequence == 1 and handoff_udp_ready) or (sequence == 2 and not handoff_udp_ready):
+                raise RuntimeError('UDP trigger is out of the prewarm/PARKED order')
+            payload = f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
+            acknowledgement = f'KER_HANDOFF_UDP_SENT seq={sequence} bytes={len(payload)}\n'.encode()
+            if acknowledgement in startup:
+                raise RuntimeError('application UDP trigger acknowledgement was already observed')
+            if not select.select([app_pidfd], [], [], 0)[0]:
+                signal.pidfd_send_signal(app_pidfd, signal.SIGUSR1)
+            else:
+                raise RuntimeError('exact original app pidfd is already readable')
+            ack_deadline = time.monotonic() + 10
+            while acknowledgement not in startup:
+                drain_startup()
+                if app.poll() is not None:
+                    raise RuntimeError('original LKL UDP app exited before acknowledging its trigger')
+                if time.monotonic() >= ack_deadline:
+                    raise RuntimeError('original LKL UDP app trigger acknowledgement timed out')
+                time.sleep(0.005)
+            if startup.count(acknowledgement) != 1:
+                raise RuntimeError('original LKL UDP app emitted a duplicate trigger acknowledgement')
+            handoff_udp_sequence = sequence
+            print('KER_SESSION_TEST_UDP_TRIGGER_ACK ' + json.dumps(dict(sequence=sequence,
+                bytes=len(payload))), flush=True)
+            if sequence != 2:
+                return
+            committed = ready(worker, 'KER_SESSION_FRAME_COMMITTED')
+            if (committed.get('queue') != 0 or committed.get('generation') != 0 or
+                committed.get('packet_pointer') is None or committed.get('object_index') is None or
+                committed.get('pool_tag') is None or payload.hex() not in committed.get('frame_hex', '')):
+                raise RuntimeError('parked original LKL endpoint did not commit the exact second UDP frame')
+            if peer_control_w < 0 or os.write(peer_control_w, b'G') != 1:
+                raise RuntimeError('could not request exact admitted-peer TX journal drain')
+            drained = ready(peer_worker, 'KER_SESSION_FRAME_DRAINED')
+            for field in ('object_index', 'pool_tag', 'packet_pointer', 'length', 'frame_hex'):
+                if drained.get(field) != committed.get(field):
+                    raise RuntimeError('peer TX drain changed committed packet ' + field)
+            if drained.get('sequence') != 2:
+                raise RuntimeError('peer TX drain returned the wrong original app datagram')
+            metrics['handoff_frame'] = dict(committed=committed, drained=drained,
+                same_pointer=True, same_bytes=True, peer_release_once=True)
+            publish()
+
         while app.poll() is None:
             if received_signal is not None:
                 app.terminate()
@@ -649,10 +704,16 @@ def run_session(args, api):
             if handoff_fd is not None:
                 trigger = select.poll(); trigger.register(handoff_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
                 if trigger.poll(0):
-                    data = os.read(handoff_fd, 2)
-                    close(handoff_fd); handoff_fd = None
-                    if data != b'H': raise RuntimeError('invalid live-handoff fixture trigger')
-                    perform_test_handoff()
+                    data = os.read(handoff_fd, 1)
+                    if data == b'U':
+                        trigger_handoff_udp()
+                    elif data == b'H':
+                        if handoff_mode != 'frame-positive':
+                            close(handoff_fd); handoff_fd = None
+                        perform_test_handoff()
+                    else:
+                        close(handoff_fd); handoff_fd = None
+                        raise RuntimeError('invalid live-handoff fixture trigger')
             drain_startup()
             if b'KER_NATIVE_READY\n' not in startup and time.monotonic() >= deadline:
                 raise RuntimeError('native Linux startup timed out')
@@ -721,6 +782,9 @@ def run_session(args, api):
         return 0
     finally:
         try:
+            if app_pidfd >= 0:
+                os.close(app_pidfd)
+                app_pidfd = -1
             if worker_pidfd >= 0:
                 if worker is not None and pidfd_process_stopped(worker_pidfd, worker.pid):
                     resume_pidfd_if_live(worker_pidfd)
