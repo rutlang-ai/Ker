@@ -30,6 +30,68 @@ static struct test_control *control(void)
     const struct rte_memzone *mz=rte_memzone_lookup(TEST_ZONE);
     return mz ? mz->addr : NULL;
 }
+static int packet_lease_core_test(struct ker_generation_rings *rings,
+    struct rte_mempool *message_pool,const struct ker_generation_identity *producer,
+    const struct ker_generation_identity *consumer)
+{
+    const uint32_t capacity=KER_GENERATION_RING_CAPACITY;
+    uint32_t baseline=ker_generation_packet_pool_in_use(rings);
+    if(baseline==UINT32_MAX||baseline||!ker_generation_packet_pool_tag(rings))return -1;
+    uintptr_t original=0;
+    if(ker_generation_test_packet_table_duplicate(rings,1,0,&original))return -1;
+    struct ker_generation_rings *rejected=NULL;
+    int rejected_status=ker_generation_rings_attach(TEST_SESSION,1,2,message_pool,&rejected);
+    if(rejected_status!=-EPROTO||rejected||
+        ker_generation_test_packet_table_restore(rings,1,original))return -1;
+    uint32_t invalid_index=0;uint64_t invalid_lease=0;
+    if(ker_generation_packet_prepare(rings,producer,consumer,0,1,&invalid_index,&invalid_lease))return -1;
+    struct rte_mbuf *invalid=ker_generation_packet_resolve(rings,producer,invalid_index,invalid_lease);
+    if(!invalid||!rte_pktmbuf_append(invalid,13)||
+        ker_generation_packet_write_complete(rings,producer,invalid_index,invalid_lease)!=-EMSGSIZE||
+        ker_generation_packet_cancel(rings,producer,invalid_index,invalid_lease)||
+        ker_generation_packet_pool_in_use(rings)!=baseline)return -1;
+    struct rte_mbuf *packets[KER_GENERATION_RING_CAPACITY]={0};
+    uint32_t indices[KER_GENERATION_RING_CAPACITY+1];
+    uint64_t leases[KER_GENERATION_RING_CAPACITY+1];
+    for(uint32_t i=0;i<=capacity;i++){
+        if(ker_generation_packet_prepare(rings,producer,consumer,0,1,&indices[i],&leases[i])||
+            !leases[i]||ker_generation_packet_pool_in_use(rings)!=baseline+i+1)return -1;
+        if(i==0){
+            uint32_t wrong_index=indices[i]+1;
+            if(ker_generation_packet_resolve(rings,producer,wrong_index,leases[i])||
+                ker_generation_packet_resolve(rings,producer,indices[i],leases[i]^UINT64_C(1)))return -1;
+        }
+        struct rte_mbuf *packet=ker_generation_packet_resolve(rings,producer,indices[i],leases[i]);
+        if(!packet||packet->pool==message_pool)return -1;
+        uint8_t *bytes=rte_pktmbuf_append(packet,14);
+        if(!bytes)return -1;
+        for(uint32_t k=0;k<14;k++)bytes[k]=(uint8_t)(0x80U+i+k);
+        if(ker_generation_packet_write_complete(rings,producer,indices[i],leases[i]))return -1;
+        if(i==0 && ker_generation_tx_enqueue(rings,producer,0,1,packet)!=-EINVAL)return -1;
+        int commit=ker_generation_packet_commit(rings,producer,0,1,indices[i],leases[i]);
+        if(i<capacity){
+            if(commit||ker_generation_packet_commit(rings,producer,0,1,indices[i],leases[i]))return -1;
+            packets[i]=packet;
+        }else{
+            if(commit!=-ENOBUFS||ker_generation_packet_cancel(rings,producer,indices[i],leases[i])||
+                ker_generation_packet_pool_in_use(rings)!=baseline+capacity)return -1;
+        }
+    }
+    for(uint32_t i=0;i<capacity;i++){
+        struct rte_mbuf *packet=NULL;
+        if(ker_generation_tx_dequeue_peer(rings,consumer,0,1,&packet)!=1||packet!=packets[i]||
+            packet->pkt_len!=14||packet->data_len!=14)return -1;
+        const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
+        for(uint32_t k=0;k<14;k++)if(bytes[k]!=(uint8_t)(0x80U+i+k))return -1;
+        if(ker_generation_packet_pmd_accepted(rings,consumer,packet)||
+            ker_generation_packet_wire_pending(rings,consumer,packet)||
+            ker_generation_packet_release(rings,consumer,packet))return -1;
+    }
+    struct rte_mbuf *empty=NULL;
+    if(ker_generation_tx_dequeue_peer(rings,consumer,0,1,&empty)!=0||empty||
+        ker_generation_packet_pool_in_use(rings)!=baseline)return -1;
+    return 0;
+}
 static int fail(struct test_control *c, const char *what)
 {
     fprintf(stderr,"NR19 secondary %d: %s\n",getpid(),what);
@@ -599,6 +661,7 @@ static int primary(const char *prefix,const char *exe)
     struct ker_generation_identity id1={.session=TEST_SESSION,.epoch=8,.slot=2,.generation=1,.process=0,.pid=(uint32_t)pids[1]};
     if(ker_generation_admit(r,&id1,pidfds[1]))FAIL_CHILDREN();
     if(parent_wait_stage(c,6,pids,2))FAIL_CHILDREN();
+    if(packet_lease_core_test(r,pool,&id0,&id1))FAIL_CHILDREN();
     struct ker_generation_cleanup_config cleanup={.version=KER_GENERATION_CLEANUP_CONFIG_VERSION,
         .size=sizeof(cleanup),.ports=1,.queues=2,.rx_queue_mask=0,.tx_queue_mask=1};
     unsigned rx_reclaimed=0,tx_reclaimed=0;
@@ -671,7 +734,7 @@ static int primary(const char *prefix,const char *exe)
         run_dequeue_crash_window(r,pool,file_prefix,exe,"cas")||
         run_dead_producer_tx(r,pool,file_prefix,exe))FAIL_CHILDREN();
     if(atomic_load(&c->failed)||rte_mempool_in_use_count(pool)!=0||
-        ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.tx_drop!=3||
+        ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.packet_full!=1||stats.packet_drop!=0||stats.tx_drop!=3||
         stats.rx_full!=1||stats.tx_peak<2||stats.rx_peak<KER_GENERATION_RING_CAPACITY)
         FAIL_CHILDREN();
     if(ker_generation_rings_destroy(r))FAIL_CHILDREN();
