@@ -61,9 +61,53 @@ find_library(ker_session_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} 
 if(NOT ker_session_ring_pmd)
     message(FATAL_ERROR "Resident packet sessions require the original net_ring PMD")
 endif()
-add_executable(ker-io-session src/posix/io-session.c src/posix/session-packet.c)
+add_executable(ker-io-session src/posix/io-session.c src/posix/session-packet.c src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c)
+target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
+if(BUILD_TESTING)
+    # Resolve fixture EAL drivers from the configured DPDK installation rather
+    # than assuming a developer prefix or PMD ABI-versioned filename.
+    get_filename_component(ker_session_pkgconfig_dir "${KER_DPDK_PKGCONFIG_DIR}" REALPATH)
+    file(GLOB ker_session_pmd_candidates LIST_DIRECTORIES TRUE
+        "${ker_session_pkgconfig_dir}/../dpdk/pmds-*")
+    set(ker_session_valid_pmd_dirs)
+    foreach(ker_session_pmd_candidate IN LISTS ker_session_pmd_candidates)
+        if(NOT IS_DIRECTORY "${ker_session_pmd_candidate}")
+            continue()
+        endif()
+        get_filename_component(ker_session_pmd_real "${ker_session_pmd_candidate}" REALPATH)
+        set(ker_session_pmd_valid TRUE)
+        foreach(ker_session_required_pmd mempool_ring net_ring)
+            set(ker_session_pmd_file "${ker_session_pmd_real}/librte_${ker_session_required_pmd}.so")
+            if(NOT EXISTS "${ker_session_pmd_file}" OR IS_DIRECTORY "${ker_session_pmd_file}")
+                set(ker_session_pmd_valid FALSE)
+                break()
+            endif()
+            get_filename_component(ker_session_pmd_file_real "${ker_session_pmd_file}" REALPATH)
+            if(NOT EXISTS "${ker_session_pmd_file_real}" OR IS_DIRECTORY "${ker_session_pmd_file_real}")
+                set(ker_session_pmd_valid FALSE)
+                break()
+            endif()
+            file(READ "${ker_session_pmd_file_real}" ker_session_pmd_magic LIMIT 4 HEX)
+            if(NOT ker_session_pmd_magic STREQUAL "7f454c46")
+                set(ker_session_pmd_valid FALSE)
+                break()
+            endif()
+        endforeach()
+        if(ker_session_pmd_valid)
+            list(APPEND ker_session_valid_pmd_dirs "${ker_session_pmd_real}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES ker_session_valid_pmd_dirs)
+    list(LENGTH ker_session_valid_pmd_dirs ker_session_pmd_dir_count)
+    if(NOT ker_session_pmd_dir_count EQUAL 1)
+        message(FATAL_ERROR
+            "Session fixtures require exactly one readable configured DPDK PMD directory containing unversioned librte_mempool_ring.so and librte_net_ring.so; searched ${ker_session_pkgconfig_dir}/../dpdk/pmds-*")
+    endif()
+    list(GET ker_session_valid_pmd_dirs 0 ker_session_pmd_dir)
+    target_compile_definitions(ker-io-session PRIVATE KER_SESSION_TEST_HOOKS=1)
+endif()
 target_link_libraries(ker-io-session PRIVATE PkgConfig::DPDK "${ker_session_ring_pmd}")
 target_link_options(ker-io-session PRIVATE -Wl,--disable-new-dtags)
 set_target_properties(ker-io-session PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}"
@@ -143,16 +187,29 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-lease-input.py"
             --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
     set_tests_properties(native-fstack-session-lease-input PROPERTIES TIMEOUT 30 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-dpdk-plugin-discovery
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-dpdk-plugin-discovery.py"
+            --configured-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-fstack-session-dpdk-plugin-discovery PROPERTIES TIMEOUT 10 LABELS "fstack;session"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_executable(ker-session-envelope-test tests/posix/session-envelope.c)
     target_include_directories(ker-session-envelope-test PRIVATE src/posix)
     target_compile_options(ker-session-envelope-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-session-envelope COMMAND ker-session-envelope-test)
     set_tests_properties(native-fstack-session-envelope PROPERTIES TIMEOUT 10 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-tc3-observer
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-tc3-observer.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-fstack-session-tc3-observer PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77 LABELS "fstack;session"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME native-fstack-session-native-packets
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-native-packets.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
-            --library "$<TARGET_FILE:ker-posix>" --app "$<TARGET_FILE:ker-exception-services-test>")
-    set_tests_properties(native-fstack-session-native-packets PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "fstack;session;native-tcp")
+            --library "$<TARGET_FILE:ker-posix>" --app "$<TARGET_FILE:ker-exception-services-test>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-fstack-session-native-packets PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "fstack;session;native-tcp"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME native-fstack-session-standby
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-standby.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
@@ -303,11 +360,7 @@ if(BUILD_TESTING)
     target_compile_options(ker-host-runtime-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-host-runtime COMMAND ker-host-runtime-test)
     set_tests_properties(native-fstack-host-runtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
-    file(GLOB ker_exception_ring_pmds "${KER_DPDK_PKGCONFIG_DIR}/../dpdk/pmds-*/librte_net_ring.so")
-    if(NOT ker_exception_ring_pmds)
-        message(FATAL_ERROR "Exception ownership acceptance requires original net_ring PMD")
-    endif()
-    list(GET ker_exception_ring_pmds 0 ker_exception_ring_pmd)
+    set(ker_exception_ring_pmd "${ker_session_pmd_dir}/librte_net_ring.so")
     add_executable(ker-exception-tap-test tests/posix/exception-tap.c
         src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/worker-mbuf.c src/posix/pcap.c)
     target_include_directories(ker-exception-tap-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")

@@ -130,6 +130,13 @@ owner 仍为原持有者。原应用完成并退出后，待机的同一 PID/EAL
 授权，再执行独立 host 对 original Linux 的 IPv4/IPv6 TCP4097、UDP512
 收发和 MTU 回滚；第二次退出后要求全部511原始对象归还。
 
-这是完整应用退出后的设备接管，不保证旧 TCP 连接延续。源 TC-3 仍为 partial：
-跨代 dispatch/drain 和实际 exception-owner 路由/授权一致性尚未覆盖，不能用
-PMD admission 数值替代 source KNI-owner 契约。
+这是完整应用退出后的设备接管，不保证旧 TCP 连接延续。TC-3 的同代双 master、
+single-consumer observer 场景已由 barrier fixture 做 bounded scenario adaptation；
+paired profile 也验证 resident 将实际 exception endpoint 与固定 packet queues 绑定到
+同一个 authenticated owner key，并由获授权 secondary 在 polling 前核对两者。
+这只证明当前 adapter 的 owner agreement，不代表 F-Stack KNI ABI 等价。跨代
+packet dispatch/drain、既有 flow continuity、物理设备 handover 和完整应用 reload
+仍未覆盖；不得把 observer 或 owner-key 检查扩大解释为这些行为已经完成。
+
+
+In the paired profile, the resident binds the session wire/exception endpoint to the same owner key as the fixed packet queues. The granted secondary checks both keys before polling and rejects a mismatch. The control resident does not relay packet data.
