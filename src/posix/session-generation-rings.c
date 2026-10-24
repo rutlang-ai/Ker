@@ -201,6 +201,12 @@ static void test_hold_dequeue_lease(void)
     if (!atomic_exchange_explicit(&test_hold_next_dequeue,0,memory_order_acq_rel)) return;
     static const char marker[]="KER_GENERATION_ACTIVE_DEQUEUE_HELD {}\n";
     (void)write(STDOUT_FILENO,marker,sizeof(marker)-1);
+#ifdef KER_SESSION_TEST_HOOKS
+    if (getenv("KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE")) {
+        (void)raise(SIGSTOP);
+        return;
+    }
+#endif
     const struct timespec nap={.tv_nsec=1000000};
     for (;;) nanosleep(&nap,NULL);
 }

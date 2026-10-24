@@ -448,6 +448,42 @@ static int bind_deferred_frame_peer(unsigned target_index)
     struct client *target=&clients[target_index];
     if(target->slot>=KER_SESSION_SLOTS||target->generation>=KER_SESSION_GENERATIONS||
         target->process>=KER_SESSION_PROCESSES||target->pidfd<0||!dead(target->pidfd))return 0;
+    /* A committed packet has no pending FRAME lease to bind.  The parked
+     * owner's immutable handoff tuple still identifies the exact live peer
+     * whose dequeue may have made the first dead-owner reap preflight busy. */
+    if(!target->frame_pending&&target->handoff_state==HANDOFF_PARKED&&
+        target->handoff_peer<CLIENTS) {
+        unsigned peer_index=target->handoff_peer;
+        struct client *peer=&clients[peer_index];
+        if(target->kind!=ATTACHED||!target->generation_admitted||
+            target->handoff_peer_pidfd<0||dead(target->handoff_peer_pidfd)||
+            target->handoff_peer_client_pidfd!=peer->pidfd||
+            peer->kind!=ATTACHED||peer->peer_only||!peer->generation_admitted||
+            dead(peer->pidfd)||peer->pid!=(pid_t)target->handoff_peer_pid||
+            peer->slot!=target->handoff_peer_slot||peer->generation!=target->handoff_peer_generation||
+            peer->process!=target->handoff_peer_process||slots[peer->slot].epoch!=target->handoff_peer_epoch||
+            peer->generation!=(target->generation^1U)||
+            atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)!=pmd_key(peer))return 0;
+        if(target->reap_deferred_peer_pidfd>=0) {
+            if(target->reap_deferred_peer_client!=peer_index||
+                target->reap_deferred_peer_pid!=peer->pid||target->reap_deferred_peer_is_producer||
+                dead(target->reap_deferred_peer_pidfd)||
+                !same_generation_identity(&target->reap_deferred_peer_identity,&(struct ker_generation_identity){
+                    .session=directory->session,.epoch=slots[peer->slot].epoch,.slot=peer->slot,
+                    .generation=peer->generation,.process=peer->process,.pid=(uint32_t)peer->pid}))return -EUCLEAN;
+            return 1;
+        }
+        int duplicate=fcntl(peer->pidfd,F_DUPFD_CLOEXEC,3);
+        if(duplicate<0)return -errno;
+        if(dead(duplicate)){close(duplicate);return 0;}
+        target->reap_deferred_peer_client=peer_index;
+        target->reap_deferred_peer_pid=peer->pid;
+        target->reap_deferred_peer_pidfd=duplicate;
+        target->reap_deferred_peer_is_producer=false;
+        target->reap_deferred_peer_identity=generation_identity(peer);
+        target->reap_deferred_attempts=0;
+        return 1;
+    }
     for(unsigned p=0;p<CLIENTS;p++) {
         struct client *producer=&clients[p];
         if(!producer->frame_pending || producer->frame_consumer_pidfd<0 ||
@@ -697,6 +733,10 @@ static int generation_frame_drain_control(char command, void *opaque)
 {
     struct generation_frame_drain_context *context=opaque;
 #ifdef KER_SESSION_TEST_HOOKS
+    if(command=='G'&&getenv("KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE"))
+        ker_generation_test_hold_next_dequeue();
+#endif
+#ifdef KER_SESSION_TEST_HOOKS
     if(command=='S'&&getenv("KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT")) {
         uint32_t tx=UINT32_MAX,pool=UINT32_MAX;struct ker_generation_test_counters counters;
         if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx,&pool)||
@@ -877,15 +917,37 @@ static int reclaim_control(unsigned index)
         }
 #ifdef KER_SESSION_TEST_HOOKS
         bool writing_death_test=getenv("KER_SESSION_TEST_FRAME_DEATH_CONSUMER_WRITING")!=NULL;
+        bool active_producer_death_test=getenv("KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER")!=NULL;
+        bool reap_defer_test=writing_death_test||active_producer_death_test;
         uint32_t tx_before=0,pool_before=0;
         struct ker_generation_test_counters counters_before;
-        if(writing_death_test&&ker_generation_test_tx_snapshot(generation_rings,0,0,0,
+        if(reap_defer_test&&ker_generation_test_tx_snapshot(generation_rings,0,0,0,
                 &tx_before,&pool_before))_Exit(125);
-        if(writing_death_test&&ker_generation_test_counters_snapshot(generation_rings,0,0,0,
+        if(reap_defer_test&&ker_generation_test_counters_snapshot(generation_rings,0,0,0,
                 &counters_before))_Exit(125);
 #endif
         int ready=ker_generation_reap_ready(generation_rings,&identity);
-        if(ready==-EBUSY)return -EBUSY;
+        if(ready==-EBUSY) {
+#ifdef KER_SESSION_TEST_HOOKS
+            if(reap_defer_test) {
+                uint32_t tx_after=0,pool_after=0;
+                struct ker_generation_test_counters counters_after;
+                if(ker_generation_test_tx_snapshot(generation_rings,0,0,0,&tx_after,&pool_after)||
+                    ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters_after)||
+                    tx_after!=tx_before||pool_after!=pool_before||
+                    !frame_test_counters_equal(&counters_before,&counters_after))_Exit(125);
+                printf("KER_SESSION_TEST_REAP_DEFERRED {\"client\":%u,\"pid\":%ld,\"generation\":%u,\"status\":%d,\"attempt\":1,\"full_reap_attempts\":0,\"preflight_only\":true,\"tx_before\":%u,\"tx_after\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu]}\n",
+                    index,(long)client->pid,client->generation,ready,tx_before,tx_after,pool_before,pool_after,
+                    (unsigned long long)counters_before.rx_full,(unsigned long long)counters_before.tx_full,
+                    (unsigned long long)counters_before.tx_drop,(unsigned long long)counters_before.packet_drop,
+                    (unsigned long long)counters_before.packet_full,(unsigned long long)counters_after.rx_full,
+                    (unsigned long long)counters_after.tx_full,(unsigned long long)counters_after.tx_drop,
+                    (unsigned long long)counters_after.packet_drop,(unsigned long long)counters_after.packet_full);
+                fflush(stdout);
+            }
+#endif
+            return -EBUSY;
+        }
         if(ready){
             fprintf(stderr,"ker session: generation packet journal readiness check failed: %d\n",ready);_Exit(125);
         }
@@ -900,7 +962,7 @@ static int reclaim_control(unsigned index)
                     ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters_after)||
                     tx_after!=tx_before||pool_after!=pool_before||
                     !frame_test_counters_equal(&counters_before,&counters_after))_Exit(125);
-                printf("KER_SESSION_TEST_REAP_DEFERRED {\"client\":%u,\"pid\":%ld,\"generation\":%u,\"status\":%d,\"attempt\":1,\"full_reap_attempts\":%u,\"tx_before\":%u,\"tx_after\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu]}\n",
+                printf("KER_SESSION_TEST_REAP_DEFERRED {\"client\":%u,\"pid\":%ld,\"generation\":%u,\"status\":%d,\"attempt\":1,\"full_reap_attempts\":%u,\"preflight_only\":false,\"tx_before\":%u,\"tx_after\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu]}\n",
                     index,(long)client->pid,client->generation,result,client->reap_full_attempts,tx_before,tx_after,pool_before,pool_after,
                     (unsigned long long)counters_before.rx_full,(unsigned long long)counters_before.tx_full,
                     (unsigned long long)counters_before.tx_drop,(unsigned long long)counters_before.packet_drop,
@@ -1359,6 +1421,16 @@ static void reap_clients(void)
                         continue;
                     }
                     if(reap)_Exit(125);
+#ifdef KER_SESSION_TEST_HOOKS
+                    if(getenv("KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER")) {
+                        uint32_t tx=UINT32_MAX,pool=UINT32_MAX;
+                        struct ker_generation_test_counters counters;
+                        if(ker_generation_test_tx_snapshot(generation_rings,0,0,0,&tx,&pool)||tx||pool||
+                            ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters))_Exit(125);
+                        printf("KER_SESSION_TEST_REAP_COMPLETED {\"client\":%u,\"status\":0,\"full_reap_attempts\":%u,\"tx_after\":%u,\"pool_after\":%u,\"pidfd_dead\":%s}\n",
+                            i,clients[i].reap_full_attempts,tx,pool,dead(clients[i].pidfd)?"true":"false");fflush(stdout);
+                    }
+#endif
                     if (clients[i].kind == ATTACHED && !clients[i].drain_mode) {
                         slots[clients[i].slot].worker_pid[clients[i].generation][clients[i].process] = 0;
                         slots[clients[i].slot].worker_heartbeat_ms[clients[i].generation][clients[i].process] = 0;

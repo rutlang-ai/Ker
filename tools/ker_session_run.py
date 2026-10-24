@@ -107,6 +107,18 @@ def validate_interrupted_cleanup(worker_code, packet_stats, *, packet_expected=T
     return 'signal-terminated'
 
 
+def validate_frame_committed_record(record, payload):
+    """Validate the actual FRAME_COMMITTED schema; sequence is not in this reply."""
+    if (not isinstance(record, dict) or record.get('queue') != 0 or record.get('generation') != 0 or
+            not isinstance(record.get('object_index'), int) or record.get('object_index') < 0 or
+            not isinstance(record.get('pool_tag'), int) or record.get('pool_tag') <= 0 or
+            not isinstance(record.get('packet_pointer'), str) or not record['packet_pointer'] or
+            not isinstance(record.get('length'), int) or record.get('length') < 14 or
+            not isinstance(record.get('frame_hex'), str) or payload.hex() not in record['frame_hex']):
+        raise RuntimeError('parked original LKL endpoint did not commit the exact second UDP frame')
+    return record
+
+
 def validate_handoff_peer_cleanup(metrics, peer_present, peer_code, peer_packet_stats):
     """Require packet completion only after validated handoff ownership."""
     if not peer_present:
@@ -139,7 +151,7 @@ def run_session(args, api):
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
-    handoff_modes = {'positive', 'frame-positive', 'frame-full', 'frame-death-prepared', 'frame-death-queued', 'frame-death-consumer-prepared', 'frame-death-consumer-writing', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    handoff_modes = {'positive', 'frame-positive', 'frame-full', 'frame-death-prepared', 'frame-death-queued', 'frame-death-producer-active-consumer', 'frame-death-consumer-prepared', 'frame-death-consumer-writing', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
         'handoff-control-hup',
         'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
         'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
@@ -269,6 +281,9 @@ def run_session(args, api):
             peer_environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
         if os.environ.get('KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT') == '1':
             peer_environment['KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT']='1'
+        if os.environ.get('KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER') == '1':
+            peer_environment['KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER']='1'
+            peer_environment['KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE']='1'
         peer_arguments.extend(['--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)])
         peer_worker = subprocess.Popen(peer_arguments,
@@ -483,7 +498,7 @@ def run_session(args, api):
             publish()
             raise RuntimeError('resident failed closed after the expected invalid QUIESCED')
         if handoff_mode not in (None, 'positive', 'frame-positive', 'frame-full',
-                'frame-death-prepared','frame-death-queued','frame-death-consumer-prepared',
+                'frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer','frame-death-consumer-prepared',
                 'frame-death-consumer-writing'):
             raise RuntimeError('test handoff mode is not a fatal profile')
         parked = wait_marker(worker, 'KER_SESSION_PMD_PARKED')
@@ -729,7 +744,7 @@ def run_session(args, api):
         def trigger_handoff_udp():
             nonlocal handoff_udp_sequence, frame_death_complete, frame_death_worker_expected_code, peer_control_w
             if handoff_mode not in ('frame-positive','frame-full','frame-death-prepared',
-                    'frame-death-consumer-prepared','frame-death-consumer-writing') or app is None or app_pidfd < 0 or app.poll() is not None:
+                    'frame-death-producer-active-consumer','frame-death-consumer-prepared','frame-death-consumer-writing') or app is None or app_pidfd < 0 or app.poll() is not None:
                 raise RuntimeError('UDP handoff trigger is available only for the live positive app')
             sequence = handoff_udp_sequence + 1
             if (sequence == 1 and handoff_udp_ready) or (sequence == 2 and not handoff_udp_ready):
@@ -917,10 +932,58 @@ def run_session(args, api):
                     commit_cancel=full,drain=drained_full)
                 publish();return
             committed = ready('KER_SESSION_FRAME_COMMITTED')
-            if (committed.get('queue') != 0 or committed.get('generation') != 0 or
-                committed.get('packet_pointer') is None or committed.get('object_index') is None or
-                committed.get('pool_tag') is None or payload.hex() not in committed.get('frame_hex', '')):
-                raise RuntimeError('parked original LKL endpoint did not commit the exact second UDP frame')
+            validate_frame_committed_record(committed,payload)
+            if handoff_mode=='frame-death-producer-active-consumer':
+                if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
+                    raise RuntimeError('could not start live consumer dequeue before producer death')
+                ready('KER_GENERATION_ACTIVE_DEQUEUE_HELD',process=peer_worker)
+                wait_pidfd_process_stopped(peer_worker_pidfd,peer_worker.pid)
+                if select.select([peer_worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('active live consumer pidfd became readable before producer death')
+                signal.pidfd_send_signal(worker_pidfd,signal.SIGKILL)
+                dead_output,_=worker.communicate(timeout=10)
+                if worker.returncode!=-signal.SIGKILL or not select.select([worker_pidfd],[],[],0)[0]:
+                    raise RuntimeError('active-dequeue producer did not die on its captured pidfd')
+                metrics['handoff_frame_death_waiting']=dict(stage='producer-dead-active-consumer',
+                    producer_pid=worker.pid,consumer_pid=peer_worker.pid,producer_status=worker.returncode,
+                    producer_pidfd_dead=True,consumer_pidfd_dead=False,committed=committed,
+                    producer_output=dead_output.decode(errors='replace'))
+                publish()
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    readable,_,_=select.select([handoff_fd],[],[],0.05)
+                    if readable:
+                        if os.read(handoff_fd,1)!=b'R':
+                            raise RuntimeError('invalid active-consumer recovery continuation')
+                        break
+                    if app.poll() is not None:raise RuntimeError('application exited during active-consumer recovery')
+                else:raise RuntimeError('fixture did not release the active consumer after checking EBUSY')
+                signal.pidfd_send_signal(peer_worker_pidfd,signal.SIGCONT)
+                drained=ready('KER_SESSION_FRAME_DRAINED',process=peer_worker)
+                for field in ('object_index','pool_tag','packet_pointer','length','frame_hex'):
+                    if drained.get(field)!=committed.get(field):
+                        raise RuntimeError('active consumer changed committed packet '+field)
+                if (drained.get('sequence')!=2 or drained.get('tx_before')!=1 or drained.get('tx_after')!=0 or
+                    drained.get('pool_in_use_after')+1!=drained.get('pool_in_use_before')):
+                    raise RuntimeError('active consumer did not release the exact in-flight packet')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    census_connection=api.Connection(args.socket)
+                    try:census=census_connection.request(api.STATUS);owner=census_connection.request(api.PMD_STATUS)
+                    finally:census_connection.close()
+                    if census.get('process')==1 and census.get('slot')==1:break
+                    time.sleep(0.02)
+                else:raise RuntimeError('readiness timer did not reap producer after active packet release')
+                if owner.get('token')!=expected_key or owner.get('generation')!=1 or peer_worker.poll() is not None:
+                    raise RuntimeError('active-consumer recovery changed surviving peer PMD owner')
+                metrics['handoff_frame_death']=dict(stage='producer-active-consumer',
+                    producer_pid=worker.pid,consumer_pid=peer_worker.pid,
+                    producer_status=worker.returncode,consumer_status=None,consumer_still_live=peer_worker.poll() is None,
+                    producer_pidfd_dead=True,committed=committed,drain=drained,final_census=census,
+                    final_owner=owner,producer_output=dead_output.decode(errors='replace'))
+                frame_death_complete=True
+                frame_death_worker_expected_code=-signal.SIGKILL
+                metrics['stage']='handoff-complete';publish();return
             if peer_control_w < 0 or os.write(peer_control_w, b'G') != 1:
                 raise RuntimeError('could not request exact admitted-peer TX journal drain')
             drained = ready('KER_SESSION_FRAME_DRAINED', process=peer_worker)
@@ -956,7 +1019,7 @@ def run_session(args, api):
                         trigger_handoff_udp()
                     elif data == b'H':
                         if handoff_mode not in ('frame-positive','frame-full','frame-death-prepared',
-                                'frame-death-consumer-prepared'):
+                                'frame-death-producer-active-consumer','frame-death-consumer-prepared'):
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
                     else:
