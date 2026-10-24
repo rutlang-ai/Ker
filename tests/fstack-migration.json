@@ -927,7 +927,7 @@
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Three real master/secondary chains remain simultaneously alive and are gated before shared control exchange; different epoch/slot/ring identities, payload isolation and ordered replies are verified.",
+      "reason": "Distinct real master/secondary chains remain simultaneously alive with different epoch/slot/control-ring identities and one actual PMD consumer. A paired-device standby stays attached without a native app or device data leases; after exact owner death it acquires in the same PID/EAL/epoch and carries independent original-Linux IPv4/IPv6 TCP4097/UDP512 traffic. Queued SIGINT (130) and SIGTERM (143) cancellation reap the actual secondary without application creation or leaked control objects; SIGTERM control-only standby reports no packet completion while the original owner census remains unchanged.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-registration",
@@ -936,9 +936,13 @@
         {
           "ctest": "native-fstack-session-standby",
           "provenance_case": "native-fstack-session-standby"
+        },
+        {
+          "ctest": "native-fstack-session-native-packets",
+          "provenance_case": "native-fstack-session-native-packets"
         }
       ],
-      "remaining": "Two distinct master/secondary chains now remain live through synchronized samples, agree on one actual PMD owner, and the nonowner stays attached without data polling. Frozen-orphan exclusion and same-PID standby takeover are qualified. A single granted directional ring-PMD worker now carries actual original-Linux packets. Cross-generation fixed dispatch/drain and exception/KNI-owner agreement still lack their implemented routing/admission paths; the current PMD grant must not stand in for that exception-owner assertion."
+      "remaining": "Fixed cross-generation dispatch/drain and actual exception-owner routing/admission agreement remain unimplemented. Same-PID paired-device takeover after complete application exit does not preserve old TCP connections or qualify the source KNI-owner assertion. TC-3 remains partial."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",

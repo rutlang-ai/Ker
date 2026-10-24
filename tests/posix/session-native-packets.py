@@ -104,7 +104,7 @@ def main():
         except BaseException as error: errors.append(str(error)); stop.set()
 
     thread = threading.Thread(target=bridge); thread.start()
-    primary = app = None
+    primary = app = standby = None
     with tempfile.TemporaryDirectory(prefix='ker-session-packets-') as directory:
         root = Path(directory); path = root / 'control.sock'; stats_path = root / 'stats.json'
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
@@ -121,7 +121,6 @@ def main():
                 '--library', str(args.library), '--stats', str(stats_path), '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
                 '--', str(args.app), '--fixed-mtu'], pass_fds=(endpoint.fileno(),),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
-            endpoint.close()
             require(line(app) == 'READY', 'original Linux application did not start')
             initial = json.loads(stats_path.read_text())
             attached, grant, geometry = (initial[key] for key in ('attached', 'grant', 'geometry'))
@@ -160,26 +159,149 @@ def main():
             finally:
                 spare.close()
                 if rejected.poll() is None: rejected.kill(); rejected.wait()
-            app.stdin.write(b'G'); app.stdin.flush()
-            payload = bytes((i * 17 + (i >> 8)) & 255 for i in range(4097))
-            for family, address in ((socket.AF_INET, '198.18.0.2'), (socket.AF_INET6, '2001:db8:1::2')):
-                with socket.socket(family, socket.SOCK_STREAM) as client:
-                    client.settimeout(10); client.connect((address, 45000)); client.sendall(payload)
-                    data = bytearray()
-                    while True:
-                        chunk = client.recv(8192)
-                        if not chunk: break
-                        data.extend(chunk)
-                    require(bytes(data) == b'NATIVE:' + payload, 'native TCP bytes/EOF differ')
-                with socket.socket(family, socket.SOCK_DGRAM) as client:
-                    client.settimeout(10); client.sendto(payload[:512], (address, 45000))
-                    data, peer = client.recvfrom(8192)
-                    require(data == b'NATIVE:' + payload[:512] and peer[0] == address, 'native UDP reply/peer differ')
-            require(line(app) == 'NATIVE_DONE', 'native MTU rollback/service completion failed')
-            app.stdin.write(b'Q'); app.stdin.flush()
+            standby_stats = root / 'standby.json'
+            standby_marker = root / 'standby-app-spawn'
+            standby = subprocess.Popen([sys.executable, str(args.tool), 'run', *common, '--standby',
+                '--wire-fd', str(endpoint.fileno()), '--library', str(args.library),
+                '--stats', str(standby_stats), '--address6', '2001:db8:1::2/64',
+                '--', str(args.app), '--fixed-mtu'], pass_fds=(endpoint.fileno(),),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment | {'PYTHONPATH': str(trace), 'KER_TEST_APP_SPAWN_MARKER': str(standby_marker)}, bufsize=0)
+            endpoint.close()
+            deadline = time.monotonic() + 20
+            while True:
+                waiting = json.loads(standby_stats.read_text()) if standby_stats.exists() else {}
+                if waiting.get('stage') == 'standby' and waiting.get('standby_samples', 0) >= 5: break
+                require(standby.poll() is None and time.monotonic() < deadline, 'real paired standby did not stay attached')
+                time.sleep(0.02)
+            pending = waiting['attached']
+            require(not waiting['app_started'] and not standby_marker.exists() and
+                pending['pid'] != attached['pid'] and pending['master'] != attached['master'] and
+                pending['epoch'] != attached['epoch'] and pending['slot'] != attached['slot'] and
+                pending['rings'] != attached['rings'], 'standby launched an app or reused the owner namespace')
+            connection = api.Connection(path)
+            try:
+                owner = connection.request(api.PMD_STATUS)
+                census = connection.request(api.STATUS)
+                require(owner['epoch'] == attached['epoch'] and owner['slot'] == attached['slot'] and
+                    census['generation'] == 507 and census['token'] == 4 and census['process'] == 2,
+                    'standby acquired data leases or displaced a live owner')
+            finally: connection.close()
+            require(not select.select([standby.stdout], [], [], 0)[0], 'standby application produced output before admission')
+
+            # Interrupt another real queued master. It must reap the actual
+            # secondary without ever creating an application or data lease.
+            spare, canceled_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            canceled_stats = root / 'canceled.json'
+            canceled_marker = root / 'canceled-app-spawn'
+            canceled = subprocess.Popen([sys.executable, str(args.tool), 'run', *common, '--standby',
+                '--wire-fd', str(canceled_endpoint.fileno()), '--library', str(args.library),
+                '--stats', str(canceled_stats), '--', str(args.app)], pass_fds=(canceled_endpoint.fileno(),),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment | {'PYTHONPATH': str(trace), 'KER_TEST_APP_SPAWN_MARKER': str(canceled_marker)}, bufsize=0)
+            canceled_endpoint.close()
+            canceled_pidfd = -1
+            try:
+                deadline = time.monotonic() + 20
+                while True:
+                    queued = json.loads(canceled_stats.read_text()) if canceled_stats.exists() else {}
+                    if queued.get('stage') == 'standby' and queued.get('standby_samples', 0) >= 3: break
+                    require(canceled.poll() is None and time.monotonic() < deadline, 'cancel fixture never queued')
+                    time.sleep(0.02)
+                canceled_pidfd = os.pidfd_open(queued['attached']['pid'])
+                canceled.send_signal(signal.SIGINT)
+                canceled_output, canceled_errors = canceled.communicate(timeout=10)
+                require(canceled.returncode == 130 and not canceled_output and not canceled_marker.exists() and
+                    select.select([canceled_pidfd], [], [], 0)[0],
+                    'queued cancellation launched an app or left its real worker alive: ' + canceled_errors.decode())
+                deadline = time.monotonic() + 5
+                while True:
+                    connection = api.Connection(path)
+                    try: census = connection.request(api.STATUS)
+                    finally: connection.close()
+                    if census['generation'] == 507 and census['token'] == 4 and census['process'] == 2: break
+                    require(time.monotonic() < deadline, 'queued cancellation leaked its control lease')
+                    time.sleep(0.02)
+            finally:
+                spare.close()
+                if canceled_pidfd >= 0: os.close(canceled_pidfd)
+                if canceled.poll() is None: canceled.kill(); canceled.wait()
+            # SIGTERM while queued owns only its control lease: no packet
+            # completion is expected until the PMD grant and packet loop exist.
+            queued_trace = root / 'queued-signal-trace'; queued_trace.mkdir()
+            (queued_trace / 'sitecustomize.py').write_text(
+                'import os, subprocess\nfrom pathlib import Path\n_original = subprocess.Popen\n'
+                'def record(*values, **options):\n'
+                ' command = values[0] if values else options.get("args")\n'
+                ' if isinstance(command, (list, tuple)) and command and Path(command[0]).name == "ker-app":\n'
+                '  Path(os.environ["KER_TEST_APP_SPAWN_MARKER"]).write_text("spawned")\n'
+                ' return _original(*values, **options)\nsubprocess.Popen = record\n')
+            spare, queued_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            queued_stats = root / 'queued-sigterm.json'
+            queued_marker = root / 'queued-sigterm-app-spawn'
+            queued_term = subprocess.Popen([sys.executable, str(args.tool), 'run', *common, '--standby',
+                '--wire-fd', str(queued_endpoint.fileno()), '--library', str(args.library),
+                '--stats', str(queued_stats), '--', str(args.app)], pass_fds=(queued_endpoint.fileno(),),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment | {'PYTHONPATH': str(queued_trace),
+                    'KER_TEST_APP_SPAWN_MARKER': str(queued_marker)}, bufsize=0)
+            queued_endpoint.close()
+            queued_pidfd = -1
+            try:
+                deadline = time.monotonic() + 20
+                while True:
+                    queued = json.loads(queued_stats.read_text()) if queued_stats.exists() else {}
+                    if queued.get('stage') == 'standby' and queued.get('standby_samples', 0) >= 3: break
+                    require(queued_term.poll() is None and time.monotonic() < deadline,
+                        'SIGTERM fixture never reached control-only standby')
+                    time.sleep(0.02)
+                queued_pidfd = os.pidfd_open(queued['attached']['pid'])
+                queued_term.send_signal(signal.SIGTERM)
+                queued_output, queued_errors = queued_term.communicate(timeout=10)
+                queued = json.loads(queued_stats.read_text())
+                require(queued_term.returncode == 143 and not queued_output and not queued_marker.exists() and
+                    queued['stage'] == 'interrupted' and queued['signal'] == signal.SIGTERM and
+                    not queued['app_started'] and queued['packet'] is None and queued['worker_code'] == 0 and
+                    queued['app_code'] is None and select.select([queued_pidfd], [], [], 0)[0] and
+                    b'KER_SESSION_PACKET_DONE' not in queued_errors,
+                    'queued SIGTERM launched an app or reported packet activity: ' + repr(queued) + queued_errors.decode())
+                connection = api.Connection(path)
+                try:
+                    owner = connection.request(api.PMD_STATUS)
+                    census = connection.request(api.STATUS)
+                    require(owner['epoch'] == attached['epoch'] and owner['slot'] == attached['slot'] and
+                        census['generation'] == 507 and census['token'] == 4 and census['process'] == 2,
+                        'queued SIGTERM changed original PMD ownership or leaked its control lease')
+                finally: connection.close()
+                print('PASS: queued SIGTERM returns143 with no app/packet activity and restores only the control lease')
+            finally:
+                spare.close()
+                if queued_pidfd >= 0: os.close(queued_pidfd)
+                if queued_term.poll() is None: queued_term.kill(); queued_term.wait()
+            print('CHECK: live paired standby and canceled standby have no native application', flush=True)
+
+            def exchange_native(process):
+                process.stdin.write(b'G'); process.stdin.flush()
+                payload = bytes((i * 17 + (i >> 8)) & 255 for i in range(4097))
+                for family, address in ((socket.AF_INET, '198.18.0.2'), (socket.AF_INET6, '2001:db8:1::2')):
+                    with socket.socket(family, socket.SOCK_STREAM) as client:
+                        client.settimeout(10); client.connect((address, 45000)); client.sendall(payload)
+                        data = bytearray()
+                        while True:
+                            chunk = client.recv(8192)
+                            if not chunk: break
+                            data.extend(chunk)
+                        require(bytes(data) == b'NATIVE:' + payload, 'native TCP bytes/EOF differ')
+                    with socket.socket(family, socket.SOCK_DGRAM) as client:
+                        client.settimeout(10); client.sendto(payload[:512], (address, 45000))
+                        data, peer = client.recvfrom(8192)
+                        require(data == b'NATIVE:' + payload[:512] and peer[0] == address, 'native UDP reply/peer differ')
+                require(line(process) == 'NATIVE_DONE', 'native MTU rollback/service completion failed')
+                process.stdin.write(b'Q'); process.stdin.flush()
+
+            exchange_native(app)
+            print('CHECK: first original Linux generation completed real TCP/UDP traffic', flush=True)
             output, stderr = app.communicate(timeout=20)
-            stop.set(); thread.join(timeout=3)
-            require(not thread.is_alive(), 'external Ethernet bridge did not stop')
             require(app.returncode == 0, 'packet-session application failed: ' + output.decode() + stderr.decode())
             require(b'PASS: original native IPv4/IPv6 TCP/UDP services' in output, 'native application proof absent')
             finished = json.loads(stats_path.read_text())
@@ -190,11 +312,36 @@ def main():
             require(native['passive_opens'] >= 2 and native['udp_in_datagrams'] >= 1 and native['udp_out_datagrams'] >= 1 and
                 native['udp6_in_datagrams'] >= 1 and native['udp6_out_datagrams'] >= 1 and native['buffers_live'] == 0,
                 'traffic bypassed original Linux or retained native buffers')
+            require(line(standby) == 'READY', 'retained standby did not start a real original Linux application')
+            admitted = json.loads(standby_stats.read_text())
+            require(admitted['attached'] == pending and admitted['grant']['pid'] == pending['pid'] and
+                admitted['grant']['epoch'] == pending['epoch'] and standby_marker.exists(),
+                'takeover restarted the standby PID/EAL/epoch or skipped the real application launch')
+            connection = api.Connection(path)
+            try:
+                owner = connection.request(api.PMD_STATUS)
+                census = connection.request(api.STATUS)
+                require(owner['epoch'] == pending['epoch'] and owner['slot'] == pending['slot'] and
+                    census['generation'] == 508 and census['token'] == 3 and census['process'] == 1,
+                    'takeover did not transfer exactly the two journaled device objects')
+            finally: connection.close()
+            exchange_native(standby)
+            print('CHECK: same-PID retained standby completed real TCP/UDP traffic', flush=True)
+            standby_output, standby_errors = standby.communicate(timeout=20)
+            require(standby.returncode == 0 and b'PASS: original native IPv4/IPv6 TCP/UDP services' in standby_output,
+                'native traffic after same-PID takeover failed: ' + standby_errors.decode())
+            taken = json.loads(standby_stats.read_text())
+            require(taken['stage'] == 'finished' and taken['packet']['tx'] > 0 and taken['packet']['rx'] > 0 and
+                taken['native']['passive_opens'] >= 2 and taken['native']['udp_in_datagrams'] >= 1 and
+                taken['native']['udp6_in_datagrams'] >= 1 and taken['native']['buffers_live'] == 0,
+                'takeover traffic bypassed original PMD/Linux or left native buffers')
+            stop.set(); thread.join(timeout=3)
+            require(not thread.is_alive(), 'external Ethernet bridge did not stop')
             connection = api.Connection(path)
             try:
                 census = connection.request(api.STATUS)
                 require(census['generation'] == 511 and census['token'] == 0 and census['process'] == 0,
-                    'original control/TX/RX objects not returned after exact secondary death')
+                    'original control/TX/RX objects not returned after both exact secondary deaths')
             finally: connection.close()
             protocols = set()
             for direction, frame in frames:
@@ -389,12 +536,17 @@ def main():
             print('PASS: real competing secondary never launches an application; actual worker loss returns125 and restores all original objects')
             print('PASS: app-owned SIGTERM reaches native DONE; launcher reports143, reaps exact children, worker packet status0 and native buffers0')
             print('PASS: resident SIGTERM closes registration, worker exits before five second deadline, resident drains, launcher reports125')
+            print('PASS: retained paired standby keeps the same actual PID/EAL/epoch and carries real native TCP/UDP after admission')
             print('PASS: source A4 primary precreates all128 coordinate rings and one original network port before actual secondary lookup')
         finally:
             if app is not None and app.poll() is None:
                 app.terminate()
                 try: app.wait(timeout=10)
                 except subprocess.TimeoutExpired: app.kill(); app.wait()
+            if standby is not None and standby.poll() is None:
+                standby.terminate()
+                try: standby.wait(timeout=10)
+                except subprocess.TimeoutExpired: standby.kill(); standby.wait()
             if primary is not None and primary.poll() is None:
                 primary.terminate()
                 try: primary.wait(timeout=10)

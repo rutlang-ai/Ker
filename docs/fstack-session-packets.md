@@ -106,6 +106,30 @@ resident epoch/slot0。实际 secondary 再验证全部128对象，并使用该�
 这不声明 F-Stack ring-name/FreeBSD ABI，也不声明完整 reload dispatcher。
 
 已完成单消费者 kernel packet delivery；cross-generation dispatch/drain、
-exception/KNI-owner 协调、paired profile 的 live standby、排队中 driver 故障
+exception/KNI-owner 协调、排队中 driver 故障
 注入、物理设备和完整应用 reload 仍在 #218 下继续跟踪。不能把普通程序重启
 当作保留旧 TCP 连接的 graceful reload。
+
+## 保持真实连接的待机接管
+
+`ker-session run --paired-pmd --standby` 会让被拒绝的真实 EAL secondary 保持
+连接。它只借用自己的 control 对象，不访问 PMD 数据队列，也不启动 native
+应用。supervisor 以一问一答的控制请求重试 admission；每次只有一个未完成
+请求，避免取得授权后遗留的控制字节误停 packet loop。`--stats` 在等待期间
+报告 `stage=standby`、`app_started=false` 和实际 worker 身份。
+
+resident 仍只在原持有者 exact pidfd 死亡、队列回收并检查 journal 后转交授权。
+取得授权的仍是同一 PID、EAL attachment、epoch 和 slot；它随后验证两个
+数据 lease、进入原始 PMD 收发循环，supervisor 才启动 original Linux 应用。
+standby 等待没有累计 admission 超时；每次控制请求仍有超时和 resident 死亡
+检查，用户中断会回收待机进程。实际排队取消分别覆盖 SIGINT 状态130 和 SIGTERM 状态143；后者要求 worker0、无 packet completion、未启动应用、exact pidfd 死亡、control lease 回收且原消费者 census 不变。未指定 `--standby` 的忙设备仍返回125。
+
+运行时验收让两个不同 master/secondary 同时存活，观察至少五次 busy 结果，
+确认待机没有创建 `ker-app`，仅多占一个 control 对象，resident 的实际设备
+owner 仍为原持有者。原应用完成并退出后，待机的同一 PID/EAL/epoch 取得
+授权，再执行独立 host 对 original Linux 的 IPv4/IPv6 TCP4097、UDP512
+收发和 MTU 回滚；第二次退出后要求全部511原始对象归还。
+
+这是完整应用退出后的设备接管，不保证旧 TCP 连接延续。源 TC-3 仍为 partial：
+跨代 dispatch/drain 和实际 exception-owner 路由/授权一致性尚未覆盖，不能用
+PMD admission 数值替代 source KNI-owner 契约。
