@@ -88,3 +88,23 @@ configured here, no packets or ring tokens are exchanged, no epochs/generations
 exist, and no original Linux application networking or graceful reload runs.
 All79generation cases remain blocked until their actual implementation and
 acceptance evidence exist.
+
+
+## Production registration acceptance
+
+The subsequent [registration implementation](fstack-session-registration.md)
+uses this guest profile to run the production `ker-io-session` binary and
+`ker-session` frontend with the checked-in
+`tests/posix/session-registration.py`. Unlike the small diagnostic above, it
+creates all 96 rings and tests three simultaneously live master/secondary
+chains, live-borrower retention after master death and monotonic epoch reuse.
+It also deliberately stops an attached secondary and verifies that resident
+shutdown refuses to free its live EAL references. The test waits for actual
+kernel stopped state before requesting that shutdown; merely sending SIGSTOP
+is not proof the secondary has stopped.
+
+A successful run must finish the complete test, including cleanup of exact
+test-owned backing files after process-death proof, report test exit 0 and
+`GUEST_SESSION_REGISTRATION_PASS`, and power down normally. Host CTest may
+still skip for lack of hugepages. Registration does not qualify PMD or packet
+transport, and all 79 actionable #218 source cases remain blocked.

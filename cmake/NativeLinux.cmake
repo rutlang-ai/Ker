@@ -55,6 +55,17 @@ set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 
 add_executable(ker-app src/posix/app-guard.c)
 set(ker_io_worker_sources src/posix/worker-rx-lcores.c src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)
 add_executable(ker-io-worker ${ker_io_worker_sources})
+# Separate registration-only EAL session. This does not enable secondary mode
+# in the existing packet worker or advertise application reload support.
+add_executable(ker-io-session src/posix/io-session.c)
+target_compile_features(ker-io-session PRIVATE c_std_11)
+target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ker-io-session PRIVATE PkgConfig::DPDK)
+target_link_options(ker-io-session PRIVATE -Wl,--disable-new-dtags)
+set_target_properties(ker-io-session PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}"
+    INSTALL_RPATH "${DPDK_LIBRARY_DIRS}")
+install(TARGETS ker-io-session RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS tools/ker-session.py DESTINATION ${CMAKE_INSTALL_BINDIR} RENAME ker-session)
 foreach(native_target ker-posix ker-app ker-io-worker)
     target_compile_features(${native_target} PRIVATE c_std_11)
     target_compile_options(${native_target} PRIVATE -Wall -Wextra -Werror)
@@ -123,6 +134,18 @@ endif()
 install(FILES "${ker_native_source}/COPYING" "${ker_native_source}/LICENSES/preferred/GPL-2.0"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux)
 if(BUILD_TESTING)
+    add_test(NAME native-fstack-session-lease-input
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-lease-input.py"
+            --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-lease-input PROPERTIES TIMEOUT 30 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-registration
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-registration.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    add_test(NAME native-fstack-hugepage-preflight
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_hugepage_preflight.py")
+    set_tests_properties(native-fstack-hugepage-preflight PROPERTIES LABELS "fstack;session")
+    set_tests_properties(native-fstack-session-registration PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        LABELS "fstack;session")
     add_executable(ker-packet-device-test tests/posix/fstack-packet-device.c src/posix/packet-device.c)
     target_include_directories(ker-packet-device-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-packet-device-test SYSTEM PRIVATE

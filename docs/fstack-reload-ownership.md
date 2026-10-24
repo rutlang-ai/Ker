@@ -5,6 +5,12 @@ not a supported reload feature or test-pass claim. Its original 81 source cases 
 The retained tests are authoritative; proposed Ker mechanisms below still need
 implementation and runtime qualification.
 
+The first executable prerequisite now exists as a separate
+[resident EAL registration stage](fstack-session-registration.md): it precreates
+bounded shared rings and attaches real secondaries under live master epochs.
+It does not yet implement packet transport, PMD ownership, generation handover
+or application reload, so the source-case disposition above is unchanged.
+
 ## Existing boundary and implementation choice
 
 At baseline `6c032bb42c3286faeafee7940fe900d38ba472b9`,
