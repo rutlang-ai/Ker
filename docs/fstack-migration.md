@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 175 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 178 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 171 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 168 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 13 | FreeBSD callout、kqueue filter、mbuf 头及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 258 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 190 项是
-19 partial + 171 blocked，另有 13 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 255 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 187 项是
+19 partial + 168 blocked，另有 13 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -67,7 +67,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
 | Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
-| Adapt typed vdev, bond and multi-port configuration | 6 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
+| Adapt typed vdev, bond and multi-port configuration | 3 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
 | Resolve remaining typed configuration and intentional schema differences | 18 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
@@ -133,7 +133,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 28 | 9 | 59 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 31 | 9 | 56 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 2 | 59 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 15 | 0 | 10 | 0 | 0 |
@@ -1154,3 +1154,23 @@ Linux/LKL 的 task/TLS 和 void-start、handle-only join ABI 不表达这些合�
 三项改列架构专用，删除歧义 pass 映射；不添加无消费者的 FreeBSD 模拟层。
 175项已适配数不变，清单为19 partial、171 blocked、13架构专用、55 harness-only，
 固定分母433；190项 blocked/partial 尚未完成，完整迁移门禁必须继续失败。
+
+
+## 配置存储分配失败的真实加载边界
+
+三个原始配置 OOM 场景现在适配到实际 Python loader 的接口、vdev、bond
+配置对象分配。测试子进程只替换目标 builder 的一次真实 dict 分配并抛出
+MemoryError，其他解析及分配继续执行原实现；旧 launcher 三个故障点均产生
+未捕获 traceback。修复后 CLI 明确返回2，在 worker limit 查询、库路径解析、
+进程创建和应用入口之前结束；不产生统计或应用 marker。撤销故障后，同一
+输入必须经真实 loader 成功构造一个对应 typed 对象，验证全局状态未被污染。
+bond 恢复阶段使用仅实现 `--dpdk-limits` JSON 合同的测试子进程，以隔离 schema
+恢复；`native-fstack-launcher-config-interop` 使用实际 worker 和原版 Linux TCP。
+
+这适配源测试的“配置分配失败使加载失败”，不声称 C calloc 次序、NULL 指针、
+全局结构布局或 ff_load_config 返回-1等价，也不承诺宿主全局 OOM 时仍能分配
+诊断内存。生产代码没有测试故障开关。实际配置启动/原始 Linux TCP 回归仍需通过。
+三个已适配源 ID 为 test_alloc_port_cfgs_calloc_oom_returns_error、
+test_vdev_cfgs_calloc_oom_returns_error、test_bond_cfgs_calloc_oom_returns_error。
+清单为178适配、19partial、168blocked、13架构专用、55harness-only，共433项；
+187项 blocked/partial 仍未完成。#224 继续跟踪其余三个 typed fixture/RSS 合同。

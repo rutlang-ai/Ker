@@ -1,4 +1,4 @@
-"""Real launcher INI parsing and pre-launch rejection; no worker mocks."""
+"""Real launcher INI parsing and pre-launch rejection; no production fault hooks."""
 import configparser
 import importlib.util
 import io
@@ -803,6 +803,91 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn('tcp-ecn', result.stderr)
                 self.assertNotIn('Traceback', result.stderr)
+
+    def test_device_configuration_allocation_failure(self):
+        # Replace only the actual dict allocation in one selected production
+        # builder. The failure path forbids process creation; recovery uses a
+        # bounded --dpdk-limits responder only for bond schema validation.
+        probe = r"""
+import builtins
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('allocation_probe', sys.argv[1])
+launcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(launcher)
+stage, configuration, marker, stats, worker = sys.argv[2:]
+real_dict = builtins.dict
+real_popen = launcher.subprocess.Popen
+real_run = launcher.subprocess.run
+real_check_output = launcher.subprocess.check_output
+injected = False
+def allocate(*args, **kwargs):
+    global injected
+    if not injected and sys._getframe(1).f_code.co_name == stage:
+        injected = True
+        print('INJECT: configuration ' + stage, flush=True)
+        raise MemoryError('test-only selected configuration allocation')
+    return real_dict(*args, **kwargs)
+def forbidden(*args, **kwargs):
+    raise AssertionError('configuration failure crossed process boundary')
+launcher.dict = allocate
+launcher.subprocess.Popen = forbidden
+launcher.subprocess.run = forbidden
+launcher.subprocess.check_output = forbidden
+arguments = ['--config', configuration, '--address', '198.18.0.2/24',
+             '--port', 'net_tap0', '--eal=--no-pci --no-huge',
+             '--library', '/missing-library', '--io-worker', worker,
+             '--stats', stats, '--', '/bin/touch', marker]
+sys.argv = [sys.argv[1], *arguments]
+try:
+    launcher.main()
+except SystemExit as error:
+    assert injected and error.code == 2
+    # The failure must not leave global loader state poisoned. With the fault
+    # disarmed, the same real configuration must build its typed objects.
+    launcher.dict = real_dict
+    launcher.subprocess.Popen = real_popen
+    launcher.subprocess.run = real_run
+    launcher.subprocess.check_output = real_check_output
+    with Path(configuration).open() as stream:
+        values = launcher.read_configuration(stream, Path(configuration).parent,
+                                             worker_path=worker)
+    field = {'additional_interfaces': 'interfaces', 'virtual_devices': 'vdevs',
+             'bond_devices': 'bonds'}[stage]
+    assert len(values[field]) == 1
+    print('RECOVERED: ' + field, flush=True)
+    raise
+raise AssertionError('allocation failure was accepted')
+"""
+        fixtures = {
+            'additional_interfaces': '[interface.aux]\naddress=198.19.0.2/24\nport=net_tap1\neal=--no-huge\n',
+            'virtual_devices': '[dpdk]\nnb_vdev=1\n[vdev0]\npath=backend.sock\nqueues=1\nqueue_size=256\n',
+            'bond_devices': '[dpdk]\nnb_bond=1\n[bond0]\nmode=1\nslave=net_tap0,net_tap1\n',
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            helper = root / 'allocation_probe.py'
+            helper.write_text(probe)
+            worker = root / 'dpdk-limits-worker'
+            worker.write_text('#!/usr/bin/env python3\nimport json, sys\n'
+                'if sys.argv[1:] != ["--dpdk-limits"]: sys.exit(2)\n'
+                'print(json.dumps({"max_numa_nodes": 1}))\n')
+            worker.chmod(0o755)
+            for stage, text in fixtures.items():
+                with self.subTest(stage=stage):
+                    config, marker, stats = root / 'config.ini', root / 'entered', root / 'stats.json'
+                    config.write_text(text)
+                    result = subprocess.run([sys.executable, str(helper), str(SOURCE), stage,
+                        str(config), str(marker), str(stats), str(worker)], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('INJECT: configuration ' + stage, result.stdout)
+                    self.assertIn('RECOVERED:', result.stdout)
+                    self.assertIn('configuration allocation failed', result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+                    self.assertNotIn('missing-library', result.stderr)
+                    self.assertFalse(marker.exists())
+                    self.assertFalse(stats.exists())
 
     def test_basic_and_multiple_sections(self):
         values = self.read('[network]\naddress=192.0.2.2/24\ngateway=192.0.2.1\n'
