@@ -521,9 +521,18 @@ def run_session(args, api):
         if handoff_mode=='frame-full':
             if os.write(control_w,b'F')!=1: raise RuntimeError('could not request actual generation TX ring fill')
             filled=wait_marker(worker,'KER_SESSION_FRAME_FULL_FILLED')
-            if not isinstance(filled.get('count'),int) or filled['count']<=0:
+            if (not isinstance(filled.get('count'),int) or filled['count']<=0 or
+                filled.get('capacity')!=filled.get('count') or
+                filled.get('pool_before')!=0 or filled.get('pool_after')!=filled['count'] or
+                len(filled.get('counters_before',[]))!=5 or
+                filled.get('counters_before')!=filled.get('counters_after') or
+                filled.get('count')!=64 or len(filled.get('objects',[]))!=filled.get('count') or
+                [item.get('ordinal') for item in filled.get('objects',[])]!=list(range(64)) or
+                len({item.get('index') for item in filled.get('objects',[])})!=64 or
+                len({item.get('pointer') for item in filled.get('objects',[])})!=64):
                 raise RuntimeError('actual generation TX ring fill did not report a positive capacity')
-            metrics['frame_full_capacity']=filled['count'];publish()
+            metrics['frame_full_capacity']=filled['count']
+            metrics['frame_full_fill']=filled;publish()
 
     def finish_signal_before_app(packet_expected):
         nonlocal completed
@@ -688,14 +697,28 @@ def run_session(args, api):
                 return
             if handoff_mode=='frame-full':
                 full=ready(worker,'KER_SESSION_FRAME_FULL_COMMIT_CANCELLED')
-                if full.get('status')!=-errno.ENOBUFS or full.get('pool_restored') is not True:
+                if (full.get('status')!=-errno.ENOBUFS or full.get('pool_restored') is not True or
+                    full.get('tx_after')!=metrics.get('frame_full_capacity') or
+                    full.get('tx_capacity')!=metrics.get('frame_full_capacity') or
+                    full.get('pool_before')!=metrics.get('frame_full_capacity') or
+                    full.get('pool_after')!=metrics.get('frame_full_capacity') or
+                    full.get('counters_before')!=metrics.get('frame_full_fill',{}).get('counters_after') or
+                    len(full.get('counters_after',[]))!=5 or
+                    full.get('counters_after')[:4]!=full.get('counters_before',[])[:4] or
+                    full.get('counters_after',[])[4]!=full.get('counters_before',[-1]*5)[4]+1):
                     raise RuntimeError('full TX ring did not cancel the prepared original frame exactly')
                 if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
                     raise RuntimeError('could not request full-ring peer drain')
                 drained_full=ready(peer_worker,'KER_SESSION_FRAME_FULL_DRAINED')
-                if drained_full.get('tx_after')!=0 or drained_full.get('count')!=metrics.get('frame_full_capacity'):
+                if (drained_full.get('tx_after')!=0 or drained_full.get('count')!=metrics.get('frame_full_capacity') or
+                    drained_full.get('pool_before')!=metrics.get('frame_full_capacity') or
+                    drained_full.get('pool_after')!=0 or
+                    drained_full.get('counters_before')!=full.get('counters_after') or
+                    drained_full.get('counters_after')!=drained_full.get('counters_before') or
+                    drained_full.get('objects')!=metrics.get('frame_full_fill',{}).get('objects')):
                     raise RuntimeError('peer did not drain the exact filled generation TX ring')
-                metrics['handoff_frame_full']=dict(commit_cancel=full,drain=drained_full)
+                metrics['handoff_frame_full']=dict(fill=metrics['frame_full_fill'],
+                    commit_cancel=full,drain=drained_full)
                 publish();return
             committed = ready(worker, 'KER_SESSION_FRAME_COMMITTED')
             if (committed.get('queue') != 0 or committed.get('generation') != 0 or

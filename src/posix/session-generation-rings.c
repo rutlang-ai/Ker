@@ -354,21 +354,18 @@ int ker_generation_test_tx_snapshot(struct ker_generation_rings *r,uint16_t port
     *packet_pool_in_use=rte_mempool_in_use_count(r->packet_pool);
     return 0;
 }
-int ker_generation_test_fill_tx_capacity(struct ker_generation_rings *r,
-    const struct ker_generation_identity *producer,uint16_t port,uint16_t queue,uint32_t *filled)
+int ker_generation_test_counters_snapshot(struct ker_generation_rings *r,uint16_t port,
+    uint16_t queue,uint32_t generation,struct ker_generation_test_counters *counters)
 {
-    if(filled)*filled=0;
-    if(!r||!producer||!filled||port>=r->ports||queue>=r->queues||
-        producer->generation>=KER_GENERATION_RING_GENERATIONS||!identity_valid(r,producer))return -EINVAL;
-    uint32_t capacity=rte_ring_get_capacity(r->tx[ring_index(r,port,queue,producer->generation)]);
-    for(uint32_t i=0;i<capacity;i++){
-        struct rte_mbuf *packet=rte_pktmbuf_alloc(r->packet_pool);
-        if(!packet)return -ENOMEM;
-        rte_pktmbuf_reset(packet);
-        int result=ker_generation_tx_enqueue(r,producer,port,queue,packet);
-        if(result){rte_pktmbuf_free(packet);return result;}
-        (*filled)++;
-    }
+    if(!r||!r->directory||!counters||port>=r->ports||queue>=r->queues||
+        generation>=KER_GENERATION_RING_GENERATIONS)return -EINVAL;
+    struct ring_stats_shared *stats=&r->stats[full_index(r,port,queue,generation)];
+    *counters=(struct ker_generation_test_counters){
+        .rx_full=atomic_load_explicit(&stats->rx_full,memory_order_acquire),
+        .tx_full=atomic_load_explicit(&stats->tx_full,memory_order_acquire),
+        .tx_drop=atomic_load_explicit(&stats->tx_drop,memory_order_acquire),
+        .packet_drop=atomic_load_explicit(&stats->packet_drop,memory_order_acquire),
+        .packet_full=atomic_load_explicit(&stats->packet_full,memory_order_acquire)};
     return 0;
 }
 int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *r,
@@ -431,8 +428,8 @@ int ker_generation_test_packet_drop_count(struct ker_generation_rings *r,uint16_
 int ker_generation_test_packet_full_count(struct ker_generation_rings *r,uint16_t p,
     uint16_t q,uint32_t g,uint64_t *count)
 {
-    if(!r||!r->primary||!count||p>=r->ports||q>=r->queues||g>=2)return -EINVAL;
-    *count=atomic_load_explicit(&r->stats[full_index(r,p,q,g)].packet_full,memory_order_relaxed);
+    if(!r||!r->directory||!count||p>=r->ports||q>=r->queues||g>=2)return -EINVAL;
+    *count=atomic_load_explicit(&r->stats[full_index(r,p,q,g)].packet_full,memory_order_acquire);
     return 0;
 }
 int ker_generation_rings_test_directory_present(void)

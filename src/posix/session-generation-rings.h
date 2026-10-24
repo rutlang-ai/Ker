@@ -56,6 +56,12 @@ struct ker_generation_ring_stats {
     uint32_t tx_rings;
 };
 
+#ifdef KER_SESSION_TEST_HOOKS
+struct ker_generation_test_counters {
+    uint64_t rx_full,tx_full,tx_drop,packet_drop,packet_full;
+};
+#endif
+
 /* The primary creates permanent port/queue/generation RX and TX rings.
  * Secondary attaches only to already-created rings. Neither operation changes
  * Linux protocol state; these rings transfer original DPDK mbuf objects. */
@@ -131,8 +137,8 @@ int ker_generation_test_packet_object_index(struct ker_generation_rings *rings,
     const struct rte_mbuf *packet,uint32_t *object_index);
 int ker_generation_test_tx_snapshot(struct ker_generation_rings *rings,uint16_t port,
     uint16_t queue,uint32_t generation,uint32_t *count,uint32_t *packet_pool_in_use);
-int ker_generation_test_fill_tx_capacity(struct ker_generation_rings *rings,
-    const struct ker_generation_identity *producer,uint16_t port,uint16_t queue,uint32_t *filled);
+int ker_generation_test_counters_snapshot(struct ker_generation_rings *rings,uint16_t port,
+    uint16_t queue,uint32_t generation,struct ker_generation_test_counters *counters);
 int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *rings,
     uint32_t index,uint32_t duplicate_index,uintptr_t *original);
 int ker_generation_test_packet_table_restore(struct ker_generation_rings *rings,

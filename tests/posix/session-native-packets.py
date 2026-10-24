@@ -989,10 +989,31 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     full_wire_snapshot=list(wire_frames);full_wire_errors=list(wire_errors)
                 seq1_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n' for frame in full_wire_snapshot)
                 seq2_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n' for frame in full_wire_snapshot)
-                require(fullproof.get('commit_cancel',{}).get('status')==-errno.ENOBUFS and
-                    fullproof.get('commit_cancel',{}).get('pool_restored') is True and
-                    fullproof.get('drain',{}).get('tx_after')==0 and
-                    fullproof.get('drain',{}).get('count')==after.get('frame_full_capacity') and
+                fill=fullproof.get('fill',{})
+                cancel=fullproof.get('commit_cancel',{})
+                drain=fullproof.get('drain',{})
+                capacity=after.get('frame_full_capacity')
+                require(fill.get('count')==capacity and fill.get('capacity')==capacity and
+                    capacity==64 and
+                    fill.get('pool_before')==0 and fill.get('pool_after')==capacity and
+                    len(fill.get('counters_before',[]))==5 and
+                    fill.get('counters_before')==fill.get('counters_after') and
+                    len(fill.get('objects',[]))==capacity and
+                    [item.get('ordinal') for item in fill.get('objects',[])]==list(range(capacity)) and
+                    len({item.get('index') for item in fill.get('objects',[])})==capacity and
+                    len({item.get('pointer') for item in fill.get('objects',[])})==capacity and
+                    cancel.get('status')==-errno.ENOBUFS and cancel.get('pool_restored') is True and
+                    cancel.get('tx_after')==capacity and cancel.get('tx_capacity')==capacity and
+                    cancel.get('pool_before')==capacity and cancel.get('pool_after')==capacity and
+                    cancel.get('counters_before')==fill.get('counters_after') and
+                    len(cancel.get('counters_after',[]))==5 and
+                    cancel.get('counters_after',[])[:4]==cancel.get('counters_before',[])[:4] and
+                    cancel.get('counters_after',[])[4]==cancel.get('counters_before',[-1]*5)[4]+1 and
+                    drain.get('tx_after')==0 and drain.get('count')==capacity and
+                    drain.get('pool_before')==capacity and drain.get('pool_after')==0 and
+                    drain.get('counters_before')==cancel.get('counters_after') and
+                    drain.get('counters_after')==drain.get('counters_before') and
+                    drain.get('objects')==fill.get('objects') and
                     seq1_count==1 and seq2_count==0 and not full_wire_errors,
                     'full generation TX ring did not reject/cancel then drain exactly')
                 os.close(handoff_write);handoff_write=-1

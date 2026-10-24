@@ -469,24 +469,76 @@ struct generation_frame_drain_context {
     struct ker_generation_rings *rings;
     struct ker_generation_identity identity;
 };
+static bool frame_test_counters_equal(const struct ker_generation_test_counters *left,
+    const struct ker_generation_test_counters *right);
+static uint16_t frame_test_ipv4_checksum(const uint8_t *bytes);
+static bool frame_test_counters_equal_after_full(const struct ker_generation_test_counters *before,
+    const struct ker_generation_test_counters *after)
+{
+    return before->packet_full!=UINT64_MAX&&before->rx_full==after->rx_full&&
+        before->tx_full==after->tx_full&&before->tx_drop==after->tx_drop&&
+        before->packet_drop==after->packet_drop&&after->packet_full==before->packet_full+1;
+}
 static int generation_frame_drain_control(char command, void *opaque)
 {
     if(command!='G')return 0;
     struct generation_frame_drain_context *context=opaque;
     if(getenv("KER_SESSION_TEST_FRAME_DRAIN_FULL")) {
         uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
-        if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||!tx_before)return -EUCLEAN;
+        struct ker_generation_test_counters counters_before,counters_after;
+        if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||!tx_before||
+            ker_generation_test_counters_snapshot(context->rings,0,0,0,&counters_before))return -EUCLEAN;
         uint32_t capacity=tx_before;
+        uint32_t indices[KER_GENERATION_RING_CAPACITY];
+        uintptr_t addresses[KER_GENERATION_RING_CAPACITY];
+        if(capacity>KER_GENERATION_RING_CAPACITY||pool_before!=capacity)return -EUCLEAN;
         for(uint32_t i=0;i<capacity;i++) {
             struct rte_mbuf *queued=NULL;
             if(ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&queued)!=1||!queued||
-                ker_generation_test_packet_object_index(context->rings,queued,&(uint32_t){0})||
-                queued->pkt_len||queued->nb_segs!=1||ker_generation_packet_release(context->rings,&context->identity,queued))return -EUCLEAN;
+                queued->pkt_len!=60||queued->nb_segs!=1||rte_mbuf_refcnt_read(queued)!=1||
+                (queued->ol_flags&RTE_MBUF_F_EXTERNAL))return -EUCLEAN;
+            if(ker_generation_test_packet_object_index(context->rings,queued,&indices[i]))return -EUCLEAN;
+            addresses[i]=(uintptr_t)queued;
+            for(uint32_t previous=0;previous<i;previous++)
+                if(indices[previous]==indices[i]||addresses[previous]==addresses[i])return -EUCLEAN;
+            const uint8_t *frame=rte_pktmbuf_mtod(queued,const uint8_t *);
+            const uint8_t host_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x01};
+            const uint8_t app_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x02};
+            if(memcmp(frame,host_mac,6)||memcmp(frame+6,app_mac,6)||frame[12]!=0x08||frame[13]!=0x00||
+                frame[14]!=0x45||frame[16]!=0||frame[17]!=28||frame[18]!=(uint8_t)(i>>8)||
+                frame[19]!=(uint8_t)i||frame[20]!=0x40||frame[21]!=0||frame[22]!=64||frame[23]!=17||
+                frame_test_ipv4_checksum(frame+14)!=0||
+                memcmp(frame+26,(uint8_t[]){198,18,0,2},4)||
+                memcmp(frame+30,(uint8_t[]){198,18,0,1},4)||
+                memcmp(frame+34,(uint8_t[]){0xaf,0xc8,0xaf,0xc9,0,8,0,0},8))return -EUCLEAN;
+            for(unsigned pad=42;pad<60;pad++)if(frame[pad])return -EUCLEAN;
+            if(ker_generation_packet_release(context->rings,&context->identity,queued))return -EUCLEAN;
         }
         if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||tx_after||
-            pool_before-pool_after!=capacity)return -EUCLEAN;
-        printf("KER_SESSION_FRAME_FULL_DRAINED {\"count\":%u,\"tx_after\":%u,\"pool_before\":%u,\"pool_after\":%u}\n",
-            capacity,tx_after,pool_before,pool_after);fflush(stdout);return 1;
+            pool_before<pool_after||pool_before-pool_after!=capacity||pool_after||
+            ker_generation_test_counters_snapshot(context->rings,0,0,0,&counters_after)||
+            !frame_test_counters_equal(&counters_before,&counters_after))return -EUCLEAN;
+        char record[8192];
+        int used=snprintf(record,sizeof(record),
+            "KER_SESSION_FRAME_FULL_DRAINED {\"count\":%u,\"tx_after\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu],\"objects\":[",
+            capacity,tx_after,pool_before,pool_after,
+            (unsigned long long)counters_before.rx_full,(unsigned long long)counters_before.tx_full,
+            (unsigned long long)counters_before.tx_drop,(unsigned long long)counters_before.packet_drop,
+            (unsigned long long)counters_before.packet_full,
+            (unsigned long long)counters_after.rx_full,(unsigned long long)counters_after.tx_full,
+            (unsigned long long)counters_after.tx_drop,(unsigned long long)counters_after.packet_drop,
+            (unsigned long long)counters_after.packet_full);
+        if(used<0||(size_t)used>=sizeof(record))return -EOVERFLOW;
+        for(uint32_t i=0;i<capacity;i++) {
+            int added=snprintf(record+used,sizeof(record)-(size_t)used,
+                "%s{\"ordinal\":%u,\"index\":%u,\"pointer\":\"%p\"}",
+                i?",":"",i,indices[i],(void *)addresses[i]);
+            if(added<0||(size_t)added>=sizeof(record)-(size_t)used)return -EOVERFLOW;
+            used+=added;
+        }
+        int closed=snprintf(record+used,sizeof(record)-(size_t)used,"]}\n");
+        if(closed<0||(size_t)closed>=sizeof(record)-(size_t)used)return -EOVERFLOW;
+        printf("%s",record);fflush(stdout);return 1;
     }
     uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
     if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||tx_before!=1)
@@ -2259,6 +2311,18 @@ static int worker_frame_request(int fd,const struct ker_session_message *identit
     int resident,uint64_t capability,uint64_t command,uint64_t tag,uint32_t index,
     uint16_t port,uint16_t queue,uint64_t lease,struct worker_heartbeat *heartbeat,
     struct ker_session_message *response);
+#ifdef KER_SESSION_TEST_HOOKS
+struct frame_full_record { uint32_t index; uintptr_t address; };
+struct frame_full_fill_result {
+    uint32_t capacity,pool_before,pool_after;
+    struct ker_generation_test_counters counters_before,counters_after;
+    struct frame_full_record objects[KER_GENERATION_RING_CAPACITY];
+};
+static int parked_frame_fill_tx_capacity(int fd,int resident,int control,
+    const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
+    struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings,
+    struct frame_full_fill_result *proof);
+#endif
 static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
     struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings);
@@ -2300,12 +2364,37 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
                 if(count<0&&errno==EINTR)continue;
 #ifdef KER_SESSION_TEST_HOOKS
                 if(count==1&&command=='F'&&generation_frame_source_test) {
-                    struct ker_generation_identity source=*identity;
-                    source.pid=(uint32_t)getpid();
-                    uint32_t filled=0;
-                    int fill=ker_generation_test_fill_tx_capacity(rings,&source,0,0,&filled);
+                    int drained=drain_worker_heartbeat_after_command(fd,heartbeat,resident,control);
+                    if(drained)return drained;
+                    struct frame_full_fill_result proof;
+                    int fill=parked_frame_fill_tx_capacity(fd,resident,control,identity,sequence,
+                        capability,heartbeat,rings,&proof);
                     if(fill)return fill;
-                    printf("KER_SESSION_FRAME_FULL_FILLED {\"count\":%u}\n",filled);fflush(stdout);
+                    char record[8192];
+                    int used=snprintf(record,sizeof(record),
+                        "KER_SESSION_FRAME_FULL_FILLED {\"count\":%u,\"capacity\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu],\"objects\":[",
+                        proof.capacity,proof.capacity,proof.pool_before,proof.pool_after,
+                        (unsigned long long)proof.counters_before.rx_full,
+                        (unsigned long long)proof.counters_before.tx_full,
+                        (unsigned long long)proof.counters_before.tx_drop,
+                        (unsigned long long)proof.counters_before.packet_drop,
+                        (unsigned long long)proof.counters_before.packet_full,
+                        (unsigned long long)proof.counters_after.rx_full,
+                        (unsigned long long)proof.counters_after.tx_full,
+                        (unsigned long long)proof.counters_after.tx_drop,
+                        (unsigned long long)proof.counters_after.packet_drop,
+                        (unsigned long long)proof.counters_after.packet_full);
+                    if(used<0||(size_t)used>=sizeof(record))return -EOVERFLOW;
+                    for(uint32_t i=0;i<proof.capacity;i++) {
+                        int added=snprintf(record+used,sizeof(record)-(size_t)used,
+                            "%s{\"ordinal\":%u,\"index\":%u,\"pointer\":\"%p\"}",
+                            i?",":"",i,proof.objects[i].index,(void *)proof.objects[i].address);
+                        if(added<0||(size_t)added>=sizeof(record)-(size_t)used)return -EOVERFLOW;
+                        used+=added;
+                    }
+                    int closed=snprintf(record+used,sizeof(record)-(size_t)used,"]}\n");
+                    if(closed<0||(size_t)closed>=sizeof(record)-(size_t)used)return -EOVERFLOW;
+                    printf("%s",record);fflush(stdout);
                     continue;
                 }
 #endif
@@ -2620,6 +2709,130 @@ static int parked_frame_cancel(int fd,int resident,const struct ker_session_mess
     return result;
 }
 #ifdef KER_SESSION_TEST_HOOKS
+static uint16_t frame_test_ipv4_checksum(const uint8_t *bytes)
+{
+    uint32_t sum=0;
+    for(unsigned i=0;i<20;i+=2)sum+=(uint32_t)((bytes[i]<<8)|bytes[i+1]);
+    while(sum>>16)sum=(sum&0xffffU)+(sum>>16);
+    return (uint16_t)~sum;
+}
+static bool frame_test_counters_equal(const struct ker_generation_test_counters *left,
+    const struct ker_generation_test_counters *right)
+{
+    return left->rx_full==right->rx_full&&left->tx_full==right->tx_full&&
+        left->tx_drop==right->tx_drop&&left->packet_drop==right->packet_drop&&
+        left->packet_full==right->packet_full;
+}
+static int frame_full_fill_failure(struct ker_generation_rings *rings,
+    const struct frame_full_fill_result *proof,uint32_t ordinal,const char *stage,int status)
+{
+    uint32_t tx=UINT32_MAX,pool=UINT32_MAX;
+    struct ker_generation_test_counters counters={0};
+    int snapshot=ker_generation_test_tx_snapshot(rings,0,0,0,&tx,&pool);
+    int counter_status=ker_generation_test_counters_snapshot(rings,0,0,0,&counters);
+    printf("KER_SESSION_FRAME_FULL_FILL_FAILED {\"stage\":\"%s\",\"status\":%d,\"committed\":%u,\"capacity\":%u,\"snapshot_status\":%d,\"tx\":%u,\"pool\":%u,\"counter_status\":%d,\"counters\":[%llu,%llu,%llu,%llu,%llu]}\n",
+        stage,status,ordinal,proof?proof->capacity:0,snapshot,tx,pool,counter_status,
+        (unsigned long long)counters.rx_full,(unsigned long long)counters.tx_full,
+        (unsigned long long)counters.tx_drop,(unsigned long long)counters.packet_drop,
+        (unsigned long long)counters.packet_full);
+    fflush(stdout);
+    return status;
+}
+/* Fill through the same authenticated packet-lease transaction as a frame
+ * from the original endpoint. This avoids bypassing the packet pool journal
+ * or manufacturing generic TX entries. */
+static int parked_frame_fill_tx_capacity(int fd,int resident,int control,
+    const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
+    struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings,
+    struct frame_full_fill_result *proof)
+{
+    if(proof)memset(proof,0,sizeof(*proof));
+    if(!identity||!sequence||!capability||!rings||!proof)return -EINVAL;
+    struct rte_ring *ring=generation_test_ring(1,0,0);
+    if(!ring)return -EUCLEAN;
+    uint32_t capacity=rte_ring_get_capacity(ring),initial=0,pool_before=0;
+    if(capacity!=KER_GENERATION_RING_CAPACITY||
+        ker_generation_test_tx_snapshot(rings,0,0,0,&initial,&pool_before)||initial||pool_before)
+        return frame_full_fill_failure(rings,proof,0,"initial-geometry",-EUCLEAN);
+    uint64_t tag=ker_generation_packet_pool_tag(rings);
+    if(!tag)return frame_full_fill_failure(rings,proof,0,"packet-tag",-EUCLEAN);
+    proof->capacity=capacity;proof->pool_before=pool_before;
+    if(ker_generation_test_counters_snapshot(rings,0,0,0,&proof->counters_before))
+        return frame_full_fill_failure(rings,proof,0,"initial-counters",-EUCLEAN);
+    struct ker_generation_identity source={.session=identity->session,.epoch=identity->epoch,
+        .slot=(uint32_t)identity->slot,.generation=(uint32_t)identity->generation,
+        .process=(uint32_t)identity->process,.pid=(uint32_t)getpid()};
+    for(uint32_t ordinal=0;ordinal<capacity;ordinal++) {
+        int drained=drain_worker_heartbeat_after_command(fd,heartbeat,resident,control);
+        if(drained)return frame_full_fill_failure(rings,proof,ordinal,"heartbeat-before-prepare",drained);
+        struct ker_session_message prepared,reply;
+        int result=worker_frame_request(fd,identity,sequence,resident,capability,
+            KER_SESSION_FRAME_PREPARE,tag,UINT32_MAX,0,0,0,heartbeat,&prepared);
+        if(result)return frame_full_fill_failure(rings,proof,ordinal,"prepare",result);
+        struct rte_mbuf *packet=ker_generation_packet_resolve(rings,&source,
+            prepared.packet_object_index,prepared.tx_lease_id);
+        if(!packet) {
+            if(parked_frame_cancel(fd,resident,identity,sequence,capability,heartbeat,&prepared))_Exit(125);
+            return frame_full_fill_failure(rings,proof,ordinal,"resolve",-ESTALE);
+        }
+        proof->objects[ordinal]=(struct frame_full_record){
+            .index=prepared.packet_object_index,.address=(uintptr_t)packet};
+        for(uint32_t previous=0;previous<ordinal;previous++)
+            if(proof->objects[previous].index==proof->objects[ordinal].index||
+                proof->objects[previous].address==proof->objects[ordinal].address) {
+                if(parked_frame_cancel(fd,resident,identity,sequence,capability,heartbeat,&prepared))_Exit(125);
+                return frame_full_fill_failure(rings,proof,ordinal,"duplicate-object",-EUCLEAN);
+            }
+        uint8_t *frame=(uint8_t *)rte_pktmbuf_append(packet,60);
+        if(!frame) {
+            int complete=ker_generation_packet_write_complete(rings,&source,
+                prepared.packet_object_index,prepared.tx_lease_id);
+            if(complete!=-EMSGSIZE&&complete)_Exit(125);
+            if(parked_frame_cancel(fd,resident,identity,sequence,capability,heartbeat,&prepared))_Exit(125);
+            return frame_full_fill_failure(rings,proof,ordinal,"append",-ENOSPC);
+        }
+        memset(frame,0,60);
+        const uint8_t host_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x01};
+        const uint8_t app_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x02};
+        memcpy(frame,host_mac,6);memcpy(frame+6,app_mac,6);
+        frame[12]=0x08;frame[13]=0x00;
+        uint8_t *ip=frame+14;
+        ip[0]=0x45;ip[2]=0;ip[3]=28;ip[4]=(uint8_t)(ordinal>>8);ip[5]=(uint8_t)ordinal;
+        ip[6]=0x40;ip[7]=0;ip[8]=64;ip[9]=17;
+        ip[12]=198;ip[13]=18;ip[14]=0;ip[15]=2;
+        ip[16]=198;ip[17]=18;ip[18]=0;ip[19]=1;
+        uint16_t checksum=frame_test_ipv4_checksum(ip);
+        ip[10]=(uint8_t)(checksum>>8);ip[11]=(uint8_t)checksum;
+        uint8_t *udp=ip+20;
+        udp[0]=0xaf;udp[1]=0xc8;udp[2]=0xaf;udp[3]=0xc9;
+        udp[4]=0;udp[5]=8; /* Valid zero-payload IPv4 UDP test frame. */
+        int complete=ker_generation_packet_write_complete(rings,&source,
+            prepared.packet_object_index,prepared.tx_lease_id);
+        if(complete) {
+            if(complete==-EMSGSIZE) {
+                if(parked_frame_cancel(fd,resident,identity,sequence,capability,heartbeat,&prepared))_Exit(125);
+            } else _Exit(125);
+            return frame_full_fill_failure(rings,proof,ordinal,"write-complete",complete);
+        }
+        result=worker_frame_request(fd,identity,sequence,resident,capability,
+            KER_SESSION_FRAME_COMMIT,prepared.packet_pool_tag,prepared.packet_object_index,
+            prepared.packet_port,prepared.packet_queue,prepared.tx_lease_id,heartbeat,&reply);
+        if(result)return frame_full_fill_failure(rings,proof,ordinal,"commit",result);
+        int tick=heartbeat_tick(fd,identity,sequence,resident,heartbeat);
+        if(tick<0)return frame_full_fill_failure(rings,proof,ordinal+1,"heartbeat-after-commit",tick);
+    }
+    int drained=drain_worker_heartbeat_after_command(fd,heartbeat,resident,control);
+    if(drained)return frame_full_fill_failure(rings,proof,capacity,"heartbeat-after-fill",drained);
+    uint32_t after=0,pool_after=0;
+    if(ker_generation_test_tx_snapshot(rings,0,0,0,&after,&pool_after)||after!=capacity||
+        pool_after-pool_before!=capacity)
+        return frame_full_fill_failure(rings,proof,capacity,"filled-geometry",-EUCLEAN);
+    proof->pool_after=pool_after;
+    if(ker_generation_test_counters_snapshot(rings,0,0,0,&proof->counters_after)||
+        !frame_test_counters_equal(&proof->counters_before,&proof->counters_after))
+        return frame_full_fill_failure(rings,proof,capacity,"filled-counters",-EUCLEAN);
+    return 0;
+}
 static int frame_negative_prepare(int fd,int resident,const struct ker_session_message *identity,
     uint64_t *sequence,uint64_t capability,uint64_t tag,unsigned variant)
 {
@@ -2750,8 +2963,12 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     if(!tag)return -EUCLEAN;
 #ifdef KER_SESSION_TEST_HOOKS
     uint32_t tx_initial=0,pool_before=0;
+    struct ker_generation_test_counters packet_counters_before;
     if(ker_generation_test_tx_snapshot(rings,0,0,0,&tx_initial,&pool_before))return -EUCLEAN;
     if(getenv("KER_SESSION_TEST_FRAME_FULL")?!tx_initial:tx_initial!=0)return -EUCLEAN;
+    if(getenv("KER_SESSION_TEST_FRAME_FULL")) {
+        if(ker_generation_test_counters_snapshot(rings,0,0,0,&packet_counters_before))return -EUCLEAN;
+    }
 #endif
 #ifdef KER_SESSION_TEST_HOOKS
     if(getenv("KER_SESSION_TEST_FRAME_NEGATIVES")) {
@@ -2809,10 +3026,19 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
 #ifdef KER_SESSION_TEST_HOOKS
         if(result==-ENOBUFS&&getenv("KER_SESSION_TEST_FRAME_FULL")) {
             uint32_t tx_after=0,pool_after=0;
+            struct ker_generation_test_counters packet_counters_after;
             if(ker_generation_test_tx_snapshot(rings,0,0,0,&tx_after,&pool_after)||
-                tx_after!=tx_initial||pool_after!=pool_before)return -EUCLEAN;
-            printf("KER_SESSION_FRAME_FULL_COMMIT_CANCELLED {\"status\":%d,\"tx_after\":%u,\"pool_restored\":true}\n",
-                result,tx_after);fflush(stdout);return 1;
+                tx_after!=tx_initial||pool_after!=pool_before||
+                ker_generation_test_counters_snapshot(rings,0,0,0,&packet_counters_after)||
+                !frame_test_counters_equal_after_full(&packet_counters_before,&packet_counters_after))return -EUCLEAN;
+            printf("KER_SESSION_FRAME_FULL_COMMIT_CANCELLED {\"status\":%d,\"tx_after\":%u,\"tx_capacity\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu],\"pool_restored\":true}\n",
+                result,tx_after,tx_initial,pool_before,pool_after,
+                (unsigned long long)packet_counters_before.rx_full,(unsigned long long)packet_counters_before.tx_full,
+                (unsigned long long)packet_counters_before.tx_drop,(unsigned long long)packet_counters_before.packet_drop,
+                (unsigned long long)packet_counters_before.packet_full,
+                (unsigned long long)packet_counters_after.rx_full,(unsigned long long)packet_counters_after.tx_full,
+                (unsigned long long)packet_counters_after.tx_drop,(unsigned long long)packet_counters_after.packet_drop,
+                (unsigned long long)packet_counters_after.packet_full);fflush(stdout);return 1;
         }
 #endif
         return result;
