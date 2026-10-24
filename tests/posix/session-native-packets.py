@@ -234,7 +234,8 @@ def main():
                 '--stats', str(standby_stats), '--address6', '2001:db8:1::2/64',
                 '--', str(args.app), '--fixed-mtu'], pass_fds=(endpoint.fileno(),),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=environment | {'PYTHONPATH': str(trace), 'KER_TEST_APP_SPAWN_MARKER': str(standby_marker)}, bufsize=0)
+                env=environment | {'PYTHONPATH': str(trace), 'KER_TEST_APP_SPAWN_MARKER': str(standby_marker),
+                    'KER_SESSION_TEST_PENDING_HB_BEFORE_PMD': '1'}, bufsize=0)
             endpoint.close()
             deadline = time.monotonic() + 20
             while True:
@@ -491,6 +492,9 @@ def main():
             standby_output, standby_errors = standby.communicate(timeout=20)
             require(standby.returncode == 0 and b'PASS: original native IPv4/IPv6 TCP/UDP services' in standby_output,
                 'native traffic after same-PID takeover failed: ' + standby_errors.decode())
+            require(b'KER_SESSION_TEST_PENDING_HB_QUEUED' in standby_errors and
+                b'KER_SESSION_TEST_PENDING_HB_DRAINED' in standby_errors,
+                'paired standby PMD acquisition did not exercise the queued-heartbeat boundary')
             taken = json.loads(standby_stats.read_text())
             require(taken['stage'] == 'finished' and taken['packet']['tx'] > 0 and taken['packet']['rx'] > 0 and
                 taken['native']['passive_opens'] >= 2 and taken['native']['udp_in_datagrams'] >= 1 and

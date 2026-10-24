@@ -21,7 +21,7 @@
 #define TEST_ZONE "ker_nr19_test_control"
 #define TEST_POOL "ker_nr19_test_pool"
 #define TEST_SESSION UINT64_C(0x4e523139a4d0b117)
-struct test_control { _Atomic unsigned stage, gen0_ready, crash_ready, producer_ready, consumer_ready; _Atomic int failed; };
+struct test_control { _Atomic unsigned stage, gen0_ready, crash_ready, producer_ready, consumer_ready, transition_release; _Atomic int failed; };
 
 static struct test_control *control(void)
 {
@@ -238,6 +238,7 @@ static int secondary_dequeue_crash(const char *mode)
     bool producer=!strncmp(mode,"producer-",9);
     bool enqueue_prepare=!strcmp(mode,"producer-enqueue");
     bool standby=!strcmp(mode,"standby");
+    bool live_release=!strcmp(mode,"dequeue-pre-live");
     bool cas=!strcmp(mode,"dequeue-cas")||!strcmp(mode,"producer-cas");
     unsigned generation=producer?0:1;
     uint64_t epoch=(enqueue_prepare||standby?24U:(cas?22U:20U))+generation;
@@ -254,15 +255,22 @@ static int secondary_dequeue_crash(const char *mode)
         struct rte_mbuf*m=packet(pool,enqueue_prepare?0x63:(cas?0x62:0x61));
         if(!m)return fail(c,"crash-window packet allocation failed");
         if(ker_generation_rx_enqueue(r,&id,0,0,1,m)){rte_pktmbuf_free(m);return fail(c,"crash-window enqueue failed");}
+        if(!enqueue_prepare&&!cas&&!strcmp(mode,"producer-pre-tx")){
+            struct rte_mbuf *tx=packet(pool,0x65);
+            if(!tx)return fail(c,"late-corruption TX fixture allocation failed");
+            if(ker_generation_tx_enqueue(r,&id,0,0,tx)){rte_pktmbuf_free(tx);return fail(c,"late-corruption TX fixture enqueue failed");}
+        }
         atomic_store_explicit(&c->stage,21,memory_order_release);wait_stage(c,22);
         return atomic_load(&c->failed)?1:0;
     }
     if(standby){wait_stage(c,22);return atomic_load(&c->failed)?1:0;}
     wait_stage(c,21);
     if(cas)ker_generation_test_hold_after_dequeue_cas(&c->crash_ready);
-    else ker_generation_test_hold_after_ring_remove(&c->crash_ready);
+    else ker_generation_test_hold_after_ring_remove(&c->crash_ready,live_release?&c->transition_release:NULL);
     struct rte_mbuf*m=NULL;
     rc=ker_generation_rx_dequeue(r,&id,0,0,&m);
+    if(live_release&&rc==1&&m&&rte_pktmbuf_mtod(m,uint8_t*)[0]==0x61&&
+        !ker_generation_packet_release(r,&id,m))return atomic_load(&c->failed)?1:0;
     if(rc==1&&m)ker_generation_packet_release(r,&id,m);
     return fail(c,"crash-window hook did not stop dequeue at requested point");
 }
@@ -271,6 +279,7 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
 {
     struct test_control*c=control();pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};int status=0,failed=0;
     bool cas=!strcmp(mode,"cas"),enqueue_prepare=!strcmp(mode,"enqueue");
+    bool live_other=!strcmp(mode,"live"),late_corruption=!strcmp(mode,"pre");
     uint64_t base_epoch=enqueue_prepare?24U:(cas?22U:20U);uint32_t base_slot=1;
     struct ker_generation_identity producer={.session=TEST_SESSION,.epoch=base_epoch,
         .slot=base_slot,.generation=0,.process=0,.pid=0};
@@ -281,15 +290,16 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
     if(!c||!rx||rte_ring_count(rx)||pool_before||
         ker_generation_test_tx_drop_count(r,0,0,0,&drop_before))return -1;
     atomic_store(&c->stage,0);atomic_store(&c->crash_ready,0);
-    atomic_store(&c->producer_ready,0);atomic_store(&c->consumer_ready,0);atomic_store(&c->failed,0);
+    atomic_store(&c->producer_ready,0);atomic_store(&c->consumer_ready,0);
+    atomic_store(&c->transition_release,0);atomic_store(&c->failed,0);
 #define CRASH_FAIL() do { failed=1;goto cleanup; } while(0)
     pids[0]=fork();if(pids[0]<0)CRASH_FAIL();
     if(!pids[0]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--",
-        enqueue_prepare?"producer-enqueue":(cas?"producer-cas":"producer-pre"),(char*)NULL);_Exit(127);}
+        enqueue_prepare?"producer-enqueue":(cas?"producer-cas":(late_corruption?"producer-pre-tx":"producer-pre")),(char*)NULL);_Exit(127);}
     pidfds[0]=syscall(SYS_pidfd_open,pids[0],0);if(pidfds[0]<0)CRASH_FAIL();producer.pid=(uint32_t)pids[0];
     pids[1]=fork();if(pids[1]<0)CRASH_FAIL();
     if(!pids[1]){execl(exe,exe,"--no-pci",prefix,"--proc-type=secondary","--",
-        enqueue_prepare?"standby":(cas?"dequeue-cas":"dequeue-pre"),(char*)NULL);_Exit(127);}
+        enqueue_prepare?"standby":(live_other?"dequeue-pre-live":(cas?"dequeue-cas":"dequeue-pre")),(char*)NULL);_Exit(127);}
     pidfds[1]=syscall(SYS_pidfd_open,pids[1],0);if(pidfds[1]<0)CRASH_FAIL();consumer.pid=(uint32_t)pids[1];
     if(ker_generation_admit(r,&producer,pidfds[0])||ker_generation_admit(r,&consumer,pidfds[1]))CRASH_FAIL();
     for(unsigned tick=0;tick<10000&&
@@ -309,33 +319,61 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
         if(waitid(P_PID,(id_t)pids[1],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[1])CRASH_FAIL();
         usleep(1000);
     }
-    if(!atomic_load_explicit(&c->crash_ready,memory_order_acquire)||
-        rte_ring_count(rx)!=0||rte_mempool_in_use_count(pool)!=pool_before+1)CRASH_FAIL();
-    if(enqueue_prepare){
+    struct rte_ring *tx=rte_ring_lookup("drain_tx_p0_q0_g0");
+    unsigned expected_objects=1U+(late_corruption?1U:0U);
+    if(!atomic_load_explicit(&c->crash_ready,memory_order_acquire)||!tx||
+        rte_ring_count(rx)!=0||rte_mempool_in_use_count(pool)!=pool_before+expected_objects||
+        rte_ring_count(tx)!=(late_corruption?1U:0U))CRASH_FAIL();
+    if(live_other){
         if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
             wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||
-            ker_generation_reap_dead(r,&producer)||rte_ring_count(rx)||
-            rte_mempool_in_use_count(pool)!=pool_before||
+            ker_generation_reap_dead(r,&producer)!=-EBUSY||
+            rte_mempool_in_use_count(pool)!=pool_before+1||rte_ring_count(rx)||rte_ring_count(tx)||
             ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
         close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
-        if(syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0)||
-            wait_child_bounded(pids[1],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||
-            ker_generation_reap_dead(r,&consumer))CRASH_FAIL();
+        atomic_store_explicit(&c->transition_release,1,memory_order_release);
+        if(wait_child_bounded(pids[1],&status)||!WIFEXITED(status)||WEXITSTATUS(status))CRASH_FAIL();
+        pids[1]=-1;
+        if(ker_generation_reap_dead(r,&producer)||rte_mempool_in_use_count(pool)!=pool_before||
+            rte_ring_count(rx)||ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
+        if(ker_generation_reap_dead(r,&consumer))CRASH_FAIL();
         close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
     }else{
+        /* Both registrations are exact-dead before the first reap. `pre`
+         * deliberately reaps the idle producer first while the consumer's
+         * active counter is stuck in a real dequeue transition. */
         if(syscall(SYS_pidfd_send_signal,pidfds[1],SIGKILL,NULL,0)||
             wait_child_bounded(pids[1],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)CRASH_FAIL();
-        if(ker_generation_reap_dead(r,&consumer)||rte_ring_lookup("drain_rx_p0_q0_g1")!=rx||
-            rte_ring_count(rx)||rte_mempool_in_use_count(pool)!=pool_before||
-            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
-        close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
         if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
-            wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL||
-            ker_generation_reap_dead(r,&producer))CRASH_FAIL();
-        close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
+            wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)CRASH_FAIL();
+        if(late_corruption){
+            ker_generation_test_corrupt_next_reap();
+            if(ker_generation_reap_dead(r,&producer)!=-EUCLEAN||
+                rte_mempool_in_use_count(pool)!=pool_before+2||rte_ring_count(tx)!=1||rte_ring_count(rx)||
+                ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
+            struct rte_mbuf *restored_tx=NULL;
+            if(rte_ring_dequeue(tx,(void **)&restored_tx)||!restored_tx||
+                rte_pktmbuf_mtod(restored_tx,uint8_t*)[0]!=0x65||rte_ring_enqueue(tx,restored_tx))CRASH_FAIL();
+            ker_generation_test_restore_reap_corruption();
+        }
+        bool consumer_first=!strcmp(mode,"cas");
+        const struct ker_generation_identity *first=consumer_first?&consumer:&producer;
+        const struct ker_generation_identity *second=consumer_first?&producer:&consumer;
+        if(ker_generation_reap_dead(r,first)||rte_ring_lookup("drain_rx_p0_q0_g1")!=rx||
+            rte_ring_count(rx)||rte_ring_count(tx)||rte_mempool_in_use_count(pool)!=pool_before||
+            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||
+            drop_after!=drop_before+(late_corruption?1U:0U))CRASH_FAIL();
+        unsigned first_index=consumer_first?1U:0U;
+        close(pidfds[first_index]);pidfds[first_index]=-1;pids[first_index]=-1;
+        if(ker_generation_reap_dead(r,second)||rte_mempool_in_use_count(pool)!=pool_before||
+            rte_ring_count(rx)||rte_ring_count(tx)||
+            ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||
+            drop_after!=drop_before+(late_corruption?1U:0U))CRASH_FAIL();
+        unsigned second_index=consumer_first?0U:1U;
+        close(pidfds[second_index]);pidfds[second_index]=-1;pids[second_index]=-1;
     }
     if(rte_mempool_in_use_count(pool)!=pool_before||ker_generation_rings_stats(r,&(struct ker_generation_ring_stats){0}))CRASH_FAIL();
-    printf("NR19_REAPER_CRASH_WINDOW_PASS mode=%s exact_owner=true tx_drop_unchanged=true\n",mode);
+    printf("NR19_REAPER_CRASH_WINDOW_PASS mode=%s dead_mask_recovery=true tx_drop_delta=%u\n",mode,late_corruption?1U:0U);
     goto cleanup;
 cleanup:
     if(failed){
@@ -348,6 +386,7 @@ cleanup:
             (void)wait_child_bounded(pids[i],&status);
             if(pidfds[i]>=0){(void)ker_generation_reap_dead(r,i?&consumer:&producer);close(pidfds[i]);pidfds[i]=-1;}
         }
+        for(unsigned i=0;i<2;i++)if(pidfds[i]>=0){close(pidfds[i]);pidfds[i]=-1;}
     }
 #undef CRASH_FAIL
     return failed?-1:0;
@@ -360,7 +399,8 @@ static int primary(const char *prefix,const char *exe)
     if(!mz)return 1;
     struct test_control*c=mz->addr;memset(c,0,sizeof(*c));atomic_init(&c->stage,0);
     atomic_init(&c->gen0_ready,0);atomic_init(&c->crash_ready,0);
-    atomic_init(&c->producer_ready,0);atomic_init(&c->consumer_ready,0);atomic_init(&c->failed,0);
+    atomic_init(&c->producer_ready,0);atomic_init(&c->consumer_ready,0);
+    atomic_init(&c->transition_release,0);atomic_init(&c->failed,0);
     struct ker_generation_rings*r=NULL;if(ker_generation_rings_create(TEST_SESSION,1,2,pool,&r))return 1;
     const struct rte_memzone *directory=rte_memzone_lookup("ker_gen_ring_directory");
     if(!directory)return 1;
@@ -460,11 +500,12 @@ static int primary(const char *prefix,const char *exe)
     if(ker_generation_reap_dead(r,&recycled))FAIL_CHILDREN();
     close(pidfds[0]);pidfds[0]=-1;pids[0]=-1;
     struct ker_generation_ring_stats stats;
-    if(run_dequeue_crash_window(r,pool,file_prefix,exe,"enqueue")||
+    if(run_dequeue_crash_window(r,pool,file_prefix,exe,"live")||
+        run_dequeue_crash_window(r,pool,file_prefix,exe,"enqueue")||
         run_dequeue_crash_window(r,pool,file_prefix,exe,"pre")||
         run_dequeue_crash_window(r,pool,file_prefix,exe,"cas"))FAIL_CHILDREN();
     if(atomic_load(&c->failed)||rte_mempool_in_use_count(pool)!=0||
-        ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.tx_drop!=2||
+        ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.tx_drop!=3||
         stats.rx_full!=1||stats.tx_peak<2||stats.rx_peak<KER_GENERATION_RING_CAPACITY)
         FAIL_CHILDREN();
     if(ker_generation_rings_destroy(r))FAIL_CHILDREN();
@@ -483,8 +524,8 @@ int main(int argc,char**argv)
         if(!prefix)rc=2;else{char exe[PATH_MAX];if(!realpath(argv[0],exe))rc=2;else rc=primary(prefix,exe);}
     }else if(!strcmp(mode,"0")||!strcmp(mode,"1"))rc=secondary((unsigned)atoi(mode),0);
     else if(!strcmp(mode,"r"))rc=secondary(1,1);
-    else if(!strcmp(mode,"producer-enqueue")||!strcmp(mode,"producer-pre")||
-        !strcmp(mode,"dequeue-pre")||!strcmp(mode,"producer-cas")||
+    else if(!strcmp(mode,"producer-enqueue")||!strcmp(mode,"producer-pre")||!strcmp(mode,"producer-pre-tx")||
+        !strcmp(mode,"dequeue-pre")||!strcmp(mode,"dequeue-pre-live")||!strcmp(mode,"producer-cas")||
         !strcmp(mode,"dequeue-cas")||!strcmp(mode,"standby"))rc=secondary_dequeue_crash(mode);
     else rc=2;
     rte_eal_cleanup();return rc;

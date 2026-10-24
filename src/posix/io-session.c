@@ -2192,6 +2192,10 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
          * inspect data leases or touch either device queue before admission.
          * One P request receives exactly one outcome, so the supervisor never
          * leaves a retry byte pending when the packet loop takes control. */
+#ifdef KER_SESSION_TEST_HOOKS
+        bool test_pending_heartbeat_done = false;
+        bool test_pending_heartbeat_reported = false;
+#endif
         while (!device_packet && !stopping) {
             if (heartbeat_tick(fd, &message, &message.sequence, peer, &heartbeat) < 0) goto cleanup;
             struct pollfd waiters[] = {{.fd = control, .events = POLLIN},
@@ -2210,6 +2214,42 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             if (!(waiters[0].revents & POLLIN) || read(control, &command, 1) != 1 || command != 'P') {
                 result = 0; goto cleanup;
             }
+#ifdef KER_SESSION_TEST_HOOKS
+            /* Deterministically leave a real heartbeat ACK queued at the
+             * PMD exchange boundary. Without the drain below, acquire_pmd()
+             * would consume this ACK as its own response. */
+            if (!test_pending_heartbeat_done && getenv("KER_SESSION_TEST_PENDING_HB_BEFORE_PMD")) {
+                test_pending_heartbeat_done = true;
+                if (!heartbeat.pending) {
+                    heartbeat.last_ack_ms = 0;
+                    if (heartbeat_tick(fd, &message, &message.sequence, peer, &heartbeat) < 0 ||
+                        !heartbeat.pending) goto cleanup;
+                }
+                struct pollfd ack = {.fd = fd, .events = POLLIN};
+                int ack_ready;
+                do ack_ready = poll(&ack, 1, 1000); while (ack_ready < 0 && errno == EINTR);
+                if (ack_ready != 1 || !(ack.revents & POLLIN)) goto cleanup;
+                fprintf(stderr, "KER_SESSION_TEST_PENDING_HB_QUEUED\n");
+            }
+#endif
+            int heartbeat_drain = drain_worker_heartbeat(fd, &heartbeat, peer, control);
+            if (heartbeat_drain == -EINTR && !stopping) {
+                /* A later command may already be queued. Keep this consumed
+                 * P request's outcome ordered before processing that command. */
+                heartbeat_drain = drain_worker_heartbeat(fd, &heartbeat, peer, -1);
+            }
+            if (heartbeat_drain == -EINTR && stopping) goto cleanup;
+            if (heartbeat_drain) goto cleanup;
+            struct pollfd control_state = {.fd = control, .events = POLLIN};
+            int control_ready;
+            do control_ready = poll(&control_state, 1, 0); while (control_ready < 0 && errno == EINTR);
+            if (control_ready < 0 || (control_state.revents & (POLLHUP | POLLERR | POLLNVAL))) goto cleanup;
+#ifdef KER_SESSION_TEST_HOOKS
+            if (test_pending_heartbeat_done && !test_pending_heartbeat_reported) {
+                test_pending_heartbeat_reported = true;
+                fprintf(stderr, "KER_SESSION_TEST_PENDING_HB_DRAINED\n");
+            }
+#endif
             int acquired = acquire_pmd(fd, &message, peer, pool, leased_packet, &device_packet, &exception_fd);
             if (acquired && acquired != -EBUSY) {
                 fprintf(stderr, "ker session: standby PMD acquisition failed %d\n", acquired); goto cleanup;

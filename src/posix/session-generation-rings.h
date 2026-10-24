@@ -106,7 +106,7 @@ void ker_generation_test_hold_next_dequeue(void);
 /* Test-only: make the next resident detach fail validation after collection. */
 void ker_generation_test_corrupt_next_detach(void);
 void ker_generation_test_corrupt_next_reap(void);
-void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready);
+void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready, _Atomic unsigned *release);
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready);
 void ker_generation_test_hold_after_enqueue_prepare(_Atomic unsigned *ready);
 /* Test-only late journal corruption and raw metric observation for reaper rollback. */

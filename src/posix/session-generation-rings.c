@@ -79,6 +79,7 @@ static _Atomic unsigned test_corrupt_next_reap;
 static struct journal_entry *test_reap_corrupt_entry;
 static uint32_t test_reap_original_ring_slot;
 static _Atomic unsigned *test_ring_remove_ready;
+static _Atomic unsigned *test_ring_remove_release;
 static _Atomic unsigned *test_dequeue_cas_ready;
 static _Atomic unsigned *test_enqueue_prepare_ready;
 void ker_generation_test_hold_next_dequeue(void)
@@ -87,18 +88,19 @@ void ker_generation_test_corrupt_next_detach(void)
 { atomic_store_explicit(&test_corrupt_next_detach,1,memory_order_release); }
 void ker_generation_test_corrupt_next_reap(void)
 { atomic_store_explicit(&test_corrupt_next_reap,1,memory_order_release); }
-void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready)
-{ test_ring_remove_ready=ready; }
+void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready,_Atomic unsigned *release)
+{ test_ring_remove_ready=ready;test_ring_remove_release=release; }
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready)
 { test_dequeue_cas_ready=ready; }
 void ker_generation_test_hold_after_enqueue_prepare(_Atomic unsigned *ready)
 { test_enqueue_prepare_ready=ready; }
-static void test_pause_at_transition(_Atomic unsigned **ready)
+static void test_pause_at_transition(_Atomic unsigned **ready,_Atomic unsigned **release)
 {
     if(!*ready)return;
     atomic_store_explicit(*ready,1,memory_order_release);
     const struct timespec nap={.tv_nsec=1000000};
-    for(;;)nanosleep(&nap,NULL);
+    while(!release||!*release||!atomic_load_explicit(*release,memory_order_acquire))nanosleep(&nap,NULL);
+    *ready=NULL;*release=NULL;
 }
 int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *r,
     const struct ker_generation_identity *owner,uint32_t after_ring_slot)
@@ -762,7 +764,7 @@ static int enqueue(struct ker_generation_rings *r, const struct ker_generation_i
     }
     atomic_store_explicit(&j->state,JOURNAL_QUEUED,memory_order_release);
 #ifdef KER_SESSION_TEST_HOOKS
-    test_pause_at_transition(&test_enqueue_prepare_ready);
+    test_pause_at_transition(&test_enqueue_prepare_ready,NULL);
 #endif
     int rc=tx?rte_ring_enqueue(r->tx[i],m):rte_ring_enqueue(r->rx[i],m);
     if (rc) { j->packet=NULL; atomic_store_explicit(&j->state,JOURNAL_FREE,memory_order_release);
@@ -798,7 +800,7 @@ static int dequeue(struct ker_generation_rings*r,const struct ker_generation_ide
     int rc=tx?rte_ring_dequeue(r->tx[i],(void**)&m):rte_ring_dequeue(r->rx[i],(void**)&m);
     if(rc){operation_leave(r,id,ring_generation);return 0;}
 #ifdef KER_SESSION_TEST_HOOKS
-    test_pause_at_transition(&test_ring_remove_ready);
+    test_pause_at_transition(&test_ring_remove_ready,&test_ring_remove_release);
 #endif
     struct journal_entry*j=journal_find(r,m);
     int ownership_ok = j && (tx ? (j->direction && j->producer.generation == g &&
@@ -809,7 +811,7 @@ static int dequeue(struct ker_generation_rings*r,const struct ker_generation_ide
         operation_leave(r,id,ring_generation);return restore?-EUCLEAN:(expected==JOURNAL_PREPARED?-EAGAIN:-EPROTO);
     }
 #ifdef KER_SESSION_TEST_HOOKS
-    test_pause_at_transition(&test_dequeue_cas_ready);
+    test_pause_at_transition(&test_dequeue_cas_ready,NULL);
 #endif
     j->consumer=*id;
     if (tx) j->owner = *id;
@@ -931,10 +933,6 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
 {
     if(!r||!r->primary||!identity_valid(r,owner))return -EINVAL;
     uint32_t g=owner->generation;
-    if(r->pidfd[g]<0||!same_identity(&r->registered[g],owner))return -ESTALE;
-    int n;
-    struct pollfd pfd={.fd=r->pidfd[g],.events=POLLIN};
-    do n=poll(&pfd,1,0);while(n<0&&errno==EINTR);if(n<=0||!(pfd.revents&POLLIN))return n<0?-errno:-EBUSY;
     size_t count_rings=ring_count(r);
     if(count_rings>SIZE_MAX/2 || count_rings*2>SIZE_MAX/sizeof(struct reap_ring_batch) ||
         count_rings>SIZE_MAX/sizeof(uint64_t)) return -EOVERFLOW;
@@ -944,10 +942,33 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
     unsigned char *claimed=calloc(r->object_count,sizeof(*claimed));
     if(!batches||!tx_drops||!claimed){free(batches);free(tx_drops);free(claimed);return -ENOMEM;}
     rte_spinlock_lock(&r->directory->lock);
+    if(r->pidfd[g]<0||!same_identity(&r->registered[g],owner)){
+        rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return -ESTALE;
+    }
+    /* A dead peer may still have an active counter if it died in a fast-path
+     * operation. Only the resident-owned pidfd proves which counters and
+     * registrations can safely be abandoned. */
+    unsigned dead_mask=0;
+    for(unsigned actor=0;actor<KER_GENERATION_RING_GENERATIONS;actor++){
+        if(r->pidfd[actor]<0)continue;
+        struct pollfd pfd={.fd=r->pidfd[actor],.events=POLLIN};
+        int n;do n=poll(&pfd,1,0);while(n<0&&errno==EINTR);
+        if(n<0){int error=-errno;rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return error;}
+        if(n>0&&(pfd.revents&POLLIN)){
+            if(!identity_valid(r,&r->registered[actor])||r->registered[actor].generation!=actor){
+                rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return -EUCLEAN;
+            }
+            dead_mask|=1U<<actor;
+        }
+    }
+    if(!(dead_mask&(1U<<g))){
+        rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return -EBUSY;
+    }
     atomic_store_explicit(&r->gate[0],1,memory_order_release);
     atomic_store_explicit(&r->gate[1],1,memory_order_release);
-    for(uint16_t p=0;p<r->ports;p++)for(uint16_t q=0;q<r->queues;q++)
-        atomic_store_explicit(&r->admitted[coord_index(r,p,q,g)],0,memory_order_release);
+    for(unsigned dead_generation=0;dead_generation<2;dead_generation++)if(dead_mask&(1U<<dead_generation))
+        for(uint16_t p=0;p<r->ports;p++)for(uint16_t q=0;q<r->queues;q++)
+            atomic_store_explicit(&r->admitted[coord_index(r,p,q,dead_generation)],0,memory_order_release);
     struct timespec wait_until,wait_now,wait_nap={.tv_nsec=1000000};
     if(clock_gettime(CLOCK_MONOTONIC,&wait_until)){
         int error=-errno;rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return error;
@@ -955,7 +976,7 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
     wait_until.tv_sec+=1;
     for(;;){
         bool busy=false;
-        for(unsigned actor=0;actor<2;actor++)if(actor!=g)
+        for(unsigned actor=0;actor<2;actor++)if(!(dead_mask&(1U<<actor)))
             for(unsigned ring=0;ring<2;ring++)
                 busy|=atomic_load_explicit(&r->active[actor*2+ring],memory_order_acquire)!=0;
         if(!busy)break;
@@ -967,8 +988,10 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
         }
         nanosleep(&wait_nap,NULL);
     }
-    atomic_store_explicit(&r->active[g*2],0,memory_order_release);
-    atomic_store_explicit(&r->active[g*2+1],0,memory_order_release);
+    for(unsigned actor=0;actor<2;actor++)if(dead_mask&(1U<<actor)){
+        atomic_store_explicit(&r->active[actor*2],0,memory_order_release);
+        atomic_store_explicit(&r->active[actor*2+1],0,memory_order_release);
+    }
     reap_clear_seen(r);
 #define REAP_ABORT(error) do { \
         int restore_result=reap_restore_rings(batches,batch_count,0); \
@@ -1005,7 +1028,10 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
     if(atomic_exchange_explicit(&test_corrupt_next_reap,0,memory_order_acq_rel)) {
         /* A late invalid RX coordinate tests that earlier queued TX is not
          * reclaimed before global journal validation completes. */
-        if(ker_generation_test_corrupt_late_queued_rx(r,owner,0)) REAP_ABORT(-EUCLEAN);
+        const struct ker_generation_identity *corrupt_owner=owner;
+        unsigned other=g^1U;
+        if((dead_mask&(1U<<other))&&r->pidfd[other]>=0)corrupt_owner=&r->registered[other];
+        if(ker_generation_test_corrupt_late_queued_rx(r,corrupt_owner,0)) REAP_ABORT(-EUCLEAN);
     }
 #endif
     for(size_t i=0;i<batch_count;i++){
@@ -1028,8 +1054,12 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
                 (j->owner.generation!=j->ring_generation||
                 j->producer.generation!=(j->ring_generation^1U)))) REAP_ABORT(-EUCLEAN);
         if(!j->seen&&!packet_claim_chain(r,j->packet,claimed)) REAP_ABORT(-EUCLEAN);
-        int dead_owner=same_identity(&j->owner,owner);
-        int dead_producer=same_identity(&j->producer,owner);
+        int dead_owner=0,dead_producer=0;
+        for(unsigned actor=0;actor<2;actor++)if(dead_mask&(1U<<actor)){
+            const struct ker_generation_identity *dead=&r->registered[actor];
+            dead_owner|=same_identity(&j->owner,dead);
+            dead_producer|=same_identity(&j->producer,dead);
+        }
         int reclaim=0;
         if(state==JOURNAL_QUEUED){
             if(j->actor_generation!=j->producer.generation) REAP_ABORT(-EUCLEAN);
@@ -1123,11 +1153,13 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
     reap_clear_seen(r);
     for(size_t i=0;i<count_rings;i++) if(tx_drops[i])
         atomic_fetch_add_explicit(&r->stats[i].tx_drop,tx_drops[i],memory_order_relaxed);
+    /* Retire exactly the requested registration before reopening the gates;
+     * another resident request cannot race a second close of this pidfd. */
+    close(r->pidfd[g]);r->pidfd[g]=-1;memset(&r->registered[g],0,sizeof(r->registered[g]));
     atomic_store_explicit(&r->gate[0],0,memory_order_release);
     atomic_store_explicit(&r->gate[1],0,memory_order_release);
     rte_spinlock_unlock(&r->directory->lock);
     free(batches);free(tx_drops);free(claimed);
-    close(r->pidfd[g]);r->pidfd[g]=-1;memset(&r->registered[g],0,sizeof(r->registered[g]));
 #undef REAP_ABORT
 #undef REAP_COMMIT_ABORT
     return 0;
