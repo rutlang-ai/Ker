@@ -350,11 +350,12 @@
       "id": "configuration-contracts",
       "title": "Resolve remaining typed configuration and intentional schema differences",
       "disposition": "contract-review",
-      "reason": "Ker typed settings and Linux defaults differ from F-Stack global structures, permissive handlers, FreeBSD boot fields and several fixture/default/ignore contracts. Existing subset coverage must not be promoted to complete fixture equivalence.",
+      "reason": "Ker typed settings and Linux defaults differ from F-Stack global structures, permissive handlers, FreeBSD boot fields and several fixture/default/ignore contracts. Existing subset coverage must not be promoted to complete fixture equivalence. VLAN configuration-record list allocation rejection now qualifies through the production loader. RX core-list allocation failure evidence does not qualify the remaining global F-Stack proc_lcore allocation contract.",
       "evidence": [
         "tools/ker-run.py",
         "tests/posix/test_ker_run_config.py",
-        "tests/upstream/fstack/tests/unit/test_ff_config.c"
+        "tests/upstream/fstack/tests/unit/test_ff_config.c",
+        "tests/posix/test_ker_run_config.py"
       ],
       "acceptance": [
         "Review each source assertion and identify a supported typed/runtime adaptation or an explicitly unsuitable FreeBSD/schema contract.",
@@ -377,7 +378,6 @@
         "tests/unit/test_ff_config.c::test_vlan_cfg_handler_portid_over_max_skips",
         "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
         "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
-        "tests/unit/test_ff_config.c::test_vlan_cfgs_calloc_oom_returns_error",
         "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
         "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off"
       ],

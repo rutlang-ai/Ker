@@ -804,6 +804,120 @@ class ConfigTests(unittest.TestCase):
                 self.assertIn('tcp-ecn', result.stderr)
                 self.assertNotIn('Traceback', result.stderr)
 
+    def test_owned_configuration_array_allocation_failure(self):
+        # Fail the actual list-construction opcode in the production builder,
+        # not an unrelated malloc, a fake parser or a successful runtime call.
+        probe = r"""
+import dis
+import importlib.util
+import inspect
+from pathlib import Path
+import sys
+import types
+spec = importlib.util.spec_from_file_location('array_probe', sys.argv[1])
+launcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(launcher)
+stage, mode, configuration, marker, stats = sys.argv[2:]
+if stage == 'vlan' and mode == 'ini':
+    function = launcher.read_configuration
+    prefix = "values.setdefault('vlans', [])"
+else:
+    function = launcher.vlan_setting if stage == 'vlan' else launcher.rx_lcore_list
+    prefix = 'values = [' if stage == 'vlan' else 'cores = ['
+lines, first = inspect.getsourcelines(function)
+line = next(first + i for i, text in enumerate(lines) if text.strip().startswith(prefix))
+def codes(code):
+    yield code
+    for constant in code.co_consts:
+        if isinstance(constant, types.CodeType):
+            yield from codes(constant)
+# CPython may inline a comprehension or compile a child code object. Both
+# forms retain the original allocation line; select its first BUILD_LIST.
+targets = []
+for code in codes(function.__code__):
+    current_line = code.co_firstlineno
+    for instruction in dis.get_instructions(code):
+        if instruction.starts_line is not None:
+            current_line = instruction.starts_line
+        positions = getattr(instruction, 'positions', None)
+        allocation_line = positions.lineno if positions is not None else current_line
+        if instruction.opname == 'BUILD_LIST' and allocation_line == line:
+            targets.append((code, instruction.offset))
+assert targets, 'no production list allocation found'
+target = targets[0]
+injected = False
+def trace(frame, event, argument):
+    global injected
+    if frame.f_code == target[0]:
+        frame.f_trace_opcodes = True
+        if event == 'opcode' and frame.f_lasti == target[1] and not injected:
+            injected = True
+            sys.settrace(None)
+            frame.f_trace = None
+            print('INJECT: BUILD_LIST ' + stage, flush=True)
+            raise MemoryError('test-only owned configuration array allocation')
+    return trace
+def forbidden(*args, **kwargs):
+    raise AssertionError('allocation failure crossed process boundary')
+launcher.subprocess.Popen = forbidden
+launcher.subprocess.run = forbidden
+launcher.subprocess.check_output = forbidden
+arguments = ['--address', '198.18.0.2/24', '--port', 'net_tap0',
+             '--eal=--no-pci --no-huge', '--library', '/missing-library',
+             '--io-worker', '/missing-worker', '--stats', stats]
+if mode == 'ini':
+    arguments += ['--config', configuration]
+elif stage == 'vlan':
+    arguments += ['--vlan', '100=198.19.0.2/24,2001:db8:19::2/64',
+                  '--vlan', '200=198.20.0.2/24']
+else:
+    arguments += ['--queues', '2', '--rx-lcores', '0,1']
+arguments += ['--', '/bin/touch', marker]
+sys.argv = [sys.argv[1], *arguments]
+sys.settrace(trace)
+try:
+    try:
+        result = launcher.main()
+    except SystemExit as error:
+        result = error.code
+finally:
+    sys.settrace(None)
+assert injected and result == 2
+values = launcher.parse_arguments(arguments)
+if stage == 'vlan':
+    assert len(values.vlans) == 2 and values.vlans[0][0] == 100
+    assert len(values.vlans[0][1]) == 2 and values.vlans[1][0] == 200
+    assert str(values.vlans[1][1][0]) == '198.20.0.2/24'
+else:
+    assert values.rx_lcores == '0,1' and values.queues == 2
+print('RECOVERED: ' + stage, flush=True)
+sys.exit(result)
+"""
+        fixtures = {
+            'vlan': '[vlan.100]\naddresses=198.19.0.2/24,2001:db8:19::2/64\n'
+                    '[vlan.200]\naddresses=198.20.0.2/24\n',
+            'rx': '[dpdk]\nqueues=2\nrx_lcores=0,1\n',
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            helper = root / 'array_probe.py'
+            helper.write_text(probe)
+            for stage, text in fixtures.items():
+                for mode in ('ini', 'cli'):
+                    with self.subTest(stage=stage, mode=mode):
+                        config, marker, stats = root / 'config.ini', root / 'entered', root / 'stats.json'
+                        config.write_text(text)
+                        result = subprocess.run([sys.executable, str(helper), str(SOURCE), stage, mode,
+                            str(config), str(marker), str(stats)], capture_output=True, text=True, timeout=5)
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        self.assertIn('INJECT: BUILD_LIST ' + stage, result.stdout)
+                        self.assertIn('RECOVERED: ' + stage, result.stdout)
+                        self.assertIn('configuration allocation failed', result.stderr)
+                        self.assertNotIn('Traceback', result.stderr)
+                        self.assertNotIn('missing-library', result.stderr)
+                        self.assertFalse(marker.exists())
+                        self.assertFalse(stats.exists())
+
     def test_device_configuration_allocation_failure(self):
         # Replace only the actual dict allocation in one selected production
         # builder. The failure path forbids process creation; recovery uses a
