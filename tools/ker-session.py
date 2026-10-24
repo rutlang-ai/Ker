@@ -136,7 +136,10 @@ def lease(args):
                 raise RuntimeError('short ticket write')
             close_fd('write_fd')
 
-            selector = selectors.DefaultSelector()
+            # DPDK callers may redirect stdin to regular files or /dev/null.
+            # epoll rejects those descriptors with EPERM; poll supports them
+            # while retaining the bounded wait used to observe signals.
+            selector = selectors.PollSelector()
             stdin_fd = sys.stdin.fileno()
             input_open = True
             stdin_eof = False

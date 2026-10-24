@@ -169,6 +169,37 @@ def main():
             master.request(api.RELEASE, **coordinate); master.close()
             eventually(0, 0)
 
+            def redirected_stdin(label, source):
+                lease = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common],
+                    stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    env=environment, bufsize=0)
+                processes.append(lease)
+                entry = ready(lease, 'KER_SESSION_ATTACHED')
+                pidfd = os.pidfd_open(entry['pid'])
+                try:
+                    output, errors = lease.communicate(timeout=20)
+                    require(lease.returncode == 0,
+                            label + ' lease did not exit normally: ' + errors.decode() + output.decode())
+                    with selectors.PollSelector() as selector:
+                        selector.register(pidfd, selectors.EVENT_READ)
+                        require(selector.select(5), label + ' left its exact EAL secondary alive')
+                finally:
+                    os.close(pidfd)
+                after = eventually(0, 0)
+                require(after['slot'] == 0 and after['epoch'] > entry['epoch'],
+                        label + ' did not release and advance its exact lease epoch')
+                print('PASS: ' + label + ' actual EAL secondary cleanup and lease release')
+
+            redirected_stdin('/dev/null', subprocess.DEVNULL)
+            empty_stdin = root / 'stdin-empty'
+            empty_stdin.write_bytes(b'')
+            with empty_stdin.open('rb') as source:
+                redirected_stdin('empty regular-file stdin', source)
+            binary_stdin = root / 'stdin-binary'
+            binary_stdin.write_bytes(b'\x00\xff\ncontrol\x80\x00')
+            with binary_stdin.open('rb') as source:
+                redirected_stdin('binary regular-file stdin', source)
+
             leases, entries = [], []
             for gen, process_id in ((0, 0), (1, 3), (0, 0)):
                 lease = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common,

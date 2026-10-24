@@ -134,6 +134,10 @@ endif()
 install(FILES "${ker_native_source}/COPYING" "${ker_native_source}/LICENSES/preferred/GPL-2.0"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux)
 if(BUILD_TESTING)
+    add_test(NAME native-fstack-session-lease-input
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-lease-input.py"
+            --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-lease-input PROPERTIES TIMEOUT 30 LABELS "fstack;session")
     add_test(NAME native-fstack-session-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
