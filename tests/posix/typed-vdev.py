@@ -138,7 +138,7 @@ def main():
                     text = '[dpdk]\nnb_vdev=1\nport=net_virtio_user0\n'
                     if args.queue_one:
                         text += 'queues=2\n'
-                    memory_mb = 1024 if queue_size == 32768 else 64
+                    memory_mb = 1024 if queue_size == 32768 else 128 if queue_size == 4096 else 64
                     text += f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m {memory_mb}\n'
                     text += '[network]\naddress=198.18.0.2/24\naddress6=2001:db8:1::2/64\nmax_mtu=1500\n'
                     if repeated:
@@ -205,15 +205,18 @@ def main():
                                         # original raw EAL vdev interface without expanding Ker's typed
                                         # configuration schema.
                                         tcp_udp_config = root / 'queue-4096-vectorized.ini'
-                                        tcp_udp_config.write_text(
-                                            '[dpdk]\nnb_vdev=0\nport=net_virtio_user0\n'
+                                        vectorized_config = '[dpdk]\nnb_vdev=0\nport=net_virtio_user0\n'
+                                        if args.queue_one:
+                                            vectorized_config += 'queues=2\n'
+                                        vectorized_config += (
                                             f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf '
-                                            f'--no-telemetry --iova-mode=va -m 64 '
+                                            f'--no-telemetry --iova-mode=va -m 128 '
                                             f'--vdev=net_virtio_user0,path={backend_path},queues=2,'
                                             'queue_size=4096,mac=00:11:22:33:44:55,'
                                             'vectorized=1,mrg_rxbuf=0,in_order=0\n'
                                             '[network]\naddress=198.18.0.2/24\n'
                                             'address6=2001:db8:1::2/64\nmax_mtu=1500\n')
+                                        tcp_udp_config.write_text(vectorized_config)
                                     command = [sys.executable, str(args.launcher), '--config', str(tcp_udp_config),
                                         '--library', str(args.library), '--io-worker', str(args.worker),
                                         '--stats', str(tcp_udp_stats)]

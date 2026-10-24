@@ -104,8 +104,9 @@ For RX queue accounting, shared copies must be subtracted (zero in outer-type mo
 `sum(rx_by_queue) = rx + rx_dropped + exception_selected - exception_shared_selected + rx_shutdown_discarded - rx_startup_discarded`.
 At the initial TAP milestone, 30 KNI/configuration/ownership source cases
 remained incomplete. The destination-port milestone below further qualifies
-17 scenarios and the admission milestone qualifies four more. The invalid-process-type check below qualifies one more. Issue219 remains open
-with eight source cases plus the documented service-ownership/encapsulation gaps.
+17 scenarios, admission qualifies four, invalid-process rejection one, and RX
+lcore membership two. Issue219 remains open with six source cases plus the
+documented service-ownership/encapsulation gaps.
 
 ## Destination-port mode
 
@@ -228,9 +229,8 @@ accept/reject policies. It requires both charged classes, their sum equal to
 selected, no admission drops, and no repeated charge under the existing three
 ARP channel EAGAIN injections, while real host/native IPv4/IPv6 TCP/UDP completes.
 
-Eight KNI source cases remain for primary-lcore/per-port core-list validation
-and generation/non-owner/named allocation contracts. Fragment/encapsulation, full
-multicast/generation fanout and automatic cross-stack ephemeral ownership gaps
+Six KNI source cases remain for generation/non-owner/named allocation
+contracts. Fragment/encapsulation, full multicast/generation fanout and automatic cross-stack ephemeral ownership gaps
 remain explicit; admission limits do not implement those behaviors.
 
 
@@ -238,6 +238,18 @@ The pinned `test_ipfw_pr_cfg_handler_isolated` body checks an invalid process
 type, despite its name. `native-fstack-eal-file-prefix` now requires actual
 original EAL rejection of `bogus_proc_type` before worker readiness, interface
 creation or application entry, followed by healthy same-prefix primary TCP/UDP.
-This further qualifies one source configuration scenario. It does not validate
-F-Stack per-port `lcore_list` membership or generation ownership: those remain
-open under issue219 even though Ker has an actual primary EAL owner.
+This further qualifies one source configuration scenario. Per-port main
+membership is separately qualified by the real RX-lcore feature below.
+Generation ownership remains open under issue219.
+
+## Port RX lcore ownership
+
+With explicit [RX lcore ownership](rx-lcores.md), an exception-enabled port must
+include the **actual original EAL main** in its `rx_lcores` selection. An enabled
+but unselected main is rejected before application entry or exception TAP
+creation. Selected cores genuinely poll disjoint queues; remote mbufs enter
+bounded SP/SC handoff rings, and main alone delivers/captures/routes them.
+The accepted source core-list and missing-main scenarios are now qualified by
+actual two-core PMD/host/native Linux runs, including an EAL main other than0.
+This is same-generation per-port queue ownership, not the six remaining
+F-Stack future-owner/inject-ring/non-owner/named allocator contracts.

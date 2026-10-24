@@ -106,7 +106,7 @@
       "id": "kni-exception-bridge",
       "title": "Define a supported host exception bridge and KNI policy adaptation",
       "disposition": "adaptation-needed",
-      "reason": "Actual original-DPDK classification, host/native Linux service routing and console/general admission budgets cover29 TAP/classification/configuration/admission source scenarios. Real original EAL now also qualifies the misleadingly named test_ipfw_pr_cfg_handler_isolated invalid-process-type rejection scenario. Remaining8 source cases concern primary-lcore/per-port lcore-list validation and generation/non-owner/named allocation contracts. A single worker does not prove per-port core inclusion. Static port ownership still lacks fragment reassembly/flow ownership, deeper/opaque encapsulations, full multicast/generation fanout and automatic cross-stack ephemeral discovery; explicit fragment drops are not migration completion.",
+      "reason": "Actual original-DPDK classification, host/native Linux service routing, console/general admission and invalid-process rejection now also have real per-port RX lcore ownership. Original EAL main membership in the port list is accepted/rejected before app entry as required by the two source fixtures; both selected cores genuinely poll disjoint PMD queues and preserve owned handoff/cleanup. Six remaining source contracts use future-generation/non-owner/inject-ring or named statistics/slot allocation state and are not proved by same-generation EAL lcores. Static port ownership still lacks fragment reassembly/flow ownership, deeper/opaque encapsulations, full multicast/generation fanout and automatic cross-stack ephemeral discovery; explicit fragment drops are not migration completion.",
       "evidence": [
         "src/posix/packet-device.c",
         "tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c",
@@ -120,7 +120,11 @@
         "tests/posix/exception-filter.c",
         "tests/posix/exception-services.py",
         "tests/posix/exception-backpressure.c",
-        "tests/posix/eal-file-prefix.py"
+        "tests/posix/eal-file-prefix.py",
+        "src/posix/worker-rx-lcores.c",
+        "tests/posix/rx-lcores.c",
+        "tests/posix/rx-lcores.py",
+        "docs/rx-lcores.md"
       ],
       "acceptance": [
         "Choose an actual supported DPDK/Linux exception device and explicit packet ownership boundary; do not add successful no-op KNI stubs.",
@@ -129,8 +133,6 @@
         "Resolve fragment/encapsulation and automatic local-port ownership with original Linux facilities, or keep an explicit unsupported boundary. Do not build Ker-owned reassembly or connection tracking merely to steer packets."
       ],
       "cases": [
-        "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_present_ok",
-        "tests/unit/test_ff_config.c::test_ff_check_config_kni_primary_lcore_missing_fails",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",

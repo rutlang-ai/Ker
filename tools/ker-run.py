@@ -140,7 +140,7 @@ def exception_ports(value):
     return ','.join(result)
 
 
-CONFIG_DEFAULTS = dict(exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None, exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0, exception_console_rate=0, exception_general_rate=0, tx_offloads='off', rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(rx_lcores=None, exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None, exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0, exception_console_rate=0, exception_general_rate=0, tx_offloads='off', rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -162,7 +162,7 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str), 'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str), 'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int), 'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int), 'exception_console_rate': ('exception_console_rate', int), 'exception_general_rate': ('exception_general_rate', int), 'tx_offloads': ('tx_offloads', str), 'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'rx_lcores': ('rx_lcores', str), 'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str), 'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str), 'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int), 'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int), 'exception_console_rate': ('exception_console_rate', int), 'exception_general_rate': ('exception_general_rate', int), 'tx_offloads': ('tx_offloads', str), 'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -314,11 +314,23 @@ def bond_device_argument(bond):
                     ('primary', 'socket_id', 'mac', 'xmit_policy') if key in bond))
 
 
+def rx_lcore_list(value, queues):
+    if value is None:
+        return None
+    parts = [part.strip() for part in value.split(',')]
+    if not parts or len(parts) > queues or any(not re.fullmatch(r'[0-9]{1,4}', part) for part in parts):
+        raise ValueError('RX lcores require decimal IDs, at most one selected core per active queue')
+    cores = [int(part) for part in parts]
+    if len(set(cores)) != len(cores):
+        raise ValueError('RX lcores must be unique')
+    return ','.join(str(core) for core in cores)
+
+
 def additional_interfaces(ini):
     result = []
     convert = {'address': ipaddress.IPv4Interface, 'address6': ipaddress.IPv6Interface,
                'vip_addresses': vip_addresses, 'vip_addresses6': vip_addresses6,
-               'port': str, 'eal': str, 'tx_offloads': str, 'queues': int, 'rss': bool, 'mtu': int, 'max_mtu': int, 'mbuf_mode': str}
+               'rx_lcores': str, 'port': str, 'eal': str, 'tx_offloads': str, 'queues': int, 'rss': bool, 'mtu': int, 'max_mtu': int, 'mbuf_mode': str}
     for section in ini.sections():
         if not section.startswith('interface.'):
             continue
@@ -451,6 +463,7 @@ def parse_arguments(argv=None):
     huge_policy.add_argument('--hugepages', dest='no_huge', action='store_false', help='require EAL hugepage mode; needs configured host hugepages')
     parser.add_argument('--memory-channels', type=int,
         help='DPDK memory channels per socket, 1..2147483647; omitted preserves EAL policy; conflicts with EAL -n/--memory-channels')
+    parser.add_argument('--rx-lcores', help='comma-separated enabled EAL lcore IDs for this port; queues assigned round robin')
     parser.add_argument('--lcore-mask', help='nonzero hexadecimal DPDK lcore mask; conflicts with EAL -c/-l/--lcores')
     parser.add_argument('--port', help='DPDK ethdev name')
     parser.add_argument('--tx-delay-us', type=int, help='Ethernet TX batch wait, 0..100 microseconds; default 0 sends without intentional delay')
@@ -672,6 +685,10 @@ def parse_arguments(argv=None):
         if any(token.split('=', 1)[0] in ('--no-shconf', '--in-memory') for token in raw_eal_options):
             parser.error('--memory-channels requires EAL shared configuration; --no-shconf/--in-memory skip channel initialization')
         eal_prefix += ['-n', str(args.memory_channels)]
+    try:
+        args.rx_lcores = rx_lcore_list(args.rx_lcores, args.queues)
+    except ValueError as error:
+        parser.error(str(error))
     if args.lcore_mask is not None:
         mask = args.lcore_mask.strip()
         if not re.fullmatch(r'(?:0[xX])?[0-9a-fA-F]+', mask) or int(mask, 16) == 0:
@@ -728,6 +745,10 @@ def parse_arguments(argv=None):
             parser.error('additional interface queues must be in 1..16')
         if interface['mbuf_mode'] not in ('large', 'scatter'):
             parser.error('additional interface mbuf_mode must be large or scatter')
+        try:
+            interface['rx_lcores'] = rx_lcore_list(interface.get('rx_lcores'), interface['queues'])
+        except ValueError as error:
+            parser.error(str(error))
         interface.setdefault('address6', None)
         interface.setdefault('vip_addresses', ())
         interface.setdefault('vip_addresses6', ())
@@ -779,6 +800,8 @@ class AdditionalWorker:
         options = ['--tx-offloads', str(TX_OFFLOADS[item['tx_offloads']]), '--queues', str(item['queues']), '--mtu', str(item['mtu']), '--max-mtu', str(item['max_mtu']),
                    '--mbuf-mode', item['mbuf_mode'], '--idle-sleep-us', str(args.idle_sleep_us),
                    '--tx-delay-us', str(args.tx_delay_us), '--numa' if args.numa else '--no-numa']
+        if item['rx_lcores'] is not None:
+            options += ['--rx-lcores', item['rx_lcores']]
         if item['rss']:
             options.append('--rss')
         if args.all_multicast or item['address6'] is not None:
@@ -940,8 +963,9 @@ def main():
                 value = getattr(args, 'exception_' + name + '_ports')
                 if value is not None:
                     exception_options += ['--exception-' + name + '-ports', value]
+        rx_lcore_options = ['--rx-lcores', args.rx_lcores] if args.rx_lcores is not None else []
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), *(['--rss'] if args.rss else []), '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, *exception_options, '--', *args.eal_args],
+            '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), *(['--rss'] if args.rss else []), '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, *exception_options, *rx_lcore_options, '--', *args.eal_args],
             pass_fds=(channel_io.fileno(), mtu_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         mtu_io.close()

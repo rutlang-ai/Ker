@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +15,21 @@ static void transfer(int fd,char *bytes,size_t size,int sending)
         if(n<0&&errno==EINTR)continue;
         check(n>0,"native TCP transfer");bytes+=n;size-=(size_t)n;}
 }
-int main(void)
+static void fixed_mtu(void)
 {
+    int fd=socket(AF_INET,SOCK_DGRAM,0);check(fd>=0,"MTU control socket");
+    struct ifreq entries[16],request={0};struct ifconf list={.ifc_len=sizeof(entries),.ifc_req=entries};
+    check(!ioctl(fd,SIOCGIFCONF,&list),"native interface list");
+    for(unsigned i=0;i<(unsigned)list.ifc_len/sizeof(entries[0]);i++)
+        if(((struct sockaddr_in*)&entries[i].ifr_addr)->sin_addr.s_addr==htonl(0xc6120002))strcpy(request.ifr_name,entries[i].ifr_name);
+    check(*request.ifr_name,"native interface found");request.ifr_mtu=1400;
+    check(ioctl(fd,SIOCSIFMTU,&request)==-1&&errno==EOPNOTSUPP,"remote RX MTU mutation rejected");
+    check(!ioctl(fd,SIOCGIFMTU,&request)&&request.ifr_mtu==1500,"native MTU preserved");
+    check(!close(fd),"MTU control close");
+}
+int main(int argc,char **argv)
+{
+    check(argc==1||(argc==2&&!strcmp(argv[1],"--fixed-mtu")),"service test arguments");
     int sockets[2][2];struct timeval timeout={.tv_sec=10};
     for(unsigned family=0;family<2;family++)for(unsigned tcp=0;tcp<2;tcp++){
         int fd=socket(family?AF_INET6:AF_INET,tcp?SOCK_STREAM:SOCK_DGRAM,0);check(fd>=0,"native service socket");
@@ -38,6 +53,7 @@ int main(void)
         check(sendto(sockets[family][0],reply,sizeof(reply),0,(void*)&peer,length)==sizeof(reply),"native UDP reply");
         check(!close(sockets[family][0])&&!close(sockets[family][1]),"native service close");
     }
+    if(argc==2)fixed_mtu();
     puts("NATIVE_DONE");fflush(stdout);check(getchar()=='Q',"remote service barrier");
     puts("PASS: original native IPv4/IPv6 TCP/UDP services");return 0;
 }

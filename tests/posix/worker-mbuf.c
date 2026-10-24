@@ -263,6 +263,29 @@ static void test_descriptor_pool_budget(void)
     CHECK(ker_worker_mbuf_budget_add(NULL, &aggregate_tx, 1, 1) == -EINVAL);
 }
 
+static void test_handoff_pool_budget(void)
+{
+    uint32_t count = 0, segments = 0;
+    const uint32_t buffer_size = RTE_MBUF_DEFAULT_BUF_SIZE;
+    const uint32_t overhead = RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN;
+    CHECK(ker_worker_mbuf_frame_segments(9000, overhead, buffer_size, &segments) == 0);
+    CHECK(segments == 5);
+    CHECK(ker_worker_mbuf_frame_segments(9000, overhead,
+        RTE_PKTMBUF_HEADROOM, &segments) == -EINVAL);
+    CHECK(ker_worker_mbuf_frame_segments(UINT32_MAX, UINT32_MAX,
+        RTE_PKTMBUF_HEADROOM + 1, &segments) == -EOVERFLOW);
+    /* Reviewer example: ring usable capacity 255 plus a 32-packet burst. */
+    CHECK(ker_worker_mbuf_handoff_pool_count(8512, 16, 287, 5, &count) == 0);
+    CHECK(count == 8512 + 22960);
+    /* Production conservatively reserves the full 256-slot ring plus burst. */
+    CHECK(ker_worker_mbuf_handoff_pool_count(8512, 16, 288, 5, &count) == 0);
+    CHECK(count == 8512 + 23040);
+    CHECK(ker_worker_mbuf_handoff_pool_count(0, UINT32_MAX, 2, 1, &count) == -EOVERFLOW);
+    CHECK(ker_worker_mbuf_handoff_pool_count(0, 1, UINT32_MAX, 2, &count) == -EOVERFLOW);
+    CHECK(ker_worker_mbuf_handoff_pool_count(UINT32_MAX, 1, 1, 1, &count) == -EOVERFLOW);
+    CHECK(ker_worker_mbuf_handoff_pool_count(0, 0, 1, 0, &count) == -EINVAL);
+}
+
 static void test_scatter_segment_limits(void)
 {
     const uint32_t payload = RTE_MBUF_DEFAULT_BUF_SIZE - RTE_PKTMBUF_HEADROOM;
@@ -286,6 +309,7 @@ int main(void)
 {
     test_worker_wait_plan();
     test_descriptor_pool_budget();
+    test_handoff_pool_budget();
     test_rx_startup_drain();
     test_scatter_rx_limits();
     test_scatter_segment_limits();

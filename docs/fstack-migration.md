@@ -14,9 +14,9 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 173 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 175 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 21 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 174 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 172 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 10 | FreeBSD callout/内部 kqueue filter/mbuf 头字段断言，不适用于 Linux 内部结构 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
@@ -48,9 +48,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配的 260 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 195 项是
-21 partial + 174 blocked，另有 10 项架构专用和 55 项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配的 258 项记录均在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 193 项是
+21 partial + 172 blocked，另有 10 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -62,7 +62,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
 | Design generation-aware reload, IPC and drain ownership | 81 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 8 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
@@ -1058,8 +1058,8 @@ IPIP 拒绝之外，还检查完整内层匹配/不匹配，避免靠一律拒�
 五种类型与非 NDP/截断帧独立核对。端口模式对分片明确丢弃计数，不增加 Ker
 重组或流状态替代实现；深层封装、自动临时端口归属仍未完成并保留在 #219。
 
-当前173 adapted、21 partial、174 blocked、10架构特定、55 harness-only，
-共195项 blocked/partial；KNI 源案例仍有8项，完整迁移门禁继续失败。
+当前175 adapted、21 partial、172 blocked、10架构特定、55 harness-only，
+共193项 blocked/partial；KNI 源案例仍有6项，完整迁移门禁继续失败。
 
 
 ## 异常队列控制/普通流量入队预算
@@ -1087,3 +1087,22 @@ worker 已退出、无就绪统计/异常 TAP/运行目录。之后同一 file p
 新增一项适配，总计173；仍有195项 blocked/partial。另两个主核用例要求具体
 端口的 `lcore_list` 包含 primary，现有单 worker 不是该合同的完成证据，继续保留
 在 #219，连同六项跨代 owner/分配合同，共八项源缺口。
+
+
+## 实际端口 RX 核归属与主核成员校验
+
+新增 [端口 RX lcore 配置](rx-lcores.md) `[dpdk] rx_lcores` / `--rx-lcores`，以及
+独立的 `[interface.NAME] rx_lcores`。选中的原始 EAL 核实际独占 RX 队列；远端核
+通过原始 DPDK SP/SC 环将完整 mbuf 交给主核，满环保留 FIFO 后缀，关闭先 join
+再回收。主核继续独占 native channel、异常 TAP、PCAP、TX 和设备控制，协议仍由
+原版 Linux 处理。两个源配置用例要求异常接口的实际 EAL 主核属于该端口的列表，
+现在有真正使用该列表的执行证据，而不是只验证一个闲置的核心名单。
+
+`native-fstack-rx-lcores` 以原版 virtio/vhost/TAP 独立注入两队列，验证主核0、
+主核1、无异常接口时全远端 RX 三种配置的真实 lcore/CPU/队列计数，以及
+IPv4/IPv6 TCP/UDP、精确异常字节、PCAP、不可变 MTU、零遗留缓冲区。
+主核缺席与禁用核请求必须在应用入口前拒绝。这里没有宣称硬件 RSS。
+配套 ownership CTest 使用真正的双核 net_ring，验证多段 mbuf、满环重试的字节
+及 FIFO、关闭后缀 PCAP、命名冲突和真实 `/dev/full` 错误下的完整释放。
+本批新增两项源适配，总计175项；193项 blocked/partial 仍未完成。#219 保留六项
+跨代 owner/注入环/命名分配源合同，以及现有功能缺口，不把同代多核误记为跨代所有权。

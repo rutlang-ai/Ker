@@ -2120,6 +2120,22 @@
         "native-fstack-eal-file-prefix"
       ],
       "adaptation": "The pinned source body passes -t bogus_proc_type to ff_load_config and checks rejection, despite its IPFW-style name. Real Ker INI configurations pass both --proc-type=bogus_proc_type and --proc-type bogus_proc_type to original DPDK EAL, which rejects each before readiness, TAP creation, runtime namespace or application entry. The worker PID must be gone, no app sentinel/statistics may exist, and subsequent same-prefix primary startup completes native host TCP/UDP. Exit125 is the Ker infrastructure-failure adaptation of source rejection, not F-Stack parser/API equivalence. The same CTest requires live same-prefix primary exclusion, concurrent distinct-prefix original EAL/native instances, actual runtime files, four positive raw/INI/CLI profiles, real host TCP/UDP and zero outstanding mbufs. Rejected arguments are handled by unchanged original EAL, not a test-only launcher stub or an unknown-option failure."
+    },
+    "rx-lcores-test_ff_check_config_kni_primary_lcore_present_ok": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_ff_check_config_kni_primary_lcore_present_ok",
+      "ker_ctests": [
+        "native-fstack-rx-lcores"
+      ],
+      "adaptation": "Per-port rx_lcores=0,1 is validated against actual enabled original EAL cores and drives real disjoint queue polling on both cores. With an actual exception TAP the original EAL main must belong to this list. Production-worker acceptance remaps two allowed CPUs to logical0,1 and repeats with main0/main1, completes original Linux IPv4/IPv6 TCP/UDP, preserves exact exception frames and requires observed lcore/CPU/queue counters and zero outstanding mbufs. This adapts primary-in-port-list acceptance, not F-Stack proc_lcore/global layout or process-per-core ABI. The independent original vhost/TAP peer explicitly alternates inbound bursts across two virtio-user queues; this is not hardware RSS. A remote-only mapping without an exception interface is also qualified, showing the main-membership constraint is conditional. RX PCAP records must equal physical queue counts, native kernel counters must prove both protocol families, and remote RX MTU mutation must return EOPNOTSUPP without changing device/native MTU. Companion native-fstack-rx-lcores-ownership uses real EAL/net_ring SP/SC full queues with multisegment frames, exact FIFO payloads, retained-suffix/shutdown capture and zero mempool use, plus real namespace collision and /dev/full error cleanup. No upstream code or protocol substitute is introduced."
+    },
+    "rx-lcores-test_ff_check_config_kni_primary_lcore_missing_fails": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_ff_check_config_kni_primary_lcore_missing_fails",
+      "ker_ctests": [
+        "native-fstack-rx-lcores"
+      ],
+      "adaptation": "Actual original EAL enables logical0,1, but per-port rx_lcores=1 with main0 and an exception TAP must reject before app entry or exception-device creation, with zero worker-owned mbufs. Repeating with original EAL main1 and list0 proves validation uses the actual main, rather than hardcoded zero or mere core enablement. A disabled selected core also rejects. The same suite requires successful main membership and actual two-core original-PMD/Linux traffic. This adapts source membership rejection with Ker status125 versus source return-1; no F-Stack configuration ABI equivalence is claimed. The independent original vhost/TAP peer explicitly alternates inbound bursts across two virtio-user queues; this is not hardware RSS. A remote-only mapping without an exception interface is also qualified, showing the main-membership constraint is conditional. RX PCAP records must equal physical queue counts, native kernel counters must prove both protocol families, and remote RX MTU mutation must return EOPNOTSUPP without changing device/native MTU. Companion native-fstack-rx-lcores-ownership uses real EAL/net_ring SP/SC full queues with multisegment frames, exact FIFO payloads, retained-suffix/shutdown capture and zero mempool use, plus real namespace collision and /dev/full error cleanup. No upstream code or protocol substitute is introduced."
     }
   }
 }
