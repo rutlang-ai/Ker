@@ -250,7 +250,18 @@ def run_session(args, api):
             publish()
             raise RuntimeError('control EOF correctly prevented PREPARE after the handoff boundary')
         negative_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
-        replay_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY')
+        prepare_rejected_mode = handoff_mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm') or \
+            (handoff_mode is not None and handoff_mode.startswith('bad-prepare-error'))
+        if prepare_rejected_mode:
+            # The explicit invalid-lease replay hook above has already proved
+            # idempotency and reports same_replay on this marker. The
+            # production PREPARE error path returns before its success-only
+            # PREPARE_REPLAY marker, so waiting for that marker would stall.
+            if negative_prepare.get('same_replay') is not True:
+                raise RuntimeError('invalid-lease PREPARE rejection replay was not verified')
+            replay_prepare = None
+        else:
+            replay_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY')
         prepared = None
         if handoff_mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
             expected_status = {'prepare-enoent': -errno.ENOENT, 'prepare-ebusy': -errno.EBUSY,
@@ -260,14 +271,15 @@ def run_session(args, api):
                 raise RuntimeError('resident returned the wrong exact PREPARE rejection')
             next_boundary = wait_marker(worker, 'KER_SESSION_HANDOFF_BOUNDARY')
             next_rejected = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
-            next_replay = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY')
+            if next_rejected.get('same_replay') is not True:
+                raise RuntimeError('second invalid-lease PREPARE replay was not verified')
             next_resumed = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED')
             if next_resumed.get('status') != expected_status:
                 raise RuntimeError('worker did not service the pipelined second handoff request')
             metrics.update(stage='handoff-rejected', handoff_protocol=dict(
                 prepare_status=expected_status, pending_heartbeat=True, queued_h_serviced=True,
                 boundaries=[boundary,next_boundary], negative_prepare=[negative_prepare,next_rejected],
-                replay_prepare=[replay_prepare,next_replay]))
+                replay_verified=[negative_prepare.get('same_replay'), next_rejected.get('same_replay')]))
             publish()
             return
         malformed_prepare = handoff_mode is not None and (
