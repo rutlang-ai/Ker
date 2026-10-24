@@ -87,6 +87,8 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     script_path = Path(__file__).resolve() if script is None else Path(script).resolve()
     command = ['unshare', '-Urn', sys.executable, str(script_path), '--inside',
         '--huge-dir', str(args.huge_dir), '--dpdk-plugin-dir', str(plugin_dir)]
+    if args.handoff_negative_profiles:
+        command.append('--handoff-negative-profiles')
     command.extend(value for name in ('worker', 'tool', 'library', 'app')
         for value in ('--' + name, str(getattr(args, name).resolve())))
     return command
@@ -105,7 +107,7 @@ def record(process, prefix):
     return json.loads(value[len(prefix) + 1:])
 
 
-def run_live_handoff_profile(args, api, plugin_paths):
+def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
     with tempfile.TemporaryDirectory(prefix='ker-a09-live-handoff-') as directory:
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
@@ -119,6 +121,7 @@ def run_live_handoff_profile(args, api, plugin_paths):
         wire = endpoint = None
         handoff_read = handoff_write = -1
         pidfds = []
+        resident_pidfd = -1
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
@@ -127,13 +130,15 @@ def run_live_handoff_profile(args, api, plugin_paths):
                 'handoff resident did not start the selected paired PMD/generation adapter')
             wire, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
             handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
+            runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
+            if mode != 'positive':
+                runner_environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
             runner = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
                 '--wire-fd', str(endpoint.fileno()), '--library', str(args.library), '--stats', str(stats_path),
                 '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
                 '--test-live-handoff-fd', str(handoff_read), '--', str(args.app), '--signal-ready'],
                 pass_fds=(endpoint.fileno(), handoff_read), stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment | {
-                    'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}, bufsize=0)
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=runner_environment, bufsize=0)
             os.close(handoff_read); handoff_read = -1
             endpoint.close(); endpoint = None
             require(line(runner) == 'READY', 'handoff application did not reach its quiescent signal barrier')
@@ -155,10 +160,68 @@ def run_live_handoff_profile(args, api, plugin_paths):
             app_pidfd = os.pidfd_open(before['app_pid']); pidfds.append(app_pidfd)
             owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
             peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
+            resident_pidfd = os.pidfd_open(primary.pid)
             require(not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'an app or worker exited before live handoff')
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
             os.close(handoff_write); handoff_write = -1
+            if mode != 'positive':
+                try:
+                    runner_output, runner_errors = runner.communicate(timeout=20)
+                except subprocess.TimeoutExpired as error:
+                    runner.kill(); runner_output, runner_errors = runner.communicate()
+                    raise RuntimeError('fatal handoff fixture did not terminate: ' +
+                        runner_errors.decode(errors='replace')) from error
+                runner_text = runner_errors.decode(errors='replace')
+                failure = json.loads(stats_path.read_text())
+                require(runner.returncode == 125 and failure.get('stage') == 'failed' and
+                    failure.get('worker_code') == 125 and failure.get('app_code') is not None,
+                    f'{mode} did not fail closed through the launcher: {failure!r}; '
+                    f'runner stdout={runner_output.decode(errors="replace")!r}; stderr={runner_text!r}')
+                require('KER_SESSION_TEST_HANDOFF_PREPARED' in runner_text and
+                    'KER_SESSION_PMD_PARKED ' not in runner_text and
+                    sum(line.startswith('KER_SESSION_PMD_GRANTED ') for line in runner_text.splitlines()) == 1 and
+                    'KER_SESSION_PACKET_DONE ' not in runner_text,
+                    f'{mode} emitted a post-failure success marker: {runner_text}')
+                if mode == 'timeout':
+                    require('KER_SESSION_TEST_HANDOFF_FDS_CLOSED' not in runner_text and
+                        'KER_SESSION_TEST_HANDOFF_QUIESCED_SENT' not in runner_text,
+                        'timeout profile reached QUIESCED despite resident timeout')
+                elif mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease'):
+                    require('KER_SESSION_TEST_HANDOFF_FDS_CLOSED' in runner_text and
+                        'KER_SESSION_TEST_HANDOFF_QUIESCED_SENT' in runner_text,
+                        f'{mode} did not reach the intended closed-descriptor QUIESCED boundary')
+                if mode == 'peer-death':
+                    killed_peer = failure.get('handoff_negative_peer', {})
+                    handoff_failure = failure.get('handoff_failure', {})
+                    require(killed_peer.get('pid') == before['handoff_peer_attached']['pid'] and
+                        killed_peer.get('returncode') == -signal.SIGKILL and killed_peer.get('pidfd_dead') is True,
+                        f'peer-death profile did not kill the exact reserved peer: {failure!r}')
+                    fatal_stage = handoff_failure.get('fatal_stage')
+                    require(fatal_stage in ('resident-preempted-before-fd-close',
+                            'resident-preempted-after-fd-close', 'quiesced-peer-revalidation') and
+                        ((fatal_stage == 'resident-preempted-before-fd-close' and
+                            handoff_failure.get('fds_closed') is None and handoff_failure.get('quiesced_sent') is None) or
+                         (fatal_stage == 'resident-preempted-after-fd-close' and
+                            handoff_failure.get('fds_closed') is not None and handoff_failure.get('quiesced_sent') is None) or
+                         (fatal_stage == 'quiesced-peer-revalidation' and
+                            handoff_failure.get('fds_closed') is not None and handoff_failure.get('quiesced_sent') is not None)),
+                        f'peer-death failure stage markers disagree: {failure!r}')
+                require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                    f'{mode} fixture left an app, worker, or resident alive')
+                primary.stdin.close(); primary.stdin = None
+                primary_output, primary_errors = primary.communicate(timeout=20)
+                require(primary.returncode == 125 and b'KER_SESSION_DRAINED ' not in primary_output and
+                    select.select([resident_pidfd], [], [], 0)[0],
+                    f'{mode} resident did not fail without a successful drain: {primary.returncode}; '
+                    f'{primary_errors.decode(errors="replace")}')
+                print('KER_SESSION_HANDOFF_FATAL_RESULT ' + json.dumps(dict(mode=mode, failure=failure,
+                    runner_returncode=runner.returncode, runner_stdout=runner_output.decode(errors='replace'),
+                    runner_stderr=runner_text, resident_returncode=primary.returncode,
+                    resident_stdout=primary_output.decode(errors='replace'),
+                    resident_stderr=primary_errors.decode(errors='replace')), sort_keys=True), flush=True)
+                print(f'PASS: {mode} after PREPARE terminates exact actors with status125 and no PARKED/grant/DRAINED success')
+                return
             deadline = time.monotonic() + 15
             while True:
                 after = json.loads(stats_path.read_text())
@@ -219,12 +282,14 @@ def run_live_handoff_profile(args, api, plugin_paths):
             if endpoint is not None: endpoint.close()
             if wire is not None: wire.close()
             for pidfd in pidfds: os.close(pidfd)
+            if resident_pidfd >= 0: os.close(resident_pidfd)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('worker', 'tool', 'library', 'app'): parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--handoff-negative-profiles', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--dpdk-plugin-dir', type=Path)
     parser.add_argument('--huge-dir', type=Path, default=Path('/dev/hugepages'))
     args = parser.parse_args()
@@ -1160,6 +1225,9 @@ def main():
             if exception_capture is not None: exception_capture.close()
     run_live_handoff_profile(args, api, plugin_paths)
     print('PASS: a generation-admitted same-process peer takes the PMD/exception grant while the original Linux app and parked worker remain alive, then both workers drain cleanly')
+    if args.handoff_negative_profiles:
+        for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout'):
+            run_live_handoff_profile(args, api, plugin_paths, mode)
     return 0
 
 

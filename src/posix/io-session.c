@@ -1903,8 +1903,22 @@ static int worker_handoff_request(int fd,const struct ker_session_message *ident
     request.command=command; request.sequence=++*sequence; request.status=0;
     request.token=command==KER_SESSION_PMD_HANDOFF_PREPARE?identity->token:owner_key;
     request.capability=capability; request.tx_lease_id=tx_lease_id; request.rx_lease_id=rx_lease_id;
+#ifdef KER_SESSION_TEST_HOOKS
+    const char *handoff_mode=getenv("KER_SESSION_TEST_HANDOFF_MODE");
+    if(command==KER_SESSION_PMD_HANDOFF_QUIESCED && handoff_mode) {
+        if(!strcmp(handoff_mode,"bad-capability"))request.capability^=UINT64_C(1);
+        else if(!strcmp(handoff_mode,"bad-tx-lease"))request.tx_lease_id^=UINT64_C(1);
+        else if(!strcmp(handoff_mode,"bad-rx-lease"))request.rx_lease_id^=UINT64_C(1);
+    }
+#endif
     require_resident_alive(resident);
     if(send(fd,&request,sizeof(request),MSG_NOSIGNAL)!=sizeof(request))return -EIO;
+#ifdef KER_SESSION_TEST_HOOKS
+    if(command==KER_SESSION_PMD_HANDOFF_QUIESCED && getenv("KER_SESSION_TEST_HANDOFF_MODE")) {
+        printf("KER_SESSION_TEST_HANDOFF_QUIESCED_SENT {\"mode\":\"%s\"}\n",
+            getenv("KER_SESSION_TEST_HANDOFF_MODE")); fflush(stdout);
+    }
+#endif
     require_resident_alive(resident);
     if(recv(fd,response,sizeof(*response),MSG_TRUNC)!=sizeof(*response))return -EIO;
     require_resident_alive(resident);
@@ -2125,6 +2139,36 @@ static int heartbeat_tick(int fd, const struct ker_session_message *identity,
     require_resident_alive(resident);
     return acknowledged ? 1 : 0;
 }
+#ifdef KER_SESSION_TEST_HOOKS
+static int worker_test_handoff_prepared(int control,int fd,int resident,
+    const struct ker_session_message *identity,uint64_t *sequence,
+    struct worker_heartbeat *heartbeat,const char *mode)
+{
+    printf("KER_SESSION_TEST_HANDOFF_PREPARED {\"mode\":\"%s\"}\n",mode); fflush(stdout);
+    if(strcmp(mode,"peer-death")&&strcmp(mode,"timeout"))return 0;
+    uint64_t start=monotonic_ms();
+    uint64_t deadline=start+(strcmp(mode,"timeout")?10000U:KER_SESSION_HANDOFF_TIMEOUT_MS+1000U);
+    for(;;) {
+        if(stopping)return -EINTR;
+        if(dead(resident))return -ECONNRESET;
+        int tick=heartbeat_tick(fd,identity,sequence,resident,heartbeat);
+        if(tick<0)return tick;
+        uint64_t now=monotonic_ms();
+        if(now>=deadline)return -ETIMEDOUT;
+        struct pollfd waiters[]={{.fd=control,.events=POLLIN},{.fd=resident,.events=POLLIN}};
+        int timeout=(int)(deadline-now); if(timeout>50)timeout=50;
+        int ready=poll(waiters,2,timeout);
+        if(ready<0) { if(errno==EINTR)continue; return -errno; }
+        if(waiters[1].revents)_Exit(125);
+        if(waiters[0].revents&(POLLERR|POLLHUP|POLLNVAL))return -ECANCELED;
+        if(waiters[0].revents&POLLIN) {
+            char command=0; ssize_t count=read(control,&command,1);
+            if(count!=1||command!='D')return -EPROTO;
+            return 0;
+        }
+    }
+}
+#endif
 static int drain_worker_heartbeat(int fd, struct worker_heartbeat *heartbeat,
     int resident, int control)
 {
@@ -2690,6 +2734,11 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             uint64_t owner_key=prepared.token,capability=prepared.capability;
             unsigned successor_slot=(unsigned)prepared.slot,successor_generation=(unsigned)prepared.generation;
             tx_id=prepared.tx_lease_id; rx_id=prepared.rx_lease_id;
+#ifdef KER_SESSION_TEST_HOOKS
+            const char *handoff_mode=getenv("KER_SESSION_TEST_HANDOFF_MODE");
+            if(handoff_mode && worker_test_handoff_prepared(control,fd,peer,&message,&message.sequence,
+                    &heartbeat,handoff_mode))_Exit(125);
+#endif
             if(owner_key!=key||!capability||!tx_id||(ring_pmd==2&&!rx_id)||
                 atomic_load_explicit(&directory->pmd_lease,memory_order_acquire)!=(uintptr_t)device_packet||
                 (ring_pmd==2&&atomic_load_explicit(&directory->pmd_rx_lease,memory_order_acquire)!=(uintptr_t)rx_packet))_Exit(125);
@@ -2700,6 +2749,12 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             if(ker_worker_exception_close(&exception_bridge))_Exit(125);
             close(wire_fd); close(mtu_fd); wire_fd=mtu_fd=-1;
             device_packet=NULL; rx_packet=NULL; exception_fd=-1;
+#ifdef KER_SESSION_TEST_HOOKS
+            if(getenv("KER_SESSION_TEST_HANDOFF_MODE")) {
+                printf("KER_SESSION_TEST_HANDOFF_FDS_CLOSED {\"mode\":\"%s\"}\n",
+                    getenv("KER_SESSION_TEST_HANDOFF_MODE")); fflush(stdout);
+            }
+#endif
             struct ker_session_message quiesced;
             if(worker_handoff_request(fd,&message,&message.sequence,peer,
                 KER_SESSION_PMD_HANDOFF_QUIESCED,owner_key,capability,tx_id,rx_id,&quiesced) ||

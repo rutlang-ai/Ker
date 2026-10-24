@@ -62,6 +62,10 @@ def run_session(args, api):
         raise ValueError('ker-app is required beside ker-io-session')
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
+    handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
+    handoff_modes = {'positive', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout'}
+    if handoff_fd is not None and handoff_mode is not None and handoff_mode not in handoff_modes:
+        raise ValueError('unknown test handoff mode')
     if handoff_fd is not None and not getattr(args, 'generation_rings', False):
         raise ValueError('test live handoff requires the generation-ring adapter')
     # Validation does not mutate file-description flags. The caller transfers
@@ -217,6 +221,83 @@ def run_session(args, api):
         boundary = wait_marker(worker, 'KER_SESSION_HANDOFF_BOUNDARY')
         negative_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
         replay_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY')
+        prepared = None
+        if handoff_mode is not None:
+            prepared = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARED')
+        if handoff_mode == 'peer-death':
+            peer_pidfd = os.pidfd_open(peer_worker.pid)
+            try:
+                peer_worker.kill()
+                peer_output, peer_errors = peer_worker.communicate(timeout=10)
+                if peer_worker.returncode != -signal.SIGKILL:
+                    raise RuntimeError('reserved peer did not die from the exact fixture SIGKILL: ' +
+                        (peer_errors or b'').decode(errors='replace'))
+                if not select.select([peer_pidfd], [], [], 0)[0]:
+                    raise RuntimeError('reserved peer pidfd did not become readable after SIGKILL')
+                metrics['handoff_negative_peer'] = dict(pid=peer_worker.pid, returncode=peer_worker.returncode,
+                    pidfd_dead=True, output=peer_output.decode(errors='replace'))
+                publish()
+            finally:
+                os.close(peer_pidfd)
+            try:
+                if os.write(control_w, b'D') != 1:
+                    raise RuntimeError('short peer-death owner release command')
+            except BrokenPipeError:
+                metrics['handoff_negative_peer']['resident_preempted_release'] = True
+                publish()
+            try:
+                fds_closed = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_FDS_CLOSED', timeout=2)
+            except RuntimeError:
+                # The resident may reap the exact dead reserved peer and fail
+                # closed before the old worker consumes D or closes its FDs.
+                fds_closed = None
+            quiesced_sent = None
+            if fds_closed is not None:
+                try:
+                    quiesced_sent = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_QUIESCED_SENT', timeout=2)
+                except RuntimeError:
+                    pass
+            try:
+                worker.wait(timeout=8)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('resident did not fail closed after reserved-peer death') from error
+            if worker.returncode != 125:
+                raise RuntimeError('reserved-peer death did not terminate the old owner with status 125')
+            metrics.update(stage='handoff-fatal-peer-death', handoff_failure=dict(mode=handoff_mode,
+                worker_code=worker.returncode, prepared=prepared, fds_closed=fds_closed,
+                quiesced_sent=quiesced_sent,
+                fatal_stage=('resident-preempted-before-fd-close' if fds_closed is None else
+                    ('resident-preempted-after-fd-close' if quiesced_sent is None else 'quiesced-peer-revalidation')),
+                peer=metrics.get('handoff_negative_peer')))
+            publish()
+            raise RuntimeError('resident failed closed after reserved-peer death')
+        if handoff_mode == 'timeout':
+            try:
+                worker.wait(timeout=8)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('resident timeout did not terminate the prepared owner') from error
+            metrics.update(stage='handoff-fatal-timeout', handoff_failure=dict(
+                mode=handoff_mode, worker_code=worker.returncode, prepared=prepared))
+            publish()
+            raise RuntimeError('resident timeout terminated the owner before QUIESCED')
+        fds_closed = quiesced_sent = None
+        if handoff_mode is not None:
+            fds_closed = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_FDS_CLOSED')
+            quiesced_sent = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_QUIESCED_SENT')
+        if handoff_mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease'):
+            try:
+                worker.wait(timeout=8)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('resident did not fail closed after invalid QUIESCED') from error
+            if worker.returncode != 125:
+                raise RuntimeError('invalid QUIESCED did not terminate the old owner with status 125')
+            metrics.update(stage='handoff-fatal-quiesced', handoff_failure=dict(mode=handoff_mode,
+                worker_code=worker.returncode, prepared=prepared, fds_closed=fds_closed,
+                quiesced_sent=quiesced_sent, peer=metrics.get('handoff_negative_peer')))
+            publish()
+            raise RuntimeError('resident failed closed after the expected invalid QUIESCED')
+        if handoff_mode not in (None, 'positive'):
+            raise RuntimeError('test handoff mode is not a fatal profile')
         parked = wait_marker(worker, 'KER_SESSION_PMD_PARKED')
         if (boundary.get('idle') is not True or boundary.get('owner_key') != metrics['grant']['queue_owner_key'] or
                 parked.get('pid') != worker.pid or parked.get('old_owner_key') != metrics['grant']['queue_owner_key'] or
