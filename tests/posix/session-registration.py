@@ -182,20 +182,30 @@ def main():
             require(len({x['rings'][0] for x in entries}) == 3, 'masters looked up the same control ring')
             require(all(p.poll() is None for p in leases), 'master exited before simultaneous samples')
             eventually(3, 3)
-            # Kill only this master. Its actual secondary still has the test's
-            # control pipe, and must protect its epoch until it leaves EAL.
-            orphan_master = leases[0]; orphan_master.kill(); orphan_master.wait(timeout=10)
+            # Stop the exact secondary before killing its supervisor. The
+            # supervisor-owned control pipe closes on death, but the stopped
+            # EAL process remains an exact live borrower until resumed.
+            orphan_master = leases[0]
             orphan = entries[0]
+            os.kill(orphan['pid'], signal.SIGSTOP)
+            stop_deadline = time.monotonic() + 5
+            while time.monotonic() < stop_deadline:
+                state = Path('/proc', str(orphan['pid']), 'stat').read_text().rsplit(')', 1)[1].split()[0]
+                if state in ('T', 't'):
+                    break
+                time.sleep(0.01)
+            require(state in ('T', 't'), 'exact secondary did not stop before supervisor death')
+            orphan_master.kill(); orphan_master.wait(timeout=10)
             eventually(3, 3)
             full = subprocess.run([sys.executable, str(args.tool), 'lease', *common],
                 input=b'', env=environment, capture_output=True, timeout=20)
             require(full.returncode == 125 and b'Errno 28' in full.stderr and
                     b'KER_SESSION_ATTACHED' not in full.stdout, 'orphan epoch was unsafely reused')
-            orphan_master.stdin.write(b'x'); orphan_master.stdin.flush(); orphan_master.stdin.close()
-            orphan_master.stdin = None
+            orphan_master.stdin.close(); orphan_master.stdin = None
+            signal.pidfd_send_signal(worker_pidfds[0], signal.SIGCONT)
             with selectors.DefaultSelector() as selector:
                 selector.register(worker_pidfds[0], selectors.EVENT_READ)
-                require(selector.select(20), 'orphan secondary cleanup timed out')
+                require(selector.select(20), 'orphan secondary cleanup timed out after control EOF')
             waited, result = os.waitpid(orphan['pid'], 0)
             require(waited == orphan['pid'] and os.waitstatus_to_exitcode(result) == 0,
                     'orphan secondary did not complete original EAL cleanup')
@@ -223,6 +233,46 @@ def main():
                 output, errors = lease.communicate(timeout=20)
                 require(lease.returncode == 0, 'master/secondary cleanup failed: ' + errors.decode())
             eventually(0, 0)
+
+            # Signal only the lease supervisor. Keep its caller-owned stdin
+            # writer open so the attached secondary cannot observe EOF there.
+            signaled = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, bufsize=0)
+            processes.append(signaled)
+            signaled_entry = ready(signaled, 'KER_SESSION_ATTACHED')
+            signaled_pidfd = os.pidfd_open(signaled_entry['pid'])
+            worker_pidfds.append(signaled_pidfd)
+            eventually(1, 1)
+            os.kill(signaled.pid, signal.SIGTERM)
+            signal_status = signaled.wait(timeout=15)
+            shutdown = ready(signaled, 'KER_SESSION_SUPERVISOR_STOP')
+            require(signal_status == 128 + signal.SIGTERM and not signaled.stdin.closed and
+                    shutdown['signal'] == signal.SIGTERM and shutdown['worker_status'] == 0 and
+                    not shutdown['escalated'],
+                    'SIGTERM did not gracefully stop only the supervisor/secondary with status 143 and stdin retained')
+            with selectors.DefaultSelector() as selector:
+                selector.register(signaled_pidfd, selectors.EVENT_READ)
+                require(selector.select(15), 'supervisor left its exact EAL secondary alive')
+            after_signal = eventually(0, 0)
+            require(after_signal['slot'] == 0 and after_signal['process'] == 0 and
+                    after_signal['epoch'] > signaled_entry['epoch'],
+                    'SIGTERM cleanup did not release the exact supervisor epoch')
+            signaled.stdin.close()
+            recycled = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, bufsize=0)
+            processes.append(recycled)
+            recycled_entry = ready(recycled, 'KER_SESSION_ATTACHED')
+            worker_pidfds.append(os.pidfd_open(recycled_entry['pid']))
+            require(recycled_entry['slot'] == signaled_entry['slot'] and
+                    recycled_entry['epoch'] > signaled_entry['epoch'],
+                    'released signal-terminated slot was not safely reusable')
+            recycled.stdin.write(b'x'); recycled.stdin.flush()
+            output, errors = recycled.communicate(timeout=20)
+            require(recycled.returncode == 0, 'post-signal epoch cleanup failed: ' + errors.decode())
+            eventually(0, 0)
+            print('PASS: SIGTERM to the lease supervisor alone reaped its exact secondary, released/reused its epoch, and returned 143 with caller stdin still open')
             for _ in range(150):
                 value = status()
                 require(value['slot'] == 0 and value['process'] == 0, 'status query mutated registrations')

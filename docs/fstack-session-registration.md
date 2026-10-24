@@ -42,7 +42,11 @@ and allow-list options. No PMD, network device or original Linux application
 instance is created at this stage.
 
 Input or EOF requests each process to stop. Stop the leases before stopping
-the resident for normal cleanup. Signal handling also requests shutdown.
+the resident for normal cleanup. The lease supervisor relays input through its
+own control pipe; SIGINT/SIGTERM closes that pipe and waits up to five seconds
+for secondary EAL cleanup. It sends SIGTERM only after that grace period and
+uses SIGKILL only after a further timeout. A graceful SIGTERM exits 143 (SIGINT
+130); any signal escalation reports failure rather than clean shutdown.
 
 ## Geometry and process lifetime
 

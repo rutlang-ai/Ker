@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import shlex
+import selectors
+import signal
 import socket
 import struct
 import subprocess
@@ -76,45 +78,205 @@ def role_arguments(eal, role):
 def lease(args):
     connection = Connection(args.socket)
     worker = None
-    read_fd = write_fd = -1
-    try:
-        ticket = connection.request(MASTER)
-        read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
-        control = sys.stdin.fileno()
-        worker = subprocess.Popen([str(args.worker.resolve(strict=True)), '--role', 'secondary',
-            '--socket', str(args.socket), '--control-fd', str(control), '--ticket-fd', str(read_fd),
-            '--generation', str(args.generation), '--process', str(args.process), '--',
-            *role_arguments(args.eal, 'secondary')], pass_fds=(read_fd, control))
-        os.close(read_fd); read_fd = -1
-        data = encode(ticket)
-        if os.write(write_fd, data) != len(data):
-            raise RuntimeError('short ticket write')
-        os.close(write_fd); write_fd = -1
-        result = worker.wait()
-        # A child has completed EAL cleanup, but the resident pidfd census may
-        # need its next poll. Only EBUSY is retried, with a new operation id.
+    read_fd = write_fd = control_read = control_write = -1
+    ticket = None
+    released = False
+    shutdown_escalated = False
+    termination_signal = 0
+    previous_handlers = {}
+
+    def remember_signal(number, _frame):
+        nonlocal termination_signal
+        if not termination_signal:
+            termination_signal = number
+
+    def close_fd(name):
+        nonlocal read_fd, write_fd, control_read, control_write
+        if name == 'read_fd':
+            fd = read_fd; read_fd = -1
+        elif name == 'write_fd':
+            fd = write_fd; write_fd = -1
+        elif name == 'control_read':
+            fd = control_read; control_read = -1
+        else:
+            fd = control_write; control_write = -1
+        if fd >= 0:
+            os.close(fd)
+
+    def release_master():
         deadline = time.monotonic() + 5
         while True:
             try:
                 connection.request(RELEASE, session=ticket['session'], epoch=ticket['epoch'],
                     token=ticket['token'], slot=ticket['slot'])
-                break
+                return
             except OSError as error:
                 if error.errno != errno.EBUSY or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.05)
+
+    cleanup_error = None
+    try:
+        for number in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[number] = signal.signal(number, remember_signal)
+        ticket = connection.request(MASTER)
+        if not termination_signal:
+            read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            os.set_blocking(control_write, False)
+            control = control_read
+            worker = subprocess.Popen([str(args.worker.resolve(strict=True)), '--role', 'secondary',
+                '--socket', str(args.socket), '--control-fd', str(control), '--ticket-fd', str(read_fd),
+                '--generation', str(args.generation), '--process', str(args.process), '--',
+                *role_arguments(args.eal, 'secondary')], stdin=subprocess.DEVNULL,
+                pass_fds=(read_fd, control_read))
+            close_fd('read_fd'); close_fd('control_read')
+            data = encode(ticket)
+            if os.write(write_fd, data) != len(data):
+                raise RuntimeError('short ticket write')
+            close_fd('write_fd')
+
+            selector = selectors.DefaultSelector()
+            stdin_fd = sys.stdin.fileno()
+            input_open = True
+            stdin_eof = False
+            pending = bytearray()
+            forwarded_signal = 0
+            escalation = 0
+            termination_deadline = None
+            selector.register(stdin_fd, selectors.EVENT_READ, 'input')
+
+            def close_child_control():
+                if control_write >= 0:
+                    try: selector.unregister(control_write)
+                    except KeyError: pass
+                    close_fd('control_write')
+
+            def forward_signal(number):
+                nonlocal input_open
+                pending.clear()
+                input_open = False
+                try: selector.unregister(stdin_fd)
+                except KeyError: pass
+                close_child_control()
+
+            if termination_signal:
+                forwarded_signal = termination_signal
+                termination_deadline = time.monotonic() + 5
+                forward_signal(forwarded_signal)
+            try:
+                while worker.poll() is None:
+                    if termination_signal and not forwarded_signal:
+                        forwarded_signal = termination_signal
+                        termination_deadline = time.monotonic() + 5
+                        forward_signal(forwarded_signal)
+                    if pending and control_write >= 0:
+                        try:
+                            selector.get_key(control_write)
+                        except KeyError:
+                            selector.register(control_write, selectors.EVENT_WRITE, 'control')
+                        try: selector.unregister(stdin_fd)
+                        except KeyError: pass
+                    else:
+                        try: selector.unregister(control_write)
+                        except (KeyError, ValueError): pass
+                        if input_open:
+                            try:
+                                selector.get_key(stdin_fd)
+                            except KeyError:
+                                selector.register(stdin_fd, selectors.EVENT_READ, 'input')
+                    for key, _events in selector.select(0.05):
+                        if key.data == 'input':
+                            try:
+                                data = os.read(stdin_fd, 4096)
+                            except InterruptedError:
+                                continue
+                            if data:
+                                pending.extend(data)
+                            else:
+                                input_open = False; stdin_eof = True
+                                try: selector.unregister(stdin_fd)
+                                except KeyError: pass
+                        elif key.data == 'control' and pending and control_write >= 0:
+                            try:
+                                count = os.write(control_write, pending[:4096])
+                                del pending[:count]
+                            except BlockingIOError:
+                                pass
+                    if stdin_eof and not pending:
+                        close_child_control()
+                    if forwarded_signal and worker.poll() is None and time.monotonic() >= termination_deadline:
+                        if escalation == 0:
+                            worker.terminate()
+                            escalation = 1
+                            shutdown_escalated = True
+                            termination_deadline = time.monotonic() + 5
+                        else:
+                            worker.kill()
+                            escalation = 2
+                            shutdown_escalated = True
+                            try:
+                                worker.wait(timeout=2)
+                            except subprocess.TimeoutExpired as error:
+                                raise RuntimeError('secondary could not be reaped after bounded SIGKILL') from error
+                            break
+            finally:
+                selector.close()
+            result = worker.wait()
+        else:
+            result = 0
+
+        if termination_signal:
+            print('KER_SESSION_SUPERVISOR_STOP ' + json.dumps(dict(signal=termination_signal,
+                worker_status=result, escalated=shutdown_escalated)), flush=True)
+        if control_write >= 0:
+            close_fd('control_write')
+        if ticket is not None:
+            release_master()
+            released = True
+        if shutdown_escalated:
+            raise RuntimeError('secondary required signal escalation; session cleanup was not graceful')
+        if termination_signal:
+            if result != 0:
+                raise RuntimeError('secondary exited unsuccessfully during graceful signal shutdown: ' + str(result))
+            return 128 + termination_signal
         return result
     finally:
-        for fd in (read_fd, write_fd):
-            if fd >= 0:
-                os.close(fd)
-        if worker is not None and worker.poll() is None:
-            worker.terminate()
+        try:
+            for name in ('read_fd', 'write_fd', 'control_read', 'control_write'):
+                try:
+                    close_fd(name)
+                except OSError as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+            if worker is not None and worker.poll() is None:
+                try:
+                    worker.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    worker.terminate(); shutdown_escalated = True
+                    try:
+                        worker.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        worker.kill(); shutdown_escalated = True
+                        try: worker.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            cleanup_error = RuntimeError('secondary could not be reaped')
+            if ticket is not None and not released and (worker is None or worker.poll() is not None):
+                try:
+                    release_master()
+                    released = True
+                except BaseException as error:
+                    cleanup_error = error
+        finally:
             try:
-                worker.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                worker.kill(); worker.wait()
-        connection.close()
+                connection.close()
+            finally:
+                for number, handler in previous_handlers.items():
+                    signal.signal(number, handler)
+        if shutdown_escalated and cleanup_error is None:
+            cleanup_error = RuntimeError('secondary required signal escalation; session cleanup was not graceful')
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def main():
