@@ -6,7 +6,9 @@ actual nested handoff function the marker sequence emitted by the C success and
 error paths. Neither proves EAL, packet, or native handoff behavior.
 """
 import errno
+import ast
 import importlib.util
+import json
 import os
 from pathlib import Path
 import select
@@ -18,6 +20,7 @@ import unittest
 
 
 SOURCE = Path(__file__).resolve().parents[2] / 'tools' / 'ker_session_run.py'
+PROFILE_SOURCE = Path(__file__).resolve().parents[1] / 'posix' / 'session-native-packets.py'
 
 
 def nested_code(code, name):
@@ -302,6 +305,90 @@ class HandoffControlPathTests(unittest.TestCase):
             with self.subTest(metrics=metrics, code=code, stats=stats):
                 with self.assertRaises(RuntimeError):
                     validate(metrics, True, code, stats)
+
+    def test_mode_specific_trigger_lifecycle_keeps_frame_and_death_profiles_open(self):
+        complete = self.launcher.handoff_trigger_complete
+        close_trigger = self.launcher.close_completed_handoff_trigger
+        u2_modes = ('frame-positive', 'frame-full', 'frame-death-prepared',
+            'frame-death-producer-active-consumer',
+            'frame-death-consumer-prepared', 'frame-death-consumer-writing')
+        for mode in u2_modes:
+            with self.subTest(mode=mode):
+                self.assertFalse(complete(mode, True, 1))
+                self.assertTrue(complete(mode, True, 2))
+                calls = []
+                self.assertEqual(close_trigger(mode, True, 1, 17, calls.append), 17)
+                self.assertEqual(calls, [])
+                self.assertIsNone(close_trigger(mode, True, 2, 17, calls.append))
+                self.assertEqual(calls, [17])
+        self.assertTrue(complete('positive', True, 0))
+        self.assertFalse(complete('positive', False, 0))
+        self.assertEqual(self.launcher.handoff_trigger_action(b'U'), 'udp')
+        self.assertEqual(self.launcher.handoff_trigger_action(b'H'), 'handoff')
+        self.assertEqual(self.launcher.handoff_trigger_action(b''), 'invalid')
+        self.assertEqual(self.launcher.handoff_trigger_action(b'X'), 'invalid')
+
+    def test_frame_marker_stream_consumes_only_enabled_prefix_in_exact_order(self):
+        prepare = ('KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS', {'variants': 12,
+            'datagram_queued': True, 'ring_unchanged': True, 'pool_unchanged': True})
+        cancel = ('KER_SESSION_FRAME_CANCEL_REPLAY_PASS', {'prepared_replay': True,
+            'bad_commit_denied': True, 'bad_cancel_denied': True, 'cancel_replay': True,
+            'datagram_queued': True, 'pool_restored': True})
+        committed = ('KER_SESSION_FRAME_COMMITTED', {'object_index': 4})
+
+        def reader(records):
+            remaining = list(records)
+            def ready(prefix, process=None):
+                if not remaining:
+                    raise RuntimeError('unexpected marker ' + prefix)
+                actual, value = remaining.pop(0)
+                if actual != prefix:
+                    raise RuntimeError('out-of-order marker: expected ' + prefix + ', got ' + actual)
+                return value
+            return ready, remaining
+
+        ready, remaining = reader([prepare, cancel, committed])
+        result = self.launcher.read_frame_commit_sequence(object(), ready, True)
+        self.assertEqual(result, (prepare[1], cancel[1], committed[1]))
+        self.assertEqual(remaining, [])
+        ready, remaining = reader([committed])
+        self.assertEqual(self.launcher.read_frame_commit_sequence(object(), ready, False),
+            (None, None, committed[1]))
+        self.assertEqual(remaining, [])
+        for records in ([cancel, committed], [prepare, prepare, cancel, committed],
+                        [prepare, cancel, cancel, committed]):
+            ready, _ = reader(records)
+            with self.assertRaises(RuntimeError):
+                self.launcher.read_frame_commit_sequence(object(), ready, True)
+
+    def test_owner_clear_marker_requires_exact_pid_and_schema(self):
+        validate = self.launcher.validate_parked_owner_cleared
+        validate({'pid': 42, 'owner_key': 0}, 42)
+        for record in ({'pid': 41, 'owner_key': 0}, {'pid': 42, 'owner_key': 3},
+                       {'pid': True, 'owner_key': 0}, {'pid': 42, 'owner_key': 0, 'extra': 1}):
+            with self.subTest(record=record):
+                with self.assertRaises(RuntimeError):
+                    validate(record, 42)
+
+    def test_failure_collector_fallback_preserves_original_reason(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        profile = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == 'run_live_handoff_profile')
+        wrapper = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.FunctionDef) and node.name == 'fatal_profile_diagnostics')
+        emitted = []
+        namespace = {'json': json, 'mode': 'frame-positive',
+            '_fatal_profile_diagnostics': lambda _reason: (_ for _ in ()).throw(OSError('capture failed')),
+            'print': lambda *args, **kwargs: emitted.append(args[0]),
+            'Exception': Exception, 'RuntimeError': RuntimeError}
+        module = ast.Module(body=[wrapper], type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module), str(PROFILE_SOURCE), 'exec'), namespace)
+        error = namespace['fatal_profile_diagnostics']('original frame failure')
+        self.assertIn('original frame failure', str(error))
+        self.assertIn('capture failed', str(error))
+        record = json.loads(emitted[0].split(' ', 1)[1])
+        self.assertEqual(record['reason'], 'original frame failure')
+        self.assertIn('diagnostic_capture_error', record)
 
 
 if __name__ == '__main__':

@@ -119,6 +119,66 @@ def validate_frame_committed_record(record, payload):
     return record
 
 
+FRAME_U2_TRIGGER_MODES = frozenset({
+    'frame-positive', 'frame-full', 'frame-death-prepared',
+    'frame-death-producer-active-consumer', 'frame-death-consumer-prepared',
+    'frame-death-consumer-writing',
+})
+
+
+def handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+    """Whether this profile consumed its complete H/U trigger sequence."""
+    return bool(handoff_seen and (mode not in FRAME_U2_TRIGGER_MODES or udp_sequence >= 2))
+
+
+def close_completed_handoff_trigger(mode, handoff_seen, udp_sequence, fd, close_fd):
+    if fd is not None and handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+        close_fd(fd)
+        return None
+    return fd
+
+
+def handoff_trigger_action(data):
+    if data == b'U':
+        return 'udp'
+    if data == b'H':
+        return 'handoff'
+    return 'invalid'
+
+
+def validate_parked_owner_cleared(record, worker_pid):
+    """Validate the immediate owner-clear record after the PARKED transition."""
+    if (not isinstance(record, dict) or set(record) != {'pid', 'owner_key'} or
+            type(record.get('pid')) is not int or record['pid'] != worker_pid or
+            type(record.get('owner_key')) is not int or record['owner_key'] != 0):
+        raise RuntimeError('parked owner did not report the exact cleared-owner state: ' + repr(record))
+
+
+def validate_frame_negative_markers(prepare, cancel):
+    prepare_fields = {'variants', 'datagram_queued', 'ring_unchanged', 'pool_unchanged'}
+    if (not isinstance(prepare, dict) or set(prepare) != prepare_fields or
+            type(prepare.get('variants')) is not int or prepare['variants'] != 12 or
+            any(prepare.get(field) is not True for field in
+                ('datagram_queued', 'ring_unchanged', 'pool_unchanged'))):
+        raise RuntimeError('frame-negative PREPARES summary did not match the exact expected result: ' + repr(prepare))
+    cancel_fields = {'prepared_replay', 'bad_commit_denied', 'bad_cancel_denied',
+        'cancel_replay', 'datagram_queued', 'pool_restored'}
+    if (not isinstance(cancel, dict) or set(cancel) != cancel_fields or
+            any(cancel.get(field) is not True for field in cancel_fields)):
+        raise RuntimeError('frame CANCEL replay summary did not match the exact expected result: ' + repr(cancel))
+
+
+def read_frame_commit_sequence(worker, ready, include_negatives):
+    """Consume only enabled frame summaries, then the exact commit record."""
+    negative_prepares = cancel_replay = None
+    if include_negatives:
+        negative_prepares = ready('KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS', process=worker)
+        cancel_replay = ready('KER_SESSION_FRAME_CANCEL_REPLAY_PASS', process=worker)
+        validate_frame_negative_markers(negative_prepares, cancel_replay)
+    committed = ready('KER_SESSION_FRAME_COMMITTED', process=worker)
+    return negative_prepares, cancel_replay, committed
+
+
 def validate_handoff_peer_cleanup(metrics, peer_present, peer_code, peer_packet_stats):
     """Require packet completion only after validated handoff ownership."""
     if not peer_present:
@@ -507,6 +567,8 @@ def run_session(args, api):
                 parked.get('successor_slot') != metrics['handoff_peer_attached']['slot'] or
                 parked.get('successor_generation') != 1 or app.poll() is not None or worker.poll() is not None):
             raise RuntimeError('same-process handoff did not park the granted generation-zero worker')
+        owner_cleared = ready('KER_SESSION_PMD_PARKED', process=worker)
+        validate_parked_owner_cleared(owner_cleared, worker.pid)
         old_exception_fd = metrics['geometry'].get('exception_endpoint_fd_number')
         old_tun_interfaces = tap_interfaces_for_process(worker.pid)
         if (not isinstance(old_exception_fd, int) or Path(f'/proc/{worker.pid}/fd/{old_exception_fd}').exists() or
@@ -539,7 +601,7 @@ def run_session(args, api):
             new_owner_key=expected_key, old_exception_fd=old_exception_fd,
             old_exception_fd_closed=True, old_tun_interfaces_before=old_tun_interfaces_before,
             old_tun_interfaces_after=old_tun_interfaces, successor_tun_interfaces=successor_tun_interfaces,
-            boundary=boundary, parked=parked,
+            boundary=boundary, parked=parked, owner_cleared=owner_cleared,
             successor=successor, geometry=geometry, resident=observed)
         metrics['handoff_protocol'] = dict(negative_prepare=negative_prepare, replay_prepare=replay_prepare)
         metrics['stage'] = 'handoff-complete'
@@ -728,6 +790,7 @@ def run_session(args, api):
         packet_app.close(); mtu_app.close(); close(startup_w)
         startup = b''
         handoff_udp_sequence = 0
+        handoff_seen = False
         deadline = time.monotonic() + 20
         stopping_at = None
 
@@ -931,7 +994,12 @@ def run_session(args, api):
                 metrics['handoff_frame_full']=dict(fill=metrics['frame_full_fill'],
                     commit_cancel=full,drain=drained_full)
                 publish();return
-            committed = ready('KER_SESSION_FRAME_COMMITTED')
+            include_negatives = os.environ.get('KER_SESSION_TEST_FRAME_NEGATIVES') is not None
+            negative_prepares, cancel_replay, committed = read_frame_commit_sequence(
+                worker, ready, include_negatives)
+            if include_negatives and (negative_prepares['variants'] != 12 or
+                    not cancel_replay['cancel_replay']):
+                raise RuntimeError('frame test-only negative controls did not complete before COMMIT')
             validate_frame_committed_record(committed,payload)
             if handoff_mode=='frame-death-producer-active-consumer':
                 if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
@@ -1015,13 +1083,16 @@ def run_session(args, api):
                 trigger = select.poll(); trigger.register(handoff_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
                 if trigger.poll(0):
                     data = os.read(handoff_fd, 1)
-                    if data == b'U':
+                    action = handoff_trigger_action(data)
+                    if action == 'udp':
                         trigger_handoff_udp()
-                    elif data == b'H':
-                        if handoff_mode not in ('frame-positive','frame-full','frame-death-prepared',
-                                'frame-death-producer-active-consumer','frame-death-consumer-prepared'):
+                        handoff_fd = close_completed_handoff_trigger(
+                            handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close)
+                    elif action == 'handoff':
+                        if handoff_mode not in FRAME_U2_TRIGGER_MODES:
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
+                        handoff_seen = True
                     else:
                         close(handoff_fd); handoff_fd = None
                         raise RuntimeError('invalid live-handoff fixture trigger')
@@ -1040,8 +1111,11 @@ def run_session(args, api):
             time.sleep(0.01)
         code = app.wait()
         drain_startup()
-        if handoff_fd is not None:
+        if handoff_fd is not None and not handoff_trigger_complete(
+                handoff_mode, handoff_seen, handoff_udp_sequence):
             raise RuntimeError('test application exited before the handoff trigger')
+        if handoff_fd is not None:
+            close(handoff_fd); handoff_fd = None
         close(control_w)
         if peer_control_w >= 0: close(peer_control_w)
         try: output, _ = worker.communicate(timeout=10)

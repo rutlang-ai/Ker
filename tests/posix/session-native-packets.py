@@ -614,6 +614,15 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             require(initial_pages, 'handoff resident created no private hugepage backing files')
 
             def fatal_profile_diagnostics(reason):
+                try:
+                    return _fatal_profile_diagnostics(reason)
+                except Exception as error:
+                    rendered = json.dumps(dict(mode=mode, reason=reason,
+                        diagnostic_capture_error=f'{type(error).__name__}: {error}'), sort_keys=True)
+                    print('KER_SESSION_HANDOFF_PROFILE_FAILURE ' + rendered, flush=True)
+                    return RuntimeError('live handoff profile failed; diagnostic capture also failed: ' + rendered)
+
+            def _fatal_profile_diagnostics(reason):
                 if runner is not None and runner.poll() is None:
                     runner.terminate()
                     try: runner.wait(timeout=5)
