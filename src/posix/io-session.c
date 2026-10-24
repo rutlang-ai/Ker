@@ -1810,6 +1810,42 @@ static int drain_worker_heartbeat(int fd, struct worker_heartbeat *heartbeat,
     }
     return 0;
 }
+/* Finish the response for a control byte that the worker has already read.
+ * A later byte may be queued while its heartbeat ACK is still pending. The
+ * control-aware drain reports that as EINTR without consuming the byte; drain
+ * only the ACK, then let the main loop process the queued command in order. */
+static int drain_worker_heartbeat_after_command(int fd, struct worker_heartbeat *heartbeat,
+    int resident, int control)
+{
+    if (stopping) return -EINTR;
+    int result = drain_worker_heartbeat(fd, heartbeat, resident, control);
+#ifdef KER_SESSION_TEST_HOOKS
+    if (result == -ECANCELED && getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+        fprintf(stderr, "KER_SESSION_TEST_DQ_CONTROL_HUP {\"authorized\":false}\n");
+        fflush(stderr);
+    }
+#endif
+    if (result == -EINTR && !stopping) {
+#ifdef KER_SESSION_TEST_HOOKS
+        if (getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+            fprintf(stderr, "KER_SESSION_TEST_DQ_HEARTBEAT_DEFERRED {\"queued_control\":true}\n");
+            fflush(stderr);
+        }
+#endif
+        result = drain_worker_heartbeat(fd, heartbeat, resident, -1);
+    }
+    if (result) return result;
+    if (stopping) return -EINTR;
+    if (control >= 0) {
+        struct pollfd state = {.fd=control, .events=POLLIN};
+        int ready;
+        do ready = poll(&state, 1, 0); while (ready < 0 && errno == EINTR && !stopping);
+        if (ready < 0) return -errno;
+        if (state.revents & (POLLHUP | POLLERR | POLLNVAL)) return -ECANCELED;
+    }
+    if (stopping) return -EINTR;
+    return 0;
+}
 static int shared_probe(struct rte_ring *input, struct rte_ring *output,
     struct rte_mbuf *packet, const struct ker_session_message *identity, int control,
     unsigned *deferred_probes, unsigned count, uint64_t *next_sequence, int resident,
@@ -1993,7 +2029,7 @@ static int tc3_observer_loop(int control, int fd, int peer, struct rte_ring **ch
         if (read(control, &command, 1) != 1) return 1;
         if (command == 'Q') return 0;
         if (command == 'S') {
-            if (samples >= 2 || drain_worker_heartbeat(fd, heartbeat, peer, control) ||
+            if (samples >= 2 || drain_worker_heartbeat_after_command(fd, heartbeat, peer, control) ||
                 observe_pmd(fd, identity, peer, &owner)) return 1;
             bool current_owner = owner.token == key;
             printf("KER_SESSION_TC3_SAMPLE {\"pid\":%ld,\"sample\":%u,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"nohw\":%u,\"owner_epoch\":%llu,\"owner_generation\":%llu,\"owner_slot\":%llu,\"owner_process\":%llu,\"queue_owner_key\":%llu,\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_fd\":%s,\"exception_ifindex\":%u}\n",
@@ -2006,7 +2042,7 @@ static int tc3_observer_loop(int control, int fd, int peer, struct rte_ring **ch
             samples++;
         } else if (command == 'P') {
             if (samples != 2) return 1;
-            int status = drain_worker_heartbeat(fd, heartbeat, peer, control) ? -EIO :
+            int status = drain_worker_heartbeat_after_command(fd, heartbeat, peer, control) ? -EIO :
                 shared_probe(channels[0], channels[3], leased_packet, identity,
                     control, &deferred, 1, &sequence, peer, fd, control_sequence, heartbeat);
             if (status) return 1;
@@ -2151,6 +2187,12 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     struct worker_heartbeat heartbeat = {0};
     if (worker_request(fd, &message, &message.sequence, KER_SESSION_HEARTBEAT, 0, peer, &message)) goto cleanup;
     heartbeat.last_ack_ms = monotonic_ms();
+#ifdef KER_SESSION_TEST_HOOKS
+    if (getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+        fprintf(stderr, "KER_SESSION_TEST_DQ_INITIAL_HEARTBEAT_ACKED {\"acked\":true}\n");
+        fflush(stderr);
+    }
+#endif
     struct worker_heartbeat_context heartbeat_context = {.fd=fd,.resident=peer,
         .identity=&message,.sequence=&message.sequence,.heartbeat=&heartbeat};
     struct rte_mbuf *device_packet = NULL;
@@ -2232,18 +2274,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 fprintf(stderr, "KER_SESSION_TEST_PENDING_HB_QUEUED\n");
             }
 #endif
-            int heartbeat_drain = drain_worker_heartbeat(fd, &heartbeat, peer, control);
-            if (heartbeat_drain == -EINTR && !stopping) {
-                /* A later command may already be queued. Keep this consumed
-                 * P request's outcome ordered before processing that command. */
-                heartbeat_drain = drain_worker_heartbeat(fd, &heartbeat, peer, -1);
-            }
-            if (heartbeat_drain == -EINTR && stopping) goto cleanup;
-            if (heartbeat_drain) goto cleanup;
-            struct pollfd control_state = {.fd = control, .events = POLLIN};
-            int control_ready;
-            do control_ready = poll(&control_state, 1, 0); while (control_ready < 0 && errno == EINTR);
-            if (control_ready < 0 || (control_state.revents & (POLLHUP | POLLERR | POLLNVAL))) goto cleanup;
+            if (drain_worker_heartbeat_after_command(fd, &heartbeat, peer, control)) goto cleanup;
 #ifdef KER_SESSION_TEST_HOOKS
             if (test_pending_heartbeat_done && !test_pending_heartbeat_reported) {
                 test_pending_heartbeat_reported = true;
@@ -2285,10 +2316,20 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     unsigned generation_test_step_index=generation_detach_test?3U:0U;
 #endif
     bool probe_pending = probe_only;
+#ifdef KER_SESSION_TEST_HOOKS
+    bool test_dq_pending_reported = false;
+#endif
     while (!stopping) {
         if (heartbeat_tick(fd, &message, &message.sequence, peer, &heartbeat) < 0) {
             fprintf(stderr, "ker session: worker heartbeat failed\n"); goto cleanup;
         }
+#ifdef KER_SESSION_TEST_HOOKS
+        if (!test_dq_pending_reported && heartbeat.pending && getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+            test_dq_pending_reported = true;
+            fprintf(stderr, "KER_SESSION_TEST_DQ_HEARTBEAT_PENDING {\"pending\":true}\n");
+            fflush(stderr);
+        }
+#endif
         if (probe_pending) {
             int probe_result = shared_probe(channels[0], channels[3], leased_packet, &message,
                 control, &deferred_probes, probe_count, &probe_sequence, peer, fd,
@@ -2358,7 +2399,13 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 control_open = false;
                 if (!drain_authorized) break;
             } else if (count == 1 && command == 'D') {
-                if (drain_worker_heartbeat(fd, &heartbeat, peer, control_open ? control : -1)) goto cleanup;
+#ifdef KER_SESSION_TEST_HOOKS
+                if (getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+                    fprintf(stderr, "KER_SESSION_TEST_DQ_D_CONSUMED {\"command\":\"D\"}\n");
+                    fflush(stderr);
+                }
+#endif
+                if (drain_worker_heartbeat_after_command(fd, &heartbeat, peer, control_open ? control : -1)) goto cleanup;
                 if (!drain_authorized && worker_request(fd, &message, &message.sequence,
                         KER_SESSION_DRAIN_MODE, 0, peer, &message)) goto cleanup;
                 drain_authorized = true;
@@ -2370,7 +2417,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 printf("KER_SESSION_RELOAD_ACTIVE {\"value\":%s}\n", reload_active ? "true" : "false"); fflush(stdout);
             } else if (count == 1 && command == 'Q') {
                 struct ker_session_message peer_status;
-                if (drain_worker_heartbeat(fd, &heartbeat, peer, control_open ? control : -1) ||
+                if (drain_worker_heartbeat_after_command(fd, &heartbeat, peer, control_open ? control : -1) ||
                     worker_request(fd, &message, &message.sequence, KER_SESSION_PEER_STATUS,
                         reload_active, peer, &peer_status)) goto cleanup;
                 uint64_t mirror_epoch, mirror_generation, mirror_draining;
@@ -2385,6 +2432,11 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                     (unsigned long long)mirror_generation, mirror_draining ? "true" : "false"); fflush(stdout);
             } else if (count == 1 && command == 'P' && (probe_count || standby)) probe_pending = true;
 #ifdef KER_SESSION_TEST_HOOKS
+            else if (count == 1 && command == 'h' && getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
+                heartbeat.last_ack_ms = 0;
+                fprintf(stderr, "KER_SESSION_TEST_DQ_HEARTBEAT_REQUESTED {\"real_tick\":true}\n");
+                fflush(stderr);
+            }
             else if (count == 1 && command == 'G' && (generation_test||generation_detach_test||generation_tx_full_test)) {
                 struct ker_generation_identity identity = {.session=message.session,.epoch=message.epoch,
                     .slot=(uint32_t)message.slot,.generation=generation,.process=process,.pid=(uint32_t)getpid()};

@@ -165,7 +165,8 @@ def main():
     (runtime / 'dpdk').mkdir(mode=0o700, exist_ok=True)
     env['XDG_RUNTIME_DIR'] = str(runtime)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
-    resident = old = current = ordinary = replacement = None
+    resident = old = current = ordinary = replacement = queued_hup = None
+    resident_stopped = False
     worker_fds = {}
 
     def epoch_live(epoch):
@@ -182,9 +183,10 @@ def main():
         finally:
             connection.close()
 
-    def start_parent():
+    def start_parent(extra_env=None):
+        child_env = env if extra_env is None else env | extra_env
         return Child([sys.executable, str(tool), 'lease', '--socket', str(path),
-                      '--worker', str(worker), '--eal', eal], label='lease', env=env)
+                      '--worker', str(worker), '--eal', eal], label='lease', env=child_env)
 
     def wait_released(epoch):
         deadline = time.monotonic() + 6
@@ -201,17 +203,63 @@ def main():
         require(ready['stage'] == 'shared-control' and ready['slots'] == 4,
                 'resident did not publish expected session geometry')
 
-        old = start_parent()
+        old = start_parent({'KER_SESSION_TEST_DQ_PENDING_HB': '1'})
         old_identity = old.wait_line('KER_SESSION_ATTACHED', 20)
         worker_fds['old'] = open_worker_pidfd(old_identity)
-        old.send('D')
+        old.errors.take('KER_SESSION_TEST_DQ_INITIAL_HEARTBEAT_ACKED', 10)
+        os.kill(resident.process.pid, signal.SIGSTOP)
+        resident_stopped = True
+        old.send('h')
+        old.errors.take('KER_SESSION_TEST_DQ_HEARTBEAT_REQUESTED', 10)
+        old.errors.take('KER_SESSION_TEST_DQ_HEARTBEAT_PENDING', 10)
+        # The two-byte write keeps Q queued behind the already-consumed D.
+        # The stopped resident cannot acknowledge the pending heartbeat until
+        # the worker proves it deferred Q while finishing D's response.
+        old.send('DQ')
+        old.errors.take('KER_SESSION_TEST_DQ_D_CONSUMED', 10)
+        old.errors.take('KER_SESSION_TEST_DQ_HEARTBEAT_DEFERRED', 10)
+        os.kill(resident.process.pid, signal.SIGCONT)
+        resident_stopped = False
         drain = old.wait_line('KER_SESSION_DRAIN_MODE', 10)
         require(drain['epoch'] == old_identity['epoch'] and drain['slot'] == old_identity['slot'] and
                 drain['generation'] == 0 and drain['process'] == 0,
                 'drain authorization was not bound to the attached worker coordinate')
+        peer = old.wait_line('KER_SESSION_PEER', 10)
+        require(peer['epoch'] == old_identity['epoch'] and
+                old.lines.snapshot().index('KER_SESSION_DRAIN_MODE ') < old.lines.snapshot().index('KER_SESSION_PEER '),
+                'queued Q was not answered after the consumed D response')
+        print('PASS: pending heartbeat ACK was drained after D while queued Q remained ordered', flush=True)
         os.kill(old.process.pid, signal.SIGKILL)
         old.process.wait(timeout=5)
         print('PASS: authenticated drain-mode worker survives its master control EOF', flush=True)
+
+        # A control hangup while the consumed D is waiting for its pending
+        # heartbeat must not authorize drain mode. This uses the same real
+        # heartbeat/registration protocol as the positive DQ ordering case.
+        queued_hup = start_parent({'KER_SESSION_TEST_DQ_PENDING_HB': '1'})
+        hup_identity = queued_hup.wait_line('KER_SESSION_ATTACHED', 20)
+        worker_fds['queued_hup'] = open_worker_pidfd(hup_identity)
+        queued_hup.errors.take('KER_SESSION_TEST_DQ_INITIAL_HEARTBEAT_ACKED', 10)
+        os.kill(resident.process.pid, signal.SIGSTOP)
+        resident_stopped = True
+        queued_hup.send('h')
+        queued_hup.errors.take('KER_SESSION_TEST_DQ_HEARTBEAT_REQUESTED', 10)
+        queued_hup.errors.take('KER_SESSION_TEST_DQ_HEARTBEAT_PENDING', 10)
+        queued_hup.send('D')
+        queued_hup.errors.take('KER_SESSION_TEST_DQ_D_CONSUMED', 10)
+        queued_hup.process.stdin.close()
+        queued_hup.errors.take('KER_SESSION_TEST_DQ_CONTROL_HUP', 10)
+        os.kill(resident.process.pid, signal.SIGCONT)
+        resident_stopped = False
+        queued_hup.process.wait(timeout=10)
+        queued_hup.wait_line('KER_SESSION_CHILD_REAP', 5)
+        wait_dead(worker_fds['queued_hup'], hup_identity['pid'])
+        hup_output = queued_hup.lines.snapshot()
+        require('KER_SESSION_DRAIN_MODE ' not in hup_output and queued_hup.process.returncode != 0,
+                'control HUP authorized DRAIN_MODE or was not rejected during pending ACK')
+        wait_released(hup_identity['epoch'])
+        print('PASS: control HUP during a pending heartbeat rejected consumed D without drain authorization', flush=True)
+        queued_hup = None
 
         current = start_parent()
         current_identity = current.wait_line('KER_SESSION_ATTACHED', 20)
@@ -309,6 +357,9 @@ def main():
         print('PASS: resident released all slots and control-pool objects', flush=True)
         return 0
     finally:
+        if resident_stopped and resident is not None and resident.process.poll() is None:
+            try: os.kill(resident.process.pid, signal.SIGCONT)
+            except ProcessLookupError: pass
         # Drain-authorized workers can outlive a failed lease/master. Kill only
         # the exact processes pinned by pidfds, while the resident can still
         # observe/reclaim them; never signal a recycled numeric PID.
@@ -325,7 +376,7 @@ def main():
         for fd in worker_fds.values():
             try: os.close(fd)
             except OSError: pass
-        for child in (old, current, ordinary, replacement):
+        for child in (old, current, ordinary, replacement, queued_hup):
             if child is not None and child.process.poll() is None:
                 child.process.kill()
                 try: child.process.wait(timeout=3)
