@@ -3458,9 +3458,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_setenv_getenv_roundtrip",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Exercise actual ker-app production getenv/setenv/exec: launcher replaces a stale inherited internal preload value, executed native application reads the exact LD_PRELOAD path, sees the internal key removed and an unrelated hello-world value preserved. Real original Linux TCP exchange requires exact active/passive counters and zero outstanding mbufs; a wrong expected value fails before TCP. This adapts the environment roundtrip through an actual consumer, not ff_* ABI or a libc-only program. See docs/application-environment.md.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-application-environment",
+          "provenance_case": "native-fstack-application-environment"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_munmap_roundtrip",

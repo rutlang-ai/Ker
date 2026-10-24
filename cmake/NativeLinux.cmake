@@ -132,6 +132,9 @@ if(BUILD_TESTING)
     target_link_options(ker-packet-device-test PRIVATE -Wl,--wrap=calloc -Wl,--wrap=free)
     add_test(NAME native-fstack-packet-device COMMAND ker-packet-device-test)
     set_tests_properties(native-fstack-packet-device PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_executable(ker-application-environment-test tests/posix/application-environment.c)
+    target_compile_options(ker-application-environment-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-application-environment-test PRIVATE ${CMAKE_DL_LIBS})
     add_executable(ker-worker-clock-test tests/posix/worker-clock.c src/posix/worker-clock.c)
     target_include_directories(ker-worker-clock-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_compile_options(ker-worker-clock-test PRIVATE -Wall -Wextra -Werror)
@@ -392,6 +395,9 @@ if(BUILD_TESTING)
         --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
         --library "$<TARGET_FILE:ker-posix>" --io-worker "$<TARGET_FILE:ker-io-worker>"
         --app "$<TARGET_FILE:ker-posix-tcp-echo-test>")
+    add_test(NAME native-fstack-application-environment COMMAND ${ker_native_test_command}
+        --environment-app "$<TARGET_FILE:ker-application-environment-test>")
+    set_tests_properties(native-fstack-application-environment PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_test(NAME native-posix-tcp-interop COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-fd-compat-test>")
     add_executable(ker-startup-interface-test tests/posix/startup-interface.c)
