@@ -14,6 +14,52 @@ import tempfile
 import time
 
 
+def signal_pidfd(pidfd, signum):
+    """Signal one exact process identity through its already-open pidfd."""
+    sender = getattr(signal, 'pidfd_send_signal', None)
+    if sender is None:
+        raise RuntimeError('pidfd_send_signal is required for exact handoff fixture control')
+    sender(pidfd, signum)
+
+
+def wait_pidfd_process_stopped(pidfd, pid, timeout=5):
+    """Wait for an exact pidfd target to report a stopped /proc state."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if select.select([pidfd], [], [], 0)[0]:
+            raise RuntimeError('exact handoff worker exited before reaching stopped state')
+        if pidfd_process_stopped(pidfd, pid):
+            return
+        time.sleep(0.005)
+    raise RuntimeError('exact handoff worker did not reach stopped state before deadline')
+
+
+def pidfd_process_stopped(pidfd, pid):
+    """Check the stopped state of a live exact pidfd target."""
+    if select.select([pidfd], [], [], 0)[0]:
+        return False
+    try:
+        lines = Path(f'/proc/{pid}/status').read_text().splitlines()
+    except FileNotFoundError:
+        return False
+    state = next((line.split()[1] for line in lines if line.startswith('State:')), None)
+    observed_pid = next((int(line.split()[1]) for line in lines if line.startswith('Pid:')), None)
+    return observed_pid == pid and state in ('T', 't')
+
+
+def resume_pidfd_if_live(pidfd):
+    """Resume an exact worker if it is still alive; tolerate concurrent exit."""
+    if select.select([pidfd], [], [], 0)[0]:
+        return False
+    try:
+        signal_pidfd(pidfd, signal.SIGCONT)
+    except ProcessLookupError:
+        if select.select([pidfd], [], [], 0)[0]:
+            return False
+        raise
+    return True
+
+
 def tap_interfaces_for_process(pid, *, fdinfo_dir=None):
     """Return TUN interface names attached to a process from its fdinfo."""
     directory = Path(f'/proc/{pid}/fdinfo') if fdinfo_dir is None else Path(fdinfo_dir)
@@ -108,6 +154,7 @@ def run_session(args, api):
         endpoint.getpeername()
     connection = api.Connection(args.socket)
     worker = peer_worker = app = None
+    worker_pidfd = -1
     peer_control_w = peer_wire_fd = -1
     peer_packet_worker = peer_packet_app = peer_mtu_worker = peer_mtu_app = None
     owned = {args.wire_fd}
@@ -251,18 +298,53 @@ def run_session(args, api):
         old_tun_interfaces_before = tap_interfaces_for_process(worker.pid)
         if metrics.get('exception_endpoint_name') not in old_tun_interfaces_before:
             raise RuntimeError('original owner did not hold the resident-selected TAP endpoint before handoff')
+        if handoff_mode == 'handoff-control-hup':
+            try:
+                if os.write(control_w, b'H') != 1:
+                    raise RuntimeError('could not request owner quiescence')
+                boundary = wait_marker(worker, 'KER_SESSION_HANDOFF_BOUNDARY')
+                wait_pidfd_process_stopped(worker_pidfd, worker.pid)
+                print('KER_SESSION_HANDOFF_WORKER_STOPPED {"exact_pidfd":true}', file=sys.stderr, flush=True)
+                snapshot_connection = api.Connection(args.socket)
+                try:
+                    stopped_snapshot = dict(status=snapshot_connection.request(api.STATUS),
+                        pmd_status=snapshot_connection.request(api.PMD_STATUS))
+                finally:
+                    snapshot_connection.close()
+                close(control_w)
+                control_w = -1
+                snapshot_connection = api.Connection(args.socket)
+                try:
+                    closed_snapshot = dict(status=snapshot_connection.request(api.STATUS),
+                        pmd_status=snapshot_connection.request(api.PMD_STATUS))
+                finally:
+                    snapshot_connection.close()
+                if stopped_snapshot != closed_snapshot:
+                    raise RuntimeError('control EOF changed owner/census while the worker was stopped')
+                print('KER_SESSION_HANDOFF_CONTROL_CLOSED {"owner_unchanged":true}',
+                    file=sys.stderr, flush=True)
+                metrics['handoff_control_hup'] = dict(boundary=boundary,
+                    stopped_snapshot=stopped_snapshot, closed_snapshot=closed_snapshot)
+                publish()
+            finally:
+                if control_w >= 0:
+                    close(control_w)
+                    control_w = -1
+                if worker_pidfd >= 0 and pidfd_process_stopped(worker_pidfd, worker.pid) and \
+                        resume_pidfd_if_live(worker_pidfd):
+                    print('KER_SESSION_HANDOFF_WORKER_RESUMED {"exact_pidfd":true}',
+                        file=sys.stderr, flush=True)
+            wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_CONTROL_HUP')
+            metrics.update(stage='handoff-control-hup', handoff_protocol=dict(
+                boundary=boundary, prepare_authorized=False,
+                stopped_snapshot=metrics['handoff_control_hup']['stopped_snapshot'],
+                closed_snapshot=metrics['handoff_control_hup']['closed_snapshot']))
+            publish()
+            raise RuntimeError('control EOF correctly prevented PREPARE after the handoff boundary')
         commands = b'HH' if handoff_mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm') else b'H'
         if os.write(control_w, commands) != len(commands):
             raise RuntimeError('could not request owner quiescence')
-        if handoff_mode == 'handoff-control-hup':
-            close(control_w); control_w=-1
         boundary = wait_marker(worker, 'KER_SESSION_HANDOFF_BOUNDARY')
-        if handoff_mode == 'handoff-control-hup':
-            wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_CONTROL_HUP')
-            metrics.update(stage='handoff-control-hup', handoff_protocol=dict(
-                boundary=boundary, prepare_authorized=False))
-            publish()
-            raise RuntimeError('control EOF correctly prevented PREPARE after the handoff boundary')
         negative_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
         prepare_rejected_mode = handoff_mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm') or \
             (handoff_mode is not None and (handoff_mode.startswith('bad-prepare-error') or
@@ -487,6 +569,10 @@ def run_session(args, api):
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
             pass_fds=(control_r, ticket_r, packet_worker.fileno(), mtu_worker.fileno(), args.wire_fd),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, bufsize=0)
+        if handoff_fd is not None:
+            # Capture the exact worker identity while it is known live; HUP
+            # cleanup must never signal a recycled numeric PID.
+            worker_pidfd = os.pidfd_open(worker.pid)
         close(control_r); close(ticket_r); close(args.wire_fd)
         packet_worker.close(); mtu_worker.close()
         data = api.encode(ticket)
@@ -635,6 +721,11 @@ def run_session(args, api):
         return 0
     finally:
         try:
+            if worker_pidfd >= 0:
+                if worker is not None and pidfd_process_stopped(worker_pidfd, worker.pid):
+                    resume_pidfd_if_live(worker_pidfd)
+                os.close(worker_pidfd)
+                worker_pidfd = -1
             if app is not None and app.poll() is None:
                 app.terminate()
                 try: app.wait(timeout=5)

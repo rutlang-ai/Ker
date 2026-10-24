@@ -551,11 +551,28 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 require(runner.returncode != 0 and failure.get('stage') == 'failed' and
                     'KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
                     'KER_SESSION_HANDOFF_BOUNDARY ' in runner_text and
+                    'KER_SESSION_HANDOFF_WORKER_STOPPED ' in runner_text and
+                    'KER_SESSION_HANDOFF_CONTROL_CLOSED ' in runner_text and
+                    'KER_SESSION_HANDOFF_WORKER_RESUMED ' in runner_text and
                     'KER_SESSION_TEST_HANDOFF_CONTROL_HUP' in runner_text and
                     'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED' not in runner_text and
                     'KER_SESSION_TEST_HANDOFF_PREPARED' not in runner_text and
                     'KER_SESSION_PMD_PARKED ' not in runner_text,
                     f'control HUP did not fail closed before PREPARE: {failure!r}; {runner_text}')
+                hup = failure.get('handoff_control_hup') or {}
+                require(isinstance(hup.get('stopped_snapshot'), dict) and
+                    hup.get('stopped_snapshot') == hup.get('closed_snapshot') and
+                    hup['stopped_snapshot'].get('status', {}).get('process') ==
+                        handoff_census_before.get('process') and
+                    hup['stopped_snapshot'].get('pmd_status', {}).get('token') ==
+                        handoff_owner_before.get('token'),
+                    f'control EOF changed the stopped owner/census: {hup!r}')
+                marker_order = [runner_text.index(marker) for marker in (
+                    'KER_SESSION_HANDOFF_BOUNDARY ', 'KER_SESSION_HANDOFF_WORKER_STOPPED ',
+                    'KER_SESSION_HANDOFF_CONTROL_CLOSED ', 'KER_SESSION_HANDOFF_WORKER_RESUMED ',
+                    'KER_SESSION_TEST_HANDOFF_CONTROL_HUP ')]
+                require(marker_order == sorted(marker_order),
+                    f'control HUP did not close at the stopped boundary in order: {runner_text}')
                 require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
                     'control HUP profile left an exact child alive')
                 primary.stdin.close(); primary.stdin = None

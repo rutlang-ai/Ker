@@ -2233,6 +2233,15 @@ static int drain_worker_heartbeat(int fd, struct worker_heartbeat *heartbeat,
     }
     return 0;
 }
+static int report_handoff_control_result(int result)
+{
+#ifdef KER_SESSION_TEST_HOOKS
+    if (result == -ECANCELED && getenv("KER_SESSION_TEST_HANDOFF_CONTROL_HUP")) {
+        printf("KER_SESSION_TEST_HANDOFF_CONTROL_HUP {\"prepare_authorized\":false}\n"); fflush(stdout);
+    }
+#endif
+    return result;
+}
 /* Finish the response for a control byte that the worker has already read.
  * A later byte may be queued while its heartbeat ACK is still pending. The
  * control-aware drain reports that as EINTR without consuming the byte; drain
@@ -2243,9 +2252,6 @@ static int drain_worker_heartbeat_after_command(int fd, struct worker_heartbeat 
     if (stopping) return -EINTR;
     int result = drain_worker_heartbeat(fd, heartbeat, resident, control);
 #ifdef KER_SESSION_TEST_HOOKS
-    if (result == -ECANCELED && getenv("KER_SESSION_TEST_HANDOFF_CONTROL_HUP")) {
-        printf("KER_SESSION_TEST_HANDOFF_CONTROL_HUP {\"prepare_authorized\":false}\n"); fflush(stdout);
-    }
     if (result == -ECANCELED && getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
         fprintf(stderr, "KER_SESSION_TEST_DQ_CONTROL_HUP {\"authorized\":false}\n");
         fflush(stderr);
@@ -2264,14 +2270,15 @@ static int drain_worker_heartbeat_after_command(int fd, struct worker_heartbeat 
 #endif
         result = drain_worker_heartbeat(fd, heartbeat, resident, -1);
     }
-    if (result) return result;
+    if (result) return report_handoff_control_result(result);
     if (stopping) return -EINTR;
     if (control >= 0) {
         struct pollfd state = {.fd=control, .events=POLLIN};
         int ready;
         do ready = poll(&state, 1, 0); while (ready < 0 && errno == EINTR && !stopping);
         if (ready < 0) return -errno;
-        if (state.revents & (POLLHUP | POLLERR | POLLNVAL)) return -ECANCELED;
+        if (state.revents & (POLLHUP | POLLERR | POLLNVAL))
+            return report_handoff_control_result(-ECANCELED);
     }
     if (stopping) return -EINTR;
     return 0;

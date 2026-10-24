@@ -136,6 +136,11 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
                     .exception_from_wire=exception_from_wire,.exception_to_native=exception_to_native,
                     .fragment_to_native=fragment_to_native,.exception_endpoint_owner_key=expected_owner,
                     .retained=0,.status=0};
+#ifdef KER_SESSION_TEST_HOOKS
+                /* Hold the exact owner at the completed boundary so the
+                 * control-HUP fixture can close its pipe before PREPARE. */
+                if (getenv("KER_SESSION_TEST_HANDOFF_CONTROL_HUP") && raise(SIGSTOP)) _Exit(125);
+#endif
                 return 1;
             }
         }

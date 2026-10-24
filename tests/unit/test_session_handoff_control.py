@@ -9,7 +9,11 @@ import errno
 import importlib.util
 import os
 from pathlib import Path
+import select
+import signal
+import subprocess
 import types
+import time
 import unittest
 
 
@@ -84,6 +88,7 @@ class HandoffControlPathTests(unittest.TestCase):
             'ready': lambda *_args, **_kwargs: None,
             'wait_marker': wait_marker,
             'worker': Actor(),
+            'worker_pidfd': -1,
         }
         function = types.FunctionType(self.function_code,
             {'os': os, 'RuntimeError': RuntimeError,
@@ -132,10 +137,17 @@ class HandoffControlPathTests(unittest.TestCase):
             'tap_interfaces_for_process': lambda _pid: {'ker_test0'},
             'wait_marker': wait_marker,
             'worker': Actor(),
+            'worker_pidfd': -1,
         }
         function = types.FunctionType(self.function_code,
             {'os': os, 'errno': errno, 'RuntimeError': RuntimeError,
              'subprocess': __import__('subprocess'),
+             'select': select,
+             'signal': signal,
+             'signal_pidfd': self.launcher.signal_pidfd,
+             'pidfd_process_stopped': self.launcher.pidfd_process_stopped,
+             'resume_pidfd_if_live': self.launcher.resume_pidfd_if_live,
+             'wait_pidfd_process_stopped': self.launcher.wait_pidfd_process_stopped,
              'tap_interfaces_for_process': values['tap_interfaces_for_process']},
             'perform_test_handoff', closure=tuple(cell(values[name]) for name in self.function_code.co_freevars))
         return function, calls, read_fd, write_fd
@@ -148,6 +160,67 @@ class HandoffControlPathTests(unittest.TestCase):
 
     def test_control_hup_closes_writer_after_h(self):
         self.exercise('handoff-control-hup', b'H', expect_closed=True)
+
+    def test_hup_boundary_wait_failure_still_resumes_exact_worker(self):
+        read_fd, write_fd = os.pipe()
+        child = subprocess.Popen([os.sys.executable, '-c', 'import time; time.sleep(30)'])
+        pidfd = os.pidfd_open(child.pid)
+        metrics = {'exception_endpoint_name': 'ker_test0'}
+        closed = []
+
+        def close(fd):
+            closed.append(fd)
+            os.close(fd)
+
+        def wait_marker(_process, prefix, timeout=10):
+            if prefix != 'KER_SESSION_HANDOFF_BOUNDARY':
+                raise AssertionError('unexpected marker wait: ' + prefix)
+            self.launcher.signal_pidfd(pidfd, signal.SIGSTOP)
+            self.launcher.wait_pidfd_process_stopped(pidfd, child.pid)
+            raise StopAtWorkerMarker
+
+        values = {
+            'api': None, 'app': Actor(), 'args': None, 'close': close,
+            'control_w': write_fd, 'handoff_mode': 'handoff-control-hup',
+            'metrics': metrics, 'peer_control_w': -1, 'peer_worker': Actor(),
+            'publish': lambda: None, 'ready': lambda *_args, **_kwargs: None,
+            'wait_marker': wait_marker, 'worker': child, 'worker_pidfd': pidfd,
+        }
+        function = types.FunctionType(self.function_code,
+            {'os': os, 'RuntimeError': RuntimeError, 'select': select,
+             'signal': signal, 'sys': __import__('sys'),
+             'tap_interfaces_for_process': lambda _pid: {'ker_test0'},
+             'signal_pidfd': self.launcher.signal_pidfd,
+             'pidfd_process_stopped': self.launcher.pidfd_process_stopped,
+             'resume_pidfd_if_live': self.launcher.resume_pidfd_if_live,
+             'wait_pidfd_process_stopped': self.launcher.wait_pidfd_process_stopped},
+            'perform_test_handoff',
+            closure=tuple(cell(values[name]) for name in self.function_code.co_freevars))
+        try:
+            with self.assertRaises(StopAtWorkerMarker):
+                function()
+            self.assertEqual(os.read(read_fd, 1), b'H')
+            self.assertEqual(closed, [write_fd])
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if select.select([pidfd], [], [], 0)[0]:
+                    self.fail('worker exited instead of being resumed')
+                state = next(line.split()[1] for line in Path(f'/proc/{child.pid}/status').read_text().splitlines()
+                    if line.startswith('State:'))
+                if state not in ('T', 't'):
+                    break
+                time.sleep(0.005)
+            self.assertNotIn(state, ('T', 't'))
+        finally:
+            if not select.select([pidfd], [], [], 0)[0]:
+                self.launcher.signal_pidfd(pidfd, signal.SIGCONT)
+                child.terminate()
+                try:
+                    child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    child.kill(); child.wait()
+            os.close(pidfd)
+            os.close(read_fd)
 
     def test_two_valid_rejections_use_same_replay_marker_without_success_marker(self):
         metrics = {'exception_endpoint_name': 'ker_test0'}
