@@ -372,6 +372,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         resident_pidfd = -1
         actor_proof_ready = False
         handoff_census_before = handoff_owner_before = None
+        rejection_timeout_snapshot = None
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
@@ -575,7 +576,23 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     if current.get('stage') == 'handoff-rejected': break
                     if runner.poll() is not None: raise RuntimeError('runner exited before rejection recovery')
                     time.sleep(0.005)
-                else: raise RuntimeError('worker did not resume after its valid PREPARE rejection')
+                else:
+                    latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
+                    try: latest = json.loads(latest_raw) if latest_raw else None
+                    except json.JSONDecodeError: latest = None
+                    runner_stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                    rejection_timeout_snapshot = dict(mode=mode,
+                        reason='worker did not publish handoff-rejected before the bounded deadline',
+                        latest_stats=latest, latest_stats_raw=latest_raw,
+                        runner_stderr=runner_stderr,
+                        runner_returncode=runner.poll(), resident_returncode=primary.poll(),
+                        actor_pids=dict(app=before['app_pid'], owner=before['attached']['pid'],
+                            peer=before['handoff_peer_attached']['pid']),
+                        census_before=handoff_census_before, owner_before=handoff_owner_before)
+                    print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_SNAPSHOT ' +
+                        json.dumps(rejection_timeout_snapshot, sort_keys=True), flush=True)
+                    raise RuntimeError('worker did not resume after its valid PREPARE rejection; '
+                        'bounded diagnostic snapshot captured')
                 runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                 require(all(marker in runner_text for marker in (
                     'KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING',
@@ -812,6 +829,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         except BaseException as error: finalization_errors.append(error)
                         if name == 'handoff_read': handoff_read = -1
                         else: handoff_write = -1
+                cleanup_outputs = {}
                 for label, process in (('launcher', runner), ('resident', primary)):
                     if process is None:
                         continue
@@ -822,11 +840,23 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                             except subprocess.TimeoutExpired:
                                 process.kill(); process.wait(timeout=10)
                         if process.poll() is not None:
-                            process.communicate(timeout=5)
+                            cleanup_outputs[label] = process.communicate(timeout=5)
                         else:
                             raise RuntimeError(f'{label} did not exit during fixture cleanup')
                     except BaseException as error:
                         finalization_errors.append(RuntimeError(f'{label} cleanup failed: {error}'))
+                if rejection_timeout_snapshot is not None:
+                    runner_out, runner_err = cleanup_outputs.get('launcher', (b'', b''))
+                    resident_out, resident_err = cleanup_outputs.get('resident', (b'', b''))
+                    runner_stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                    final_snapshot = dict(rejection_timeout_snapshot,
+                        runner_returncode=runner.poll(), resident_returncode=primary.poll(),
+                        runner_stdout=runner_out.decode(errors='replace'),
+                        runner_stderr=runner_stderr,
+                        resident_stdout=resident_out.decode(errors='replace'),
+                        resident_stderr=resident_err.decode(errors='replace'))
+                    print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_FINAL ' +
+                        json.dumps(final_snapshot, sort_keys=True), flush=True)
                 if finalization_errors:
                     raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
                         repr([str(error) for error in finalization_errors]))
