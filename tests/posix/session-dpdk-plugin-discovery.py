@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Verify configured and custom-prefix DPDK PMD resolution for session fixtures."""
 import argparse
+import contextlib
 import importlib.util
+import io
+import json
 import os
 import shlex
 from pathlib import Path
 import tempfile
+import sys
 from types import SimpleNamespace
 
 
@@ -67,6 +71,32 @@ def main():
         require(set(runner.tap_interfaces_for_process(12345, fdinfo_dir=fdinfo)) ==
                 {'kex12345678', 'kersession0'},
                 'launcher fdinfo helper did not read every original TUN interface record')
+        original_error = ValueError('profile failed first')
+        cleanup_error = RuntimeError('stage=post-reap-before-unlink path=/huge/map_0 expected=old actual=new')
+        original_report = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(original_report):
+                try:
+                    raise original_error
+                finally:
+                    runner.report_hugepage_cleanup_refusal('peer-death', sys.exc_info()[1], cleanup_error)
+        except ValueError as error:
+            require(error is original_error,
+                'hugepage cleanup refusal replaced the active profile exception')
+        else:
+            require(False, 'active profile exception did not propagate after cleanup refusal')
+        original_marker = json.loads(original_report.getvalue().strip().split(' ', 1)[1])
+        require(original_marker['original'] == {'type': 'ValueError', 'message': str(original_error)} and
+                original_marker['cleanup'] == {'type': 'RuntimeError', 'message': str(cleanup_error)},
+                'combined cleanup marker omitted the original or cleanup diagnostic')
+        cleanup_report = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(cleanup_report):
+                runner.report_hugepage_cleanup_refusal('peer-death', None, cleanup_error)
+        except RuntimeError as error:
+            require(error is cleanup_error, 'cleanup refusal did not propagate when no profile error existed')
+        else:
+            require(False, 'cleanup refusal was swallowed without an active profile exception')
         module_names = ('mempool_ring', 'net_ring')
         expected = []
         for module in module_names:

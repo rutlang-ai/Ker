@@ -42,6 +42,93 @@ def tap_interfaces_for_process(pid):
     return names
 
 
+def cleanup_handoff_hugepages(args, mode, page_pattern, owned_pages, pidfds,
+                              resident_pidfd, primary, runner):
+    if not owned_pages:
+        return
+    for pidfd in pidfds:
+        require(select.select([pidfd], [], [], 5)[0],
+            'refuse hugepage cleanup while an exact handoff child remains alive')
+    if resident_pidfd >= 0:
+        require(select.select([resident_pidfd], [], [], 5)[0],
+            'refuse hugepage cleanup while the exact handoff resident remains alive')
+    require(primary is not None and primary.poll() is not None and
+        (runner is None or runner.poll() is not None),
+        'refuse hugepage cleanup before resident and launcher reaping')
+    current_pages = {page_path for page_path in args.huge_dir.iterdir()
+        if page_pattern.fullmatch(page_path.name)}
+    recorded_pages = set(owned_pages)
+    unrecorded = current_pages - recorded_pages
+    missing = recorded_pages - current_pages
+
+    def describe_page(path, expected=None):
+        try:
+            value = path.lstat()
+        except FileNotFoundError:
+            actual = dict(dev=None, inode=None, uid=None, type='missing')
+        else:
+            kind = stat.S_IFMT(value.st_mode)
+            actual = dict(dev=value.st_dev, inode=value.st_ino, uid=value.st_uid,
+                type='regular' if stat.S_ISREG(value.st_mode) else oct(kind))
+        if expected is None:
+            expected_value = None
+        else:
+            expected_value = dict(dev=expected[0], inode=expected[1], uid=expected[2],
+                type='regular' if expected[3] == stat.S_IFREG else oct(expected[3]))
+        return dict(path=str(path), expected=expected_value, actual=actual)
+
+    if mode == 'positive':
+        require(not unrecorded,
+            'stage=post-reap-before-unlink unexpected exact-prefix files; refusing cleanup: ' +
+            repr([describe_page(path) for path in sorted(unrecorded)]))
+    else:
+        require(not unrecorded and not missing,
+            'stage=post-reap-before-unlink fatal exact-prefix file set changed; refusing cleanup: ' +
+            repr([describe_page(path, owned_pages[path]) for path in sorted(missing)] +
+                [describe_page(path) for path in sorted(unrecorded)]))
+    leftovers = []
+    validated = []
+    for page_path, identity in owned_pages.items():
+        try:
+            page_stat = page_path.lstat()
+        except FileNotFoundError:
+            continue
+        actual_identity = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid,
+            stat.S_IFMT(page_stat.st_mode))
+        if actual_identity != identity or not stat.S_ISREG(page_stat.st_mode):
+            raise RuntimeError('stage=post-reap-before-unlink hugepage identity changed; refusing all cleanup: ' +
+                repr(describe_page(page_path, identity)))
+        leftovers.append(page_path)
+        validated.append((page_path, identity))
+    if mode == 'positive':
+        leak = bool(leftovers)
+    else:
+        require(len(leftovers) == len(owned_pages),
+            f'{mode} did not preserve the complete exact-prefix file set for cleanup')
+        leak = False
+    # Validate every recorded path before deleting any file so a mismatch
+    # cannot cause partial cleanup.
+    for page_path, _ in validated:
+        page_path.unlink()
+    require(not any(page_path.exists() for page_path in owned_pages),
+        'exact handoff hugepage files remain after cleanup')
+    require(not leak, 'successful handoff profile leaked its exact-prefix hugepage backing files')
+    print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED mode={mode} files={len(owned_pages)} '
+        f'leftovers={len(leftovers)}', flush=True)
+
+
+def report_hugepage_cleanup_refusal(mode, original_error, cleanup_error):
+    def describe(error):
+        if error is None:
+            return None
+        return dict(type=type(error).__name__, message=str(error))
+    print('KER_SESSION_HANDOFF_HUGEPAGE_CLEANUP_REFUSED ' + json.dumps(dict(
+        mode=mode, original=describe(original_error), cleanup=describe(cleanup_error)),
+        sort_keys=True), flush=True)
+    if original_error is None:
+        raise cleanup_error.with_traceback(cleanup_error.__traceback__)
+
+
 def line(process, timeout=25, stderr_path=None):
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
@@ -402,6 +489,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             require(drained and drained[-1]['objects'] == 511 and drained[-1]['outstanding'] == 0,
                 'handoff resident did not report exact final pool cleanup')
         finally:
+            original_error = sys.exc_info()[1]
             if handoff_read >= 0: os.close(handoff_read)
             if handoff_write >= 0: os.close(handoff_write)
             if runner is not None and runner.poll() is None:
@@ -416,74 +504,11 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 runner.communicate(timeout=5)
             if primary is not None and primary.poll() is not None:
                 primary.communicate(timeout=5)
-            if owned_pages:
-                for pidfd in pidfds:
-                    require(select.select([pidfd], [], [], 5)[0],
-                        'refuse hugepage cleanup while an exact handoff child remains alive')
-                if resident_pidfd >= 0:
-                    require(select.select([resident_pidfd], [], [], 5)[0],
-                        'refuse hugepage cleanup while the exact handoff resident remains alive')
-                require(primary is not None and primary.poll() is not None and
-                    (runner is None or runner.poll() is not None),
-                    'refuse hugepage cleanup before resident and launcher reaping')
-                current_pages = {page_path for page_path in args.huge_dir.iterdir()
-                    if page_pattern.fullmatch(page_path.name)}
-                recorded_pages = set(owned_pages)
-                unrecorded = current_pages - recorded_pages
-                missing = recorded_pages - current_pages
-                def describe_page(path, expected=None):
-                    try:
-                        value = path.lstat()
-                    except FileNotFoundError:
-                        actual = dict(dev=None, inode=None, uid=None, type='missing')
-                    else:
-                        kind = stat.S_IFMT(value.st_mode)
-                        actual = dict(dev=value.st_dev, inode=value.st_ino, uid=value.st_uid,
-                            type='regular' if stat.S_ISREG(value.st_mode) else oct(kind))
-                    if expected is None:
-                        expected_value = None
-                    else:
-                        expected_value = dict(dev=expected[0], inode=expected[1], uid=expected[2],
-                            type='regular' if expected[3] == stat.S_IFREG else oct(expected[3]))
-                    return dict(path=str(path), expected=expected_value, actual=actual)
-                if mode == 'positive':
-                    require(not unrecorded,
-                        'stage=post-reap-before-unlink unexpected exact-prefix files; refusing cleanup: ' +
-                        repr([describe_page(path) for path in sorted(unrecorded)]))
-                else:
-                    require(not unrecorded and not missing,
-                        'stage=post-reap-before-unlink fatal exact-prefix file set changed; refusing cleanup: ' +
-                        repr([describe_page(path, owned_pages[path]) for path in sorted(missing)] +
-                            [describe_page(path) for path in sorted(unrecorded)]))
-                leftovers = []
-                validated = []
-                for page_path, identity in owned_pages.items():
-                    try:
-                        page_stat = page_path.lstat()
-                    except FileNotFoundError:
-                        continue
-                    actual_identity = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid,
-                        stat.S_IFMT(page_stat.st_mode))
-                    if actual_identity != identity or not stat.S_ISREG(page_stat.st_mode):
-                        raise RuntimeError('stage=post-reap-before-unlink hugepage identity changed; '
-                            'refusing all cleanup: ' + repr(describe_page(page_path, identity)))
-                    leftovers.append(page_path)
-                    validated.append((page_path, identity))
-                if mode == 'positive':
-                    leak = bool(leftovers)
-                else:
-                    require(len(leftovers) == len(owned_pages),
-                        f'{mode} did not preserve the complete exact-prefix file set for cleanup')
-                    leak = False
-                # Recheck the full set above before deleting any file so a
-                # replaced or unexpected path cannot cause partial cleanup.
-                for page_path, _ in validated:
-                    page_path.unlink()
-                require(not any(page_path.exists() for page_path in owned_pages),
-                    'exact handoff hugepage files remain after cleanup')
-                require(not leak, 'successful handoff profile leaked its exact-prefix hugepage backing files')
-                print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED mode={mode} files={len(owned_pages)} '
-                    f'leftovers={len(leftovers)}', flush=True)
+            try:
+                cleanup_handoff_hugepages(args, mode, page_pattern, owned_pages,
+                    pidfds, resident_pidfd, primary, runner)
+            except BaseException as cleanup_error:
+                report_hugepage_cleanup_refusal(mode, original_error, cleanup_error)
             if endpoint is not None: endpoint.close()
             if wire is not None: wire.close()
             for pidfd in pidfds: os.close(pidfd)
