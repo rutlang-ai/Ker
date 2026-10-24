@@ -6,6 +6,7 @@ actual nested handoff function the marker sequence emitted by the C success and
 error paths. Neither proves EAL, packet, or native handoff behavior.
 """
 import errno
+import importlib.util
 import os
 from pathlib import Path
 import types
@@ -53,6 +54,9 @@ class HandoffControlPathTests(unittest.TestCase):
         cls.function_code = nested_code(module, 'perform_test_handoff')
         if cls.function_code is None:
             raise RuntimeError('could not locate actual perform_test_handoff code object')
+        spec = importlib.util.spec_from_file_location('ker_session_run_for_cleanup_test', SOURCE)
+        cls.launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.launcher)
 
     def exercise(self, mode, expected, expect_closed):
         read_fd, write_fd = os.pipe()
@@ -197,6 +201,21 @@ class HandoffControlPathTests(unittest.TestCase):
 
     def test_malformed_success_does_not_wait_for_success_replay_marker(self):
         self.exercise_malformed_rejection('bad-prepare-success')
+
+    def test_peer_cleanup_distinguishes_control_only_and_committed_packet_owner(self):
+        validate = self.launcher.validate_handoff_peer_cleanup
+        packet = {'status': 0}
+        validate({}, True, 0, None)
+        validate({'handoff': {'stage': 'committed'}}, True, 0, packet)
+        validate({}, False, None, None)
+        for metrics, code, stats in (
+                ({}, 0, packet),
+                ({'handoff': {'stage': 'committed'}}, 0, None),
+                ({}, 1, None),
+                ({'handoff': {'stage': 'committed'}}, 0, {'status': 1})):
+            with self.subTest(metrics=metrics, code=code, stats=stats):
+                with self.assertRaises(RuntimeError):
+                    validate(metrics, True, code, stats)
 
 
 if __name__ == '__main__':

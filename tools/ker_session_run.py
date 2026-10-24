@@ -59,6 +59,20 @@ def validate_interrupted_cleanup(worker_code, packet_stats, *, packet_expected=T
     return 'signal-terminated'
 
 
+def validate_handoff_peer_cleanup(metrics, peer_present, peer_code, peer_packet_stats):
+    """Require packet completion only after validated handoff ownership."""
+    if not peer_present:
+        return
+    if peer_code != 0:
+        raise RuntimeError('handoff peer did not exit cleanly')
+    committed = (metrics.get('handoff') or {}).get('stage') == 'committed'
+    if committed:
+        if not isinstance(peer_packet_stats, dict) or peer_packet_stats.get('status') != 0:
+            raise RuntimeError('committed handoff peer did not report successful packet cleanup')
+    elif peer_packet_stats is not None:
+        raise RuntimeError('control-only handoff peer unexpectedly reported packet completion')
+
+
 def run_session(args, api):
     address = ipaddress.ip_interface(args.address or '198.18.0.2/24')
     address6 = ipaddress.ip_interface(args.address6) if args.address6 else None
@@ -603,8 +617,8 @@ def run_session(args, api):
         metrics.update(packet=packet_stats, native=native_stats, worker_code=worker.returncode, app_code=code,
             handoff_peer_packet=peer_packet_stats, handoff_peer_code=peer_code)
         release(ticket)
-        if (worker.returncode or packet_stats is None or packet_stats['status'] or
-                (peer_worker is not None and (peer_code or peer_packet_stats is None or peer_packet_stats['status']))):
+        validate_handoff_peer_cleanup(metrics, peer_worker is not None, peer_code, peer_packet_stats)
+        if worker.returncode or packet_stats is None or packet_stats['status']:
             raise RuntimeError('secondary packet cleanup failed')
         if received_signal is not None:
             native_cleanup = validate_interrupted_cleanup(worker.returncode, packet_stats, app_launched=True,
