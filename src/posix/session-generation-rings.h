@@ -155,6 +155,7 @@ void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready, _Atomic
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready);
 void ker_generation_test_hold_after_enqueue_prepare(_Atomic unsigned *ready);
 void ker_generation_test_hold_packet_commit(_Atomic unsigned *ready,_Atomic unsigned *release);
+void ker_generation_test_hold_after_packet_enqueue(_Atomic unsigned *ready,_Atomic unsigned *release);
 /* Test-only late journal corruption and raw metric observation for reaper rollback. */
 int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *rings,
     const struct ker_generation_identity *owner, uint32_t after_ring_slot);

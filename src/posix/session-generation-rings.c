@@ -135,6 +135,8 @@ static _Atomic unsigned *test_dequeue_cas_ready;
 static _Atomic unsigned *test_enqueue_prepare_ready;
 static _Atomic unsigned *test_packet_commit_ready;
 static _Atomic unsigned *test_packet_commit_release;
+static _Atomic unsigned *test_packet_enqueue_ready;
+static _Atomic unsigned *test_packet_enqueue_release;
 void ker_generation_test_hold_next_dequeue(void)
 { atomic_store_explicit(&test_hold_next_dequeue,1,memory_order_release); }
 void ker_generation_test_corrupt_next_detach(void)
@@ -149,6 +151,8 @@ void ker_generation_test_hold_after_enqueue_prepare(_Atomic unsigned *ready)
 { test_enqueue_prepare_ready=ready; }
 void ker_generation_test_hold_packet_commit(_Atomic unsigned *ready,_Atomic unsigned *release)
 { test_packet_commit_ready=ready;test_packet_commit_release=release; }
+void ker_generation_test_hold_after_packet_enqueue(_Atomic unsigned *ready,_Atomic unsigned *release)
+{ test_packet_enqueue_ready=ready;test_packet_enqueue_release=release; }
 static void test_pause_at_transition(_Atomic unsigned **ready,_Atomic unsigned **release)
 {
     if(!*ready)return;
@@ -1160,26 +1164,32 @@ int ker_generation_packet_commit(struct ker_generation_rings *r,
         return (state==JOURNAL_PACKET_PMD_ACCEPTED||state==JOURNAL_PACKET_WIRE_PENDING)?-EUCLEAN:0;
     if(state!=JOURNAL_PREPARED||!packet_reclaimable(r,j->packet)||j->packet->nb_segs!=1||
         j->packet->pkt_len<14||j->packet->pkt_len>1518||j->packet->data_len!=j->packet->pkt_len)return -EMSGSIZE;
+    struct ker_generation_identity consumer=j->consumer;
+    if(!identity_valid(r,&consumer)||!same_identity(&consumer,&j->owner)||
+        consumer.generation!=(producer->generation^1U))return -ESTALE;
     int entered=operation_enter(r,producer,p,q,producer->generation);if(entered)return entered;
-    entered=operation_enter_tx_peer(r,&j->consumer,p,q,producer->generation);
+    entered=operation_enter_tx_peer(r,&consumer,p,q,producer->generation);
     if(entered){operation_leave(r,producer,producer->generation);return entered;}
     unsigned expected=JOURNAL_PREPARED;
     if(!atomic_compare_exchange_strong_explicit(&j->state,&expected,JOURNAL_PACKET_COMMITTING,
         memory_order_acq_rel,memory_order_acquire)){
-        operation_leave(r,&j->consumer,producer->generation);operation_leave(r,producer,producer->generation);
+        operation_leave(r,&consumer,producer->generation);operation_leave(r,producer,producer->generation);
         return expected==JOURNAL_QUEUED||expected==JOURNAL_DEQUEUEING||expected==JOURNAL_INFLIGHT?0:-ESTALE;
     }
 #ifdef KER_SESSION_TEST_HOOKS
     test_pause_at_transition(&test_packet_commit_ready,&test_packet_commit_release);
 #endif
-    j->owner=j->consumer;
+    j->owner=consumer;
     atomic_store_explicit(&j->state,JOURNAL_QUEUED,memory_order_release);
     size_t slot=ring_index(r,p,q,producer->generation);
     int rc=rte_ring_enqueue(r->tx[slot],j->packet);
     if(rc){atomic_store_explicit(&j->state,JOURNAL_PREPARED,memory_order_release);
         if(rc==-ENOBUFS)atomic_fetch_add_explicit(&r->stats[slot].packet_full,1,memory_order_relaxed);}
     else peak_observe(&r->stats[slot].tx_peak,rte_ring_count(r->tx[slot]),rte_ring_get_capacity(r->tx[slot]));
-    operation_leave(r,&j->consumer,producer->generation);operation_leave(r,producer,producer->generation);
+#ifdef KER_SESSION_TEST_HOOKS
+    if(!rc)test_pause_at_transition(&test_packet_enqueue_ready,&test_packet_enqueue_release);
+#endif
+    operation_leave(r,&consumer,producer->generation);operation_leave(r,producer,producer->generation);
     return rc;
 }
 int ker_generation_packet_cancel(struct ker_generation_rings *r,
