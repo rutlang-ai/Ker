@@ -5,7 +5,7 @@
 #include <stdatomic.h>
 #include <errno.h>
 #define KER_SESSION_MAGIC UINT64_C(0x4b45525345535331)
-#define KER_SESSION_VERSION 5U
+#define KER_SESSION_VERSION 6U
 #define KER_SESSION_SLOTS 4U
 #define KER_SESSION_GENERATIONS 2U
 #define KER_SESSION_PROCESSES 4U
@@ -52,8 +52,17 @@ struct ker_session_directory {
     uint32_t ring_pmd;
     /* Coordinate key, never a PID/liveness substitute. Held until exact borrower death. */
     _Atomic uint64_t pmd_owner;
+    /* Immutable session-stable exception endpoint identity. Authorization
+     * uses pmd_owner as the single atomic grant key for both resources. */
+    _Atomic uint32_t exception_ifindex;
     _Atomic uintptr_t pmd_lease;
     _Atomic uintptr_t pmd_rx_lease;
+    /* 0 idle, 1 selected in shared ring, 2 TAP write in progress,
+     * 3 TAP read in progress, 4 outbound frame in lease, 5 PMD TX pending,
+     * 6 external wire send in progress, 7 TAP copy complete/native RX pending,
+     * 8 native packet-channel send in progress (ambiguous on process death). */
+    _Atomic uint32_t pmd_exception_phase;
+    _Atomic uint64_t pmd_exception_discarded;
     _Atomic uint64_t epoch[KER_SESSION_SLOTS];
     /* Resident assigns the original mbuf before acknowledging RESERVE; only
      * exact borrower death permits clearing this lease and returning it. */

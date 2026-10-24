@@ -11,7 +11,9 @@
 #include <net/if_arp.h>
 #include <linux/if_tun.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -27,7 +29,7 @@ static bool owner(const struct ker_worker_exception *bridge)
 {
     return bridge && bridge->pending && bridge->owner == rte_lcore_id();
 }
-int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *iface,
+static int exception_open(struct ker_worker_exception *bridge, const char *iface, const char *ring_name, bool session_keeper,
     struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit, uint32_t console_limit, uint32_t general_limit)
 {
     if (!bridge || bridge->pending || !pool || !mac || !rte_is_valid_assigned_ether_addr(mac) || !iface || !*iface || strlen(iface) >= IFNAMSIZ || !strcmp(iface, ".") || !strcmp(iface, "..") ||
@@ -59,12 +61,48 @@ int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *i
     close(control);
     if (error) { close(fd); return -saved; }
     char name[RTE_RING_NAMESIZE];
-    snprintf(name, sizeof(name), "ker_exception_%u", (unsigned)getpid());
-    struct rte_ring *pending = rte_ring_create(name, capacity, pool->socket_id, RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (ring_name) { if (strlen(ring_name) >= sizeof(name)) { close(fd); return -ENAMETOOLONG; } strcpy(name, ring_name); }
+    else snprintf(name, sizeof(name), "ker_exception_%u", (unsigned)getpid());
+    unsigned ring_flags = RING_F_SP_ENQ | RING_F_SC_DEQ | (ring_name ? RING_F_EXACT_SZ : 0);
+    struct rte_ring *pending = rte_ring_create(name, capacity, pool->socket_id, ring_flags);
     if (!pending) { int result = rte_errno; close(fd); return -result; }
     *bridge = (struct ker_worker_exception){.fd = fd, .pool = pool, .pending = pending, .owner = rte_lcore_id(),
         .ether_type = ether_type, .rate_limit = rate_limit, .console_limit = console_limit,
-        .general_limit = general_limit, .window_start = -1};
+        .general_limit = general_limit, .window_start = -1,
+        .session_shared = ring_name != NULL, .session_keeper = session_keeper};
+    bridge->endpoint_ifindex = if_nametoindex(request.ifr_name);
+    return 0;
+}
+int ker_worker_exception_open(struct ker_worker_exception *bridge, const char *iface,
+    struct rte_mempool *pool, const struct rte_ether_addr *mac, unsigned mtu, uint16_t ether_type, unsigned capacity, uint32_t rate_limit, uint32_t console_limit, uint32_t general_limit)
+{
+    return exception_open(bridge, iface, NULL, false, pool, mac, mtu, ether_type, capacity,
+        rate_limit, console_limit, general_limit);
+}
+int ker_worker_exception_open_session(struct ker_worker_exception *bridge, const char *iface,
+    const char *ring_name, struct rte_mempool *pool, const struct rte_ether_addr *mac,
+    unsigned mtu, unsigned capacity, _Atomic uint32_t *phase, unsigned *ifindex)
+{
+    if (!ring_name || !phase || !ifindex) return -EINVAL;
+    int result = exception_open(bridge, iface, ring_name, true, pool, mac, mtu, RTE_ETHER_TYPE_ARP,
+        capacity, 0, 0, 0);
+    if (!result) { bridge->session_phase = phase; bridge->port_mode = true; *ifindex = bridge->endpoint_ifindex; }
+    return result;
+}
+int ker_worker_exception_attach_session(struct ker_worker_exception *bridge, int fd,
+    const char *iface, const char *ring_name, struct rte_mempool *pool, unsigned ifindex, struct rte_mbuf *lease_packet, _Atomic uint32_t *phase)
+{
+    if (!bridge || bridge->pending || fd < 0 || !iface || !ring_name || !pool || !ifindex || !lease_packet || lease_packet->pool != pool || !phase ||
+        strlen(ring_name) >= RTE_RING_NAMESIZE) return -EINVAL;
+    struct ifreq request = {0};
+    if (ioctl(fd, TUNGETIFF, &request)) return -errno;
+    if (strcmp(request.ifr_name, iface) || if_nametoindex(request.ifr_name) != ifindex) return -ESTALE;
+    struct rte_ring *pending = rte_ring_lookup(ring_name);
+    if (!pending || rte_ring_get_capacity(pending) != 64 || !rte_ring_is_prod_single(pending) ||
+        !rte_ring_is_cons_single(pending) || !rte_ring_empty(pending)) return -EUCLEAN;
+    *bridge = (struct ker_worker_exception){.fd=fd,.pool=pool,.pending=pending,.owner=rte_lcore_id(),
+        .ether_type=RTE_ETHER_TYPE_ARP,.session_shared=true,.endpoint_ifindex=ifindex,
+        .session_lease_packet=lease_packet,.session_phase=phase,.port_mode=true};
     return 0;
 }
 int ker_worker_exception_mtu(struct ker_worker_exception *bridge, unsigned *mtu, bool set)
@@ -239,10 +277,115 @@ int ker_worker_exception_poll(struct ker_worker_exception *bridge, uint16_t wire
     return result < 0 && result != -EAGAIN && result != -EWOULDBLOCK && result != -EINTR &&
         result != -EMSGSIZE && result != -EINVAL && result != -E2BIG ? result : 0;
 }
+#ifdef KER_SESSION_TEST_HOOKS
+static void session_test_hold(const char *environment)
+{
+    const char *path = getenv(environment);
+    if (path && access(path, F_OK) == 0) raise(SIGSTOP);
+}
+#endif
+int ker_worker_exception_session_enqueue(struct ker_worker_exception *bridge, struct rte_mbuf *packet, bool to_native)
+{
+    if (!owner(bridge) || !bridge->session_shared || !packet || bridge->session_busy ||
+        packet != bridge->session_lease_packet || packet->pool != bridge->pool || packet->nb_segs != 1)
+        return -EPERM;
+    if (rte_ring_enqueue(bridge->pending, packet)) return -ENOBUFS;
+    bridge->session_busy = true; bridge->session_to_native = to_native;
+    if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 1, memory_order_release);
+    bridge->selected++; bridge->enqueued++;
+    return 0;
+}
+int ker_worker_exception_session_poll(struct ker_worker_exception *bridge, uint16_t port, unsigned mtu, bool *progress)
+{
+    if (!owner(bridge) || !bridge->session_shared || !progress || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU)
+        return -EINVAL;
+    struct rte_mbuf *packet = bridge->session_lease_packet;
+    if (!packet || packet->pool != bridge->pool || packet->nb_segs != 1) return -EUCLEAN;
+    if (bridge->session_native_pending) return 0;
+    if (bridge->session_busy && !bridge->session_tx_pending) {
+        struct rte_mbuf *queued = NULL;
+        if (rte_ring_dequeue(bridge->pending, (void **)&queued)) return 0;
+        if (queued != packet) return -EUCLEAN;
+        if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 2, memory_order_release);
+#ifdef KER_SESSION_TEST_HOOKS
+        session_test_hold("KER_SESSION_TEST_HOLD_EXCEPTION_WRITE");
+#endif
+        int result = host_write(bridge->fd, packet, mtu);
+        if (result == -EAGAIN || result == -EWOULDBLOCK || result == -EINTR) {
+            if (rte_ring_enqueue(bridge->pending, packet)) return -EUCLEAN;
+            if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 1, memory_order_release);
+            return 0;
+        }
+        /* A nontransient error may follow partial delivery: retain phase 2. */
+        if (result) return result;
+        bridge->to_host++;
+        if (bridge->session_to_native) {
+            bridge->session_native_pending = true;
+            if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 7, memory_order_release);
+            *progress = true;
+            return 3; /* TAP copy completed; the same lease still must reach native RX. */
+        }
+        bridge->session_busy = false;
+        if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 0, memory_order_release);
+        *progress = true;
+        return 1; /* TAP copied the complete host-only frame. */
+    }
+    if (!bridge->session_busy) {
+        struct pollfd event = {.fd=bridge->fd,.events=POLLIN};
+        int ready;
+        do ready = poll(&event, 1, 0); while (ready < 0 && errno == EINTR);
+        if (ready < 0) return -errno;
+        if (!ready) return 0;
+        if (event.revents & (POLLERR | POLLHUP | POLLNVAL)) return -EIO;
+        if (!(event.revents & POLLIN)) return 0;
+        if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 3, memory_order_release);
+        unsigned char bytes[EXCEPTION_FRAME + 1];
+        ssize_t length = read(bridge->fd, bytes, sizeof(bytes));
+        if (length < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 0, memory_order_release);
+                return 0;
+            }
+            return -errno;
+        }
+        unsigned l2 = length >= 14 && bytes[12] == 0x81 && bytes[13] == 0 ? 18 : 14;
+        if (length < (ssize_t)l2 || length > (ssize_t)(mtu + l2)) return -EMSGSIZE;
+        rte_pktmbuf_reset(packet);
+        void *data = rte_pktmbuf_append(packet, (uint16_t)length);
+        if (!data) return -ENOSPC;
+        memcpy(data, bytes, (size_t)length);
+        bridge->session_busy = true; bridge->session_tx_pending = true;
+        if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 4, memory_order_release);
+        *progress = true;
+    }
+    if (bridge->session_tx_pending) {
+        if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 4, memory_order_release);
+        if (rte_eth_tx_burst(port, 0, &packet, 1) != 1) return 0;
+        bridge->session_tx_pending = false; bridge->from_host++;
+        if (bridge->session_phase) atomic_store_explicit(bridge->session_phase, 5, memory_order_release);
+        *progress = true;
+        return 2; /* Same journaled RX mbuf enters the fixed PMD TX ring. */
+    }
+    return 0;
+}
+int ker_worker_exception_session_reclaim(struct ker_worker_exception *bridge, struct rte_mbuf *expected)
+{
+    if (!owner(bridge) || !bridge->session_keeper || !bridge->session_shared || !expected) return -EPERM;
+    struct rte_mbuf *packet = NULL;
+    unsigned count = 0;
+    while (!rte_ring_dequeue(bridge->pending, (void **)&packet)) {
+        if (packet != expected || ++count > 1) return -EUCLEAN;
+    }
+    return (int)count;
+}
 int ker_worker_exception_close(struct ker_worker_exception *bridge)
 {
     if (!bridge || !bridge->pending) return 0;
     if (!owner(bridge)) return -EXDEV;
+    if (bridge->session_shared && !bridge->session_keeper) {
+        int result = close(bridge->fd); bridge->fd = -1; bridge->pending = NULL;
+        return result ? -errno : 0;
+    }
     void *packet;
     while (!rte_ring_dequeue(bridge->pending, &packet)) {
         rte_pktmbuf_free(packet); bridge->shutdown_dropped++;

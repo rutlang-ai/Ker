@@ -5,8 +5,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -56,8 +58,10 @@ static int mtu_control(int fd, uint16_t port)
     return send(fd, &message, sizeof(message), MSG_DONTWAIT | MSG_NOSIGNAL) == sizeof(message) ? 0 : -EIO;
 }
 int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_fd,
-    int control, int registration_fd, int resident_pidfd, _Atomic uint64_t *owner, uint64_t expected_owner,
-    struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet, const volatile sig_atomic_t *stopping)
+    int control, int registration_fd, int resident_pidfd, _Atomic uint64_t *owner,
+    uint64_t expected_owner,
+    struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet,
+    struct ker_worker_exception *exception, const volatile sig_atomic_t *stopping)
 {
     struct rte_ring *rx = rte_ring_lookup(KER_SESSION_PACKET_RX), *tx = rte_ring_lookup(KER_SESSION_PACKET_TX);
     uint16_t actual_mtu;
@@ -67,18 +71,24 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         !rte_ring_is_prod_single(tx) || !rte_ring_is_cons_single(tx) ||
         rte_eth_dev_get_mtu(port, &actual_mtu) || actual_mtu != 1500) return -EUCLEAN;
     bool tx_queued = false, tx_pending = false, tx_output = false;
-    bool rx_queued = false, rx_pending = false, rx_output = false;
+    struct rte_mbuf *tx_output_packet = NULL;
+    bool exception_reply_queued = false;
+    bool rx_queued = false, rx_pending = false, rx_output = false, exception_pending = false;
+    bool shared_native_pending = false, shared_native_queued = false;
+    bool rx_fragment = false;
+    uint64_t exception_to_native = 0, fragment_to_native = 0;
     uint64_t sent = 0, received = 0, to_wire = 0, from_wire = 0;
+    uint64_t exception_to_wire = 0, exception_from_wire = 0;
     struct rte_eth_stats before, after;
     if (rte_eth_stats_get(port, &before)) return -EIO;
-    printf("KER_SESSION_PACKET_READY {\"mtu\":1500,\"tx_features\":0,\"rx_ring\":\"%s\",\"tx_ring\":\"%s\"}\n",
-        KER_SESSION_PACKET_RX, KER_SESSION_PACKET_TX); fflush(stdout);
+    printf("KER_SESSION_PACKET_READY {\"mtu\":1500,\"tx_features\":0,\"rx_ring\":\"%s\",\"tx_ring\":\"%s\",\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_ifindex\":%u}\n",
+        KER_SESSION_PACKET_RX, KER_SESSION_PACKET_TX, (unsigned long long)expected_owner, exception->endpoint_ifindex); fflush(stdout);
     int status = 0;
     for (; !*stopping;) {
         if (!alive(resident_pidfd)) _Exit(125); /* Never clean shared state after resident loss. */
         if (atomic_load_explicit(owner, memory_order_acquire) != expected_owner) { status = -ESTALE; break; }
         short packet_events = (!tx_pending && !tx_queued && !tx_output ? POLLIN : 0) | (rx_output ? POLLOUT : 0);
-        short wire_events = (!rx_pending && !rx_queued && !rx_output ? POLLIN : 0) | (tx_output ? POLLOUT : 0);
+        short wire_events = (!rx_pending && !rx_queued && !rx_output && !exception_pending && !tx_queued && !tx_output && !exception->session_busy ? POLLIN : 0) | (tx_output ? POLLOUT : 0);
         struct pollfd fds[] = {{.fd = control, .events = POLLIN}, {.fd = registration_fd, .events = POLLIN},
             {.fd = packet_fd, .events = packet_events},
             {.fd = wire_fd, .events = wire_events}, {.fd = mtu_fd, .events = POLLIN},
@@ -124,17 +134,36 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         if (tx_queued) {
             struct rte_mbuf *packet;
             if (!rte_ring_dequeue(tx, (void **)&packet)) {
-                if (packet != tx_packet || packet->nb_segs != 1) { status = -EUCLEAN; break; }
-                tx_queued = false; tx_output = true; progress = true;
+                if (packet != tx_packet && !(exception_reply_queued && packet == rx_packet)) { status = -EUCLEAN; break; }
+                if (packet->nb_segs != 1) { status = -EUCLEAN; break; }
+                tx_queued = false; tx_output = true; tx_output_packet = packet;
+                if (packet == rx_packet) exception_reply_queued = false;
+                progress = true;
             }
         }
         if (tx_output) {
-            ssize_t n = send(wire_fd, rte_pktmbuf_mtod(tx_packet, void *), tx_packet->pkt_len, MSG_DONTWAIT | MSG_NOSIGNAL);
-            if (n < 0 && transient()) { /* Keep the complete original object under its resident lease. */ }
-            else if (n != tx_packet->pkt_len) { status = n < 0 ? -errno : -EIO; break; }
-            else { tx_output = false; to_wire++; progress = true; }
+            if (tx_output_packet == rx_packet) {
+#ifdef KER_SESSION_TEST_HOOKS
+                const char *hold_path = getenv("KER_SESSION_TEST_HOLD_EXCEPTION_OUTPUT");
+                if (hold_path && access(hold_path, F_OK) == 0) raise(SIGSTOP);
+#endif
+                atomic_store_explicit(exception->session_phase, 6, memory_order_release);
+            }
+            ssize_t n = send(wire_fd, rte_pktmbuf_mtod(tx_output_packet, void *), tx_output_packet->pkt_len, MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (n < 0 && transient()) {
+                if (tx_output_packet == rx_packet) atomic_store_explicit(exception->session_phase, 5, memory_order_release);
+            }
+            else if (n != tx_output_packet->pkt_len) { status = n < 0 ? -errno : -EIO; break; }
+            else {
+                if (tx_output_packet == rx_packet) {
+                    exception_to_wire++; exception->session_busy = false;
+                    atomic_store_explicit(exception->session_phase, 0, memory_order_release);
+                    rte_pktmbuf_reset(rx_packet);
+                }
+                tx_output = false; tx_output_packet = NULL; to_wire++; progress = true;
+            }
         }
-        if (!rx_pending && !rx_queued && !rx_output && (fds[3].revents & POLLIN)) {
+        if (!rx_pending && !rx_queued && !rx_output && !exception->session_busy && (fds[3].revents & POLLIN)) {
             uint8_t bytes[1518];
             ssize_t n = recv(wire_fd, bytes, sizeof(bytes), MSG_DONTWAIT | MSG_TRUNC);
             if (n < 0) { if (!transient()) { status = -errno; break; } }
@@ -143,10 +172,38 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
                 rte_pktmbuf_reset(rx_packet);
                 void *data = rte_pktmbuf_append(rx_packet, (uint16_t)n);
                 if (!data) { status = -ENOSPC; break; }
-                memcpy(data, bytes, (size_t)n); rx_pending = true; from_wire++; progress = true;
+                memcpy(data, bytes, (size_t)n);
+                rx_pending = true; from_wire++; progress = true;
             }
         }
-        if (rx_pending && !rte_ring_enqueue(rx, rx_packet)) { rx_pending = false; rx_queued = true; progress = true; }
+        if (rx_pending && !tx_queued && !tx_output) {
+            enum ker_exception_route route = ker_worker_exception_route(exception, rx_packet);
+            if (route == KER_EXCEPTION_HOST || route == KER_EXCEPTION_SHARED) {
+                int admitted = ker_worker_exception_session_enqueue(exception, rx_packet, route == KER_EXCEPTION_SHARED);
+                if (admitted) { status = admitted; break; }
+                rx_pending = false; exception_pending = true; progress = true;
+            } else if (!rte_ring_enqueue(rx, rx_packet)) {
+                rx_pending = false; rx_queued = true; rx_fragment = route == KER_EXCEPTION_DROP; progress = true;
+            }
+        }
+        if (!rx_pending && !rx_queued && !rx_output && !tx_queued && !tx_output) {
+            int delivered = ker_worker_exception_session_poll(exception, port, 1500, &progress);
+            if (delivered < 0) { status = delivered; break; }
+            if (delivered == 1) { exception_from_wire++; exception_pending = false; }
+            if (delivered == 2) { exception_pending = false; exception_reply_queued = true; tx_queued = true; sent++; }
+            if (delivered == 3) {
+                exception_from_wire++; exception_pending = false;
+#ifdef KER_SESSION_TEST_HOOKS
+                const char *hold_path = getenv("KER_SESSION_TEST_HOLD_EXCEPTION_NATIVE");
+                if (hold_path && access(hold_path, F_OK) == 0) raise(SIGSTOP);
+#endif
+                shared_native_pending = true;
+            }
+        }
+        if (shared_native_pending && !rte_ring_enqueue(rx, rx_packet)) {
+            shared_native_pending = false; shared_native_queued = true;
+            rx_queued = true; progress = true;
+        }
         if (rx_queued) {
             struct rte_mbuf *packet;
             if (rte_eth_rx_burst(port, 0, &packet, 1)) {
@@ -158,18 +215,36 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
             struct ker_packet_header header = {0};
             struct iovec iov[] = {{&header, sizeof(header)}, {rte_pktmbuf_mtod(rx_packet, void *), rx_packet->pkt_len}};
             struct msghdr message = {.msg_iov = iov, .msg_iovlen = 2};
+            if (shared_native_queued) atomic_store_explicit(exception->session_phase, 8, memory_order_release);
             ssize_t n = sendmsg(packet_fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
-            if (n < 0 && transient()) { /* Retain the complete frame; do not reorder or reallocate. */ }
-            else if (n < 0 && (errno == ECONNREFUSED || errno == EPIPE || errno == ENOTCONN)) break;
+            if (n < 0 && transient()) {
+                if (shared_native_queued) atomic_store_explicit(exception->session_phase, 7, memory_order_release);
+            }
+            else if (n < 0 && (errno == ECONNREFUSED || errno == EPIPE || errno == ENOTCONN)) {
+                if (shared_native_queued) atomic_store_explicit(exception->session_phase, 7, memory_order_release);
+                break;
+            }
             else if (n != (ssize_t)(sizeof(header) + rx_packet->pkt_len)) { status = n < 0 ? -errno : -EIO; break; }
-            else { rx_output = false; progress = true; }
+            else {
+                rx_output = false;
+                if (rx_fragment) { fragment_to_native++; rx_fragment = false; }
+                if (shared_native_queued) {
+                    shared_native_queued = false; exception_to_native++;
+                    exception->session_native_pending = false; exception->session_to_native = false;
+                    exception->session_busy = false;
+                    atomic_store_explicit(exception->session_phase, 0, memory_order_release);
+                    rte_pktmbuf_reset(rx_packet);
+                }
+                progress = true;
+            }
         }
         if (!progress) poll(fds, 6, 1);
     }
     if (rte_eth_stats_get(port, &after) || after.opackets - before.opackets != sent ||
         after.ipackets - before.ipackets != received) status = -EUCLEAN;
-    printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"retained\":%u,\"status\":%d}\n",
+    printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"exception_to_wire\":%llu,\"exception_from_wire\":%llu,\"exception_to_native\":%llu,\"fragment_to_native\":%llu,\"exception_endpoint_owner_key\":%llu,\"retained\":%u,\"status\":%d}\n",
         (unsigned long long)sent, (unsigned long long)received, (unsigned long long)to_wire,
-        (unsigned long long)from_wire, (unsigned)(tx_pending + tx_queued + tx_output + rx_pending + rx_queued + rx_output), status); fflush(stdout);
+        (unsigned long long)from_wire, (unsigned long long)exception_to_wire, (unsigned long long)exception_from_wire,
+        (unsigned long long)exception_to_native, (unsigned long long)fragment_to_native, (unsigned long long)expected_owner, (unsigned)(tx_pending + tx_queued + tx_output + rx_pending + rx_queued + rx_output + exception_pending + exception_reply_queued + exception->session_busy + shared_native_pending), status); fflush(stdout);
     return status;
 }

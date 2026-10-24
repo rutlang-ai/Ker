@@ -133,3 +133,6 @@ owner 仍为原持有者。原应用完成并退出后，待机的同一 PID/EAL
 这是完整应用退出后的设备接管，不保证旧 TCP 连接延续。源 TC-3 仍为 partial：
 跨代 dispatch/drain 和实际 exception-owner 路由/授权一致性尚未覆盖，不能用
 PMD admission 数值替代 source KNI-owner 契约。
+
+
+In the paired profile, the resident binds the session wire/exception endpoint to the same owner key as the fixed packet queues. The granted secondary checks both keys before polling and rejects a mismatch. The control resident does not relay packet data.

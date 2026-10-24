@@ -38,7 +38,14 @@ def line(process, timeout=25):
 
 def record(process, prefix):
     value = line(process)
-    require(value.startswith(prefix + ' '), 'unexpected output: ' + value)
+    if not value.startswith(prefix + ' '):
+        diagnostic = ''
+        if process.poll() is None:
+            try: process.wait(timeout=3)
+            except subprocess.TimeoutExpired: pass
+        if process.poll() is not None and process.stderr is not None:
+            diagnostic = process.stderr.read().decode(errors='replace')
+        raise RuntimeError('unexpected output: ' + value + (('\nchild stderr:\n' + diagnostic) if diagnostic else ''))
     return json.loads(value[len(prefix) + 1:])
 
 
@@ -105,10 +112,12 @@ def main():
 
     thread = threading.Thread(target=bridge); thread.start()
     primary = app = standby = None
+    exception_capture = None
     with tempfile.TemporaryDirectory(prefix='ker-session-packets-') as directory:
         root = Path(directory); path = root / 'control.sock'; stats_path = root / 'stats.json'
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
-            f'-m 64 --huge-dir={args.huge_dir} --file-prefix=packets-{os.getpid()}-{os.urandom(4).hex()}')
+            f'-m 64 -d /home/hurricane/.local/state/ker-compat-work/dpdk-tap-retry-install/lib64/dpdk/pmds-27.0/librte_mempool_ring.so '
+            f'--huge-dir={args.huge_dir} --file-prefix=packets-{os.getpid()}-{os.urandom(4).hex()}')
         common = ['--socket', str(path), '--worker', str(args.worker), '--eal', eal, '--paired-pmd']
         environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1'}
         try:
@@ -126,6 +135,20 @@ def main():
             attached, grant, geometry = (initial[key] for key in ('attached', 'grant', 'geometry'))
             require(attached['pid'] == grant['pid'] and attached['validated_rings'] == 128 and geometry['rx_ring'] != geometry['tx_ring'],
                 'worker is not the granted actual secondary with directional PMD queues')
+            exception_name = created['exception_endpoint_name']
+            exception_ifindex = created['exception_endpoint_ifindex']
+            require(exception_name.startswith('kex') and exception_ifindex > 0 and
+                geometry['exception_endpoint_ifindex'] == exception_ifindex,
+                'resident and granted worker disagree on the persistent exception endpoint identity')
+            subprocess.run(['ip', 'address', 'add', '198.18.0.77/32', 'dev', exception_name], check=True)
+            exception_mac = bytes.fromhex(json.loads(subprocess.check_output(
+                ['ip', '-json', 'link', 'show', 'dev', exception_name], text=True))[0]['address'].replace(':', ''))
+            exception_capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+            exception_capture.bind((exception_name, 0)); exception_capture.setblocking(False)
+            require(attached['generation'] == 0 and grant['generation'] == 0 and
+                grant['queue_owner_key'] == grant['exception_endpoint_owner_key'] != 0 and
+                grant['exception_endpoint_fd'] is True and geometry['exception_endpoint_owner_key'] == grant['queue_owner_key'],
+                'PMD queue and session exception endpoint do not share one grant identity')
             connection = api.Connection(path)
             try:
                 census = connection.request(api.STATUS)
@@ -161,7 +184,7 @@ def main():
                 if rejected.poll() is None: rejected.kill(); rejected.wait()
             standby_stats = root / 'standby.json'
             standby_marker = root / 'standby-app-spawn'
-            standby = subprocess.Popen([sys.executable, str(args.tool), 'run', *common, '--standby',
+            standby = subprocess.Popen([sys.executable, str(args.tool), 'run', *common, '--standby', '--generation', '1',
                 '--wire-fd', str(endpoint.fileno()), '--library', str(args.library),
                 '--stats', str(standby_stats), '--address6', '2001:db8:1::2/64',
                 '--', str(args.app), '--fixed-mtu'], pass_fds=(endpoint.fileno(),),
@@ -175,7 +198,65 @@ def main():
                 require(standby.poll() is None and time.monotonic() < deadline, 'real paired standby did not stay attached')
                 time.sleep(0.02)
             pending = waiting['attached']
+            require(waiting['standby']['queue_owner_key'] == 0 and
+                waiting['standby']['exception_endpoint_owner_key'] == 0 and
+                waiting['standby']['exception_endpoint_fd'] is False,
+                'denied standby received or claimed the persistent exception endpoint')
+            # Inject one uniquely addressed real ARP exception through the session
+            # endpoint while a second generation is attached but ungranted.
+            exception_sender = bytes.fromhex('024b455200aa')
+            arp = (b'\xff' * 6 + exception_sender + b'\x08\x06' +
+                struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1) + exception_sender +
+                socket.inet_aton('198.18.0.170') + b'\x00' * 6 + socket.inet_aton('198.18.0.77'))
+            require(wire.send(arp) == len(arp), 'could not inject the selected ARP exception frame')
+            arp_deadline = time.monotonic() + 5
+            exception_frames = []
+            arp_reply = []
+            while time.monotonic() < arp_deadline:
+                arp_reply = [frame for direction, frame in frames if direction == 'native' and
+                    len(frame) >= 42 and frame[0:6] == exception_sender and frame[12:14] == b'\x08\x06' and
+                    frame[20:22] == b'\x00\x02' and frame[22:28] == exception_mac and
+                    frame[28:32] == socket.inet_aton('198.18.0.77') and frame[32:38] == exception_sender and
+                    frame[38:42] == socket.inet_aton('198.18.0.170')]
+                readable, _, _ = select.select([exception_capture], [], [], 0)
+                if readable:
+                    observed = exception_capture.recv(65536)
+                    if observed == arp: exception_frames.append(observed)
+                if arp_reply and exception_frames: break
+                require(not errors and app.poll() is None and standby.poll() is None,
+                    'exception path exited while waiting for the original Linux ARP reply')
+                time.sleep(0.01)
+            quiet_until = time.monotonic() + 0.15
+            while time.monotonic() < quiet_until:
+                readable, _, _ = select.select([exception_capture], [], [], 0.01)
+                if readable and exception_capture.recv(65536) == arp: exception_frames.append(arp)
+            require(len(exception_frames) == 1, 'the fixed exception endpoint did not receive the selected ARP frame exactly once')
+            require(len(arp_reply) == 1, 'original Linux did not return exactly one ARP reply through the granted endpoint')
+            # A large host UDP datagram forces real IPv4 fragments across the
+            # native packet channel. The exception TAP is not a fragment sink;
+            # the production counter advances only after packet_fd accepts it.
+            fragment_probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                fragment_probe.setsockopt(socket.IPPROTO_IP, getattr(socket, 'IP_MTU_DISCOVER', 10),
+                    getattr(socket, 'IP_PMTUDISC_DONT', 0))
+                fragment_probe.sendto(bytes((i * 13) & 255 for i in range(4096)), ('198.18.0.2', 44999))
+            finally:
+                fragment_probe.close()
+            def selected_fragment(frame):
+                return (len(frame) >= 34 and frame[12:14] == b'\x08\x00' and
+                    socket.inet_ntoa(frame[26:30]) == '198.18.0.1' and
+                    socket.inet_ntoa(frame[30:34]) == '198.18.0.2' and
+                    (struct.unpack('!H', frame[20:22])[0] & 0x3fff) != 0)
+            fragment_quiet_until = time.monotonic() + 0.3
+            exception_fragments = []
+            while time.monotonic() < fragment_quiet_until:
+                readable, _, _ = select.select([exception_capture], [], [], 0.01)
+                if readable:
+                    captured = exception_capture.recv(65536)
+                    if selected_fragment(captured): exception_fragments.append(captured)
+            require(not exception_fragments, 'IPv4 fragment was copied to the exception TAP instead of native RX')
             require(not waiting['app_started'] and not standby_marker.exists() and
+                attached['generation'] == 0 and pending['generation'] == 1 and
                 pending['pid'] != attached['pid'] and pending['master'] != attached['master'] and
                 pending['epoch'] != attached['epoch'] and pending['slot'] != attached['slot'] and
                 pending['rings'] != attached['rings'], 'standby launched an app or reused the owner namespace')
@@ -184,6 +265,8 @@ def main():
                 owner = connection.request(api.PMD_STATUS)
                 census = connection.request(api.STATUS)
                 require(owner['epoch'] == attached['epoch'] and owner['slot'] == attached['slot'] and
+                    owner['generation'] == 0 and owner['process'] == attached['process'] == 0 and
+                    owner['token'] == grant['queue_owner_key'] and
                     census['generation'] == 507 and census['token'] == 4 and census['process'] == 2,
                     'standby acquired data leases or displaced a live owner')
             finally: connection.close()
@@ -299,6 +382,33 @@ def main():
                 require(line(process) == 'NATIVE_DONE', 'native MTU rollback/service completion failed')
                 process.stdin.write(b'Q'); process.stdin.flush()
 
+            def graceful_signal_release(process, stats_file, control_path):
+                before = json.loads(stats_file.read_text())
+                require(before.get('app_started') and before.get('stage') == 'application-started' and
+                    before['grant']['queue_owner_key'] == before['grant']['exception_endpoint_owner_key'] != 0,
+                    'replacement owner did not reach a fully granted application before cleanup')
+                app_fd = os.pidfd_open(before['app_pid'])
+                worker_fd = os.pidfd_open(before['attached']['pid'])
+                try:
+                    process.send_signal(signal.SIGTERM)
+                    output, errors = process.communicate(timeout=20)
+                    after = json.loads(stats_file.read_text())
+                    require(process.returncode == 143 and after.get('stage') == 'interrupted' and
+                        after.get('native_cleanup') == 'graceful' and after.get('app_code') == 143 and
+                        after.get('worker_code') == 0 and after.get('packet', {}).get('status') == 0 and
+                        after.get('native', {}).get('buffers_live') == 0 and
+                        select.select([app_fd], [], [], 0)[0] and select.select([worker_fd], [], [], 0)[0],
+                        'signal cleanup did not reap the replacement owner cleanly: ' + repr(after) + errors.decode())
+                    connection = api.Connection(control_path)
+                    try:
+                        census = connection.request(api.STATUS)
+                        require(census['generation'] == 511 and census['token'] == 0 and census['process'] == 0,
+                            'replacement owner cleanup left a shared object leased')
+                    finally: connection.close()
+                    return output
+                finally:
+                    os.close(app_fd); os.close(worker_fd)
+
             exchange_native(app)
             print('CHECK: first original Linux generation completed real TCP/UDP traffic', flush=True)
             output, stderr = app.communicate(timeout=20)
@@ -307,22 +417,28 @@ def main():
             finished = json.loads(stats_path.read_text())
             require(finished['stage'] == 'finished' and finished['app_started'], 'supervisor completion snapshot absent')
             stats, native = finished['packet'], finished['native']
-            require(stats['tx'] > 0 and stats['rx'] > 0 and stats['to_wire'] > 0 and stats['from_wire'] > 0 and stats['status'] == 0,
-                'actual original PMD/host wire traffic absent')
+            require(stats['tx'] > 0 and stats['rx'] > 0 and stats['to_wire'] > 0 and stats['from_wire'] > 0 and stats['status'] == 0 and
+                stats['exception_from_wire'] >= 1 and stats['exception_to_wire'] >= 1 and stats['exception_to_native'] >= 1 and
+                stats['exception_endpoint_owner_key'] == grant['queue_owner_key'] and stats['fragment_to_native'] >= 1,
+                'actual single-owner ARP exception, fragment-to-native route, or endpoint identity accounting differs')
             require(native['passive_opens'] >= 2 and native['udp_in_datagrams'] >= 1 and native['udp_out_datagrams'] >= 1 and
                 native['udp6_in_datagrams'] >= 1 and native['udp6_out_datagrams'] >= 1 and native['buffers_live'] == 0,
                 'traffic bypassed original Linux or retained native buffers')
             require(line(standby) == 'READY', 'retained standby did not start a real original Linux application')
             admitted = json.loads(standby_stats.read_text())
             require(admitted['attached'] == pending and admitted['grant']['pid'] == pending['pid'] and
-                admitted['grant']['epoch'] == pending['epoch'] and standby_marker.exists(),
+                admitted['grant']['epoch'] == pending['epoch'] and admitted['grant']['generation'] == 1 and
+                admitted['grant']['exception_endpoint_ifindex'] == exception_ifindex and
+                admitted['grant']['exception_endpoint_fd'] is True and standby_marker.exists(),
                 'takeover restarted the standby PID/EAL/epoch or skipped the real application launch')
             connection = api.Connection(path)
             try:
                 owner = connection.request(api.PMD_STATUS)
                 census = connection.request(api.STATUS)
                 require(owner['epoch'] == pending['epoch'] and owner['slot'] == pending['slot'] and
-                    census['generation'] == 508 and census['token'] == 3 and census['process'] == 1,
+                    owner['generation'] == 1 and owner['process'] == 0 and
+                    owner['token'] == admitted['grant']['queue_owner_key'] == admitted['grant']['exception_endpoint_owner_key'] and
+                    owner['token'] != 0 and census['generation'] == 508 and census['token'] == 3 and census['process'] == 1,
                     'takeover did not transfer exactly the two journaled device objects')
             finally: connection.close()
             exchange_native(standby)
@@ -529,6 +645,317 @@ def main():
                     if pidfd >= 0: os.close(pidfd)
                 for process in (resident_app, stopping_primary):
                     if process.poll() is None: process.kill(); process.wait()
+            # Deterministically stop after phase 2 is published but before the
+            # destructive TAP write. The resident must fail closed, not regrant.
+            boundary_path = root / 'exception-write-boundary.sock'
+            boundary_eal = eal.replace('packets-', 'exception-write-boundary-')
+            boundary_common = ['--socket', str(boundary_path), '--worker', str(args.worker),
+                '--eal', boundary_eal, '--paired-pmd']
+            boundary_marker = root / 'hold-exception-write'
+            boundary_environment = environment | {'KER_SESSION_TEST_HOLD_EXCEPTION_WRITE': str(boundary_marker)}
+            boundary_primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *boundary_common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=boundary_environment, bufsize=0)
+            boundary_ready = record(boundary_primary, 'KER_SESSION_READY')
+            boundary_wire, boundary_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            boundary_stats = root / 'exception-write-owner.json'
+            boundary_owner = subprocess.Popen([sys.executable, str(args.tool), 'run', *boundary_common,
+                '--wire-fd', str(boundary_endpoint.fileno()), '--library', str(args.library),
+                '--address6', '2001:db8:1::2/64', '--stats', str(boundary_stats), '--', str(args.app)],
+                pass_fds=(boundary_endpoint.fileno(),), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=boundary_environment, bufsize=0)
+            boundary_endpoint.close()
+            try:
+                require(line(boundary_owner) == 'READY', 'write-boundary owner did not reach original Linux')
+                boundary_state = json.loads(boundary_stats.read_text())
+                boundary_grant = boundary_state['grant']
+                require(boundary_state['attached']['pid'] == boundary_grant['pid'] and
+                    boundary_grant['queue_owner_key'] == boundary_grant['exception_endpoint_owner_key'] != 0 and
+                    boundary_grant['exception_endpoint_ifindex'] == boundary_ready['exception_endpoint_ifindex'] and
+                    boundary_grant['exception_endpoint_fd'] is True,
+                    'write-boundary owner did not hold the paired PMD/TAP grant before standby startup')
+            except BaseException:
+                boundary_wire.close()
+                for process in (boundary_owner, boundary_primary):
+                    if process.poll() is None: process.kill(); process.wait()
+                raise
+            boundary_standby_stats = root / 'exception-write-standby.json'
+            boundary_standby_wire = boundary_standby_endpoint = boundary_standby = None
+            try:
+                boundary_standby_wire, boundary_standby_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+                boundary_standby = subprocess.Popen([sys.executable, str(args.tool), 'run', *boundary_common,
+                    '--standby', '--wire-fd', str(boundary_standby_endpoint.fileno()), '--library', str(args.library),
+                    '--address6', '2001:db8:1::2/64', '--stats', str(boundary_standby_stats), '--', str(args.app)],
+                    pass_fds=(boundary_standby_endpoint.fileno(),), stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+                boundary_standby_endpoint.close(); boundary_standby_endpoint = None
+            except BaseException:
+                if boundary_standby_endpoint is not None: boundary_standby_endpoint.close()
+                if boundary_standby_wire is not None: boundary_standby_wire.close()
+                boundary_wire.close()
+                for process in (boundary_standby, boundary_owner, boundary_primary):
+                    if process is not None and process.poll() is None: process.kill(); process.wait()
+                raise
+            boundary_pidfd = -1
+            try:
+                deadline = time.monotonic() + 15
+                while True:
+                    state = json.loads(boundary_standby_stats.read_text()) if boundary_standby_stats.exists() else {}
+                    if state.get('stage') == 'standby' and state.get('standby_samples', 0) >= 2: break
+                    require(boundary_standby.poll() is None and time.monotonic() < deadline,
+                        'write-boundary standby did not remain attached')
+                    time.sleep(0.02)
+                boundary_pending = state['attached']
+                require(boundary_pending['generation'] == 0 and
+                    state['standby']['queue_owner_key'] == 0 and
+                    state['standby']['exception_endpoint_owner_key'] == 0 and
+                    state['standby']['exception_endpoint_fd'] is False,
+                    'phase-2 standby unexpectedly held an endpoint grant before owner death')
+                boundary_marker.touch()
+                frame = (b'\xff' * 6 + bytes.fromhex('024b455200aa') + b'\x08\x06' +
+                    struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1) + bytes.fromhex('024b455200aa') +
+                    socket.inet_aton('198.18.0.170') + b'\x00' * 6 + socket.inet_aton('198.18.0.77'))
+                require(boundary_wire.send(frame) == len(frame), 'write-boundary frame injection failed')
+                owner_state = json.loads(boundary_stats.read_text())
+                worker_pid = owner_state['attached']['pid']; boundary_pidfd = os.pidfd_open(worker_pid)
+                deadline = time.monotonic() + 10
+                stopped = False
+                while time.monotonic() < deadline:
+                    try: status_text = Path(f'/proc/{worker_pid}/status').read_text()
+                    except FileNotFoundError: break
+                    stopped = any(line.startswith('State:') and line.split()[1] == 'T' for line in status_text.splitlines())
+                    if stopped: break
+                    time.sleep(0.01)
+                require(stopped, 'worker did not stop after publishing phase 2 before TAP write')
+                signal.pidfd_send_signal(boundary_pidfd, signal.SIGKILL)
+                require(select.select([boundary_pidfd], [], [], 5)[0], 'phase-2 owner death was not observed')
+                os.close(boundary_pidfd); boundary_pidfd = -1
+                boundary_owner.communicate(timeout=15)
+                primary_output, primary_errors = boundary_primary.communicate(timeout=10)
+                standby_output, standby_errors = boundary_standby.communicate(timeout=10)
+                standby_state = json.loads(boundary_standby_stats.read_text())
+                require(boundary_primary.returncode == 125 and b'KER_SESSION_DRAINED' not in primary_output and
+                    boundary_standby.returncode == 125 and standby_state.get('stage') == 'failed' and
+                    not standby_state.get('app_started', False) and 'grant' not in standby_state and
+                    standby_state.get('attached') == boundary_pending and not standby_output,
+                    'ambiguous TAP write was reassigned instead of failing the session closed: ' +
+                    primary_errors.decode(errors='replace') + standby_errors.decode(errors='replace'))
+            finally:
+                if boundary_pidfd >= 0: os.close(boundary_pidfd)
+                boundary_wire.close(); boundary_standby_wire.close()
+                for process in (boundary_owner, boundary_primary, boundary_standby):
+                    if process.poll() is None: process.kill(); process.wait()
+            # Stop the actual granted worker after a TAP output has entered the
+            # exact RX lease/PMD TX path but before external-wire send. Reaping
+            # must account this known one-frame discard exactly once.
+            discard_path = root / 'exception-discard.sock'
+            discard_eal = eal.replace('packets-', 'exception-discard-')
+            discard_common = ['--socket', str(discard_path), '--worker', str(args.worker),
+                '--eal', discard_eal, '--paired-pmd']
+            discard_marker = root / 'hold-exception-output'
+            discard_environment = environment | {'KER_SESSION_TEST_HOLD_EXCEPTION_OUTPUT': str(discard_marker)}
+            discard_primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *discard_common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=discard_environment, bufsize=0)
+            discard_ready = record(discard_primary, 'KER_SESSION_READY')
+            discard_wire, discard_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            discard_stats = root / 'exception-discard-owner.json'
+            discard_owner = subprocess.Popen([sys.executable, str(args.tool), 'run', *discard_common,
+                '--wire-fd', str(discard_endpoint.fileno()), '--library', str(args.library),
+                '--address6', '2001:db8:1::2/64', '--stats', str(discard_stats), '--', str(args.app)],
+                pass_fds=(discard_endpoint.fileno(),), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=discard_environment, bufsize=0)
+            discard_endpoint.close()
+            try:
+                require(line(discard_owner) == 'READY', 'exception-discard owner did not reach original Linux')
+                discard_state = json.loads(discard_stats.read_text())
+                discard_grant = discard_state['grant']
+                require(discard_state['attached']['pid'] == discard_grant['pid'] and
+                    discard_grant['queue_owner_key'] == discard_grant['exception_endpoint_owner_key'] != 0 and
+                    discard_grant['exception_endpoint_ifindex'] == discard_ready['exception_endpoint_ifindex'] and
+                    discard_grant['exception_endpoint_fd'] is True,
+                    'exception-discard owner did not hold the paired PMD/TAP grant before standby startup')
+            except BaseException:
+                discard_wire.close()
+                for process in (discard_owner, discard_primary):
+                    if process.poll() is None: process.kill(); process.wait()
+                raise
+            discard_standby_stats = root / 'exception-discard-standby.json'
+            standby_wire = standby_endpoint = discard_standby = None
+            try:
+                standby_wire, standby_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+                discard_standby = subprocess.Popen([sys.executable, str(args.tool), 'run', *discard_common,
+                    '--standby', '--wire-fd', str(standby_endpoint.fileno()), '--library', str(args.library),
+                    '--address6', '2001:db8:1::2/64', '--stats', str(discard_standby_stats), '--', str(args.app), '--signal-ready'],
+                    pass_fds=(standby_endpoint.fileno(),), stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+                standby_endpoint.close(); standby_endpoint = None
+            except BaseException:
+                if standby_endpoint is not None: standby_endpoint.close()
+                if standby_wire is not None: standby_wire.close()
+                discard_wire.close()
+                for process in (discard_standby, discard_owner, discard_primary):
+                    if process is not None and process.poll() is None: process.kill(); process.wait()
+                raise
+            discard_pidfd = -1
+            try:
+                deadline = time.monotonic() + 15
+                while True:
+                    state = json.loads(discard_standby_stats.read_text()) if discard_standby_stats.exists() else {}
+                    if state.get('stage') == 'standby' and state.get('standby_samples', 0) >= 2: break
+                    require(discard_standby.poll() is None and time.monotonic() < deadline,
+                        'exception-discard standby did not remain attached')
+                    time.sleep(0.02)
+                subprocess.run(['ip', 'address', 'add', '198.18.0.99/32',
+                    'dev', discard_ready['exception_endpoint_name']], check=True)
+                raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+                raw.bind((discard_ready['exception_endpoint_name'], 0))
+                frame = (b'\xff' * 6 + bytes.fromhex('024b45520099') + b'\x08\x06' +
+                    struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1) + bytes.fromhex('024b45520099') +
+                    socket.inet_aton('198.18.0.170') + b'\x00' * 6 + socket.inet_aton('198.18.0.99'))
+                discard_marker.touch()
+                require(raw.send(frame) == len(frame), 'could not inject test Ethernet frame into the resident TAP')
+                raw.close()
+                owner_state = json.loads(discard_stats.read_text())
+                worker_pid = owner_state['attached']['pid']; discard_pidfd = os.pidfd_open(worker_pid)
+                deadline = time.monotonic() + 10
+                stopped = False
+                while time.monotonic() < deadline:
+                    try: status_text = Path(f'/proc/{worker_pid}/status').read_text()
+                    except FileNotFoundError: break
+                    stopped = any(line.startswith('State:') and 'T' in line for line in status_text.splitlines())
+                    if stopped: break
+                    time.sleep(0.01)
+                require(stopped, 'worker did not stop at the published phase-5 output boundary')
+                signal.pidfd_send_signal(discard_pidfd, signal.SIGKILL)
+                require(select.select([discard_pidfd], [], [], 5)[0], 'phase-5 worker death was not observed')
+                os.close(discard_pidfd); discard_pidfd = -1
+                discard_owner.communicate(timeout=15)
+                require(discard_owner.returncode == 125, 'killed packet owner did not report backend failure')
+                require(line(discard_standby) == 'READY', 'standby did not inherit the exact persistent endpoint after phase-5 reclaim')
+                admitted = json.loads(discard_standby_stats.read_text())
+                require(admitted['grant']['queue_owner_key'] == admitted['grant']['exception_endpoint_owner_key'] != 0 and
+                    admitted['grant']['exception_endpoint_ifindex'] == discard_ready['exception_endpoint_ifindex'] and
+                    admitted['grant']['exception_endpoint_fd'] is True,
+                    'phase-5 regrant did not retain the same endpoint identity/fd authorization')
+                discard_standby_output = graceful_signal_release(discard_standby, discard_standby_stats, discard_path)
+                discard_primary.stdin.close(); discard_primary.stdin = None
+                discard_primary_output, discard_primary_errors = discard_primary.communicate(timeout=20)
+                require(discard_primary.returncode == 0, 'exception-discard resident cleanup failed: ' + discard_primary_errors.decode())
+                reclaim_records = [json.loads(line.removeprefix('KER_SESSION_EXCEPTION_RECLAIM '))
+                    for line in discard_primary_output.decode().splitlines()
+                    if line.startswith('KER_SESSION_EXCEPTION_RECLAIM ')]
+                drained_records = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                    for line in discard_primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+                require(reclaim_records == [{'phase': 5, 'discarded': 1, 'total': 1}] and
+                    drained_records and drained_records[-1]['exception_lease_discarded'] == 1,
+                    'resident did not account the single known phase-5 output discard exactly once')
+            finally:
+                if discard_pidfd >= 0: os.close(discard_pidfd)
+                discard_wire.close(); standby_wire.close()
+                for process in (discard_owner, discard_primary, discard_standby):
+                    if process.poll() is None: process.kill(); process.wait()
+            # Phase 7 means the selected exception frame has been copied to
+            # the persistent TAP, but the same journaled mbuf is still pending
+            # native RX. Kill the exact owner at that boundary and prove one
+            # discard is accounted before the same endpoint is regranted.
+            native_path = root / 'exception-native.sock'
+            native_eal = eal.replace('packets-', 'exception-native-')
+            native_common = ['--socket', str(native_path), '--worker', str(args.worker),
+                '--eal', native_eal, '--paired-pmd']
+            native_marker = root / 'hold-exception-native'
+            native_environment = environment | {'KER_SESSION_TEST_HOLD_EXCEPTION_NATIVE': str(native_marker)}
+            native_primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *native_common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=native_environment, bufsize=0)
+            native_ready = record(native_primary, 'KER_SESSION_READY')
+            native_wire, native_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            native_owner_stats = root / 'exception-native-owner.json'
+            native_owner = subprocess.Popen([sys.executable, str(args.tool), 'run', *native_common,
+                '--wire-fd', str(native_endpoint.fileno()), '--library', str(args.library),
+                '--address6', '2001:db8:1::2/64', '--stats', str(native_owner_stats), '--', str(args.app)],
+                pass_fds=(native_endpoint.fileno(),), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=native_environment, bufsize=0)
+            native_endpoint.close()
+            native_standby_wire = native_standby_endpoint = native_standby = None
+            native_pidfd = -1
+            try:
+                require(line(native_owner) == 'READY', 'phase-7 owner did not reach original Linux')
+                native_owner_state = json.loads(native_owner_stats.read_text())
+                native_grant = native_owner_state['grant']
+                require(native_owner_state['attached']['pid'] == native_grant['pid'] and
+                    native_grant['queue_owner_key'] == native_grant['exception_endpoint_owner_key'] != 0 and
+                    native_grant['exception_endpoint_ifindex'] == native_ready['exception_endpoint_ifindex'] and
+                    native_grant['exception_endpoint_fd'] is True,
+                    'phase-7 owner did not hold the endpoint grant')
+                subprocess.run(['ip', 'address', 'add', '198.18.0.100/32',
+                    'dev', native_ready['exception_endpoint_name']], check=True)
+                native_standby_stats = root / 'exception-native-standby.json'
+                native_standby_wire, native_standby_endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+                native_standby = subprocess.Popen([sys.executable, str(args.tool), 'run', *native_common,
+                    '--standby', '--generation', '1', '--wire-fd', str(native_standby_endpoint.fileno()),
+                    '--library', str(args.library), '--address6', '2001:db8:1::2/64',
+                    '--stats', str(native_standby_stats), '--', str(args.app), '--signal-ready'],
+                    pass_fds=(native_standby_endpoint.fileno(),), stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+                native_standby_endpoint.close(); native_standby_endpoint = None
+                deadline = time.monotonic() + 15
+                while True:
+                    state = json.loads(native_standby_stats.read_text()) if native_standby_stats.exists() else {}
+                    if state.get('stage') == 'standby' and state.get('standby_samples', 0) >= 2: break
+                    require(native_standby.poll() is None and time.monotonic() < deadline,
+                        'phase-7 standby did not remain attached')
+                    time.sleep(0.02)
+                require(state['attached']['generation'] == 1 and
+                    state['standby']['exception_endpoint_fd'] is False and
+                    state['standby']['exception_endpoint_owner_key'] == 0,
+                    'phase-7 standby received the endpoint before admission')
+                native_marker.touch()
+                native_frame = (b'\xff' * 6 + bytes.fromhex('024b455200bb') + b'\x08\x06' +
+                    struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1) + bytes.fromhex('024b455200bb') +
+                    socket.inet_aton('198.18.0.171') + b'\x00' * 6 + socket.inet_aton('198.18.0.100'))
+                require(native_wire.send(native_frame) == len(native_frame), 'phase-7 ARP injection failed')
+                native_pid = native_owner_state['attached']['pid']; native_pidfd = os.pidfd_open(native_pid)
+                deadline = time.monotonic() + 10
+                stopped = False
+                while time.monotonic() < deadline:
+                    try: status_text = Path(f'/proc/{native_pid}/status').read_text()
+                    except FileNotFoundError: break
+                    stopped = any(line.startswith('State:') and line.split()[1] == 'T' for line in status_text.splitlines())
+                    if stopped: break
+                    time.sleep(0.01)
+                require(stopped, 'worker did not stop after TAP copy at phase 7 before native RX enqueue')
+                signal.pidfd_send_signal(native_pidfd, signal.SIGKILL)
+                require(select.select([native_pidfd], [], [], 5)[0], 'phase-7 owner death was not observed')
+                os.close(native_pidfd); native_pidfd = -1
+                native_owner.communicate(timeout=15)
+                require(native_owner.returncode == 125, 'phase-7 owner loss did not fail its launcher')
+                require(line(native_standby) == 'READY', 'phase-7 exact-death recovery did not regrant the endpoint')
+                native_admitted = json.loads(native_standby_stats.read_text())
+                require(native_admitted['grant']['generation'] == 1 and
+                    native_admitted['grant']['exception_endpoint_ifindex'] == native_ready['exception_endpoint_ifindex'] and
+                    native_admitted['grant']['exception_endpoint_fd'] is True and
+                    native_admitted['grant']['queue_owner_key'] == native_admitted['grant']['exception_endpoint_owner_key'] != 0,
+                    'phase-7 regrant changed endpoint identity or owner authorization')
+                native_standby_output = graceful_signal_release(native_standby, native_standby_stats, native_path)
+                native_primary.stdin.close(); native_primary.stdin = None
+                native_primary_output, native_primary_errors = native_primary.communicate(timeout=20)
+                require(native_primary.returncode == 0, 'phase-7 resident cleanup failed: ' + native_primary_errors.decode())
+                reclaim_records = [json.loads(line.removeprefix('KER_SESSION_EXCEPTION_RECLAIM '))
+                    for line in native_primary_output.decode().splitlines()
+                    if line.startswith('KER_SESSION_EXCEPTION_RECLAIM ')]
+                drained_records = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                    for line in native_primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+                require(reclaim_records == [{'phase': 7, 'discarded': 1, 'total': 1}] and
+                    drained_records and drained_records[-1]['exception_lease_discarded'] == 1,
+                    'resident did not account exactly one known phase-7 native-handoff discard')
+            finally:
+                if native_pidfd >= 0: os.close(native_pidfd)
+                native_wire.close()
+                if native_standby_endpoint is not None: native_standby_endpoint.close()
+                if native_standby_wire is not None: native_standby_wire.close()
+                for process in (native_owner, native_primary, native_standby):
+                    if process is not None and process.poll() is None: process.kill(); process.wait()
+            print('PASS: exact phase-7 TAP-copy/native-handoff lease is reclaimed once before endpoint regrant')
+            print('PASS: exact phase-5 TAP output lease is reclaimed and counted once before endpoint regrant')
             print('PASS: original guest Linux peers exchange exact IPv4/IPv6 TCP4097/UDP512 with original imported Linux')
             print('PASS: actual granted EAL secondary consumes independent original PMD RX/TX queues; resident stays off packet path')
             print('PASS: fixed1500 MTU rejects live mutation coherently; original Linux/PMD counters and bidirectional Ethernet capture')
@@ -552,6 +979,7 @@ def main():
                 try: primary.wait(timeout=10)
                 except subprocess.TimeoutExpired: primary.kill(); primary.wait()
             stop.set(); thread.join(timeout=3); wire.close(); endpoint.close(); os.close(tap)
+            if exception_capture is not None: exception_capture.close()
     return 0
 
 

@@ -15,7 +15,7 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 5
+VERSION = 6
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
           'generation', 'process', 'token', 'slot', 'status')
 WIRE = struct.Struct('=10Qq')
@@ -382,8 +382,10 @@ def main():
                 return 0
             if args.action == 'device-status':
                 reply = connection.request(PMD_STATUS)
-                print(json.dumps(dict(stage='ring-pmd', session=reply['session'], owner=reply['token'],
-                    epoch=reply['epoch'], slot=reply['slot'], generation=reply['generation'], process=reply['process'])))
+                status = dict(stage='ring-pmd', session=reply['session'], owner=reply['token'],
+                    epoch=reply['epoch'], slot=reply['slot'], generation=reply['generation'], process=reply['process'])
+                if args.paired_pmd: status['exception_endpoint_owner'] = reply['token']
+                print(json.dumps(status))
                 return 0
             reply = connection.request(STATUS)
             print(json.dumps(dict(stage='shared-control', session=reply['session'],

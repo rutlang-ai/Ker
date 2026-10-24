@@ -2,7 +2,9 @@
 #define _GNU_SOURCE
 #include "io-session.h"
 #include "session-packet.h"
+#include "worker-exception.h"
 #include <sys/types.h>
+#include <net/if.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
@@ -55,6 +57,8 @@ static bool pmd_configured;
 static int pmd_client = -1;
 static struct rte_mbuf *pmd_packet, *pmd_rx_packet;
 static struct rte_ring *packet_rx, *packet_tx;
+static struct ker_worker_exception session_exception_keeper = {.fd=-1};
+static char session_exception_iface[IFNAMSIZ], session_exception_ring[RTE_RING_NAMESIZE];
 static uint64_t pmd_key(const struct client *client)
 {
     return 1 + ((uint64_t)client->slot * KER_SESSION_GENERATIONS + client->generation) * KER_SESSION_PROCESSES + client->process;
@@ -124,6 +128,17 @@ static void reclaim_pmd(unsigned index)
         rte_mbuf_refcnt_read(pmd_packet) != 1 || (pmd_packet->ol_flags & RTE_MBUF_F_EXTERNAL) ||
         atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) != pmd_key(&clients[index]) ||
         atomic_load_explicit(&directory->pmd_lease, memory_order_acquire) != (uintptr_t)pmd_packet) _Exit(125);
+    if (ring_pmd == 2 && session_exception_keeper.pending &&
+        ker_worker_exception_session_reclaim(&session_exception_keeper, pmd_rx_packet) < 0) _Exit(125);
+    uint32_t exception_phase = ring_pmd == 2 ? atomic_load_explicit(&directory->pmd_exception_phase, memory_order_acquire) : 0;
+    if (exception_phase > 8 || exception_phase == 2 || exception_phase == 3 || exception_phase == 6 || exception_phase == 8)
+        _Exit(125); /* A destructive TAP or external-wire syscall may have transferred the frame. */
+    if (ring_pmd == 2 && (exception_phase == 4 || exception_phase == 5 || exception_phase == 7)) {
+        uint64_t previous = atomic_fetch_add_explicit(&directory->pmd_exception_discarded, 1, memory_order_acq_rel);
+        if (previous == UINT64_MAX) _Exit(125);
+        fprintf(stdout, "KER_SESSION_EXCEPTION_RECLAIM {\"phase\":%u,\"discarded\":1,\"total\":%llu}\n",
+            exception_phase, (unsigned long long)(previous + 1)); fflush(stdout);
+    }
     struct rte_mbuf *packet;
     unsigned seen = 0;
     if (ring_pmd == 2 && (!pmd_rx_packet || pmd_rx_packet == pmd_packet || !known_object(pmd_rx_packet) ||
@@ -133,9 +148,13 @@ static void reclaim_pmd(unsigned index)
     while (rte_eth_rx_burst(pmd_port, 0, &packet, 1))
         if (packet != (ring_pmd == 2 ? pmd_rx_packet : pmd_packet) || ++seen > 1) _Exit(125);
     if (ring_pmd == 2) {
-        seen = 0;
-        while (!rte_ring_dequeue(packet_tx, (void **)&packet))
-            if (packet != pmd_packet || ++seen > 1) _Exit(125);
+        bool saw_tx = false, saw_rx_tx = false;
+        while (!rte_ring_dequeue(packet_tx, (void **)&packet)) {
+            if (packet == pmd_packet && !saw_tx) saw_tx = true;
+            else if (packet == pmd_rx_packet && !saw_rx_tx) saw_rx_tx = true;
+            else _Exit(125);
+        }
+        atomic_store_explicit(&directory->pmd_exception_phase, 0, memory_order_release);
         atomic_store_explicit(&directory->pmd_rx_lease, 0, memory_order_release);
         rte_pktmbuf_reset(pmd_rx_packet); rte_pktmbuf_free(pmd_rx_packet); pmd_rx_packet = NULL;
     }
@@ -304,6 +323,7 @@ static int handle(unsigned i, const struct ker_session_message *request,
         if (!ring_pmd) return -EOPNOTSUPP;
         reply->epoch = reply->slot = reply->generation = reply->process = 0;
         reply->token = atomic_load_explicit(&directory->pmd_owner, memory_order_acquire);
+        if ((ring_pmd == 2) != (atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire) != 0)) return -EUCLEAN;
         if (pmd_client >= 0) {
             struct client *owner = &clients[pmd_client];
             reply->epoch = slots[owner->slot].epoch; reply->slot = owner->slot;
@@ -415,9 +435,17 @@ static void receive_request(unsigned i)
         reply.status = result;
         client->sequence = request.sequence; client->request = request; client->reply = reply;
     }
-    if (send(client->fd, &reply, sizeof(reply), MSG_DONTWAIT | MSG_NOSIGNAL) != sizeof(reply)) {
-        disconnect_client(i);
-    }
+    ssize_t sent;
+    if (!reply.status && request.command == KER_SESSION_PMD_ACQUIRE && ring_pmd == 2) {
+        char control[CMSG_SPACE(sizeof(int))] = {0};
+        struct iovec iov = {.iov_base=&reply,.iov_len=sizeof(reply)};
+        struct msghdr message = {.msg_iov=&iov,.msg_iovlen=1,.msg_control=control,.msg_controllen=sizeof(control)};
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+        cmsg->cmsg_level = SOL_SOCKET; cmsg->cmsg_type = SCM_RIGHTS; cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &session_exception_keeper.fd, sizeof(int));
+        sent = sendmsg(client->fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+    } else sent = send(client->fd, &reply, sizeof(reply), MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (sent != sizeof(reply)) disconnect_client(i);
 }
 static int accept_client(int listener)
 {
@@ -464,15 +492,18 @@ static int primary(const char *path, int control)
     atomic_init(&directory->state, KER_SESSION_PREPARING);
     directory->ring_pmd = ring_pmd;
     atomic_init(&directory->pmd_owner, 0);
+    atomic_init(&directory->exception_ifindex, 0);
     atomic_init(&directory->pmd_lease, 0);
     atomic_init(&directory->pmd_rx_lease, 0);
+    atomic_init(&directory->pmd_exception_phase, 0);
+    atomic_init(&directory->pmd_exception_discarded, 0);
     for (unsigned s = 0; s < KER_SESSION_SLOTS; s++) {
         atomic_init(&directory->epoch[s], 0);
         for (unsigned g = 0; g < KER_SESSION_GENERATIONS; g++)
             for (unsigned p = 0; p < KER_SESSION_PROCESSES; p++) atomic_init(&directory->lease[s][g][p], 0);
     }
-    if (!atomic_is_lock_free(&directory->pmd_owner) || !atomic_is_lock_free(&directory->pmd_lease) ||
-        !atomic_is_lock_free(&directory->pmd_rx_lease) ||
+    if (!atomic_is_lock_free(&directory->pmd_owner) || !atomic_is_lock_free(&directory->exception_ifindex) || !atomic_is_lock_free(&directory->pmd_lease) ||
+        !atomic_is_lock_free(&directory->pmd_rx_lease) || !atomic_is_lock_free(&directory->pmd_exception_phase) || !atomic_is_lock_free(&directory->pmd_exception_discarded) ||
         !atomic_is_lock_free(&directory->epoch[0]) ||
         !atomic_is_lock_free(&directory->lease[0][0][0]) || random_id(&directory->session)) goto cleanup;
     for (unsigned s = 0; s < KER_SESSION_SLOTS; s++)
@@ -501,6 +532,21 @@ static int primary(const char *path, int control)
         pmd_configured = true;
         if (rte_eth_rx_queue_setup(pmd_port, 0, 128, SOCKET_ID_ANY, NULL, message_pool) ||
             rte_eth_tx_queue_setup(pmd_port, 0, 128, SOCKET_ID_ANY, NULL) || rte_eth_dev_start(pmd_port)) goto cleanup;
+        if (ring_pmd == 2) {
+            struct rte_ether_addr mac = {.addr_bytes = {0x02, 0x4b, 0x45,
+                (uint8_t)(directory->session >> 16), (uint8_t)(directory->session >> 8), (uint8_t)directory->session}};
+            snprintf(session_exception_iface, sizeof(session_exception_iface), "kex%08x", (unsigned)directory->session);
+            snprintf(session_exception_ring, sizeof(session_exception_ring), "ker_se_%08x", (unsigned)directory->session);
+            unsigned ifindex = 0;
+            int endpoint_result = ker_worker_exception_open_session(
+                &session_exception_keeper, session_exception_iface, session_exception_ring,
+                message_pool, &mac, 1500, 64, &directory->pmd_exception_phase, &ifindex);
+            if (endpoint_result || !ifindex) {
+                fprintf(stderr, "ker session: exception endpoint setup failed: %d\n", endpoint_result ? endpoint_result : -ENODEV);
+                goto cleanup;
+            }
+            directory->exception_ifindex = ifindex;
+        }
     }
     int precreated = validate_shared_rings();
     if (precreated != (int)QUEUES) goto cleanup;
@@ -524,9 +570,9 @@ static int primary(const char *path, int control)
     bound = true;
     if (lstat(path, &socket_identity) || listen(listener, 16)) goto cleanup;
     atomic_store_explicit(&directory->state, KER_SESSION_READY, memory_order_release);
-    printf("KER_SESSION_READY {\"stage\":\"shared-control\",\"session\":%llu,\"rings\":%u,\"slots\":%u,\"ring_pmd\":%s,\"ports\":%u,\"epoch\":%llu,\"slot\":0}\n",
+    printf("KER_SESSION_READY {\"stage\":\"shared-control\",\"session\":%llu,\"rings\":%u,\"slots\":%u,\"ring_pmd\":%s,\"ports\":%u,\"epoch\":%llu,\"slot\":0,\"exception_endpoint_name\":\"%s\",\"exception_endpoint_ifindex\":%u}\n",
         (unsigned long long)directory->session, (unsigned)precreated, KER_SESSION_SLOTS, ring_pmd ? "true" : "false",
-        (unsigned)rte_eth_dev_count_avail(), (unsigned long long)atomic_load_explicit(&directory->epoch[0], memory_order_acquire)); fflush(stdout);
+        (unsigned)rte_eth_dev_count_avail(), (unsigned long long)atomic_load_explicit(&directory->epoch[0], memory_order_acquire), ring_pmd == 2 ? session_exception_iface : "", atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire)); fflush(stdout);
     result = 0;
     while (!stopping) {
         reap_clients();
@@ -561,6 +607,7 @@ cleanup:
         if (clients[i].kind == RESERVED || clients[i].kind == ATTACHED) reclaim_control(i);
         drop_client(i);
     }
+    if (session_exception_keeper.pending && ker_worker_exception_close(&session_exception_keeper)) result = 1;
     if (pmd_configured) {
         if (rte_eth_dev_stop(pmd_port) || rte_eth_dev_close(pmd_port)) result = 1;
     }
@@ -570,7 +617,8 @@ cleanup:
         if (rte_mempool_in_use_count(message_pool)) {
             fprintf(stderr, "ker session: outstanding shared control objects prevent cleanup\n"); _Exit(125);
         }
-        printf("KER_SESSION_DRAINED {\"outstanding\":0,\"objects\":%u}\n", KER_SESSION_OBJECTS); fflush(stdout);
+        printf("KER_SESSION_DRAINED {\"outstanding\":0,\"objects\":%u,\"exception_lease_discarded\":%llu}\n",
+            KER_SESSION_OBJECTS, (unsigned long long)atomic_load_explicit(&directory->pmd_exception_discarded, memory_order_acquire)); fflush(stdout);
         rte_mempool_free(message_pool);
     }
     for (unsigned i = 0; i < QUEUES; i++) if (rings[i]) {
@@ -606,6 +654,43 @@ static int exchange(int fd, struct ker_session_message *message)
         response.status > 0 || response.status < -4095) return -EPROTO;
     *message = response;
     return (int)response.status;
+}
+static int exchange_exception_fd(int fd, struct ker_session_message *message, int *received_fd)
+{
+    struct ker_session_message response;
+    char control[CMSG_SPACE(sizeof(int) * 2)] = {0};
+    struct iovec iov = {.iov_base=&response,.iov_len=sizeof(response)};
+    struct msghdr header = {.msg_iov=&iov,.msg_iovlen=1,.msg_control=control,.msg_controllen=sizeof(control)};
+    *received_fd = -1;
+    if (send(fd, message, sizeof(*message), MSG_NOSIGNAL) != sizeof(*message)) return -EIO;
+    ssize_t received = recvmsg(fd, &header, MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    if (received < 0) return -EIO;
+    unsigned descriptors = 0;
+    bool ancillary_invalid = false;
+    for (struct cmsghdr *cmsg=CMSG_FIRSTHDR(&header); cmsg; cmsg=CMSG_NXTHDR(&header,cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+            cmsg->cmsg_len < CMSG_LEN(sizeof(int)) ||
+            (cmsg->cmsg_len - CMSG_LEN(0)) % sizeof(int)) {
+            ancillary_invalid = true;
+            continue;
+        }
+        size_t count=(cmsg->cmsg_len-CMSG_LEN(0))/sizeof(int);
+        int *fds=(int *)CMSG_DATA(cmsg);
+        for (size_t i=0;i<count;i++) { if (!descriptors++) *received_fd=fds[i]; else close(fds[i]); }
+    }
+    if (received != sizeof(response) || header.msg_flags & (MSG_TRUNC | MSG_CTRUNC) || ancillary_invalid ||
+        memcmp(&response, message, sizeof(response) - sizeof(response.status)) ||
+        response.status > 0 || response.status < -4095) {
+        if (*received_fd >= 0) { close(*received_fd); *received_fd=-1; }
+        return -EPROTO;
+    }
+    *message=response;
+    if (response.status) {
+        if (*received_fd>=0) { close(*received_fd); *received_fd=-1; }
+        return (int)response.status;
+    }
+    if (descriptors != 1) { if (*received_fd>=0) close(*received_fd); *received_fd=-1; return -EPROTO; }
+    return 0;
 }
 static uint64_t monotonic_ms(void)
 {
@@ -733,15 +818,19 @@ static int pmd_roundtrips(struct rte_mbuf *packet, const struct ker_session_mess
     return 0;
 }
 static int acquire_pmd(int fd, struct ker_session_message *identity,
-    struct rte_mempool *pool, struct rte_mbuf *control_packet, struct rte_mbuf **packet)
+    struct rte_mempool *pool, struct rte_mbuf *control_packet, struct rte_mbuf **packet, int *exception_fd)
 {
     identity->command = KER_SESSION_PMD_ACQUIRE; identity->sequence++; identity->status = 0;
-    int result = exchange(fd, identity);
+    int result;
+    *exception_fd = -1;
+    if (ring_pmd == 2) result = exchange_exception_fd(fd, identity, exception_fd);
+    else result = exchange(fd, identity);
     if (result) return result;
     *packet = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_lease, memory_order_acquire);
     uint64_t key = 1 + (identity->slot * KER_SESSION_GENERATIONS + identity->generation) * KER_SESSION_PROCESSES + identity->process;
     return !known_object(*packet) || (*packet)->pool != pool || *packet == control_packet ||
-        atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) != key ? -EUCLEAN : 0;
+        atomic_load_explicit(&directory->pmd_owner, memory_order_acquire) != key ||
+        ((ring_pmd == 2) != (atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire) != 0)) ? -EUCLEAN : 0;
 }
 /* Use the resident's serialized snapshot; separately reading the owner key and
  * a recycled slot epoch could combine two different grants. */
@@ -757,12 +846,14 @@ static int observe_pmd(int fd, struct ker_session_message *identity, struct ker_
     if (!owner->epoch || !owner->slot || owner->slot >= KER_SESSION_SLOTS ||
         owner->generation >= KER_SESSION_GENERATIONS || owner->process >= KER_SESSION_PROCESSES) return -EPROTO;
     uint64_t key = 1 + (owner->slot * KER_SESSION_GENERATIONS + owner->generation) * KER_SESSION_PROCESSES + owner->process;
-    return key == owner->token ? 0 : -EPROTO;
+    return key == owner->token && ((ring_pmd == 2) ==
+        (atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire) != 0)) ? 0 : -EPROTO;
 }
 static int secondary(const char *path, int control, int ticket, unsigned generation,
     unsigned process, unsigned probe_count, bool probe_only, bool standby, int packet_fd, int wire_fd, int mtu_fd, int argc, char **argv)
 {
-    int result = 1, fd = -1, peer = -1;
+    int result = 1, fd = -1, peer = -1, exception_fd = -1;
+    struct ker_worker_exception exception_bridge = {.fd=-1};
     bool initialized = false;
     struct ker_session_message message;
     if (receive_exact(ticket, &message, sizeof(message))) return 1;
@@ -827,13 +918,16 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         (unsigned long long)message.slot, generation, process, (unsigned)validated_rings, names[0], names[1], names[2], names[3]); fflush(stdout);
     struct rte_mbuf *device_packet = NULL;
     if (ring_pmd) {
-        int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet);
+        int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet, &exception_fd);
         if (acquired && (!standby || acquired != -EBUSY)) {
             fprintf(stderr, "ker session: PMD consumer grant rejected %d\n", acquired); goto cleanup;
         }
-        printf("%s {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu}\n",
+        uint64_t key = acquired ? 0 : 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
+        printf("%s {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"queue_owner_key\":%llu,\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_ifindex\":%u,\"exception_endpoint_fd\":%s}\n",
             acquired ? "KER_SESSION_PMD_STANDBY" : "KER_SESSION_PMD_GRANTED",
-            (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot); fflush(stdout);
+            (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot, generation, process,
+            (unsigned long long)key, (unsigned long long)(ring_pmd == 2 ? key : 0),
+            atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire), exception_fd >= 0 ? "true" : "false"); fflush(stdout);
     }
     if (ring_pmd == 2) {
         /* A paired standby owns only its coordinate control lease. Do not
@@ -854,20 +948,31 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             if (!(waiters[0].revents & POLLIN) || read(control, &command, 1) != 1 || command != 'P') {
                 result = 0; goto cleanup;
             }
-            int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet);
+            int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet, &exception_fd);
             if (acquired && acquired != -EBUSY) {
                 fprintf(stderr, "ker session: standby PMD acquisition failed %d\n", acquired); goto cleanup;
             }
-            printf("%s {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu}\n",
+            uint64_t owner_key = acquired ? 0 : 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
+            printf("%s {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu,\"generation\":%u,\"process\":%u,\"queue_owner_key\":%llu,\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_ifindex\":%u,\"exception_endpoint_fd\":%s}\n",
                 acquired ? "KER_SESSION_PMD_STANDBY" : "KER_SESSION_PMD_GRANTED",
-                (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot); fflush(stdout);
+                (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot,
+                generation, process, (unsigned long long)owner_key, (unsigned long long)(owner_key && ring_pmd == 2 ? owner_key : 0),
+                atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire), exception_fd >= 0 ? "true" : "false"); fflush(stdout);
         }
         if (!device_packet) { result = 0; goto cleanup; }
+        char exception_iface[IFNAMSIZ], exception_ring[RTE_RING_NAMESIZE];
+        snprintf(exception_iface, sizeof(exception_iface), "kex%08x", (unsigned)directory->session);
+        snprintf(exception_ring, sizeof(exception_ring), "ker_se_%08x", (unsigned)directory->session);
+        if (ker_worker_exception_attach_session(&exception_bridge, exception_fd, exception_iface,
+                exception_ring, pool, atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire),
+                (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire), &directory->pmd_exception_phase)) goto cleanup;
+        exception_fd=-1; /* bridge owns the received CLOEXEC descriptor */
         struct rte_mbuf *rx_packet = (struct rte_mbuf *)atomic_load_explicit(&directory->pmd_rx_lease, memory_order_acquire);
         if (!known_object(rx_packet) || rx_packet == device_packet || rx_packet == leased_packet || rx_packet->pool != pool) goto cleanup;
         uint64_t key = 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
         result = ker_session_packet_loop(pmd_port, packet_fd, wire_fd, mtu_fd, control, fd, peer,
-            &directory->pmd_owner, key, device_packet, rx_packet, &stopping) ? 1 : 0;
+            &directory->pmd_owner, key, device_packet, rx_packet,
+            &exception_bridge, &stopping) ? 1 : 0;
         goto cleanup;
     }
     uint64_t device_sequence = 0;
@@ -886,7 +991,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 directory->primary_pid, KER_SESSION_PROBE_PAYLOAD); fflush(stdout);
             if (ring_pmd && standby) {
                 if (!device_packet) {
-                    int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet);
+                    int acquired = acquire_pmd(fd, &message, pool, leased_packet, &device_packet, &exception_fd);
                     if (acquired && acquired != -EBUSY) {
                         fprintf(stderr, "ker session: standby PMD acquisition failed %d\n", acquired); goto cleanup;
                     }
@@ -896,10 +1001,13 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 bool owns = owner.epoch == message.epoch && owner.slot == message.slot &&
                     owner.generation == message.generation && owner.process == message.process;
                 if (owns != (device_packet != NULL)) goto cleanup;
-                printf("KER_SESSION_PMD_SAMPLED {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu,\"owns_device\":%s,\"owner_epoch\":%llu,\"owner_generation\":%llu,\"owner_slot\":%llu,\"owner_process\":%llu,\"sequence\":%llu}\n",
+                printf("KER_SESSION_PMD_SAMPLED {\"pid\":%ld,\"epoch\":%llu,\"slot\":%llu,\"owns_device\":%s,\"owner_epoch\":%llu,\"owner_generation\":%llu,\"owner_slot\":%llu,\"owner_process\":%llu,\"queue_owner_key\":%llu,\"exception_endpoint_owner_key\":%llu,\"exception_endpoint_ifindex\":%u,\"sequence\":%llu}\n",
                     (long)getpid(), (unsigned long long)message.epoch, (unsigned long long)message.slot,
                     owns ? "true" : "false", (unsigned long long)owner.epoch, (unsigned long long)owner.generation,
-                    (unsigned long long)owner.slot, (unsigned long long)owner.process, (unsigned long long)probe_sequence); fflush(stdout);
+                    (unsigned long long)owner.slot, (unsigned long long)owner.process,
+                    (unsigned long long)owner.token, (unsigned long long)(ring_pmd == 2 ? owner.token : 0),
+                    atomic_load_explicit(&directory->exception_ifindex, memory_order_acquire),
+                    (unsigned long long)probe_sequence); fflush(stdout);
             }
             if (ring_pmd && device_packet && probe_count) {
                 int status = pmd_roundtrips(device_packet, &message, probe_count, &device_sequence,
@@ -933,6 +1041,8 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     }
     result = 0;
 cleanup:
+    if (exception_bridge.pending && ker_worker_exception_close(&exception_bridge)) result = 1;
+    if (exception_fd >= 0) close(exception_fd);
     if (initialized && rte_eal_cleanup()) result = 1;
     if (fd >= 0) close(fd);
     if (peer >= 0) close(peer);
