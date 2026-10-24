@@ -46,6 +46,8 @@ struct ker_generation_ring_stats {
     uint64_t rx_full;
     uint64_t tx_full;
     uint64_t tx_drop;
+    uint64_t packet_drop;
+    uint64_t packet_full;
     uint32_t rx_peak;
     uint32_t tx_peak;
     uint32_t rx_capacity;
@@ -89,6 +91,33 @@ int ker_generation_tx_enqueue(struct ker_generation_rings *rings,
 int ker_generation_tx_dequeue_peer(struct ker_generation_rings *rings,
     const struct ker_generation_identity *consumer, uint16_t port,
     uint16_t queue, struct rte_mbuf **packet);
+/* Resident-owned prepared packet lease. The packet pool is distinct from the
+ * session message/PMD lease pool, but commit publishes into the existing TX
+ * generation ring and shares its journal/recovery path. Indices are scoped to
+ * the validated packet pool table; callers must never transmit raw pointers. */
+int ker_generation_packet_prepare(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *producer,
+    const struct ker_generation_identity *consumer, uint16_t port, uint16_t queue,
+    uint32_t *object_index, uint64_t *lease_id);
+uint64_t ker_generation_packet_pool_tag(const struct ker_generation_rings *rings);
+struct rte_mbuf *ker_generation_packet_resolve(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *producer, uint32_t object_index,
+    uint64_t lease_id);
+int ker_generation_packet_write_complete(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *producer, uint32_t object_index,
+    uint64_t lease_id);
+int ker_generation_packet_commit(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *producer, uint16_t port, uint16_t queue,
+    uint32_t object_index, uint64_t lease_id);
+int ker_generation_packet_cancel(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *producer, uint32_t object_index,
+    uint64_t lease_id);
+/* Reserved for a future external-send ledger. These remain fail-closed until
+ * the PMD and wire completion boundaries are journaled by the real adapter. */
+int ker_generation_packet_pmd_accepted(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *consumer, struct rte_mbuf *packet);
+int ker_generation_packet_wire_pending(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *consumer, struct rte_mbuf *packet);
 uint64_t ker_generation_rx_full_count(struct ker_generation_rings *rings,
     uint16_t port, uint16_t queue, uint32_t target_generation);
 int ker_generation_rings_stats(struct ker_generation_rings *rings,
@@ -97,6 +126,22 @@ int ker_generation_packet_release(struct ker_generation_rings *rings,
     const struct ker_generation_identity *owner, struct rte_mbuf *packet);
 
 #ifdef KER_SESSION_TEST_HOOKS
+uint32_t ker_generation_packet_pool_in_use(struct ker_generation_rings *rings);
+int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *rings,
+    uint32_t index,uint32_t duplicate_index,uintptr_t *original);
+int ker_generation_test_packet_table_restore(struct ker_generation_rings *rings,
+    uint32_t index,uintptr_t original);
+int ker_generation_test_packet_force_untracked_send(struct ker_generation_rings *rings,
+    uint32_t index,uint64_t lease_id);
+int ker_generation_test_packet_restore_prepared(struct ker_generation_rings *rings,
+    uint32_t index,uint64_t lease_id);
+int ker_generation_test_reopen_after_failclosed_reap(struct ker_generation_rings *rings);
+int ker_generation_test_reopen_after_failed_detach(struct ker_generation_rings *rings,
+    uint32_t generation);
+int ker_generation_test_packet_drop_count(struct ker_generation_rings *rings,uint16_t port,
+    uint16_t queue,uint32_t generation,uint64_t *count);
+int ker_generation_test_packet_full_count(struct ker_generation_rings *rings,uint16_t port,
+    uint16_t queue,uint32_t generation,uint64_t *count);
 /* Test-only: observe the same generation-directory lookup used by attach. */
 int ker_generation_rings_test_directory_present(void);
 /* Test-only: repeat the production secondary attach and require identical objects. */
@@ -109,12 +154,15 @@ void ker_generation_test_corrupt_next_reap(void);
 void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready, _Atomic unsigned *release);
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready);
 void ker_generation_test_hold_after_enqueue_prepare(_Atomic unsigned *ready);
+void ker_generation_test_hold_packet_commit(_Atomic unsigned *ready,_Atomic unsigned *release);
+void ker_generation_test_hold_after_packet_enqueue(_Atomic unsigned *ready,_Atomic unsigned *release);
 /* Test-only late journal corruption and raw metric observation for reaper rollback. */
 int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *rings,
     const struct ker_generation_identity *owner, uint32_t after_ring_slot);
 void ker_generation_test_restore_reap_corruption(void);
 int ker_generation_test_tx_drop_count(struct ker_generation_rings *rings,
     uint16_t port, uint16_t queue, uint32_t generation, uint64_t *count);
+int ker_generation_test_active_counts(struct ker_generation_rings *rings,uint32_t counts[4]);
 #endif
 
 /* Reclaim only after the exact registered PIDFD is readable. */
