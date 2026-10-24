@@ -19,7 +19,7 @@ VERSION = 4
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
           'generation', 'process', 'token', 'slot', 'status')
 WIRE = struct.Struct('=10Qq')
-MASTER, RESERVE, RELEASE, STATUS, ATTACHED, PROBE, PMD_ACQUIRE, PMD_STATUS = range(1, 9)
+MASTER, RESERVE, RELEASE, STATUS, ATTACHED, PROBE, PMD_ACQUIRE, PMD_STATUS, EPOCH_LIVE = range(1, 10)
 
 
 def packet(command, sequence=1, **values):
@@ -130,6 +130,7 @@ def lease(args):
                 '--socket', str(args.socket), '--control-fd', str(control), '--ticket-fd', str(read_fd),
                 '--generation', str(args.generation), '--process', str(args.process),
                 *(['--ring-pmd'] if ring_pmd else []),
+                *(['--standby'] if getattr(args, 'standby', False) else []),
                 '--probe-count', str(args.probe_count),
                 *(['--probe-only'] if args.action == 'probe' else []), '--',
                 *role_arguments(args.eal, 'secondary', ring_pmd)], stdin=subprocess.DEVNULL,
@@ -315,15 +316,23 @@ def bounded_probe_count(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe', 'device-status'))
+    parser.add_argument('action', choices=('serve', 'lease', 'status', 'probe', 'device-status', 'epoch-status'))
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-session')
     parser.add_argument('--eal', default='')
+    parser.add_argument('--standby', action='store_true', help='keep a refused consumer attached and retry admission on each P command')
+    parser.add_argument('--epoch', type=int, help='epoch to query with epoch-status; 0 names the resident')
     parser.add_argument('--generation', type=int, choices=range(2), default=0)
     parser.add_argument('--process', type=int, choices=range(4), default=0)
     parser.add_argument('--ring-pmd', action='store_true', help='qualify the original shared ring PMD with an exclusive secondary consumer')
     parser.add_argument('--probe-count', type=bounded_probe_count, default=0)
     args = parser.parse_args()
+    if args.standby and (args.action != 'lease' or not args.ring_pmd):
+        parser.error('--standby requires lease --ring-pmd')
+    if args.action == 'epoch-status' and (args.epoch is None or not 0 <= args.epoch < 2**64):
+        parser.error('epoch-status requires --epoch in 0..2^64-1')
+    if args.action != 'epoch-status' and args.epoch is not None:
+        parser.error('--epoch is only valid with epoch-status')
     args.socket = args.socket.absolute()
     try:
         if args.action == 'serve':
@@ -337,6 +346,11 @@ def main():
             return lease(args)
         connection = Connection(args.socket)
         try:
+            if args.action == 'epoch-status':
+                reply = connection.request(EPOCH_LIVE, epoch=args.epoch)
+                print(json.dumps(dict(session=reply['session'], epoch=reply['epoch'],
+                    live=bool(reply['token']), slot=reply['slot'])))
+                return 0
             if args.action == 'device-status':
                 reply = connection.request(PMD_STATUS)
                 print(json.dumps(dict(stage='ring-pmd', session=reply['session'], owner=reply['token'],

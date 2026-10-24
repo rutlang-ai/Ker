@@ -47,3 +47,43 @@ network dispatch ring、物理设备/no-hardware/KNI-owner 一致性、队列中
 partial，不能把诊断帧 loopback 等同于这些源断言。TC-2 使用原始 null PMD，
 只要求自己的非零 epoch/slot/ring、真实 secondary 设备消费权和 primary 不消费；
 这批实际原始 PMD 验证满足该单条场景，不能扩展为整个 reload 流程完成。
+
+
+## Live standby 与 epoch 查询
+
+`lease --ring-pmd --standby` 在消费者申请返回 EBUSY 时保留真实 EAL secondary
+和控制 mbuf；严格模式仍退出，不改变原有拒绝边界。输入 `P` 时继续共享控制
+请求、重新申请实际 grant，并从 resident 获取一次序列化的完整 owner 快照。
+只有持有实际 journaled PMD mbuf 且 owner 坐标匹配的 worker 能调用 burst。
+`--probe-count 0`（默认值）只执行这些控制步骤，不声明实际帧收发；指定正数
+时，owner 才执行该数量的原始 PMD 帧验证。非 owner 始终不执行数据轮询。
+
+standby 不因 master 死亡、心跳缺失或 worker 冻结就抢占设备。只有 exact
+borrower pidfd 证明旧消费者死亡、resident 回收旧 lease 后，同一个 standby
+PID、原始 EAL attachment 和 epoch 才能在后续 `P` 请求取得新 grant。这里
+没有新建一个独立 primary 来替代接管，也不承诺周期性自动晋升或业务 readiness。
+
+```sh
+ker-session lease --socket "$SESSION_DIR/control.sock" --ring-pmd --standby \
+  --probe-count 16 --eal "$SHARED_EAL_OPTIONS"
+ker-session epoch-status --socket "$SESSION_DIR/control.sock" --epoch 0
+ker-session epoch-status --socket "$SESSION_DIR/control.sock" --epoch 123
+```
+
+`epoch-status` 直接查询 resident 的 exact-pidfd census。master 存活，或其任意
+RESERVED/ATTACHED borrower 仍存活，该 epoch 就保持 live；注册已清除或精确
+进程死亡后变为 non-live。epoch0 表示仍服务的 resident；未知 epoch 返回
+non-live。slot 被更高 epoch 复用不会使旧 epoch 复活。这是 Ker 的明确进程
+寿命机制，不复制 F-Stack 的 heartbeat/stamp 过期 ABI，也不将冻结当成死亡。
+
+`native-fstack-session-standby` 同时保持两个不同 master 和两个 secondary
+存活，先释放两边 `P` 屏障，再等待双方对同一 owner 的样本。测试还杀死旧
+master、冻结并确认旧 borrower 的实际 T 状态，要求 standby 仍不得接管；
+精确杀死并回收 borrower 后，原 standby 在原 PID/EAL/epoch 中实际收发，
+计数/序列继续递增。旧 slot 的新 epoch、默认零数量控制、全部511对象归还
+也有独立断言。
+
+源 `test_it_a14_epoch_liveness_after_exit` 只要求旧 epoch 在进程退出后变为
+non-live，且 primary epoch0 继续 live，本批完成这条场景。TC-3 新增双活
+observer/owner 样本证据，但独立固定网络 dispatch、异常包路由及其 owner
+一致性仍未实现，不能用 PMD grant 的数值替代源 KNI/exception-owner 断言。

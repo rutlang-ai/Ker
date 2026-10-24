@@ -929,16 +929,25 @@
         {
           "ctest": "native-fstack-session-registration",
           "provenance_case": "native-fstack-session-directory"
+        },
+        {
+          "ctest": "native-fstack-session-standby",
+          "provenance_case": "native-fstack-session-standby"
         }
       ],
-      "remaining": "A real secondary ring-PMD consumer grant is now qualified separately, but this source case requires two distinct master/worker chains to remain alive through synchronized post-admission samples, agreeing on the fixed dispatch owner and exception/KNI owner word. The current rejected secondary exits instead of staying as a no-hardware observer; those simultaneous-sampling/dispatch/exception-owner assertions remain unqualified."
+      "remaining": "Two distinct master/secondary chains now remain live through synchronized samples, agree on one actual PMD owner, and the nonowner stays attached without data polling. Frozen-orphan exclusion and same-PID standby takeover are qualified. The separate fixed network dispatch and exception/KNI ownership agreement still lack an implemented packet-routing path; the PMD grant must not stand in for that exception-owner assertion."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The resident now provides real EAL registration, shared-control leases and namespace recycling. This source case still lacks its actual epoch-liveness, hardware-owner query or drain-peer implementation; control health probes do not qualify it.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production epoch-status queries the resident exact-pidfd census. Distinct actual master/secondary epochs remain live while borrowers survive master death, including a frozen orphan. After exact borrower death and registration release their epochs become non-live while the resident epoch0 remains live. Reusing the old slot for a newer real secondary never revives the old epoch. This qualifies the source TC-4 liveness verdict, not its F-Stack heartbeat timeout implementation, drain-peer protocol or full reload flow.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-standby",
+          "provenance_case": "native-fstack-session-standby"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",

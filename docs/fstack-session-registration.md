@@ -4,7 +4,9 @@
 primary and actual secondary processes before generation handover can be
 qualified. `ker-io-session` and `ker-session` implement registration and shared control
 using original DPDK EAL, memzones, mbuf pools and rings. The existing packet worker and
-`ker-run` secondary admission boundary remain unchanged.
+`ker-run` secondary admission boundary remain unchanged. Optional device admission
+and live standby are documented separately in [the ring-PMD stage](fstack-session-pmd.md);
+the shared-control commands below do not enable them.
 
 ## Running the shared-control stage
 

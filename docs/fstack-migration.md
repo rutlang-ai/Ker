@@ -1328,3 +1328,24 @@ IPv4/IPv6 TCP/UDP，另有两个原始 null PMD。每个实际 EAL 子进程完�
 原始固定网络 dispatch、物理设备/nohw/KNI owner 协调、向原始 Linux 交付
 数据包及完整 reload 仍待实现。清单现为182 scenario-adapted、21 partial、
 160 blocked、15 architecture-specific、55 harness-only，181项未完成。
+
+
+2026-10-24 存活 standby 与 epoch-liveness 批次
+
+`ker-session lease --ring-pmd --standby` 现在保留未获消费者授权的真实 EAL
+secondary 和控制通道。两条不同 master/secondary 链保持同时存活，通过
+共同屏障取样一个实际 PMD owner；只有持有 resident 私有 journal 授权对象的
+worker 进行真实 TX/RX。owner 快照由 resident 串行返回，避免将旧授权坐标
+和复用后的 epoch 分开读取。master 死亡和 borrower 冻结均不触发抢占；
+精确 borrower 死亡并回收后，原 standby 在相同 PID/EAL/epoch 中实际接管。
+
+新增 production `epoch-status`，按真实 pidfd census 证明旧 epoch 在 borrower
+存活时保持 live、完全退出后 non-live，resident epoch0 继续 live；slot 被
+更高 epoch 复用也不能复活旧 epoch。原始 TC-4 的这一 liveness 判定完成适配，
+不声明实现其 heartbeat/stamp ABI。TC-3 的固定网络 dispatch 和异常包路由
+owner 协调仍为 partial。既有控制/PMD 套件和新 standby 接管套件在隔离
+DPDK hugepage guest 执行；宿主缺少 hugepages 的运行时 CTest 仍跳过。
+
+当前183 scenario-adapted、21 partial、159 blocked，180项未完成；15项架构
+专属及55项 harness-only 保留边界。#218 仍有76项未完成（73 blocked、3 partial）。
+原始 Linux 数据包交付、排队中的 driver 崩溃注入和完整 reload 继续待实现。
