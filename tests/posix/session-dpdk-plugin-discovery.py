@@ -37,6 +37,7 @@ def main():
     observer = load_fixture('tc3_observer_fixture', Path(__file__).with_name('session-tc3-observer.py'))
     coordinate = load_fixture('coordinate_fixture', Path(__file__).with_name('session-coordinate.py'))
     drain_peer = load_fixture('drain_peer_fixture', Path(__file__).with_name('session-drain-peer.py'))
+    runner = load_fixture('ker_session_run_fixture', Path(__file__).parents[2] / 'tools' / 'ker_session_run.py')
     configured = args.configured_dir.resolve(strict=True)
 
     native_paths = native.resolve_dpdk_plugin_paths(configured, ('mempool_ring',), {})
@@ -58,6 +59,14 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ker-session-pmd-custom-') as directory:
         custom = (Path(directory) / 'prefix with spaces').resolve()
         custom.mkdir()
+        fdinfo = custom / 'fdinfo'
+        fdinfo.mkdir()
+        (fdinfo / '3').write_text('pos:\t0\nflags:\t02000002\niff:\tkex12345678\n')
+        (fdinfo / '4').write_text('pos:\t0\nflags:\t02000002\niff:\tkersession0\n')
+        (fdinfo / '5').write_text('pos:\t0\nflags:\t02000002\n')
+        require(set(runner.tap_interfaces_for_process(12345, fdinfo_dir=fdinfo)) ==
+                {'kex12345678', 'kersession0'},
+                'launcher fdinfo helper did not read every original TUN interface record')
         module_names = ('mempool_ring', 'net_ring')
         expected = []
         for module in module_names:

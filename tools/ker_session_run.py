@@ -14,6 +14,20 @@ import tempfile
 import time
 
 
+def tap_interfaces_for_process(pid, *, fdinfo_dir=None):
+    """Return TUN interface names attached to a process from its fdinfo."""
+    directory = Path(f'/proc/{pid}/fdinfo') if fdinfo_dir is None else Path(fdinfo_dir)
+    names = []
+    for path in directory.iterdir():
+        try:
+            information = path.read_text()
+        except FileNotFoundError:
+            continue
+        names.extend(line.split(':', 1)[1].strip() for line in information.splitlines()
+            if line.startswith('iff:'))
+    return names
+
+
 
 def validate_interrupted_cleanup(worker_code, packet_stats, *, packet_expected=True, app_launched=False,
                                  app_code=None, startup=b'', native_stats=None):

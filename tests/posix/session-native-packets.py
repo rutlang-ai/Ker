@@ -232,7 +232,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 page_stat = page_path.lstat()
                 require(stat.S_ISREG(page_stat.st_mode) and page_stat.st_uid == os.getuid(),
                     'unexpected handoff hugepage backing-file identity')
-                owned_pages[page_path] = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid)
+                owned_pages[page_path] = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid,
+                    stat.S_IFMT(page_stat.st_mode))
             require(owned_pages, 'handoff resident created no exact-prefix hugepage backing files')
 
             def fatal_profile_diagnostics(reason):
@@ -430,15 +431,30 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 recorded_pages = set(owned_pages)
                 unrecorded = current_pages - recorded_pages
                 missing = recorded_pages - current_pages
+                def describe_page(path, expected=None):
+                    try:
+                        value = path.lstat()
+                    except FileNotFoundError:
+                        actual = dict(dev=None, inode=None, uid=None, type='missing')
+                    else:
+                        kind = stat.S_IFMT(value.st_mode)
+                        actual = dict(dev=value.st_dev, inode=value.st_ino, uid=value.st_uid,
+                            type='regular' if stat.S_ISREG(value.st_mode) else oct(kind))
+                    if expected is None:
+                        expected_value = None
+                    else:
+                        expected_value = dict(dev=expected[0], inode=expected[1], uid=expected[2],
+                            type='regular' if expected[3] == stat.S_IFREG else oct(expected[3]))
+                    return dict(path=str(path), expected=expected_value, actual=actual)
                 if mode == 'positive':
                     require(not unrecorded,
-                        'unexpected exact-prefix hugepage files appeared; refusing all cleanup: ' +
-                        repr(sorted(str(path) for path in unrecorded)))
+                        'stage=post-reap-before-unlink unexpected exact-prefix files; refusing cleanup: ' +
+                        repr([describe_page(path) for path in sorted(unrecorded)]))
                 else:
                     require(not unrecorded and not missing,
-                        'fatal profile hugepage file set changed; refusing all cleanup: ' +
-                        repr(dict(unrecorded=sorted(str(path) for path in unrecorded),
-                            missing=sorted(str(path) for path in missing))))
+                        'stage=post-reap-before-unlink fatal exact-prefix file set changed; refusing cleanup: ' +
+                        repr([describe_page(path, owned_pages[path]) for path in sorted(missing)] +
+                            [describe_page(path) for path in sorted(unrecorded)]))
                 leftovers = []
                 validated = []
                 for page_path, identity in owned_pages.items():
@@ -446,9 +462,11 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         page_stat = page_path.lstat()
                     except FileNotFoundError:
                         continue
-                    require((page_stat.st_dev, page_stat.st_ino, page_stat.st_uid) == identity and
-                        stat.S_ISREG(page_stat.st_mode),
-                        'handoff hugepage backing-file identity changed; refusing all cleanup')
+                    actual_identity = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid,
+                        stat.S_IFMT(page_stat.st_mode))
+                    if actual_identity != identity or not stat.S_ISREG(page_stat.st_mode):
+                        raise RuntimeError('stage=post-reap-before-unlink hugepage identity changed; '
+                            'refusing all cleanup: ' + repr(describe_page(page_path, identity)))
                     leftovers.append(page_path)
                     validated.append((page_path, identity))
                 if mode == 'positive':
