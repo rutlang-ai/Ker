@@ -775,10 +775,18 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
             siginfo_t info={0};if(waitid(P_PID,(id_t)pids[0],&info,WEXITED|WNOHANG|WNOWAIT)||info.si_pid==pids[0])PACKET_CASE_FAIL();
             usleep(1000);
         }
-        struct ker_generation_cleanup_config empty={.version=KER_GENERATION_CLEANUP_CONFIG_VERSION,
-            .size=sizeof(empty),.ports=1,.queues=2,.rx_queue_mask=0,.tx_queue_mask=0};
-        if(!atomic_load(&c->packet_writer_ready)||
-            ker_generation_orderly_detach_ready(rings,&actors[0],&empty)!=-EBUSY)PACKET_CASE_FAIL();
+        struct ker_generation_cleanup_config selected_tx={.version=KER_GENERATION_CLEANUP_CONFIG_VERSION,
+            .size=sizeof(selected_tx),.ports=1,.queues=2,.rx_queue_mask=0,
+            .tx_queue_mask=UINT64_C(1)<<1};
+        unsigned writer_ready=atomic_load(&c->packet_writer_ready);
+        int detach_ready_rc=writer_ready?
+            ker_generation_orderly_detach_ready(rings,&actors[0],&selected_tx):-ETIMEDOUT;
+        if(!writer_ready||detach_ready_rc!=-EBUSY){
+            fprintf(stderr,"NR19 packet profile=2 detach-ready rc=%d writer_ready=%u selected_tx_mask=%llu packet_pool_in_use=%u\n",
+                detach_ready_rc,writer_ready,(unsigned long long)selected_tx.tx_queue_mask,
+                ker_generation_packet_pool_in_use(rings));
+            PACKET_CASE_FAIL();
+        }
     }
     if(profile==3){
         struct rte_mbuf *packet_out=ker_generation_packet_resolve(rings,&actors[0],index,lease);
