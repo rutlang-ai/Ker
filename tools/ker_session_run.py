@@ -565,7 +565,8 @@ def run_session(args, api):
             connection.close()
             if not completed:
                 metrics.update(stage='failed', worker_code=worker.poll() if worker is not None else None,
-                    app_code=app.poll() if app is not None else None)
+                    app_code=app.poll() if app is not None else None,
+                    handoff_peer_code=peer_worker.poll() if peer_worker is not None else None)
                 publish()
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)

@@ -40,13 +40,19 @@ def tap_interfaces_for_process(pid):
     return names
 
 
-def line(process, timeout=25):
+def line(process, timeout=25, stderr_path=None):
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
         require(selector.select(timeout), 'packet-session output timed out')
     value = process.stdout.readline()
     if not value:
-        raise RuntimeError('packet-session exited early: ' + process.stderr.read().decode())
+        if stderr_path is not None:
+            diagnostic = Path(stderr_path).read_text(errors='replace') if Path(stderr_path).exists() else ''
+        elif process.stderr is not None:
+            diagnostic = process.stderr.read().decode(errors='replace')
+        else:
+            diagnostic = ''
+        raise RuntimeError('packet-session exited early: ' + diagnostic)
     return value.decode().strip()
 
 
@@ -118,6 +124,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             '--paired-pmd', '--generation-rings']
         environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1'}
         primary = runner = None
+        runner_stderr_handle = None
         wire = endpoint = None
         handoff_read = handoff_write = -1
         pidfds = []
@@ -133,22 +140,75 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
             if mode != 'positive':
                 runner_environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
+            runner_stderr_path = root / 'runner.stderr.log'
+            runner_stderr_handle = runner_stderr_path.open('wb')
             runner = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
                 '--wire-fd', str(endpoint.fileno()), '--library', str(args.library), '--stats', str(stats_path),
                 '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
                 '--test-live-handoff-fd', str(handoff_read), '--', str(args.app), '--signal-ready'],
                 pass_fds=(endpoint.fileno(), handoff_read), stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=runner_environment, bufsize=0)
+                stdout=subprocess.PIPE, stderr=runner_stderr_handle, env=runner_environment, bufsize=0)
+            runner_stderr_handle.close(); runner_stderr_handle = None
             os.close(handoff_read); handoff_read = -1
             endpoint.close(); endpoint = None
-            require(line(runner) == 'READY', 'handoff application did not reach its quiescent signal barrier')
+
+            def startup_failure(reason):
+                if runner is not None and runner.poll() is None:
+                    runner.terminate()
+                    try: runner.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner.wait()
+                runner_output = b''
+                if runner is not None and runner.stdout is not None:
+                    try: runner_output, _ = runner.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner_output, _ = runner.communicate()
+                latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
+                try: latest = json.loads(latest_raw) if latest_raw else None
+                except json.JSONDecodeError: latest = None
+                if primary is not None and primary.poll() is None:
+                    if primary.stdin is not None:
+                        primary.stdin.close(); primary.stdin = None
+                    try: resident_output, resident_errors = primary.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        primary.terminate()
+                        try: resident_output, resident_errors = primary.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            primary.kill(); resident_output, resident_errors = primary.communicate()
+                else:
+                    resident_output, resident_errors = primary.communicate(timeout=5)
+                diagnostic = dict(mode=mode, reason=reason, latest_stats=latest,
+                    latest_stats_raw=latest_raw,
+                    actors=dict(app=dict(pid=(latest or {}).get('app_pid'), returncode=(latest or {}).get('app_code')),
+                        owner=dict(pid=((latest or {}).get('attached') or {}).get('pid'),
+                            returncode=(latest or {}).get('worker_code')),
+                        peer=dict(pid=((latest or {}).get('handoff_peer_attached') or {}).get('pid'),
+                            returncode=(latest or {}).get('handoff_peer_code'))),
+                    runner_returncode=runner.returncode if runner is not None else None,
+                    runner_stdout=runner_output.decode(errors='replace'),
+                    runner_stderr=(runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''),
+                    resident_pid=primary.pid, resident_returncode=primary.returncode,
+                    resident_stdout=resident_output.decode(errors='replace'),
+                    resident_stderr=resident_errors.decode(errors='replace'))
+                rendered = json.dumps(diagnostic, sort_keys=True)
+                print('KER_SESSION_HANDOFF_STARTUP_FAILURE ' + rendered, flush=True)
+                return RuntimeError('handoff profile startup failed with diagnostics: ' + rendered)
+
+            try:
+                ready_line = line(runner, stderr_path=runner_stderr_path)
+            except RuntimeError as error:
+                raise startup_failure(str(error)) from error
+            if ready_line != 'READY':
+                raise startup_failure('handoff application did not reach its quiescent signal barrier: ' + ready_line)
             deadline = time.monotonic() + 15
             while True:
                 before = json.loads(stats_path.read_text()) if stats_path.exists() else {}
                 if before.get('stage') == 'application-started' and before.get('handoff_peer_attached'):
                     break
-                require(runner.poll() is None and time.monotonic() < deadline,
-                    'handoff workers did not attach before the application barrier')
+                if runner.poll() is not None:
+                    raise startup_failure('handoff workers exited before the application barrier')
+                if time.monotonic() >= deadline:
+                    raise startup_failure('handoff workers did not attach before the application barrier')
                 time.sleep(0.01)
             require(before['generation_rings'] is True and before['attached']['generation'] == 0 and
                 before['grant']['generation'] == 0 and before['handoff_peer_attached']['generation'] == 1 and
@@ -161,18 +221,69 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
             peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
             resident_pidfd = os.pidfd_open(primary.pid)
+
+            def fatal_profile_diagnostics(reason):
+                if runner is not None and runner.poll() is None:
+                    runner.terminate()
+                    try: runner.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner.wait()
+                runner_output = b''
+                if runner is not None and runner.stdout is not None:
+                    try: runner_output, _ = runner.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner_output, _ = runner.communicate()
+                latest = None
+                latest_raw = ''
+                if stats_path.exists():
+                    latest_raw = stats_path.read_text(errors='replace')
+                    try: latest = json.loads(latest_raw)
+                    except json.JSONDecodeError: pass
+                stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                primary_output = primary_errors = b''
+                if primary is not None and primary.poll() is None:
+                    if primary.stdin is not None:
+                        primary.stdin.close(); primary.stdin = None
+                    try: primary_output, primary_errors = primary.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        primary.terminate()
+                        try: primary_output, primary_errors = primary.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            primary.kill(); primary_output, primary_errors = primary.communicate()
+                elif primary is not None and primary.stdout is not None:
+                    try: primary_output, primary_errors = primary.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        primary.kill(); primary_output, primary_errors = primary.communicate()
+                actors = dict(resident=dict(pid=primary.pid, returncode=primary.poll()),
+                    app=dict(pid=before['app_pid'], returncode=(latest or {}).get('app_code'),
+                        pidfd_dead=bool(select.select([app_pidfd], [], [], 0)[0])),
+                    owner=dict(pid=before['attached']['pid'], returncode=(latest or {}).get('worker_code'),
+                        pidfd_dead=bool(select.select([owner_pidfd], [], [], 0)[0])),
+                    peer=dict(pid=before['handoff_peer_attached']['pid'],
+                        returncode=(latest or {}).get('handoff_peer_code'),
+                        pidfd_dead=bool(select.select([peer_pidfd], [], [], 0)[0])))
+                diagnostic = dict(mode=mode, reason=reason, latest_stats=latest, latest_stats_raw=latest_raw,
+                    actors=actors,
+                    runner_returncode=runner.returncode if runner is not None else None,
+                    runner_stdout=runner_output.decode(errors='replace'), runner_stderr=stderr,
+                    resident_stdout=primary_output.decode(errors='replace'),
+                    resident_stderr=primary_errors.decode(errors='replace'))
+                rendered = json.dumps(diagnostic, sort_keys=True)
+                print('KER_SESSION_HANDOFF_PROFILE_FAILURE ' + rendered, flush=True)
+                return RuntimeError('live handoff profile failed with diagnostics: ' + rendered)
+
             require(not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'an app or worker exited before live handoff')
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
             os.close(handoff_write); handoff_write = -1
             if mode != 'positive':
                 try:
-                    runner_output, runner_errors = runner.communicate(timeout=20)
+                    runner_output, _ = runner.communicate(timeout=20)
                 except subprocess.TimeoutExpired as error:
-                    runner.kill(); runner_output, runner_errors = runner.communicate()
+                    runner.kill(); runner_output, _ = runner.communicate()
                     raise RuntimeError('fatal handoff fixture did not terminate: ' +
-                        runner_errors.decode(errors='replace')) from error
-                runner_text = runner_errors.decode(errors='replace')
+                        (runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else '')) from error
+                runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                 failure = json.loads(stats_path.read_text())
                 require(runner.returncode == 125 and failure.get('stage') == 'failed' and
                     failure.get('worker_code') == 125 and failure.get('app_code') is not None,
@@ -224,10 +335,17 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 return
             deadline = time.monotonic() + 15
             while True:
-                after = json.loads(stats_path.read_text())
+                try:
+                    after = json.loads(stats_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    if runner.poll() is not None:
+                        raise fatal_profile_diagnostics('runner exited before publishing a complete handoff result')
+                    after = {}
                 if after.get('stage') == 'handoff-complete': break
-                require(runner.poll() is None and time.monotonic() < deadline,
-                    'same-session live handoff did not complete')
+                if runner.poll() is not None:
+                    raise fatal_profile_diagnostics('runner exited before same-session handoff completed')
+                if time.monotonic() >= deadline:
+                    raise fatal_profile_diagnostics('same-session handoff exceeded its bounded completion deadline')
                 time.sleep(0.01)
             handoff = after['handoff']; protocol = after['handoff_protocol']
             endpoint_name = ready['exception_endpoint_name']
@@ -245,7 +363,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'handoff changed process/endpoint identity or failed exact PREPARE/replay validation')
             runner.send_signal(signal.SIGTERM)
-            output, errors = runner.communicate(timeout=20)
+            output, _ = runner.communicate(timeout=20)
+            errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
             finished = json.loads(stats_path.read_text())
             require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
                 finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and
@@ -283,6 +402,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             if wire is not None: wire.close()
             for pidfd in pidfds: os.close(pidfd)
             if resident_pidfd >= 0: os.close(resident_pidfd)
+            if runner_stderr_handle is not None: runner_stderr_handle.close()
 
 
 def main():
