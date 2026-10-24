@@ -1211,3 +1211,16 @@ UDP 计数精确为3，排除宿主流量；宿主对照必须因同内核绑定
 布尔解析等价；#228 已记录精确差异。不添加成功 no-op 配置或无消费者开关。
 清单179适配、19partial、167blocked、13架构专用、55harness-only保持不变，
 186项 blocked/partial 仍未完成。
+
+
+## Primary-only EAL 入口与源进程模式差异
+
+新增[进程模式合同](process-modes.md)：主/附加接口的显式 secondary 参数
+在任何 worker 执行前失败2；真实同前缀 primary 必须持续运行并完成后续
+原始 Linux TCP/UDP。支持两种参数形式、有效 auto 实际选择 primary、CLI
+primary 覆盖旧 INI secondary，并保留未知 mode 的原始 EAL 拒绝及 suffix 边界。
+
+#227 六项继续 blocked：源 argv 用例实际要求接受 secondary/proc_id0；两条
+proc_id 用例要求同一全局进程核表的正负索引；三个 thread_mode 用例要求有效
+多栈/进程表、默认多进程及特定冲突。Ker 多核 RX 不是那些语义，不增加同名
+no-op 配置或虚假适配映射。清单179/19/167/13/55保持不变，186项仍未完成。

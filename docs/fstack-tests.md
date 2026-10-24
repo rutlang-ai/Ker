@@ -447,3 +447,8 @@ RX owner 列表不等于 F-Stack 全局 proc_lcore 表，不计入该源用例�
 元组冲突；`native-fstack-socket-contracts` 的 `--fd-coexistence` 验证两个
 内核同元组 UDP 独立流量、混合 epoll 完整64位标签、双关闭顺序与精确 native
 UDP 计数。见 [共存合同及四条尚未迁移的配置断言](stack-coexistence.md)。
+
+
+进程模式：`native-fstack-eal-file-prefix` 还验证主/附加接口显式 secondary
+在 worker exec 前拒绝，已有 primary 存活并完成 TCP/UDP，auto 实际选择 primary
+及 CLI primary 覆盖旧 INI secondary。见[六项仍未完成的源进程合同](process-modes.md)。

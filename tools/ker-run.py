@@ -326,6 +326,21 @@ def rx_lcore_list(value, queues):
     return ','.join(str(core) for core in cores)
 
 
+def reject_secondary_eal(tokens):
+    """Reject an explicit unsupported secondary before any worker executes.
+
+    The original EAL still validates unknown/auto modes. Tokens after its first
+    separator belong to the driver/application suffix and are not mode options.
+    """
+    for index, token in enumerate(tokens):
+        if token == '--':
+            break
+        mode = (token.split('=', 1)[1] if token.startswith('--proc-type=') else
+                tokens[index + 1] if token == '--proc-type' and index + 1 < len(tokens) else None)
+        if mode == 'secondary':
+            raise ValueError('secondary EAL processes are unsupported; each Ker worker must own a primary device')
+
+
 def additional_interfaces(ini):
     result = []
     convert = {'address': ipaddress.IPv4Interface, 'address6': ipaddress.IPv6Interface,
@@ -343,15 +358,18 @@ def additional_interfaces(ini):
         item = {'name': name}
         for key, value in fields.items():
             item[key] = ini.getboolean(section, key, raw=True) if key == 'rss' else convert[key](value)
-        if not item['port'] or not shlex.split(item['eal']):
+        eal_tokens = shlex.split(item['eal'])
+        if not item['port'] or not eal_tokens:
             raise ValueError(f'[{section}] empty port/eal')
+        reject_secondary_eal(eal_tokens)
         result.append(item)
     if len(result) > 7:
         raise ValueError('at most seven additional native interfaces are supported')
     return result
 
 
-def read_configuration(stream, directory, source='<stream>', worker_path=None):
+def read_configuration(stream, directory, source='<stream>', worker_path=None,
+                       eal_override=None):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
     ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
@@ -360,13 +378,20 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None):
     ini.read_string(stream.read().removeprefix('\ufeff'), source=str(source))
     if ini.defaults():
         raise ValueError('DEFAULT inheritance is unsupported')
+    # Reject unsupported main EAL mode only after applying the CLI-over-INI
+    # precedence, and before querying any worker capability. The suffix after
+    # EAL's `--` remains application-owned and is deliberately ignored here.
+    main_eal = eal_override if eal_override is not None else ini.get(
+        'dpdk', 'eal', fallback=None)
+    if main_eal is not None:
+        try:
+            main_eal_tokens = shlex.split(main_eal)
+        except ValueError as error:
+            raise ValueError(f'--eal: {error}') from error
+        reject_secondary_eal(main_eal_tokens)
     devices = virtual_devices(ini, directory)
     values = {'vdevs': devices} if devices or ini.has_option('dpdk', 'nb_vdev') else {}
     bonds = bond_devices(ini)
-    if bonds:
-        if worker_path is None:
-            raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
-        bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
     interfaces = additional_interfaces(ini)
     if interfaces:
         values['interfaces'] = interfaces
@@ -401,13 +426,21 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None):
             if convert is Path and not value.is_absolute():
                 value = directory / value
             values[field] = value
+    if bonds:
+        if worker_path is None:
+            raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
+        # All typed fields and every worker EAL mode are now validated. Only
+        # then may this capability probe execute the selected worker.
+        bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
+        values['bonds'] = bonds
     return values
 
 
-def load_configuration(path, worker_path=None):
+def load_configuration(path, worker_path=None, eal_override=None):
     path = path.resolve()
     with path.open(encoding='utf-8') as stream:
-        return read_configuration(stream, path.parent, path, worker_path)
+        return read_configuration(stream, path.parent, path, worker_path,
+                                  eal_override)
 
 
 def parse_arguments(argv=None):
@@ -489,7 +522,8 @@ def parse_arguments(argv=None):
     values = dict(CONFIG_DEFAULTS)
     if supplied.config is not None:
         try:
-            values.update(load_configuration(supplied.config, supplied.io_worker))
+            values.update(load_configuration(supplied.config, supplied.io_worker,
+                                             getattr(supplied, 'eal', None)))
         except MemoryError:
             parser.error(f'{supplied.config}: configuration allocation failed')
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
@@ -630,6 +664,10 @@ def parse_arguments(argv=None):
     else:
         eal_prefix, eal_remainder = args.eal_args[:separator], args.eal_args[separator:]
     raw_eal_options = list(eal_prefix)
+    try:
+        reject_secondary_eal(raw_eal_options)
+    except ValueError as error:
+        parser.error(str(error))
     if not 0 <= args.tx_delay_us <= 100:
         parser.error('--tx-delay-us must be in 0..100')
     if args.base_virtaddr is not None:

@@ -1569,7 +1569,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source -t secondary -p0 must load successfully and store secondary/proc_id0. Ker rejects explicit secondary in effective main/aux EAL args before worker execution; real CLI primary-over-INI-secondary acceptance is the reverse override and does not qualify the source assertion. See docs/process-modes.md and issue227.",
       "ker_tests": []
     },
     {
@@ -1643,14 +1643,14 @@
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_in_range",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source mask0x3 maps proc_id1 through a global process-core table and synthesizes non-NULL proc_mask. Ker original-EAL core masks and per-port RX lcores do not implement that global process-index/table contract. Keep the in-range positive case blocked under issue227; see docs/process-modes.md.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source proc_id5 with a two-core process table must fail after the same valid mapping permits in-range proc_id1. Ker has no proc_id schema/global mapping; rejecting every unknown field is not this conditional bounds check. Remains blocked under issue227; see docs/process-modes.md.",
       "ker_tests": []
     },
     {
@@ -1909,21 +1909,21 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source mode1 derives4threads, collapses nb_procs to1, forces primary and preserves full proc_mask0xf; its fixture describes multi-thread/multi-stack semantics. Existing Ker EAL RX pollers feeding one original Linux instance are not that process/stack table. No no-op thread_mode flag or pass mapping is added. See docs/process-modes.md and issue227.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source absent thread_mode stores0threads and derives4processes from mask0xf. Ker does not launch one native application/kernel stack per mask bit; enabling multiple EAL cores or independent primary instances does not qualify that default multi-process contract. See docs/process-modes.md and issue227.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Source mode1 plus secondary is rejected, with mode1/primary as its accepted control. Ker now rejects explicit secondary before EAL for all modes, but has no valid source-style mode1/global stack table. Blanket secondary rejection does not qualify the conditional conflict case. See docs/process-modes.md and issue227.",
       "ker_tests": []
     },
     {

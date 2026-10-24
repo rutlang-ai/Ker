@@ -41,6 +41,9 @@ def main():
     cpu = min(os.sched_getaffinity(0))
     eal = f'--lcores=0@{cpu} --no-pci --no-telemetry --proc-type=primary -m 64 --no-huge --iova-mode=va --vdev=net_tap0,iface=kerpeer,remote=kerlink'
     profiles = (('raw', '', [], ' --file-prefix=ker-raw', 'ker-raw'),
+                ('auto', '', [], ' --file-prefix=ker-auto', 'ker-auto'),
+                ('cli-primary-override', '[dpdk]\neal=--proc-type=secondary\n', [],
+                    ' --file-prefix=ker-cli-primary', 'ker-cli-primary'),
                 ('ini', '[dpdk]\nfile_prefix=mytest\n', [], '', 'mytest'),
                 ('cli', '[dpdk]\nfile_prefix=unused-ini\n', ['--file-prefix', 'cli.override-1'], '', 'cli.override-1'),
                 ('cli-before-terminator', '', ['--file-prefix', 'typed-before-terminator'],
@@ -84,9 +87,10 @@ def main():
             config, stats = root / (name + '.ini'), root / (name + '.json')
             config.write_text(ini)
             port = 30300 + index
+            profile_eal = eal.replace('--proc-type=primary', '--proc-type=auto') if name == 'auto' else eal
             command = [sys.executable, str(args.launcher), '--library', str(args.library),
                 '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0',
-                '--eal', eal + extra_eal, '--config', str(config), *options, '--stats', str(stats),
+                '--eal', profile_eal + extra_eal, '--config', str(config), *options, '--stats', str(stats),
                 '--', str(args.app), str(port)]
             with (root / (name + '.log')).open('w+') as log:
                 app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True,
@@ -113,6 +117,34 @@ def main():
                                 'same-prefix primary was not rejected by EAL lock: ' + duplicate.stderr)
                         require(not duplicate_stats.exists() and 'READY ' not in duplicate.stdout,
                                 'duplicate primary reached readiness')
+                        # Reject an explicit secondary before executing even a
+                        # PID-recording exec wrapper, while a real same-prefix
+                        # primary remains live and later completes TCP/UDP.
+                        for mode in ('--proc-type=secondary', '--proc-type secondary'):
+                            for auxiliary in (False, True):
+                                secondary_config = root / 'secondary.ini'
+                                secondary_stats = root / 'secondary.json'
+                                marker = root / 'secondary-entered'
+                                secondary_eal = f'--lcores=0@{cpu} --no-pci --no-huge --no-telemetry ' + mode
+                                secondary_config.write_text('[interface.other]\naddress=198.20.0.2/24\n'
+                                    'port=net_tap2\neal=' + secondary_eal + '\n' if auxiliary else '')
+                                require(app.poll() is None, 'primary exited before secondary preflight')
+                                rejected = subprocess.run([sys.executable, str(args.launcher),
+                                    '--library', str(args.library), '--io-worker', str(wrapper),
+                                    '--address', '198.19.0.2/24', '--port', 'net_tap1',
+                                    '--eal', (secondary_eal if not auxiliary else
+                                        f'--lcores=0@{cpu} --no-pci --no-huge --proc-type=primary'),
+                                    '--file-prefix', expected, '--config', str(secondary_config),
+                                    '--stats', str(secondary_stats), '--', '/bin/touch', str(marker)],
+                                    env=dict(os.environ, RUNTIME_DIRECTORY=str(root)),
+                                    capture_output=True, text=True, timeout=15)
+                                require(rejected.returncode == 2 and
+                                    'secondary EAL processes are unsupported' in rejected.stderr,
+                                    'secondary was not rejected before EAL: ' + rejected.stdout + rejected.stderr)
+                                require(not worker_pid.exists() and not marker.exists() and not secondary_stats.exists(),
+                                    'secondary preflight executed worker/app or published stats')
+                                require(app.poll() is None, 'secondary request terminated live primary')
+                        print('PASS: explicit secondary main/aux modes rejected before worker exec; primary remains live', flush=True)
                         # A different prefix permits a second real EAL/native instance
                         # while the first stays live; use its own TAP and native subnet.
                         isolated_stats = root / 'isolated.json'
@@ -141,6 +173,7 @@ def main():
                     require(app.returncode == 0 and 'PASS:' in output, 'EAL namespace native traffic failed')
                     record = json.loads(stats.read_text())
                     require(record['stop_requests'] or record['control_eof'], 'control shutdown not observed')
+                    require(record['io']['process_type'] == 'primary', 'accepted EAL mode was not actually primary')
                     require(record['outstanding'] == 0 and record['native']['passive_opens'] == 1 and
                             record['native']['udp_in_datagrams'] == 1 and record['native']['udp_out_datagrams'] == 1,
                             'missing native traffic or packet cleanup')
