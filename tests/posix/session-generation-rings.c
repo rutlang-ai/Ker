@@ -44,6 +44,7 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
 {
     const uint32_t capacity=KER_GENERATION_RING_CAPACITY;
     uint32_t baseline=ker_generation_packet_pool_in_use(rings);
+    unsigned message_baseline=rte_mempool_in_use_count(message_pool);
     struct rte_ring *packet_ring=rte_ring_lookup("drain_tx_p0_q1_g0");
     if(baseline==UINT32_MAX||baseline||!packet_ring||!ker_generation_packet_pool_tag(rings))return -1;
     uintptr_t original=0;
@@ -119,7 +120,11 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
     }
     struct rte_mbuf *empty=NULL;
     if(ker_generation_tx_dequeue_peer(rings,consumer,0,1,&empty)!=0||empty||
-        ker_generation_packet_pool_in_use(rings)!=baseline)return -1;
+        ker_generation_packet_pool_in_use(rings)!=baseline||
+        rte_mempool_in_use_count(message_pool)!=message_baseline)return -1;
+    printf("NR19_PACKET_LEASE_CORE_PASS capacity=%u full_plus_one_rejected=true fifo_identity_order=true cancel_stale_rejected=true pmd_wire_unsupported=true message_pool_before=%u message_pool_after=%u packet_pool_before=%u packet_pool_after=%u\n",
+        capacity,message_baseline,rte_mempool_in_use_count(message_pool),baseline,
+        ker_generation_packet_pool_in_use(rings));
     return 0;
 }
 static int fail(struct test_control *c, const char *what)
@@ -1058,10 +1063,17 @@ static int primary(const char *prefix,const char *exe)
         run_packet_death_case(r,pool,file_prefix,exe,5)||
         run_packet_death_case(r,pool,file_prefix,exe,6)||
         run_packet_death_case(r,pool,file_prefix,exe,7))FAIL_CHILDREN();
-    if(atomic_load(&c->failed)||rte_mempool_in_use_count(pool)!=0||
+    uint32_t final_packet_pool_in_use=ker_generation_packet_pool_in_use(r);
+    unsigned final_message_pool_in_use=rte_mempool_in_use_count(pool);
+    if(atomic_load(&c->failed)||final_message_pool_in_use!=0||final_packet_pool_in_use!=0||
         ker_generation_rings_stats(r,&stats)||stats.tx_full!=0||stats.packet_full!=1||stats.packet_drop!=1||stats.tx_drop!=4||
         stats.rx_full!=1||stats.tx_peak<2||stats.rx_peak<KER_GENERATION_RING_CAPACITY)
         FAIL_CHILDREN();
+    printf("NR19_PACKET_LEASE_FINAL_STATS tx_full=%llu rx_full=%llu tx_drop=%llu packet_full=%llu packet_drop=%llu tx_peak=%u rx_peak=%u message_pool_in_use=%u packet_pool_in_use=%u\n",
+        (unsigned long long)stats.tx_full,(unsigned long long)stats.rx_full,
+        (unsigned long long)stats.tx_drop,(unsigned long long)stats.packet_full,
+        (unsigned long long)stats.packet_drop,stats.tx_peak,stats.rx_peak,
+        final_message_pool_in_use,final_packet_pool_in_use);
     if(ker_generation_rings_destroy(r))FAIL_CHILDREN();
     rte_memzone_free(mz);rte_mempool_free(pool);
     puts("NR19 two-secondary ring contract passed");return 0;
