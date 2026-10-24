@@ -380,6 +380,7 @@ def main():
     parser.add_argument('--address')
     parser.add_argument('--stats', type=Path)
     parser.add_argument('--address6')
+    parser.add_argument('--test-live-handoff-fd', type=int, help=argparse.SUPPRESS)
     values = sys.argv[1:]
     separator = values.index('--') if '--' in values else len(values)
     command = values[separator + 1:]
@@ -390,6 +391,8 @@ def main():
             parser.error('run requires --paired-pmd --wire-fd --library and -- COMMAND')
     elif command or args.wire_fd is not None or args.library is not None or args.stats is not None or args.address is not None or args.address6 is not None:
         parser.error('packet endpoints, library and command are only valid with run')
+    if args.test_live_handoff_fd is not None and (args.action != 'run' or args.test_live_handoff_fd < 0):
+        parser.error('--test-live-handoff-fd requires run and a nonnegative descriptor')
     if (args.test_directory_gate_fd is not None or args.test_directory_replay_attached or
             args.test_generation_rings_replay) and args.action != 'lease':
         parser.error('directory test options are only valid with lease')

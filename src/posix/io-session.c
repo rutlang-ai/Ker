@@ -1917,8 +1917,45 @@ static int worker_handoff_request(int fd,const struct ker_session_message *ident
     if(response->token!=owner_key ||
         (command==KER_SESSION_PMD_HANDOFF_PREPARE ? !response->capability : response->capability!=capability) ||
         response->tx_lease_id!=tx_lease_id || response->rx_lease_id!=rx_lease_id) return -EPROTO;
+#ifdef KER_SESSION_TEST_HOOKS
+    if(command==KER_SESSION_PMD_HANDOFF_PREPARE && getenv("KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE")) {
+        struct ker_session_message replay;
+        if(send(fd,&request,sizeof(request),MSG_NOSIGNAL)!=sizeof(request))return -EIO;
+        require_resident_alive(resident);
+        if(recv(fd,&replay,sizeof(replay),MSG_TRUNC)!=sizeof(replay))return -EIO;
+        require_resident_alive(resident);
+        if(memcmp(response,&replay,sizeof(replay)))return -EPROTO;
+        printf("KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY {\"same_response\":true}\n"); fflush(stdout);
+    }
+#endif
     return 0;
 }
+#ifdef KER_SESSION_TEST_HOOKS
+static int worker_handoff_expect_prepare_rejected(int fd,const struct ker_session_message *identity,
+    uint64_t *sequence,int resident,uint64_t owner_key,uint64_t tx_lease_id,uint64_t rx_lease_id)
+{
+    struct ker_session_message request=*identity,response,expected;
+    request.command=KER_SESSION_PMD_HANDOFF_PREPARE; request.sequence=++*sequence; request.status=0;
+    request.token=identity->token; request.capability=0; request.tx_lease_id=tx_lease_id^UINT64_C(1);
+    request.rx_lease_id=rx_lease_id;
+    require_resident_alive(resident);
+    if(send(fd,&request,sizeof(request),MSG_NOSIGNAL)!=sizeof(request))return -EIO;
+    require_resident_alive(resident);
+    if(recv(fd,&response,sizeof(response),MSG_TRUNC)!=sizeof(response))return -EIO;
+    require_resident_alive(resident);
+    expected=request; expected.session=directory->session; expected.status=-EPERM;
+    if(memcmp(&response,&expected,sizeof(response)))return -EPROTO;
+    if(send(fd,&request,sizeof(request),MSG_NOSIGNAL)!=sizeof(request))return -EIO;
+    require_resident_alive(resident);
+    struct ker_session_message replay;
+    if(recv(fd,&replay,sizeof(replay),MSG_TRUNC)!=sizeof(replay))return -EIO;
+    require_resident_alive(resident);
+    if(memcmp(&response,&replay,sizeof(response)))return -EPROTO;
+    printf("KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED {\"status\":%d,\"same_replay\":true}\n",-EPERM);
+    fflush(stdout);
+    return 0;
+}
+#endif
 struct worker_heartbeat {
     bool pending;
     struct ker_session_message request;
@@ -2624,6 +2661,10 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         if(packet_result==1) {
             uint64_t tx_id=device_tx_lease_id;
             uint64_t rx_id=device_rx_lease_id;
+#ifdef KER_SESSION_TEST_HOOKS
+            if(getenv("KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE") &&
+                worker_handoff_expect_prepare_rejected(fd,&message,&message.sequence,peer,key,tx_id,rx_id)) _Exit(125);
+#endif
             struct ker_session_message prepared;
             int handoff=worker_handoff_request(fd,&message,&message.sequence,peer,
                 KER_SESSION_PMD_HANDOFF_PREPARE,key,0,tx_id,rx_id,&prepared);

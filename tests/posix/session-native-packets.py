@@ -27,6 +27,19 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def tap_interfaces_for_process(pid):
+    """Read the kernel-reported interface for every original TUN file description."""
+    names = []
+    for path in Path(f'/proc/{pid}/fdinfo').iterdir():
+        try:
+            information = path.read_text()
+        except FileNotFoundError:
+            continue
+        names.extend(line.split(':', 1)[1].strip() for line in information.splitlines()
+            if line.startswith('iff:'))
+    return names
+
+
 def line(process, timeout=25):
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
@@ -156,6 +169,8 @@ def main():
 
     thread = threading.Thread(target=bridge); thread.start()
     primary = app = standby = None
+    handoff_read = -1
+    handoff_write = -1
     exception_capture = None
     with tempfile.TemporaryDirectory(prefix='ker-session-packets-') as directory:
         root = Path(directory); path = root / 'control.sock'; stats_path = root / 'stats.json'
@@ -171,10 +186,15 @@ def main():
             created = record(primary, 'KER_SESSION_READY')
             require(created['rings'] == 128 and created['ports'] == 1 and created['epoch'] == 0 and created['slot'] == 0,
                 'resident did not precreate the complete shared geometry and actual network port')
+            handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
             app = subprocess.Popen([sys.executable, str(args.tool), 'run', *common, '--wire-fd', str(endpoint.fileno()),
                 '--library', str(args.library), '--stats', str(stats_path), '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
-                '--', str(args.app), '--fixed-mtu'], pass_fds=(endpoint.fileno(),),
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+                '--test-live-handoff-fd', str(handoff_read), '--', str(args.app), '--fixed-mtu'],
+                pass_fds=(endpoint.fileno(), handoff_read),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}, bufsize=0)
+            os.close(handoff_read)
+            handoff_read = -1
             require(line(app) == 'READY', 'original Linux application did not start')
             initial = json.loads(stats_path.read_text())
             attached, grant, geometry = (initial[key] for key in ('attached', 'grant', 'geometry'))
@@ -409,7 +429,7 @@ def main():
                 if queued_term.poll() is None: queued_term.kill(); queued_term.wait()
             print('CHECK: live paired standby and canceled standby have no native application', flush=True)
 
-            def exchange_native(process):
+            def exchange_native(process, *, finish=True):
                 process.stdin.write(b'G'); process.stdin.flush()
                 payload = bytes((i * 17 + (i >> 8)) & 255 for i in range(4097))
                 for family, address in ((socket.AF_INET, '198.18.0.2'), (socket.AF_INET6, '2001:db8:1::2')):
@@ -426,7 +446,8 @@ def main():
                         data, peer = client.recvfrom(8192)
                         require(data == b'NATIVE:' + payload[:512] and peer[0] == address, 'native UDP reply/peer differ')
                 require(line(process) == 'NATIVE_DONE', 'native MTU rollback/service completion failed')
-                process.stdin.write(b'Q'); process.stdin.flush()
+                if finish:
+                    process.stdin.write(b'Q'); process.stdin.flush()
 
             def graceful_signal_release(process, stats_file, control_path):
                 before = json.loads(stats_file.read_text())
@@ -455,8 +476,50 @@ def main():
                 finally:
                     os.close(app_fd); os.close(worker_fd)
 
-            exchange_native(app)
+            exchange_native(app, finish=False)
             print('CHECK: first original Linux generation completed real TCP/UDP traffic', flush=True)
+            before_handoff = json.loads(stats_path.read_text())
+            require(before_handoff.get('stage') == 'application-started' and before_handoff['app_started'] and
+                before_handoff['attached']['generation'] == 0 and before_handoff['grant']['generation'] == 0 and
+                before_handoff['handoff_peer_attached']['generation'] == 1 and
+                before_handoff['handoff_peer_early_denial']['queue_owner_key'] == 0 and
+                before_handoff['handoff_peer_early_denial']['exception_endpoint_fd'] is False and
+                before_handoff['handoff_peer_attached']['slot'] == before_handoff['attached']['slot'] and
+                before_handoff['handoff_peer_attached']['epoch'] == before_handoff['attached']['epoch'],
+                'handoff fixture did not attach opposite generations to the same live master slot')
+            app_pidfd = os.pidfd_open(before_handoff['app_pid'])
+            owner_pidfd = os.pidfd_open(before_handoff['attached']['pid'])
+            try:
+                require(not select.select([app_pidfd, owner_pidfd], [], [], 0)[0],
+                    'application or original owner exited before the quiescent handoff barrier')
+                require(os.write(handoff_write, b'H') == 1, 'could not signal the private handoff fixture trigger')
+                os.close(handoff_write); handoff_write = -1
+                deadline = time.monotonic() + 15
+                while True:
+                    handoff_snapshot = json.loads(stats_path.read_text())
+                    if handoff_snapshot.get('stage') == 'handoff-complete': break
+                    require(app.poll() is None and time.monotonic() < deadline,
+                        'same-process handoff did not complete at the application quiescent barrier')
+                    time.sleep(0.01)
+                handoff = handoff_snapshot['handoff']
+                protocol = handoff_snapshot['handoff_protocol']
+                require(handoff['app_pid'] == before_handoff['app_pid'] and
+                    handoff['old_worker_pid'] == before_handoff['attached']['pid'] and
+                    handoff['peer_worker_pid'] == handoff_snapshot['handoff_peer_attached']['pid'] and
+                    handoff['old_exception_fd_closed'] and handoff['old_owner_key'] != handoff['new_owner_key'] and
+                    before_handoff['exception_endpoint_name'] in handoff['old_tun_interfaces_before'] and
+                    before_handoff['exception_endpoint_name'] not in handoff['old_tun_interfaces_after'] and
+                    before_handoff['exception_endpoint_name'] in handoff['successor_tun_interfaces'] and
+                    handoff['resident']['token'] == handoff['new_owner_key'] and
+                    handoff['successor']['generation'] == 1 and
+                    protocol['negative_prepare']['status'] == -1 and protocol['negative_prepare']['same_replay'] and
+                    protocol['replay_prepare']['same_response'] and
+                    not select.select([app_pidfd, owner_pidfd], [], [], 0)[0],
+                    'handoff changed the original app/owner process, failed exact grant transfer, or mishandled PREPARE validation/replay')
+                print('PASS: same original Linux app and generation-zero worker remain live while the paired-ring grant and exception endpoint move to its same-slot generation-one peer', flush=True)
+            finally:
+                os.close(app_pidfd); os.close(owner_pidfd)
+            app.stdin.write(b'Q'); app.stdin.flush()
             output, stderr = app.communicate(timeout=20)
             require(app.returncode == 0, 'packet-session application failed: ' + output.decode() + stderr.decode())
             require(b'PASS: original native IPv4/IPv6 TCP/UDP services' in output, 'native application proof absent')
@@ -1015,6 +1078,12 @@ def main():
             print('PASS: retained paired standby keeps the same actual PID/EAL/epoch and carries real native TCP/UDP after admission')
             print('PASS: source A4 primary precreates all128 coordinate rings and one original network port before actual secondary lookup')
         finally:
+            if handoff_read >= 0:
+                os.close(handoff_read)
+                handoff_read = -1
+            if handoff_write >= 0:
+                os.close(handoff_write)
+                handoff_write = -1
             if app is not None and app.poll() is None:
                 app.terminate()
                 try: app.wait(timeout=10)

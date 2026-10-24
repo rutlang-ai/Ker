@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import select
 import selectors
 import signal
 import socket
@@ -67,8 +68,13 @@ def run_session(args, api):
             raise ValueError('--wire-fd must be a connected local Ethernet datagram endpoint')
         endpoint.getpeername()
     connection = api.Connection(args.socket)
-    worker = app = None
+    worker = peer_worker = app = None
+    peer_control_w = peer_wire_fd = -1
+    peer_packet_worker = peer_packet_app = peer_mtu_worker = peer_mtu_app = None
+    handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     owned = {args.wire_fd}
+    if handoff_fd is not None:
+        owned.add(handoff_fd)
     metrics = {'stage': 'starting', 'app_started': False}
     completed = False
     received_signal = None
@@ -113,12 +119,13 @@ def run_session(args, api):
                     raise
                 time.sleep(0.02)
 
-    def ready(*prefixes):
+    def ready(*prefixes, process=None):
+        process = worker if process is None else process
         with selectors.DefaultSelector() as selector:
-            selector.register(worker.stdout, selectors.EVENT_READ)
+            selector.register(process.stdout, selectors.EVENT_READ)
             if not selector.select(20):
                 raise RuntimeError('secondary packet startup timed out')
-        line = worker.stdout.readline()
+        line = process.stdout.readline()
         prefix = next((value for value in prefixes if line.startswith(value.encode() + b' ')), None)
         if prefix is None:
             raise RuntimeError('secondary packet startup failed: ' + line.decode(errors='replace'))
@@ -127,9 +134,133 @@ def run_session(args, api):
             print(line.decode().rstrip(), file=sys.stderr, flush=True)
         return (prefix, value) if len(prefixes) > 1 else value
 
+    def wait_marker(process, prefix, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                if not selector.select(max(0, deadline-time.monotonic())):
+                    break
+            line = process.stdout.readline()
+            if not line:
+                raise RuntimeError('worker exited before ' + prefix)
+            if line.startswith(prefix.encode() + b' '):
+                print(line.decode().rstrip(), file=sys.stderr, flush=True)
+                return json.loads(line[len(prefix)+1:])
+            print(line.decode().rstrip(), file=sys.stderr, flush=True)
+        raise RuntimeError('timed out waiting for ' + prefix)
+
+    def start_handoff_peer(ticket):
+        nonlocal peer_worker, peer_control_w, peer_packet_worker, peer_packet_app
+        nonlocal peer_mtu_worker, peer_mtu_app
+        if handoff_fd is None:
+            return
+        if args.generation != 0 or args.standby or peer_wire_fd < 0:
+            raise RuntimeError('live handoff fixture requires a generation-zero owner')
+        peer_packet_worker, peer_packet_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        peer_mtu_worker, peer_mtu_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        ticket_r, ticket_w = pipe(os.O_CLOEXEC)
+        control_r, peer_control_w = pipe(os.O_CLOEXEC)
+        os.set_blocking(peer_control_w, False)
+        peer_worker = subprocess.Popen([str(worker_path), '--role', 'secondary', '--paired-pmd', '--standby',
+            '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
+            '--generation', '1', '--process', str(args.process), '--packet-fd', str(peer_packet_worker.fileno()),
+            '--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
+            *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
+            pass_fds=(control_r, ticket_r, peer_packet_worker.fileno(), peer_wire_fd, peer_mtu_worker.fileno()),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, bufsize=0)
+        close(control_r); close(ticket_r)
+        peer_packet_worker.close(); peer_packet_worker = None
+        peer_mtu_worker.close(); peer_mtu_worker = None
+        data = api.encode(ticket)
+        if os.write(ticket_w, data) != len(data):
+            raise RuntimeError('short handoff peer ticket write')
+        close(ticket_w)
+        attached = ready('KER_SESSION_ATTACHED', process=peer_worker)
+        outcome, standby = ready('KER_SESSION_PMD_GRANTED', 'KER_SESSION_PMD_STANDBY', process=peer_worker)
+        if (outcome != 'KER_SESSION_PMD_STANDBY' or attached['slot'] != ticket['slot'] or
+                attached['epoch'] != ticket['epoch'] or attached['generation'] != 1 or
+                attached['process'] != args.process or standby['queue_owner_key'] != 0 or
+                standby['exception_endpoint_owner_key'] != 0 or standby['exception_endpoint_fd']):
+            raise RuntimeError('same-master opposite-generation peer did not remain control-only')
+        metrics['exception_endpoint_name'] = f"kex{ticket['session'] & 0xffffffff:08x}"
+        if os.write(peer_control_w, b'P') != 1:
+            raise RuntimeError('short early standby admission request')
+        denied_outcome, denied = ready('KER_SESSION_PMD_GRANTED', 'KER_SESSION_PMD_STANDBY', process=peer_worker)
+        if (denied_outcome != 'KER_SESSION_PMD_STANDBY' or denied['queue_owner_key'] != 0 or
+                denied['exception_endpoint_owner_key'] != 0 or denied['exception_endpoint_fd']):
+            raise RuntimeError('successor acquired packet or exception authority before old-owner quiescence')
+        connection = api.Connection(args.socket)
+        try:
+            owner = connection.request(api.PMD_STATUS)
+        finally:
+            connection.close()
+        if owner['token'] != metrics['grant']['queue_owner_key'] or owner['generation'] != 0 or owner['epoch'] != ticket['epoch']:
+            raise RuntimeError('early standby request displaced the live generation-zero owner')
+        metrics['handoff_peer_early_denial'] = denied
+        metrics['handoff_peer_attached'] = attached
+        metrics['handoff_peer_standby'] = standby
+        publish()
+
+    def perform_test_handoff():
+        if peer_worker is None or app is None or app.poll() is not None or worker.poll() is not None:
+            raise RuntimeError('live handoff fixture lost its original app/owner before transition')
+        old_tun_interfaces_before = tap_interfaces_for_process(worker.pid)
+        if metrics.get('exception_endpoint_name') not in old_tun_interfaces_before:
+            raise RuntimeError('original owner did not hold the resident-selected TAP endpoint before handoff')
+        if os.write(control_w, b'H') != 1:
+            raise RuntimeError('could not request owner quiescence')
+        boundary = wait_marker(worker, 'KER_SESSION_HANDOFF_BOUNDARY')
+        negative_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
+        replay_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY')
+        parked = wait_marker(worker, 'KER_SESSION_PMD_PARKED')
+        if (boundary.get('idle') is not True or boundary.get('owner_key') != metrics['grant']['queue_owner_key'] or
+                parked.get('pid') != worker.pid or parked.get('old_owner_key') != metrics['grant']['queue_owner_key'] or
+                parked.get('successor_slot') != metrics['handoff_peer_attached']['slot'] or
+                parked.get('successor_generation') != 1 or app.poll() is not None or worker.poll() is not None):
+            raise RuntimeError('same-process handoff did not park the granted generation-zero worker')
+        old_exception_fd = metrics['geometry'].get('exception_endpoint_fd_number')
+        old_tun_interfaces = tap_interfaces_for_process(worker.pid)
+        if (not isinstance(old_exception_fd, int) or Path(f'/proc/{worker.pid}/fd/{old_exception_fd}').exists() or
+                metrics['geometry'].get('exception_endpoint_ifindex') <= 0 or
+                metrics['exception_endpoint_name'] in old_tun_interfaces):
+            raise RuntimeError('parked owner still holds the session exception endpoint or another alias to its TAP')
+        if os.write(peer_control_w, b'P') != 1:
+            raise RuntimeError('could not admit the exact reserved successor')
+        successor = ready('KER_SESSION_PMD_GRANTED', process=peer_worker)
+        geometry = ready('KER_SESSION_PACKET_READY', process=peer_worker)
+        successor_tun_interfaces = tap_interfaces_for_process(peer_worker.pid)
+        connection = api.Connection(args.socket)
+        try:
+            observed = connection.request(api.PMD_STATUS)
+        finally:
+            connection.close()
+        expected_key = 1 + (successor['slot'] * 2 + successor['generation']) * 4 + successor['process']
+        if (successor['generation'] != 1 or
+                successor['slot'] != metrics['attached']['slot'] or successor['epoch'] != metrics['attached']['epoch'] or
+                successor['pid'] != metrics['handoff_peer_attached']['pid'] or successor['pid'] == worker.pid or
+                successor['queue_owner_key'] != expected_key or successor['exception_endpoint_owner_key'] != expected_key or
+                not successor['exception_endpoint_fd'] or geometry['exception_endpoint_owner_key'] != expected_key or
+                metrics['exception_endpoint_name'] not in successor_tun_interfaces or
+                observed['token'] != expected_key or observed['generation'] != 1 or
+                observed['slot'] != metrics['attached']['slot'] or observed['epoch'] != metrics['attached']['epoch'] or
+                app.poll() is not None or worker.poll() is not None or peer_worker.poll() is not None):
+            raise RuntimeError('resident did not grant the same-session successor while old app/worker remained live')
+        metrics['handoff'] = dict(stage='committed', app_pid=app.pid, old_worker_pid=worker.pid,
+            peer_worker_pid=peer_worker.pid, old_owner_key=metrics['grant']['queue_owner_key'],
+            new_owner_key=expected_key, old_exception_fd=old_exception_fd,
+            old_exception_fd_closed=True, old_tun_interfaces_before=old_tun_interfaces_before,
+            old_tun_interfaces_after=old_tun_interfaces, successor_tun_interfaces=successor_tun_interfaces,
+            boundary=boundary, parked=parked,
+            successor=successor, geometry=geometry, resident=observed)
+        metrics['handoff_protocol'] = dict(negative_prepare=negative_prepare, replay_prepare=replay_prepare)
+        metrics['stage'] = 'handoff-complete'
+        publish()
+
     def finish_signal_before_app(packet_expected):
         nonlocal completed
         close(control_w)
+        if peer_control_w >= 0: close(peer_control_w)
         try: output, _ = worker.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             worker.kill(); worker.communicate()
@@ -141,7 +272,22 @@ def run_session(args, api):
         if len(packet_lines) > 1:
             raise RuntimeError('secondary packet worker reported duplicate completion')
         packet_stats = json.loads(packet_lines[0]) if packet_lines else None
-        metrics.update(packet=packet_stats, worker_code=worker.returncode, app_code=None, signal=received_signal)
+        peer_packet_stats = None
+        if peer_worker is not None:
+            try: peer_output, peer_errors = peer_worker.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                peer_worker.kill(); peer_output, peer_errors = peer_worker.communicate()
+                raise RuntimeError('handoff standby did not exit after launcher signal: ' + (peer_errors or b'').decode(errors='replace'))
+            print(peer_output.decode().rstrip(), file=sys.stderr, flush=True)
+            peer_lines = [line.removeprefix('KER_SESSION_PACKET_DONE ')
+                for line in peer_output.decode().splitlines() if line.startswith('KER_SESSION_PACKET_DONE ')]
+            if len(peer_lines) > 1: raise RuntimeError('handoff peer reported duplicate completion')
+            peer_packet_stats = json.loads(peer_lines[0]) if peer_lines else None
+            if peer_worker.returncode != 0 or peer_packet_stats is not None:
+                raise RuntimeError('control-only handoff peer did not remain data-plane inactive')
+        metrics.update(packet=packet_stats, worker_code=worker.returncode, app_code=None, signal=received_signal,
+            handoff_peer_packet=peer_packet_stats,
+            handoff_peer_code=peer_worker.returncode if peer_worker is not None else None)
         release(ticket)
         validate_interrupted_cleanup(worker.returncode, packet_stats, packet_expected=packet_expected)
         metrics.update(native_cleanup=None, stage='interrupted'); publish(); completed = True
@@ -154,6 +300,11 @@ def run_session(args, api):
         ticket_r, ticket_w = pipe(os.O_CLOEXEC)
         control_r, control_w = pipe(os.O_CLOEXEC)
         startup_r, startup_w = pipe(os.O_CLOEXEC | os.O_NONBLOCK)
+        if handoff_fd is not None:
+            if args.generation != 0 or args.standby:
+                raise RuntimeError('test live handoff requires a generation-zero packet owner')
+            peer_wire_fd = os.dup(args.wire_fd)
+            owned.add(peer_wire_fd)
         worker = subprocess.Popen([str(worker_path), '--role', 'secondary', '--paired-pmd',
             *(['--standby'] if args.standby else []),
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
@@ -195,11 +346,12 @@ def run_session(args, api):
         info = metrics['geometry'] = ready('KER_SESSION_PACKET_READY')
         if info['mtu'] != 1500 or info['tx_features'] != 0 or info['rx_ring'] == info['tx_ring']:
             raise RuntimeError('unsupported secondary packet geometry')
+        start_handoff_peer(ticket)
         metrics['stage'] = 'worker-ready'; publish()
         if received_signal is not None:
             return finish_signal_before_app(packet_expected=True)
         environment = {k: v for k, v in os.environ.items() if not k.startswith(
-            ('LKL_', 'KER_PACKET_', 'KER_NATIVE_', 'KER_RUN_', 'KER_STARTUP_', 'KER_PRELOAD_'))}
+            ('LKL_', 'KER_PACKET_', 'KER_NATIVE_', 'KER_RUN_', 'KER_STARTUP_', 'KER_PRELOAD_', 'KER_SESSION_TEST_'))}
         environment.update(KER_PRELOAD_LIBRARY=(environment.pop('LD_PRELOAD') + ':' if environment.get('LD_PRELOAD') else '') + str(library),
             KER_PACKET_FD=str(packet_app.fileno()), KER_PACKET_CONTROL_FD=str(mtu_app.fileno()),
             KER_STARTUP_FD=str(startup_w), KER_PACKET_MTU='1500', KER_PACKET_MAX_MTU='1500',
@@ -235,6 +387,13 @@ def run_session(args, api):
                 except subprocess.TimeoutExpired:
                     app.kill(); app.wait()
                 break
+            if handoff_fd is not None:
+                trigger = select.poll(); trigger.register(handoff_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+                if trigger.poll(0):
+                    data = os.read(handoff_fd, 2)
+                    close(handoff_fd); handoff_fd = None
+                    if data != b'H': raise RuntimeError('invalid live-handoff fixture trigger')
+                    perform_test_handoff()
             drain_startup()
             if b'KER_NATIVE_READY\n' not in startup and time.monotonic() >= deadline:
                 raise RuntimeError('native Linux startup timed out')
@@ -250,7 +409,10 @@ def run_session(args, api):
             time.sleep(0.01)
         code = app.wait()
         drain_startup()
+        if handoff_fd is not None:
+            raise RuntimeError('test application exited before the handoff trigger')
         close(control_w)
+        if peer_control_w >= 0: close(peer_control_w)
         try: output, _ = worker.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             worker.kill(); worker.communicate()
@@ -260,14 +422,30 @@ def run_session(args, api):
         for line in output.decode().splitlines():
             if line.startswith('KER_SESSION_PACKET_DONE '):
                 packet_stats = json.loads(line.removeprefix('KER_SESSION_PACKET_DONE '))
+        peer_packet_stats = None
+        peer_code = None
+        if peer_worker is not None:
+            try: peer_output, peer_errors = peer_worker.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                peer_worker.kill(); peer_output, peer_errors = peer_worker.communicate()
+                raise RuntimeError('handoff peer did not exit after packet-control EOF: ' + (peer_errors or b'').decode(errors='replace'))
+            print(peer_output.decode().rstrip(), file=sys.stderr, flush=True)
+            peer_code = peer_worker.returncode
+            peer_lines = [line.removeprefix('KER_SESSION_PACKET_DONE ')
+                for line in peer_output.decode().splitlines() if line.startswith('KER_SESSION_PACKET_DONE ')]
+            if len(peer_lines) > 1:
+                raise RuntimeError('handoff peer reported duplicate packet completion')
+            peer_packet_stats = json.loads(peer_lines[0]) if peer_lines else None
         native_stats = None
         for line in startup.decode().splitlines():
             if line.startswith('KER_NATIVE_STATS '):
                 native_stats = json.loads(line.removeprefix('KER_NATIVE_STATS '))
                 print('KER_SESSION_NATIVE_STATS ' + json.dumps(native_stats), file=sys.stderr, flush=True)
-        metrics.update(packet=packet_stats, native=native_stats, worker_code=worker.returncode, app_code=code)
+        metrics.update(packet=packet_stats, native=native_stats, worker_code=worker.returncode, app_code=code,
+            handoff_peer_packet=peer_packet_stats, handoff_peer_code=peer_code)
         release(ticket)
-        if worker.returncode or packet_stats is None or packet_stats['status']:
+        if (worker.returncode or packet_stats is None or packet_stats['status'] or
+                (peer_worker is not None and (peer_code or peer_packet_stats is None or peer_packet_stats['status']))):
             raise RuntimeError('secondary packet cleanup failed')
         if received_signal is not None:
             native_cleanup = validate_interrupted_cleanup(worker.returncode, packet_stats, app_launched=True,
@@ -292,7 +470,12 @@ def run_session(args, api):
             if worker is not None and worker.poll() is None:
                 try: worker.wait(timeout=5)
                 except subprocess.TimeoutExpired: worker.kill(); worker.wait()
+            if peer_worker is not None and peer_worker.poll() is None:
+                try: peer_worker.wait(timeout=5)
+                except subprocess.TimeoutExpired: peer_worker.kill(); peer_worker.wait()
             for endpoint in (packet_worker, packet_app, mtu_worker, mtu_app): endpoint.close()
+            for endpoint in (peer_packet_worker, peer_packet_app, peer_mtu_worker, peer_mtu_app):
+                if endpoint is not None: endpoint.close()
             connection.close()
             if not completed:
                 metrics.update(stage='failed', worker_code=worker.poll() if worker is not None else None,
