@@ -77,7 +77,11 @@ def run_session(args, api):
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
-    handoff_modes = {'positive', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout'}
+    handoff_modes = {'positive', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+        'handoff-control-hup',
+        'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
+        'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
+        'bad-prepare-error-rx-lease', 'bad-prepare-error-sequence', 'bad-prepare-success'}
     if handoff_fd is not None and handoff_mode is not None and handoff_mode not in handoff_modes:
         raise ValueError('unknown test handoff mode')
     if handoff_fd is not None and not getattr(args, 'generation_rings', False):
@@ -183,6 +187,8 @@ def run_session(args, api):
         ticket_r, ticket_w = pipe(os.O_CLOEXEC)
         control_r, peer_control_w = pipe(os.O_CLOEXEC)
         os.set_blocking(peer_control_w, False)
+        peer_environment = os.environ.copy()
+        peer_environment.pop('KER_SESSION_TEST_HANDOFF_PENDING_HB', None)
         peer_worker = subprocess.Popen([str(worker_path), '--role', 'secondary', '--paired-pmd', '--standby',
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', '1', '--process', str(args.process), '--packet-fd', str(peer_packet_worker.fileno()),
@@ -190,7 +196,7 @@ def run_session(args, api):
             '--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
             pass_fds=(control_r, ticket_r, peer_packet_worker.fileno(), peer_wire_fd, peer_mtu_worker.fileno()),
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, bufsize=0)
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, env=peer_environment, bufsize=0)
         close(control_r); close(ticket_r)
         peer_packet_worker.close(); peer_packet_worker = None
         peer_mtu_worker.close(); peer_mtu_worker = None
@@ -230,14 +236,53 @@ def run_session(args, api):
         old_tun_interfaces_before = tap_interfaces_for_process(worker.pid)
         if metrics.get('exception_endpoint_name') not in old_tun_interfaces_before:
             raise RuntimeError('original owner did not hold the resident-selected TAP endpoint before handoff')
-        if os.write(control_w, b'H') != 1:
+        commands = b'HH' if handoff_mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm') else b'H'
+        if os.write(control_w, commands) != len(commands):
             raise RuntimeError('could not request owner quiescence')
+        if handoff_mode == 'handoff-control-hup':
+            close(control_w); control_w=-1
         boundary = wait_marker(worker, 'KER_SESSION_HANDOFF_BOUNDARY')
+        if handoff_mode == 'handoff-control-hup':
+            wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_CONTROL_HUP')
+            metrics.update(stage='handoff-control-hup', handoff_protocol=dict(
+                boundary=boundary, prepare_authorized=False))
+            publish()
+            raise RuntimeError('control EOF correctly prevented PREPARE after the handoff boundary')
         negative_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
         replay_prepare = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY')
         prepared = None
-        if handoff_mode is not None:
+        if handoff_mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
+            expected_status = {'prepare-enoent': -errno.ENOENT, 'prepare-ebusy': -errno.EBUSY,
+                'prepare-eperm': -errno.EPERM}[handoff_mode]
+            resumed = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED')
+            if resumed.get('status') != expected_status:
+                raise RuntimeError('resident returned the wrong exact PREPARE rejection')
+            next_boundary = wait_marker(worker, 'KER_SESSION_HANDOFF_BOUNDARY')
+            next_rejected = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED')
+            next_replay = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_REPLAY')
+            next_resumed = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED')
+            if next_resumed.get('status') != expected_status:
+                raise RuntimeError('worker did not service the pipelined second handoff request')
+            metrics.update(stage='handoff-rejected', handoff_protocol=dict(
+                prepare_status=expected_status, pending_heartbeat=True, queued_h_serviced=True,
+                boundaries=[boundary,next_boundary], negative_prepare=[negative_prepare,next_rejected],
+                replay_prepare=[replay_prepare,next_replay]))
+            publish()
+            return
+        malformed_prepare = handoff_mode is not None and (
+            handoff_mode.startswith('bad-prepare-error') or handoff_mode == 'bad-prepare-success')
+        if not malformed_prepare and handoff_mode is not None:
             prepared = wait_marker(worker, 'KER_SESSION_TEST_HANDOFF_PREPARED')
+        if malformed_prepare:
+            try: worker.wait(timeout=10)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('malformed PREPARE reply did not fail closed') from error
+            if worker.returncode != 125:
+                raise RuntimeError('malformed PREPARE reply did not terminate the old worker with status 125')
+            metrics.update(stage='handoff-malformed-reply', handoff_failure=dict(
+                mode=handoff_mode, worker_code=worker.returncode, boundary=boundary))
+            publish()
+            raise RuntimeError('worker rejected a malformed PREPARE reply as required')
         if handoff_mode == 'peer-death':
             peer_pidfd = os.pidfd_open(peer_worker.pid)
             try:

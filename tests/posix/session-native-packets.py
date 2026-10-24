@@ -2,6 +2,7 @@
 """Original Linux TCP/UDP peers over a real secondary directional ring PMD."""
 import argparse
 import ctypes
+import errno
 import fcntl
 import importlib.util
 import json
@@ -353,7 +354,16 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             f'--file-prefix={file_prefix}')
         common = ['--socket', str(control_path), '--worker', str(args.worker), '--eal', eal,
             '--paired-pmd', '--generation-rings']
-        environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1'}
+        environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1',
+            'KER_SESSION_TEST_HANDOFF_PENDING_HB': '1'}
+        if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
+            environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = mode.removeprefix('prepare-').upper()
+        elif mode.startswith('bad-prepare-error'):
+            environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = 'ENOENT'
+            field = mode.removeprefix('bad-prepare-error-') if mode != 'bad-prepare-error' else 'generation'
+            environment['KER_SESSION_TEST_HANDOFF_BAD_ERROR_FIELD'] = field
+        if mode == 'handoff-control-hup': environment['KER_SESSION_TEST_HANDOFF_CONTROL_HUP'] = '1'
+        if mode is not None: environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
         primary = runner = None
         runner_stderr_handle = None
         wire = endpoint = None
@@ -361,6 +371,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         pidfds = []
         resident_pidfd = -1
         actor_proof_ready = False
+        handoff_census_before = handoff_owner_before = None
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
@@ -518,8 +529,109 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
 
             require(not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'an app or worker exited before live handoff')
+            connection = api.Connection(control_path)
+            try:
+                handoff_census_before = connection.request(api.STATUS)
+                handoff_owner_before = connection.request(api.PMD_STATUS)
+            finally: connection.close()
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
             os.close(handoff_write); handoff_write = -1
+            if mode == 'handoff-control-hup':
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    try: current = json.loads(stats_path.read_text())
+                    except (OSError, json.JSONDecodeError): current = {}
+                    if current.get('stage') == 'handoff-control-hup': break
+                    if runner.poll() is not None: break
+                    time.sleep(0.005)
+                runner_output, _ = runner.communicate(timeout=20)
+                runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                failure = json.loads(stats_path.read_text())
+                require(runner.returncode != 0 and failure.get('stage') == 'failed' and
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
+                    'KER_SESSION_HANDOFF_BOUNDARY ' in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_CONTROL_HUP' in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_PREPARE_REJECTED' not in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_PREPARED' not in runner_text and
+                    'KER_SESSION_PMD_PARKED ' not in runner_text,
+                    f'control HUP did not fail closed before PREPARE: {failure!r}; {runner_text}')
+                require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                    'control HUP profile left an exact child alive')
+                primary.stdin.close(); primary.stdin = None
+                primary_output, primary_errors = primary.communicate(timeout=20)
+                require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
+                    primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
+                drained = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                    for line in primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+                require(primary.returncode == 0 and drained and drained[-1].get('objects') == 511,
+                    'control HUP changed resident ownership or prevented exact cleanup: ' + primary_errors.decode())
+                print('PASS: control HUP with a pending ACK aborted before PREPARE and drained the unchanged owner')
+                return
+            if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    try: current = json.loads(stats_path.read_text())
+                    except (OSError, json.JSONDecodeError): current = {}
+                    if current.get('stage') == 'handoff-rejected': break
+                    if runner.poll() is not None: raise RuntimeError('runner exited before rejection recovery')
+                    time.sleep(0.005)
+                else: raise RuntimeError('worker did not resume after its valid PREPARE rejection')
+                runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                require(all(marker in runner_text for marker in (
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING',
+                    'KER_SESSION_HANDOFF_BOUNDARY',
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DEFERRED',
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED',
+                    'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED',
+                    'KER_SESSION_HANDOFF_BOUNDARY')),
+                    'pending ACK, PREPARE, and queued H were not observed: ' + runner_text)
+                marker_lines = runner_text.splitlines()
+                marker_positions = [next(i for i, line in enumerate(marker_lines) if line.startswith(marker))
+                    for marker in ('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING', 'KER_SESSION_HANDOFF_BOUNDARY',
+                        'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DEFERRED',
+                        'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED',
+                        'KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED')]
+                boundary_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_HANDOFF_BOUNDARY ')]
+                resumed_positions = [i for i, line in enumerate(marker_lines)
+                    if line.startswith('KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED ')]
+                require(len(boundary_positions) == 2 and len(resumed_positions) == 2 and
+                    marker_positions[0] < marker_positions[1] < marker_positions[2] < marker_positions[3] <
+                    marker_positions[4] < boundary_positions[1] < resumed_positions[1],
+                    'pending ACK, first PREPARE, and pipelined second H were not serviced in order: ' + runner_text)
+                connection = api.Connection(control_path)
+                try:
+                    rejected_census = connection.request(api.STATUS)
+                    rejected_owner = connection.request(api.PMD_STATUS)
+                    require(rejected_census == handoff_census_before and
+                        rejected_owner == handoff_owner_before and
+                        rejected_owner['token'] == before['grant']['queue_owner_key'] and
+                        rejected_owner['generation'] == 0,
+                        'valid PREPARE rejection changed owner, lease census, or pool state')
+                finally: connection.close()
+                runner.send_signal(signal.SIGTERM)
+                runner_output, _ = runner.communicate(timeout=20)
+                errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
+                finished = json.loads(stats_path.read_text())
+                require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
+                    finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and
+                    finished.get('handoff_peer_code') == 0 and finished.get('native', {}).get('buffers_live') == 0,
+                    'worker failed cleanup after PREPARE rejection: ' + repr(finished) + errors.decode())
+                require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                    'PREPARE rejection profile left an exact actor alive')
+                connection = api.Connection(control_path)
+                try:
+                    census = connection.request(api.STATUS); owner = connection.request(api.PMD_STATUS)
+                    require(census['generation'] == 511 and census['token'] == 0 and owner['token'] == 0,
+                        'PREPARE rejection cleanup did not restore pool/PMD ownership')
+                finally: connection.close()
+                primary.stdin.close(); primary.stdin = None
+                primary_output, primary_errors = primary.communicate(timeout=20)
+                require(primary.returncode == 0 and any(line.startswith('KER_SESSION_DRAINED ')
+                    for line in primary_output.decode().splitlines()),
+                    'PREPARE rejection did not cleanly drain the resident: ' + primary_errors.decode())
+                print(f'PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, and resumed the packet loop')
+                return
             if mode != 'positive':
                 try:
                     runner_output, _ = runner.communicate(timeout=20)
@@ -530,15 +642,28 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                 require_healthy_eal_mp_channel(mode, runner_text)
                 failure = json.loads(stats_path.read_text())
-                require(runner.returncode == 125 and failure.get('stage') == 'failed' and
+                malformed_prepare = mode.startswith('bad-prepare-error') or mode == 'bad-prepare-success'
+                require((runner.returncode != 0 if malformed_prepare else runner.returncode == 125) and
+                    failure.get('stage') == 'failed' and
                     failure.get('worker_code') == 125 and failure.get('app_code') is not None,
                     f'{mode} did not fail closed through the launcher: {failure!r}; '
                     f'runner stdout={runner_output.decode(errors="replace")!r}; stderr={runner_text!r}')
-                require('KER_SESSION_TEST_HANDOFF_PREPARED' in runner_text and
-                    'KER_SESSION_PMD_PARKED ' not in runner_text and
+                if malformed_prepare:
+                    expected_kind = 'error' if mode.startswith('bad-prepare-error') else 'success'
+                    require('KER_SESSION_TEST_HANDOFF_PREPARED' not in runner_text and
+                        'KER_SESSION_PMD_PARKED ' not in runner_text and
+                        'KER_SESSION_PACKET_DONE ' not in runner_text,
+                        f'{mode} accepted a malformed PREPARE reply: {runner_text}')
+                else:
+                    require('KER_SESSION_TEST_HANDOFF_PREPARED' in runner_text and
+                        'KER_SESSION_PMD_PARKED ' not in runner_text and
+                        'KER_SESSION_PACKET_DONE ' not in runner_text,
+                        f'{mode} emitted a post-failure success marker: {runner_text}')
+                require('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
+                    'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED' in runner_text and
                     sum(line.startswith('KER_SESSION_PMD_GRANTED ') for line in runner_text.splitlines()) == 1 and
-                    'KER_SESSION_PACKET_DONE ' not in runner_text,
-                    f'{mode} emitted a post-failure success marker: {runner_text}')
+                    'KER_SESSION_HANDOFF_BOUNDARY ' in runner_text,
+                    f'{mode} did not complete the pending-heartbeat boundary: {runner_text}')
                 if mode == 'timeout':
                     require('KER_SESSION_TEST_HANDOFF_FDS_CLOSED' not in runner_text and
                         'KER_SESSION_TEST_HANDOFF_QUIESCED_SENT' not in runner_text,
@@ -570,10 +695,27 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'),
                     runner_text, primary_mp_socket, before['attached']['pid'],
                     before['handoff_peer_attached']['pid'])
-                require(primary.returncode == 125 and b'KER_SESSION_DRAINED ' not in primary_output and
-                    select.select([resident_pidfd], [], [], 0)[0],
-                    f'{mode} resident did not fail without a successful drain: {primary.returncode}; '
-                    f'{primary_errors.decode(errors="replace")}')
+                if malformed_prepare:
+                    expected_field = (mode.removeprefix('bad-prepare-error-') if mode != 'bad-prepare-error'
+                        else 'generation') if expected_kind == 'error' else 'token'
+                    require(any(line.startswith('KER_SESSION_TEST_HANDOFF_REPLY_CORRUPTED ') and
+                        f'"kind":"{expected_kind}"' in line and f'"field":"{expected_field}"' in line
+                        for line in primary_output.decode().splitlines()),
+                        f'{mode} resident did not inject the intended malformed reply')
+                    if mode == 'bad-prepare-success':
+                        require(primary.returncode == 125 and b'KER_SESSION_DRAINED ' not in primary_output and
+                            select.select([resident_pidfd], [], [], 0)[0],
+                            'malformed successful PREPARE did not leave the prepared session fail-closed')
+                    else:
+                        drained = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                            for line in primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+                        require(primary.returncode == 0 and drained and drained[-1].get('objects') == 511,
+                            'malformed failed PREPARE changed resident ownership or prevented cleanup')
+                else:
+                    require(primary.returncode == 125 and b'KER_SESSION_DRAINED ' not in primary_output and
+                        select.select([resident_pidfd], [], [], 0)[0],
+                        f'{mode} resident did not fail without a successful drain: {primary.returncode}; '
+                        f'{primary_errors.decode(errors="replace")}')
                 print('KER_SESSION_HANDOFF_FATAL_RESULT ' + json.dumps(dict(mode=mode, failure=failure,
                     runner_returncode=runner.returncode, runner_stdout=runner_output.decode(errors='replace'),
                     runner_stderr=runner_text, resident_returncode=primary.returncode,
@@ -631,6 +773,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             primary.stdin.close(); primary.stdin = None
             primary_output, primary_errors = primary.communicate(timeout=20)
             runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+            require('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
+                'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED' in runner_text,
+                'positive handoff did not drain its real pending heartbeat before PREPARE')
             require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
                 primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
             require(primary.returncode == 0, 'handoff resident did not exit cleanly: ' + primary_errors.decode())
@@ -1646,7 +1791,11 @@ def main():
     run_live_handoff_profile(args, api, plugin_paths)
     print('PASS: a generation-admitted same-process peer takes the PMD/exception grant while the original Linux app and parked worker remain alive, then both workers drain cleanly')
     if args.handoff_negative_profiles:
-        for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout'):
+        for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+                'handoff-control-hup',
+                'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
+                'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
+                'bad-prepare-error-rx-lease', 'bad-prepare-error-sequence', 'bad-prepare-success'):
             run_live_handoff_profile(args, api, plugin_paths, mode)
     return 0
 

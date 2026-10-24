@@ -77,6 +77,9 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     bool rx_queued = false, rx_pending = false, rx_output = false, exception_pending = false;
     bool shared_native_pending = false, shared_native_queued = false;
     bool handoff_requested=false;
+#ifdef KER_SESSION_TEST_HOOKS
+    bool test_hold_handoff_heartbeat=getenv("KER_SESSION_TEST_HANDOFF_PENDING_HB")!=NULL;
+#endif
     bool rx_fragment = false;
     uint64_t exception_to_native = 0, fragment_to_native = 0;
     uint64_t sent = 0, received = 0, to_wire = 0, from_wire = 0;
@@ -95,7 +98,12 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         if (atomic_load_explicit(owner, memory_order_acquire) != expected_owner) { status = -ESTALE; break; }
         short packet_events = (!tx_pending && !tx_queued && !tx_output ? POLLIN : 0) | (rx_output ? POLLOUT : 0);
         short wire_events = (!rx_pending && !rx_queued && !rx_output && !exception_pending && !tx_queued && !tx_output && !exception->session_busy ? POLLIN : 0) | (tx_output ? POLLOUT : 0);
-        struct pollfd fds[] = {{.fd = control, .events = POLLIN}, {.fd = registration_fd, .events = POLLIN},
+        struct pollfd fds[] = {{.fd = control, .events = POLLIN},
+#ifdef KER_SESSION_TEST_HOOKS
+            {.fd = registration_fd, .events = test_hold_handoff_heartbeat ? 0 : POLLIN},
+#else
+            {.fd = registration_fd, .events = POLLIN},
+#endif
             {.fd = packet_fd, .events = packet_events},
             {.fd = wire_fd, .events = wire_events}, {.fd = mtu_fd, .events = POLLIN},
             {.fd = resident_pidfd, .events = POLLIN}};

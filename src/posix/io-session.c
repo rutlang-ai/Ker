@@ -1201,6 +1201,12 @@ static int handle(unsigned i, const struct ker_session_message *request,
             request->tx_lease_id != client->pmd_tx_lease_id ||
             request->rx_lease_id != client->pmd_rx_lease_id ||
             atomic_load_explicit(&directory->pmd_exception_phase,memory_order_acquire)!=0) return -EPERM;
+#ifdef KER_SESSION_TEST_HOOKS
+        const char *prepare_reject = getenv("KER_SESSION_TEST_HANDOFF_PREPARE_REJECT");
+        if (prepare_reject && !strcmp(prepare_reject, "ENOENT")) return -ENOENT;
+        if (prepare_reject && !strcmp(prepare_reject, "EBUSY")) return -EBUSY;
+        if (prepare_reject && !strcmp(prepare_reject, "EPERM")) return -EPERM;
+#endif
         int target = -1;
         for (unsigned k=0;k<CLIENTS;k++) {
             struct client *candidate=&clients[k];
@@ -1481,6 +1487,26 @@ static void receive_request(unsigned i)
         reply.status = result;
         client->sequence = request.sequence; client->request = request; client->reply = reply;
     }
+#ifdef KER_SESSION_TEST_HOOKS
+    if (request.command==KER_SESSION_PMD_HANDOFF_PREPARE &&
+        request.tx_lease_id==client->pmd_tx_lease_id && request.rx_lease_id==client->pmd_rx_lease_id) {
+        const char *mode=getenv("KER_SESSION_TEST_HANDOFF_MODE");
+        if (mode && !strncmp(mode,"bad-prepare-error",17) && reply.status) {
+            const char *field=getenv("KER_SESSION_TEST_HANDOFF_BAD_ERROR_FIELD");
+            if(!field || !strcmp(field,"generation")) { reply.generation^=1U; field="generation"; }
+            else if(!strcmp(field,"token")) reply.token^=UINT64_C(1);
+            else if(!strcmp(field,"capability")) reply.capability^=UINT64_C(1);
+            else if(!strcmp(field,"tx-lease")) reply.tx_lease_id^=UINT64_C(1);
+            else if(!strcmp(field,"rx-lease")) reply.rx_lease_id^=UINT64_C(1);
+            else if(!strcmp(field,"sequence")) reply.sequence^=UINT64_C(1);
+            else field="unsupported";
+            printf("KER_SESSION_TEST_HANDOFF_REPLY_CORRUPTED {\"kind\":\"error\",\"field\":\"%s\"}\n",field); fflush(stdout);
+        } else if (mode && !strcmp(mode,"bad-prepare-success") && !reply.status) {
+            reply.token^=UINT64_C(1);
+            printf("KER_SESSION_TEST_HANDOFF_REPLY_CORRUPTED {\"kind\":\"success\",\"field\":\"token\"}\n"); fflush(stdout);
+        }
+    }
+#endif
     ssize_t sent;
     if (!reply.status && request.command == KER_SESSION_PMD_ACQUIRE && ring_pmd == 2) {
         char control[CMSG_SPACE(sizeof(int))] = {0};
@@ -1928,12 +1954,22 @@ static int worker_handoff_request(int fd,const struct ker_session_message *ident
     require_resident_alive(resident);
     if(response->magic!=request.magic || response->version!=request.version ||
         response->command!=request.command || response->sequence!=request.sequence ||
-        response->session!=request.session || response->epoch!=identity->epoch ||
-        response->slot!=identity->slot || response->generation!=(identity->generation^1U) ||
-        response->process!=identity->process) return -EPROTO;
-    if(response->status) return (int)response->status;
-    if(response->token!=owner_key ||
-        (command==KER_SESSION_PMD_HANDOFF_PREPARE ? !response->capability : response->capability!=capability) ||
+        response->status > 0 || response->status < -4095) return -EPROTO;
+    if(response->status) {
+        /* Rejections echo the exact request identity and authority. Accepting
+         * the successor identity on an error can hide a malformed or stale
+         * reply and incorrectly convert a recoverable rejection to success. */
+        if(!message_equal_except_status(response,&request)) return -EPROTO;
+        return (int)response->status;
+    }
+    struct ker_session_message expected=request;
+    expected.generation=identity->generation^1U;
+    expected.token=owner_key;
+    if(command==KER_SESSION_PMD_HANDOFF_PREPARE) {
+        if(!response->capability) return -EPROTO;
+        expected.capability=response->capability;
+    } else expected.capability=capability;
+    if(!message_equal_except_status(response,&expected) ||
         response->tx_lease_id!=tx_lease_id || response->rx_lease_id!=rx_lease_id) return -EPROTO;
 #ifdef KER_SESSION_TEST_HOOKS
     if(command==KER_SESSION_PMD_HANDOFF_PREPARE && getenv("KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE")) {
@@ -2207,6 +2243,9 @@ static int drain_worker_heartbeat_after_command(int fd, struct worker_heartbeat 
     if (stopping) return -EINTR;
     int result = drain_worker_heartbeat(fd, heartbeat, resident, control);
 #ifdef KER_SESSION_TEST_HOOKS
+    if (result == -ECANCELED && getenv("KER_SESSION_TEST_HANDOFF_CONTROL_HUP")) {
+        printf("KER_SESSION_TEST_HANDOFF_CONTROL_HUP {\"prepare_authorized\":false}\n"); fflush(stdout);
+    }
     if (result == -ECANCELED && getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
         fprintf(stderr, "KER_SESSION_TEST_DQ_CONTROL_HUP {\"authorized\":false}\n");
         fflush(stderr);
@@ -2217,6 +2256,10 @@ static int drain_worker_heartbeat_after_command(int fd, struct worker_heartbeat 
         if (getenv("KER_SESSION_TEST_DQ_PENDING_HB")) {
             fprintf(stderr, "KER_SESSION_TEST_DQ_HEARTBEAT_DEFERRED {\"queued_control\":true}\n");
             fflush(stderr);
+        }
+        if (getenv("KER_SESSION_TEST_HANDOFF_PENDING_HB")) {
+            printf("KER_SESSION_TEST_HANDOFF_HEARTBEAT_DEFERRED {\"queued_control\":true}\n");
+            fflush(stdout);
         }
 #endif
         result = drain_worker_heartbeat(fd, heartbeat, resident, -1);
@@ -2382,12 +2425,33 @@ struct worker_heartbeat_context {
 static int service_worker_heartbeat(void *opaque)
 {
     struct worker_heartbeat_context *context = opaque;
-    return heartbeat_tick(context->fd, context->identity, context->sequence,
+#ifdef KER_SESSION_TEST_HOOKS
+    static bool handoff_pending_reported;
+    if(context->heartbeat->pending && getenv("KER_SESSION_TEST_HANDOFF_PENDING_HB")) {
+        if(!handoff_pending_reported) {
+            handoff_pending_reported=true;
+            printf("KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING {\"pending\":true}\n"); fflush(stdout);
+        }
+        return 0;
+    }
+#endif
+    int result=heartbeat_tick(context->fd, context->identity, context->sequence,
         context->resident, context->heartbeat);
+#ifdef KER_SESSION_TEST_HOOKS
+    if(result>=0 && context->heartbeat->pending && !handoff_pending_reported &&
+        getenv("KER_SESSION_TEST_HANDOFF_PENDING_HB")) {
+        handoff_pending_reported=true;
+        printf("KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING {\"pending\":true}\n"); fflush(stdout);
+    }
+#endif
+    return result;
 }
 static int pump_worker_heartbeat_context(void *opaque)
 {
     struct worker_heartbeat_context *context = opaque;
+#ifdef KER_SESSION_TEST_HOOKS
+    if(context->heartbeat->pending && getenv("KER_SESSION_TEST_HANDOFF_PENDING_HB")) return 0;
+#endif
     return pump_worker_heartbeat(context->fd, context->heartbeat, context->resident);
 }
 #ifdef KER_SESSION_TEST_HOOKS
@@ -2706,9 +2770,21 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
             service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,&packet_stats);
         if(packet_result<0){result=1;goto cleanup;}
-        if(packet_result==1) {
+        while(packet_result==1) {
             uint64_t tx_id=device_tx_lease_id;
             uint64_t rx_id=device_rx_lease_id;
+            /* The packet loop's final nonblocking ACK pump can leave a real
+             * heartbeat outstanding. Finish it before PREPARE so that its
+             * reply cannot be mistaken for the synchronous handoff response. */
+#ifdef KER_SESSION_TEST_HOOKS
+            bool pending_handoff_heartbeat=heartbeat.pending;
+#endif
+            if(drain_worker_heartbeat_after_command(fd,&heartbeat,peer,control_open?control:-1))goto cleanup;
+#ifdef KER_SESSION_TEST_HOOKS
+            if(pending_handoff_heartbeat && getenv("KER_SESSION_TEST_HANDOFF_PENDING_HB")) {
+                printf("KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED {\"pending\":false}\n"); fflush(stdout);
+            }
+#endif
 #ifdef KER_SESSION_TEST_HOOKS
             if(getenv("KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE") &&
                 worker_handoff_expect_prepare_rejected(fd,&message,&message.sequence,peer,tx_id,rx_id)) _Exit(125);
@@ -2718,13 +2794,18 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 KER_SESSION_PMD_HANDOFF_PREPARE,key,0,tx_id,rx_id,&prepared);
             if(handoff){
                 if(handoff==-EBUSY||handoff==-ENOENT||handoff==-EPERM){
+#ifdef KER_SESSION_TEST_HOOKS
+                    if(getenv("KER_SESSION_TEST_HANDOFF_PREPARE_REJECT")) {
+                        printf("KER_SESSION_TEST_HANDOFF_PREPARE_RESUMED {\"status\":%d}\n",handoff); fflush(stdout);
+                    }
+#endif
                     struct ker_session_packet_stats resumed_stats={0};
                     int resumed=ker_session_packet_loop(pmd_port,packet_fd,wire_fd,mtu_fd,control,fd,peer,
                         &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
                         service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,&resumed_stats);
                     if(resumed<0){result=1;goto cleanup;}
-                    if(resumed==1)_Exit(125); /* A second transfer is not an implicit retry. */
                     if(merge_packet_stats(&packet_stats,&resumed_stats))_Exit(125);
+                    if(resumed==1) continue; /* A queued H is a distinct caller handoff request. */
                     printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"exception_to_wire\":%llu,\"exception_from_wire\":%llu,\"exception_to_native\":%llu,\"fragment_to_native\":%llu,\"exception_endpoint_owner_key\":%llu,\"retained\":%u,\"status\":0}\n",
                         (unsigned long long)packet_stats.tx,(unsigned long long)packet_stats.rx,
                         (unsigned long long)packet_stats.to_wire,(unsigned long long)packet_stats.from_wire,
