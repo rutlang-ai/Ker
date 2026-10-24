@@ -195,6 +195,19 @@ def handoff_socket_budget_checks(native):
         str(secondary) == str(primary) + '_2147483647_ffffffffffffffff' and
         len(os.fsencode(primary)) < 108 and len(os.fsencode(secondary)) <= 107,
         'maximum DPDK primary/secondary socket path geometry is wrong')
+    boundary_root = '/' + 'x' * 27
+    boundary_primary, boundary_secondary = native.validate_dpdk_mp_socket_paths(boundary_root, prefix)
+    require(len(os.fsencode(boundary_secondary)) == 107,
+        'exact 107-byte secondary path was not accepted')
+    for index, overlong_root in enumerate(('/' + 'x' * 28, '/' + 'é' * 14)):
+        primary_candidate, secondary_candidate = native.dpdk_mp_socket_paths(overlong_root, prefix)
+        require(len(os.fsencode(secondary_candidate)) >= 108,
+            '108-byte rejection fixture did not exceed the encoded path limit')
+        if index == 1:
+            require(len(str(secondary_candidate)) < 108,
+                'multibyte fixture does not distinguish encoded bytes from characters')
+        expect_error(lambda value=overlong_root: native.validate_dpdk_mp_socket_paths(value, prefix),
+            '108-byte or multibyte DPDK socket path')
     long_runtime = '/' + 'runtime-component-' * 8
     with tempfile.TemporaryDirectory(prefix='a09-path-budget-') as raw:
         huge_parent = Path(raw) / 'huge'
@@ -229,16 +242,27 @@ def handoff_socket_budget_checks(native):
             f'EAL: Multi-process socket {base}\n', runner_log,
             Path(base), owner, peer)
     require(len(accepted) == 2, 'full primary/secondary EAL channel proof was not accepted')
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            native.require_live_eal_mp_channels('host-check',
-                f'EAL: Multi-process socket {base}\n', runner_log.splitlines()[0],
-                Path(base), owner, peer)
-    except RuntimeError as error:
-        require('exactly the owner and peer' in str(error),
-            'missing secondary channel did not report exact actor mismatch')
-    else:
-        raise RuntimeError('missing secondary EAL channel was accepted')
+
+    def rejected_channels(label, primary_log, worker_log):
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                native.require_live_eal_mp_channels(label, primary_log, worker_log,
+                    Path(base), owner, peer)
+        except RuntimeError:
+            return
+        raise RuntimeError(label + ' channel diagnostics were accepted')
+
+    rejected_channels('missing secondary', f'EAL: Multi-process socket {base}\n',
+        runner_log.splitlines()[0])
+    rejected_channels('missing primary', '', runner_log)
+    rejected_channels('wrong socket base', f'EAL: Multi-process socket {base}\n',
+        runner_log.replace(base, base + '-wrong'))
+    rejected_channels('wrong actor pid', f'EAL: Multi-process socket {base}\n',
+        runner_log.replace(f'_{peer}_', '_54321_'))
+    rejected_channels('duplicate actor pid', f'EAL: Multi-process socket {base}\n',
+        runner_log.replace(f'_{peer}_', f'_{owner}_'))
+    rejected_channels('positive-looking socket plus MP failure', f'EAL: Multi-process socket {base}\n',
+        runner_log + 'EAL: failed to init mp channel\n')
 
 def runner_script_path():
     sibling = Path(__file__).with_name('ker_session_run.py')
