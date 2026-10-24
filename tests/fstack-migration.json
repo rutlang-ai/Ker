@@ -894,15 +894,18 @@
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "The real resident precreates its bounded directory, all128control/RX/TX/reply rings and message pool before admitting EAL secondaries; selected coordinates are looked up and geometry-validated by actual secondary processes.",
+      "status": "scenario-adapted",
+      "reason": "Before accepting any secondary, the resident looks up every slot/generation/process/control-RX-TX-reply ring using original rte_ring_lookup and validates all128 actual objects, their capacity and SP/SC geometry. It also configures one original directional net_ring network port and its fixed epoch-independent RX/TX rings. Readiness reports actual128 lookups, one port and resident epoch/slot0. A real EAL secondary revalidates all128 objects, looks up the fixed queues and carries original imported-Linux IPv4/IPv6 TCP/UDP traffic. This adapts source TC-1 creation/lookup/network-port assertions, not source ring-name ABI or the complete reload dispatcher.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-registration",
           "provenance_case": "native-fstack-session-directory"
+        },
+        {
+          "ctest": "native-fstack-session-native-packets",
+          "provenance_case": "native-fstack-session-native-packets"
         }
-      ],
-      "remaining": "A configured original network PMD is now qualified separately. Exhaustive lookup of every source-coordinate/drain object and the fixed queue dispatch/admission contract remain unqualified."
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_secondary_looks_up_own_slot",
@@ -935,7 +938,7 @@
           "provenance_case": "native-fstack-session-standby"
         }
       ],
-      "remaining": "Two distinct master/secondary chains now remain live through synchronized samples, agree on one actual PMD owner, and the nonowner stays attached without data polling. Frozen-orphan exclusion and same-PID standby takeover are qualified. The separate fixed network dispatch and exception/KNI ownership agreement still lack an implemented packet-routing path; the PMD grant must not stand in for that exception-owner assertion."
+      "remaining": "Two distinct master/secondary chains now remain live through synchronized samples, agree on one actual PMD owner, and the nonowner stays attached without data polling. Frozen-orphan exclusion and same-PID standby takeover are qualified. A single granted directional ring-PMD worker now carries actual original-Linux packets. Cross-generation fixed dispatch/drain and exception/KNI-owner agreement still lack their implemented routing/admission paths; the current PMD grant must not stand in for that exception-owner assertion."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",

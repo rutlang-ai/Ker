@@ -2,9 +2,10 @@
 
 This is the implementation prerequisite for [issue #218](https://github.com/rutlang-ai/Ker/issues/218),
 not a claim of full reload support. Of its original 79 actionable cases,
-three A4 scenarios are now adapted: namespace recycling, own-slot secondary
-lookup/device claim and epoch liveness. 76 remain incomplete (73 blocked and
-3 partial). The two page-array build assertions are separately excluded in #232.
+four A4 scenarios are now adapted: complete primary precreation, namespace
+recycling, own-slot secondary lookup/device claim and epoch liveness.
+75 remain incomplete (73 blocked and 2 partial). The two page-array build assertions
+are separately excluded in #232.
 The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
 The retained tests are authoritative; proposed Ker mechanisms below still need
 implementation and runtime qualification.
@@ -15,13 +16,15 @@ bounded shared rings and attaches real secondaries under live master epochs.
 It also exchanges authenticated shared control mbufs with the parked resident,
 including resident-journaled leases recovered after exact borrower death,
 even when a worker exits before enqueue or after reply dequeue.
-The optional [original ring-PMD stage](fstack-session-pmd.md) supplies an actual
-secondary consumer grant and live standbys that sample ownership and take over
-in the same PID/EAL/epoch after exact borrower death. Epoch liveness comes from
-the resident pidfd census, including surviving/frozen orphans and stale-epoch
-rejection after slot reuse. This still does not implement packet transport into
-original Linux, fixed network dispatch/exception-owner agreement, physical PMD
-handover or application reload.
+The optional [original ring-PMD stage](fstack-session-pmd.md) now supplies an
+actual secondary consumer grant and a live standby that samples the owner and
+takes over in the same PID/EAL/epoch after exact borrower death. Epoch liveness
+comes from the resident pidfd census, including surviving/frozen orphans and
+stale-epoch rejection after slot reuse. The [directional packet stage](fstack-session-packets.md)
+also transports real IPv4/IPv6 TCP/UDP frames into an original imported-Linux instance through a
+granted EAL secondary, without a primary packet relay. Cross-generation
+dispatch/drain and exception-owner agreement, physical PMD handover and full
+application reload remain unimplemented.
 
 ## Existing boundary and implementation choice
 
@@ -213,6 +216,7 @@ This design supplies no pass/provenance entry for any of them.
 | Generation-directory integration (7 in `test_ff_gendir_mp_integration.c`) | Real original-EAL primary and secondaries under two distinct, simultaneously live masters; precreated/lookup-only rings; distinct epochs and packet tokens; exactly one queue consumer; live-coordinate probe; orphan drain; repeated slot recycle. Use a memory mode actually supporting secondaries; no-huge independent primaries do not qualify. |
 | Reload integration (7 in `test_ff_reload_integration.c`) | Boot/parked control progress, non-owner TX diversion, watermark drain and burst guard; actual original Linux half-open packets routed to the correct kernel. |
 | Config lifecycle/directory tests in `test_ff_config.c` | Valid/invalid real topology configuration, finite geometry, complete legal/illegal lifecycle table, delayed operation/epoch rejection, owner/user proof, orphan liveness and census-locked purge. Schema rejection without a valid positive configuration is insufficient. |
+| Page-array build tests (2 in `test_ff_config_pa.c`) | The source build with `FF_USE_PAGE_ARRAY` must reject graceful reload while continuing to accept the minimal reload-off configuration. Ker has no same build mode; generic unsupported-key rejection does not prove this conditional positive/negative contract. The explicit exclusion is recorded in [the page-array audit](fstack-page-array-contracts.md) under #232. |
 | DPDK glue tests in `test_ff_dpdk_if.c` | Original shared pool/cache and SP/SC rings, exact queue ownership, full-ring visibility, peer/foreign-epoch TX, missing/full/transient directory behavior, bounded flow admission and growth, dead-user purge returning the pool to baseline. |
 | IPC tests (12 in `test_ff_ipc.c`) | Coordinate parser/serialization compatibility plus two live clients, delayed/foreign replies, dead-client reclamation and non-destructive probe under concurrent real control traffic. |
 | `test_graceful_reload.sh::entrypoint` | A caller-owned server on original Linux, external traffic across repeated HUP/USR2, continued existing streams and new connections, explicit fault/timeout scenarios, process ownership and complete resource cleanup. Parse-only/harness self-tests do not qualify. |
