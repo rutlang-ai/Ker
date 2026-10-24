@@ -6,7 +6,7 @@
       "id": "reload-generations",
       "title": "Design generation-aware reload, IPC and drain ownership",
       "disposition": "adaptation-needed",
-      "reason": "Ker has independent native instances and bounded local queues, but no F-Stack process:generation:epoch directory, cross-generation admission or graceful handover protocol. Local SP/SC tests do not satisfy these contracts.",
+      "reason": "Ker now has resident EAL registration and authenticated cross-process shared control probes with bounded mbuf pools/rings, exact borrower-lifetime retention and queued-request recovery. It still lacks hardware consumer grants, generation packet transport into original Linux, packet allocation journals, cross-generation admission and graceful handover. Registration or control echoes do not satisfy the complete source generation contracts.",
       "evidence": [
         "docs/fstack-reload-ownership.md",
         "src/posix/io-worker.c",

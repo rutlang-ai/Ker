@@ -8,6 +8,8 @@ implementation and runtime qualification.
 The first executable prerequisite now exists as a separate
 [resident EAL registration stage](fstack-session-registration.md): it precreates
 bounded shared rings and attaches real secondaries under live master epochs.
+It also exchanges authenticated shared control mbufs with the parked resident,
+including recovery of queued requests after exact borrower death.
 It does not yet implement packet transport, PMD ownership, generation handover
 or application reload, so the source-case disposition above is unchanged.
 

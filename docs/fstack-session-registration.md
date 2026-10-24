@@ -35,14 +35,13 @@ ker-session status --socket "$SESSION_DIR/control.sock"
 
 `serve` executes a real primary. `lease` remains the master and starts a direct
 child running original EAL secondary initialization and shared-object lookup.
-Readiness reports `registration-only`; no application command is accepted.
+Readiness reports `shared-control`; the probe command is the only data-plane exception and exercises bounded control mbufs, not application traffic.
 The tool selects `--proc-type`, adds `--no-pci`, and rejects device admission.
 The compiled worker independently requires no PCI and rejects virtual-device
 and allow-list options. No PMD, network device or original Linux application
 instance is created at this stage.
 
-Input or EOF requests each process to stop. Stop the leases before stopping
-the resident for normal cleanup. The lease supervisor relays input through its
+Input or EOF requests each process to stop. Send `P` to an attached lease to run its configured bounded shared-control probe. The one-shot `probe` action exits after one batch. Stop the leases before stopping the resident for normal cleanup. The lease supervisor relays input through its
 own control pipe; SIGINT/SIGTERM closes that pipe and waits up to five seconds
 for secondary EAL cleanup. It sends SIGTERM only after that grace period and
 uses SIGKILL only after a further timeout. A graceful SIGTERM exits 143 (SIGINT
@@ -50,9 +49,9 @@ uses SIGKILL only after a further timeout. A graceful SIGTERM exits 143 (SIGINT
 
 ## Geometry and process lifetime
 
-The resident precreates the directory and all 96 bounded original DPDK rings
+The resident precreates the directory and all 128 bounded original DPDK rings
 before publishing readiness: four epoch slots (slot zero reserved), two
-generations, four process indices and control/RX/TX rings per coordinate.
+generations, four process indices and control/RX/TX/reply rings per coordinate.
 Each ring has capacity 64 and declares single-producer/single-consumer use.
 That declaration does not yet prove data ownership: this stage only looks up
 rings, without enqueueing packets or granting a consumer.
@@ -101,5 +100,4 @@ The 79 actionable source cases in #218 remain blocked. Packet envelopes,
 shared pools, generation admission and grants, PMD secondary compatibility,
 single-consumer enforcement, packet delivery into original Linux, draining,
 hardware handover and caller-managed graceful reload still require real
-implementation and source-case acceptance. This registration stage is an
-implementation prerequisite, not a replacement for those contracts.
+implementation and source-case acceptance. This implementation stage proves bounded control mbuf exchange only; packet envelopes and production ownership remain unqualified. It is an implementation prerequisite, not a replacement for those contracts.

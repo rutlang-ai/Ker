@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import select
 import stat
 from pathlib import Path
 import selectors
@@ -30,6 +31,12 @@ def ready(process, prefix):
         selector.register(process.stdout, selectors.EVENT_READ)
         require(selector.select(30), 'session readiness timed out')
     line = process.stdout.readline().decode().strip()
+    if not line:
+        try:
+            _output, errors = process.communicate(timeout=2)
+            line = 'process exited ' + str(process.returncode) + ': ' + errors.decode(errors='replace')
+        except subprocess.TimeoutExpired:
+            line = 'stdout closed while process remains alive; stderr pending'
     require(line.startswith(prefix + ' '), 'unexpected readiness: ' + line)
     return json.loads(line[len(prefix) + 1:])
 
@@ -97,7 +104,7 @@ def main():
         try:
             info = ready(primary, 'KER_SESSION_READY')
             record_pages('session-' + run_id)
-            require(info['rings'] == 96 and info['slots'] == 4 and info['stage'] == 'registration-only',
+            require(info['rings'] == 128 and info['slots'] == 4 and info['stage'] == 'shared-control',
                     'finite geometry was not completely precreated')
 
             def status():
@@ -226,7 +233,7 @@ def main():
             leases, entries = [], []
             for gen, process_id in ((0, 0), (1, 3), (0, 0)):
                 lease = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common,
-                    '--generation', str(gen), '--process', str(process_id)], stdin=subprocess.PIPE,
+                    '--generation', str(gen), '--process', str(process_id), '--probe-count', '16'], stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
                 processes.append(lease); leases.append(lease)
                 entry = ready(lease, 'KER_SESSION_ATTACHED'); entries.append(entry)
@@ -236,6 +243,24 @@ def main():
             require(len({x['rings'][0] for x in entries}) == 3, 'masters looked up the same control ring')
             require(all(p.poll() is None for p in leases), 'master exited before simultaneous samples')
             eventually(3, 3)
+            # All three masters and workers are alive before any shared mbuf probe.
+            for lease in leases:
+                lease.stdin.write(b'P'); lease.stdin.flush()
+            for lease, entry in zip(leases, entries):
+                reply = ready(lease, 'KER_SESSION_PROBED')
+                require(all(reply[key] == entry[key] for key in ('epoch', 'slot', 'generation', 'process')) and
+                        reply['count'] == 16 and reply['sequence'] == 16 and reply['primary_pid'] == primary.pid,
+                        'shared reply crossed a live master namespace')
+            leases[1].stdin.write(b'P'); leases[1].stdin.flush()
+            require(ready(leases[1], 'KER_SESSION_PROBED')['sequence'] == 32, 'probe sequence reset')
+            census = status()
+            require(census['generation'] == 511 and census['token'] == 0, 'shared probes leaked mbufs')
+            diagnostic = subprocess.run([sys.executable, str(args.tool), 'status', '--socket', str(path)],
+                capture_output=True, env=environment, timeout=10)
+            require(diagnostic.returncode == 0, 'production status failed: ' + diagnostic.stderr.decode())
+            diagnostic = json.loads(diagnostic.stdout)
+            require(diagnostic['registered_eal_users'] == 3 and diagnostic['outstanding'] == 0 and
+                    diagnostic['pool_available'] == 511, 'production pool census is incorrect')
             # Stop the exact secondary before killing its supervisor. The
             # supervisor-owned control pipe closes on death, but the stopped
             # EAL process remains an exact live borrower until resumed.
@@ -287,6 +312,114 @@ def main():
                 output, errors = lease.communicate(timeout=20)
                 require(lease.returncode == 0, 'master/secondary cleanup failed: ' + errors.decode())
             eventually(0, 0)
+
+            # Queue one real shared probe while the resident is stopped; the
+            # borrower must time out, and the resident must reclaim the mbuf.
+            timed = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common, '--probe-count', '1'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            processes.append(timed)
+            timed_info = ready(timed, 'KER_SESSION_ATTACHED')
+            worker_pidfds.append(os.pidfd_open(timed_info['pid']))
+            primary_pidfd = os.pidfd_open(primary.pid)
+            try:
+                signal.pidfd_send_signal(primary_pidfd, signal.SIGSTOP)
+                deadline = time.monotonic() + 5
+                while Path(f'/proc/{primary.pid}/stat').read_text().rsplit(')', 1)[1].split()[0] not in ('T', 't'):
+                    require(time.monotonic() < deadline, 'resident did not actually stop')
+                    time.sleep(0.01)
+                timed.stdin.write(b'P'); timed.stdin.flush()
+                # Keep the caller's writer open so EOF cannot cancel the probe.
+                # Once the child reports its timeout, resume the resident so the
+                # supervisor can complete RELEASE before its own deadline.
+                errors = bytearray()
+                deadline = time.monotonic() + 12
+                while b'shared probe failed -110' not in errors:
+                    require(time.monotonic() < deadline, 'shared probe timeout was not reported')
+                    ready_fds, _, _ = select.select([timed.stderr], [], [], 0.1)
+                    if ready_fds:
+                        chunk = os.read(timed.stderr.fileno(), 4096)
+                        if not chunk:
+                            break
+                        errors.extend(chunk)
+                signal.pidfd_send_signal(primary_pidfd, signal.SIGCONT)
+                output = timed.stdout.read()
+                errors.extend(timed.stderr.read())
+                timed.wait(timeout=5)
+                require(timed.returncode == 1 and b'shared probe failed -110' in errors and
+                        b'KER_SESSION_PROBED' not in output, 'unserved shared request did not time out safely; stdout=' + output.decode(errors='replace') + ' stderr=' + errors.decode(errors='replace'))
+            finally:
+                signal.pidfd_send_signal(primary_pidfd, signal.SIGCONT)
+                os.close(primary_pidfd)
+            census = eventually(0, 0)
+            require(census['generation'] == 511 and census['token'] == 0,
+                    'dead borrower queued request was not reclaimed')
+            probe = subprocess.run([sys.executable, str(args.tool), 'probe', *common, '--probe-count', '4'],
+                input=b'', capture_output=True, env=environment, timeout=20)
+            require(probe.returncode == 0 and b'KER_SESSION_PROBED' in probe.stdout,
+                    'production one-shot shared probe failed: ' + probe.stderr.decode())
+            eventually(0, 0)
+
+            # Cancel a deliberately large active batch after observing its
+            # first published mbuf. The request remains ring-owned until the
+            # exact secondary exits and the resident reclaims it.
+            def cancel_large_batch(mode):
+                batch = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common,
+                    '--probe-count', '4096'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, env=environment, bufsize=0)
+                processes.append(batch)
+                entry = ready(batch, 'KER_SESSION_ATTACHED')
+                pidfd = os.pidfd_open(entry['pid'])
+                worker_pidfds.append(pidfd)
+                eventually(1, 1)
+                batch.stdin.write(b'P'); batch.stdin.flush()
+                active_deadline = time.monotonic() + 5
+                while True:
+                    active = status()
+                    if active['generation'] == 510 and active['token'] == 1:
+                        break
+                    require(time.monotonic() < active_deadline,
+                            'large probe batch never exposed an outstanding shared mbuf: ' + str(active))
+                    time.sleep(0.001)
+                started = time.monotonic()
+                if mode == 'SIGTERM':
+                    os.kill(batch.pid, signal.SIGTERM)
+                else:
+                    batch.stdin.write(b'x'); batch.stdin.flush()
+                result = batch.wait(timeout=8)
+                duration = time.monotonic() - started
+                shutdown = None
+                if mode == 'SIGTERM':
+                    shutdown = ready(batch, 'KER_SESSION_SUPERVISOR_STOP')
+                reap_record = ready(batch, 'KER_SESSION_CHILD_REAP')
+                stdin_was_open = not batch.stdin.closed
+                output, errors = batch.communicate(timeout=2)
+                expected_status = 128 + signal.SIGTERM if mode == 'SIGTERM' else 0
+                require(result == expected_status and stdin_was_open and duration < 5,
+                        mode + ' did not stop the active batch promptly with stdin open: result=' + str(result) + ' expected=' + str(expected_status) + ' stdin_was_open=' + str(stdin_was_open) + ' duration=' + str(duration) + ' stdout=' + output.decode(errors='replace') + ' stderr=' + errors.decode(errors='replace'))
+                if shutdown is not None:
+                    require(shutdown['worker_status'] == 0 and shutdown['signal'] == signal.SIGTERM and
+                            not shutdown['escalated'], 'SIGTERM cancellation escalated or failed: ' + repr(shutdown))
+                require(reap_record == {'pid': entry['pid'], 'status': 0,
+                                       'escalated': False, 'input_abandoned': False} and
+                        b'KER_SESSION_PROBED' not in output,
+                        'cancelled batch child status/output was not clean: ' + repr(reap_record))
+                with selectors.DefaultSelector() as selector:
+                    selector.register(pidfd, selectors.EVENT_READ)
+                    require(selector.select(2), 'cancelled batch child remained alive')
+                batch.stdin.close()
+                deadline = time.monotonic() + 5
+                while True:
+                    reclaimed = status()
+                    if (reclaimed['slot'] == 0 and reclaimed['process'] == 0 and
+                            reclaimed['generation'] == 511 and reclaimed['token'] == 0):
+                        break
+                    require(time.monotonic() < deadline,
+                            'cancelled published mbuf was not reclaimed after exact child death: ' + str(reclaimed))
+                    time.sleep(0.01)
+                print('PASS: ' + mode + ' cancels active 4096-probe batch, reaps child, and reclaims published mbuf')
+
+            cancel_large_batch('non-P stop')
+            cancel_large_batch('SIGTERM')
 
             # Signal only the lease supervisor. Keep its caller-owned stdin
             # writer open so the attached secondary cannot observe EOF there.
@@ -391,8 +524,9 @@ def main():
                     'secondary accepted a dead primary lifetime: ' + str(held.returncode) + ' ' + errors.decode() + ' ' + output.decode())
             require(blocked_socket.exists(), 'failed cleanup silently removed a live session namespace')
             print('PASS: device/descriptor preflight; stopped live borrower prevents cleanup; primary death is fatal')
-            print('PASS: resident precreates96rings; real EAL secondary lookup, identity/retry guards, '
-                  'live-borrower release refusal, orphan liveness and epoch recycle; registration-only')
+            print('PASS: three live master namespaces exchange64-byte shared mbufs; monotonic sequences; timeout recovers after borrower death')
+            print('PASS: resident precreates128rings; real EAL secondary lookup, identity/retry guards, '
+                  'live-borrower release refusal, orphan liveness and epoch recycle; shared-control')
         finally:
             for process in reversed(processes):
                 stop(process)
