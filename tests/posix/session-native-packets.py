@@ -7,11 +7,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shlex
 import signal
 import selectors
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -117,9 +119,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
     with tempfile.TemporaryDirectory(prefix='ker-a09-live-handoff-') as directory:
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
+        file_prefix = f'a09-handoff-{os.getpid()}-{os.urandom(4).hex()}'
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
             f'-m 64 {plugin_options} --huge-dir={shlex.quote(str(args.huge_dir))} '
-            f'--file-prefix=a09-handoff-{os.getpid()}-{os.urandom(4).hex()}')
+            f'--file-prefix={file_prefix}')
         common = ['--socket', str(control_path), '--worker', str(args.worker), '--eal', eal,
             '--paired-pmd', '--generation-rings']
         environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -129,6 +132,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         handoff_read = handoff_write = -1
         pidfds = []
         resident_pidfd = -1
+        owned_pages = {}
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
@@ -221,6 +225,15 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
             peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
             resident_pidfd = os.pidfd_open(primary.pid)
+            page_pattern = re.compile(re.escape(file_prefix) + r'map_[0-9]+(?:_[0-9]+)?')
+            for page_path in args.huge_dir.iterdir():
+                if not page_pattern.fullmatch(page_path.name):
+                    continue
+                page_stat = page_path.lstat()
+                require(stat.S_ISREG(page_stat.st_mode) and page_stat.st_uid == os.getuid(),
+                    'unexpected handoff hugepage backing-file identity')
+                owned_pages[page_path] = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid)
+            require(owned_pages, 'handoff resident created no exact-prefix hugepage backing files')
 
             def fatal_profile_diagnostics(reason):
                 if runner is not None and runner.poll() is None:
@@ -398,6 +411,53 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 primary.terminate()
                 try: primary.wait(timeout=10)
                 except subprocess.TimeoutExpired: primary.kill(); primary.wait()
+            if runner is not None and runner.poll() is not None:
+                runner.communicate(timeout=5)
+            if primary is not None and primary.poll() is not None:
+                primary.communicate(timeout=5)
+            if owned_pages:
+                for pidfd in pidfds:
+                    require(select.select([pidfd], [], [], 5)[0],
+                        'refuse hugepage cleanup while an exact handoff child remains alive')
+                if resident_pidfd >= 0:
+                    require(select.select([resident_pidfd], [], [], 5)[0],
+                        'refuse hugepage cleanup while the exact handoff resident remains alive')
+                require(primary is not None and primary.poll() is not None and
+                    (runner is None or runner.poll() is not None),
+                    'refuse hugepage cleanup before resident and launcher reaping')
+                current_pages = {page_path for page_path in args.huge_dir.iterdir()
+                    if page_pattern.fullmatch(page_path.name)}
+                recorded_pages = set(owned_pages)
+                unrecorded = current_pages - recorded_pages
+                require(not unrecorded,
+                    'unexpected exact-prefix hugepage files appeared; refusing all cleanup: ' +
+                    repr(sorted(str(path) for path in unrecorded)))
+                leftovers = []
+                validated = []
+                for page_path, identity in owned_pages.items():
+                    try:
+                        page_stat = page_path.lstat()
+                    except FileNotFoundError:
+                        continue
+                    require((page_stat.st_dev, page_stat.st_ino, page_stat.st_uid) == identity and
+                        stat.S_ISREG(page_stat.st_mode),
+                        'handoff hugepage backing-file identity changed; refusing all cleanup')
+                    leftovers.append(page_path)
+                    validated.append((page_path, identity))
+                if mode == 'positive':
+                    leak = bool(leftovers)
+                else:
+                    require(leftovers, f'{mode} did not leave exact-prefix files for harness cleanup')
+                    leak = False
+                # Recheck the full set above before deleting any file so a
+                # replaced or unexpected path cannot cause partial cleanup.
+                for page_path, _ in validated:
+                    page_path.unlink()
+                require(not any(page_path.exists() for page_path in owned_pages),
+                    'exact handoff hugepage files remain after cleanup')
+                require(not leak, 'successful handoff profile leaked its exact-prefix hugepage backing files')
+                print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED mode={mode} files={len(owned_pages)} '
+                    f'leftovers={len(leftovers)}', flush=True)
             if endpoint is not None: endpoint.close()
             if wire is not None: wire.close()
             for pidfd in pidfds: os.close(pidfd)
