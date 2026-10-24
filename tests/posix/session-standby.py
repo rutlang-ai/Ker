@@ -36,6 +36,7 @@ def main():
         print('SKIP: ' + reason + '; no host settings changed')
         return 77
     api = load('ker_session_tool', args.tool)
+    expected_frame_bytes = 14 + api.WIRE.size + 8 + 64
     require(ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0, 'subreaper setup')
     processes, workers = [], []
     with tempfile.TemporaryDirectory(prefix='ker-standby-') as directory:
@@ -47,7 +48,8 @@ def main():
         def launch(action, *extra):
             process = subprocess.Popen([sys.executable, str(args.tool), action, *common, *extra],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
-                env=os.environ | {'RUNTIME_DIRECTORY': str(root)})
+                env=os.environ | {'RUNTIME_DIRECTORY': str(root),
+                                  'KER_SESSION_TEST_DIRECTORY_HOOKS': '1'})
             processes.append(process)
             return process
 
@@ -63,6 +65,10 @@ def main():
 
         def status(): return query(api.STATUS)
 
+        def resident_snapshot():
+            primary.stdin.write(b'S'); primary.stdin.flush()
+            return ready(primary, 'KER_SESSION_TEST_SNAPSHOT')
+
         def round_sample(process, sequence, owns, owner_epoch):
             response = ready(process, 'KER_SESSION_PROBED')
             sample = ready(process, 'KER_SESSION_PMD_SAMPLED')
@@ -72,7 +78,8 @@ def main():
                     'inconsistent live ownership sample: ' + str(sample))
             if owns:
                 data = ready(process, 'KER_SESSION_PMD_PROBED')
-                require(data['count'] == 16 and data['frame_bytes'] == 174, 'actual PMD burst evidence missing')
+                require(data['count'] == 16 and data['frame_bytes'] == expected_frame_bytes,
+                        'actual PMD burst evidence missing')
                 return sample, data
             return sample, None
 
@@ -106,6 +113,34 @@ def main():
             zero = launch('lease', '--standby')
             zero_entry = ready(zero, 'KER_SESSION_ATTACHED'); ready(zero, 'KER_SESSION_PMD_STANDBY')
             workers.append((zero_entry['pid'], os.pidfd_open(zero_entry['pid'])))
+
+            # With the owner and two real secondary standbys alive, repeated
+            # fourth-MASTER denial must preserve the actual PMD grant, all
+            # leases, mirrors, slot identities and resident pool accounting.
+            full_before = resident_snapshot()
+            require(full_before['pmd'][0] != 0 and full_before['pmd'][1] == 0 and
+                    full_before['pmd'][4] == 0 and full_before['pmd'][5] == 0 and
+                    status()['slot'] == 3 and status()['process'] == 3 and
+                    all(p.poll() is None for p in (first, second, zero)),
+                    'three live ring-PMD owner/standby chains or truthful exception-zero boundary absent')
+            for attempt in range(2):
+                denied = subprocess.run([sys.executable, str(args.tool), 'lease', *common],
+                    input=b'x', stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                    env=os.environ | {'RUNTIME_DIRECTORY': str(root),
+                                      'KER_SESSION_TEST_DIRECTORY_HOOKS': '1'}, timeout=15)
+                require(denied.returncode == 125 and b'KER_SESSION_ATTACHED ' not in denied.stdout,
+                        'fourth MASTER was not refused before secondary attachment: ' +
+                        denied.stdout.decode(errors='replace') + denied.stderr.decode(errors='replace'))
+                full_after = resident_snapshot()
+                for key in ('header', 'next_epoch', 'pool', 'pmd', 'pmd_identity', 'slots', 'leases', 'peers'):
+                    require(full_after[key] == full_before[key],
+                            'fourth MASTER denial mutated resident ' + key +
+                            ': ' + repr((full_before[key], full_after[key])))
+                require(status()['slot'] == 3 and status()['process'] == 3 and
+                        all(p.poll() is None for p in (first, second, zero)),
+                        'fourth MASTER denial changed the three live registrations')
+            print('PASS: two full-directory denials preserved one live PMD owner, two standbys, leases, mirrors and pool')
+
             zero.stdin.write(b'P'); zero.stdin.flush()
             no_probe = ready(zero, 'KER_SESSION_PROBED'); census_only = ready(zero, 'KER_SESSION_PMD_SAMPLED')
             require(no_probe['count'] == 0 and no_probe['sequence'] == 0 and

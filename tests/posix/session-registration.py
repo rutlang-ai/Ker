@@ -40,6 +40,14 @@ def ready(process, prefix):
     require(line.startswith(prefix + ' '), 'unexpected readiness: ' + line)
     return json.loads(line[len(prefix) + 1:])
 
+def ready_exact(process, expected):
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        if not selector.select(30):
+            raise RuntimeError('session marker timed out: ' + expected)
+    line = process.stdout.readline().decode(errors='replace').strip()
+    require(line == expected, 'unexpected session marker: ' + line)
+
 
 def child_reap(output, expected_pid, input_abandoned=False):
     records = [line.removeprefix(b'KER_SESSION_CHILD_REAP ').decode()
@@ -93,7 +101,8 @@ def main():
                 owned_pages[path] = (value.st_dev, value.st_ino, value.st_uid)
     with tempfile.TemporaryDirectory(prefix='ker-session-') as name:
         root = Path(name); path = root / 'control.sock'
-        environment = dict(os.environ, RUNTIME_DIRECTORY=str(root))
+        environment = dict(os.environ, RUNTIME_DIRECTORY=str(root),
+                           KER_SESSION_TEST_DIRECTORY_HOOKS='1')
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry '
                f'--iova-mode=va -m 64 --huge-dir={args.huge_dir} --file-prefix=session-{run_id}')
         common = ['--socket', str(path), '--worker', str(args.worker), '--eal', eal]
@@ -107,23 +116,224 @@ def main():
             require(info['rings'] == 128 and info['slots'] == 4 and info['stage'] == 'shared-control',
                     'finite geometry was not completely precreated')
 
-            def status():
-                connection = api.Connection(path)
+            def status(socket_path=path):
+                connection = api.Connection(socket_path)
                 try:
-                    return connection.request(api.STATUS)
+                    reply = connection.request(api.STATUS)
+                    # Keep protocol fields for the detailed lease assertions,
+                    # and expose the same names as the production status CLI.
+                    reply.update(registered_epochs=reply['slot'],
+                        eal_processes=reply['process'], outstanding=reply['token'],
+                        pool_available=reply['generation'])
+                    return reply
                 finally:
                     connection.close()
 
-            def eventually(epochs, users):
+            def eventually(epochs, users, socket_path=path):
                 deadline = time.monotonic() + 10
                 while True:
-                    value = status()
+                    value = status(socket_path)
                     if value['slot'] == epochs and value['process'] == users:
                         return value
                     require(time.monotonic() < deadline, 'session census did not converge: ' + str(value))
                     time.sleep(0.05)
 
+            def resident_record(prefix, resident=primary):
+                deadline = time.monotonic() + 20
+                with selectors.DefaultSelector() as selector:
+                    selector.register(resident.stdout, selectors.EVENT_READ)
+                    while time.monotonic() < deadline:
+                        require(selector.select(max(0, deadline - time.monotonic())),
+                                'resident record timed out: ' + prefix)
+                        line = resident.stdout.readline().decode(errors='replace').strip()
+                        if line.startswith(prefix + ' '):
+                            return json.loads(line[len(prefix) + 1:])
+                        if line.startswith('KER_SESSION_CHILD_REAP '):
+                            continue
+                        require(False, 'unexpected resident record while waiting for ' + prefix + ': ' + line)
+                raise RuntimeError('resident record timed out: ' + prefix)
+
+            def snapshot(resident=primary):
+                resident.stdin.write(b'S'); resident.stdin.flush()
+                return resident_record('KER_SESSION_TEST_SNAPSHOT', resident)
+
+            def generation_directory_state(resident=primary):
+                resident.stdin.write(b'G'); resident.stdin.flush()
+                return resident_record('KER_SESSION_TEST_DIRECTORY_STATE', resident)
+
+            def restore_directory_header():
+                primary.stdin.write(b'R'); primary.stdin.flush()
+                deadline = time.monotonic() + 20
+                with selectors.DefaultSelector() as selector:
+                    selector.register(primary.stdout, selectors.EVENT_READ)
+                    while time.monotonic() < deadline:
+                        require(selector.select(max(0, deadline - time.monotonic())),
+                                'test directory header restore timed out')
+                        line = primary.stdout.readline().decode(errors='replace').strip()
+                        if line == 'KER_SESSION_TEST_DIRECTORY_RESTORED':
+                            return
+                        if line.startswith('KER_SESSION_CHILD_REAP '):
+                            continue
+                        require(False, 'unexpected resident line during restore: ' + line)
+                raise RuntimeError('test directory header restore timed out')
+
+            # With the opt-in generation adapter omitted, an ordinary real
+            # secondary must still register through the generic Ker session.
+            # Observe the actual generation memzone lookup used by
+            # ker_generation_rings_attach(), while checking that the distinct
+            # generic session memzone remains present and unchanged.
+            disabled_before = generation_directory_state()
+            require(disabled_before['generation_present'] is False and
+                    disabled_before['session_present'] is True and
+                    disabled_before['session_matches'] is True and
+                    disabled_before['session'] == info['session'],
+                    'default-off generation adapter namespace was not absent')
+            disabled_snapshot = snapshot()
+            disabled = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, bufsize=0)
+            processes.append(disabled)
+            disabled_attached = ready(disabled, 'KER_SESSION_ATTACHED')
+            require(disabled_attached['epoch'] != 0 and disabled_attached['slot'] != 0 and
+                    disabled_attached['generation'] == 0 and disabled_attached['process'] == 0,
+                    'default-off real secondary did not register normally')
+            disabled_during = generation_directory_state()
+            require(disabled_during == disabled_before,
+                    'default-off secondary created or changed the generation namespace')
+            disabled_census = status()
+            require(disabled_census['registered_epochs'] == 1 and
+                    disabled_census['eal_processes'] == 1 and
+                    disabled_census['outstanding'] == 1 and
+                    disabled_census['pool_available'] == disabled_snapshot['pool'][0] - 1,
+                    'default-off registration did not use normal generic control accounting')
+            disabled.stdin.write(b'x'); disabled.stdin.flush()
+            disabled_output, disabled_errors = disabled.communicate(timeout=20)
+            require(disabled.returncode == 0,
+                    'default-off secondary cleanup failed: ' + disabled_errors.decode(errors='replace'))
+            child_reap(disabled_output, disabled_attached['pid'])
+            disabled_after = eventually(0, 0)
+            require(disabled_after['pool_available'] == disabled_snapshot['pool'][0] and
+                    disabled_after['outstanding'] == disabled_snapshot['pool'][1],
+                    'default-off secondary leaked its generic session control lease')
+            disabled_final = generation_directory_state()
+            require(disabled_final == disabled_before,
+                    'default-off namespace changed after secondary cleanup')
+            disabled_final_snapshot = snapshot()
+            for key in ('pool', 'pmd', 'slots', 'leases', 'peers'):
+                require(disabled_final_snapshot[key] == disabled_snapshot[key],
+                        'default-off session cleanup changed resident ' + key)
+            print('PASS: default-off real EAL registration kept generation memzone absent and restored generic session accounting')
+
+            def directory_case(field, case_eal=eal, mutate=True):
+                before = snapshot()
+                gate_read, gate_write = os.pipe()
+                worker = subprocess.Popen([sys.executable, str(args.tool), 'lease',
+                    *common, '--eal', case_eal, '--test-directory-gate-fd', str(gate_read)],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    pass_fds=(gate_read,), env=environment, bufsize=0)
+                processes.append(worker)
+                os.close(gate_read)
+                try:
+                    ready_exact(worker, 'KER_SESSION_TEST_RESERVED')
+                    if mutate:
+                        primary.stdin.write(b'M' + field.encode()); primary.stdin.flush()
+                        mutated = resident_record('KER_SESSION_TEST_DIRECTORY_MUTATED')
+                        require(mutated['field'] == field, 'wrong shared directory field was mutated')
+                    os.write(gate_write, b'G')
+                    output, errors = worker.communicate(timeout=30)
+                    require(worker.returncode != 0 and b'KER_SESSION_ATTACHED ' not in output and
+                            b'shared directory lookup/validation failed' in errors,
+                            'malformed/missing directory reached ATTACHED: ' +
+                            output.decode(errors='replace') + errors.decode(errors='replace'))
+                except BaseException as error:
+                    if worker.poll() is None:
+                        worker.kill()
+                    try:
+                        output, errors = worker.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        output, errors = b'', b'worker output remained blocked after kill'
+                    raise RuntimeError(str(error) + '; worker stdout=' +
+                        output.decode(errors='replace') + ' stderr=' +
+                        errors.decode(errors='replace')) from error
+                finally:
+                    os.close(gate_write)
+                    if worker.poll() is None:
+                        worker.kill(); worker.wait(timeout=5)
+                if mutate:
+                    restore_directory_header()
+                after = snapshot()
+                for key in ('header', 'pool', 'pmd', 'pmd_identity', 'slots', 'leases', 'peers'):
+                    require(after[key] == before[key],
+                            'directory rejection changed resident ' + key + ': ' + repr((before[key], after[key])))
+                require(eventually(0, 0)['session'] == info['session'],
+                        'directory rejection retained a registration')
+                print('PASS: real secondary rejected directory case ' + field +
+                      ' before ATTACHED without changing owner/lease/ring census')
+
             require(eventually(0, 0)['session'] == info['session'], 'session identity mismatch')
+            for field in ('m', 'v', 'z', 's', 'g', 'c'):
+                directory_case(field)
+
+            # Create an actual unrelated EAL primary without the Ker resident
+            # directory, then reserve through the real session and attach a
+            # real secondary in that independent EAL namespace.
+            missing_prefix = 'dir-missing-' + run_id[-8:]
+            missing_eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry '
+                           f'--iova-mode=va -m 32 --huge-dir={args.huge_dir} '
+                           f'--file-prefix={missing_prefix}')
+            missing_primary = subprocess.Popen([str(args.worker), '--role', 'test-eal-primary',
+                '--control-fd', '0', '--', *missing_eal.split(), '--proc-type=primary'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            processes.append(missing_primary)
+            require(missing_primary.stdout.readline().decode().strip() ==
+                    'KER_SESSION_TEST_EAL_PRIMARY_READY',
+                    'independent EAL primary did not publish readiness')
+            directory_case('absent', case_eal=missing_eal, mutate=False)
+            missing_primary.stdin.close(); missing_primary.stdin = None
+            missing_out, missing_err = missing_primary.communicate(timeout=20)
+            require(missing_primary.returncode == 0,
+                    'independent EAL primary cleanup failed: ' + missing_err.decode(errors='replace'))
+
+            # A second primary cannot take the active resident's exact DPDK
+            # file prefix; the original resident snapshot must remain intact.
+            before_busy = snapshot()
+            busy = subprocess.run([str(args.worker), '--role', 'test-eal-primary',
+                '--control-fd', '0', '--', *eal.split(), '--proc-type=primary'],
+                input=b'', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, timeout=20)
+            require(busy.returncode != 0 and b'KER_SESSION_TEST_EAL_PRIMARY_READY' not in busy.stdout,
+                    'second same-prefix EAL primary unexpectedly started')
+            after_busy = snapshot()
+            for key in ('header', 'next_epoch', 'pool', 'pmd', 'pmd_identity', 'slots', 'leases', 'peers'):
+                require(after_busy[key] == before_busy[key],
+                        'same-prefix primary collision changed resident ' + key)
+            print('PASS: same-prefix primary collision failed while resident directory and owners stayed unchanged')
+
+            # A valid secondary receives the same authenticated directory
+            # attachment twice with the exact same request sequence; the
+            # resident's normal idempotent reply cache must return the same
+            # coordinate without advancing or reallocating its lease.
+            before = snapshot()
+            replay = subprocess.Popen([sys.executable, str(args.tool), 'lease',
+                *common, '--test-directory-replay-attached'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, bufsize=0)
+            processes.append(replay)
+            replay_record = ready(replay, 'KER_SESSION_TEST_ATTACHED_REPLAY')
+            attached = ready(replay, 'KER_SESSION_ATTACHED')
+            require(replay_record['slot'] == attached['slot'] and
+                    replay_record['epoch'] == attached['epoch'] and
+                    replay_record['sequence'] > 0,
+                    'identical ATTACHED replay changed its coordinate')
+            replay.stdin.write(b'x'); replay.stdin.flush()
+            replay_output, replay_errors = replay.communicate(timeout=20)
+            require(replay.returncode == 0 and b'KER_SESSION_CHILD_REAP' in replay_output,
+                    'idempotent ATTACHED replay cleanup failed: ' + replay_errors.decode(errors='replace'))
+            after = snapshot()
+            require(after['pool'] == before['pool'] and after['pmd'] == before['pmd'] and
+                    after['leases'] == before['leases'] and after['peers'] == before['peers'] and
+                    after['slots'] == before['slots'],
+                    'same-sequence ATTACHED replay changed resident accounting')
             master = api.Connection(path)
             ticket = master.request(api.MASTER)
             # An exact repeated operation returns its original result, rather
@@ -547,6 +757,69 @@ def main():
             primary.stdin.write(b'x'); primary.stdin.flush()
             output, errors = primary.communicate(timeout=20)
             require(primary.returncode == 0 and not path.exists(), 'resident cleanup failed: ' + errors.decode())
+
+            # An explicitly enabled adapter uses a distinct EAL primary and
+            # the same production generation-directory lookup on both sides.
+            # The secondary repeats the real production attach in-process and
+            # verifies the directory and all eight ring objects are identical.
+            enabled_socket = root / 'enabled-control.sock'
+            enabled_eal = eal.replace('session-' + run_id, 'enabled-' + run_id)
+            enabled_common = ['--socket', str(enabled_socket), '--worker', str(args.worker),
+                              '--eal', enabled_eal, '--generation-rings']
+            enabled_primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *enabled_common],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, bufsize=0)
+            processes.append(enabled_primary)
+            enabled_info = ready(enabled_primary, 'KER_SESSION_READY')
+            require(enabled_info['rings'] == 128,
+                    'enabled resident did not create all generic control rings: ' + repr(enabled_info))
+            record_pages('enabled-' + run_id)
+            enabled_before = generation_directory_state(enabled_primary)
+            require(enabled_before['generation_present'] is True and
+                    enabled_before['session_present'] is True and
+                    enabled_before['session_matches'] is True and
+                    enabled_before['session'] == enabled_info['session'],
+                    'enabled primary did not create its generation adapter in the same session')
+            enabled_snapshot = snapshot(enabled_primary)
+            enabled_secondary = subprocess.Popen([sys.executable, str(args.tool), 'lease',
+                *enabled_common, '--test-generation-rings-replay'], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            processes.append(enabled_secondary)
+            replay = ready(enabled_secondary, 'KER_SESSION_TEST_GENERATION_REPLAY')
+            require(replay == {'directory_same': True, 'rings_same': True,
+                    'session': enabled_info['session'], 'ports': 1, 'queues': 2},
+                    'repeat generation attach changed its production namespace or rings: ' + repr(replay))
+            enabled_attached = ready(enabled_secondary, 'KER_SESSION_ATTACHED')
+            require(enabled_attached['generation'] == 0 and enabled_attached['process'] == 0 and
+                    enabled_attached['epoch'] != 0 and enabled_attached['slot'] != 0 and
+                    enabled_attached['validated_rings'] == enabled_info['rings'],
+                    'enabled generation adapter did not validate all resident rings: ' + repr(enabled_attached))
+            require(generation_directory_state(enabled_primary) == enabled_before,
+                    'enabled secondary changed or replaced the resident generation directory')
+            enabled_census = status(enabled_socket)
+            require(enabled_census['registered_epochs'] == 1 and
+                    enabled_census['eal_processes'] == 1 and enabled_census['outstanding'] == 1,
+                    'enabled generation registration accounting was not singular')
+            enabled_secondary.stdin.write(b'x'); enabled_secondary.stdin.flush()
+            enabled_output, enabled_errors = enabled_secondary.communicate(timeout=20)
+            require(enabled_secondary.returncode == 0,
+                    'enabled generation secondary cleanup failed: ' + enabled_errors.decode(errors='replace'))
+            child_reap(enabled_output, enabled_attached['pid'])
+            enabled_final = eventually(0, 0, enabled_socket)
+            require(enabled_final['pool_available'] == enabled_snapshot['pool'][0] and
+                    enabled_final['outstanding'] == enabled_snapshot['pool'][1] and
+                    generation_directory_state(enabled_primary) == enabled_before,
+                    'enabled generation cleanup changed pool or directory identity')
+            enabled_final_snapshot = snapshot(enabled_primary)
+            for key in ('pool', 'pmd', 'pmd_identity', 'leases', 'peers'):
+                require(enabled_final_snapshot[key] == enabled_snapshot[key],
+                        'enabled registration cleanup changed resident ' + key)
+            enabled_primary.stdin.write(b'x'); enabled_primary.stdin.flush()
+            enabled_primary_output, enabled_primary_errors = enabled_primary.communicate(timeout=20)
+            require(enabled_primary.returncode == 0 and not enabled_socket.exists(),
+                    'enabled generation resident cleanup failed: ' + enabled_primary_errors.decode(errors='replace'))
+            print('PASS: opted-in real EAL secondary repeated the production generation attach with the same directory/rings and clean accounting')
+
             # Device admission is deliberately unavailable at this stage; a
             # bad control descriptor must also fail before original EAL starts.
             for options in (['--vdev=net_null0'], []):

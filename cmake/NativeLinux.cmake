@@ -61,7 +61,7 @@ find_library(ker_session_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} 
 if(NOT ker_session_ring_pmd)
     message(FATAL_ERROR "Resident packet sessions require the original net_ring PMD")
 endif()
-add_executable(ker-io-session src/posix/io-session.c src/posix/session-packet.c src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c)
+add_executable(ker-io-session src/posix/io-session.c src/posix/session-packet.c src/posix/session-generation-rings.c src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c)
 target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
@@ -203,6 +203,19 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-fstack-session-tc3-observer PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77 LABELS "fstack;session"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_executable(ker-session-peer-mirror-test tests/posix/session-peer-mirror.c)
+    target_include_directories(ker-session-peer-mirror-test PRIVATE src/posix)
+    target_compile_options(ker-session-peer-mirror-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-session-peer-mirror-test PRIVATE pthread)
+    add_test(NAME native-fstack-session-peer-mirror COMMAND ker-session-peer-mirror-test)
+    set_tests_properties(native-fstack-session-peer-mirror PROPERTIES TIMEOUT 10 LABELS "fstack;session")
+    add_test(NAME native-fstack-session-drain-peer
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-drain-peer.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}" --huge-dir /dev/hugepages)
+    set_tests_properties(native-fstack-session-drain-peer PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        LABELS "fstack;session")
     add_test(NAME native-fstack-session-native-packets
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-native-packets.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
@@ -221,11 +234,58 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-session-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    add_test(NAME native-fstack-session-coordinate
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-coordinate.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-fstack-session-coordinate PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        LABELS "fstack;session")
     add_test(NAME native-fstack-hugepage-preflight
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_hugepage_preflight.py")
     set_tests_properties(native-fstack-hugepage-preflight PROPERTIES LABELS "fstack;session")
-    set_tests_properties(native-fstack-session-registration PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+    set_tests_properties(native-fstack-session-registration PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77
         LABELS "fstack;session")
+    add_executable(ker-session-generation-rings-test
+        tests/posix/session-generation-rings.c src/posix/session-generation-rings.c)
+    target_include_directories(ker-session-generation-rings-test PRIVATE src/posix)
+    target_compile_features(ker-session-generation-rings-test PRIVATE c_std_11)
+    target_compile_definitions(ker-session-generation-rings-test PRIVATE KER_SESSION_TEST_HOOKS=1)
+    target_compile_options(ker-session-generation-rings-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-session-generation-rings-test PRIVATE PkgConfig::DPDK)
+    target_link_options(ker-session-generation-rings-test PRIVATE -Wl,--disable-new-dtags)
+    set_target_properties(ker-session-generation-rings-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+    add_test(NAME native-fstack-session-generation-rings
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-rings.py"
+            --test "$<TARGET_FILE:ker-session-generation-rings-test>")
+    set_tests_properties(native-fstack-session-generation-rings PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
+        LABELS "fstack;session;dpdk")
+    add_test(NAME native-fstack-session-generation-rings-registration
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-rings-registration.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-generation-rings-registration PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77
+        LABELS "fstack;session;dpdk")
+    add_test(NAME native-fstack-session-generation-tx-full
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-rings-registration.py"
+            --tx-full-only --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-generation-tx-full PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77
+        LABELS "fstack;session;dpdk")
+    add_test(NAME native-fstack-session-generation-detach
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-detach.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-generation-detach PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77
+        LABELS "fstack;session;dpdk")
+    add_test(NAME native-fstack-session-generation-empty-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-empty-config.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
+    set_tests_properties(native-fstack-session-generation-empty-config PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        LABELS "fstack;session;dpdk")
+    add_test(NAME native-fstack-session-generation-invalid-selected-entry
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-empty-config.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --invalid-selected-entry)
+    set_tests_properties(native-fstack-session-generation-invalid-selected-entry PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+        LABELS "fstack;session;dpdk")
     add_executable(ker-packet-device-test tests/posix/fstack-packet-device.c src/posix/packet-device.c)
     target_include_directories(ker-packet-device-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-packet-device-test SYSTEM PRIVATE

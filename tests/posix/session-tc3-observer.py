@@ -235,7 +235,9 @@ def main():
                                if line.startswith('KER_SESSION_DRAINED ')]
             require(len(drained_records) == 1, 'resident omitted final mempool drain proof: ' + primary_output)
             drained = json.loads(drained_records[0])
-            require(drained == dict(outstanding=0, objects=511, exception_lease_discarded=0),
+            require(drained == dict(outstanding=0, objects=511, exception_lease_discarded=0,
+                generation_rings=dict(rx_full=0, tx_full=0, tx_drop=0, rx_peak=0, tx_peak=0,
+                    rx_capacity=0, tx_capacity=0, rx_rings=0, tx_rings=0)),
                     'resident did not restore all original pool objects: ' + repr(drained))
             stderr = primary.stderr.read().decode(errors='replace')
             if stderr:

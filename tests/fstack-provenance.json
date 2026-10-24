@@ -62,7 +62,7 @@
       "ker_ctests": [
         "native-fstack-session-native-packets"
       ],
-      "adaptation": "Production resident precreates and original-rte_ring-lookups all128 slot/generation/process/channel rings with capacity64 and SP/SC flags before opening admission. It configures one original net_ring port from two distinct fixed RX/TX rings with rte_eth_from_rings; actual port count and resident epoch0/slot0 are reported. A real original EAL secondary validates all128 coordinate objects and consumes the shared directional PMD, while the resident only controls/reclaims and never relays live packets. The caller original-Linux instance uses the existing virtio packet channel; a separate original guest-Linux peer exchanges exact IPv4/IPv6 TCP4097 and UDP512 bytes through an independent TAP/byte-only wire adapter. Original PMD counter deltas, imported-Linux passive-open/UDP counters and bidirectional Ethernet capture prohibit a host-socket/control-echo shortcut. Distinct original TX/RX mbufs and the control object are journaled before grant, reclaimed only after exact borrower death, including pre-app and running-app worker failures; all511 objects return. A real competing EAL secondary cannot invoke the app guard, and an actual kill at the published worker-ready boundary must be noticed before app creation. Fixed1500 MTU is read back from original PMD and unsupported changes roll native Linux back with EOPNOTSUPP. Optional paired-device standby retains the same real secondary PID/EAL/epoch while denied, with only its control object and no native app. After exact owner death and original object reclamation it acquires, starts a real imported-Linux instance and repeats independent IPv4/IPv6 TCP4097/UDP512 traffic. A third actual queued secondary is canceled before admission by both SIGINT and SIGTERM: no app starts, the exact worker dies, and its control lease is reclaimed; SIGTERM produces no packet completion and leaves the original owner census unchanged. TC-3 remains partial because cross-generation dispatch/drain and actual exception-owner routing agreement are still absent. This qualifies TC-1 precreation/lookup/port existence, not source names/FreeBSD layouts, physical-NIC DMA, queued-driver crash injection, cross-generation flow drain, exception/KNI ownership or full reload. All previous control/ring-PMD/standby suites and the new native acceptance pass in the isolated guest; host runtime skips77 without shared hugepages."
+      "adaptation": "Production resident precreates and original-rte_ring-lookups all128 slot/generation/process/channel rings with capacity64 and SP/SC flags before opening admission. It configures one original net_ring port from two distinct fixed RX/TX rings with rte_eth_from_rings; actual port count and resident epoch0/slot0 are reported. A real original EAL secondary validates all128 coordinate objects and consumes the shared directional PMD, while the resident only controls/reclaims and never relays live packets. The caller original-Linux instance uses the existing virtio packet channel; a separate original guest-Linux peer exchanges exact IPv4/IPv6 TCP4097 and UDP512 bytes through an independent TAP/byte-only wire adapter. Original PMD counter deltas, imported-Linux passive-open/UDP counters and bidirectional Ethernet capture prohibit a host-socket/control-echo shortcut. Distinct original TX/RX mbufs and the control object are journaled before grant, reclaimed only after exact borrower death, including pre-app and running-app worker failures; all511 objects return. A real competing EAL secondary cannot invoke the app guard, and an actual kill at the published worker-ready boundary must be noticed before app creation. Fixed1500 MTU is read back from original PMD and unsupported changes roll native Linux back with EOPNOTSUPP. Optional paired-device standby retains the same real secondary PID/EAL/epoch while denied, with only its control object and no native app. After exact owner death and original object reclamation it acquires, starts a real imported-Linux instance and repeats independent IPv4/IPv6 TCP4097/UDP512 traffic. A third actual queued secondary is canceled before admission by both SIGINT and SIGTERM: no app starts, the exact worker dies, and its control lease is reclaimed; SIGTERM produces no packet completion and leaves the original owner census unchanged. TC-3 remains partial because production cross-generation dispatch/drain and full source flow-ownership behavior remain unqualified. Separately, the paired profile proves bounded adapter owner agreement: the resident binds the actual session wire/exception endpoint and fixed packet queues to one authenticated owner key, and the granted secondary validates both before polling. This does not establish F-Stack KNI ABI equivalence or broad exception routing. This qualifies TC-1 precreation/lookup/port existence, not source names/FreeBSD layouts, physical-NIC DMA, queued-driver crash injection, cross-generation flow drain, exception/KNI ownership or full reload. Host-only strict BUILD_TESTING=ON/OFF builds and the lease-input, plugin-discovery, and envelope CTests passed; the host plugin-discovery CTest covered configured and custom-prefix modules, spaces, versioned target names without requiring an ABI suffix, and fail-closed missing configuration/module cases. The later exact candidate `16f27ed0f13b3a5e424d9082cad6f3b0a59fa0fe` passed all 15 suites in a fresh guest. Its actual-result manifest `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-driver-paths-integrated-guest1/actual-result-driverpaths-full15-1.json` has SHA-256 `c48fbaf75164d971ac92e802a206a401495770fc2a2d0c528cd534d65002e224` and binds package manifest `4a6490542312d7854b1d837b9a809f6a07e6fcaf3bde6b209d9532e229a978a3`, image `a602222a63ca719321c7cec6b87596c1f3e8c04a9304df63bc93ffed5b0d0699`, and serial `5cda0488a8c5ca455bc465c73c29d1abcddc113bc818bad7f881c65be00ee11c`; all suite exits were zero, the matrix marker was present, and QEMU exited zero after normal power-down. This integrated validation adds a portable configured-PMD-path discovery check; it does not alter source-case status/counts or claim physical-NIC/offload behavior."
     },
     "native-fstack-session-standby": {
       "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
@@ -74,6 +74,43 @@
         "native-fstack-session-standby"
       ],
       "adaptation": "Two real master/secondary chains retain their original EAL attachments and coordinate-specific controls while the resident grants one original ring-PMD consumer. Both masters and workers remain alive through synchronized control/owner samples; only the owner executes actual174-byte TX/RX bursts with exact original counter deltas. Serialized resident owner snapshots prevent mixing a grant with a recycled slot epoch. Master death and a frozen live orphan do not permit preemption. Exact borrower death recovers the old journaled object, and the same standby PID/EAL/epoch then acquires and performs actual PMD bursts without restart. Production epoch-status proves dead epochs become non-live, resident epoch0 remains live and slot reuse cannot revive an old epoch. Zero-count standby performs control only and does not fabricate frame traffic. All511 original objects return. This qualifies only source test_it_a14_epoch_liveness_after_exit in addition to previously qualified scenarios; TC-3 stays partial because separate fixed network dispatch and exception/KNI ownership agreement have no implemented packet-routing path. No imported-Linux packet delivery, physical-device handover, original heartbeat-timeout ABI or full application reload claim."
+    },
+    "native-fstack-session-drain-peer": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": [
+        "test_it_a14_usr2_drain_peer_semantics"
+      ],
+      "ker_ctests": [
+        "native-fstack-session-drain-peer"
+      ],
+      "adaptation": "This maps only test_it_a14_usr2_drain_peer_semantics. The pinned TC-7 source starts a drain-hold worker and a peer-sampling worker, reaps the old worker’s master while the worker stays alive, requires peer1=1 while its heartbeat stamp is fresh, then releases that worker and requires peer1=0 after the source freshness interval. Ker runs two real EAL secondaries under the authenticated resident with distinct epochs/slots but the same source generation0/process0. Only the exact ATTACHED worker can enter drain mode; its own monotonic heartbeat remains valid after master death, and PEER_STATUS selects its fresh epoch/generation. Exact worker death stops heartbeat updates; after the 2-second freshness window PEER_STATUS returns caller-epoch/opposite-generation fallback and clears only the advisory draining bit. The same production adapter test also checks reload-active suppression, coherent true-to-true peer replacement, ordinary worker exit on master death, exact pidfd cleanup and a 511-object resource baseline. The F-M5-1 helper/mirror proof supports the fallback-coordinate oracle but is not a second catalog mapping. The combined CMake-built guest5 evidence record is usr2-drain-peer-guest5-final/run-evidence-attemptusr2final5.json (SHA256 8bccb9243a48f257f0c2b4ce5d946a9af17b6f272f0e70149818cf5227bf133e); all five bound guest suites exited zero and the guest powered down. This TC-7 mapping does not cover P1 detach retention, nonowner/foreign TX, flow-map, external packet TX, established TCP continuity or full reload; P1 queue-ownership and peer-TX retention are recorded separately. No F-Stack protocol implementation or upstream source is modified."
+    },
+    "native-fstack-session-generation-detach": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_queue_ownership",
+        "test_p1_drain_peer_tx",
+        "test_p1_drain_nonowner_tx"
+      ],
+      "ker_ctests": [
+        "native-fstack-session-generation-detach"
+      ],
+      "adaptation": "This maps test_p1_drain_queue_ownership and test_p1_drain_peer_tx, and now separately maps test_p1_drain_nonowner_tx. The pinned P1 helper seeds one known-pool mbuf into each of eight original rings for two queues, RX/TX directions and generations. With no foreign peer and the PMD/RX owner in the source generation (mode 0), unregister drains only configured RX q0/g0 and TX q1/g0, leaves the six other ring entries, returns two objects to the 64-object source pool, and after repeated unregister/reinit finds the same RX ring pointer. With a live foreign slot-2/epoch-2 peer (mode 2), it drains only RX q0/g0, retains configured TX and the six other entries, and returns one object. The new non-owner mode uses one authenticated master slot/epoch: a live generation-1 secondary owns the actual PMD/RX lease while a registered generation-0 source detaches. The resident validates and pins that exact owner, drains only RX q0/g0 (+1), retains TX q1/g0 and the other six journaled entries, and leaves generation-1 PMD identity unchanged. Wrong-master ARM is denied; exact owner death/replacement rejects the stale capability with ESTALE and its replay with EPERM, without changing the replacement owner or pool. The real EAL fixture uses production journals/rings, retained-object identity, exact detach replay, same-identity re-admission, persistent ring identity and 511-object positive cleanup. A separate final held-dequeue case asserts bounded fail-closed resident status125, no successful detach acknowledgement and exact pidfd death; this is safety evidence rather than an extra source assertion. Evidence is bound to runtime commit 67bfc5b652f76d36fdf827657fa48dde223a76ec by aggregate manifest SHA256 71e23ac944f6958db88f956742a4bbe2e654a68963525f43b2147ee508cd12ce. That historical evidence was split: guest5 passed the ten parent suites but failed overall at P1; guest9 passed P1-only. It was not a single-image full-matrix PASS; the later integrated run below provides that result. This mapping does not adapt test_p1_drain_foreign_epoch_tx, TX burst/payload behavior, flow-map, external TX, TCP continuity or full reload. The separate native-fstack-session-generation-empty-config mapping adapts only test_p1_drain_empty_qconf through the real empty-cleanup-mask EAL test; invalid-selected-entry behavior is safety evidence only. The earlier integrated candidate `5f9055e28782ad4cdf86cc363f2e8cbfd3ef2c15` and guest6 are retained as historical evidence. The latest candidate `0ac28b8973b1f79e5fdbb9a86335531d9f71fd14` passed all 13 suites in one guest image; actual-result manifest `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-directory-modes-integrated-guest2/actual-result-attemptmodes-integrated1.json` has SHA-256 `30f449b0762efa5fd0f953103aed2ee3c7f11368cf72b4ec624b9cef67e51571`, package SHA-256 `4d87ed42fe94ed1c45736a62701779fe2683511dd933115105c5d07d4bd45cbb`, image SHA-256 `32750d8b2c2648edf6abe56287d18723b030cad79a7879ebf954d2a9ed5d6149`, and serial SHA-256 `d2c258cc7feedca27e0becc0a83d17bf901dcb29763fef6e93106898b6022d44`. All 13 suites exited zero; QEMU exited zero after normal power-down and the final pool census was 511 objects with zero outstanding."
+    },
+    "native-fstack-session-directory-validation": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_directory_full",
+        "test_p1_directory_missing",
+        "test_p1_directory_invalid",
+        "test_p1_directory_success",
+        "test_p1_directory_primary_slot_busy"
+      ],
+      "ker_ctests": [
+        "native-fstack-session-registration",
+        "native-fstack-session-standby"
+      ],
+      "adaptation": "All five source cases are scenario-adapted through actual original-DPDK EAL processes and the production Ker directory validator. Missing uses an independent EAL primary without a Ker directory; invalid mutates real shared-header fields after a secondary has reserved but before EAL and proves rejection before ATTACHED with resident state unchanged; full uses one real ring-PMD owner plus two live control-only standbys and repeats fourth-MASTER denial while comparing the resident directory, owner identity, slots, leases, peer mirrors and pool; primary-slot-busy starts a second real EAL primary on the active file prefix and proves the live resident remains unchanged. Success observes default-off absence of the generation directory while generic registration succeeds, then a separate generation-rings-enabled EAL namespace where the actual secondary attaches and repeats the production attach lookup with the same directory and all eight ring pointers. The same-session test restores pool, PMD, lease and peer state after exact child cleanup. It does not claim a literal graceful_reload switch or F-Stack ABI equivalence. Exception endpoint fields are zero in the ring-PMD profile; this is not paired-TAP evidence. The fixed epoch-derived no-fallback live-slot policy remains blocked because Ker selects any free resident slot. Guest result manifest SHA-256 40e67429eee326cd2253832b06bd7418c010e33ac5212eda5dfc4a4388ab4523 binds package eec8f41a68145442a18748da33d00e6ab6f3a40741715f5be83282dbb9a849c2, image cb0c73789ed9c0c2e6b87b50386fd0529c37370f685161b6a67d479b5e87e04d and serial 2c883f53041d2d3df54641d9f31f6118d27358750de33de5b63828c14862123c. The latest integrated 13-suite guest reran the default-off and enabled profiles on `0ac28b8973b1f79e5fdbb9a86335531d9f71fd14`; actual-result manifest SHA-256 `30f449b0762efa5fd0f953103aed2ee3c7f11368cf72b4ec624b9cef67e51571`, package SHA-256 `4d87ed42fe94ed1c45736a62701779fe2683511dd933115105c5d07d4bd45cbb`, image SHA-256 `32750d8b2c2648edf6abe56287d18723b030cad79a7879ebf954d2a9ed5d6149`, and serial SHA-256 `d2c258cc7feedca27e0becc0a83d17bf901dcb29763fef6e93106898b6022d44`. The standalone guest4 result above remains historical; this is the latest combined evidence."
     },
     "native-fstack-session-directory": {
       "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
@@ -88,6 +125,15 @@
         "native-fstack-session-ring-pmd"
       ],
       "adaptation": "Runtime-only adaptation using original DPDK EAL, rings and mbufs: production resident precreates shared geometry, authenticates real secondary processes under distinct plain masters, journals each control mbuf before RESERVE acknowledgement, and reclaims it only after exact borrower death. Three chains are held alive before concurrent probes; identity/payload/sequence checks prohibit cross-namespace replies. For the source A4/USR2-chain recycling case, all three masters are killed without retirement, surviving borrowers still block recycling, then all workers leave original EAL and a fourth master/secondary must obtain a fresh nonzero epoch/slot and validate real directory/rings/pool through actual shared transport. Empty-ring borrower crashes before first enqueue and after reply dequeue, published-request timeout and conservative live-borrower cleanup are tested. This qualifies test_it_a14_usr2_chain_slot_recycle and, with ring-PMD/native-packet acceptance, test_it_a14_secondary_looks_up_own_slot and test_it_a14_primary_precreates_all_slots. The own-slot source uses an original null PMD, so physical NICs and Linux packet delivery are not requirements of that individual case. The simultaneous-master case remains partial because cross-generation dispatch/drain and exception/KNI-owner agreement remain unqualified. Physical-device handover is additionally outside this software profile. An optional fixed original net_ring PMD now configures one shared queue in the resident and attaches real EAL secondaries. Only a granted borrower may call actual TX/RX bursts; each 174-byte Ethernet test frame and original PMD counter delta are checked. A second real secondary is denied EBUSY, including after the owning master dies while its borrower survives. Exact borrower death recovers the separately journaled original mbuf, then a newer epoch can become consumer. Primary never polls data while a borrower is live; this ring-PMD test is not imported-Linux delivery, physical-NIC parking or source KNI-owner-word proof. Both pre-TX and post-RX borrower deaths restore all511 objects; queued-driver crash recovery is not yet independently injected. No source F-Stack ABI, FreeBSD networking, actual USR2 application reload or hardware handover is claimed. Runtime CTest skips77 without shared hugepages; complete CMake-built production acceptance passed in the isolated original-DPDK guest."
+    },
+    "nr19-generation-aware-rings": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": "test_ut_nr_19_drain_ring_sp_sc",
+      "ker_ctests": [
+        "native-fstack-session-generation-rings",
+        "native-fstack-session-generation-rings-registration"
+      ],
+      "adaptation": "Ker's resident-created original-DPDK rings use stable port/queue/generation names, RX MP/SC and TX SP/SC flags, and journaled mbuf ownership. The standalone EAL component test uses one port, two queues, and two actual secondary generations to check RX transfer and source rejection, invalid queue ownership, multisegment validation, peer TX, full-ring ENOBUFS/counter/caller ownership, FIFO drain, unregister/idempotent re-admission on the same ring, exact-death recovery, generation recycle, and final pool baseline. A separate original-DPDK EAL guest runs the production adapter operations inside two resident-authenticated ATTACHED secondaries with distinct slots and epochs: six exact G probes cover RX payload transfer/queue isolation, empty and accepted peer TX, full-ring rejection/counter and ownership, ordered FIFO release/pool delta; a third live generation-0 owner is rejected and resident teardown succeeds. This adapts every assertion in the pinned NR-19 ring helper test using a Ker-owned adapter, not a direct import of F-Stack globals or ABI. The worker production packet-dispatch/flow-map path, external TX burst, TCP/UDP traffic and complete reload are broader source scenarios and are not claimed by this mapping. Runtime tests require original DPDK hugepages and skip77 when the host lacks them."
     },
     "native-fstack-config-owned-arrays": {
       "source_file": "tests/unit/test_ff_config.c",
@@ -194,7 +240,7 @@
       "ker_ctests": [
         "native-fstack-startup-failures"
       ],
-      "adaptation": "Run the actual Ker launcher, production preload/guard plus a separate test-only preload variant and original DPDK net_tap worker in a private network namespace. A successful control must execute the interface probe and publish native statistics. Test-only host CLOCK_REALTIME EIO is restricted to the application preload by its startup/packet environment: original Linux boots, then the production realtime adapter fails before native READY and main. A real off-subnet gateway is rejected by original Linux during network bring-up. A separate non-installed library compiles the exact same Ker adaptation sources and pinned liblkl with link-time wrappers for lkl_init, lkl_netdev_add, lkl_start_kernel and lkl_if_up; no hook exists in the production library. Its successful control forwards to real LKL initialization, device registration, kernel boot, loopback and device activation. Inject EIO separately at init, registration and boot; an exact stage trace must stop at the failed boundary, with successful real prerequisite stages and no later calls. Variadic kernel command-line arguments are formatted and forwarded to the real boot function in the control. Injected loopback EIO must stop before device activation; injected device EIO follows successful real loopback activation and must reach the production interface-activation failure handler. Exact host-side traces prove these stages; neither failure may send native READY or execute main. These are injected adapter-return failures, not organic internal kernel/NIC faults or full F-Stack stage equivalence. Unknown ethdev lookup fails in the worker before native startup; retain its already-consumed DONE snapshot in launcher --stats. Every case requires actual successful rte_eal_cleanup and zero outstanding mbufs; failures return125 and leave no application marker/native success statistics. Monotonic host clocks and upstream sources are unchanged. No FreeBSD initialization ABI or exit1 equivalence is claimed."
+      "adaptation": "Run the actual Ker launcher, production preload/guard plus a separate test-only preload variant and original DPDK net_tap worker in a private network namespace. A successful control must execute the interface probe and publish native statistics. Test-only host CLOCK_REALTIME EIO is restricted to the application preload by its startup/packet environment: original Linux boots, then the production realtime adapter fails before native READY and main. A real off-subnet gateway is rejected by original Linux during network bring-up. A separate non-installed library compiles the exact same Ker adaptation sources and pinned liblkl with link-time wrappers for lkl_init, lkl_netdev_add, lkl_start_kernel and lkl_if_up; no hook exists in the production library. Its successful control forwards to real LKL initialization, device registration, kernel boot, loopback and device activation. Inject EIO separately at init, registration and boot; an exact stage trace must stop at the failed boundary, with successful real prerequisite stages and no later calls. Variadic kernel command-line arguments are formatted and forwarded to the real boot function in the control. Injected loopback EIO must stop before device activation; injected device EIO follows successful real loopback activation and must reach the production interface-activation failure handler. Exact host-side traces prove these stages; neither failure may send native READY or execute main. These are injected adapter-return failures, not organic internal kernel/NIC faults or full F-Stack stage equivalence. Unknown ethdev lookup fails in the worker before native startup; retain its already-consumed DONE snapshot in launcher --stats. Every case requires actual successful rte_eal_cleanup and zero outstanding mbufs; failures return125 and leave no application marker/native success statistics. Monotonic host clocks and upstream sources are unchanged. No FreeBSD initialization ABI or exit1 equivalence is claimed. The specific test_ff_init_fail_dpdk_if_up mapping is limited to this late interface-activation failure/no-app/cleanup scenario: actual lkl_if_up device EIO after real loopback success. The source mock asserts only prior-stage call counts and exit(1); Ker does not claim the ff_dpdk_if_up API, exit code, or multi-port rollback."
     },
     "native-fstack-packet-device": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
@@ -496,7 +542,9 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific Linux TCP SO_LINGER/last-reference-close extension of pinned host shutdown and dup bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server runs use independent Linux peers over DPDK net_tap/veth. Six data connections cover both closer directions and three modes: enable abortive linger then disable it through dup for graceful EOF; leave zero linger enabled and consume reset through recv; consume reset through SO_ERROR instead. Shared queried option values are checked. Closing the original descriptor must leave the alias usable: after a TCP control barrier, the peer observes no poll/epoll readiness for 100 ms and EAGAIN, then receives an exact 17-byte payload through the remaining alias. The final alias closes only after payload consumption acknowledgment. Terminal poll/epoll readiness includes RDHUP/full 64-bit tags and reset ERR/HUP; reset is observed exactly once by the selected consumer, cleared on both aliases, and subsequent reads return EOF. Native instances require seven matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No runtime/protocol changes, positive linger deadlines, unread-data close, process exit, concurrent close/read or cross-process descriptor transfer coverage is introduced.",
-      "ker_ctests": ["native-fstack-tcp-linger"]
+      "ker_ctests": [
+        "native-fstack-tcp-linger"
+      ]
     },
     "native-fstack-udp-receive-truncation": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -514,7 +562,9 @@
         "test_ff_host_msg_name_shutdown_bridges"
       ],
       "adaptation": "Ker-specific independent-peer fd-mode extension of pinned host nonblocking/dup/message bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth with separate control/data connections. Each endpoint receives in turn. Before the sender is released, MSG_DONTWAIT on a blocking socket returns EAGAIN without changing F_GETFL; FIONBIO=1 through dup makes both descriptors nonblocking and ordinary read/recvmsg return EAGAIN; F_SETFL through the original clears shared O_NONBLOCK, another MSG_DONTWAIT leaves it clear, and F_SETFL through the alias enables it again. Poll/epoll with full 64-bit tag drive the first exact payload; FIONBIO=0 through the original restores blocking on both descriptors before a two-iovec MSG_WAITALL receives the exact 17-byte tail and both descriptors observe EOF. No-argument FIOCLEX/FIONCLEX plus F_SETFD separately verify that FD_CLOEXEC is descriptor-local, initially set on the original but absent on dup, and remains independent through mode changes and I/O. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, exec-inheritance support claim, concurrent F_SETFL, mode changes during blocked syscalls or general no-argument ioctl coverage is introduced.",
-      "ker_ctests": ["native-fstack-tcp-fd-modes"]
+      "ker_ctests": [
+        "native-fstack-tcp-fd-modes"
+      ]
     },
     "native-fstack-socket-contracts": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -524,7 +574,9 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Seven Ker-specific public POSIX socket-contract extensions of pinned host bridge name/nonblocking/dup scenarios. Separate host-reference and imported-Linux CTests execute the same assertions: socket creation flags and SO_TYPE/SO_DOMAIN/SO_PROTOCOL; explicit accept/accept4 flags rather than listener flag inheritance; zero/short address buffers with untouched sentinels and full returned lengths; TCP/keepalive options, invalid-option errors and recovery; bind collision without disrupting the live listener; and F_DUPFD_CLOEXEC/fstat alias identity, self-duplication errors and surviving I/O after the original closes. The upstream host-only bridge tests do not cover these additional Linux socket contracts. Native fd scenario execution requires original-Linux TCP open counters, no outstanding packet buffers, and the existing independent-host TCP/DPDK interop. Contract cases themselves use loopback. No ff implementation, private API, mock, protocol change or new supported capability is introduced. Added explicit host SYS_socket plus normal native UDP sockets bound simultaneously to identical loopback address/port without reuse. Distinct payloads/peer tuples, shared mixed epoll with full64-bit tags, nonblocking/CLOEXEC, EAGAIN after drain and both close orders prove independent ownership. Host reference requires same-kernel EADDRINUSE instead. The native runner requires the coexistence marker and exactly3 original-Linux UDP sends/receives, excluding host traffic, plus its existing TCP opens/zero mbufs. These UDP paths use loopback; separate TCP exercises original DPDK. No global stack.kernel_coexist configuration-field equivalence is claimed; all4source flag cases remain blocked under issue228. See docs/stack-coexistence.md.",
-      "ker_ctests": ["native-fstack-socket-contracts"]
+      "ker_ctests": [
+        "native-fstack-socket-contracts"
+      ]
     },
     "native-fstack-readiness": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -533,37 +585,49 @@
         "test_ff_host_ioctl_fionbio"
       ],
       "adaptation": "Ker-specific poll/select readiness extensions of the pinned FF_KERNEL_COEXIST host readiness and nonblocking bridge scenarios. Separate host-reference and native CTests execute the same eight public POSIX TCP cases: listener/accept transitions, read/write and duplicate-entry/set-bit counts, mixed host pipe/native TCP with pselect timeout preservation, invalid/negative fds, urgent-data POLLPRI/exceptfds, SO_RCVLOWAT, buffered EOF and zero/invalid timeouts. The upstream cases test host kqueue/epoll bridge registration and FIONBIO, not these poll/select or native TCP behaviors. Native CTest logs positive imported-kernel active/passive opens, verifies packet-buffer reclamation, runs independent host-peer TCP over DPDK, and rejects invalid preload/device startup. Local readiness cases use loopback rather than DPDK. No ff implementation, kqueue emulation, synthetic events, protocol state machine, performance claim, or io_uring support is added.",
-      "ker_ctests": ["native-fstack-readiness"]
+      "ker_ctests": [
+        "native-fstack-readiness"
+      ]
     },
     "mbuf-release": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_pktmbuf_free_basic",
       "adaptation": "Use Ker pool; require restored availability instead of skip.",
-      "ker_ctests": ["fstack-mbuf-release"]
+      "ker_ctests": [
+        "fstack-mbuf-release"
+      ]
     },
     "clock-monotonic": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_get_tsc_ns_monotonic",
       "adaptation": "Use Ker monotonic nanosecond clock; no ff TSC implementation.",
-      "ker_ctests": ["fstack-clock-monotonic"]
+      "ker_ctests": [
+        "fstack-clock-monotonic"
+      ]
     },
     "empty-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_zero_total",
       "adaptation": "Verify zero-length copy export and ownership, not NIC transmission.",
-      "ker_ctests": ["fstack-empty-export"]
+      "ker_ctests": [
+        "fstack-empty-export"
+      ]
     },
     "null-context": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_null_ctx_no_crash",
       "adaptation": "Ker allocation rejects null context; no upstream ff consumption rule.",
-      "ker_ctests": ["fstack-null-context"]
+      "ker_ctests": [
+        "fstack-null-context"
+      ]
     },
     "packet-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_basic",
       "adaptation": "Verify copied bytes and lifetime; no ethdev send claim.",
-      "ker_ctests": ["fstack-packet-export"]
+      "ker_ctests": [
+        "fstack-packet-export"
+      ]
     },
     "ethdev-tx": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -574,31 +638,41 @@
         "test_ff_dpdk_if_send_udp_csum"
       ],
       "adaptation": "The raw-send cases call ff_dpdk_raw_packet_send with 64 bytes and 4096 bytes, the latter forcing its multisegment allocation path. Ker adapts the bounded copied-packet exporter to a borrowed, caller-configured ethdev TX queue; the pinned DPDK net_ring PMD verifies exact bytes, FIFO/full-ring retry, pool exhaustion and driver TX packet statistics. A separate Ker extension, motivated by the upstream TCP/UDP checksum-offload cases, opt-in completes supported CHECKSUM_PARTIAL packets in software and verifies TCP/UDP wire checksums independently, including UDP folded-zero policy. It does not reproduce hardware offload and makes no NIC, F-Stack stack, or application-protocol claim.",
-      "ker_ctests": ["ethdev-tx"]
+      "ker_ctests": [
+        "ethdev-tx"
+      ]
     },
     "multiseg-boundary": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker currently rejects multi-segment adoption, preserving caller ownership; positive support deferred.",
-      "ker_ctests": ["fstack-multiseg-boundary"]
+      "ker_ctests": [
+        "fstack-multiseg-boundary"
+      ]
     },
     "queue-isolation": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_ut_nr_19_drain_ring_sp_sc",
       "adaptation": "Two owner-worker Linux skb FIFOs; no reload generations or SP/SC DPDK ring claim.",
-      "ker_ctests": ["fstack-queue-isolation"]
+      "ker_ctests": [
+        "fstack-queue-isolation"
+      ]
     },
     "queue-full-ownership": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_ut_nr_19_drain_ring_sp_sc",
       "adaptation": "Full FIFO preserves caller reference and pool availability; no drain-ring statistics claim.",
-      "ker_ctests": ["fstack-queue-full-ownership"]
+      "ker_ctests": [
+        "fstack-queue-full-ownership"
+      ]
     },
     "export-exhaustion-retry": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_copydata_fail",
       "adaptation": "Exhaust the real Ker packet pool, assert failed copy-out preserves the caller's output slot and skb ownership, then release one mbuf and require a successful retry. No mocked copydata or NIC send claim.",
-      "ker_ctests": ["fstack-export-exhaustion-retry"]
+      "ker_ctests": [
+        "fstack-export-exhaustion-retry"
+      ]
     },
     "offload-metadata-rejection": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -607,37 +681,49 @@
         "test_ff_dpdk_if_send_tso"
       ],
       "adaptation": "Ker explicitly rejects checksum-partial and GSO metadata it cannot export, preserves the skb and output slot, then succeeds after metadata is cleared. No offload execution claim.",
-      "ker_ctests": ["fstack-offload-metadata-rejection"]
+      "ker_ctests": [
+        "fstack-offload-metadata-rejection"
+      ]
     },
     "software-checksum-completion": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_ip_csum",
       "adaptation": "Ker-specific software completion extension motivated by this upstream checksum-offload case: copy a linear Internet-checksum CHECKSUM_PARTIAL skb and complete its seeded transport checksum using Linux checksum primitives before export. CRC32C is rejected when the imported skb layout exposes csum_not_inet; GSO and the existing ordinary CHECKSUM_PARTIAL export remain rejected, and the copy carries no DPDK TX offload flags. This does not claim F-Stack's NIC/hardware offload behavior.",
-      "ker_ctests": ["fstack-software-checksum-completion"]
+      "ker_ctests": [
+        "fstack-software-checksum-completion"
+      ]
     },
     "headroom-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_basic",
       "adaptation": "Export a payload with explicit headroom, verify mbuf data_off and bytes, then free the skb and validate copy lifetime. No ethdev transmission claim.",
-      "ker_ctests": ["fstack-headroom-export"]
+      "ker_ctests": [
+        "fstack-headroom-export"
+      ]
     },
     "multiseg-copy": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Use a real three-segment DPDK chain with uneven and zero-length segments as input to Ker's explicit chain-to-linear-skb copy adapter; verify source links/refcounts remain caller-owned and the copy survives source-chain release. This does not implement upstream's segmented TX path or Linux nonlinear skb support.",
-      "ker_ctests": ["fstack-multiseg-copy"]
+      "ker_ctests": [
+        "fstack-multiseg-copy"
+      ]
     },
     "multiseg-ethernet-ingress": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Adapt the multisegment packet geometry intent in the ingress direction: split destination/source/type fields across real DPDK segments, copy to a linear skb, classify with unchanged Linux eth_type_trans and deliver one host packet through Ker's existing protocol runtime. Also verify broadcast/otherhost classification, ownership and failure boundaries. This is not F-Stack TX, NIC traffic, Ethernet offload or nonlinear Linux skb support.",
-      "ker_ctests": ["fstack-multiseg-ethernet-ingress"]
+      "ker_ctests": [
+        "fstack-multiseg-ethernet-ingress"
+      ]
     },
     "arp-chain-feedback": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific integration extension of the upstream multisegment geometry scenario: split a valid Ethernet ARP reply across a real DPDK chain, linearize and classify it, then exercise the existing ARP decoder and scoped native neighbor feedback from an actual worker RX poll. Verify rejection boundaries, timer/reference preservation, source-chain release and pool recovery. The ARP feedback scenario is not an upstream F-Stack test and does not claim NIC traffic or general ARP learning. The opt-in known-peer resolver extension also tests INCOMPLETE reply admission, queued output, invalid broadcast reply retention, and consumed output on exporter pressure through the same actual worker RX path.",
-      "ker_ctests": ["fstack-arp-chain-feedback"]
+      "ker_ctests": [
+        "fstack-arp-chain-feedback"
+      ]
     },
     "ipv4-ingress-validation": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -646,25 +732,33 @@
         "test_ff_dpdk_if_send_ip_csum"
       ],
       "adaptation": "Ker-specific ingress/header-validation extension. At pinned F-Stack revision 646a641cfff77f4815e1e29829a09e1ed15a2999 both named cases exercise ff_dpdk_if_send, not IPv4 ingress. Ker uses real segmented DPDK input and its copy/classify path, then validates IPv4 header/options, length, padding and native ip_fast_csum. No ip_rcv, routing, fragment reassembly, transport/socket or NIC delivery claim.",
-      "ker_ctests": ["fstack-ipv4-ingress-validation"]
+      "ker_ctests": [
+        "fstack-ipv4-ingress-validation"
+      ]
     },
     "udp-ingress-validation": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
       "adaptation": "Ker-specific ingress extension motivated by the pinned UDP checksum TX case. The F-Stack source only sets UDP TX offload metadata and calls ff_dpdk_if_send; it does not test UDP ingress. Ker validates an unfragmented IPv4 UDP datagram using the original Linux pseudoheader checksum primitives. This does not claim socket delivery, routing, reassembly, ICMP, NIC or TX offload support.",
-      "ker_ctests": ["fstack-udp-ingress-validation"]
+      "ker_ctests": [
+        "fstack-udp-ingress-validation"
+      ]
     },
     "udp-minimal-boundaries": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
       "adaptation": "Additional Ker-specific UDP ingress regression for the minimum eight-byte header with zero and valid nonzero checksums, zero-valued ports, even payload length and Ethernet padding exclusion. The upstream case is still TX-only and does not cover these receive semantics.",
-      "ker_ctests": ["fstack-udp-minimal-boundaries"]
+      "ker_ctests": [
+        "fstack-udp-minimal-boundaries"
+      ]
     },
     "tcp-ingress-validation": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_tcp_csum",
       "adaptation": "Ker-specific ingress extension motivated by the pinned TCP checksum TX case. The upstream case enables TCP TX checksum offload and calls ff_dpdk_if_send; it is not a TCP receive test. Ker validates an unfragmented IPv4 TCP segment and its complete pseudoheader checksum, preserving options as opaque bytes. This does not claim TCP option interpretation, connection state, routing, reassembly, socket delivery, NIC or TX offload support.",
-      "ker_ctests": ["fstack-tcp-ingress-validation"]
+      "ker_ctests": [
+        "fstack-tcp-ingress-validation"
+      ]
     },
     "transport-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -673,7 +767,9 @@
         "test_ff_dpdk_if_send_tcp_csum"
       ],
       "adaptation": "Ker-specific worker RX integration extension motivated by upstream UDP/TCP TX checksum-offload cases; neither upstream case tests ingress. A registered ETH_P_IP handler validates and synchronously exposes existing immutable UDP/TCP packet views, consumes its skb reference on every path, and fails closed when protocol fanout shares the skb descriptor reference. This is not socket delivery, routing, fragment reassembly, TCP state or NIC receive support.",
-      "ker_ctests": ["transport-receive"]
+      "ker_ctests": [
+        "transport-receive"
+      ]
     },
     "icmp-echo": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -682,13 +778,17 @@
         "test_ff_dpdk_if_send_tcp_csum"
       ],
       "adaptation": "Ker-specific ICMPv4 echo constructor and worker-ingress extension. The pinned F-Stack cases cover UDP/TCP TX checksum offload, not ICMP. Ker constructs explicit-address echo request/reply frames with opaque IPv4 options and validates the complete ICMP checksum in an immutable worker callback view; it does not implement automatic replies, ICMP errors, routing, reassembly, sockets, ping or NIC support.",
-      "ker_ctests": ["icmp-echo"]
+      "ker_ctests": [
+        "icmp-echo"
+      ]
     },
     "udp-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
       "adaptation": "Ker-specific software packet-construction and receive-roundtrip extension motivated by the upstream UDP TX checksum-offload case, which is not an explicit-address UDP constructor or ingress scenario. Ker builds a fixed Ethernet/IPv4/UDP packet with Linux software checksum primitives, copies it through the existing export and segmented ingress adapters, then validates it in the worker-scoped transport receiver. No routing, address policy, socket, automatic TX offload or NIC transmission is claimed.",
-      "ker_ctests": ["udp-create"]
+      "ker_ctests": [
+        "udp-create"
+      ]
     },
     "udp-configured-create": {
       "source_file": "tests/udp-configured-create.c",
@@ -709,7 +809,9 @@
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
       "adaptation": "Ker-specific neighbor-backed packet-construction extension motivated by the pinned UDP TX checksum case. The upstream case does not perform neighbor selection or ARP resolution. Ker uses one configured local address/device and an existing permanent neighbor entry, releases the lookup reference before allocating the packet, then validates software checksum and worker RX copy/retry behavior. No unresolved queue, ARP resolution, FIB, route, socket or NIC transmission is claimed.",
-      "ker_ctests": ["udp-neighbor-create"]
+      "ker_ctests": [
+        "udp-neighbor-create"
+      ]
     },
     "tx-copy-export-retry": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -720,7 +822,9 @@
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_tcp_csum",
       "adaptation": "Ker-specific explicit-address TCP/IPv4 packet-construction and worker receive-roundtrip extension motivated by the pinned TCP TX checksum-offload case, which is not a constructor or receive test. Ker writes fixed Ethernet/IPv4/TCP headers and software checksums; an application sink accepts a copy, then a real segmented chain is classified and validated by the existing TCP packet-view receiver. No socket, TCP state machine, route, NIC or hardware offload is claimed.",
-      "ker_ctests": ["tcp-create"]
+      "ker_ctests": [
+        "tcp-create"
+      ]
     },
     "tcp-options-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -731,13 +835,17 @@
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_tcp_csum",
       "adaptation": "Ker-specific extension of the pinned TCP TX checksum case: derives the source IPv4/MAC from one configured address/device and the destination MAC from an existing NUD_PERMANENT neighbor, releases the lookup reference before allocation, then validates software checksums through TX retry and segmented worker RX. The upstream case does not test neighbor selection or ARP resolution. No unresolved queue, FIB, routing, source fallback, TCP state, socket or NIC transmission is claimed.",
-      "ker_ctests": ["tcp-neighbor-create"]
+      "ker_ctests": [
+        "tcp-neighbor-create"
+      ]
     },
     "fstack-chain-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific positive linear-skb-to-DPDK-chain copy extension motivated by the pinned multisegment TX case. Ker copies an existing supported linear UDP/TCP packet into independently owned direct mbufs, then validates the chain through its copy/classify worker RX path after releasing the source skb. The upstream case exercises F-Stack TX; this does not claim F-Stack/NIC transmission, Linux nonlinear skb support, or offload.",
-      "ker_ctests": ["fstack-chain-export"]
+      "ker_ctests": [
+        "fstack-chain-export"
+      ]
     },
     "tx-chain-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -783,7 +891,9 @@
         "test_ff_dpdk_if_send_tcp_csum"
       ],
       "adaptation": "Ker-specific concurrent same-process SP/SC extension motivated by pinned F-Stack segmented TX and UDP/TCP checksum TX cases. A registered EAL producer and distinct registered EAL consumer overlap across 192 alternating UDP, TCP, and ICMP echo chains using a capacity-one DPDK ring; an independent wire-byte checksum oracle runs before enqueue and the actual consumer worker validates protocol dispatch order and payloads. IPv4 and TCP option lengths vary across the records. Initial backpressure is deterministic. This does not claim MPMC, multiprocess/RSS, NIC I/O, F-Stack RX, or upstream concurrency coverage.",
-      "ker_ctests": ["fstack-concurrent-ring"]
+      "ker_ctests": [
+        "fstack-concurrent-ring"
+      ]
     },
     "udp-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -792,7 +902,9 @@
         "test_ff_dpdk_if_send_multiseg"
       ],
       "adaptation": "Ker-specific extension: construct explicit Ethernet/IPv4/UDP packets with opaque copied IPv4 options, validate the variable-IHL IPv4 and UDP checksums, then export a segmented copy through the actual worker receive path. The pinned cases motivate checksum and segmented-buffer coverage; they do not test IPv4 options semantics. No routing, source-route processing, socket delivery or NIC transmission is claimed.",
-      "ker_ctests": ["udp-ip-options"]
+      "ker_ctests": [
+        "udp-ip-options"
+      ]
     },
     "tcp-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -801,7 +913,9 @@
         "test_ff_dpdk_if_send_multiseg"
       ],
       "adaptation": "Ker-specific extension constructs Ethernet/IPv4/TCP packets with independently supplied opaque IPv4 and TCP option bytes, verifies both checksums with independent wire-byte oracles, and sends a segmented copy through the actual worker receive path. Existing constructors remain zero-IP-options wrappers. The pinned F-Stack cases motivate checksum and segmented-buffer coverage, not IPv4/TCP option semantics; no routing, source-route processing, TCP state, sockets or NIC transmission is claimed.",
-      "ker_ctests": ["tcp-ip-options"]
+      "ker_ctests": [
+        "tcp-ip-options"
+      ]
     },
     "udp-neighbor-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -863,19 +977,25 @@
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific steering/ingress extension motivated by the pinned segmented TX scenario. Segmented IPv4 UDP/TCP chains pass through fixed owner selection and local or worker-poll handoff, then the owner uses its separate pool/context/device for Ethernet copy/classification and transport checksum validation. Includes capacity-one inbox retry, bad-checksum drops, and explicit callback-owned allocation-failure drop/recovery. Logical workers share one EAL thread. The upstream case does not test steering or ingress; this does not claim RSS, NIC I/O, sockets, TCP state, production retry buffering, or IPv6 transport reception. The companion flow-chain test covers IPv4/IPv6 segmented parsing and handoff ownership. Extended to every IPv4 option length from 0 through 40 bytes, validating copied option bytes, full header length, options-area checksum corruption and recovery; flow-ip-options separately checks variable-IHL steering bounds and fixed key/hash invariance. Options remain opaque, without source-route or other option interpretation. The input now enters through a real bounded ker_tx_ring and ker_flow_ring worker RX callback, which preserves a pending chain on full owner inbox and retries before reading later entries. This ingress ownership retry does not change the explicit owner-side allocation-drop policy.",
-      "ker_ctests": ["fstack-flow-receive"]
+      "ker_ctests": [
+        "fstack-flow-receive"
+      ]
     },
     "flow-concurrent-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific complete flow ingress/owner receive integration inspired by the pinned segmented TX case. Two distinct pinned CPUs run ingress ring steering and owner-local Ethernet/IPv4 TCP/UDP validation with separate pools and receive state. Immutable expected records verify packet/key bytes and callback placement, deterministic full-inbox pending/FIFO retry, checksum drops, owner-pool exhaustion/drop/recovery, and orderly drain/teardown. Skip only with fewer than two allowed CPUs; setup errors fail. This does not claim upstream F-Stack flow coverage, NIC/RSS, sockets, TCP state, or a production allocation-retry bridge.",
-      "ker_ctests": ["fstack-flow-concurrent-receive"]
+      "ker_ctests": [
+        "fstack-flow-concurrent-receive"
+      ]
     },
     "flow-owner-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific owner receive adapter inspired by the pinned segmented TX scenario. A bounded owner-local packet ring queues chains after flow handoff; worker service polling reuses the Ethernet copy/classify receive path. Destination allocation failure retains one pending chain for FIFO retry; queue overflow explicitly consumes and drops the newest chain. Tests cover allocation recovery during RX pressure, lifecycle pins, cancellation and initialization rollback. This is not upstream F-Stack flow coverage, end-to-end lossless backpressure, NIC/RSS, sockets or TCP state.",
-      "ker_ctests": ["fstack-flow-owner-receive"]
+      "ker_ctests": [
+        "fstack-flow-owner-receive"
+      ]
     },
     "neighbor-resolved-output": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -899,7 +1019,9 @@
         "test_ff_dpdk_if_send_multiseg"
       ],
       "adaptation": "Ker-specific responder and two-peer discovery integration extension: the production responder builds a local ARP reply with the native constructor, actual application rings/worker RX deliver it to the discovery peer, and native neighbor output releases queued UDP for transport validation. Tests bounded failures, reply selection and ownership. These upstream cases motivate packet output/segmentation, not an F-Stack ARP responder; full arp_process, general learning, routing and NIC transmission are not claimed.",
-      "ker_ctests": ["arp-responder"]
+      "ker_ctests": [
+        "arp-responder"
+      ]
     },
     "icmp-echo-service": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -908,7 +1030,9 @@
         "test_ff_dpdk_if_send_multiseg"
       ],
       "adaptation": "Ker-specific first-contact echo-service integration extension. Two independent skb pools and real SP/SC rings carry a validated echo request, native neighbor resolution emits an ARP probe through the existing responder and scoped feedback path, and the returned echo reply is checked by the peer transport callback. This is not the F-Stack socket, ping, full ICMP input/reply path, routing, or NIC delivery.",
-      "ker_ctests": ["fstack-icmp-echo-service"]
+      "ker_ctests": [
+        "fstack-icmp-echo-service"
+      ]
     },
     "icmpv4-service": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -917,25 +1041,33 @@
         "test_ff_dpdk_if_send_multiseg"
       ],
       "adaptation": "Ker-specific ICMPv4 control extension: generic error events, bounded safe error emission, timestamp and opt-in extended echo, token-bucket limits and independent peer pools with actual RX/TX rings. The source cases motivate packet delivery only; no upstream ICMP suite, sockets, routing, IPv4 reassembly, IPv6 or NIC delivery is claimed. The same real-ring fixture also exercises an opt-in bounded Ker UDP endpoint table: validated local datagrams reach bound callbacks, while lookup misses automatically generate ICMP port-unreachable through the existing neighbor output. This is not native Linux socket lookup or a F-Stack UDP ingress test. Explicit immutable unavailable-protocol declarations additionally drive automatic ICMP protocol-unreachable for validated local IPv4 ingress, with competing-handler suppression. This is a Ker policy adapter, not Linux inet_protos/raw socket/XFRM integration. Connected endpoint regressions extend the Ker-specific UDP adapter with generation-scoped handles and exact peer filtering; these are not upstream F-Stack socket tests.",
-      "ker_ctests": ["icmpv4-service"]
+      "ker_ctests": [
+        "icmpv4-service"
+      ]
     },
     "flow-icmpv4": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific UDP control-flow steering extension: ICMPv4 errors quote an outbound UDP tuple which must resolve to the same flow owner as its response. Real segmented DPDK chains cover every header split, truncated quotes, declared lengths, Ethernet padding, unsupported options/fragments/protocols, wrong quoted local address and ingress-only direction. Steering does not authenticate ICMP or validate checksums; those remain the owner receiver and sent-evidence tracker responsibilities. This is not a F-Stack upstream ICMP test, NIC/RSS, TCP or IPv6 control-plane implementation.",
-      "ker_ctests": ["flow-icmpv4"]
+      "ker_ctests": [
+        "flow-icmpv4"
+      ]
     },
     "ethdev-rx": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_main_loop_one_iteration_then_stop",
       "adaptation": "Ker-specific borrowed ethdev RX extension around the existing worker receive path. A real pinned DPDK net_ring PMD injects Ethernet frames and segmented mbuf chains; the test checks one-packet worker budgets, FIFO classification/dispatch, pool-pressure retry, cancellation, and RX binding exclusion. Opt-in immutable shared-reference profiles test direct shared segments, actual rte_pktmbuf_clone chains, and attached external-buffer chains, including caller/sibling lifetime, extbuf callbacks and allocation retry. The upstream case only motivates one worker-loop iteration and stop; pinned free/fanout scenarios do not test indirect-clone or external-buffer RX. No NIC, RSS, socket, or full-stack behavior is claimed.",
-      "ker_ctests": ["ethdev-rx"]
+      "ker_ctests": [
+        "ethdev-rx"
+      ]
     },
     "ethdev-rebind": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_register_deregister_roundtrip",
       "adaptation": "Ker-specific borrowed ethdev RX lifecycle extension. A real started net_ring port keeps a queued successor behind a pending frame across adapter/device/runtime teardown; a fresh callback generation rebinds the same queue and consumes it first. The test covers pending-packet cleanup exclusion, exact cancellation, invalid rebind rollback, FIFO delivery and pool reclamation. The upstream registration roundtrip motivates lifecycle testing only; PMD queues are caller-owned and are not implicitly flushed, and this does not implement full F-Stack device registration.",
-      "ker_ctests": ["ethdev-rebind"]
+      "ker_ctests": [
+        "ethdev-rebind"
+      ]
     },
     "ethdev-duplex": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -945,13 +1077,17 @@
         "test_ff_dpdk_if_send_udp_csum"
       ],
       "adaptation": "Ker-specific composition test: two actual pinned DPDK net_ring ethdev ports cross-connect bounded TX/RX queues; each Ker worker polls the existing ethdev TX and RX adapters through its shared worker callback argument. Distinct source/destination pools carry multisegment software-checksummed TCP and UDP packets through the original Ethernet classifier and transport views. Independent checksum verification, FIFO, full-ring retry, destination-pool pressure retention, callback drop, ownership, and pool reclamation are checked. The F-Stack cases motivate the worker/send/checksum boundaries only; this is not an F-Stack stack, hardware-offload, NIC, or application-protocol test.",
-      "ker_ctests": ["ethdev-duplex"]
+      "ker_ctests": [
+        "ethdev-duplex"
+      ]
     },
     "ethdev-multiqueue": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_ut_nr_19_drain_ring_sp_sc",
       "adaptation": "Ker-specific multi-EAL ethdev queue-isolation extension motivated by the upstream SP/SC drain scenario. Two owner workers on distinct EAL lcores use independent bounded net_ring ethdev queues, contexts, pools, and existing TX/RX adapters. The test checks real worker dispatch, queue-0 backpressure while queue 1 progresses, recovery, checksum/payload identity, and wrong-owner rejection. It does not test upstream ring reload, RSS, multiprocess operation, physical NICs, or full F-Stack.",
-      "ker_ctests": ["ethdev-multiqueue"]
+      "ker_ctests": [
+        "ethdev-multiqueue"
+      ]
     },
     "ethdev-rx-metadata": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -960,19 +1096,25 @@
         "test_ff_dpdk_if_send_udp_csum"
       ],
       "adaptation": "Ker-specific RX trust-boundary extension: a real net_ring PMD feeds TCP/UDP frames through ethdev RX, the worker, the original Ethernet classifier and existing transport packet views. GOOD/BAD/UNKNOWN checksum hints never bypass software wire validation; NONE and transformed metadata are rejected. The pinned F-Stack cases are TX checksum-offload scenarios and do not cover this RX path or hardware/NIC checksum behavior.",
-      "ker_ctests": ["ethdev-rx-metadata"]
+      "ker_ctests": [
+        "ethdev-rx-metadata"
+      ]
     },
     "ethdev-external-lifetime": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_pktmbuf_free_basic",
       "adaptation": "Ker-specific final-reference RX lifetime extension motivated by the upstream basic mbuf release case. A real net_ring ethdev feeds mixed external/direct/external chains into the existing copy/classify/dispatch adapter. No parent or sibling reference is retained. Actual DPDK external-buffer callbacks poison and quarantine released storage; retained owned skbs are checked before and after physical source deallocation. Repeated allocation failure, partial-budget FIFO recovery, cancellation transfer, transformed-metadata drop, exact callback counts, PMD receive counts and full source/destination pool reclamation are verified. The pinned upstream case only frees one basic mbuf and does not test external-buffer RX, deferred skb ownership, NICs, hardware offload or protocol behavior.",
-      "ker_ctests": ["ethdev-external-lifetime"]
+      "ker_ctests": [
+        "ethdev-external-lifetime"
+      ]
     },
     "ethdev-rx-capacity": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
       "adaptation": "Ker-specific RX linear-copy capacity extension motivated by the pinned multisegment TX case. Real net_ring RX carries small source-pool segments into an independently sized destination pool. Capacity-minus-one, exact capacity and capacity-plus-one are checked with three headrooms and a non-cache-line-aligned destination room size. With the destination pool exhausted, permanently oversized frames are consumed as ENOSPC drops before a fitting successor becomes ENOMEM pending; releasing one backing permits exact FIFO recovery. Direct allocation error precedence, byte preservation, Linux shared-info reservation, PMD packet counts and both pool baselines are verified. Payloads are opaque: no IPv4/TCP/UDP protocol processing, jumbo MTU negotiation, NIC, nonlinear skb or F-Stack RX support is claimed.",
-      "ker_ctests": ["ethdev-rx-capacity"]
+      "ker_ctests": [
+        "ethdev-rx-capacity"
+      ]
     },
     "ethdev-rx-fanout": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -981,7 +1123,9 @@
         "test_ff_dpdk_pktmbuf_free_basic"
       ],
       "adaptation": "Ker-specific Linux packet_type fanout and ownership extension. Real net_ring RX supplies segmented opaque Ethernet frames through the actual worker, original Ethernet classification and imported Linux ptype delivery. Global-before-device ordering, per-callback descriptor references, final-handler status, explicit invalid-status reporting, no-handler drop, retained skb lifetime, cloned backing, COW ENOMEM rollback/recovery, independent header/payload mutation, both release orders and full pool reclamation are checked. The pinned F-Stack cases motivate worker iteration and basic ownership only; they do not test Linux ptype fanout or COW. No F-Stack RX, NIC, IP/transport processing or application-protocol behavior is claimed.",
-      "ker_ctests": ["ethdev-rx-fanout"]
+      "ker_ctests": [
+        "ethdev-rx-fanout"
+      ]
     },
     "native-fstack-epoll": {
       "source_file": "tests/unit/test_ff_epoll.c",
@@ -1006,7 +1150,9 @@
         "test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup"
       ],
       "adaptation": "Ten public POSIX scenarios use real loopback TCP connections, first on the host Linux baseline and then through libker-posix with the complete pinned Linux kernel. Covers create/invalid values, ADD/MOD/DEL and full 64-bit event data, level readiness while partially unread, ET drain/new data, ONESHOT explicit rearm, write-only readiness, buffered EOF with reverse-direction data, and abortive-close ERR/HUP with SO_ERROR. Kernel open counters and empty outstanding DPDK allocation counts are required. The same CTest also retains independent host TCP/DPDK interop checks. No ff implementation, FreeBSD stack, kqueue translation, synthetic events or cmocka stubs are copied. Linux rejects epoll_create(0), unlike the upstream stub; half-close uses EPOLLRDHUP instead of assuming EV_EOF translates to EPOLLHUP. Arbitrary invalid-pointer and synthetic unknown-kqueue-filter cases are not claimed. Full-suite inventory adds NULL ADD/MOD event recovery: Linux EFAULT replaces the upstream wrapper EINVAL; Ker must reject NULL before the LKL user-copy path dereferences it. DEL with NULL remains valid. Existing write-only, zero-maxevents and empty-FIN scenarios cover the corresponding additional upstream registrations. Unknown FreeBSD filter translation has no Linux equivalent and remains separately classified. NULL wait-buffer adaptation covers epoll_wait, epoll_pwait and epoll_pwait2: invalid maxevents yields EINVAL; empty zero-time waits return zero; ready native ET/ONESHOT events fault with EFAULT and remain deliverable to a valid buffer. A host pipe in mixed-domain epoll also retains ONESHOT readiness after EFAULT. F-Stack rejects NULL unconditionally with EINVAL; Linux only faults when copying an event. The adapter probes native epoll readiness rather than passing NULL into shared-address-space user copies. No arbitrary inaccessible-pointer or concurrent-consumer recovery is claimed.",
-      "ker_ctests": ["native-fstack-epoll"]
+      "ker_ctests": [
+        "native-fstack-epoll"
+      ]
     },
     "native-fstack-message-io": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1018,7 +1164,9 @@
         "test_ff_host_dup2"
       ],
       "adaptation": "Six public POSIX behavioral scenarios run on host Linux and the complete imported Linux TCP stack, comparing successful scenario output and requiring at least six native active/passive opens plus zero outstanding DPDK buffers. Adapts the FF_KERNEL_COEXIST host bridge tests for sendmsg/recvmsg, address lookup, half-close, readv/writev, FIONBIO, dup and dup2. Unlike the upstream host-only bridge cases, the adapted AF_INET pairs must use native TCP under ker-run; the AF_UNIX vector roundtrip remains explicit host passthrough. Ker-specific extensions cover zero-length iovecs, stream short reads without MSG_TRUNC, MSG_PEEK/DONTWAIT, FIONREAD, shared O_NONBLOCK and independent descriptor CLOEXEC, and fixed-fd host/native replacement with post-replacement byte checks. No ff implementation, mock or FreeBSD protocol code is copied. Loopback scenarios do not exercise DPDK traffic; the same CTest separately runs existing independent-host-peer active/passive TCP interop and verifies DPDK counters. No new protocol implementation or zero-copy, ancillary-data, IPv6, fork, or io_uring support is claimed.",
-      "ker_ctests": ["native-fstack-message-io"]
+      "ker_ctests": [
+        "native-fstack-message-io"
+      ]
     },
     "native-fstack-stream-io": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1027,14 +1175,18 @@
         "test_ff_host_readv_writev"
       ],
       "adaptation": "Ker-specific independent-peer extension: public POSIX TCP programs run vector (writev/readv), message (sendmsg/recvmsg), and batched-message (sendmmsg/recvmmsg) modes against an independent host Linux endpoint over DPDK net_tap/veth. Each mode runs with Ker as client and as server, for six role/API combinations. Every direction validates 256 KiB + 13 bytes using direction-specific patterns, nonblocking progress/retry handling, zero-length vector entries where applicable, half-close and exact EOF. Batched TCP I/O is treated as a byte stream rather than preserving message boundaries. Small send buffers exercise backpressure; observed partial/retry counts are logged without imposing scheduler-dependent counts as performance requirements. Each native instance must show TX/RX, the matching native active/passive open, and zero outstanding packet buffers; both peer programs must report successful byte verification. Upstream covers small host-only bridge transfers, not this native TCP/DPDK or batched-message behavior. No ff implementation, FreeBSD stack, mock, new protocol path, zero-copy, ancillary-data, or io_uring support is added.",
-      "ker_ctests": ["native-fstack-stream-io"]
+      "ker_ctests": [
+        "native-fstack-stream-io"
+      ]
     },
     "native-fstack-udp-interop": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_udp_csum",
       "source_example": "adapter/syscall/main_stack_udp.c",
       "adaptation": "Ker-specific native UDP socket extension motivated by pinned UDP TX-checksum coverage and the public UDP/epoll example. The upstream checksum case tests TX offload metadata, not UDP socket semantics; the example is not an upstream automated test and ignores empty datagrams, unlike this validation. Three modes (sendto/recvfrom, sendmsg/recvmsg, sendmmsg/recvmmsg) run with Ker as both client and server against independent host Linux peers over DPDK net_tap/veth. Each direction verifies four distinct datagrams of lengths 0, 1, 33 and 257; checks peer tuples, epoll readiness, connected UDP in message mode, FIONREAD, MSG_PEEK/MSG_TRUNC, and empty-queue EAGAIN without interpreting zero payload as EOF. Every native instance requires positive DPDK TX/RX, at least four original-Linux UDP InDatagrams/OutDatagrams, zero UDP input/no-port errors and zero outstanding buffers. Protocol behavior is the complete imported Linux UDP implementation, not the basic Ker packet constructors/views. The change adds private native diagnostics fields; it does not change protocol sources, the TCP capability declaration, DNS, IPv6, multicast, fragmentation or error-queue coverage.",
-      "ker_ctests": ["native-fstack-udp-interop"]
+      "ker_ctests": [
+        "native-fstack-udp-interop"
+      ]
     },
     "native-fstack-udp-errors": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -1059,7 +1211,9 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific blocking receive/half-close and duplicated-descriptor extension of the pinned host bridge scenarios, not an upstream F-Stack timeout test. The same public POSIX program runs as a host reference and with the complete imported Linux kernel as client and server over DPDK net_tap/veth. Before READY, a blocking listener must time out accept with EAGAIN; its accepted socket inherits SO_RCVTIMEO and remains blocking. The client checks recv/recvmsg/readv empty-queue EAGAIN after a configured 120ms timeout, invalid microseconds EDOM without changing the prior option, shared timeout state through dup, MSG_WAITALL returning five existing bytes when no suffix arrives before timeout, a following empty-read timeout, disabling timeout through the alias, and partial WAITALL completion at EOF with successful reverse-direction acknowledgement. Explicit application handshakes suppress peer data until requested, and poll establishes that the first five bytes are queued before partial-WAITALL timing. Timing checks allow tick/scheduler variation (50ms to 5s) and are not a precision/performance claim. Native client exercises the receive cases; native server exercises listener timeout/inheritance and peer progress. Each native instance requires matching original-Linux TCP open counts, DPDK TX/RX and no outstanding packet buffers. No protocol changes, mocks, signal interruption/cancellation, send timeout, TCP connect-timeout or general time64 ABI support is added.",
-      "ker_ctests": ["native-fstack-tcp-receive-timeouts"]
+      "ker_ctests": [
+        "native-fstack-tcp-receive-timeouts"
+      ]
     },
     "native-fstack-tcp-send-timeouts": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1069,7 +1223,9 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific blocking send/backpressure extension, not an upstream F-Stack timeout test. Host-reference and native client/server runs use a dedicated TCP control connection plus a small-buffer TCP data connection over DPDK net_tap/veth. Each endpoint takes a turn sending 512 KiB + 13 direction-specific bytes while its peer withholds application reads until a control marker. SO_SNDTIMEO=120ms must yield positive partial send progress, then no-progress EAGAIN via send, writev and sendmsg; all positive return lengths advance the source offset. Invalid microseconds return EDOM without replacing the prior value. Clearing the timeout through dup must affect the original fd. After an explicit resume marker, the peer enlarges its receive buffer, verifies the entire byte stream, acknowledges completion on the control connection, and the roles reverse. Both directions end at exact EOF without extra bytes. Elapsed checks allow 50ms..5s and option tick rounding, not precise timing. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol or runtime adapter changes, mocks, host signal interruption/cancellation, connect-timeout or general time64 ABI support is introduced.",
-      "ker_ctests": ["native-fstack-tcp-send-timeouts"]
+      "ker_ctests": [
+        "native-fstack-tcp-send-timeouts"
+      ]
     },
     "native-fstack-tcp-connect-lifecycle": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1079,7 +1235,9 @@
         "test_ff_host_kqueue_ctl_poll"
       ],
       "adaptation": "Ker-specific Linux TCP connect/error and epoll lifetime extension of the pinned host bridge scenarios, not an upstream F-Stack AF_UNSPEC reconnect test. Host-reference and native client/server runs use independent Linux peers over DPDK net_tap/veth. One nonblocking client socket plus its dup alias receives ECONNREFUSED from an unused port; poll/epoll report error readiness, reading SO_ERROR through the alias clears it for the original fd, and error readiness clears without assuming HUP/writable readiness disappears. AF_UNSPEC resets the socket; it connects to the first listener, verifies peer tuples and echo, then AF_UNSPEC aborts that live connection (the server must observe ECONNRESET). Any local reset error is cleared, and the same socket reconnects to a different listener port without replacing the epoll registration. Closing the originally registered fd must retain readiness and I/O through the live alias; the final exchange, half-close and EOF succeed with the full 64-bit event tag intact. Native client requires three active opens; native server requires two passive opens, plus positive DPDK TX/RX, both endpoint PASS results and zero outstanding buffers. Original Linux owns refusal, reset and reconnect semantics. No protocol/adapter changes, mocks, portable AF_UNSPEC guarantee, concurrent close stress, host signal interruption or io_uring coverage is introduced.",
-      "ker_ctests": ["native-fstack-tcp-connect-lifecycle"]
+      "ker_ctests": [
+        "native-fstack-tcp-connect-lifecycle"
+      ]
     },
     "native-fstack-tcp-defer-accept": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1088,7 +1246,9 @@
         "test_ff_host_kqueue_ctl_poll"
       ],
       "adaptation": "Ker-specific Linux TCP_DEFER_ACCEPT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack deferred-accept test or support claim. Host reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A separate control connection coordinates two sequential data connections on the same nonblocking listener. With deferred accept enabled (31 seconds, permitting kernel rounding), completed client connect with checked peer tuple and SO_ERROR must not make the listener readable during a 100ms poll, an immediate epoll wait, or nonblocking accept (EAGAIN). Payload is withheld until an explicit control marker, then poll/epoll and accept must succeed. Clearing the option on that listener permits the second handshake to trigger readiness and accept before payload is sent. Both phases verify exact echo, half-close/EOF, drained listener readiness and a full 64-bit epoll tag. Each native instance requires at least three matching original-Linux TCP opens, positive DPDK TX/RX and zero outstanding buffers. No original protocol/runtime changes, mocks, deferred timer expiry, TCP Fast Open, host signal interruption or io_uring coverage is introduced.",
-      "ker_ctests": ["native-fstack-tcp-defer-accept"]
+      "ker_ctests": [
+        "native-fstack-tcp-defer-accept"
+      ]
     },
     "native-fstack-tcp-reuseport": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1097,7 +1257,9 @@
         "test_ff_host_kqueue_ctl_poll"
       ],
       "adaptation": "Ker-specific Linux SO_REUSEPORT extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack reuseport test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Two nonblocking listeners enable and query SO_REUSEPORT before sharing an address/port; a third socket with SO_REUSEADDR alone must fail bind with EADDRINUSE. A separate control connection coordinates eight initial data connections and four later connections. Poll/epoll drive accepts; unique tokens verify every connection exactly once without requiring equal hash distribution or both listeners to receive initial connections. The test retains the token=1 accepted connection, closes precisely the listener that accepted it, and requires continued echo and half-close/EOF on the accepted connection. The remaining listener must accept all four later connections, with exact echo, EOF, full 64-bit epoll tags and cleared readiness after the queue drains. Each native instance requires thirteen matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, mocks, pending-connection migration, cross-process workers, UID isolation, BPF selection or io_uring coverage is introduced.",
-      "ker_ctests": ["native-fstack-tcp-reuseport"]
+      "ker_ctests": [
+        "native-fstack-tcp-reuseport"
+      ]
     },
     "native-fstack-tcp-urgent": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1106,7 +1268,9 @@
         "test_ff_host_kqueue_ctl_poll"
       ],
       "adaptation": "Ker-specific Linux urgent-data extension motivated by pinned host socket/readiness bridge scenarios, not an upstream F-Stack urgent-data test or equivalence claim. The existing Ker loopback OOB case is extended to independent host Linux peers over DPDK net_tap/veth, with host-reference and native client/server runs. Two data connections disable/enable SO_OOBINLINE and exercise both directions. A separate control connection orders receiver option setup and EPOLLPRI registration, six ordinary prefix bytes, one MSG_OOB byte, and five ordinary suffix bytes, without fixed sleeps. Poll/epoll must report priority readiness with full 64-bit tags. SIOCATMARK via public ioctl changes from false before prefix consumption to true at the urgent boundary; POSIX sockatmark must match each ioctl result. The new sockatmark adapter/export reuses existing ioctl dispatch because libc internal ioctl bypasses native fd routing. Invalid fd EBADF, host pipe ENOTTY and host socket reference behavior are checked. Out-of-line mode peeks then consumes MSG_OOB without duplicating the urgent byte in the ordinary stream; inline mode rejects MSG_OOB with EINVAL and consumes the urgent byte through ordinary recv. Exact suffix and half-close/EOF must clear urgent mark and PRI while allowing persistent EOF/HUP readiness. Native instances require three matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No original protocol changes, SIGURG/async ownership, overwriting multiple outstanding urgent pointers or io_uring coverage is introduced.",
-      "ker_ctests": ["native-fstack-tcp-urgent"]
+      "ker_ctests": [
+        "native-fstack-tcp-urgent"
+      ]
     },
     "native-fstack-tcp-receive-queue": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1116,7 +1280,9 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific Linux TCP receive-queue extension of pinned host message/vector/dup bridge scenarios, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Each direction sends 16 KiB + 37 deterministic bytes and half-closes; a separate control connection and SO_RCVLOWAT coordinate a complete queued payload without fixed sleeps, then restore the low-water mark to one. Two-iovec recvmsg(MSG_PEEK|MSG_WAITALL) through dup and a 6001-byte peek through the original fd verify bytes without changing FIONREAD on either alias. Linux TCP recv(MSG_TRUNC) consumes 257 bytes without modifying destination canaries; recvmsg(MSG_PEEK|MSG_TRUNC) reports 513 bytes without copying or consuming. Remaining bytes are verified through readv on the alias, with exact original-fd queue counts after each read; both aliases and ordinary peek observe EOF and zero FIONREAD, excluding FIN from payload counts. These Linux TCP flag semantics are distinct from UDP datagram truncation and are not a portable POSIX claim. Each native instance requires two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, concurrent-reader stress, SO_PEEK_OFF, invalid-pointer recovery or io_uring coverage is introduced.",
-      "ker_ctests": ["native-fstack-tcp-receive-queue"]
+      "ker_ctests": [
+        "native-fstack-tcp-receive-queue"
+      ]
     },
     "native-fstack-tcp-shutdown-write": {
       "source_file": "tests/unit/test_ff_host_interface.c",
@@ -1126,7 +1292,9 @@
         "test_ff_host_dup"
       ],
       "adaptation": "Ker-specific Linux local SHUT_WR extension of pinned host shutdown/message/vector/dup bridge scenarios, distinct from existing peer-RST validation and not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Invalid shutdown how=42 returns EINVAL without breaking later normal sends. SHUT_WR through dup shares send shutdown with the original fd. Repeated shutdown succeeds while the peer keeps its send direction open; once both FINs are ACKed Linux may return ENOTCONN instead. send/sendto/sendmsg/one-entry sendmmsg with MSG_NOSIGNAL must return EPIPE without SIGPIPE; the same APIs without the flag plus write/writev must each return EPIPE with exactly one handled SIGPIPE, six signals per endpoint and unchanged zero SO_ERROR. A separate control connection keeps the peer receive socket open until all probes finish, distinguishing local shutdown from peer-close errors without fixed sleeps. A client that has shut down writes must still receive the full reverse server reply through its alias; the server performs the same error matrix. Both endpoints verify EOF, poll/epoll IN plus RDHUP and full 64-bit tags. Native instances require two matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, SHUT_RD, blocked/ignored/default-action SIGPIPE, async signal ownership or partial-success sendmmsg signal behavior is introduced.",
-      "ker_ctests": ["native-fstack-tcp-shutdown-write"]
+      "ker_ctests": [
+        "native-fstack-tcp-shutdown-write"
+      ]
     },
     "native-fstack-udp-broadcast": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -1144,7 +1312,9 @@
         "test_ff_host_kqueue_ctl_poll"
       ],
       "adaptation": "Ker-specific Linux listener-restart extension of pinned host fd/readiness bridge scenarios, not an upstream F-Stack restart test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. A listener enables SO_REUSEADDR with SO_REUSEPORT verified disabled, has a dup alias, and accepts an initial connection through that alias. A REUSEADDR candidate must fail bind while both listener references exist and after the original fd closes, with the alias still reporting SO_ACCEPTCONN. After the final alias closes, the accepted connection stays alive: a candidate without REUSEADDR must still fail bind, while a REUSEADDR replacement must bind/listen the same endpoint. A separate control connection announces replacement readiness without fixed sleeps. The old accepted stream continues verified echo; a new stream is accepted using a distinct full 64-bit tag in the same epoll instance. Closing the replacement listener must clear listener readiness while both accepted streams independently finish exact content, half-close and EOF. Native instances require three matching original-Linux TCP opens, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, TIME_WAIT-state/duration assertions, cross-process takeover, pending-connection migration or cross-UID port policy is introduced.",
-      "ker_ctests": ["native-fstack-tcp-listener-restart"]
+      "ker_ctests": [
+        "native-fstack-tcp-listener-restart"
+      ]
     },
     "native-fstack-udp-reuseport": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -1785,7 +1955,7 @@
       "ker_ctests": [
         "native-fstack-run-stop"
       ],
-      "adaptation": "Partial integration-loop adaptation: exactly one caller callback can request stop after actual original Linux traffic; complete kernel and independent EAL-worker cleanup is observed before API return, not inferred from process exit. Autonomous separate workers service the original Linux kernel while the app callback executes. This does not qualify exactly one coupled original F-Stack dispatch/RX/message/TX/accounting loop iteration or callback-on-EAL-lcore semantics. The source case stays partial under223."
+      "adaptation": "Scenario-adapted for the pinned fixture’s observable callback-stop-return-teardown smoke: the real EAL fixture invokes a callback that requests stop and returns through teardown, without explicit assertions for the main-loop phases or cleanup return code. Ker verifies one caller callback, actual original-Linux traffic, worker stop/reap acknowledgement, and zero outstanding buffers before API return. Ker executes the callback in the application process while independent EAL workers poll; it does not implement the single coupled EAL-lcore dispatch/RX/message/TX/accounting iteration described in the source comments. No F-Stack callback symbol or lcore ABI equivalence is claimed."
     },
     "native-fstack-interface-context": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -1819,7 +1989,7 @@
       "ker_ctests": [
         "native-fstack-tx-offloads"
       ],
-      "adaptation": "Actual original Linux virtio CSUM/HOST_TSO feature negotiation derives from original ethdev capability and enabled-config readback; the worker translates original metadata to mbuf lengths/flags/pseudo-header seeds and calls original TX prepare. Independent TAP/veth host kernels run IPv4/IPv6 UDP lengths0/1/511/1400 and two512KiB TCP streams. AF_PACKET sees all native TCP bytes with independent sequence/payload coverage, IPv4 header and TCP/UDP checksum validation, no omitted UDP checksums, per-segment MTU and zero socket drops; host GRO/GSO/TSO are disabled. Run off-large,checksum-large,tso-large,tso-scatter after1600/1500 native/PMD MTU restarts; verify actual request counters, configured features, IPv4 TSO requests and zero IPv6 TSO advertisement for TAP. TX-first TAP setup initializes original GSO; output segment maximum fits the pinned PMD Ethernet budget without exceeding kernel-requested size. All normal buffers are reclaimed. Original null PMD must reject missing checksum/TSO capabilities before app entry with zero owned buffers. Test-only interposition forwards a real checksum header copy then injects EAGAIN into original TAP writev: detect its orphan header, refuse retry, return125 and require all processes reaped. That fault path is characterization of issue244, not successful cleanup; physical-NIC and IPv6 TSO claims stay partial under221. Worker pre-PMD capture is not wire evidence. With the isolated TAP ownership patch, the same test adds injected original checksum-copy ENOMEM and writev EAGAIN, including rejection after two successful GSO segment writes. Complete independent raw TCP/UDP checksum, nonperiodic512KiB byte coverage and zero-drop evidence must still pass, with zero outstanding buffers and all processes reaped. Without that qualified PMD, the original failure characterization remains enforced."
+      "adaptation": "Per-source checksum/TSO scenarios use the original Linux virtio CHECKSUM_PARTIAL/GSO metadata path, the Ker worker translator, original DPDK TX preparation, and original software PMDs. The fresh TAP run covered off/checksum/tso-large/tso-scatter with independent AF_PACKET validation of IPv4, TCP and UDP checksums, TCP byte coverage, MTU bounds, zero capture drops and normal-profile ownership cleanup. The virtio-user/vhost-kernel run independently covered IPv4/IPv6 checksums and TSO, payload, MTU, queues and persistent-interface cleanup. The unsupported net_null control rejects before app entry. On the unpatched TAP failure characterization, the known rejected-buffer defect fails closed, reaps processes and reports outstanding=1; that is not a cleanup or retry pass. The optional isolated issue244 retry patch is not part of this qualification. These tests adapt the weak pinned source smoke scenarios and do not qualify physical NIC execution; issue221 remains a separate hardware goal. A separate approved host-only software-path result, `/home/hurricane/.local/state/ker-compat-work/native-offload-source-qualification-result-v2.json` (SHA-256 `67509c905134f20c858845f9dcb2d8ca02bf5653e66e4de7e3b318516351581e`), records 4/4 host CTests. The tested offload production/test blobs are byte-identical to qualified parent `87a705d96a368dfa30606df830b81a756b9c08f5`; this proof is separate from the combined session guest, which did not run offload suites. Physical-NIC issue #221 remains open."
     },
     "native-fstack-tx-offload-metadata": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -1832,7 +2002,7 @@
       "ker_ctests": [
         "native-fstack-tx-offload-metadata"
       ],
-      "adaptation": "Exercise production metadata adapter with bounded packet records and original DPDK header/pseudo-header/raw-checksum APIs. Invalid flags, out-of-range checksum offsets, mismatched TCP checksum field, wrong/disabled GSO type/size/header hint and oversized non-GSO reject before changing buffer bytes/ownership/metadata. A valid IPv4 GSO request yields correct lengths/flags and a legal smaller TAP segment maximum. Generic partial checksum uses the kernel-requested range/seed via original DPDK; independent folded sums validate ICMP and unknown-protocol examples. This is adapter validation, not physical checksum/segmentation execution."
+      "adaptation": "Fresh native-fstack-tx-offload-metadata execution validates the production adapter against original DPDK headers and checksum helpers: malformed flags/offsets/GSO metadata reject before buffer, bytes, ownership or metadata change; valid Linux metadata yields the expected original mbuf fields and segment bound. This is source-adapter evidence; packet/wire behavior is established by the separate native TAP and virtio/vhost CTests, not by this helper test and not by physical hardware."
     },
     "native-fstack-tx-offloads-config": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -1845,7 +2015,7 @@
       "ker_ctests": [
         "native-fstack-tx-offloads-config"
       ],
-      "adaptation": "Validate explicit off/checksum/tso mode, default off, final repeated INI value and CLI precedence, independent additional-interface inheritance/override and rejection of unsupported mode strings before runtime. Native extra-interface settings retain old9-field compatibility with an optional negotiated-feature field; production original Linux UAPI bit positions are compile-time checked. No full F-Stack config ABI or hardware execution is claimed."
+      "adaptation": "Fresh native-fstack-tx-offloads-config execution validates explicit off/checksum/tso modes, default off, repeated INI final-value and CLI precedence, additional-interface inheritance/override, and unsupported-value rejection before runtime. These settings select the production metadata behavior exercised by the separate TAP and virtio/vhost wire tests; no F-Stack config ABI or physical-NIC claim is made."
     },
     "native-fstack-tap-offload-retry": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -1871,7 +2041,7 @@
       "ker_ctests": [
         "native-fstack-virtio-kernel-offloads"
       ],
-      "adaptation": "Actual original virtio-user PMD -> host vhost-net/TAP -> original Linux TC/veth software offload. Five off/checksum/TSO large/scatter profiles, including two active queue pairs and persistent TAP with initial ALLMULTI off/on. Run original Linux IPv4/IPv6 TCP512KiB with nonperiodic data and UDP0/1/511/1400 after native/PMD MTU1600/1500 restart. Require original Linux TSO4 and TSO6 requests, actual PMD enabled-feature/queue/MAC readback, full independent raw-wire TCP byte coverage, IPv4/TCP/UDP checksums, MTU bounds, zero capture drops and outstanding buffers. Private veth GRO/GSO/TSO and TX checksums are disabled to force complete wire bytes at capture. Linux TC redirects Ethernet because the original kernel backend sets the guest MAC on host TAP, which a Linux bridge would consume locally. Original Linux owns protocol and host segmentation; no upstream changes or Ker protocol implementation. A scoped adapter sets/reads real host IFF_ALLMULTI only for the actual named kernel backend when CTRL_RX is unavailable; restores only its changed flag at teardown. Persistent TAP proves off/on restoration and unrelated UP preservation. Missing explicit iface and injected readback EIO after a successful set must fail before app entry, restore flags and reclaim all mbufs. Test skips only when original PMD or accessible vhost device is missing. Software evidence does not fulfill the remaining physical NIC requirement under221."
+      "adaptation": "Fresh native-fstack-virtio-kernel-offloads execution runs original virtio-user through host vhost-net/TAP and original Linux software checksum/segmentation. The tested profiles cover off, checksum, IPv4/IPv6 TSO, large/scatter buffers, one/two queues, persistent TAP and interface rename. Independent capture verifies TCP payload coverage, IPv4/TCP/UDP checksums, MTU bounds and zero AF_PACKET capture drops. Shutdown accounting is profile-specific: the rename profile asserts its permitted rx_shutdown_discarded=1; other ownership and cleanup counters are checked in their respective profiles, with pools restored at teardown. This is software-path evidence, not physical-NIC qualification. The native receive-mode adapter verifies/restores actual host TAP flags only for the supported named vhost backend."
     },
     "native-fstack-virtio-kernel-config": {
       "source_file": "tests/unit/test_ff_config.c",
@@ -2199,7 +2369,9 @@
     "native-fstack-session-tc3-observer": {
       "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
       "source_case": "test_it_a14_two_masters_single_consumer",
-      "ker_ctests": ["native-fstack-session-tc3-observer"],
+      "ker_ctests": [
+        "native-fstack-session-tc3-observer"
+      ],
       "adaptation": "BUILD_TESTING-only real-EAL observer fixture for the source two-masters/single-consumer scenario: two distinct live masters and secondaries use generation0/process0, independently sample stable no-hardware state and the same nonzero owner epoch on both sides of a barrier, and are denied native-device ownership unless they are the selected owner. Each publishes one valid resident-leased typed message to its own distinct ring; both are simultaneously pending before the resident drains exactly one correctly typed token and reply from each. Both chains remain alive through drain and are then reaped with the full resident pool restored. This qualifies the named scenario's ownership/barrier/message-ring assertions only; it does not prove cross-generation dispatch, broad exception routing, physical handover, flow continuity or full reload."
     },
     "native-fstack-application-environment": {
@@ -2211,6 +2383,32 @@
         "native-fstack-application-environment"
       ],
       "adaptation": "Actual ker-app reads the launcher-generated preload path, calls real setenv then exec, and removes its internal KER_PRELOAD_LIBRARY key. An executed native application requires exact LD_PRELOAD roundtrip and preserved unrelated hello-world environment; original Linux loopback TCP exchanges an exact payload under the real host-TCP syscall guard. Exactly one native active/passive open and zero outstanding mbufs are required. Wrong expected value returns1 before native TCP opens and cleans up. Enclosing tcp-interop retains independent host/DPDK TCP acceptance. No new wrapper/API or libc-only test; source variable literal is adapted to the actual production preload consumer. Nine other host-helper source cases remain open."
+    },
+    "native-fstack-session-coordinate": {
+      "source_file": "tests/integration/test_ff_gendir_mp_integration.c",
+      "source_case": "test_it_a14_probe_roundtrip_tools_contract",
+      "ker_ctests": [
+        "native-fstack-session-coordinate"
+      ],
+      "adaptation": "Scenario-adapts only the pinned coordinate-query/ring-selection assertion: a real original-DPDK resident authenticates an ATTACHED EAL worker, answers an unseeded typed coordinate query from its live registration, and the worker uses that returned coordinate with the production ring-name helper for an actual proc-1 ring lookup distinct from slot zero. An unbound request receives EPERM and zero identity/coordinate fields. Exact worker/supervisor pidfd cleanup, zero users, all 511 pool objects and resident DRAINED are required. Ker command 13 is not FF_RELOAD_CMD_QUERY or ff_ipc ABI compatibility; cookies, multi-candidate discovery, fallback, transport, TCP and reload remain unclaimed."
+    },
+    "native-fstack-session-generation-empty-config": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_empty_qconf"
+      ],
+      "ker_ctests": [
+        "native-fstack-session-generation-empty-config"
+      ],
+      "adaptation": "This maps only test_p1_drain_empty_qconf. With primary-owned RX/TX cleanup masks set to zero, a real original-DPDK EAL guest proves all eight populated ring objects and exact pointers remain retained across orderly detach and same-ring readmission; the pool returns to 511 available objects with zero in use and no PMD owner. The invalid-selected-entry failure is safety evidence only. Historically, empty and invalid-only profiles passed in separate immutable runs using identical production binaries; those split runs did not provide a single-image all-profile PASS. The later integrated run below does. Exact bindings are in /home/hurricane/.local/state/ker-compat-work/fstack-followups/session-drain-empty-config-invalid-only1/aggregate-evidence.json. The earlier integrated candidate `5f9055e28782ad4cdf86cc363f2e8cbfd3ef2c15` and guest6 are retained as historical evidence. The latest candidate `0ac28b8973b1f79e5fdbb9a86335531d9f71fd14` passed all 13 suites in one guest image; actual-result manifest `/home/hurricane/.local/state/ker-compat-work/fstack-followups/session-directory-modes-integrated-guest2/actual-result-attemptmodes-integrated1.json` has SHA-256 `30f449b0762efa5fd0f953103aed2ee3c7f11368cf72b4ec624b9cef67e51571`, package SHA-256 `4d87ed42fe94ed1c45736a62701779fe2683511dd933115105c5d07d4bd45cbb`, image SHA-256 `32750d8b2c2648edf6abe56287d18723b030cad79a7879ebf954d2a9ed5d6149`, and serial SHA-256 `d2c258cc7feedca27e0becc0a83d17bf901dcb29763fef6e93106898b6022d44`. All 13 suites exited zero; QEMU exited zero after normal power-down and the final pool census was 511 objects with zero outstanding."
+    },
+    "native-fstack-session-generation-tx-full": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": "test_f_m4_1_drain_ring_full_visible",
+      "ker_ctests": [
+        "native-fstack-session-generation-tx-full"
+      ],
+      "adaptation": "A real original-DPDK EAL resident run fills the configured TX generation ring, observes the enqueue returning ENOBUFS, preserves caller ownership of the rejected object, drains accepted objects in FIFO order and completes resident cleanup. The normal run reports tx_full=1, tx_drop=0, tx_peak=64 for capacity 64, and rx_peak=0. The exact candidate 0ea4bcb1bfa9fe28f07444aba7b0ad6d417d0c13 passed all 14 guest suites; result /home/hurricane/.local/state/ker-compat-work/fstack-followups/session-tx-full-visibility-guest2/actual-result-txfull-normal2.json has SHA-256 c25a5ead4dad477852db7800f4c0a69c772d08448e5d21989f28a51ccb723721 and binds package e3fc692ba4172a5c810dd056ae5d908245db5fd5a7478ba40190995f83d2da02, image fb5a1029bce203cf934a7c2e9c7dadcefbdbad1fa9bb6c8058f60fae9b611a38, and serial cb00c7379594ea6813fdd41921373ead1528c107066c082ea1a6658d24384b13. A separate private negative-control build disabled event-time peak updates while leaving the full counter intact; the EAL test then failed specifically with tx_full=1, tx_peak=0, capacity=64, tx_drop=0, rx_peak=0 after successful drain and cleanup. Its result /home/hurricane/.local/state/ker-compat-work/fstack-followups/session-tx-full-visibility-mutation1/actual-result-txfull-peakmutation1.json has SHA-256 984609cd9b30c6da02f4b4473ded3a55421c4e9ca287247fcf0eb6b4fb83dab4; that mutation was built from 476d20bae93691c5c1e1f0dd880b1c996e26a5b0, with production code and the registration fixture byte-identical to the normal candidate. Initial normal attempt failure is retained separately and is not counted as a pass. No physical-NIC or broader TX behavior is claimed."
     }
   }
 }
