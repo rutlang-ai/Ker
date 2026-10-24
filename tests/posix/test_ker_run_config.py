@@ -1146,6 +1146,71 @@ raise AssertionError('allocation failure was accepted')
             arguments = launcher.parse_arguments([*base, '--eal=--no-pci ' + raw, '--', '/bin/true'])
             self.assertEqual(arguments.eal_args, ['--no-pci', *raw.split()])
 
+    def test_bond_secondary_modes_precede_worker_limits_query(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'bond.ini'
+            calls = root / 'worker-calls'
+            worker = root / 'worker'
+            app_marker = root / 'app-entered'
+            stats = root / 'stats.json'
+            worker.write_text('#!/usr/bin/env python3\nimport json, pathlib, sys\n'
+                f'with pathlib.Path({str(calls)!r}).open("a") as trace:\n'
+                ' trace.write(" ".join(sys.argv[1:]) + "\\n")\n'
+                'if sys.argv[1:] == ["--dpdk-limits"]:\n'
+                ' print(json.dumps({"max_numa_nodes": 1}))\n'
+                ' sys.exit(0)\n'
+                'sys.exit(2)\n')
+            worker.chmod(0o755)
+            base = ['--address', '198.18.0.2/24', '--port', 'net_bonding0',
+                    '--config', str(config), '--library', str(root / 'missing-library'),
+                    '--io-worker', str(worker), '--stats', str(stats), '--',
+                    '/bin/touch', str(app_marker)]
+
+            for mode in ('--proc-type=secondary', '--proc-type secondary'):
+                with self.subTest(location='main', mode=mode):
+                    calls.unlink(missing_ok=True)
+                    config.write_text('[dpdk]\nnb_bond=1\nport=net_bonding0\n'
+                        'eal=--no-pci ' + mode + '\n'
+                        '[bond0]\nmode=1\nslave=net_tap0,net_tap1\nsocket_id=0\n')
+                    result = subprocess.run([sys.executable, str(SOURCE), *base],
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('secondary EAL processes are unsupported', result.stderr)
+                    self.assertFalse(calls.exists(), 'worker ran before main-mode rejection')
+                    self.assertFalse(app_marker.exists())
+                    self.assertFalse(stats.exists())
+
+                with self.subTest(location='auxiliary', mode=mode):
+                    calls.unlink(missing_ok=True)
+                    config.write_text('[dpdk]\nnb_bond=1\nport=net_bonding0\n'
+                        'eal=--no-pci --proc-type=primary\n'
+                        '[bond0]\nmode=1\nslave=net_tap0,net_tap1\nsocket_id=0\n'
+                        '[interface.aux]\naddress=198.19.0.2/24\nport=net_tap1\n'
+                        'eal=--no-pci ' + mode + '\n')
+                    result = subprocess.run([sys.executable, str(SOURCE), *base],
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('secondary EAL processes are unsupported', result.stderr)
+                    self.assertFalse(calls.exists(), 'worker ran before auxiliary-mode rejection')
+                    self.assertFalse(app_marker.exists())
+                    self.assertFalse(stats.exists())
+
+            # A CLI primary value replaces the invalid INI main EAL, then the
+            # valid bond is allowed to query the worker's real limits schema.
+            config.write_text('[dpdk]\nnb_bond=1\nport=net_bonding0\n'
+                'eal=--no-pci --proc-type=secondary\n'
+                '[bond0]\nmode=1\nslave=net_tap0,net_tap1\nsocket_id=0\n')
+            calls.unlink(missing_ok=True)
+            result = subprocess.run([sys.executable, str(SOURCE), *base[:-3],
+                '--eal=--no-pci --proc-type=primary', *base[-3:]],
+                capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('secondary EAL processes are unsupported', result.stderr)
+            self.assertEqual(calls.read_text(), '--dpdk-limits\n')
+            self.assertFalse(app_marker.exists())
+            self.assertFalse(stats.exists())
+
     def test_explicit_boundaries(self):
         self.assertEqual(self.read('[dpdk]\nport=a\nport=b\n'), {'port': 'b'})
         for text in ('port=x\n', '[unknown]\nport=x\n', '[dpdk]\nunknown=x\n',

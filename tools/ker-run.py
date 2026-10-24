@@ -368,7 +368,8 @@ def additional_interfaces(ini):
     return result
 
 
-def read_configuration(stream, directory, source='<stream>', worker_path=None):
+def read_configuration(stream, directory, source='<stream>', worker_path=None,
+                       eal_override=None):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
     ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
@@ -377,13 +378,20 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None):
     ini.read_string(stream.read().removeprefix('\ufeff'), source=str(source))
     if ini.defaults():
         raise ValueError('DEFAULT inheritance is unsupported')
+    # Reject unsupported main EAL mode only after applying the CLI-over-INI
+    # precedence, and before querying any worker capability. The suffix after
+    # EAL's `--` remains application-owned and is deliberately ignored here.
+    main_eal = eal_override if eal_override is not None else ini.get(
+        'dpdk', 'eal', fallback=None)
+    if main_eal is not None:
+        try:
+            main_eal_tokens = shlex.split(main_eal)
+        except ValueError as error:
+            raise ValueError(f'--eal: {error}') from error
+        reject_secondary_eal(main_eal_tokens)
     devices = virtual_devices(ini, directory)
     values = {'vdevs': devices} if devices or ini.has_option('dpdk', 'nb_vdev') else {}
     bonds = bond_devices(ini)
-    if bonds:
-        if worker_path is None:
-            raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
-        bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
     interfaces = additional_interfaces(ini)
     if interfaces:
         values['interfaces'] = interfaces
@@ -418,13 +426,21 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None):
             if convert is Path and not value.is_absolute():
                 value = directory / value
             values[field] = value
+    if bonds:
+        if worker_path is None:
+            raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
+        # All typed fields and every worker EAL mode are now validated. Only
+        # then may this capability probe execute the selected worker.
+        bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
+        values['bonds'] = bonds
     return values
 
 
-def load_configuration(path, worker_path=None):
+def load_configuration(path, worker_path=None, eal_override=None):
     path = path.resolve()
     with path.open(encoding='utf-8') as stream:
-        return read_configuration(stream, path.parent, path, worker_path)
+        return read_configuration(stream, path.parent, path, worker_path,
+                                  eal_override)
 
 
 def parse_arguments(argv=None):
@@ -506,7 +522,8 @@ def parse_arguments(argv=None):
     values = dict(CONFIG_DEFAULTS)
     if supplied.config is not None:
         try:
-            values.update(load_configuration(supplied.config, supplied.io_worker))
+            values.update(load_configuration(supplied.config, supplied.io_worker,
+                                             getattr(supplied, 'eal', None)))
         except MemoryError:
             parser.error(f'{supplied.config}: configuration allocation failed')
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
