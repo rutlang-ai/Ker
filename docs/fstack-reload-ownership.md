@@ -1,9 +1,7 @@
 # Generation reload ownership contract
 
 This is the implementation prerequisite for [issue #218](https://github.com/rutlang-ai/Ker/issues/218),
-not a supported reload feature or test-pass claim. Its 81 source cases remain
-unfinished: 80 are blocked and 1 is partial. The source pin is
-`646a641cfff77f4815e1e29829a09e1ed15a2999`.
+not a supported reload feature or test-pass claim. Its original 81 source cases include two page-array build assertions, separately excluded under #232. The remaining 79 actionable cases are unfinished: 78 blocked and 1 partial. The source pin is `646a641cfff77f4815e1e29829a09e1ed15a2999`.
 The retained tests are authoritative; proposed Ker mechanisms below still need
 implementation and runtime qualification.
 
@@ -197,10 +195,25 @@ This design supplies no pass/provenance entry for any of them.
 | Generation-directory integration (7 in `test_ff_gendir_mp_integration.c`) | Real original-EAL primary and secondaries under two distinct, simultaneously live masters; precreated/lookup-only rings; distinct epochs and packet tokens; exactly one queue consumer; live-coordinate probe; orphan drain; repeated slot recycle. Use a memory mode actually supporting secondaries; no-huge independent primaries do not qualify. |
 | Reload integration (7 in `test_ff_reload_integration.c`) | Boot/parked control progress, non-owner TX diversion, watermark drain and burst guard; actual original Linux half-open packets routed to the correct kernel. |
 | Config lifecycle/directory tests in `test_ff_config.c` | Valid/invalid real topology configuration, finite geometry, complete legal/illegal lifecycle table, delayed operation/epoch rejection, owner/user proof, orphan liveness and census-locked purge. Schema rejection without a valid positive configuration is insufficient. |
-| Page-array build tests (2 in `test_ff_config_pa.c`) | The source build with `FF_USE_PAGE_ARRAY` must reject graceful reload while continuing to accept the minimal reload-off configuration. Ker has no same build mode; generic unsupported-key rejection does not prove this conditional positive/negative contract. Resolve its precise architecture disposition separately. |
 | DPDK glue tests in `test_ff_dpdk_if.c` | Original shared pool/cache and SP/SC rings, exact queue ownership, full-ring visibility, peer/foreign-epoch TX, missing/full/transient directory behavior, bounded flow admission and growth, dead-user purge returning the pool to baseline. |
 | IPC tests (12 in `test_ff_ipc.c`) | Coordinate parser/serialization compatibility plus two live clients, delayed/foreign replies, dead-client reclamation and non-destructive probe under concurrent real control traffic. |
 | `test_graceful_reload.sh::entrypoint` | A caller-owned server on original Linux, external traffic across repeated HUP/USR2, continued existing streams and new connections, explicit fault/timeout scenarios, process ownership and complete resource cleanup. Parse-only/harness self-tests do not qualify. |
+
+## Explicit architecture exclusions
+
+The following source assertions are outside #218's qualification sequence. They remain
+architecture-specific exclusions under #232, with no Ker pass or test mapping:
+
+- `tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload` requires
+  the optional `FF_USE_PAGE_ARRAY` source build to reject reload because staged TX
+  carries process-private FreeBSD `bsd_m_table` references.
+- `tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off` is the paired
+  assertion that the same build accepts minimal reload-off configuration; Ker has
+  no equivalent build mode or process-private FreeBSD mbuf-table representation.
+
+Both assertions are from F-Stack revision `646a641cfff77f4815e1e29829a09e1ed15a2999`.
+See [the page-array audit](fstack-page-array-contracts.md) for the source boundary and
+rationale. These exclusions add no passes and do not change the 79 actionable #218 cases.
 
 Begin implementation with the resident-session lifecycle and real secondary
 attachment/lookup, integrated with process supervision rather than a detached
@@ -212,6 +225,10 @@ before enabling application reload or attempting the flow-map cases. Keep
 hardware-dependent PMD profiles explicit and unqualified profiles unsupported.
 
 At this checkpoint the catalog remains 179 scenario-adapted, 19 partial,
-167 blocked, 13 architecture-specific and 55 harness-only (433 total).
-The 186 blocked/partial cases, including all 81 tracked here, remain unfinished;
+165 blocked, 15 architecture-specific and 55 harness-only (433 total).
+The 184 blocked/partial cases, including all 79 tracked here, remain unfinished;
 `--require-complete` must continue to fail.
+
+For the actual local EAL attachment precondition and its observed failure, see
+[the environment investigation](fstack-reload-environment.md). This environment
+limitation does not waive any of the implementation or packet-delivery gates.

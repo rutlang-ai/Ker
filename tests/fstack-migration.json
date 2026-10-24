@@ -2186,15 +2186,15 @@
     {
       "id": "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack page-array/graceful-reload build configuration is not implemented in Ker.",
+      "status": "architecture-specific",
+      "reason": "Source build with FF_USE_PAGE_ARRAY rejects reload because staged TX carries process-private bsd_m_table references that another process cannot release (pinned ff_config.c guard and ff_memory.c). Ker original Linux packet channels/copied TX chains have no FreeBSD mbuf-table build ABI. Explicit architecture exclusion under issue232, not a Ker pass or generic reload rejection; see docs/fstack-page-array-contracts.md.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack page-array/graceful-reload build configuration is not implemented in Ker.",
+      "status": "architecture-specific",
+      "reason": "Source FF_USE_PAGE_ARRAY build still accepts valid_minimal.ini and records graceful_reload=0. This is the positive counterpart of the process-private FreeBSD mbuf-table build restriction, absent from Ker's original Linux ownership representation. Do not add a no-op build flag/global field for the assertion. Explicit architecture exclusion under issue232 with no pass mapping; see docs/fstack-page-array-contracts.md.",
       "ker_tests": []
     },
     {

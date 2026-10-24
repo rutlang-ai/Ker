@@ -16,8 +16,8 @@
 |---|---:|---|
 | scenario-adapted | 179 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 19 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 167 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
-| architecture-specific | 13 | FreeBSD callout、kqueue filter、mbuf 头及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
+| blocked | 165 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
 **全部原始测试已纳入；全部行为迁移尚未完成。**
@@ -49,8 +49,8 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 ## 剩余案例的 issue 追踪
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配的 254 项记录均在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 186 项是
-19 partial + 167 blocked，另有 13 项架构专用和 55 项上游工具链自测。
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：其中 184 项是
+19 partial + 165 blocked，另有 15 项架构专用和 55 项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -61,7 +61,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 81 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Design generation-aware reload, IPC and drain ownership | 79 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
 | Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
@@ -75,7 +75,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve unmapped host memory, time, environment and kqueue helpers | 10 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
 | Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
-| Record nonportable callout, kqueue filter and mbuf header assertions | 10 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
+| Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
 
 默认审计还检查：每个非 `scenario-adapted` 案例都恰好出现一次、issue 必须是
@@ -134,7 +134,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 32 | 9 | 55 | 0 | 0 |
-| [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 2 | 0 | 0 |
+| [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 2 | 59 | 0 | 0 |
 | [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 15 | 0 | 10 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
@@ -1234,9 +1234,10 @@ no-op 配置或虚假适配映射。清单179/19/167/13/55保持不变，186项�
 Ker 只提供运行时与设备适配。半开连接路由仍须先证明原版 Linux 的查询及生命周期
 接口，不能用 SYN 观察器或自写 TCP 状态机替代。
 
-该文档推进实现前必须明确合同的设计工作，不代表已实现 reload。#218 的 81 项源案例均未完成：80 项 blocked、1 项 partial。其中
-`test_ut_nr_19_drain_ring_sp_sc` 保留本地 FIFO/多队列隔离覆盖，但尚未满足
-F-Stack generation-aware multiprocess drain ring 合同。没有新增通过映射；总数保持
-179/19/167/13/55，完整门禁仍须拒绝 186 项 blocked/partial。下一步先实现有实际进程
-监督调用方的驻留会话与真实 secondary 接入，再做两条同时存活 master 链的单消费者
-数据验证。
+该文档推进实现前必须明确合同的设计工作，不代表已实现 reload。原 #218 的81项源案例中，两项 page-array 条件断言现作为架构专属排除转至 #232；其余79项仍是 actionable：其中 `test_ut_nr_19_drain_ring_sp_sc` 保留部分本地 FIFO/多队列隔离覆盖但仍为 partial，其余78项 blocked。没有新增通过映射；总数保持179/19/165/15/55，完整门禁仍须拒绝184项 blocked/partial。下一步先实现有实际进程监督调用方的驻留会话与真实 secondary 接入，再做两条同时存活 master 链的单消费者数据验证。
+
+## Page-array 精确排除与真实 secondary 环境核验
+
+[精确源合同](fstack-page-array-contracts.md)确认两项 page-array 用例检查的是 F-Stack 构建模式中 BSD mbuf 引用不能跨进程释放所引起的 reload 开关限制，不是待实现的通用 Linux page-array 分配器。两项从 #218 转到 #232 架构专属组，保留源 ID，不添加无消费者的构建开关或通过映射。当前179适配、19partial、165blocked、15架构专属、55harness-only，仍有184项未完成；#218保留79项。
+
+[实际 EAL 探针](fstack-reload-environment.md)证明本机 no-huge primary 可启动，但同命名空间 secondary 在共享内存初始化前失败；hugepage primary 则没有可用 hugepage。该环境证据不构成 secondary/PMD/网络通过，也不改变79项 reload缺口。

@@ -11,7 +11,8 @@
         "docs/fstack-reload-ownership.md",
         "src/posix/io-worker.c",
         "src/runtime/tx-ring.c",
-        "tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c"
+        "tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c",
+        "docs/fstack-reload-environment.md"
       ],
       "acceptance": [
         "Specify generation lifecycle, single-consumer admission, peer liveness, failure recovery and ownership before adding implementation.",
@@ -62,8 +63,6 @@
         "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
         "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
         "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
-        "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
-        "tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
@@ -519,15 +518,17 @@
     },
     {
       "id": "freebsd-internals",
-      "title": "Record nonportable callout, kqueue filter and mbuf header assertions",
+      "title": "Record nonportable callout, kqueue, mbuf and page-array build assertions",
       "disposition": "architecture-specific",
-      "reason": "These assertions depend on FreeBSD sbintime/hardclock/tick conversion, timer activation macros, internal kqueue filter IDs or mbuf M_PKTHDR/m_pkthdr.len fields. Original Linux has different timer/readiness/skb representations; a VMA payload or fabricated FreeBSD header mirror does not qualify them.",
+      "reason": "These assertions depend on FreeBSD sbintime/hardclock/tick conversion, timer activation macros, internal kqueue filter IDs or mbuf M_PKTHDR/m_pkthdr.len fields. Original Linux has different timer/readiness/skb representations; a VMA payload or fabricated FreeBSD header mirror does not qualify them. The FF_USE_PAGE_ARRAY reload restriction depends on process-private FreeBSD bsd_m_table references, with a conditional reject/on and accept/off source pair; it is not a generic Linux allocator contract.",
       "evidence": [
         "tests/upstream/fstack/tests/unit/test_ff_callout.c",
         "tests/upstream/fstack/tests/unit/test_ff_epoll.c",
         "src/posix/posix-poll.c",
         "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
-        "docs/fstack-zc-contracts.md"
+        "docs/fstack-zc-contracts.md",
+        "tests/upstream/fstack/tests/unit/test_ff_config_pa.c",
+        "docs/fstack-page-array-contracts.md"
       ],
       "acceptance": [
         "Confirm each listed assertion is FreeBSD-internal and document the supported Linux timer/readiness behavior with existing runnable evidence.",
@@ -544,7 +545,9 @@
         "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_unknown_filter_yields_zero_events",
         "tests/unit/test_ff_epoll.c::test_ff_epoll_wait_eof_unknown_filter_only_hup",
         "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_pkthdr_flag_set",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero"
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
+        "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
+        "tests/unit/test_ff_config_pa.c::test_page_array_keeps_graceful_off"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/232"
     },
