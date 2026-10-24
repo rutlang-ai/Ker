@@ -1408,21 +1408,21 @@
       "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Section appears before port configuration; source only asserts rss_check_cfgs stays NULL and discards the loader result. No assertion of successful load or of a particular error code. Ker has no equivalent ordered RSS-table loader contract. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Malformed three-token rule leaves nb_rss_tbl zero if the source RSS block exists; loader result is discarded. Generic unknown-section rejection does not prove rule-parser behavior. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
+      "reason": "Valid source configuration succeeds with RSS enabled and thash_adjust=0. Ker has no corresponding source-port optimization toggle; rejecting the field is not this positive contract. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
@@ -2291,14 +2291,14 @@
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source table setter declines with -1 when rss_check_cfgs is NULL. An absent Ker table API or rejected INI section is not a demonstrated setter guard. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source table setter declines with -1 for enable=0; the surrounding enabled table contract is still required. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
@@ -2316,181 +2316,181 @@
           "provenance_case": "native-fstack-ephemeral-ports"
         }
       ],
-      "remaining": "F-Stack RSS tables, queue-specific port selection and ff_rss_tbl_set_portrange return-code/API semantics are not implemented. This covers range validation and native allocation policy only."
+      "remaining": "Source enabled-table setter rejects first>last. Existing original-Linux ephemeral-range validation is partial evidence only; no Ker RSS candidate table update or queue ownership contract is implemented. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed."
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source lookup declines with -1 when configuration is NULL. No corresponding real Ker lookup consumer is qualified. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_disabled",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source lookup declines with -1 when configuration is disabled. No matching enabled/disabled candidate-table lifecycle is qualified. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_smoke",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source invokes lookup against uncontrolled table state and discards its return value; the assertion is only that this actual path does not crash, not hit/miss correctness or packet landing. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_hit",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source hit returns0, a non-NULL candidate array and a nonempty index interval; sampled candidates agree with the independent software hash and own-queue check. Ker has no such source-port candidate table. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_rotation",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Consecutive lookups preserve the same index interval and array pointer; rotation is performed by the caller, and two different candidate ports pass the own-queue check. Lookup must not be described as advancing the cursor itself. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_miss",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "A different source address misses the configured three-tuple, returns -ENOENT and leaves the candidate pointer NULL. No Ker equivalent table/miss path is qualified. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_null",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source rejects NULL softc or output pointer with -1 before dereference. Guarding a different RSS control API does not implement this source-port-selection consumer. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_degraded",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "With BSS RETA size0, context initialization succeeds but leaves ports unready; adjustment declines -1 for native/software fallback. This is degraded readiness, not working reverse calculation. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_single_queue",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source sets one queue but the earlier unready-context guard already returns -1 in this unit environment. It does not isolate the one-queue branch or prove traffic landing. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_equivalence_hitrate",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "On a non-skipped run (the source test skips if EAL initialization fails), standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. An EAL-init skip is not a pass and reaches none of these assertions. This is not observed PMD queue landing. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_landing",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source IPv6 own-queue verdicts match an independent software Toeplitz replica over64 destination ports and include at least one hit. Source BSS RETA0 implies mask0xffff; it is not a queried device RETA. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source own-queue predicate returns1 for a fixed IPv6 tuple with one queue. Ordinary single-queue TCP delivery does not invoke or establish a corresponding Ker predicate ABI. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "IPv6 rule initialization and lookup return a candidate array whose sampled ports pass the source own-queue predicate; missing tuples must miss. Ker has no IPv6 candidate table consumer. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_guard",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source IPv6 adjustment rejects NULL softc/output and declines after initialization with RETA0/unready context. Neither disabled device RSS nor zero packet counters proves these guards. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash6_equivalence_hitrate",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "On a non-skipped run (the source test skips if EAL initialization fails), standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. An EAL-init skip is not a pass and reaches none of these assertions. No device RX queue is observed. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_off",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source makes100 IPv4 adjustments with recheck=0, all declining at the unready-context guard, and asserts zero wrapped own-queue checks. The recheck branch is not reached. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_on",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source makes100 IPv4 adjustments with recheck=1 but the unready-context guard still prevents rechecks; zero wrapper calls plus a direct predicate-call sanity check are asserted. It does not demonstrate enabled runtime rechecking. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_off",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source makes100 IPv6 adjustments with recheck=0; RETA0/unready initialization causes -1 and no wrapped predicate calls. No ready recheck branch is exercised. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_on",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source makes100 IPv6 adjustments with recheck=1; all still decline before rechecking. A direct predicate call checks wrapper wiring, not the ready adjustment branch. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_microbench",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source probes context readiness and calls skip() when RETA0 leaves adjustment unavailable. Only a ready context times10000 calls for each recheck mode and asserts off<on. A skipped run provides no performance result. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_thash_adjust_off",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "With the source optimization disabled, IPv4 adjustment declines -1 so its original PCB caller can perform the fallback scan. Ker must preserve original Linux allocation rather than invent a TCP port scan. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_thash_adjust_off",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "With thash_adjust=0, IPv6 adjustment declines -1 for the original PCB caller fallback. No Ker equivalent optimization lifecycle or caller is implemented. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_ctx_init_thash_adjust_off",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source initialization returns0 when optimization is disabled. This is a deliberate disabled-path result, not evidence that a usable reverse-hash context exists. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_range_params",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source IPv4 adjustment declines for an inverted range and a two-port sub-RETA range, but RETA0/unready context may reject earlier. The unit does not independently reach ready-context range validation. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_range_params",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "Source IPv6 adjustment similarly declines inverted and too-small ranges with the earlier unready guard active. Original Linux range checks alone do not qualify reverse-hash candidate selection. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
       "ker_tests": []
     },
     {
