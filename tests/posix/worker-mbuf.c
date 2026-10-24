@@ -4,6 +4,7 @@
 #include "worker-tx.h"
 #include "worker-rx-drain.h"
 #include "worker-scatter.h"
+#include "worker-device.h"
 #include <errno.h>
 #include <rte_eal.h>
 #include <sched.h>
@@ -11,6 +12,38 @@
 #include <stdlib.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
+
+static const struct rte_device *const selected_device =
+    (const struct rte_device *)(uintptr_t)1;
+static const struct rte_device *const member_device =
+    (const struct rte_device *)(uintptr_t)2;
+static struct rte_devargs selected_args, member_args;
+static uint32_t rx_limit = UINT16_MAX, tx_limit = UINT16_MAX;
+
+const struct rte_devargs *rte_dev_devargs(const struct rte_device *device)
+{
+    if (device == selected_device) return &selected_args;
+    if (device == member_device) return &member_args;
+    return NULL;
+}
+
+int rte_eth_dev_info_get(uint16_t port_id, struct rte_eth_dev_info *info)
+{
+    if (!info || port_id > 2) return -ENODEV;
+    info->device = port_id == 1 ? (struct rte_device *)selected_device :
+        port_id == 2 ? (struct rte_device *)member_device : NULL;
+    info->rx_desc_lim.nb_max = rx_limit;
+    info->tx_desc_lim.nb_max = tx_limit;
+    return 0;
+}
+
+int rte_eth_dev_adjust_nb_rx_tx_desc(uint16_t port_id, uint16_t *rx, uint16_t *tx)
+{
+    if (port_id > 2 || !rx || !tx) return -EINVAL;
+    *rx = 128;
+    *tx = 192;
+    return 0;
+}
 
 struct tx_mock { uint16_t limit; unsigned int next; };
 static uint16_t mock_tx_burst(void *context, struct rte_mbuf **packets, uint16_t count)
@@ -263,6 +296,39 @@ static void test_descriptor_pool_budget(void)
     CHECK(ker_worker_mbuf_budget_add(NULL, &aggregate_tx, 1, 1) == -EINVAL);
 }
 
+static void test_retained_device_descriptor_budget(void)
+{
+    uint32_t rx = 0, tx = 0;
+    /* This production helper takes only a port ID and obtains the selected
+     * device's retained DPDK devargs. There is no argv to accidentally reuse
+     * after EAL has rewritten it. */
+    selected_args.args = "path=/tmp/selected.sock,queues=2,queue_size=4096,mac=00:11:22:33:44:55";
+    member_args.args = "path=/tmp/member.sock,queues=2,queue_size=32768,mac=00:11:22:33:44:56";
+    CHECK(ker_worker_configured_port_descriptors(1, 256, 256, &rx, &tx) == 0);
+    CHECK(rx == 4096 && tx == 4096);
+    CHECK(ker_worker_configured_port_descriptors(2, 4096, 4096, &rx, &tx) == 0);
+    CHECK(rx == 32768 && tx == 32768);
+    CHECK(ker_worker_configured_port_descriptors(0, 0, 0, &rx, &tx) == 0);
+    CHECK(rx == 128 && tx == 192);
+
+    const char *invalid[] = {
+        "queue_size=4096,queue_size=512", "queue_size=", "queue_size=0",
+        "queue_size=4096junk", "queue_size=65536", "queue_size=-1"
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        selected_args.args = invalid[i];
+        rx = 17; tx = 19;
+        CHECK(ker_worker_configured_port_descriptors(1, 0, 0, &rx, &tx) == -EINVAL);
+        CHECK(rx == 17 && tx == 19);
+    }
+    rx_limit = tx_limit = 2048;
+    selected_args.args = "queue_size=4096";
+    rx = 17; tx = 19;
+    CHECK(ker_worker_configured_port_descriptors(1, 0, 0, &rx, &tx) == -ERANGE);
+    CHECK(rx == 17 && tx == 19);
+    rx_limit = tx_limit = UINT16_MAX;
+}
+
 static void test_handoff_pool_budget(void)
 {
     uint32_t count = 0, segments = 0;
@@ -309,6 +375,7 @@ int main(void)
 {
     test_worker_wait_plan();
     test_descriptor_pool_budget();
+    test_retained_device_descriptor_budget();
     test_handoff_pool_budget();
     test_rx_startup_drain();
     test_scatter_rx_limits();

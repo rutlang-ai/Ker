@@ -32,6 +32,7 @@
 #include "worker-offload.h"
 #include "worker-receive-mode.h"
 #include "worker-exception.h"
+#include "worker-device.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
@@ -62,59 +63,6 @@ struct ker_worker_rx_queue {
     uint16_t port;
     uint16_t queue;
 };
-
-/* Typed virtio-user queue_size controls the actual RX and TX rings even when
- * rte_eth_dev_adjust_nb_rx_tx_desc leaves its requested counts unchanged. */
-static uint16_t configured_vdev_ring_size(int argc, char **argv, const char *port)
-{
-    for (int i = 0; i < argc; ++i) {
-        const char *device = NULL;
-        if (!strcmp(argv[i], "--vdev") && i + 1 < argc) device = argv[++i];
-        else if (!strncmp(argv[i], "--vdev=", 7)) device = argv[i] + 7;
-        if (!device) continue;
-        const char *options = strchr(device, ',');
-        if (!options || (size_t)(options - device) != strlen(port) ||
-            strncmp(device, port, (size_t)(options - device))) continue;
-        for (const char *item = options + 1; *item;) {
-            const char *end = strchr(item, ',');
-            size_t length = end ? (size_t)(end - item) : strlen(item);
-            if (length > sizeof("queue_size=") - 1 &&
-                !strncmp(item, "queue_size=", sizeof("queue_size=") - 1)) {
-                char value[16];
-                size_t digits = length - (sizeof("queue_size=") - 1);
-                if (digits >= sizeof(value)) return 0;
-                memcpy(value, item + sizeof("queue_size=") - 1, digits);
-                value[digits] = '\0';
-                char *tail;
-                unsigned long parsed = strtoul(value, &tail, 10);
-                if (*tail || parsed > UINT16_MAX) return 0;
-                return (uint16_t)parsed;
-            }
-            if (!end) break;
-            item = end + 1;
-        }
-    }
-    return 0;
-}
-
-static int configured_port_descriptors(uint16_t port, int argc, char **argv,
-    uint16_t minimum_rx, uint16_t minimum_tx, uint32_t *rx, uint32_t *tx)
-{
-    char name[RTE_ETH_NAME_MAX_LEN];
-    struct rte_eth_dev_info info = {0};
-    uint16_t rx_desc = 256, tx_desc = 256;
-    if (rte_eth_dev_get_name_by_port(port, name) ||
-        rte_eth_dev_info_get(port, &info) ||
-        rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) return -EIO;
-    uint16_t ring = configured_vdev_ring_size(argc, argv, name);
-    rx_desc = RTE_MAX(RTE_MAX(rx_desc, minimum_rx), ring);
-    tx_desc = RTE_MAX(RTE_MAX(tx_desc, minimum_tx), ring);
-    if ((info.rx_desc_lim.nb_max && rx_desc > info.rx_desc_lim.nb_max) ||
-        (info.tx_desc_lim.nb_max && tx_desc > info.tx_desc_lim.nb_max)) return -ERANGE;
-    *rx = rx_desc;
-    *tx = tx_desc;
-    return 0;
-}
 
 static uint16_t worker_rx_burst(void *context, struct rte_mbuf **packets,
     uint16_t capacity)
@@ -368,8 +316,6 @@ int main(int argc, char **argv)
         perror("ker: open worker log"); return 1;
     }
     argv[split] = argv[0];
-    uint16_t configured_ring = configured_vdev_ring_size(argc - split - 1,
-        argv + split + 1, port_name);
     if (rte_eal_init(argc - split, argv + split) < 0) {
         fprintf(stderr, "ker EAL: %s\n", rte_strerror(rte_errno));
         if (ker_worker_log_close(&log)) perror("ker: close worker log");
@@ -483,12 +429,18 @@ int main(int argc, char **argv)
     if (rte_eth_dev_adjust_nb_rx_tx_desc(port, &rx_desc, &tx_desc)) goto device_error;
     struct rte_eth_dev_info budget_info = {0};
     if (rte_eth_dev_info_get(port, &budget_info)) goto device_error;
-    /* A typed virtio-user ring can exceed the PMD-adjusted defaults. Use its
-     * selected config value for both directions; other devices use adjusted
-     * descriptors. Check PMD limits before attempting queue setup. */
-    uint16_t selected_rx_budget = RTE_MAX(rx_desc, configured_ring);
-    uint16_t selected_tx_budget = RTE_MAX(tx_desc, configured_ring);
-    uint32_t pool_rx_desc = selected_rx_budget, pool_tx_desc = selected_tx_budget;
+    /* A typed virtio-user ring can exceed PMD-adjusted defaults. Query the
+     * selected device's retained DPDK arguments and check the actual ring
+     * against PMD limits before reserving buffers. */
+    uint32_t selected_rx_budget, selected_tx_budget;
+    uint32_t pool_rx_desc = 0, pool_tx_desc = 0;
+    if (ker_worker_configured_port_descriptors(port, rx_desc, tx_desc,
+            &selected_rx_budget, &selected_tx_budget)) {
+        fprintf(stderr, "ker: cannot derive selected port descriptor budget from PMD and retained device arguments\n");
+        goto cleanup;
+    }
+    pool_rx_desc = selected_rx_budget;
+    pool_tx_desc = selected_tx_budget;
     if ((budget_info.rx_desc_lim.nb_max && selected_rx_budget > budget_info.rx_desc_lim.nb_max) ||
         (budget_info.tx_desc_lim.nb_max && selected_tx_budget > budget_info.tx_desc_lim.nb_max)) {
         fprintf(stderr, "ker: configured descriptor budget RX=%u TX=%u exceeds ethdev limits RX=%u TX=%u\n",
@@ -516,8 +468,8 @@ int main(int argc, char **argv)
                     goto cleanup;
                 }
             }
-            int member_result = configured_port_descriptors(bond_members[i],
-                argc - split - 1, argv + split + 1, selected_rx_budget,
+            int member_result = ker_worker_configured_port_descriptors(bond_members[i],
+                selected_rx_budget,
                 selected_tx_budget, &bond_rx_budgets[i], &bond_tx_budgets[i]);
             int budget_result = member_result ? member_result :
                 ker_worker_mbuf_budget_add_queues(&pool_rx_desc, &pool_tx_desc,
