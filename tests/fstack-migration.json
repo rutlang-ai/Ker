@@ -926,23 +926,14 @@
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Distinct real master/secondary chains remain simultaneously alive with different epoch/slot/control-ring identities and one actual PMD consumer. A paired-device standby stays attached without a native app or device data leases; after exact owner death it acquires in the same PID/EAL/epoch and carries independent original-Linux IPv4/IPv6 TCP4097/UDP512 traffic. Queued SIGINT (130) and SIGTERM (143) cancellation reap the actual secondary without application creation or leaked control objects; SIGTERM control-only standby reports no packet completion while the original owner census remains unchanged.",
+      "status": "scenario-adapted",
+      "reason": "A BUILD_TESTING-only source-shaped observer exercises the pinned two-masters/single-consumer scenario with two distinct live masters and real EAL secondaries sharing generation0/process0. Each worker independently samples stable no-hardware state and the same nonzero PMD owner epoch across a shared barrier; the primary is not owner. The resident holds one valid journaled probe mbuf in each distinct typed message ring simultaneously, then drains and verifies exactly one correctly owned token/reply per ring before either chain exits. This adapts only this source scenario's same-generation ownership and message-ring assertions. It does not qualify cross-generation dispatch/drain, general exception/KNI packet ownership, physical-device handover, queued packet crash/recovery, established-flow continuity or the full reload path.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-session-registration",
-          "provenance_case": "native-fstack-session-directory"
-        },
-        {
-          "ctest": "native-fstack-session-standby",
-          "provenance_case": "native-fstack-session-standby"
-        },
-        {
-          "ctest": "native-fstack-session-native-packets",
-          "provenance_case": "native-fstack-session-native-packets"
+          "ctest": "native-fstack-session-tc3-observer",
+          "provenance_case": "native-fstack-session-tc3-observer"
         }
-      ],
-      "remaining": "Fixed cross-generation dispatch/drain and actual exception-owner routing/admission agreement remain unimplemented. Same-PID paired-device takeover after complete application exit does not preserve old TCP connections or qualify the source KNI-owner assertion. TC-3 remains partial."
+      ]
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
