@@ -189,6 +189,12 @@ int ker_generation_test_tx_drop_count(struct ker_generation_rings *r,uint16_t p,
     *count=atomic_load_explicit(&r->stats[full_index(r,p,q,g)].tx_drop,memory_order_relaxed);
     return 0;
 }
+int ker_generation_test_active_counts(struct ker_generation_rings *r,uint32_t counts[4])
+{
+    if(!r||!r->primary||!counts)return -EINVAL;
+    for(unsigned i=0;i<4;i++)counts[i]=atomic_load_explicit(&r->active[i],memory_order_acquire);
+    return 0;
+}
 static void test_hold_dequeue_lease(void)
 {
     if (!atomic_exchange_explicit(&test_hold_next_dequeue,0,memory_order_acq_rel)) return;

@@ -134,6 +134,11 @@ static int fail(struct test_control *c, const char *what)
     if(c) atomic_store(&c->failed,1);
     return 1;
 }
+static int fail_packet_enqueue_race(struct test_control *c,const char *what)
+{
+    if(c)atomic_store_explicit(&c->packet_enqueue_release,1,memory_order_release);
+    return fail(c,what);
+}
 static void wait_stage(struct test_control*c,unsigned stage)
 {
     for(unsigned tick=0;tick<20000;tick++){
@@ -365,12 +370,13 @@ static int secondary_packet_worker(unsigned generation)
         while(!atomic_load_explicit(&c->packet_enqueue_ready,memory_order_acquire))usleep(1000);
         struct rte_mbuf *packet_out=NULL;
         if(ker_generation_tx_dequeue_peer(rings,&id,0,1,&packet_out)!=1||!packet_out||
-            packet_out->pkt_len!=14||packet_out->data_len!=14)return fail(c,"race consumer could not dequeue committed packet");
+            packet_out->pkt_len!=14||packet_out->data_len!=14)
+            return fail_packet_enqueue_race(c,"race consumer could not dequeue committed packet");
         const uint8_t *bytes=rte_pktmbuf_mtod(packet_out,const uint8_t *);
         for(unsigned i=0;i<14;i++)if(bytes[i]!=(uint8_t)(0x90U+i))
-            return fail(c,"race consumer packet bytes mismatch");
+            return fail_packet_enqueue_race(c,"race consumer packet bytes mismatch");
         if(ker_generation_packet_release(rings,&id,packet_out))
-            return fail(c,"race consumer could not release committed packet");
+            return fail_packet_enqueue_race(c,"race consumer could not release committed packet");
         atomic_store_explicit(&c->packet_consumer_released,1,memory_order_release);
         atomic_store_explicit(&c->packet_enqueue_release,1,memory_order_release);
         while(atomic_load_explicit(&c->packet_go,memory_order_acquire)<2)usleep(1000);
@@ -753,6 +759,7 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
 {
     struct test_control *c=control();pid_t pids[2]={-1,-1};int pidfds[2]={-1,-1};
     int status=0,result=-1;uint32_t index=0;uint64_t lease=0;
+    uint32_t post_race_active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
     struct ker_generation_identity actors[2]={
         {.session=TEST_SESSION,.epoch=100+profile*2,.slot=1,.generation=0,.process=0,.pid=0},
         {.session=TEST_SESSION,.epoch=101+profile*2,.slot=2,.generation=1,.process=0,.pid=0}};
@@ -947,7 +954,9 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
         ker_generation_test_hold_after_packet_enqueue(&c->packet_enqueue_ready,&c->packet_enqueue_release);
         int commit_rc=ker_generation_packet_commit(rings,&actors[0],0,1,index,lease);
         ker_generation_test_hold_after_packet_enqueue(NULL,NULL);
-        if(commit_rc||!atomic_load_explicit(&c->packet_consumer_released,memory_order_acquire)||
+        int active_rc=ker_generation_test_active_counts(rings,post_race_active);
+        if(commit_rc||!atomic_load_explicit(&c->packet_consumer_released,memory_order_acquire)||active_rc||
+            post_race_active[0]||post_race_active[1]||post_race_active[2]||post_race_active[3]||
             rte_ring_count(tx)||ker_generation_packet_pool_in_use(rings)!=packet_baseline||
             rte_mempool_in_use_count(pool))PACKET_CASE_FAIL();
         if(ker_generation_packet_cancel(rings,&actors[0],index,lease)!=-ESTALE)PACKET_CASE_FAIL();
@@ -1050,8 +1059,9 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
     }
     if(ker_generation_packet_pool_in_use(rings)!=packet_baseline||rte_ring_count(tx)||
         rte_mempool_in_use_count(pool))PACKET_CASE_FAIL();
-    if(profile==8)printf("NR19_PACKET_POST_ENQUEUE_PEER_RELEASE_PASS consumer_released=%u packet_pool_in_use=%u message_pool_in_use=%u tx_ring_count=%u\n",
+    if(profile==8)printf("NR19_PACKET_POST_ENQUEUE_PEER_RELEASE_PASS consumer_released=%u active=%u,%u,%u,%u packet_pool_in_use=%u message_pool_in_use=%u tx_ring_count=%u\n",
         atomic_load_explicit(&c->packet_consumer_released,memory_order_acquire),
+        post_race_active[0],post_race_active[1],post_race_active[2],post_race_active[3],
         ker_generation_packet_pool_in_use(rings),rte_mempool_in_use_count(pool),rte_ring_count(tx));
     printf("NR19_PACKET_LEASE_DEATH_PASS profile=%u queued_retained=%u pool_baseline=true\n",profile,profile==3?1U:0U);
     result=0;

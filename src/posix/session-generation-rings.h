@@ -162,6 +162,7 @@ int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *ring
 void ker_generation_test_restore_reap_corruption(void);
 int ker_generation_test_tx_drop_count(struct ker_generation_rings *rings,
     uint16_t port, uint16_t queue, uint32_t generation, uint64_t *count);
+int ker_generation_test_active_counts(struct ker_generation_rings *rings,uint32_t counts[4]);
 #endif
 
 /* Reclaim only after the exact registered PIDFD is readable. */
