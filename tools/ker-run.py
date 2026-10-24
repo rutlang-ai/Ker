@@ -903,17 +903,18 @@ class AdditionalWorker:
         if self.finished_result is not None:
             return self.finished_result
         self.stop_channels()
-        failed = False
+        failed = timed_out = False
         if self.process is not None:
             try:
                 output, _ = self.process.communicate(timeout=10)
             except subprocess.TimeoutExpired:
-                self.process.kill(); output, _ = self.process.communicate(); failed = True
+                self.process.kill(); output, _ = self.process.communicate(); failed = timed_out = True
             for line in output.splitlines():
                 if line.startswith('KER_IO_DONE '): self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
             failed |= self.process.returncode != 0 or self.stats is None or self.stats.get('outstanding', 1) != 0
         if self.stats is not None:
-            self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None)
+            self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None,
+                              shutdown_timed_out=timed_out, worker_exit_code=self.process.returncode if self.process else None)
         self.finished_result = failed
         return failed
 
@@ -928,15 +929,17 @@ def unexpected_worker_exit(worker, additional):
 
 
 def collect_worker(process, stats):
-    failed = False
+    failed = timed_out = False
     try:
         output, _ = process.communicate(timeout=10)
     except subprocess.TimeoutExpired:
-        process.kill(); output, _ = process.communicate(); failed = True
+        process.kill(); output, _ = process.communicate(); failed = timed_out = True
         print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
     for line in output.splitlines():
         if line.startswith('KER_IO_DONE '):
             stats = json.loads(line.removeprefix('KER_IO_DONE '))
+    if stats is not None:
+        stats.update(shutdown_timed_out=timed_out, worker_exit_code=process.returncode)
     return stats, failed or process.returncode != 0 or stats is None
 
 

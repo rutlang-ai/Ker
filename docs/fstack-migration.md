@@ -1292,3 +1292,21 @@ generation network packet transport or full reload.
 Current inventory:181scenario-adapted,22partial,160blocked,15architecture-specific,
 55harness-only (433total). The completion gate still fails for182unfinished
 cases. Issue#218 remains open for78incomplete cases (74blocked/4partial).
+
+
+2026-10-24 多 worker 停止 ACK 回归
+
+将 #242 的并发回收修复带入后续迁移分支，保留现有 worker 生命周期检查和配置边界。
+全部 worker 的十秒退出等待同时开始，收集所有结果后才发送 ACK，避免串行等待
+四个 worker 时超过原生 API 的三十秒截止时间。单个回收异常不会跳过其他 worker。
+
+`native-fstack-run-stop` 新增四 worker 超时模式：两个原始 TAP PMD 继续覆盖独立宿主
+IPv4/IPv6 TCP/UDP，另有两个原始 null PMD。每个实际 EAL 子进程完成清理后，
+测试包装进程故意延迟六十秒退出。断言四个包装进程均触发十秒超时、被 SIGKILL
+并回收，四份原始池统计均为零未归还 mbuf，API 返回 EIO，十个私有通道全部关闭，
+应用仍继续运行六秒。该故障注入针对 supervisor 回收端点，不声明强制杀死 EAL
+进程可以安全回收其 mbuf。构建及两个 run-stop CTest 均通过。
+
+这是已有 run/stop 适配的缺陷修复与回归增强，不提升原始耦合 EAL 循环用例的状态。
+当前清单保持 181 scenario-adapted、22 partial、160 blocked，仍有182项未完成；
+15项架构专属及55项 harness-only 保留原有边界，issue223继续跟踪耦合循环差异。
