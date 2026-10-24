@@ -2605,11 +2605,16 @@ static int frame_negative_prepare(int fd,int resident,const struct ker_session_m
     switch(variant){
     case 0: request.capability^=1; break;
     case 1: request.token^=1;expected_status=-ESTALE;break;
-    case 2: request.packet_pool_tag^=1;expected_status=-EOPNOTSUPP;break;
-    case 3: request.packet_object_index=0;expected_status=-EBUSY;break;
-    case 4: request.packet_queue=2;expected_status=-EOPNOTSUPP;break;
-    case 5: request.tx_lease_id=1;expected_status=-EBUSY;break;
-    case 6: request.version--;expected_status=-EPROTO;break;
+    case 2: request.session^=1;expected_status=-ESTALE;break;
+    case 3: request.epoch^=1;expected_status=-ESTALE;break;
+    case 4: request.slot^=1;expected_status=-ESTALE;break;
+    case 5: request.generation^=1;break;
+    case 6: request.process^=1;break;
+    case 7: request.packet_pool_tag^=1;expected_status=-EOPNOTSUPP;break;
+    case 8: request.packet_object_index=0;expected_status=-EBUSY;break;
+    case 9: request.packet_queue=2;expected_status=-EOPNOTSUPP;break;
+    case 10: request.tx_lease_id=1;expected_status=-EBUSY;break;
+    case 11: request.version--;expected_status=-EPROTO;break;
     default:return -EINVAL;
     }
     require_resident_alive(resident);
@@ -2651,7 +2656,7 @@ static int frame_negative_prepares_leave_datagram(int packet_fd,int fd,int resid
     uint64_t tag=ker_generation_packet_pool_tag(rings);
     uint32_t ring_before,pool_before,ring_after,pool_after;
     if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_before,&pool_before)||ring_before)return -EUCLEAN;
-    for(unsigned variant=0;variant<7;variant++) {
+    for(unsigned variant=0;variant<12;variant++) {
         int result=frame_negative_prepare(fd,resident,identity,sequence,capability,tag,variant);
         if(result)return result;
         if(ker_generation_test_tx_snapshot(rings,0,0,0,&ring_after,&pool_after)||
@@ -2662,7 +2667,7 @@ static int frame_negative_prepares_leave_datagram(int packet_fd,int fd,int resid
         ssize_t n=recvmsg(packet_fd,&msg,MSG_PEEK|MSG_TRUNC|MSG_DONTWAIT);
         if(n!=(ssize_t)peek_length||memcmp(observed,peek_bytes,peek_length))return -EUCLEAN;
     }
-    printf("KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS {\"variants\":7,\"datagram_queued\":true,\"ring_unchanged\":true,\"pool_unchanged\":true}\n");
+    printf("KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS {\"variants\":12,\"datagram_queued\":true,\"ring_unchanged\":true,\"pool_unchanged\":true}\n");
     fflush(stdout);return 0;
 }
 static int frame_prepare_cancel_replay(int packet_fd,int fd,int resident,
