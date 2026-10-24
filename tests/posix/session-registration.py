@@ -254,13 +254,13 @@ def main():
             leases[1].stdin.write(b'P'); leases[1].stdin.flush()
             require(ready(leases[1], 'KER_SESSION_PROBED')['sequence'] == 32, 'probe sequence reset')
             census = status()
-            require(census['generation'] == 511 and census['token'] == 0, 'shared probes leaked mbufs')
+            require(census['generation'] == 508 and census['token'] == 3, 'live control leases are not journaled')
             diagnostic = subprocess.run([sys.executable, str(args.tool), 'status', '--socket', str(path)],
                 capture_output=True, env=environment, timeout=10)
             require(diagnostic.returncode == 0, 'production status failed: ' + diagnostic.stderr.decode())
             diagnostic = json.loads(diagnostic.stdout)
-            require(diagnostic['registered_eal_users'] == 3 and diagnostic['outstanding'] == 0 and
-                    diagnostic['pool_available'] == 511, 'production pool census is incorrect')
+            require(diagnostic['registered_eal_users'] == 3 and diagnostic['outstanding'] == 3 and
+                    diagnostic['pool_available'] == 508, 'production pool census is incorrect')
             # Stop the exact secondary before killing its supervisor. The
             # supervisor-owned control pipe closes on death, but the stopped
             # EAL process remains an exact live borrower until resumed.
@@ -313,6 +313,79 @@ def main():
                 require(lease.returncode == 0, 'master/secondary cleanup failed: ' + errors.decode())
             eventually(0, 0)
 
+            # Exact A4/USR2-chain source scenario: all three master slots are
+            # occupied, then every master dies without issuing RELEASE. Keep
+            # their EAL workers alive until after that observation; only exact
+            # borrower death may make room for the fourth master.
+            abandoned = []
+            for _ in range(3):
+                owner = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+                processes.append(owner)
+                entry = ready(owner, 'KER_SESSION_ATTACHED')
+                pidfd = os.pidfd_open(entry['pid']); worker_pidfds.append(pidfd)
+                abandoned.append((owner, entry, pidfd))
+            require(len({entry['slot'] for _, entry, _ in abandoned}) == 3,
+                    'chain masters did not occupy every reusable slot')
+            eventually(3, 3)
+            for owner, entry, pidfd in abandoned:
+                signal.pidfd_send_signal(pidfd, signal.SIGSTOP)
+                stop_deadline = time.monotonic() + 5
+                while Path(f'/proc/{entry["pid"]}/stat').read_text().rsplit(')', 1)[1].split()[0] not in ('T', 't'):
+                    require(time.monotonic() < stop_deadline, 'A4 secondary did not stop before master death')
+                    time.sleep(0.01)
+            for owner, _, _ in abandoned:
+                owner.kill(); owner.wait(timeout=10)
+            census = eventually(3, 3)
+            require(census['generation'] == 508 and census['token'] == 3,
+                    'dead masters prematurely released surviving borrowers')
+            for owner, _, _ in abandoned:
+                owner.stdin.close(); owner.stdin = None
+            for _, entry, pidfd in abandoned:
+                signal.pidfd_send_signal(pidfd, signal.SIGCONT)
+                with selectors.DefaultSelector() as selector:
+                    selector.register(pidfd, selectors.EVENT_READ)
+                    require(selector.select(20), 'abandoned EAL worker did not exit')
+                waited, result = os.waitpid(entry['pid'], 0)
+                require(waited == entry['pid'] and os.waitstatus_to_exitcode(result) == 0,
+                        'abandoned chain worker did not finish original EAL cleanup')
+            census = eventually(0, 0)
+            require(census['generation'] == 511 and census['token'] == 0, 'chain control leases leaked')
+            fourth = subprocess.run([sys.executable, str(args.tool), 'probe', *common, '--probe-count', '4'],
+                input=b'', capture_output=True, env=environment, timeout=20)
+            require(fourth.returncode == 0, 'fourth master could not register: ' + fourth.stderr.decode())
+            fourth_lines = fourth.stdout.decode().splitlines()
+            attached = next(json.loads(line.split(' ', 1)[1]) for line in fourth_lines
+                            if line.startswith('KER_SESSION_ATTACHED '))
+            proved = next(json.loads(line.split(' ', 1)[1]) for line in fourth_lines
+                          if line.startswith('KER_SESSION_PROBED '))
+            require(attached['epoch'] > max(entry['epoch'] for _, entry, _ in abandoned) and
+                    1 <= attached['slot'] < 4 and attached['epoch'] == proved['epoch'] and
+                    attached['slot'] == proved['slot'] and proved['count'] == 4 and len(attached['rings']) == 4,
+                    'fourth chain master aliased epoch zero or failed shared-object lookup')
+            census = eventually(0, 0)
+            require(census['generation'] == 511 and census['token'] == 0, 'fourth master leaked objects')
+            # The resident assigned an mbuf before acknowledging reservation.
+            # Kill a borrower without ever enqueueing it, and again after a
+            # reply was dequeued, when neither control ring holds a reference.
+            for after_reply in (False, True):
+                killed = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common, '--probe-count', '1'],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+                processes.append(killed)
+                killed_info = ready(killed, 'KER_SESSION_ATTACHED')
+                killed_pidfd = os.pidfd_open(killed_info['pid']); worker_pidfds.append(killed_pidfd)
+                if after_reply:
+                    killed.stdin.write(b'P'); killed.stdin.flush()
+                    ready(killed, 'KER_SESSION_PROBED')
+                census = eventually(1, 1)
+                require(census['generation'] == 510 and census['token'] == 1,
+                        'borrower has no pre-enqueue journaled mbuf lease')
+                signal.pidfd_send_signal(killed_pidfd, signal.SIGKILL)
+                output, errors = killed.communicate(timeout=20)
+                require(killed.returncode != 0, 'killed borrower was reported successful')
+                census = eventually(0, 0)
+                require(census['generation'] == 511 and census['token'] == 0,
+                        'unpublished or dequeued control lease leaked after borrower death')
             # Queue one real shared probe while the resident is stopped; the
             # borrower must time out, and the resident must reclaim the mbuf.
             timed = subprocess.Popen([sys.executable, str(args.tool), 'lease', *common, '--probe-count', '1'],
@@ -523,6 +596,8 @@ def main():
             require(held.returncode == 125 and b'primary process exited' in errors,
                     'secondary accepted a dead primary lifetime: ' + str(held.returncode) + ' ' + errors.decode() + ' ' + output.decode())
             require(blocked_socket.exists(), 'failed cleanup silently removed a live session namespace')
+            print('PASS: source A4/USR2 chain: three unretired dead masters recycle for fourth real secondary, never epoch0')
+            print('PASS: journal recovers control mbuf after death before enqueue and after reply dequeue')
             print('PASS: device/descriptor preflight; stopped live borrower prevents cleanup; primary death is fatal')
             print('PASS: three live master namespaces exchange64-byte shared mbufs; monotonic sequences; timeout recovers after borrower death')
             print('PASS: resident precreates128rings; real EAL secondary lookup, identity/retry guards, '

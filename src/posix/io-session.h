@@ -5,7 +5,7 @@
 #include <stdatomic.h>
 #include <errno.h>
 #define KER_SESSION_MAGIC UINT64_C(0x4b45525345535331)
-#define KER_SESSION_VERSION 2U
+#define KER_SESSION_VERSION 3U
 #define KER_SESSION_SLOTS 4U
 #define KER_SESSION_GENERATIONS 2U
 #define KER_SESSION_PROCESSES 4U
@@ -26,7 +26,8 @@ struct ker_session_message {
 };
 _Static_assert(sizeof(struct ker_session_message) == 88, "session wire ABI");
 /* Shared control transport: request producer owns the mbuf until enqueue,
- * resident owns it until reply enqueue, then the same secondary owns it. */
+ * resident owns it until reply enqueue, then the same secondary owns it.
+ * The object remains allocated under its coordinate lease throughout. */
 struct ker_session_probe {
     struct ker_session_message identity;
     uint64_t responder;
@@ -49,5 +50,8 @@ struct ker_session_directory {
     uint32_t primary_pid, slots, generations, processes, channels, capacity;
     _Atomic unsigned state;
     _Atomic uint64_t epoch[KER_SESSION_SLOTS];
+    /* Resident assigns the original mbuf before acknowledging RESERVE; only
+     * exact borrower death permits clearing this lease and returning it. */
+    _Atomic uintptr_t lease[KER_SESSION_SLOTS][KER_SESSION_GENERATIONS][KER_SESSION_PROCESSES];
 };
 #endif

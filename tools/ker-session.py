@@ -15,7 +15,7 @@ import sys
 import time
 
 MAGIC = 0x4B45525345535331
-VERSION = 2
+VERSION = 3
 FIELDS = ('magic', 'version', 'command', 'sequence', 'session', 'epoch',
           'generation', 'process', 'token', 'slot', 'status')
 WIRE = struct.Struct('=10Qq')

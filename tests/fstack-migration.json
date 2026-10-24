@@ -894,51 +894,74 @@
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_primary_precreates_all_slots",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "The real resident precreates its bounded directory, all128control/RX/TX/reply rings and message pool before admitting EAL secondaries; selected coordinates are looked up and geometry-validated by actual secondary processes.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory"
+        }
+      ],
+      "remaining": "The source also requires a configured network port, every source-coordinate lookup and one fixed queue dispatch ring protected by hardware arbitration. Those network/dispatch contracts are not implemented or qualified."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_secondary_looks_up_own_slot",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "A real EAL secondary under a different plain master validates a nonzero epoch, nonzero reusable slot and its directory/rings/pool, then exchanges authenticated shared control mbufs.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory"
+        }
+      ],
+      "remaining": "The source also requires the secondary to claim the hardware and the resident to park from network consumption. No secondary network PMD or hardware-owner grant is implemented yet."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_two_masters_single_consumer",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Three real master/secondary chains remain simultaneously alive and are gated before shared control exchange; different epoch/slot/ring identities, payload isolation and ordered replies are verified.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory"
+        }
+      ],
+      "remaining": "The source single dispatch-ring consumer, no-hardware arbitration, hardware-owner/KNI-owner agreement and packet delivery remain unimplemented. Shared control isolation is not hardware exclusivity."
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "reason": "The resident now provides real EAL registration, shared-control leases and namespace recycling. This source case still lacks its actual epoch-liveness, hardware-owner query or drain-peer implementation; control health probes do not qualify it.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_probe_roundtrip_tools_contract",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "reason": "The resident now provides real EAL registration, shared-control leases and namespace recycling. This source case still lacks its actual epoch-liveness, hardware-owner query or drain-peer implementation; control health probes do not qualify it.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_drain_peer_semantics",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
+      "reason": "The resident now provides real EAL registration, shared-control leases and namespace recycling. This source case still lacks its actual epoch-liveness, hardware-owner query or drain-peer implementation; control health probes do not qualify it.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_usr2_chain_slot_recycle",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack shared generation directory, epochs and multiprocess reload ownership are absent from Ker; local FIFO tests are not equivalent.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exact A4 namespace-recycle scenario now uses one resident EAL primary, three plain masters and their real EAL secondaries. All three reusable slots are occupied; every master is killed without RELEASE while its worker remains alive, so slots and control leases remain protected. After all exact worker lifetimes end and original EAL cleanup completes, a fourth plain master and real secondary obtain an epoch greater than every abandoned epoch, a nonzero reusable slot, validated directory/ring/pool lookup and four real shared-mbuf probe roundtrips. No fallback to primary epoch/slot zero, unreaped processes or outstanding control objects is accepted. This qualifies namespace recycling only, not USR2 application orchestration, hardware handover or packet delivery.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-registration",
+          "provenance_case": "native-fstack-session-directory"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_kni_integration.c::test_kni_process_tx_basic",
@@ -1040,49 +1063,49 @@
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_drain_ring_tx_watermark",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_send_burst_guard",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_dispatch",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_window_mechanism",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
       "ker_tests": []
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_main_loop_parked_pass",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Ker has no graceful reload generations, TX diversion/drain ownership or epoch protocol.",
+      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
       "ker_tests": []
     },
     {

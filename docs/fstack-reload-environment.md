@@ -38,8 +38,8 @@ does not test PMD secondary compatibility, generation ownership, two live
 masters, original Linux networking or graceful reload.
 
 Raw source, compile/run commands and captured stderr are recorded with the
-implementation investigation in #218. All 79 actionable generation cases remain
-blocked. Work on other source contracts continues independently of this host
+implementation investigation in #218. All 79 actionable generation cases were still
+incomplete at that diagnostic checkpoint. Work on other source contracts continues independently of this host
 prerequisite; the migration goal is not complete.
 
 ## Isolated guest removes the local shared-memory prerequisite blocker
@@ -86,8 +86,8 @@ transport. Do not wait for host privilege escalation merely to retry the old
 no-huge profile. It does not qualify any source case yet: no PMD/device is
 configured here, no packets or ring tokens are exchanged, no epochs/generations
 exist, and no original Linux application networking or graceful reload runs.
-All79generation cases remain blocked until their actual implementation and
-acceptance evidence exist.
+At that diagnostic checkpoint all79generation cases were still incomplete;
+source acceptance requires actual implementation and matching evidence.
 
 
 ## Production registration acceptance
@@ -107,7 +107,8 @@ A successful run must finish the complete test, including cleanup of exact
 test-owned backing files after process-death proof, report test exit 0 and
 `GUEST_SESSION_REGISTRATION_PASS`, and power down normally. Host CTest may
 still skip for lack of hugepages. Registration does not qualify PMD or packet
-transport, and all 79 actionable #218 source cases remain blocked.
+transport; all 79 actionable #218 source cases were still incomplete at that
+registration-only checkpoint.
 
 
 ## Shared-control transport acceptance
@@ -132,4 +133,33 @@ transport pass. These are guest image changes and do not alter host settings.
 This health probe returns the registered sender's identity. It does not answer
 F-Stack's hardware-owner query, grant network-device ownership, exercise a
 secondary network PMD or deliver packets into an original Linux instance. The
-remaining #218 source-case status is unchanged.
+shared-control checkpoint alone did not complete a source-case migration.
+
+
+## Journaled control leases and the source A4 namespace case
+
+The version-3 resident assigns an original control mbuf and records ownership
+before acknowledging each secondary reservation. The borrower looks it up but
+never returns it to the pool. The guest acceptance kills a real borrower before
+its first enqueue and another after reply dequeue, when neither ring contains
+a reference. Each death must restore all 511 original pool objects. Live
+borrowers retain their leases; stopping one still makes primary cleanup fail.
+
+The same production test now occupies every reusable slot with three plain
+masters and real EAL secondaries. All masters are killed without RELEASE while
+their workers stay alive. Slots and mbuf leases remain protected until those
+exact worker lifetimes end with original EAL cleanup. A fourth plain master
+and real secondary must then get a strictly newer, nonzero epoch and nonzero
+slot, validate the shared directory/rings/pool, and complete four shared-mbuf
+roundtrips. This is the source A4/USR2-chain namespace recycling scenario,
+`test_it_a14_usr2_chain_slot_recycle`; it does not exercise application USR2,
+hardware handover or packet delivery. The full final guest run exits0, reports
+zero outstanding after cleanup and powers down normally.
+
+The source precreation, own-slot lookup and cross-master isolation cases now
+have partial mappings to the actual test. Their fixed queue dispatch,
+secondary PMD/hardware ownership and owner-word assertions remain unqualified.
+The catalog is181adapted/22partial/160blocked/15architecture-specific/55harness-only;
+182cases remain blocked or partial. Issue#218 retains78incomplete cases
+(74blocked/4partial), rather than treating every prior prerequisite as no
+implementation or claiming a complete reload pass.
