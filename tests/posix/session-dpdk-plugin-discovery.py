@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 from pathlib import Path
+import stat
 import tempfile
 import sys
 from types import SimpleNamespace
@@ -33,6 +34,158 @@ def expect_error(call, label):
     raise RuntimeError(label + ' unexpectedly resolved')
 
 
+class ReapedProcess:
+    def poll(self):
+        return 0
+
+
+def private_hugepage_cleanup_checks(native):
+    prefix = 'a09-private-test-'
+
+    def snapshot(directory):
+        root = Path(directory)
+        root_stat = root.lstat()
+        result = [('directory', root_stat.st_dev, root_stat.st_ino, root_stat.st_uid,
+            stat.S_IFMT(root_stat.st_mode), stat.S_IMODE(root_stat.st_mode))]
+        for entry in sorted(root.iterdir(), key=lambda item: item.name):
+            value = entry.lstat()
+            identity = (entry.name, value.st_dev, value.st_ino, value.st_uid,
+                stat.S_IFMT(value.st_mode), stat.S_IMODE(value.st_mode), value.st_nlink)
+            if stat.S_ISREG(value.st_mode):
+                result.append(identity + (entry.read_bytes(),))
+            elif stat.S_ISLNK(value.st_mode):
+                result.append(identity + (os.readlink(entry),))
+            else:
+                result.append(identity)
+        return tuple(result)
+
+    def setup(parent):
+        parent_fd, directory_fd, parent_identity, directory_identity = \
+            native.create_handoff_hugepage_dir(parent, 'owned')
+        Path(parent, 'owned', prefix + 'map_0_0').write_bytes(b'backing')
+        Path(parent, 'owned', prefix + 'map_0_1').write_bytes(b'backing-two')
+        return parent_fd, directory_fd, parent_identity, directory_identity
+
+    def refusal(label, mutate=None, actor_alive=False):
+        with tempfile.TemporaryDirectory(prefix='a09-private-refuse-') as raw:
+            parent = Path(raw)
+            parent_fd, directory_fd, parent_identity, directory_identity = setup(parent)
+            live_pidfd = os.pidfd_open(os.getpid()) if actor_alive else -1
+            expected = [snapshot(parent / 'owned')]
+            try:
+                try:
+                    native.cleanup_private_hugepage_dir(parent, parent_fd, parent_identity,
+                        'owned', directory_fd, directory_identity, prefix,
+                        [live_pidfd] if actor_alive else [], -1, ReapedProcess(), None, True,
+                        before_second_pass=(lambda: (mutate(parent), expected.__setitem__(0,
+                            snapshot(parent / 'owned')))) if mutate else None)
+                except RuntimeError:
+                    pass
+                else:
+                    raise RuntimeError(label + ' unexpectedly passed private cleanup')
+                held = Path(parent, 'owned')
+                require(held.exists(), label + ' removed the owned directory after refusal')
+                require(snapshot(held) == expected[0],
+                    label + ' changed held directory entries before refusing cleanup')
+            finally:
+                if live_pidfd >= 0: os.close(live_pidfd)
+                os.close(directory_fd); os.close(parent_fd)
+
+    refusal('unknown entry', mutate=lambda parent: Path(parent, 'owned', 'unexpected').write_text('x'))
+    refusal('symlink entry', mutate=lambda parent: Path(parent, 'owned', 'stray').symlink_to('missing'))
+    refusal('FIFO entry', mutate=lambda parent: os.mkfifo(Path(parent, 'owned', 'stray')))
+    refusal('subdirectory entry', mutate=lambda parent: Path(parent, 'owned', 'stray').mkdir())
+    refusal('live actor', actor_alive=True)
+    with tempfile.TemporaryDirectory(prefix='a09-private-unproven-') as raw:
+        parent = Path(raw)
+        parent_fd, directory_fd, parent_identity, directory_identity = setup(parent)
+        snapshot_before = snapshot(parent / 'owned')
+        try:
+            try:
+                native.cleanup_private_hugepage_dir(parent, parent_fd, parent_identity,
+                    'owned', directory_fd, directory_identity, prefix, [], -1,
+                    ReapedProcess(), None, False)
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError('incomplete actor proof unexpectedly allowed hugepage cleanup')
+            require(snapshot(parent / 'owned') == snapshot_before,
+                'incomplete actor proof changed private files')
+        finally:
+            os.close(directory_fd); os.close(parent_fd)
+    refusal('mutation between validation passes', mutate=lambda parent: Path(parent, 'owned',
+        prefix + 'map_0_2').write_bytes(b'raced'))
+    refusal('directory mode change', mutate=lambda parent: os.chmod(Path(parent, 'owned'), 0o755))
+    refusal('hard-linked backing file', mutate=lambda parent: os.link(
+        Path(parent, 'owned', prefix + 'map_0_0'), Path(parent, 'outside-link')))
+
+    with tempfile.TemporaryDirectory(prefix='a09-private-replace-') as raw:
+        parent = Path(raw)
+        parent_fd, directory_fd, parent_identity, directory_identity = setup(parent)
+        held_snapshot = snapshot(parent / 'owned')
+        try:
+            (parent / 'owned').rename(parent / 'held')
+            (parent / 'owned').mkdir(mode=0o700)
+            (parent / 'owned' / (prefix + 'map_0_0')).write_bytes(b'replacement')
+            replacement_snapshot = snapshot(parent / 'owned')
+            try:
+                native.cleanup_private_hugepage_dir(parent, parent_fd, parent_identity,
+                    'owned', directory_fd, directory_identity, prefix,
+                    [], -1, ReapedProcess(), None, True)
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError('replaced directory unexpectedly passed private cleanup')
+            require(snapshot(parent / 'held') == held_snapshot and
+                snapshot(parent / 'owned') == replacement_snapshot,
+                'directory replacement refusal removed entries from either directory')
+        finally:
+            os.close(directory_fd); os.close(parent_fd)
+
+    with tempfile.TemporaryDirectory(prefix='a09-private-symlink-replace-') as raw:
+        parent = Path(raw)
+        parent_fd, directory_fd, parent_identity, directory_identity = setup(parent)
+        held_snapshot = snapshot(parent / 'owned')
+        try:
+            (parent / 'owned').rename(parent / 'held')
+            (parent / 'owned').symlink_to('held', target_is_directory=True)
+            try:
+                native.cleanup_private_hugepage_dir(parent, parent_fd, parent_identity,
+                    'owned', directory_fd, directory_identity, prefix,
+                    [], -1, ReapedProcess(), None, True)
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError('symlink directory replacement unexpectedly passed cleanup')
+            link_stat = (parent / 'owned').lstat()
+            require(snapshot(parent / 'held') == held_snapshot and stat.S_ISLNK(link_stat.st_mode) and
+                os.readlink(parent / 'owned') == 'held',
+                'symlink replacement refusal modified the held directory')
+        finally:
+            os.close(directory_fd); os.close(parent_fd)
+
+    with tempfile.TemporaryDirectory(prefix='a09-private-cycle-') as raw:
+        parent = Path(raw)
+        parent_fd, directory_fd, parent_identity, directory_identity = setup(parent)
+        old_fd = -1
+        try:
+            old = parent / 'owned' / (prefix + 'map_0_0')
+            old_fd = os.open(old, os.O_RDONLY | os.O_CLOEXEC)
+            old_inode = os.fstat(old_fd).st_ino
+            old.unlink()
+            old.write_bytes(b'new mapping at reused name')
+            require(old.stat().st_ino != old_inode,
+                'inode-cycle fixture did not force a distinct replacement inode')
+            native.cleanup_private_hugepage_dir(parent, parent_fd, parent_identity,
+                'owned', directory_fd, directory_identity, prefix, [], -1,
+                ReapedProcess(), None, True)
+            require(not (parent / 'owned').exists(),
+                'post-reap exact private mappings were not removed')
+        finally:
+            if old_fd >= 0: os.close(old_fd)
+            os.close(directory_fd); os.close(parent_fd)
+
+
 def runner_script_path():
     sibling = Path(__file__).with_name('ker_session_run.py')
     if sibling.is_file():
@@ -50,6 +203,7 @@ def main():
     parser.add_argument('--configured-dir', type=Path, required=True)
     args = parser.parse_args()
     native = load_fixture('native_packets_fixture', Path(__file__).with_name('session-native-packets.py'))
+    private_hugepage_cleanup_checks(native)
     observer = load_fixture('tc3_observer_fixture', Path(__file__).with_name('session-tc3-observer.py'))
     coordinate = load_fixture('coordinate_fixture', Path(__file__).with_name('session-coordinate.py'))
     drain_peer = load_fixture('drain_peer_fixture', Path(__file__).with_name('session-drain-peer.py'))

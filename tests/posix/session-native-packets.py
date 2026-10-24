@@ -42,80 +42,134 @@ def tap_interfaces_for_process(pid):
     return names
 
 
-def cleanup_handoff_hugepages(args, mode, page_pattern, owned_pages, pidfds,
-                              resident_pidfd, primary, runner):
-    if not owned_pages:
-        return
-    require(page_pattern is not None, 'recorded hugepage files have no exact-prefix matcher')
+def create_handoff_hugepage_dir(parent, name):
+    parent = Path(parent).resolve(strict=True)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    directory_fd = -1
+    created = False
+    try:
+        parent_stat = os.fstat(parent_fd)
+        parent_path_stat = os.stat(parent, follow_symlinks=False)
+        require((parent_stat.st_dev, parent_stat.st_ino) ==
+            (parent_path_stat.st_dev, parent_path_stat.st_ino) and
+            stat.S_ISDIR(parent_stat.st_mode), 'hugepage parent path changed during open')
+        parent_vfs = os.fstatvfs(parent_fd)
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        created = True
+        directory_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+            os.O_CLOEXEC, dir_fd=parent_fd)
+        os.fchmod(directory_fd, 0o700)
+        directory_stat = os.fstat(directory_fd)
+        directory_vfs = os.fstatvfs(directory_fd)
+        entry_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        require(stat.S_ISDIR(directory_stat.st_mode) and directory_stat.st_uid == os.geteuid() and
+            stat.S_IMODE(directory_stat.st_mode) == 0o700 and
+            directory_stat.st_dev == parent_stat.st_dev and
+            (directory_stat.st_dev, directory_stat.st_ino) == (entry_stat.st_dev, entry_stat.st_ino) and
+            int(directory_vfs.f_bsize or directory_vfs.f_frsize) ==
+                int(parent_vfs.f_bsize or parent_vfs.f_frsize),
+            'private handoff hugepage directory has unexpected owner, mode, device, or page class')
+        require(not os.listdir(directory_fd), 'new private hugepage directory was not empty')
+        page_class = int(directory_vfs.f_bsize or directory_vfs.f_frsize)
+        return parent_fd, directory_fd, (parent_stat.st_dev, parent_stat.st_ino), \
+            (directory_stat.st_dev, directory_stat.st_ino, directory_stat.st_uid,
+                stat.S_IMODE(directory_stat.st_mode), page_class)
+    except BaseException:
+        if directory_fd >= 0:
+            try:
+                directory_stat = os.fstat(directory_fd)
+                entry_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if created and (directory_stat.st_dev, directory_stat.st_ino) == \
+                        (entry_stat.st_dev, entry_stat.st_ino) and not os.listdir(directory_fd):
+                    os.close(directory_fd)
+                    directory_fd = -1
+                    os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            try: os.close(directory_fd)
+            except OSError: pass
+        try: os.close(parent_fd)
+        except OSError: pass
+        raise
+
+
+def _private_hugepage_entries(directory_fd, file_prefix, expected_dev, expected_uid):
+    pattern = re.compile(re.escape(file_prefix) + r'map_[0-9]+(?:_[0-9]+)?')
+    names = sorted(os.listdir(directory_fd))
+    invalid = [name for name in names if not pattern.fullmatch(name)]
+    require(not invalid, 'private hugepage directory contains unexpected entries: ' + repr(invalid))
+    entries = {}
+    for name in names:
+        value = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        identity = (value.st_dev, value.st_ino, value.st_uid, stat.S_IFMT(value.st_mode),
+            stat.S_IMODE(value.st_mode), value.st_nlink, value.st_size)
+        require(stat.S_ISREG(value.st_mode) and value.st_uid == expected_uid and
+            value.st_dev == expected_dev and value.st_nlink == 1,
+            f'private hugepage entry has unsafe identity: {name!r} {identity!r}')
+        entries[name] = identity
+    return entries
+
+
+def cleanup_private_hugepage_dir(parent, parent_fd, parent_identity, directory_name,
+                                 directory_fd, directory_identity, file_prefix,
+                                 pidfds, resident_pidfd, primary, runner,
+                                 actor_proof_ready, before_second_pass=None):
     for pidfd in pidfds:
         require(select.select([pidfd], [], [], 5)[0],
             'refuse hugepage cleanup while an exact handoff child remains alive')
     if resident_pidfd >= 0:
         require(select.select([resident_pidfd], [], [], 5)[0],
             'refuse hugepage cleanup while the exact handoff resident remains alive')
-    require(primary is not None and primary.poll() is not None and
+    require((primary is None or primary.poll() is not None) and
         (runner is None or runner.poll() is not None),
         'refuse hugepage cleanup before resident and launcher reaping')
-    current_pages = {page_path for page_path in args.huge_dir.iterdir()
-        if page_pattern.fullmatch(page_path.name)}
-    recorded_pages = set(owned_pages)
-    unrecorded = current_pages - recorded_pages
-    missing = recorded_pages - current_pages
+    def validate_directory_binding():
+        parent_stat = os.fstat(parent_fd)
+        parent_path_stat = os.stat(parent, follow_symlinks=False)
+        require((parent_stat.st_dev, parent_stat.st_ino) == parent_identity and
+            (parent_path_stat.st_dev, parent_path_stat.st_ino) == parent_identity and
+            stat.S_ISDIR(parent_stat.st_mode),
+            'private hugepage parent path was replaced; refusing cleanup')
+        directory_stat = os.fstat(directory_fd)
+        directory_vfs = os.fstatvfs(directory_fd)
+        parent_vfs = os.fstatvfs(parent_fd)
+        entry_stat = os.stat(directory_name, dir_fd=parent_fd, follow_symlinks=False)
+        page_class = int(directory_vfs.f_bsize or directory_vfs.f_frsize)
+        require((directory_stat.st_dev, directory_stat.st_ino, directory_stat.st_uid,
+                stat.S_IMODE(directory_stat.st_mode), page_class) == directory_identity and
+            (entry_stat.st_dev, entry_stat.st_ino) == directory_identity[:2] and
+            stat.S_ISDIR(directory_stat.st_mode) and directory_stat.st_dev == parent_stat.st_dev and
+            stat.S_IMODE(directory_stat.st_mode) == 0o700 and
+            page_class == int(parent_vfs.f_bsize or parent_vfs.f_frsize),
+            'private hugepage directory path, owner, mode, device, or page class changed; refusing cleanup')
 
-    def describe_page(path, expected=None):
-        try:
-            value = path.lstat()
-        except FileNotFoundError:
-            actual = dict(dev=None, inode=None, uid=None, type='missing')
-        else:
-            kind = stat.S_IFMT(value.st_mode)
-            actual = dict(dev=value.st_dev, inode=value.st_ino, uid=value.st_uid,
-                type='regular' if stat.S_ISREG(value.st_mode) else oct(kind))
-        if expected is None:
-            expected_value = None
-        else:
-            expected_value = dict(dev=expected[0], inode=expected[1], uid=expected[2],
-                type='regular' if expected[3] == stat.S_IFREG else oct(expected[3]))
-        return dict(path=str(path), expected=expected_value, actual=actual)
-
-    if mode == 'positive':
-        require(not unrecorded,
-            'stage=post-reap-before-unlink unexpected exact-prefix files; refusing cleanup: ' +
-            repr([describe_page(path) for path in sorted(unrecorded)]))
+    validate_directory_binding()
+    entries = _private_hugepage_entries(directory_fd, file_prefix,
+        directory_identity[0], os.geteuid())
+    require(actor_proof_ready or not entries,
+        'refuse private hugepage cleanup with backing files before all exact actor identities were captured')
+    if before_second_pass is not None:
+        before_second_pass()
+    # Revalidate the entire directory and every entry immediately before the
+    # first unlink. A single mismatch refuses the whole cleanup batch.
+    validate_directory_binding()
+    second = _private_hugepage_entries(directory_fd, file_prefix,
+        directory_identity[0], os.geteuid())
+    require(second == entries, 'private hugepage contents changed before cleanup commit; refusing all unlink')
+    for name in sorted(second):
+        os.unlink(name, dir_fd=directory_fd)
+    require(not os.listdir(directory_fd), 'private hugepage directory is not empty after exact cleanup')
+    current_entry = os.stat(directory_name, dir_fd=parent_fd, follow_symlinks=False)
+    require((current_entry.st_dev, current_entry.st_ino) == directory_identity[:2],
+        'private hugepage directory entry changed before rmdir')
+    os.rmdir(directory_name, dir_fd=parent_fd)
+    try:
+        os.stat(directory_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
     else:
-        require(not unrecorded and not missing,
-            'stage=post-reap-before-unlink fatal exact-prefix file set changed; refusing cleanup: ' +
-            repr([describe_page(path, owned_pages[path]) for path in sorted(missing)] +
-                [describe_page(path) for path in sorted(unrecorded)]))
-    leftovers = []
-    validated = []
-    for page_path, identity in owned_pages.items():
-        try:
-            page_stat = page_path.lstat()
-        except FileNotFoundError:
-            continue
-        actual_identity = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid,
-            stat.S_IFMT(page_stat.st_mode))
-        if actual_identity != identity or not stat.S_ISREG(page_stat.st_mode):
-            raise RuntimeError('stage=post-reap-before-unlink hugepage identity changed; refusing all cleanup: ' +
-                repr(describe_page(page_path, identity)))
-        leftovers.append(page_path)
-        validated.append((page_path, identity))
-    if mode == 'positive':
-        leak = bool(leftovers)
-    else:
-        require(len(leftovers) == len(owned_pages),
-            f'{mode} did not preserve the complete exact-prefix file set for cleanup')
-        leak = False
-    # Validate every recorded path before deleting any file so a mismatch
-    # cannot cause partial cleanup.
-    for page_path, _ in validated:
-        page_path.unlink()
-    require(not any(page_path.exists() for page_path in owned_pages),
-        'exact handoff hugepage files remain after cleanup')
-    require(not leak, 'successful handoff profile leaked its exact-prefix hugepage backing files')
-    print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED mode={mode} files={len(owned_pages)} '
-        f'leftovers={len(leftovers)}', flush=True)
+        raise RuntimeError('private hugepage directory remains after exact cleanup')
+    return len(entries)
 
 
 def report_hugepage_cleanup_refusal(mode, original_error, cleanup_error):
@@ -207,9 +261,14 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
     with tempfile.TemporaryDirectory(prefix='ker-a09-live-handoff-') as directory:
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
-        file_prefix = f'a09-handoff-{os.getpid()}-{os.urandom(4).hex()}'
+        file_prefix = f'a09-handoff-{os.getpid()}-{os.urandom(16).hex()}'
+        huge_dir_name = f'{file_prefix}-huge'
+        huge_parent_path = args.huge_dir.resolve(strict=True)
+        huge_parent_fd, huge_dir_fd, huge_parent_identity, huge_dir_identity = \
+            create_handoff_hugepage_dir(huge_parent_path, huge_dir_name)
+        private_huge_dir = huge_parent_path / huge_dir_name
         eal = (f'--lcores=0@{min(os.sched_getaffinity(0))} --no-pci --no-telemetry --iova-mode=va '
-            f'-m 64 {plugin_options} --huge-dir={shlex.quote(str(args.huge_dir))} '
+            f'-m 64 {plugin_options} --huge-dir={shlex.quote(str(private_huge_dir))} '
             f'--file-prefix={file_prefix}')
         common = ['--socket', str(control_path), '--worker', str(args.worker), '--eal', eal,
             '--paired-pmd', '--generation-rings']
@@ -220,11 +279,11 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         handoff_read = handoff_write = -1
         pidfds = []
         resident_pidfd = -1
-        owned_pages = {}
-        page_pattern = None
+        actor_proof_ready = False
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            resident_pidfd = os.pidfd_open(primary.pid)
             ready = record(primary, 'KER_SESSION_READY')
             require(ready['ring_pmd'] and ready['ports'] == 1 and ready['slot'] == 0,
                 'handoff resident did not start the selected paired PMD/generation adapter')
@@ -313,17 +372,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             app_pidfd = os.pidfd_open(before['app_pid']); pidfds.append(app_pidfd)
             owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
             peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
-            resident_pidfd = os.pidfd_open(primary.pid)
-            page_pattern = re.compile(re.escape(file_prefix) + r'map_[0-9]+(?:_[0-9]+)?')
-            for page_path in args.huge_dir.iterdir():
-                if not page_pattern.fullmatch(page_path.name):
-                    continue
-                page_stat = page_path.lstat()
-                require(stat.S_ISREG(page_stat.st_mode) and page_stat.st_uid == os.getuid(),
-                    'unexpected handoff hugepage backing-file identity')
-                owned_pages[page_path] = (page_stat.st_dev, page_stat.st_ino, page_stat.st_uid,
-                    stat.S_IFMT(page_stat.st_mode))
-            require(owned_pages, 'handoff resident created no exact-prefix hugepage backing files')
+            actor_proof_ready = True
+            initial_pages = _private_hugepage_entries(huge_dir_fd, file_prefix,
+                huge_dir_identity[0], os.geteuid())
+            require(initial_pages, 'handoff resident created no private hugepage backing files')
 
             def fatal_profile_diagnostics(reason):
                 if runner is not None and runner.poll() is None:
@@ -492,30 +544,69 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 'handoff resident did not report exact final pool cleanup')
         finally:
             original_error = sys.exc_info()[1]
-            if handoff_read >= 0: os.close(handoff_read)
-            if handoff_write >= 0: os.close(handoff_write)
-            if runner is not None and runner.poll() is None:
-                runner.terminate()
-                try: runner.wait(timeout=10)
-                except subprocess.TimeoutExpired: runner.kill(); runner.wait()
-            if primary is not None and primary.poll() is None:
-                primary.terminate()
-                try: primary.wait(timeout=10)
-                except subprocess.TimeoutExpired: primary.kill(); primary.wait()
-            if runner is not None and runner.poll() is not None:
-                runner.communicate(timeout=5)
-            if primary is not None and primary.poll() is not None:
-                primary.communicate(timeout=5)
+            cleanup_error = None
+            finalization_errors = []
+            cleaned_hugepage_files = None
             try:
-                cleanup_handoff_hugepages(args, mode, page_pattern, owned_pages,
-                    pidfds, resident_pidfd, primary, runner)
-            except BaseException as cleanup_error:
+                for name, value in (('handoff_read', handoff_read),
+                                    ('handoff_write', handoff_write)):
+                    if value >= 0:
+                        try: os.close(value)
+                        except BaseException as error: finalization_errors.append(error)
+                        if name == 'handoff_read': handoff_read = -1
+                        else: handoff_write = -1
+                for label, process in (('launcher', runner), ('resident', primary)):
+                    if process is None:
+                        continue
+                    try:
+                        if process.poll() is None:
+                            process.terminate()
+                            try: process.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                process.kill(); process.wait(timeout=10)
+                        if process.poll() is not None:
+                            process.communicate(timeout=5)
+                        else:
+                            raise RuntimeError(f'{label} did not exit during fixture cleanup')
+                    except BaseException as error:
+                        finalization_errors.append(RuntimeError(f'{label} cleanup failed: {error}'))
+                if finalization_errors:
+                    raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
+                        repr([str(error) for error in finalization_errors]))
+                cleaned_hugepage_files = cleanup_private_hugepage_dir(huge_parent_path, huge_parent_fd,
+                    huge_parent_identity, huge_dir_name, huge_dir_fd, huge_dir_identity,
+                    file_prefix, pidfds, resident_pidfd, primary, runner, actor_proof_ready)
+            except BaseException as error:
+                cleanup_error = error
+            finally:
+                # Always release process and directory descriptors, even when
+                # private-directory validation or reporting refuses deletion.
+                closers = []
+                if endpoint is not None: closers.append(endpoint.close)
+                if wire is not None: closers.append(wire.close)
+                for process in (runner, primary):
+                    if process is not None:
+                        for stream in (process.stdin, process.stdout, process.stderr):
+                            if stream is not None: closers.append(stream.close)
+                closers.extend(lambda fd=fd: os.close(fd) for fd in pidfds)
+                if resident_pidfd >= 0: closers.append(lambda: os.close(resident_pidfd))
+                if runner_stderr_handle is not None: closers.append(runner_stderr_handle.close)
+                closers.extend((lambda: os.close(huge_dir_fd), lambda: os.close(huge_parent_fd)))
+                for close in closers:
+                    try: close()
+                    except BaseException as error: finalization_errors.append(error)
+            if finalization_errors:
+                close_error = RuntimeError('handoff descriptor finalization failed: ' +
+                    repr([str(error) for error in finalization_errors]))
+                if cleanup_error is None:
+                    cleanup_error = close_error
+                else:
+                    cleanup_error = RuntimeError(str(cleanup_error) + '; ' + str(close_error))
+            if cleanup_error is not None:
                 report_hugepage_cleanup_refusal(mode, original_error, cleanup_error)
-            if endpoint is not None: endpoint.close()
-            if wire is not None: wire.close()
-            for pidfd in pidfds: os.close(pidfd)
-            if resident_pidfd >= 0: os.close(resident_pidfd)
-            if runner_stderr_handle is not None: runner_stderr_handle.close()
+            if cleaned_hugepage_files is not None:
+                print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED profile={mode} mode=private '
+                    f'files={cleaned_hugepage_files}', flush=True)
 
 
 def main():
