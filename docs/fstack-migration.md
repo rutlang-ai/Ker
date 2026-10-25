@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 207 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 208 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 144 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 143 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为207 scenario-adapted、12 partial、144 blocked，共156项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、12 partial、143 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共226项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：156项行为未完成
-（12 partial + 144 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共225项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：155项行为未完成
+（12 partial + 143 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -74,7 +74,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve remaining typed configuration and intentional schema differences | 14 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 9 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 8 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
 | Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
@@ -1539,3 +1539,25 @@ address/port/eal、缺失应用命令均在库/worker/application初始化前返
 
 本批16项配置生命周期检查、对应CTest及21项清单审计测试均通过；
 完整清单仍因144项blocked和12项partial保持未完成。
+
+
+## 原始 Linux 实时时钟连续刷新
+
+`test_ff_get_current_time_advances` 通过 `native-fstack-realtime-refresh`
+适配其两次刷新后时间前进的可观察场景。测试实际启动私有原版 Linux，使用生产
+`ker_native_sync_realtime` 同步，再通过原始 `clock_gettime` 读取；每次刷新
+必须读取宿主realtime一次，结果的秒/纳秒规范且处于独立宿主采样窗口内。
+两次刷新之间实际等待2ms，原生realtime严格前进，原生monotonic的增量保持在
+宿主monotonic采样窗口中。只修改私有内核时钟，不修改宿主时钟。
+
+同批两个独立CTest `native-fstack-realtime-refresh-host-error` 与
+`native-fstack-realtime-refresh-invalid-nsec` 是Ker扩展：宿主EIO或原版Linux
+拒绝非法纳秒值时必须分别返回-EIO/-EINVAL，时钟保持原来的连续进度；去除故障后
+刷新恢复成功。它们不另计两项上游迁移，也不将错误返回冒充F-Stack fatal断言。
+F-Stack缓存getter、NULL分离输出参数ABI及fatal刷新错误场景继续保留缺口。
+
+本批原有realtime与三个新增CTest全部通过；编译启用-Wall -Wextra -Werror。
+当前208项scenario-adapted、12项partial、143项blocked，155项行为尚未完成。
+
+本批Debug/Release各4项realtime CTest通过，21项清单审计测试与
+106文件/433项完整性审计通过；完整迁移门禁仍因155项未完成返回2。
