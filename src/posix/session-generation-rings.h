@@ -56,6 +56,12 @@ struct ker_generation_ring_stats {
     uint32_t tx_rings;
 };
 
+#ifdef KER_SESSION_TEST_HOOKS
+struct ker_generation_test_counters {
+    uint64_t rx_full,tx_full,tx_drop,packet_drop,packet_full;
+};
+#endif
+
 /* The primary creates permanent port/queue/generation RX and TX rings.
  * Secondary attaches only to already-created rings. Neither operation changes
  * Linux protocol state; these rings transfer original DPDK mbuf objects. */
@@ -134,6 +140,8 @@ int ker_generation_test_packet_lease_identity(struct ker_generation_rings *rings
     uint32_t *object_index,uint64_t *lease_id);
 int ker_generation_test_tx_snapshot(struct ker_generation_rings *rings,uint16_t port,
     uint16_t queue,uint32_t generation,uint32_t *count,uint32_t *packet_pool_in_use);
+int ker_generation_test_counters_snapshot(struct ker_generation_rings *rings,uint16_t port,
+    uint16_t queue,uint32_t generation,struct ker_generation_test_counters *counters);
 int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *rings,
     uint32_t index,uint32_t duplicate_index,uintptr_t *original);
 int ker_generation_test_packet_table_restore(struct ker_generation_rings *rings,
@@ -157,7 +165,7 @@ int ker_generation_rings_test_replay(struct ker_generation_rings *rings);
 void ker_generation_test_hold_next_dequeue(void);
 /* Test-only: make the next resident detach fail validation after collection. */
 void ker_generation_test_corrupt_next_detach(void);
-void ker_generation_test_corrupt_next_reap(void);
+int ker_generation_test_corrupt_next_reap(struct ker_generation_rings *rings);
 void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready, _Atomic unsigned *release);
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready);
 void ker_generation_test_hold_after_enqueue_prepare(_Atomic unsigned *ready);
@@ -166,13 +174,16 @@ void ker_generation_test_hold_after_packet_enqueue(_Atomic unsigned *ready,_Atom
 /* Test-only late journal corruption and raw metric observation for reaper rollback. */
 int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *rings,
     const struct ker_generation_identity *owner, uint32_t after_ring_slot);
-void ker_generation_test_restore_reap_corruption(void);
+int ker_generation_test_cleanup_reset_after_reap_corruption(struct ker_generation_rings *rings);
 int ker_generation_test_tx_drop_count(struct ker_generation_rings *rings,
     uint16_t port, uint16_t queue, uint32_t generation, uint64_t *count);
 int ker_generation_test_active_counts(struct ker_generation_rings *rings,uint32_t counts[4]);
 #endif
 
 /* Reclaim only after the exact registered PIDFD is readable. */
+/* Read-only preflight: returns -EBUSY while any live actor is active. */
+int ker_generation_reap_ready(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *owner);
 int ker_generation_reap_dead(struct ker_generation_rings *rings,
     const struct ker_generation_identity *owner);
 int ker_generation_rings_destroy(struct ker_generation_rings *rings);

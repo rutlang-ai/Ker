@@ -11,6 +11,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -120,6 +121,7 @@ static uint64_t packet_pool_tag(uint64_t session,uint64_t table_identity)
 
 static int identity_valid(const struct ker_generation_rings *r,const struct ker_generation_identity *id);
 static int same_identity(const struct ker_generation_identity *a,const struct ker_generation_identity *b);
+static size_t coord_index(const struct ker_generation_rings *r,uint16_t p,uint16_t q,uint32_t g);
 static size_t full_index(const struct ker_generation_rings *r,uint16_t p,uint16_t q,uint32_t g);
 static struct journal_entry *packet_lease_find(struct ker_generation_rings *r,
     uint32_t object_index,uint64_t lease_id);
@@ -129,6 +131,9 @@ static _Atomic unsigned test_corrupt_next_detach;
 static _Atomic unsigned test_corrupt_next_reap;
 static struct journal_entry *test_reap_corrupt_entry;
 static uint32_t test_reap_original_ring_slot;
+static struct ker_generation_rings *test_reap_reset_rings;
+static unsigned test_reap_gate_snapshot[KER_GENERATION_RING_GENERATIONS];
+static unsigned test_reap_gate_snapshot_valid;
 static _Atomic unsigned *test_ring_remove_ready;
 static _Atomic unsigned *test_ring_remove_release;
 static _Atomic unsigned *test_dequeue_cas_ready;
@@ -141,8 +146,24 @@ void ker_generation_test_hold_next_dequeue(void)
 { atomic_store_explicit(&test_hold_next_dequeue,1,memory_order_release); }
 void ker_generation_test_corrupt_next_detach(void)
 { atomic_store_explicit(&test_corrupt_next_detach,1,memory_order_release); }
-void ker_generation_test_corrupt_next_reap(void)
-{ atomic_store_explicit(&test_corrupt_next_reap,1,memory_order_release); }
+int ker_generation_test_corrupt_next_reap(struct ker_generation_rings *r)
+{
+    if(!r||!r->primary||!r->directory)return -EINVAL;
+    rte_spinlock_lock(&r->directory->lock);
+    if(test_reap_gate_snapshot_valid||test_reap_corrupt_entry||
+        atomic_load_explicit(&test_corrupt_next_reap,memory_order_acquire)) {
+        rte_spinlock_unlock(&r->directory->lock);return -EBUSY;
+    }
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS;i++) {
+        test_reap_gate_snapshot[i]=atomic_load_explicit(&r->gate[i],memory_order_acquire);
+        if(test_reap_gate_snapshot[i]) {
+            rte_spinlock_unlock(&r->directory->lock);return -EBUSY;
+        }
+    }
+    test_reap_reset_rings=r;test_reap_gate_snapshot_valid=1;
+    atomic_store_explicit(&test_corrupt_next_reap,1,memory_order_release);
+    rte_spinlock_unlock(&r->directory->lock);return 0;
+}
 void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready,_Atomic unsigned *release)
 { test_ring_remove_ready=ready;test_ring_remove_release=release; }
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready)
@@ -175,12 +196,38 @@ int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *r,
     }
     return -ENOENT;
 }
-void ker_generation_test_restore_reap_corruption(void)
+int ker_generation_test_cleanup_reset_after_reap_corruption(struct ker_generation_rings *r)
 {
-    if(test_reap_corrupt_entry){
-        test_reap_corrupt_entry->ring_slot=test_reap_original_ring_slot;
-        test_reap_corrupt_entry=NULL;
+    if(!r||!r->primary||!r->directory||!test_reap_gate_snapshot_valid||
+        test_reap_reset_rings!=r||!test_reap_corrupt_entry)return -EINVAL;
+    rte_spinlock_lock(&r->directory->lock);
+    int valid=1;
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS;i++)
+        if(test_reap_gate_snapshot[i]!=0||
+            atomic_load_explicit(&r->gate[i],memory_order_acquire)!=1)valid=0;
+    if(test_reap_corrupt_entry->ring_slot!=test_reap_original_ring_slot+1U||
+        atomic_load_explicit(&test_reap_corrupt_entry->state,memory_order_acquire)!=JOURNAL_QUEUED||
+        test_reap_corrupt_entry->seen)valid=0;
+    for(unsigned actor=0;actor<KER_GENERATION_RING_GENERATIONS;actor++) {
+        if(r->pidfd[actor]<0)continue;
+        struct pollfd pfd={.fd=r->pidfd[actor],.events=POLLIN};
+        int n;do n=poll(&pfd,1,0);while(n<0&&errno==EINTR);
+        if(n!=1||!(pfd.revents&POLLIN)||!identity_valid(r,&r->registered[actor])||
+            r->registered[actor].generation!=actor)valid=0;
     }
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS*KER_GENERATION_RING_GENERATIONS;i++)
+        if(atomic_load_explicit(&r->active[i],memory_order_acquire))valid=0;
+    for(uint16_t p=0;p<r->ports;p++)for(uint16_t q=0;q<r->queues;q++)
+        for(unsigned g=0;g<KER_GENERATION_RING_GENERATIONS;g++)
+            if(r->pidfd[g]>=0&&atomic_load_explicit(&r->admitted[coord_index(r,p,q,g)],
+                memory_order_acquire))valid=0;
+    if(!valid){rte_spinlock_unlock(&r->directory->lock);return -EUCLEAN;}
+    test_reap_corrupt_entry->ring_slot=test_reap_original_ring_slot;
+    test_reap_corrupt_entry=NULL;
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS;i++)
+        atomic_store_explicit(&r->gate[i],test_reap_gate_snapshot[i],memory_order_release);
+    test_reap_reset_rings=NULL;test_reap_gate_snapshot_valid=0;
+    rte_spinlock_unlock(&r->directory->lock);return 0;
 }
 int ker_generation_test_tx_drop_count(struct ker_generation_rings *r,uint16_t p,uint16_t q,
     uint32_t g,uint64_t *count)
@@ -200,6 +247,12 @@ static void test_hold_dequeue_lease(void)
     if (!atomic_exchange_explicit(&test_hold_next_dequeue,0,memory_order_acq_rel)) return;
     static const char marker[]="KER_GENERATION_ACTIVE_DEQUEUE_HELD {}\n";
     (void)write(STDOUT_FILENO,marker,sizeof(marker)-1);
+#ifdef KER_SESSION_TEST_HOOKS
+    if (getenv("KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE")) {
+        (void)raise(SIGSTOP);
+        return;
+    }
+#endif
     const struct timespec nap={.tv_nsec=1000000};
     for (;;) nanosleep(&nap,NULL);
 }
@@ -379,6 +432,20 @@ int ker_generation_test_tx_snapshot(struct ker_generation_rings *r,uint16_t port
     *packet_pool_in_use=rte_mempool_in_use_count(r->packet_pool);
     return 0;
 }
+int ker_generation_test_counters_snapshot(struct ker_generation_rings *r,uint16_t port,
+    uint16_t queue,uint32_t generation,struct ker_generation_test_counters *counters)
+{
+    if(!r||!r->directory||!counters||port>=r->ports||queue>=r->queues||
+        generation>=KER_GENERATION_RING_GENERATIONS)return -EINVAL;
+    struct ring_stats_shared *stats=&r->stats[full_index(r,port,queue,generation)];
+    *counters=(struct ker_generation_test_counters){
+        .rx_full=atomic_load_explicit(&stats->rx_full,memory_order_acquire),
+        .tx_full=atomic_load_explicit(&stats->tx_full,memory_order_acquire),
+        .tx_drop=atomic_load_explicit(&stats->tx_drop,memory_order_acquire),
+        .packet_drop=atomic_load_explicit(&stats->packet_drop,memory_order_acquire),
+        .packet_full=atomic_load_explicit(&stats->packet_full,memory_order_acquire)};
+    return 0;
+}
 int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *r,
     uint32_t index,uint32_t duplicate_index,uintptr_t *original)
 {
@@ -439,8 +506,8 @@ int ker_generation_test_packet_drop_count(struct ker_generation_rings *r,uint16_
 int ker_generation_test_packet_full_count(struct ker_generation_rings *r,uint16_t p,
     uint16_t q,uint32_t g,uint64_t *count)
 {
-    if(!r||!r->primary||!count||p>=r->ports||q>=r->queues||g>=2)return -EINVAL;
-    *count=atomic_load_explicit(&r->stats[full_index(r,p,q,g)].packet_full,memory_order_relaxed);
+    if(!r||!r->directory||!count||p>=r->ports||q>=r->queues||g>=2)return -EINVAL;
+    *count=atomic_load_explicit(&r->stats[full_index(r,p,q,g)].packet_full,memory_order_acquire);
     return 0;
 }
 int ker_generation_rings_test_directory_present(void)
@@ -1185,6 +1252,13 @@ struct rte_mbuf *ker_generation_packet_resolve(struct ker_generation_rings *r,
      * The resident reaper must not reclaim a live writer's object between
      * resolve and write_complete. A dead producer is covered by pidfd recovery. */
     if(!claimed)operation_leave(r,producer,j->ring_generation);
+#ifdef KER_SESSION_TEST_HOOKS
+    if(claimed&&getenv("KER_SESSION_TEST_FRAME_DEATH_CONSUMER_WRITING")) {
+        printf("KER_SESSION_FRAME_WRITING_HELD {\"object_index\":%u,\"lease_id\":%llu,\"ring_generation\":%u}\n",
+            index,(unsigned long long)id,j->ring_generation);fflush(stdout);
+        raise(SIGSTOP);
+    }
+#endif
     return claimed?j->packet:NULL;
 }
 int ker_generation_packet_write_complete(struct ker_generation_rings *r,
@@ -1433,6 +1507,47 @@ static int reap_restore_rings(struct reap_ring_batch *batches,size_t count,int d
     return 0;
 }
 
+int ker_generation_reap_ready(struct ker_generation_rings*r,const struct ker_generation_identity*owner)
+{
+    if(!r||!r->primary||!identity_valid(r,owner))return -EINVAL;
+    uint32_t requested=owner->generation;
+    rte_spinlock_lock(&r->directory->lock);
+    if(r->pidfd[requested]<0||!same_identity(&r->registered[requested],owner)){
+        rte_spinlock_unlock(&r->directory->lock);return -ESTALE;
+    }
+    unsigned dead_mask=0;
+    for(unsigned actor=0;actor<KER_GENERATION_RING_GENERATIONS;actor++){
+        if(atomic_load_explicit(&r->gate[actor],memory_order_acquire)){
+            rte_spinlock_unlock(&r->directory->lock);return -EBUSY;
+        }
+        if(r->pidfd[actor]<0)continue;
+        if(!identity_valid(r,&r->registered[actor])||r->registered[actor].generation!=actor){
+            rte_spinlock_unlock(&r->directory->lock);return -EUCLEAN;
+        }
+        struct pollfd pfd={.fd=r->pidfd[actor],.events=POLLIN};
+        int n;do n=poll(&pfd,1,0);while(n<0&&errno==EINTR);
+        if(n<0){int error=-errno;rte_spinlock_unlock(&r->directory->lock);return error;}
+        if(pfd.revents&(POLLERR|POLLNVAL)){
+            rte_spinlock_unlock(&r->directory->lock);return -EIO;
+        }
+        if(n>0&&(pfd.revents&POLLIN))dead_mask|=1U<<actor;
+        else if(pfd.revents&POLLHUP){
+            rte_spinlock_unlock(&r->directory->lock);return -EIO;
+        }
+    }
+    if(!(dead_mask&(1U<<requested))){
+        rte_spinlock_unlock(&r->directory->lock);return -EBUSY;
+    }
+    for(unsigned actor=0;actor<KER_GENERATION_RING_GENERATIONS;actor++)
+        if(!(dead_mask&(1U<<actor)))
+            for(unsigned ring=0;ring<KER_GENERATION_RING_GENERATIONS;ring++)
+                if(atomic_load_explicit(&r->active[actor*KER_GENERATION_RING_GENERATIONS+ring],
+                    memory_order_acquire)){
+                    rte_spinlock_unlock(&r->directory->lock);return -EBUSY;
+                }
+    rte_spinlock_unlock(&r->directory->lock);return 0;
+}
+
 int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_generation_identity*owner)
 {
     if(!r||!r->primary||!identity_valid(r,owner))return -EINVAL;
@@ -1444,10 +1559,21 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
     struct reap_ring_batch *batches=calloc(batch_count,sizeof(*batches));
     uint64_t *tx_drops=calloc(count_rings,sizeof(*tx_drops));
     unsigned char *claimed=calloc(r->object_count,sizeof(*claimed));
-    if(!batches||!tx_drops||!claimed){free(batches);free(tx_drops);free(claimed);return -ENOMEM;}
+    unsigned char *admitted_before=calloc(count_rings,sizeof(*admitted_before));
+#define REAP_FREE_TEMP() do { free(batches);free(tx_drops);free(claimed);free(admitted_before); } while(0)
+    if(!batches||!tx_drops||!claimed||!admitted_before){REAP_FREE_TEMP();return -ENOMEM;}
     rte_spinlock_lock(&r->directory->lock);
+    unsigned gate_before[KER_GENERATION_RING_GENERATIONS];
+    for(unsigned gate=0;gate<KER_GENERATION_RING_GENERATIONS;gate++) {
+        gate_before[gate]=atomic_load_explicit(&r->gate[gate],memory_order_acquire);
+        if(gate_before[gate]) {
+            rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return -EBUSY;
+        }
+    }
+    for(size_t i=0;i<count_rings;i++)
+        admitted_before[i]=atomic_load_explicit(&r->admitted[i],memory_order_acquire);
     if(r->pidfd[g]<0||!same_identity(&r->registered[g],owner)){
-        rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return -ESTALE;
+        rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return -ESTALE;
     }
     /* A dead peer may still have an active counter if it died in a fast-path
      * operation. Only the resident-owned pidfd proves which counters and
@@ -1457,25 +1583,36 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
         if(r->pidfd[actor]<0)continue;
         struct pollfd pfd={.fd=r->pidfd[actor],.events=POLLIN};
         int n;do n=poll(&pfd,1,0);while(n<0&&errno==EINTR);
-        if(n<0){int error=-errno;rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return error;}
+        if(n<0){int error=-errno;rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return error;}
         if(n>0&&(pfd.revents&POLLIN)){
             if(!identity_valid(r,&r->registered[actor])||r->registered[actor].generation!=actor){
-                rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return -EUCLEAN;
+                rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return -EUCLEAN;
             }
             dead_mask|=1U<<actor;
         }
     }
     if(!(dead_mask&(1U<<g))){
-        rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return -EBUSY;
+        rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return -EBUSY;
     }
     atomic_store_explicit(&r->gate[0],1,memory_order_release);
     atomic_store_explicit(&r->gate[1],1,memory_order_release);
     for(unsigned dead_generation=0;dead_generation<2;dead_generation++)if(dead_mask&(1U<<dead_generation))
         for(uint16_t p=0;p<r->ports;p++)for(uint16_t q=0;q<r->queues;q++)
             atomic_store_explicit(&r->admitted[coord_index(r,p,q,dead_generation)],0,memory_order_release);
+#define REAP_ROLLBACK_GATES() do { \
+    for(uint16_t restore_p=0;restore_p<r->ports;restore_p++) \
+        for(uint16_t restore_q=0;restore_q<r->queues;restore_q++) \
+            for(unsigned restore_g=0;restore_g<KER_GENERATION_RING_GENERATIONS;restore_g++) \
+                if(!(dead_mask&(1U<<restore_g))) { \
+                    size_t restore_i=coord_index(r,restore_p,restore_q,restore_g); \
+                    atomic_store_explicit(&r->admitted[restore_i],admitted_before[restore_i],memory_order_release); \
+                } \
+    for(unsigned restore_gate=0;restore_gate<KER_GENERATION_RING_GENERATIONS;restore_gate++) \
+        atomic_store_explicit(&r->gate[restore_gate],gate_before[restore_gate],memory_order_release); \
+} while(0)
     struct timespec wait_until,wait_now,wait_nap={.tv_nsec=1000000};
     if(clock_gettime(CLOCK_MONOTONIC,&wait_until)){
-        int error=-errno;rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return error;
+        int error=-errno;REAP_ROLLBACK_GATES();rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return error;
     }
     wait_until.tv_sec+=1;
     for(;;){
@@ -1485,10 +1622,10 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
                 busy|=atomic_load_explicit(&r->active[actor*2+ring],memory_order_acquire)!=0;
         if(!busy)break;
         if(clock_gettime(CLOCK_MONOTONIC,&wait_now)){
-            int error=-errno;rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return error;
+            int error=-errno;REAP_ROLLBACK_GATES();rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return error;
         }
         if(wait_now.tv_sec>wait_until.tv_sec||(wait_now.tv_sec==wait_until.tv_sec&&wait_now.tv_nsec>=wait_until.tv_nsec)){
-            rte_spinlock_unlock(&r->directory->lock);free(batches);free(tx_drops);free(claimed);return -EBUSY;
+            REAP_ROLLBACK_GATES();rte_spinlock_unlock(&r->directory->lock);REAP_FREE_TEMP();return -EBUSY;
         }
         nanosleep(&wait_nap,NULL);
     }
@@ -1502,7 +1639,7 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
         reap_clear_seen(r); \
         memset(claimed,0,r->object_count); \
         rte_spinlock_unlock(&r->directory->lock); \
-        free(batches);free(tx_drops);free(claimed); \
+        REAP_FREE_TEMP(); \
         return restore_result ? -EUCLEAN : (error); \
     } while(0)
     /* Collect and validate every original ring before reclaiming anything. */
@@ -1637,7 +1774,7 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
         reap_clear_seen(r); \
         memset(claimed,0,r->object_count); \
         rte_spinlock_unlock(&r->directory->lock); \
-        free(batches);free(tx_drops);free(claimed); \
+        REAP_FREE_TEMP(); \
         (void)restore_result; \
         return -EUCLEAN; \
     } while(0)
@@ -1684,7 +1821,9 @@ int ker_generation_reap_dead(struct ker_generation_rings*r,const struct ker_gene
     atomic_store_explicit(&r->gate[0],0,memory_order_release);
     atomic_store_explicit(&r->gate[1],0,memory_order_release);
     rte_spinlock_unlock(&r->directory->lock);
-    free(batches);free(tx_drops);free(claimed);
+    REAP_FREE_TEMP();
+#undef REAP_ROLLBACK_GATES
+#undef REAP_FREE_TEMP
 #undef REAP_ABORT
 #undef REAP_COMMIT_ABORT
     return 0;
