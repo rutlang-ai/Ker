@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -185,9 +186,49 @@ static void client(void)
     puts("PASS: POSIX TCP 1MiB echo, epoll, nonblocking connect/accept, half-close");
 }
 
+static void wait_for_fault_release(const char *path, unsigned int timeout_ms)
+{
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    CHECK(fd >= 0);
+    struct timespec deadline;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &deadline) == 0);
+    deadline.tv_sec += timeout_ms / 1000;
+    deadline.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        ++deadline.tv_sec;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    unsigned char token = 0;
+    for (;;) {
+        struct timespec now;
+        CHECK(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+        int timeout = (int)((deadline.tv_sec - now.tv_sec) * 1000 +
+            (deadline.tv_nsec - now.tv_nsec) / 1000000);
+        CHECK(timeout > 0);
+        struct pollfd descriptor = {.fd = fd, .events = POLLIN};
+        int result;
+        do result = poll(&descriptor, 1, timeout); while (result < 0 && errno == EINTR);
+        CHECK(result > 0);
+        CHECK(!(descriptor.revents & POLLNVAL));
+        CHECK(!(descriptor.revents & POLLERR) || (descriptor.revents & POLLHUP));
+        if (descriptor.revents & POLLIN) {
+            ssize_t count;
+            do count = read(fd, &token, sizeof(token)); while (count < 0 && errno == EINTR);
+            CHECK(count == 1 && token == 0xa5);
+            break;
+        }
+        CHECK(descriptor.revents & POLLHUP);
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
+        while (nanosleep(&pause, &pause) && errno == EINTR) {}
+    }
+    CHECK(close(fd) == 0);
+}
+
 int main(int argc, char **argv)
 {
-    CHECK(argc == 4);
+    bool gated_client = argc == 5 && !strcmp(argv[1], "gated-client");
+    bool gate_check = argc == 6 && !strcmp(argv[1], "fault-gate-check");
+    CHECK(argc == 4 || gated_client || gate_check);
     signal(SIGPIPE, SIG_IGN);
     address = argv[2];
     char *end;
@@ -196,7 +237,20 @@ int main(int argc, char **argv)
     port = (uint16_t)value;
     slow_server = !strcmp(argv[1], "slow-server");
     slow_client = !strcmp(argv[1], "slow-client");
-    if (!strcmp(argv[1], "client") || slow_client) client();
+    if (gated_client) {
+        printf("READY %u\n", port);
+        fflush(stdout);
+        wait_for_fault_release(argv[4], 20000);
+        client();
+    } else if (gate_check) {
+        char *timeout_end;
+        unsigned long timeout = strtoul(argv[5], &timeout_end, 10);
+        CHECK(!*timeout_end && timeout > 0 && timeout <= 20000);
+        printf("READY %u\n", port);
+        fflush(stdout);
+        wait_for_fault_release(argv[4], (unsigned int)timeout);
+        puts("PASS: bounded TCP fault gate");
+    } else if (!strcmp(argv[1], "client") || slow_client) client();
     else if (!strcmp(argv[1], "server") || slow_server) {
         int listener = listen_socket();
         printf("READY %u\n", port);

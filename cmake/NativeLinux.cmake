@@ -534,6 +534,13 @@ if(BUILD_TESTING)
     add_executable(ker-posix-fstack-message-io-test tests/posix/fstack-message-io.c)
     target_compile_options(ker-posix-fstack-message-io-test PRIVATE -Wall -Wextra -Werror)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME native-posix-tcp-fault-gate
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/tcp-fault-gate.py"
+            --app "$<TARGET_FILE:ker-posix-tcp-echo-test>")
+    set_tests_properties(native-posix-tcp-fault-gate PROPERTIES TIMEOUT 15 LABELS native-tcp)
+    add_test(NAME native-posix-tcp-fault-setup
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_tcp_fault_setup.py")
+    set_tests_properties(native-posix-tcp-fault-setup PROPERTIES TIMEOUT 15 LABELS native-tcp)
     add_test(NAME native-fstack-worker-traffic
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-traffic.py"
             --worker "$<TARGET_FILE:ker-io-worker>")
