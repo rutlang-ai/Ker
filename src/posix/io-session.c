@@ -774,28 +774,47 @@ static int generation_test_nonframe_drain(struct generation_frame_drain_context 
 {
     if(!context||!context->rings||!context->message_pool||!context->nonframe_reap||
         context->identity.generation!=0||!generation_test_hold_joined||
-        !atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire))return -EUCLEAN;
+        !atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire)) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"context\",\"generation\":%u,\"nonframe\":%s,\"hold_started\":%s,\"hold_joined\":%s,\"hold_completed\":%u}\n",
+            context?context->identity.generation:UINT32_MAX,context&&context->nonframe_reap?"true":"false",
+            generation_test_hold_started?"true":"false",generation_test_hold_joined?"true":"false",
+            atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire));fflush(stderr);
+        return -EUCLEAN;
+    }
     unsigned before[8]={0},after[8]={0},active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
     const unsigned expected[8]={0,0,1,0,0,1,0,1};
     for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
         struct rte_ring *ring=generation_test_ring(d,q,g);
-        if(!ring)return -EUCLEAN;
+        if(!ring){fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"before_ring_lookup\",\"direction\":%u,\"queue\":%u,\"generation\":%u}\n",d,q,g);fflush(stderr);return -EUCLEAN;}
         before[(d*2+q)*2+g]=rte_ring_count(ring);
     }
-    if(memcmp(before,expected,sizeof(expected)))return -EUCLEAN;
+    if(memcmp(before,expected,sizeof(expected))) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"before_ring_counts\",\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u]}\n",
+            before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7]);fflush(stderr);
+        return -EUCLEAN;
+    }
     unsigned control_before=rte_mempool_avail_count(context->message_pool);
     int status=generation_test_step(context->rings,&context->identity,context->message_pool,5,
         true,false,false,false,false);
-    if(status)return status;
+    if(status) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"step5\",\"status\":%d}\n",status);fflush(stderr);
+        return status;
+    }
     for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
         struct rte_ring *ring=generation_test_ring(d,q,g);
-        if(!ring)return -EUCLEAN;
+        if(!ring){fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"after_ring_lookup\",\"direction\":%u,\"queue\":%u,\"generation\":%u}\n",d,q,g);fflush(stderr);return -EUCLEAN;}
         after[(d*2+q)*2+g]=rte_ring_count(ring);
     }
-    if(ker_generation_test_active_counts(context->rings,active)||
-        memcmp(after,(unsigned[8]){0},sizeof(after))||
-        rte_mempool_avail_count(context->message_pool)!=control_before+3||
-        ker_generation_packet_pool_in_use(context->rings)!=0)return -EUCLEAN;
+    int active_status=ker_generation_test_active_counts(context->rings,active);
+    unsigned control_after=rte_mempool_avail_count(context->message_pool);
+    unsigned packet_after=ker_generation_packet_pool_in_use(context->rings);
+    if(active_status||memcmp(after,(unsigned[8]){0},sizeof(after))||
+        control_after!=control_before+3||packet_after!=0) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"after_drain_invariants\",\"active_status\":%d,\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"control_before\":%u,\"control_after\":%u,\"packet_after\":%u,\"active\":[%u,%u,%u,%u]}\n",
+            active_status,after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],
+            control_before,control_after,packet_after,active[0],active[1],active[2],active[3]);fflush(stderr);
+        return -EUCLEAN;
+    }
     printf("KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED {\"generation\":%u,\"status\":0,\"rx_drained\":%u,\"tx_drained\":%u,\"rings_before\":[%u,%u,%u,%u,%u,%u,%u,%u],\"rings_after\":[%u,%u,%u,%u,%u,%u,%u,%u],\"active\":[%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u}\n",
         context->identity.generation,before[2]-after[2],(before[5]-after[5])+(before[7]-after[7]),
         before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
@@ -1205,12 +1224,24 @@ static int generation_detach_release_retained(struct ker_generation_rings *rings
         struct rte_mbuf *packet=NULL;
         int expected_rx=empty_cleanup?1:((identity->generation==0&&q==0)?0:1);
         int got=ker_generation_rx_dequeue(rings,identity,0,q,&packet);
-        if(got!=expected_rx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet))))return -EUCLEAN;
+        if(got!=expected_rx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet)))) {
+            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+                fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"step5_rx\",\"queue\":%u,\"expected\":%d,\"got\":%d,\"packet\":%s}\n",
+                    q,expected_rx,got,packet?"true":"false");fflush(stderr);
+            }
+            return -EUCLEAN;
+        }
         packet=NULL;
         int expected_tx=1;
         if(!empty_cleanup&&identity->generation==1&&q==1&&!foreign&&!nonowner_detach)expected_tx=0;
         got=ker_generation_tx_dequeue_peer(rings,identity,0,q,&packet);
-        if(got!=expected_tx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet))))return -EUCLEAN;
+        if(got!=expected_tx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet)))) {
+            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+                fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"step5_tx\",\"queue\":%u,\"expected\":%d,\"got\":%d,\"packet\":%s}\n",
+                    q,expected_tx,got,packet?"true":"false");fflush(stderr);
+            }
+            return -EUCLEAN;
+        }
     }
     return 0;
 }
