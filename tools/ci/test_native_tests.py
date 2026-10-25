@@ -133,6 +133,25 @@ class NativeTestSelectorTests(unittest.TestCase):
                  mock.patch.object(native_tests, "summary"):
                 native_tests.run_full_ctest(Path("build"), junit)
 
+    def test_dpdk_runtime_discovery_follows_meson_unversioned_plugin_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary) / "dpdk"
+            plugin_dir = prefix / "lib64" / "dpdk" / "pmds-27.0"
+            library_dir = prefix / "lib64"
+            plugin_dir.mkdir(parents=True)
+            library_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("librte_mempool_ring", "librte_net_ring"):
+                (plugin_dir / f"{name}.so.27.0").write_bytes(b"versioned DPDK plugin")
+                (plugin_dir / f"{name}.so").symlink_to(f"{name}.so.27.0")
+            (library_dir / "librte_eal.so.27").write_bytes(b"versioned DPDK library")
+            (library_dir / "librte_eal.so").symlink_to("librte_eal.so.27")
+
+            self.assertEqual(native_tests.dpdk_plugin_directory(
+                prefix, ("librte_mempool_ring.so", "librte_net_ring.so")), plugin_dir)
+            self.assertCountEqual(native_tests.dpdk_runtime_directories(prefix), [plugin_dir, library_dir])
+            with self.assertRaisesRegex(RuntimeError, "missing required plugins"):
+                native_tests.dpdk_plugin_directory(prefix, ("librte_missing.so",))
+
     def test_junit_rejects_nonzero_ctest_even_when_xml_is_green(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary) / "ctest.xml"

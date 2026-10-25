@@ -170,13 +170,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t runtime_dirs < <(find "$RUNNER_TEMP/dpdk-install" -type f \
-            -name 'librte_*.so*' -printf '%h\n' | sort -u)
-          if (( ${#runtime_dirs[@]} == 0 )); then
-            echo 'Pinned DPDK install contains no runtime shared-library directories.' >&2
-            exit 1
-          fi
-          runtime_path="$(IFS=:; echo "${runtime_dirs[*]}")"
+          runtime_path="$(python3 tools/ci/native_tests.py dpdk-library-path "$RUNNER_TEMP/dpdk-install")"
           if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
             runtime_path="${runtime_path}:${LD_LIBRARY_PATH}"
           fi
@@ -185,33 +179,8 @@ jobs:
 
       - name: Build pinned iproute2 with deterministic netem seed support
         if: steps.native.outputs.present == 'true'
-        shell: bash
         run: |
-          set -euo pipefail
-          version=6.10.0
-          archive="$RUNNER_TEMP/iproute2-${version}.tar.xz"
-          curl --fail --location --retry 3 \
-            "https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-${version}.tar.xz" \
-            --output "$archive"
-          echo '91a62f82737b44905a00fa803369c447d549e914e9a2a4018fdd75b1d54e8dce  '"$archive" \
-            | sha256sum --check --status
-          source_dir="$RUNNER_TEMP/iproute2-${version}"
-          mkdir -p "$source_dir"
-          tar -xf "$archive" --strip-components=1 -C "$source_dir"
-          make -C "$source_dir" -j 2 config.mk
-          make -C "$source_dir/lib" -j 2
-          make -C "$source_dir/tc" -j 2
-          install -d "$RUNNER_TEMP/iproute2-bin"
-          install -m 0755 "$source_dir/tc/tc" "$RUNNER_TEMP/iproute2-bin/tc"
-          "$RUNNER_TEMP/iproute2-bin/tc" -V
-          sudo modprobe sch_netem
-          unshare --user --map-root-user --net sh -ceu '
-            tc_bin=$1
-            ip link set lo up
-            "$tc_bin" qdisc add dev lo root netem delay 2ms 1ms loss 2% reorder 20% 50% seed 42
-            "$tc_bin" qdisc show dev lo | grep -q 'qdisc netem'
-            "$tc_bin" qdisc del dev lo root
-          ' sh "$RUNNER_TEMP/iproute2-bin/tc"
+          tools/ci/build_iproute2_tc.sh "$RUNNER_TEMP/iproute2-bin"
           echo "$RUNNER_TEMP/iproute2-bin" >> "$GITHUB_PATH"
 
       - name: Configure and test Ker with pinned DPDK when integration exists
@@ -343,7 +312,8 @@ jobs:
           worker="$(find build-native-on -type f -name ker-io-session -perm -u+x -print -quit)"
           library="$(find build-native-on -type f -name 'libker-posix.so*' -print -quit)"
           app="$(find build-native-on -type f -name ker-exception-services-test -perm -u+x -print -quit)"
-          plugin_dir="$(find "$RUNNER_TEMP/dpdk-install" -type f -name librte_mempool_ring.so -printf '%h\n' -quit)"
+          plugin_dir="$(python3 tools/ci/native_tests.py dpdk-plugin-dir "$RUNNER_TEMP/dpdk-install" \
+            librte_mempool_ring.so librte_net_ring.so)"
           test -n "$worker" && test -n "$library" && test -n "$app" && test -n "$plugin_dir"
           test -r "$plugin_dir/librte_mempool_ring.so"
           test -r "$plugin_dir/librte_net_ring.so"
