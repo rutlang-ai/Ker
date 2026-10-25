@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Check that the held RX proof counts the session pool, not the frame pool."""
+"""Check non-FRAME reap pool accounting and the runner's retained-ring drain."""
+import contextlib
+import io
 import importlib.util
+import json
+import os
 from pathlib import Path
 import sys
+import types
 import unittest
 
 
@@ -10,13 +15,60 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_DIR = ROOT / 'tests' / 'posix'
 FIXTURE = FIXTURE_DIR / 'session-native-packets.py'
 IO_SESSION = ROOT / 'src' / 'posix' / 'io-session.c'
+RUNNER = ROOT / 'tools' / 'ker_session_run.py'
 sys.path.insert(0, str(FIXTURE_DIR))
 spec = importlib.util.spec_from_file_location('session_native_packets_pool_oracle', FIXTURE)
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
+def nested_code(code, name):
+    for item in code.co_consts:
+        if isinstance(item, types.CodeType):
+            if item.co_name == name:
+                return item
+            found = nested_code(item, name)
+            if found is not None:
+                return found
+    return None
+
+
+def cell(value):
+    return (lambda: value).__closure__[0]
+
+
 class NonframePoolOracleTests(unittest.TestCase):
+    def test_runner_executes_actual_retained_drain_marker_reader(self):
+        runner_code = compile(RUNNER.read_text(), str(RUNNER), 'exec')
+        drain_code = nested_code(runner_code, 'drain_nonframe_retained_packets')
+        self.assertIsNotNone(drain_code)
+        read_fd, write_fd = os.pipe()
+        worker = types.SimpleNamespace(poll=lambda: None)
+        marker = {'generation': 0, 'status': 0, 'rx_drained': 1, 'tx_drained': 2}
+        waits = []
+
+        def wait_marker(process, prefix):
+            waits.append((process, prefix))
+            return marker
+
+        values = {'control_w': write_fd, 'handoff_mode': 'nonframe-active-reap',
+                  'wait_marker': wait_marker, 'worker': worker}
+        drain = types.FunctionType(drain_code,
+            {'os': os, 'RuntimeError': RuntimeError, 'json': json},
+            'drain_nonframe_retained_packets',
+            closure=tuple(cell(values[name]) for name in drain_code.co_freevars))
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                result = drain()
+            self.assertEqual(os.read(read_fd, 1), b'K')
+            self.assertEqual(result, marker)
+            self.assertEqual(waits, [(worker, 'KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED')])
+            self.assertIn('KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED ' + json.dumps(marker),
+                          output.getvalue())
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+
     def test_wait_marker_reports_both_distinct_pools(self):
         source = IO_SESSION.read_text()
         marker = source[source.index('KER_SESSION_TEST_NONFRAME_REAP_WAIT'):]

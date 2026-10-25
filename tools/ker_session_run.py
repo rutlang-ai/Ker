@@ -772,7 +772,7 @@ def run_session(args, api):
             raise RuntimeError('non-FRAME retained-packet drain has no live original owner')
         if os.write(control_w, b'K') != 1:
             raise RuntimeError('could not request the original owner to drain retained live rings')
-        drained = record(worker, 'KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED')
+        drained = wait_marker(worker, 'KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED')
         print('KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED ' + json.dumps(drained), flush=True)
         return drained
 
