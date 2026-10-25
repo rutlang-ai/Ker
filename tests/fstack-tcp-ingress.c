@@ -139,6 +139,9 @@ static void check_sentinel(const struct ker_tcp_packet_view *view)
     CHECK(view->source_port == 0x1234 && view->destination_port == 0x5678);
     CHECK(view->checksum == 0x9abc && view->tcp_header_length == 21 &&
         view->segment_length == 22 && view->payload_length == 23);
+    CHECK(view->sequence == 0x12345678 && view->acknowledgment == 0x23456789 &&
+        view->end_sequence == 0x3456789a && view->flags == 0x4567 &&
+        view->window == 0x5678 && view->urgent_pointer == 0x6789);
 }
 
 static void reject_unchanged(struct ker_skb_context *owner, struct sk_buff *skb,
@@ -221,8 +224,20 @@ static void validation_failures_preserve_view_and_packet(void)
 {
     unsigned char frame[FRAME_LENGTH], saved[FRAME_LENGTH];
     const struct ker_tcp_packet_view sentinel = {
-        (const unsigned char *)(uintptr_t)1, (const unsigned char *)(uintptr_t)2,
-        0x1234, 0x5678, 0x9abc, 21, 22, 23
+        .header = (const unsigned char *)(uintptr_t)1,
+        .payload = (const unsigned char *)(uintptr_t)2,
+        .source_port = 0x1234,
+        .destination_port = 0x5678,
+        .checksum = 0x9abc,
+        .tcp_header_length = 21,
+        .segment_length = 22,
+        .payload_length = 23,
+        .sequence = 0x12345678,
+        .acknowledgment = 0x23456789,
+        .end_sequence = 0x3456789a,
+        .flags = 0x4567,
+        .window = 0x5678,
+        .urgent_pointer = 0x6789,
     };
     struct ker_tcp_packet_view output;
     build_frame(frame, 24, 5);

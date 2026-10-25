@@ -48,14 +48,29 @@ static void blocked(struct sk_buff *alias)
         udp.source_port == 0x1234 && udp.destination_port == 0x5678 && udp.checksum == 0x9abc &&
         udp.udp_length == 0x1234 && udp.payload_length == 0x5678);
     struct ker_tcp_packet_view tcp = {
-        (const unsigned char *)(uintptr_t)1, (const unsigned char *)(uintptr_t)2,
-        0x1234, 0x5678, 0x9abc, 21, 22, 23
+        .header = (const unsigned char *)(uintptr_t)1,
+        .payload = (const unsigned char *)(uintptr_t)2,
+        .source_port = 0x1234,
+        .destination_port = 0x5678,
+        .checksum = 0x9abc,
+        .tcp_header_length = 21,
+        .segment_length = 22,
+        .payload_length = 23,
+        .sequence = 0x12345678,
+        .acknowledgment = 0x23456789,
+        .end_sequence = 0x3456789a,
+        .flags = 0x4567,
+        .window = 0x5678,
+        .urgent_pointer = 0x6789,
     };
     CHECK(ker_tcp_packet_view_init(&context, alias, &tcp) == -EBUSY);
     CHECK(tcp.header == (const unsigned char *)(uintptr_t)1 &&
         tcp.payload == (const unsigned char *)(uintptr_t)2 && tcp.source_port == 0x1234 &&
         tcp.destination_port == 0x5678 && tcp.checksum == 0x9abc &&
-        tcp.tcp_header_length == 21 && tcp.segment_length == 22 && tcp.payload_length == 23);
+        tcp.tcp_header_length == 21 && tcp.segment_length == 22 && tcp.payload_length == 23 &&
+        tcp.sequence == 0x12345678 && tcp.acknowledgment == 0x23456789 &&
+        tcp.end_sequence == 0x3456789a && tcp.flags == 0x4567 &&
+        tcp.window == 0x5678 && tcp.urgent_pointer == 0x6789);
 }
 static void *wrong_worker(void *arg)
 {
