@@ -272,6 +272,15 @@ class NativeTestSelectorTests(unittest.TestCase):
                 log.write_text("\n".join(lines), encoding="utf-8")
                 native_tests.verify_session_profiles(log, source)
 
+                if not structured:
+                    hup_marker = native_tests._legacy_profile_success_marker("handoff-control-hup")
+                    altered = [line for line in lines if line != hup_marker]
+                    altered.append(hup_marker + " (embedded text is not an exact success line)")
+                    log.write_text("\n".join(altered), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError,
+                                                "legacy native session runtime lacks profile success marker for handoff-control-hup"):
+                        native_tests.verify_session_profiles(log, source)
+
                 missing_eal = [line for line in lines if not line.startswith("KER_SESSION_HANDOFF_EAL_CHANNELS ")]
                 log.write_text("\n".join(missing_eal), encoding="utf-8")
                 with self.assertRaisesRegex(RuntimeError, "EAL-channel profile set mismatch"):
@@ -332,6 +341,19 @@ class NativeTestSelectorTests(unittest.TestCase):
                         node.targets[0].id == "HANDOFF_NEGATIVE_PROFILES")
         self.assertEqual(native_tests._literal_profile_tuple(constant),
                          native_tests.MANDATORY_NEGATIVE_PROFILES)
+
+    def test_legacy_fixed_profile_markers_match_checked_in_fixture_literals(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        printed_literals = {
+            node.args[0].value for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print" and
+            node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+        }
+        for mode in ("positive", "frame-positive", "nonframe-active-reap", "handoff-control-hup"):
+            marker = native_tests._legacy_profile_success_marker(mode)
+            with self.subTest(mode=mode):
+                self.assertIn(marker, printed_literals)
 
     def test_session_profile_inventory_fails_closed_for_missing_renamed_or_unsupported_values(self):
         valid = self.fixture_source(False)

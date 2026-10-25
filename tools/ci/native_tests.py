@@ -354,12 +354,23 @@ def expected_session_profiles(source_path: Path) -> tuple[set[str], bool]:
 
 def _legacy_profile_success_marker(mode: str) -> str:
     if mode == "positive":
-        return "PASS: a generation-admitted same-process peer takes the PMD/exception grant"
+        return ("PASS: a generation-admitted same-process peer takes the PMD/exception grant while the original "
+                "Linux app and parked worker remain alive, then both workers drain cleanly")
     if mode == "frame-positive":
-        return "PASS: original LKL post-PARKED UDP frame is journaled before prepare"
+        return ("PASS: original LKL post-PARKED UDP frame is journaled before prepare and drained by the admitted "
+                "peer as the exact mbuf pointer/bytes once")
     if mode == "nonframe-active-reap":
-        return "PASS: bounded non-FRAME full reap waited for the real RX dequeue"
-    return f"PASS: {mode}"
+        return ("PASS: bounded non-FRAME full reap waited for the real RX dequeue, retired the dead borrower, "
+                "and restored all rings")
+    if mode == "handoff-control-hup":
+        return "PASS: control HUP with a pending ACK aborted before PREPARE and drained the unchanged owner"
+    if mode in {"prepare-enoent", "prepare-ebusy", "prepare-eperm"}:
+        return (f"PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, "
+                "and resumed the packet loop")
+    if mode in MANDATORY_NEGATIVE_PROFILES:
+        return (f"PASS: {mode} after PREPARE terminates exact actors with status125 and no "
+                "PARKED/grant/DRAINED success")
+    raise ValueError("unsupported legacy native session profile: " + mode)
 
 
 def verify_session_profiles(log_path: Path, source_path: Path) -> None:
@@ -429,15 +440,16 @@ def verify_session_profiles(log_path: Path, source_path: Path) -> None:
     if not structured:
         if observed:
             raise RuntimeError("legacy profile output unexpectedly contains structured evidence records")
+        profile_lines = set(text.splitlines())
         for mode in expected_profiles:
             marker = _legacy_profile_success_marker(mode)
-            if marker not in text:
+            if marker not in profile_lines:
                 raise RuntimeError(f"legacy native session runtime lacks profile success marker for {mode}")
     for marker in (
         _legacy_profile_success_marker("positive"),
         _legacy_profile_success_marker("frame-positive"),
     ):
-        if marker not in text:
+        if marker not in set(text.splitlines()):
             raise RuntimeError("native session runtime lacks terminal success marker: " + marker)
     count = len(observed) if structured else len(expected_profiles)
     summary(f"Native session runtime: {count}/{len(expected_profiles)} source-derived profiles; "
