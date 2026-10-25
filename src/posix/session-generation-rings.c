@@ -121,6 +121,7 @@ static uint64_t packet_pool_tag(uint64_t session,uint64_t table_identity)
 
 static int identity_valid(const struct ker_generation_rings *r,const struct ker_generation_identity *id);
 static int same_identity(const struct ker_generation_identity *a,const struct ker_generation_identity *b);
+static size_t coord_index(const struct ker_generation_rings *r,uint16_t p,uint16_t q,uint32_t g);
 static size_t full_index(const struct ker_generation_rings *r,uint16_t p,uint16_t q,uint32_t g);
 static struct journal_entry *packet_lease_find(struct ker_generation_rings *r,
     uint32_t object_index,uint64_t lease_id);
@@ -130,6 +131,9 @@ static _Atomic unsigned test_corrupt_next_detach;
 static _Atomic unsigned test_corrupt_next_reap;
 static struct journal_entry *test_reap_corrupt_entry;
 static uint32_t test_reap_original_ring_slot;
+static struct ker_generation_rings *test_reap_reset_rings;
+static unsigned test_reap_gate_snapshot[KER_GENERATION_RING_GENERATIONS];
+static unsigned test_reap_gate_snapshot_valid;
 static _Atomic unsigned *test_ring_remove_ready;
 static _Atomic unsigned *test_ring_remove_release;
 static _Atomic unsigned *test_dequeue_cas_ready;
@@ -142,8 +146,24 @@ void ker_generation_test_hold_next_dequeue(void)
 { atomic_store_explicit(&test_hold_next_dequeue,1,memory_order_release); }
 void ker_generation_test_corrupt_next_detach(void)
 { atomic_store_explicit(&test_corrupt_next_detach,1,memory_order_release); }
-void ker_generation_test_corrupt_next_reap(void)
-{ atomic_store_explicit(&test_corrupt_next_reap,1,memory_order_release); }
+int ker_generation_test_corrupt_next_reap(struct ker_generation_rings *r)
+{
+    if(!r||!r->primary||!r->directory)return -EINVAL;
+    rte_spinlock_lock(&r->directory->lock);
+    if(test_reap_gate_snapshot_valid||test_reap_corrupt_entry||
+        atomic_load_explicit(&test_corrupt_next_reap,memory_order_acquire)) {
+        rte_spinlock_unlock(&r->directory->lock);return -EBUSY;
+    }
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS;i++) {
+        test_reap_gate_snapshot[i]=atomic_load_explicit(&r->gate[i],memory_order_acquire);
+        if(test_reap_gate_snapshot[i]) {
+            rte_spinlock_unlock(&r->directory->lock);return -EBUSY;
+        }
+    }
+    test_reap_reset_rings=r;test_reap_gate_snapshot_valid=1;
+    atomic_store_explicit(&test_corrupt_next_reap,1,memory_order_release);
+    rte_spinlock_unlock(&r->directory->lock);return 0;
+}
 void ker_generation_test_hold_after_ring_remove(_Atomic unsigned *ready,_Atomic unsigned *release)
 { test_ring_remove_ready=ready;test_ring_remove_release=release; }
 void ker_generation_test_hold_after_dequeue_cas(_Atomic unsigned *ready)
@@ -176,12 +196,38 @@ int ker_generation_test_corrupt_late_queued_rx(struct ker_generation_rings *r,
     }
     return -ENOENT;
 }
-void ker_generation_test_restore_reap_corruption(void)
+int ker_generation_test_cleanup_reset_after_reap_corruption(struct ker_generation_rings *r)
 {
-    if(test_reap_corrupt_entry){
-        test_reap_corrupt_entry->ring_slot=test_reap_original_ring_slot;
-        test_reap_corrupt_entry=NULL;
+    if(!r||!r->primary||!r->directory||!test_reap_gate_snapshot_valid||
+        test_reap_reset_rings!=r||!test_reap_corrupt_entry)return -EINVAL;
+    rte_spinlock_lock(&r->directory->lock);
+    int valid=1;
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS;i++)
+        if(test_reap_gate_snapshot[i]!=0||
+            atomic_load_explicit(&r->gate[i],memory_order_acquire)!=1)valid=0;
+    if(test_reap_corrupt_entry->ring_slot!=test_reap_original_ring_slot+1U||
+        atomic_load_explicit(&test_reap_corrupt_entry->state,memory_order_acquire)!=JOURNAL_QUEUED||
+        test_reap_corrupt_entry->seen)valid=0;
+    for(unsigned actor=0;actor<KER_GENERATION_RING_GENERATIONS;actor++) {
+        if(r->pidfd[actor]<0)continue;
+        struct pollfd pfd={.fd=r->pidfd[actor],.events=POLLIN};
+        int n;do n=poll(&pfd,1,0);while(n<0&&errno==EINTR);
+        if(n!=1||!(pfd.revents&POLLIN)||!identity_valid(r,&r->registered[actor])||
+            r->registered[actor].generation!=actor)valid=0;
     }
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS*KER_GENERATION_RING_GENERATIONS;i++)
+        if(atomic_load_explicit(&r->active[i],memory_order_acquire))valid=0;
+    for(uint16_t p=0;p<r->ports;p++)for(uint16_t q=0;q<r->queues;q++)
+        for(unsigned g=0;g<KER_GENERATION_RING_GENERATIONS;g++)
+            if(r->pidfd[g]>=0&&atomic_load_explicit(&r->admitted[coord_index(r,p,q,g)],
+                memory_order_acquire))valid=0;
+    if(!valid){rte_spinlock_unlock(&r->directory->lock);return -EUCLEAN;}
+    test_reap_corrupt_entry->ring_slot=test_reap_original_ring_slot;
+    test_reap_corrupt_entry=NULL;
+    for(unsigned i=0;i<KER_GENERATION_RING_GENERATIONS;i++)
+        atomic_store_explicit(&r->gate[i],test_reap_gate_snapshot[i],memory_order_release);
+    test_reap_reset_rings=NULL;test_reap_gate_snapshot_valid=0;
+    rte_spinlock_unlock(&r->directory->lock);return 0;
 }
 int ker_generation_test_tx_drop_count(struct ker_generation_rings *r,uint16_t p,uint16_t q,
     uint32_t g,uint64_t *count)

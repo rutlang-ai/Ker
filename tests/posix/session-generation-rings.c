@@ -622,15 +622,18 @@ static int run_dequeue_crash_window(struct ker_generation_rings*r,struct rte_mem
         if(syscall(SYS_pidfd_send_signal,pidfds[0],SIGKILL,NULL,0)||
             wait_child_bounded(pids[0],&status)||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGKILL)CRASH_FAIL();
         if(late_corruption){
-            ker_generation_test_corrupt_next_reap();
+            if(ker_generation_test_corrupt_next_reap(r))CRASH_FAIL();
             if(ker_generation_reap_dead(r,&producer)!=-EUCLEAN||
                 rte_mempool_in_use_count(pool)!=pool_before+2||rte_ring_count(tx)!=1||rte_ring_count(rx)||
                 ker_generation_test_tx_drop_count(r,0,0,0,&drop_after)||drop_after!=drop_before)CRASH_FAIL();
             struct rte_mbuf *restored_tx=NULL;
             if(rte_ring_dequeue(tx,(void **)&restored_tx)||!restored_tx||
                 rte_pktmbuf_mtod(restored_tx,uint8_t*)[0]!=0x65||rte_ring_enqueue(tx,restored_tx))CRASH_FAIL();
-            ker_generation_test_restore_reap_corruption();
+            if(ker_generation_test_cleanup_reset_after_reap_corruption(r))CRASH_FAIL();
+            puts("KER_SESSION_TEST_CLEANUP_RESET {\"gates_closed_before_reset\":true,\"exact_corruption_restored\":true,\"all_actors_dead\":true,\"active_zero\":true,\"dead_admissions_remain_zero\":true,\"cleanup_only\":true}");
         }
+        /* Cleanup-only reap after the explicit test reset; it does not show that
+         * the corrupted production transaction reopened its fail-closed gates. */
         bool consumer_first=!strcmp(mode,"cas");
         const struct ker_generation_identity *first=consumer_first?&consumer:&producer;
         const struct ker_generation_identity *second=consumer_first?&producer:&consumer;
@@ -886,7 +889,7 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
             rte_mempool_in_use_count(pool)!=2||
             ring_snapshot_verify(tx,2,expected_tx,tx_values,tx_lengths)||
             ring_snapshot_verify(rx_ring,1,expected_rx,rx_values,rx_lengths))PACKET_CASE_FAIL();
-        ker_generation_test_corrupt_next_reap();
+        if(ker_generation_test_corrupt_next_reap(rings))PACKET_CASE_FAIL();
         if(ker_generation_reap_dead(rings,&actors[0])!=-EUCLEAN||rte_ring_count(tx)!=2||
             rte_ring_count(rx_ring)!=1||
             ker_generation_packet_pool_in_use(rings)!=packet_baseline+1||
@@ -895,7 +898,9 @@ static int run_packet_death_case(struct ker_generation_rings *rings,struct rte_m
             ring_snapshot_verify(rx_ring,1,expected_rx,rx_values,rx_lengths)||
             ker_generation_test_tx_drop_count(rings,0,1,0,&drop_after)||drop_after!=drop_before||
             ker_generation_test_packet_drop_count(rings,0,1,0,&packet_drop_after)||packet_drop_after!=packet_drop_before)PACKET_CASE_FAIL();
-        ker_generation_test_restore_reap_corruption();
+        if(ker_generation_test_cleanup_reset_after_reap_corruption(rings))PACKET_CASE_FAIL();
+        puts("KER_SESSION_TEST_CLEANUP_RESET {\"gates_closed_before_reset\":true,\"exact_corruption_restored\":true,\"all_actors_dead\":true,\"active_zero\":true,\"dead_admissions_remain_zero\":true,\"cleanup_only\":true}");
+        /* Cleanup-only reap after test reset; not recovery evidence. */
         if(ker_generation_reap_dead(rings,&actors[0])||rte_ring_count(tx)||
             rte_ring_count(rx_ring)||
             ker_generation_packet_pool_in_use(rings)!=packet_baseline||
@@ -1179,7 +1184,7 @@ static int primary(const char *prefix,const char *exe)
         rte_pktmbuf_mtod(expected_tx,uint8_t*)[0]!=0x46||rte_ring_enqueue(reaper_tx,expected_tx)||
         rte_ring_dequeue(stable,(void **)&expected_rx)||!expected_rx||
         rte_pktmbuf_mtod(expected_rx,uint8_t*)[0]!=0x55||rte_ring_enqueue(stable,expected_rx))FAIL_CHILDREN();
-    ker_generation_test_corrupt_next_reap();
+    if(ker_generation_test_corrupt_next_reap(r))FAIL_CHILDREN();
     if(ker_generation_reap_dead(r,&id1)!=-EUCLEAN||
         rte_mempool_in_use_count(pool)!=in_use_before_failed_reap||
         rte_ring_count(reaper_tx)!=1||rte_ring_count(stable)!=1||
@@ -1191,7 +1196,9 @@ static int primary(const char *prefix,const char *exe)
     retained=NULL;
     if(rte_ring_dequeue(stable,(void **)&retained)||retained!=expected_rx||
         rte_pktmbuf_mtod(retained,uint8_t*)[0]!=0x55||rte_ring_enqueue(stable,retained))FAIL_CHILDREN();
-    ker_generation_test_restore_reap_corruption();
+    if(ker_generation_test_cleanup_reset_after_reap_corruption(r))FAIL_CHILDREN();
+    puts("KER_SESSION_TEST_CLEANUP_RESET {\"gates_closed_before_reset\":true,\"exact_corruption_restored\":true,\"all_actors_dead\":true,\"active_zero\":true,\"dead_admissions_remain_zero\":true,\"cleanup_only\":true}");
+    /* Cleanup-only reap after test reset; not production recovery evidence. */
     if(ker_generation_reap_dead(r,&id1))FAIL_CHILDREN();
     close(pidfds[1]);pidfds[1]=-1;pids[1]=-1;
     if(rte_ring_count(stable)!=0||rte_ring_count(reaper_tx)!=0||
