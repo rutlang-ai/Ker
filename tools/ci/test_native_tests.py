@@ -333,13 +333,15 @@ class NativeTestSelectorTests(unittest.TestCase):
     def test_checked_in_session_fixture_inventory_matches_classifier_negative_profiles(self):
         source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
         expected, structured = native_tests.expected_session_profiles(source)
-        self.assertEqual(expected, native_tests.MANDATORY_SESSION_PROFILES)
-        self.assertFalse(structured)
+        self.assertEqual(expected, native_tests.MANDATORY_SESSION_PROFILES | native_tests.FRAME_RECOVERY_PROFILES)
+        self.assertTrue(structured)
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        constant = next(node.value for node in tree.body if isinstance(node, ast.Assign) and
-                        len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and
-                        node.targets[0].id == "HANDOFF_NEGATIVE_PROFILES")
-        self.assertEqual(native_tests._literal_profile_tuple(constant),
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        negative_loop = next(node for node in ast.walk(main) if isinstance(node, ast.For) and
+                             isinstance(node.target, ast.Name) and node.target.id == "mode" and
+                             native_tests._literal_profile_tuple(node.iter) is not None and
+                             "bad-capability" in native_tests._literal_profile_tuple(node.iter))
+        self.assertEqual(native_tests._literal_profile_tuple(negative_loop.iter),
                          native_tests.MANDATORY_NEGATIVE_PROFILES)
 
     def test_legacy_fixed_profile_markers_match_checked_in_fixture_literals(self):

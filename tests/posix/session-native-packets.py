@@ -772,21 +772,59 @@ def start_handoff_resident(popen, command, environment, mode, **kwargs):
 
 def _stop_timed_out_runner(process, timeout_error, wait_timeout=5):
     """Stop only the runner process, retain captured bytes, and close our pipe."""
-    output = timeout_error.output or b''
+    output = (timeout_error.output or b'')[:262144]
     if process.poll() is None:
         process.kill()
     process.wait(timeout=wait_timeout)
+    for stream in (process.stdout, process.stderr):
+        if stream is not None and not stream.closed:
+            stream.close()
     process._ker_session_timeout_stdout = output
-    if process.stdout is not None:
-        process.stdout.close()
     return output
+
+
+def _communicate_bounded(process, timeout=5, max_bytes=262144):
+    """Collect only currently available child output without waiting on inherited pipes."""
+    streams = [stream for stream in (process.stdout, process.stderr)
+        if stream is not None and not stream.closed]
+    captured = {stream: bytearray() for stream in streams}
+    selector = selectors.DefaultSelector()
+    for stream in streams:
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    total = 0
+    try:
+        while selector.get_map() and total < max_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready = selector.select(remaining)
+            if not ready:
+                break
+            for key, _ in ready:
+                chunk = os.read(key.fd, min(65536, max_bytes - total))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                captured[key.fileobj].extend(chunk)
+                total += len(chunk)
+                if total >= max_bytes:
+                    break
+    finally:
+        selector.close()
+        for stream in streams:
+            if not stream.closed:
+                stream.close()
+    return (bytes(captured.get(process.stdout, b'')),
+        bytes(captured.get(process.stderr, b'')))
 
 
 def _collect_profile_cleanup_output(label, process):
     """Avoid a second communicate() on the deliberately closed timed-out pipe."""
     if label == 'launcher' and hasattr(process, '_ker_session_timeout_stdout'):
         return process._ker_session_timeout_stdout, b''
-    return process.communicate(timeout=5)
+    return _communicate_bounded(process, timeout=0.1)
 
 
 def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
@@ -944,9 +982,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                         runner.kill(); runner.wait()
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    try: runner_output, _ = runner.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = _communicate_bounded(runner, timeout=0.1)
                 latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
                 try: latest = json.loads(latest_raw) if latest_raw else None
                 except json.JSONDecodeError: latest = None
@@ -956,11 +992,14 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     try: resident_output, resident_errors = primary.communicate(timeout=10)
                     except subprocess.TimeoutExpired:
                         primary.terminate()
-                        try: resident_output, resident_errors = primary.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            primary.kill(); resident_output, resident_errors = primary.communicate()
+                        try: primary.wait(timeout=1)
+                        except subprocess.TimeoutExpired: primary.kill(); primary.wait(timeout=1)
+                        resident_output, resident_errors = _communicate_bounded(primary, timeout=0.1)
                 else:
-                    resident_output, resident_errors = primary.communicate(timeout=5)
+                    if primary is not None:
+                        resident_output, resident_errors = _communicate_bounded(primary, timeout=0.1)
+                    else:
+                        resident_output = resident_errors = b''
                 runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                 mp_errors = eal_mp_channel_errors(runner_errors, resident_errors.decode(errors='replace'))
                 if mp_errors:
@@ -1041,9 +1080,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                         runner.kill(); runner.wait()
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    try: runner_output, _ = runner.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = _communicate_bounded(runner, timeout=0.1)
                 latest = None
                 latest_raw = ''
                 if stats_path.exists():
@@ -1058,13 +1095,11 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     try: primary_output, primary_errors = primary.communicate(timeout=10)
                     except subprocess.TimeoutExpired:
                         primary.terminate()
-                        try: primary_output, primary_errors = primary.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            primary.kill(); primary_output, primary_errors = primary.communicate()
+                        try: primary.wait(timeout=1)
+                        except subprocess.TimeoutExpired: primary.kill(); primary.wait(timeout=1)
+                        primary_output, primary_errors = _communicate_bounded(primary, timeout=0.1)
                 elif primary is not None and primary.stdout is not None:
-                    try: primary_output, primary_errors = primary.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        primary.kill(); primary_output, primary_errors = primary.communicate()
+                    primary_output, primary_errors = _communicate_bounded(primary, timeout=0.1)
                 mp_errors = eal_mp_channel_errors(stderr, primary_errors.decode(errors='replace'))
                 if mp_errors:
                     reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)

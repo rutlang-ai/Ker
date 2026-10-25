@@ -395,6 +395,14 @@ def reject_handoff_trigger_eof(mode, handoff_seen, udp_sequence):
     raise RuntimeError('handoff trigger pipe reached unexpected EOF')
 
 
+def wait_after_pipe_eof(process, timeout, failure_message):
+    """Confirm the exact child has exited after its output pipe reaches EOF."""
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(failure_message) from error
+
+
 def wait_for_frame_death_fixture_ack(fd, timeout=10):
     """Wait boundedly for the fixture's live-actor validation before queued death."""
     deadline = time.monotonic() + timeout
@@ -1650,6 +1658,7 @@ def _run_session_impl(args, api):
         except subprocess.TimeoutExpired:
             worker.kill(); worker.communicate()
             raise RuntimeError('secondary packet worker did not exit')
+        wait_after_pipe_eof(worker, 1, 'secondary packet worker remained live after stdout EOF')
         print(output.decode().rstrip(), file=sys.stderr, flush=True)
         packet_stats = None
         for line in output.decode().splitlines():

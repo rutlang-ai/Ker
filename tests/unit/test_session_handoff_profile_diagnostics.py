@@ -65,7 +65,8 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
             self.assertTrue(select.select([process.stdout], [], [], 2)[0],
                 'child PID did not become readable before the bounded-capture test')
             started = time.monotonic()
-            output, errors = self.fixture.communicate_bounded(process, timeout=0.2)
+            process.wait(timeout=2)
+            output, errors = self.fixture._communicate_bounded(process, timeout=0.2)
             self.assertLess(time.monotonic() - started, 2)
             child_pid = int(output.decode().strip())
             self.assertEqual(errors, b'')
@@ -82,9 +83,8 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
 
     def test_frame_owner_waits_for_exit_after_stdout_eof(self):
         source = LAUNCHER.read_text()
-        finish = source[source.index('    def finish_frame_owner_output():'):
-            source.index('    def validate_frame_commit_drain_bijection():')]
-        self.assertIn('wait_after_pipe_eof(worker,', finish)
+        self.assertIn('def wait_after_pipe_eof(process, timeout, failure_message):', source)
+        self.assertIn("wait_after_pipe_eof(worker, 1, 'secondary packet worker remained live after stdout EOF')", source)
         process = subprocess.Popen([sys.executable, '-c',
             'import os,sys; os.close(1); sys.stdin.buffer.read(1)'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -111,27 +111,25 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
             source.index('            try:\n                ready_line = line(runner')]
         diagnostic_helpers += source[source.index('            def fatal_profile_diagnostics(reason):'):
             source.index("            require(not select.select([app_pidfd, owner_pidfd, peer_pidfd]")]
-        diagnostic_helpers += source[source.index('            if profile_expects_failure:'):
+        diagnostic_helpers += source[source.index('            if _is_fatal_handoff_profile(mode):'):
             source.index("            if mode == 'timeout':")]
-        self.assertNotIn('communicate()', diagnostic_helpers)
-        self.assertIn('communicate_bounded(', diagnostic_helpers)
+        self.assertIn('_communicate_bounded(', diagnostic_helpers)
+        self.assertIn('_stop_timed_out_runner(', diagnostic_helpers)
 
     def test_positive_modes_are_not_classified_as_fatal_negative_profiles(self):
         source = FIXTURE.read_text()
-        branch = source[source.index('            if profile_expects_failure:'):
+        branch = source[source.index('            if _is_fatal_handoff_profile(mode):'):
             source.index("            if mode == 'timeout':")]
-        self.assertEqual(self.fixture.HANDOFF_SUCCESS_PROFILES, ('positive', 'frame-positive'))
-        self.assertFalse(self.fixture.handoff_profile_expects_failure('positive'))
-        self.assertFalse(self.fixture.handoff_profile_expects_failure('frame-positive'))
-        self.assertFalse(self.fixture.handoff_profile_expects_failure('nonframe-active-reap'))
-        self.assertTrue(self.fixture.handoff_profile_expects_failure('bad-capability'))
-        self.assertTrue(self.fixture.handoff_profile_expects_failure('peer-death'))
-        self.assertTrue(self.fixture.handoff_profile_expects_failure('timeout'))
-        with self.assertRaisesRegex(ValueError, 'unsupported handoff profile: typo'):
-            self.fixture.handoff_profile_expects_failure('typo')
+        self.assertFalse(self.fixture._is_fatal_handoff_profile('positive'))
+        self.assertFalse(self.fixture._is_fatal_handoff_profile('frame-positive'))
+        self.assertFalse(self.fixture._is_fatal_handoff_profile('nonframe-active-reap'))
+        self.assertTrue(self.fixture._is_fatal_handoff_profile('bad-capability'))
+        self.assertTrue(self.fixture._is_fatal_handoff_profile('peer-death'))
+        self.assertTrue(self.fixture._is_fatal_handoff_profile('timeout'))
+        with self.assertRaisesRegex(ValueError, 'unknown handoff profile classification:'):
+            self.fixture._is_fatal_handoff_profile('typo')
         self.assertIn('runner.communicate(timeout=20)', branch)
-        self.assertIn('if mode in HANDOFF_NEGATIVE_PROFILES:', source)
-        self.assertIn('profile_expects_failure = handoff_profile_expects_failure(mode)', source)
+        self.assertIn('if _is_fatal_handoff_profile(mode):', source)
 
 
 if __name__ == '__main__':
