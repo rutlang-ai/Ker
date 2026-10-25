@@ -2625,7 +2625,9 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     if(peek<0)return (errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR)?0:-errno;
     if(peek<(ssize_t)(sizeof(struct ker_packet_header)+14)||
         peek>(ssize_t)sizeof(peek_bytes)||(peek_msg.msg_flags&MSG_TRUNC))return -EMSGSIZE;
-    if(!ker_packet_tx_frame_header_supported(peek_bytes,(size_t)peek))return -EOPNOTSUPP;
+    struct ker_packet_header peek_header;
+    if(!ker_packet_tx_frame_header_parse_supported(peek_bytes,(size_t)peek,&peek_header))
+        return -EOPNOTSUPP;
     int drained=drain_worker_heartbeat_after_command(fd,heartbeat,resident,control);
     if(drained)return drained;
     uint64_t tag=ker_generation_packet_pool_tag(rings);

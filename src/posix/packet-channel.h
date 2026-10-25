@@ -30,11 +30,11 @@ static inline int ker_packet_tx_header_simple_supported(const struct ker_packet_
 }
 /* Validate the original packet-channel prefix exactly as the TX consumer
  * interprets it, without treating the RX-only `buffers` field as TX metadata. */
-static inline int ker_packet_tx_frame_header_supported(const void *frame, size_t length)
+static inline int ker_packet_tx_frame_header_parse_supported(const void *frame, size_t length,
+    struct ker_packet_header *header)
 {
-    if (!frame || length < sizeof(struct ker_packet_header)) return 0;
-    struct ker_packet_header header;
-    memcpy(&header, frame, sizeof(header));
-    return ker_packet_tx_header_simple_supported(&header);
+    if (!frame || !header || length < sizeof(*header)) return 0;
+    memcpy(header, frame, sizeof(*header));
+    return ker_packet_tx_header_simple_supported(header);
 }
 #endif
