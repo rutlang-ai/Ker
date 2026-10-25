@@ -104,7 +104,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            build-essential cmake libbsd-dev libelf-dev libfdt-dev libnuma-dev \
+            bison build-essential cmake curl flex libbsd-dev libelf-dev libfdt-dev libnuma-dev \
             iproute2 kmod util-linux libbpf-dev libmnl-dev libnl-route-3-dev libpcap-dev \
             meson ninja-build pkg-config python3 python3-pyelftools
 
@@ -160,10 +160,59 @@ jobs:
           meson setup "$KER_DPDK_BUILD_DIR" third_party/dpdk \
             --prefix "$KER_DPDK_PREFIX" --libdir lib64 \
             -Denable_libs=eal,ring,mempool,mbuf,ethdev,gso \
-            -Denable_drivers=bus/vdev,mempool/ring,net/ring,net/tap \
+            -Denable_drivers=bus/vdev,mempool/ring,net/null,net/ring,net/tap \
             -Ddisable_apps='*' -Dtests=false -Dplatform=generic
           meson compile -C "$KER_DPDK_BUILD_DIR" -j 2
           meson install -C "$KER_DPDK_BUILD_DIR" --no-rebuild
+
+      - name: Export pinned DPDK runtime libraries to test subprocesses
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t runtime_dirs < <(find "$RUNNER_TEMP/dpdk-install" -type f \
+            -name 'librte_*.so*' -printf '%h\n' | sort -u)
+          if (( ${#runtime_dirs[@]} == 0 )); then
+            echo 'Pinned DPDK install contains no runtime shared-library directories.' >&2
+            exit 1
+          fi
+          runtime_path="$(IFS=:; echo "${runtime_dirs[*]}")"
+          if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+            runtime_path="${runtime_path}:${LD_LIBRARY_PATH}"
+          fi
+          echo "LD_LIBRARY_PATH=${runtime_path}" >> "$GITHUB_ENV"
+          echo "Pinned DPDK runtime directories: ${runtime_path}"
+
+      - name: Build pinned iproute2 with deterministic netem seed support
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=6.10.0
+          archive="$RUNNER_TEMP/iproute2-${version}.tar.xz"
+          curl --fail --location --retry 3 \
+            "https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-${version}.tar.xz" \
+            --output "$archive"
+          echo '91a62f82737b44905a00fa803369c447d549e914e9a2a4018fdd75b1d54e8dce  '"$archive" \
+            | sha256sum --check --status
+          source_dir="$RUNNER_TEMP/iproute2-${version}"
+          mkdir -p "$source_dir"
+          tar -xf "$archive" --strip-components=1 -C "$source_dir"
+          make -C "$source_dir" -j 2 config.mk
+          make -C "$source_dir/lib" -j 2
+          make -C "$source_dir/tc" -j 2
+          install -d "$RUNNER_TEMP/iproute2-bin"
+          install -m 0755 "$source_dir/tc/tc" "$RUNNER_TEMP/iproute2-bin/tc"
+          "$RUNNER_TEMP/iproute2-bin/tc" -V
+          sudo modprobe sch_netem
+          unshare --user --map-root-user --net sh -ceu '
+            tc_bin=$1
+            ip link set lo up
+            "$tc_bin" qdisc add dev lo root netem delay 2ms 1ms loss 2% reorder 20% 50% seed 42
+            "$tc_bin" qdisc show dev lo | grep -q 'qdisc netem'
+            "$tc_bin" qdisc del dev lo root
+          ' sh "$RUNNER_TEMP/iproute2-bin/tc"
+          echo "$RUNNER_TEMP/iproute2-bin" >> "$GITHUB_PATH"
 
       - name: Configure and test Ker with pinned DPDK when integration exists
         run: |
@@ -273,7 +322,13 @@ jobs:
 
       - name: Run the full native CTest graph with JUnit accounting
         if: steps.native.outputs.present == 'true'
-        run: python3 tools/ci/native_tests.py full-ctest build-native-on "$RUNNER_TEMP/native-full-ctest.xml"
+        shell: bash
+        run: |
+          set -euo pipefail
+          unshare --user --map-root-user --net sh -ceu '
+            ip link set lo up
+            exec python3 tools/ci/native_tests.py full-ctest "$1" "$2"
+          ' _ build-native-on "$RUNNER_TEMP/native-full-ctest.xml"
 
       - name: Run exact native session migration matrix
         if: steps.native.outputs.present == 'true'

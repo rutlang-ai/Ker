@@ -117,6 +117,7 @@ class NativeTestSelectorTests(unittest.TestCase):
 
             def run(command, **_kwargs):
                 self.assertIn("-E", command)
+                self.assertEqual(command[command.index("--parallel") + 1], "1")
                 self.assertEqual(command[command.index("-E") + 1],
                                  "^" + native_tests.re.escape(native_tests.SESSION_DIRECT) + "$")
                 expected = sorted(all_names - {native_tests.SESSION_DIRECT})
