@@ -198,6 +198,7 @@ static bool generation_cleanup_equal(const struct ker_generation_cleanup_config 
 static struct rte_ring *generation_test_original[8];
 static struct rte_mbuf *generation_test_original_packet[8];
 static bool generation_test_hold_started;
+static _Atomic unsigned generation_test_hold_completed;
 static pthread_t generation_test_hold_thread;
 static struct {
     struct ker_generation_rings *rings;
@@ -213,6 +214,7 @@ static void *generation_test_hold_rx_dequeue(void *unused)
     if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
         if(result!=1||!packet||ker_generation_packet_release(generation_test_hold_context.rings,
                 &generation_test_hold_context.identity,packet))_Exit(125);
+        atomic_store_explicit(&generation_test_hold_completed,1,memory_order_release);
         printf("KER_SESSION_TEST_NONFRAME_ACTIVE_RELEASED {\"generation\":0,\"status\":0}\n");
         fflush(stdout);
         return NULL;
@@ -723,6 +725,7 @@ struct generation_frame_drain_context {
     struct ker_generation_rings *rings;
     struct ker_generation_identity identity;
     struct rte_mbuf *packet;
+    bool nonframe_reap;
 };
 static int generation_frame_dequeue_attempt(void *opaque)
 {
@@ -731,10 +734,40 @@ static int generation_frame_dequeue_attempt(void *opaque)
     return ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,
         &context->packet);
 }
+static int generation_test_nonframe_hold(char command,
+    const struct generation_frame_drain_context *context, bool enabled)
+{
+    if(command!='Y'||!enabled)return 0;
+    if(!context||!context->rings||context->identity.generation!=0)return -EPERM;
+    if(generation_test_hold_started)return -EALREADY;
+    generation_test_hold_context.rings=context->rings;
+    generation_test_hold_context.identity=context->identity;
+    atomic_store_explicit(&generation_test_hold_completed,0,memory_order_relaxed);
+    ker_generation_test_hold_next_dequeue();
+    int error=pthread_create(&generation_test_hold_thread,NULL,generation_test_hold_rx_dequeue,NULL);
+    if(error)return -error;
+    generation_test_hold_started=true;
+    return 1;
+}
+static int generation_test_join_nonframe_hold(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity)
+{
+    const struct ker_generation_identity *held=&generation_test_hold_context.identity;
+    if(!generation_test_hold_started||!rings||!identity||generation_test_hold_context.rings!=rings||
+        held->session!=identity->session||held->epoch!=identity->epoch||held->slot!=identity->slot||
+        held->generation!=identity->generation||held->process!=identity->process||held->pid!=identity->pid||
+        !atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire))return -EUCLEAN;
+    int error=pthread_join(generation_test_hold_thread,NULL);
+    if(error)return -error;
+    generation_test_hold_started=false;
+    return 0;
+}
 static int generation_frame_drain_control(char command, void *opaque)
 {
     struct generation_frame_drain_context *context=opaque;
     if(!context||!context->rings)return -EINVAL;
+    int hold=generation_test_nonframe_hold(command,context,context->nonframe_reap);
+    if(hold)return hold;
     uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
     if(command=='Q') {
         if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||tx_after||pool_after)
@@ -3381,6 +3414,8 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
 #ifdef KER_SESSION_TEST_HOOKS
     bool detach_foreign_result=false;
     bool detach_nonowner_result=false;
+    bool nonframe_reap_requested=getenv("KER_SESSION_TEST_NONFRAME_REAP")!=NULL;
+    bool nonframe_reap_active=false;
 #endif
     struct ker_worker_exception exception_bridge = {.fd=-1};
     bool initialized = false;
@@ -3441,6 +3476,13 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
 #endif
         )) goto cleanup;
     if (generation_rings_enabled && !peer_only && ker_generation_rings_attach(d->session,1,2,pool,&generation_rings)) goto cleanup;
+#ifdef KER_SESSION_TEST_HOOKS
+    if(nonframe_reap_requested) {
+        if(ring_pmd!=2||!generation_rings_enabled||!generation_rings||peer_only||
+            !generation_detach_test||generation>1)goto cleanup;
+        nonframe_reap_active=true;
+    }
+#endif
 #ifdef KER_SESSION_TEST_HOOKS
     if (generation_rings_test_replay) {
         if (!generation_rings || peer_only || ker_generation_rings_test_replay(generation_rings)) goto cleanup;
@@ -3646,14 +3688,15 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
 #ifdef KER_SESSION_TEST_HOOKS
         struct generation_frame_drain_context frame_drain_context={.rings=generation_rings,
             .identity={.session=message.session,.epoch=message.epoch,.slot=(uint32_t)message.slot,
-                .generation=generation,.process=process,.pid=(uint32_t)getpid()}};
+                .generation=generation,.process=process,.pid=(uint32_t)getpid()},
+            .nonframe_reap=nonframe_reap_active&&generation==0};
 #endif
         int packet_result=ker_session_packet_loop(pmd_port,packet_fd,wire_fd,mtu_fd,control,fd,peer,
             &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
             service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,
 #ifdef KER_SESSION_TEST_HOOKS
-            generation_frame_drain_test?generation_frame_drain_control:NULL,
-            generation_frame_drain_test?&frame_drain_context:NULL,
+            (generation_frame_drain_test||nonframe_reap_active)?generation_frame_drain_control:NULL,
+            (generation_frame_drain_test||nonframe_reap_active)?&frame_drain_context:NULL,
 #endif
             &packet_stats);
         if(packet_result<0){result=1;goto cleanup;}
@@ -3691,8 +3734,8 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                         &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
                         service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,
 #ifdef KER_SESSION_TEST_HOOKS
-                        generation_frame_drain_test?generation_frame_drain_control:NULL,
-                        generation_frame_drain_test?&frame_drain_context:NULL,
+                        (generation_frame_drain_test||nonframe_reap_active)?generation_frame_drain_control:NULL,
+                        (generation_frame_drain_test||nonframe_reap_active)?&frame_drain_context:NULL,
 #endif
                         &resumed_stats);
                     if(resumed<0){result=1;goto cleanup;}
@@ -4018,6 +4061,14 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     }
     result = 0;
 cleanup:
+#ifdef KER_SESSION_TEST_HOOKS
+    if(nonframe_reap_active&&generation_test_hold_started) {
+        struct ker_generation_identity identity={.session=message.session,.epoch=message.epoch,
+            .slot=(uint32_t)message.slot,.generation=generation,.process=process,.pid=(uint32_t)getpid()};
+        if(generation_test_join_nonframe_hold(generation_rings,&identity))_Exit(125);
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_HOLD_JOINED {\"generation\":%u}\n",generation);fflush(stderr);
+    }
+#endif
     if(ticket>=0)close(ticket);
     if (exception_bridge.pending && ker_worker_exception_close(&exception_bridge)) result = 1;
     if (exception_fd >= 0) close(exception_fd);

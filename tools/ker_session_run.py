@@ -739,7 +739,7 @@ def run_session(args, api):
         seeded = wait_marker(peer_worker, 'KER_GENERATION_PROBED')
         if seeded != {'generation': 1, 'step': 3}:
             raise RuntimeError('opposite generation did not run the exact ring seed step')
-        if os.write(control_w, b'H') != 1:
+        if os.write(control_w, b'Y') != 1:
             raise RuntimeError('could not start the real owner RX dequeue')
         wait_marker(worker, 'KER_GENERATION_ACTIVE_DEQUEUE_HELD')
         wait_pidfd_process_stopped(worker_pidfd, worker.pid)
