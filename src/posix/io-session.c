@@ -234,6 +234,14 @@ static bool frame_identity_equal(const struct ker_generation_identity *a,
     return a->session==b->session && a->epoch==b->epoch && a->slot==b->slot &&
         a->generation==b->generation && a->process==b->process && a->pid==b->pid;
 }
+static bool frame_pidfd_live(int pidfd)
+{
+    return pidfd>=0 && !dead(pidfd);
+}
+static bool deferred_frame_consumer_matches(int consumer_pidfd,int saved_pidfd)
+{
+    return frame_pidfd_live(consumer_pidfd)&&frame_pidfd_live(saved_pidfd);
+}
 static bool frame_command(uint64_t command)
 {
     return command==KER_SESSION_FRAME_PREPARE || command==KER_SESSION_FRAME_COMMIT ||
@@ -518,9 +526,10 @@ static int bind_deferred_frame_peer(unsigned target_index)
                     .session=directory->session,.epoch=slots[producer->slot].epoch,.slot=producer->slot,
                     .generation=producer->generation,.process=producer->process,.pid=(uint32_t)producer->pid}))continue;
             struct client *consumer=&clients[consumer_index];
-            if(consumer->kind!=ATTACHED||!consumer->generation_admitted||dead(consumer->pidfd)||
+            if(consumer->kind!=ATTACHED||!consumer->generation_admitted||
                 consumer->pidfd!=producer->handoff_peer_client_pidfd||
-                !dead(producer->frame_consumer_pidfd)||consumer->slot>=KER_SESSION_SLOTS||
+                !deferred_frame_consumer_matches(consumer->pidfd,producer->frame_consumer_pidfd)||
+                consumer->slot>=KER_SESSION_SLOTS||
                 consumer->generation>=KER_SESSION_GENERATIONS||consumer->process>=KER_SESSION_PROCESSES||
                 consumer->pid!=(pid_t)producer->frame_consumer_identity.pid||
                 !frame_identity_equal(&producer->frame_consumer_identity,&(struct ker_generation_identity){
@@ -535,7 +544,7 @@ static int bind_deferred_frame_peer(unsigned target_index)
             if(target->reap_deferred_peer_client!=peer_index||target->reap_deferred_peer_pid!=peer->pid||
                 target->reap_deferred_peer_is_producer!=peer_is_producer||
                 !frame_identity_equal(&target->reap_deferred_peer_identity,&peer_identity)||
-                dead(target->reap_deferred_peer_pidfd))return -EUCLEAN;
+                !frame_pidfd_live(target->reap_deferred_peer_pidfd))return -EUCLEAN;
             return 1;
         }
         int duplicate=fcntl(peer->pidfd,F_DUPFD_CLOEXEC,3);
