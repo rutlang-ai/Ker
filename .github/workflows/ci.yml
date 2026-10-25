@@ -159,7 +159,7 @@ jobs:
         run: |
           meson setup "$KER_DPDK_BUILD_DIR" third_party/dpdk \
             --prefix "$KER_DPDK_PREFIX" --libdir lib64 \
-            -Denable_libs=eal,ring,mempool,mbuf,ethdev \
+            -Denable_libs=eal,ring,mempool,mbuf,ethdev,gso \
             -Denable_drivers=bus/vdev,mempool/ring,net/ring,net/tap \
             -Ddisable_apps='*' -Dtests=false -Dplatform=generic
           meson compile -C "$KER_DPDK_BUILD_DIR" -j 2
