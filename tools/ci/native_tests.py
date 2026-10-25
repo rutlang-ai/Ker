@@ -261,7 +261,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     required = set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) | set(SESSION_CTEST)
     result = subprocess.run(
         ["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
-         "--output-junit", str(junit), "--parallel", "2", "-E", "^" + re.escape(SESSION_DIRECT) + "$"],
+         "--output-junit", str(junit), "--parallel", "1", "-E", "^" + re.escape(SESSION_DIRECT) + "$"],
         check=False,
     )
     if not junit.is_file():
