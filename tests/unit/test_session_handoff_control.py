@@ -384,8 +384,12 @@ class HandoffControlPathTests(unittest.TestCase):
                 os.close(write_fd)
 
         tree = ast.parse(SOURCE.read_text())
-        run_session = next(node for node in tree.body
+        run_session_wrapper = next(node for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name == 'run_session')
+        run_session = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_session_impl')
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == '_run_session_impl' for node in ast.walk(run_session_wrapper)))
         calls = [node for node in ast.walk(run_session)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
             node.func.id == 'close_peer_control_when_safe']
