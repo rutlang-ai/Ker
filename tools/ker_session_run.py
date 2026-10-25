@@ -155,6 +155,20 @@ def validate_frame_committed_record(record, payload):
     return record
 
 
+def decode_optional_stderr(data):
+    """Decode a captured stderr pipe, treating inherited stderr as empty."""
+    return (data or b'').decode(errors='replace')
+
+
+INTENTIONAL_FRAME_CONSUMER_DEATH_MODES = frozenset((
+    'frame-death-consumer-prepared', 'frame-death-consumer-writing',
+    'frame-death-both-prepared'))
+
+
+def frame_consumer_death_was_expected(mode):
+    return mode in INTENTIONAL_FRAME_CONSUMER_DEATH_MODES
+
+
 FRAME_U2_TRIGGER_MODES = frozenset({
     'frame-positive', 'frame-full', 'frame-death-prepared',
     'frame-death-producer-active-consumer', 'frame-death-consumer-prepared',
@@ -1222,7 +1236,7 @@ def _run_session_impl(args, api):
                     retained_owner=retained_owner_before,retained_owner_after=retained_owner_after,
                     producer_pid=worker.pid,producer_status=worker.returncode,producer_pidfd_dead=True,
                     producer_output=producer_output.decode(errors='replace'),
-                    producer_stderr=producer_errors.decode(errors='replace'),final_census=census,final_owner=owner)
+                    producer_stderr=decode_optional_stderr(producer_errors),final_census=census,final_owner=owner)
                 frame_death_complete=True
                 frame_death_worker_expected_code=-signal.SIGKILL
                 metrics['stage']='handoff-complete';publish();return
@@ -1243,7 +1257,7 @@ def _run_session_impl(args, api):
                     'consumer_pid':peer_worker.pid,'consumer_status':peer_worker.returncode,
                     'consumer_pidfd_dead':True,'writing':writing,
                     'consumer_output':peer_output.decode(errors='replace'),
-                    'consumer_stderr':peer_errors.decode(errors='replace')}
+                    'consumer_stderr':decode_optional_stderr(peer_errors)}
                 publish()
                 continue_deadline=time.monotonic()+10
                 while time.monotonic()<continue_deadline:
@@ -1320,7 +1334,7 @@ def _run_session_impl(args, api):
                             producer_pidfd_dead=True,consumer_pidfd_dead=True,prepared=prepared,
                             final_census=final_census,final_owner=final_owner,
                             producer_output=producer_output.decode(errors='replace'),
-                            producer_stderr=producer_errors.decode(errors='replace'),
+                            producer_stderr=decode_optional_stderr(producer_errors),
                             consumer_output=peer_output.decode(errors='replace'))
                         frame_death_complete=True
                         frame_death_worker_expected_code=-signal.SIGKILL
@@ -1357,7 +1371,7 @@ def _run_session_impl(args, api):
                         consumer_status=peer_worker.returncode,consumer_pidfd_dead=True,
                         census=census,final_census=final_census,pmd_owner_after_reap=owner_after_reap,
                         prepared=prepared,preserved=preserved,cancelled=cancelled,
-                        consumer_output=peer_output.decode(errors='replace'),consumer_stderr=peer_errors.decode(errors='replace'),
+                        consumer_output=peer_output.decode(errors='replace'),consumer_stderr=decode_optional_stderr(peer_errors),
                         producer_output=worker_output.decode(errors='replace'))
                     frame_death_complete=True
                     frame_death_worker_expected_code=1
@@ -1643,7 +1657,7 @@ def _run_session_impl(args, api):
         metrics.update(packet=packet_stats, native=native_stats, worker_code=worker.returncode, app_code=code,
             handoff_peer_packet=peer_packet_stats, handoff_peer_code=peer_code)
         release(ticket)
-        if handoff_mode in ('frame-death-consumer-prepared','frame-death-both-prepared'):
+        if frame_consumer_death_was_expected(handoff_mode):
             if peer_code != -signal.SIGKILL or peer_packet_stats is not None:
                 raise RuntimeError('intentional consumer death lost its exact pidfd outcome')
         else:

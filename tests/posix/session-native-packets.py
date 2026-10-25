@@ -705,6 +705,30 @@ NONFATAL_HANDOFF_PROFILES = frozenset((
     'handoff-control-hup', 'prepare-enoent', 'prepare-ebusy', 'prepare-eperm'))
 
 
+FRAME_PROFILE_EXIT_CODES = {
+    'frame-death-prepared': (-signal.SIGKILL, 0),
+    'frame-death-queued': (-signal.SIGKILL, 0),
+    'frame-death-producer-active-consumer': (-signal.SIGKILL, 0),
+    'frame-death-consumer-prepared': (1, -signal.SIGKILL),
+    'frame-death-consumer-writing': (1, -signal.SIGKILL),
+    'frame-death-both-prepared': (-signal.SIGKILL, -signal.SIGKILL),
+    'frame-lost-prepare-reply': (-signal.SIGKILL, 0),
+}
+
+
+def frame_profile_expected_exit_codes(mode):
+    """Expected owner/peer process outcomes for every frame recovery profile."""
+    return FRAME_PROFILE_EXIT_CODES.get(mode, (0, 0))
+
+
+def start_handoff_resident(popen, command, environment, mode, **kwargs):
+    """Install resident-side hooks before Popen snapshots its environment."""
+    resident_environment = dict(environment)
+    if mode == 'frame-lost-prepare-reply':
+        resident_environment['KER_SESSION_TEST_FRAME_REPLY_LOST'] = '1'
+    return popen(command, env=resident_environment, **kwargs)
+
+
 def _stop_timed_out_runner(process, timeout_error, wait_timeout=5):
     """Stop only the runner process, retain captured bytes, and close our pipe."""
     output = timeout_error.output or b''
@@ -799,8 +823,9 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
         rejection_timeout_snapshot = None
         frame_full_stage = None
         try:
-            primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            primary = start_handoff_resident(subprocess.Popen,
+                [sys.executable, str(args.tool), 'serve', *common], environment, mode,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
             resident_pidfd = os.pidfd_open(primary.pid)
             ready = record(primary, 'KER_SESSION_READY')
             require(ready['ring_pmd'] and ready['ports'] == 1 and ready['slot'] == 0,
@@ -1813,12 +1838,9 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     first_wire_frame=(first_wire_frame.hex() if first_wire_frame is not None else None))
                 require(all(frame_positive_checks.values()),
                     'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
-            expected_worker_code=(1 if mode=='frame-death-consumer-prepared' else
-                -signal.SIGKILL if mode in ('frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer') else 0)
-            if mode in ('frame-death-both-prepared','frame-lost-prepare-reply'):expected_worker_code=-signal.SIGKILL
-            expected_peer_code=-signal.SIGKILL if mode in ('frame-death-consumer-prepared','frame-death-both-prepared') else 0
+            expected_worker_code, expected_peer_code = frame_profile_expected_exit_codes(mode)
             expected_worker_cleanup=(finished.get('worker_code')==expected_worker_code and finished.get('packet') is None
-                if mode in ('frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer','frame-death-consumer-prepared','frame-death-both-prepared','frame-lost-prepare-reply') else
+                if mode in FRAME_PROFILE_EXIT_CODES else
                 finished.get('worker_code')==0 and finished.get('packet',{}).get('status')==0)
             require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
                 finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and

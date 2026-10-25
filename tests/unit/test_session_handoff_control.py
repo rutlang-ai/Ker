@@ -461,6 +461,73 @@ class HandoffControlPathTests(unittest.TestCase):
         self.assertEqual(self.launcher.handoff_trigger_action(b''), 'invalid')
         self.assertEqual(self.launcher.handoff_trigger_action(b'X'), 'invalid')
 
+    def test_actor_death_evidence_accepts_uncaptured_stderr(self):
+        decode = self.launcher.decode_optional_stderr
+        self.assertEqual(decode(None), '')
+        self.assertEqual(decode(b''), '')
+        self.assertEqual(decode(b'actor stderr\n'), 'actor stderr\n')
+        tree = ast.parse(SOURCE.read_text())
+        runner = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_session_impl')
+        decoded = [node for node in ast.walk(runner)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == 'decode_optional_stderr']
+        self.assertEqual(len(decoded), 4, 'all four actor-death evidence sites must use optional stderr decoding')
+        self.assertEqual(sorted(ast.unparse(node.args[0]) for node in decoded),
+            ['peer_errors', 'peer_errors', 'producer_errors', 'producer_errors'])
+        for call in decoded:
+            stream_name = ast.unparse(call.args[0])
+            expression = ast.Expression(body=call)
+            namespace = {'decode_optional_stderr': decode, stream_name: None}
+            self.assertEqual(eval(compile(expression, str(SOURCE), 'eval'), namespace), '',
+                f'actual evidence value for {stream_name} must accept inherited stderr')
+        inherited_stream_mutant = ast.Expression(body=ast.Attribute(
+            value=ast.Name(id='producer_errors', ctx=ast.Load()), attr='decode', ctx=ast.Load()))
+        with self.assertRaises(AttributeError):
+            eval(compile(ast.fix_missing_locations(inherited_stream_mutant),
+                         str(SOURCE), 'eval'), {'producer_errors': None})
+
+    def test_lost_prepare_reply_hook_is_installed_before_resident_spawn(self):
+        captured = {}
+
+        def fake_popen(command, **kwargs):
+            captured['command'] = command
+            captured['environment'] = kwargs['env']
+            return 'resident-handle'
+
+        base = {'PATH': '/usr/bin'}
+        result = PROFILE.start_handoff_resident(fake_popen, ['ker', 'serve'], base,
+                                                'frame-lost-prepare-reply', stdin=object())
+        self.assertEqual(result, 'resident-handle')
+        self.assertEqual(captured['environment']['KER_SESSION_TEST_FRAME_REPLY_LOST'], '1')
+        self.assertEqual(captured['environment']['PATH'], base['PATH'])
+        self.assertNotIn('KER_SESSION_TEST_FRAME_REPLY_LOST', base)
+        captured.clear()
+        PROFILE.start_handoff_resident(fake_popen, ['ker', 'serve'], base, 'frame-positive')
+        self.assertNotIn('KER_SESSION_TEST_FRAME_REPLY_LOST', captured['environment'])
+
+    def test_frame_death_cleanup_outcomes_are_exhaustive_and_include_writing(self):
+        expected = {
+            'frame-death-prepared': (-signal.SIGKILL, 0),
+            'frame-death-queued': (-signal.SIGKILL, 0),
+            'frame-death-producer-active-consumer': (-signal.SIGKILL, 0),
+            'frame-death-consumer-prepared': (1, -signal.SIGKILL),
+            'frame-death-consumer-writing': (1, -signal.SIGKILL),
+            'frame-death-both-prepared': (-signal.SIGKILL, -signal.SIGKILL),
+            'frame-lost-prepare-reply': (-signal.SIGKILL, 0),
+            'frame-positive': (0, 0),
+            'frame-full': (0, 0),
+        }
+        for mode, outcomes in expected.items():
+            with self.subTest(mode=mode):
+                self.assertEqual(PROFILE.frame_profile_expected_exit_codes(mode), outcomes)
+        for mode in ('frame-death-consumer-prepared', 'frame-death-consumer-writing',
+                     'frame-death-both-prepared'):
+            self.assertTrue(self.launcher.frame_consumer_death_was_expected(mode), mode)
+        for mode in ('frame-death-prepared', 'frame-death-queued',
+                     'frame-death-producer-active-consumer', 'frame-positive', 'frame-full'):
+            self.assertFalse(self.launcher.frame_consumer_death_was_expected(mode), mode)
+
     def test_frame_peer_control_stays_open_until_final_quiescence(self):
         read_fd, write_fd = os.pipe()
         closed = []
