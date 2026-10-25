@@ -1585,3 +1585,24 @@ enqueue要求目标已admit，不能靠直接向未归属ring写对象来冒充�
 
 本批Debug/Release各3项独立CTest通过，21项清单审计测试和106文件/433项
 完整性审计通过。完整迁移门禁仍因142项blocked及13项partial返回2。
+
+
+## RX-15 活消费者持有对象时的拒绝与恢复
+
+三个新增CTest `native-fstack-session-orphan-inflight-rx`、`-tx`、`-both`
+验证生产adapter中活消费者持有RX对象、TX peer对象或两者时的回收行为。
+确认gen1死亡后，readiness返回-EBUSY；实际reap达到有界超时后同样返回-EBUSY，
+八条ring的剩余对象、已取出的对象字节/引用和pool计数都保持不变。
+相同活身份重新admit成功，证明超时路径恢复了两代operation gate。
+
+both例只归还一个对象时再次验证拒绝与超时回滚；全部归还后readiness成功且不
+回收对象，随后reap重试成功。保留对象仍以原指针及完整字节按FIFO交付，最终127
+对象池完全恢复，quiescent TX drop仍精确为4。所有adapter调用仍由primary执行，
+子进程仅提供实际pidfd lifetime。
+
+这里验证的是active-operation lease，不是源用例的外部purge-owner锁/reset ABI。
+RX-15继续partial，原有remaining不变；当前208项完整适配、13项partial、142项
+blocked，共155项行为未完成。本批Debug/Release各6项orphan CTest全部通过，
+包含原有三例和三个新增profile。
+
+本批21项清单审计测试及106文件/433项完整性审计通过；完整迁移门禁继续返回2。

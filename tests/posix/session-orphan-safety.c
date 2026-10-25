@@ -69,21 +69,30 @@ static void verify_packet(struct rte_mbuf *m, unsigned tx, unsigned generation,
     for (unsigned i = 0; i < PAYLOAD_SIZE; ++i)
         CHECK(bytes[i] == (unsigned char)((tx * 128 + generation * 64 + queue * 16 + sequence) ^ i));
 }
-static void verify_untouched(struct ker_generation_rings *rings, struct rte_mempool *pool,
-    struct rte_mbuf *packets[2][2][2][2])
+static void verify_preserved(struct ker_generation_rings *rings, struct rte_mempool *pool,
+    struct rte_mbuf *packets[2][2][2][2], unsigned held_mask, unsigned released_mask)
 {
-    CHECK(rte_mempool_avail_count(pool) == POOL_SIZE - QUEUED);
+    unsigned released = (released_mask & 1U) + ((released_mask >> 1) & 1U);
+    CHECK(rte_mempool_avail_count(pool) == POOL_SIZE - QUEUED + released);
     for (unsigned tx = 0; tx < 2; ++tx)
         for (unsigned g = 0; g < 2; ++g)
             for (unsigned q = 0; q < 2; ++q) {
-                CHECK(rte_ring_count(observed_ring(tx, g, q)) == 2);
-                for (unsigned sequence = 0; sequence < 2; ++sequence)
+                unsigned held = q == 0 && g == (tx ? 1U : 0U) && (held_mask & (1U << tx));
+                CHECK(rte_ring_count(observed_ring(tx, g, q)) == (held ? 1U : 2U));
+                for (unsigned sequence = 0; sequence < 2; ++sequence) {
+                    if (held && sequence == 0 && (released_mask & (1U << tx))) continue;
                     verify_packet(packets[tx][g][q][sequence], tx, g, q, sequence);
+                }
             }
     /* Telemetry is intentionally unavailable while identities are admitted. */
     struct ker_generation_ring_stats stats = {.tx_drop = UINT64_MAX};
     CHECK(ker_generation_rings_stats(rings, &stats) == -EBUSY);
     CHECK(stats.tx_drop == UINT64_MAX);
+}
+static void verify_untouched(struct ker_generation_rings *rings, struct rte_mempool *pool,
+    struct rte_mbuf *packets[2][2][2][2])
+{
+    verify_preserved(rings, pool, packets, 0, 0);
 }
 static void verify_forged_reaps(struct ker_generation_rings *rings, struct rte_mempool *pool,
     struct rte_mbuf *packets[2][2][2][2], const struct ker_generation_identity ids[2])
@@ -102,7 +111,10 @@ static void verify_forged_reaps(struct ker_generation_rings *rings, struct rte_m
 }
 int main(int argc, char **argv)
 {
-    CHECK(argc == 2 && (!strcmp(argv[1], "live") || !strcmp(argv[1], "identity") ||
+    CHECK(argc == 2);
+    unsigned held_mask = !strcmp(argv[1], "inflight-rx") ? 1U :
+        !strcmp(argv[1], "inflight-tx") ? 2U : !strcmp(argv[1], "inflight-both") ? 3U : 0U;
+    CHECK(held_mask || (!strcmp(argv[1], "live") || !strcmp(argv[1], "identity") ||
         !strcmp(argv[1], "reap")));
     /* Fork before EAL starts host threads. Each child only blocks on a pipe. */
     struct actor actors[2];
@@ -146,12 +158,43 @@ int main(int argc, char **argv)
             verify_untouched(rings, pool, packets);
         }
     }
+    struct rte_mbuf *held[2] = {NULL, NULL};
+    for (unsigned tx = 0; tx < 2; ++tx) if (held_mask & (1U << tx)) {
+        CHECK((tx ? ker_generation_tx_dequeue_peer(rings, &ids[0], 0, 0, &held[tx]) :
+            ker_generation_rx_dequeue(rings, &ids[0], 0, 0, &held[tx])) == 1);
+        CHECK(held[tx] == packets[tx][tx ? 1 : 0][0][0]);
+        verify_packet(held[tx], tx, tx ? 1 : 0, 0, 0);
+    }
     stop_actor(&actors[1]);
     if (!strcmp(argv[1], "identity")) verify_forged_reaps(rings, pool, packets, ids);
+    if (held_mask) {
+        unsigned released_mask = 0;
+        CHECK(ker_generation_reap_ready(rings, &ids[1]) == -EBUSY);
+        CHECK(ker_generation_reap_dead(rings, &ids[1]) == -EBUSY);
+        verify_preserved(rings, pool, packets, held_mask, released_mask);
+        /* A successful exact admission replay proves the timed-out reap
+         * restored both operation gates, without consuming more packets. */
+        CHECK(ker_generation_admit(rings, &ids[0], actors[0].pidfd) == 0);
+        verify_preserved(rings, pool, packets, held_mask, released_mask);
+        for (unsigned tx = 0; tx < 2; ++tx) if (held_mask & (1U << tx)) {
+            CHECK(ker_generation_packet_release(rings, &ids[0], held[tx]) == 0);
+            released_mask |= 1U << tx;
+            verify_preserved(rings, pool, packets, held_mask, released_mask);
+            if (released_mask != held_mask) {
+                CHECK(ker_generation_reap_ready(rings, &ids[1]) == -EBUSY);
+                CHECK(ker_generation_reap_dead(rings, &ids[1]) == -EBUSY);
+                CHECK(ker_generation_admit(rings, &ids[0], actors[0].pidfd) == 0);
+                verify_preserved(rings, pool, packets, held_mask, released_mask);
+            }
+        }
+        CHECK(ker_generation_reap_ready(rings, &ids[1]) == 0);
+        verify_preserved(rings, pool, packets, held_mask, released_mask);
+    }
+    unsigned released = (held_mask & 1U) + ((held_mask >> 1) & 1U);
     CHECK(ker_generation_reap_dead(rings, &ids[1]) == 0);
-    CHECK(rte_mempool_avail_count(pool) == POOL_SIZE - QUEUED / 2);
+    CHECK(rte_mempool_avail_count(pool) == POOL_SIZE - QUEUED / 2 + released);
     CHECK(ker_generation_reap_dead(rings, &ids[1]) == -ESTALE);
-    CHECK(rte_mempool_avail_count(pool) == POOL_SIZE - QUEUED / 2);
+    CHECK(rte_mempool_avail_count(pool) == POOL_SIZE - QUEUED / 2 + released);
     int all_dead = !strcmp(argv[1], "reap");
     if (all_dead) {
         stop_actor(&actors[0]);
@@ -161,11 +204,14 @@ int main(int argc, char **argv)
     for (unsigned q = 0; q < 2; ++q) {
         CHECK(rte_ring_count(observed_ring(0, 1, q)) == 0);
         CHECK(rte_ring_count(observed_ring(1, 0, q)) == 0);
-        CHECK(rte_ring_count(observed_ring(0, 0, q)) == (all_dead ? 0U : 2U));
-        CHECK(rte_ring_count(observed_ring(1, 1, q)) == (all_dead ? 0U : 2U));
+        CHECK(rte_ring_count(observed_ring(0, 0, q)) ==
+            (all_dead ? 0U : 2U - (q == 0 && (held_mask & 1U) ? 1U : 0U)));
+        CHECK(rte_ring_count(observed_ring(1, 1, q)) ==
+            (all_dead ? 0U : 2U - (q == 0 && (held_mask & 2U) ? 1U : 0U)));
         if (all_dead) continue;
         for (unsigned tx = 0; tx < 2; ++tx)
-            for (unsigned sequence = 0; sequence < 2; ++sequence) {
+            for (unsigned sequence = q == 0 && (held_mask & (1U << tx)) ? 1U : 0U;
+                 sequence < 2; ++sequence) {
                 struct rte_mbuf *m = NULL;
                 CHECK((tx ? ker_generation_tx_dequeue_peer(rings, &ids[0], 0, q, &m) :
                     ker_generation_rx_dequeue(rings, &ids[0], 0, q, &m)) == 1);

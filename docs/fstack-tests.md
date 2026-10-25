@@ -482,3 +482,8 @@ RX-15 部分迁移：`native-fstack-session-orphan-live/identity/reap` 以primar
 测试验证真实DPDK队列的pidfd拒绝、精确死亡回收、活消费者FIFO保留和最终释放。
 子进程仅提供lifetime，不代表secondary EAL/packet worker。源purge锁与未附加
 消费者等分支仍未完成，案例仅标partial，完整适配数量不增加。
+
+
+RX-15 in-flight 扩展：`native-fstack-session-orphan-inflight-rx/tx/both` 检查活
+消费者持有RX/TX对象时的readiness拒绝、实际reap超时回滚、逐个归还及成功重试。
+与原有三例一起验证FIFO及完全回收；仍是primary组件证据，RX-15保持partial。

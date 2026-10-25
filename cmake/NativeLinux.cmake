@@ -281,8 +281,13 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-session-orphan-live COMMAND ker-session-orphan-safety-test live)
     add_test(NAME native-fstack-session-orphan-identity COMMAND ker-session-orphan-safety-test identity)
     add_test(NAME native-fstack-session-orphan-reap COMMAND ker-session-orphan-safety-test reap)
+    add_test(NAME native-fstack-session-orphan-inflight-rx COMMAND ker-session-orphan-safety-test inflight-rx)
+    add_test(NAME native-fstack-session-orphan-inflight-tx COMMAND ker-session-orphan-safety-test inflight-tx)
+    add_test(NAME native-fstack-session-orphan-inflight-both COMMAND ker-session-orphan-safety-test inflight-both)
     set_tests_properties(native-fstack-session-orphan-live native-fstack-session-orphan-identity
-        native-fstack-session-orphan-reap PROPERTIES TIMEOUT 20 LABELS "fstack;session;dpdk")
+        native-fstack-session-orphan-reap native-fstack-session-orphan-inflight-rx
+        native-fstack-session-orphan-inflight-tx native-fstack-session-orphan-inflight-both
+        PROPERTIES TIMEOUT 20 LABELS "fstack;session;dpdk")
     add_test(NAME native-fstack-session-generation-rings-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-rings-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
