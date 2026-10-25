@@ -3,6 +3,7 @@
 #include "io-session.h"
 #include "session-packet.h"
 #include "session-generation-rings.h"
+#include "session-peer-drain.h"
 #include "packet-channel.h"
 #include <sys/uio.h>
 #include "worker-exception.h"
@@ -473,7 +474,15 @@ static bool known_object(struct rte_mbuf *packet)
 struct generation_frame_drain_context {
     struct ker_generation_rings *rings;
     struct ker_generation_identity identity;
+    struct rte_mbuf *packet;
 };
+static int generation_frame_dequeue_attempt(void *opaque)
+{
+    struct generation_frame_drain_context *context=opaque;
+    context->packet=NULL;
+    return ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,
+        &context->packet);
+}
 static int generation_frame_drain_control(char command, void *opaque)
 {
     struct generation_frame_drain_context *context=opaque;
@@ -488,12 +497,17 @@ static int generation_frame_drain_control(char command, void *opaque)
     if(command!='G')return 0;
     if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||
         tx_before>KER_GENERATION_RING_CAPACITY)return -EUCLEAN;
+    struct timespec deadline;
+    if(clock_gettime(CLOCK_MONOTONIC,&deadline))return -errno;
+    deadline.tv_sec+=5;
     unsigned released=0;
     for(uint32_t n=0;n<KER_GENERATION_RING_CAPACITY;n++) {
-        struct rte_mbuf *packet=NULL;
-        int dequeued=ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&packet);
+        int dequeued=ker_session_peer_dequeue_until(generation_frame_dequeue_attempt,
+            context,&deadline);
+        struct rte_mbuf *packet=context->packet;
         if(dequeued==0)break;
-        if(dequeued!=1||!packet||packet->nb_segs!=1||rte_mbuf_refcnt_read(packet)!=1||
+        if(dequeued!=1)return dequeued<0?dequeued:-EUCLEAN;
+        if(!packet||packet->nb_segs!=1||rte_mbuf_refcnt_read(packet)!=1||
             (packet->ol_flags&RTE_MBUF_F_EXTERNAL)||packet->pkt_len<14||packet->pkt_len>1518||
             packet->data_len!=packet->pkt_len)return -EUCLEAN;
         const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
