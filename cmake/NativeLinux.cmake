@@ -423,6 +423,12 @@ if(BUILD_TESTING)
     target_compile_options(ker-realtime-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-realtime COMMAND ker-realtime-test)
     set_tests_properties(native-fstack-realtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-realtime-refresh COMMAND ker-realtime-test advance)
+    add_test(NAME native-fstack-realtime-refresh-host-error COMMAND ker-realtime-test host-error)
+    add_test(NAME native-fstack-realtime-refresh-invalid-nsec COMMAND ker-realtime-test invalid-nsec)
+    set_tests_properties(native-fstack-realtime-refresh
+        native-fstack-realtime-refresh-host-error native-fstack-realtime-refresh-invalid-nsec
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-host-runtime-test tests/posix/fstack-host-runtime.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-host-runtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-host-runtime-test SYSTEM PRIVATE

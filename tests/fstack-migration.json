@@ -3517,9 +3517,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Adapt the observable two-refresh advancing-realtime scenario through ker_native_sync_realtime and original Linux clock_gettime in a booted private kernel. Each successful refresh must read host CLOCK_REALTIME exactly once and produce normalized seconds/nanoseconds bracketed by independent host observations. Two refreshes separated by a real 2ms sleep must yield strictly advancing native realtime while native monotonic stays inside host monotonic bounds. Separate Ker extension profiles inject host EIO or an invalid nanosecond value, require EIO/EINVAL with no epoch jump, then repeat a successful refresh. No cached F-Stack getter, nullable split-output ABI, fatal refresh-error policy, host clock modification, periodic synchronization or network delivery is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realtime-refresh",
+          "provenance_case": "native-fstack-realtime-refresh"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_os_errno_mapping",

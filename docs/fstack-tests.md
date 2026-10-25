@@ -470,3 +470,9 @@ VLAN 节名校验：`native-fstack-config-lifecycle` 新增三项相关检查，
 `test_vlan_cfg_handler_bad_section_returns_zero` 的加载失败场景。Ker使用
 `[vlan.ID]`，验证畸形ID的真实CLI拒绝、worker/application未启动及修正后的恢复。
 孤立/filter与越界数组的成功跳过不是本批适配内容。
+
+
+连续实时时钟刷新：`native-fstack-realtime-refresh` 适配
+`test_ff_get_current_time_advances` 的两次更新后时间严格前进场景，调用生产适配器
+及真实原版Linux时钟。两个相关独立CTest覆盖宿主EIO、非法纳秒值和成功恢复；
+缓存getter、NULL输出参数及F-Stack fatal错误ABI继续保留缺口。

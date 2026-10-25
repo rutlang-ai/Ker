@@ -413,7 +413,7 @@
       "id": "host-helper-abi",
       "title": "Resolve unmapped host memory, time, environment and kqueue helpers",
       "disposition": "contract-review",
-      "reason": "Three allocation scenarios now have actual native-buffer-domain acceptance: zero-initialized allocation, prefix-preserving resize and zero-size pointer identity. Remaining F-Stack cached time/environment, fatal/shared/file mapping and host kqueue helper ABI cases need their actual adapter or explicit incompatibility disposition; no libc-only test or successful unsupported stub qualifies.",
+      "reason": "Three allocation scenarios now have actual native-buffer-domain acceptance: zero-initialized allocation, prefix-preserving resize and zero-size pointer identity. Remaining F-Stack cached time/environment, fatal/shared/file mapping and host kqueue helper ABI cases need their actual adapter or explicit incompatibility disposition; no libc-only test or successful unsupported stub qualifies. The observable two-refresh advancing-realtime case now uses the production synchronization adapter and actual private Linux clock; the cached getter/nullable split-output and fatal refresh-error ABI cases remain incomplete.",
       "evidence": [
         "src/posix/host-memory.c",
         "src/posix/host-clock.c",
@@ -422,7 +422,9 @@
         "src/posix/native-buffer.c",
         "tests/posix/native-buffer-resize.c",
         "docs/native-buffers.md",
-        "docs/application-environment.md"
+        "docs/application-environment.md",
+        "src/posix/realtime-clock.c",
+        "tests/posix/fstack-realtime.c"
       ],
       "acceptance": [
         "Determine an actual Ker/LKL consumer and contract for each helper, or record why the source-specific API is unsuitable.",
@@ -431,7 +433,6 @@
       ],
       "cases": [
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
-        "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_advances",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",

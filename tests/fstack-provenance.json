@@ -2434,6 +2434,16 @@
         "native-fstack-config-lifecycle"
       ],
       "adaptation": "The source malformed [vlanXX] section must fail configuration loading. Ker adapts this through its supported [vlan.ID] syntax: [vlan.XX] and malformed/non-ASCII/out-of-range tags fail the actual reader and CLI with exit2 before library, worker or application setup. Tests place malformed sections both before and after a valid VLAN, then correct the tag and verify both independent address records and a clean subsequent no-VLAN load. Valid IDs1/4094 and decimal alias collision are also tested. This is a strict typed-loader scenario adaptation, not F-Stack section spelling, global VLAN-array ABI or callback return-value compatibility; permissive orphan/filter and out-of-array skip contracts remain unadapted."
+    },
+    "native-fstack-realtime-refresh": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": "test_ff_get_current_time_advances",
+      "ker_ctests": [
+        "native-fstack-realtime-refresh",
+        "native-fstack-realtime-refresh-host-error",
+        "native-fstack-realtime-refresh-invalid-nsec"
+      ],
+      "adaptation": "Adapt the observable two-refresh advancing-realtime scenario through ker_native_sync_realtime and original Linux clock_gettime in a booted private kernel. Each successful refresh must read host CLOCK_REALTIME exactly once and produce normalized seconds/nanoseconds bracketed by independent host observations. Two refreshes separated by a real 2ms sleep must yield strictly advancing native realtime while native monotonic stays inside host monotonic bounds. Separate Ker extension profiles inject host EIO or an invalid nanosecond value, require EIO/EINVAL with no epoch jump, then repeat a successful refresh. No cached F-Stack getter, nullable split-output ABI, fatal refresh-error policy, host clock modification, periodic synchronization or network delivery is claimed."
     }
   }
 }
