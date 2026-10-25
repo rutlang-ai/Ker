@@ -402,23 +402,19 @@ int ker_generation_test_packet_lease_identity(struct ker_generation_rings *r,
 {
     if(object_index)*object_index=UINT32_MAX;
     if(lease_id)*lease_id=0;
-    /* Validate registry membership before reading a packet field. */
+    /* Check registry membership before reading any mbuf field. */
     if(!r||!r->directory||!consumer||!packet||!object_index||!lease_id||
-        !identity_valid(r,consumer)||!known_pool_object(r,packet))return -EINVAL;
+        !known_pool_object(r,packet))return -EINVAL;
     if(packet->pool!=r->packet_pool)return -EPROTO;
-    for(uint32_t i=0;i<r->packet_object_count;i++)
-        if(r->objects[r->packet_object_base+i]==packet&&r->packet_object_table[i]==(uintptr_t)packet){
-            *object_index=i;break;
-        }
-    if(*object_index==UINT32_MAX)return -EUCLEAN;
     for(uint32_t i=0;i<r->directory->journal_count;i++){
         struct journal_entry *j=&r->journal[i];
-        if(atomic_load_explicit(&j->state,memory_order_acquire)==JOURNAL_INFLIGHT&&
-            j->dedicated_packet&&j->packet==packet&&same_identity(&j->consumer,consumer)&&j->lease_id){
-            *lease_id=j->lease_id;return 0;
-        }
+        if(atomic_load_explicit(&j->state,memory_order_acquire)!=JOURNAL_INFLIGHT||
+            j->packet!=packet||!same_identity(&j->consumer,consumer))continue;
+        uint32_t index;
+        if(ker_generation_test_packet_object_index(r,packet,&index))return -EUCLEAN;
+        if(!j->lease_id)return -EUCLEAN;
+        *object_index=index;*lease_id=j->lease_id;return 0;
     }
-    *object_index=UINT32_MAX;
     return -ESTALE;
 }
 int ker_generation_test_tx_snapshot(struct ker_generation_rings *r,uint16_t port,
