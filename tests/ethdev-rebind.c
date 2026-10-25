@@ -73,7 +73,7 @@ static struct rte_mbuf *make_packet(struct ker_packet_pool *pool,
 
     struct rte_mbuf *packet = rte_pktmbuf_alloc(pool->mbufs);
     CHECK(packet);
-    uint8_t *data = rte_pktmbuf_append(packet, sizeof(frame));
+    uint8_t *data = (uint8_t *)rte_pktmbuf_append(packet, sizeof(frame));
     CHECK(data);
     memcpy(data, frame, sizeof(frame));
     return packet;
