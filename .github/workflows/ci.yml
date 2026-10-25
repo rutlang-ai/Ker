@@ -151,6 +151,21 @@ jobs:
             echo "$path gitlink: $actual"
           done
 
+      - name: Enable native user and network namespaces
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [[ -e /proc/sys/user/max_user_namespaces ]]; then
+            sudo sysctl -w user.max_user_namespaces=28633
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Configure pinned DPDK
         env:
           KER_DPDK_BUILD_DIR: ${{ runner.temp }}/dpdk-build
@@ -263,15 +278,6 @@ jobs:
         run: |
           set -euo pipefail
           sudo modprobe tun
-          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
-            sudo sysctl -w kernel.unprivileged_userns_clone=1
-          fi
-          if [[ -e /proc/sys/user/max_user_namespaces ]]; then
-            sudo sysctl -w user.max_user_namespaces=28633
-          fi
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
           sudo sysctl -w vm.nr_hugepages=256
           sudo mkdir -p /dev/hugepages
           if ! mountpoint -q /dev/hugepages; then
