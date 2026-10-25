@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Original virtio-user/vhost-net IPv4/IPv6 TSO with independent wire checks."""
 import argparse
+import atexit
 import concurrent.futures
 import importlib.util
 import json
@@ -13,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+
+from dpdk_runtime import private_runtime_environment
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('offloads', Path(__file__).with_name('tx-offloads.py'))
@@ -45,6 +48,9 @@ def main():
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         if args.native_buffers: command.append('--native-buffers')
         return subprocess.run(command, env=environment).returncode
+    runtime = tempfile.TemporaryDirectory(prefix='ker-virtio-runtime-')
+    atexit.register(runtime.cleanup)
+    environment = private_runtime_environment(Path(runtime.name) / 'dpdk', environment)
     for command in (
             ['ip', 'link', 'set', 'lo', 'up'],
             ['ip', 'link', 'add', 'offhost', 'type', 'veth', 'peer', 'name', 'offlink'],

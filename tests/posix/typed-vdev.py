@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real virtio-user -> independent vhost/TAP -> host-kernel ICMP acceptance."""
 import argparse
+import atexit
 import importlib.util
 import json
 import os
@@ -9,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import socket
+
+from dpdk_runtime import private_runtime_environment
 
 spec = importlib.util.spec_from_file_location('icmp_mtu', Path(__file__).with_name('icmp-mtu.py'))
 mtu = importlib.util.module_from_spec(spec)
@@ -67,6 +70,9 @@ def main():
         if args.queue_one:
             command.append('--queue-one')
         return subprocess.run(command, env=environment).returncode
+    runtime = tempfile.TemporaryDirectory(prefix='ker-vdev-runtime-')
+    atexit.register(runtime.cleanup)
+    environment = private_runtime_environment(Path(runtime.name) / 'dpdk', environment)
     for command in (
         ['ip', 'link', 'set', 'lo', 'up'],
         ['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
