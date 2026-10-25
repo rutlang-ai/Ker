@@ -60,6 +60,7 @@ struct ker_generation_identity { uint64_t session,epoch; uint32_t slot,generatio
 struct generation_frame_drain_context { struct ker_generation_rings *rings;
     struct ker_generation_identity identity; bool nonframe_reap; };
 static bool generation_test_hold_started;
+static bool generation_test_hold_joined;
 static _Atomic unsigned generation_test_hold_completed;
 static pthread_t generation_test_hold_thread;
 static struct { struct ker_generation_rings *rings;
@@ -86,7 +87,8 @@ int main(void) {
     if (generation_test_nonframe_hold('Y',&context,true)!=-EALREADY || hold_next_calls!=1 || thread_calls!=1) return 13;
     atomic_store_explicit(&generation_test_hold_completed,1,memory_order_release);
     struct ker_generation_identity exact=context.identity;
-    if (generation_test_join_nonframe_hold(&rings,&exact) || join_calls!=1 || generation_test_hold_started) return 14;
+    if (generation_test_join_nonframe_hold(&rings,&exact) || join_calls!=1 || generation_test_hold_started ||
+        !generation_test_hold_joined) return 14;
     generation_test_hold_started=true;
     struct ker_generation_identity wrong=exact; wrong.pid++;
     if (generation_test_join_nonframe_hold(&rings,&wrong)!=-EUCLEAN || join_calls!=1) return 15;
