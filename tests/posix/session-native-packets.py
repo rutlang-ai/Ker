@@ -41,6 +41,53 @@ def nonframe_reap_pool_delta_matches(before, waiting):
         type(waiting.get('packet_pool_in_use')) is int and waiting['packet_pool_in_use'] == 0)
 
 
+NONFRAME_RETAINED_RINGS = [0, 0, 1, 0, 0, 1, 0, 1]
+
+
+def nonframe_exact_int_list(value, expected):
+    return (type(value) is list and len(value) == len(expected) and
+        all(type(item) is int for item in value) and value == expected)
+
+
+def nonframe_reap_retained_matches(before, reaped):
+    baseline = before.get('generation')
+    return (type(baseline) is int and baseline >= 2 and
+        type(reaped.get('status')) is int and reaped['status'] == 0 and
+        type(reaped.get('full_reap_attempts')) is int and reaped['full_reap_attempts'] == 1 and
+        reaped.get('generation_admitted') is False and
+        nonframe_exact_int_list(reaped.get('active'), [0, 0, 0, 0]) and
+        nonframe_exact_int_list(reaped.get('rings'), NONFRAME_RETAINED_RINGS) and
+        type(reaped.get('packet_pool_in_use')) is int and reaped['packet_pool_in_use'] == 0 and
+        type(reaped.get('control_pool_available')) is int and
+        reaped['control_pool_available'] == baseline - 2)
+
+
+def nonframe_reap_status_matches(before, status, owner, owner_before, pool_available, pool_delta):
+    baseline = before.get('generation')
+    before_processes = before.get('process')
+    return (type(baseline) is int and type(before_processes) is int and
+        type(status.get('generation')) is int and status['generation'] == baseline + pool_delta and
+        type(status.get('process')) is int and status['process'] == before_processes - 1 and
+        type(pool_available) is int and pool_available == status['generation'] and
+        owner == owner_before)
+
+
+def nonframe_retained_drain_matches(before, reaped, drained):
+    baseline = before.get('generation')
+    previous = reaped.get('control_pool_available')
+    return (type(baseline) is int and type(previous) is int and
+        type(drained.get('generation')) is int and drained['generation'] == 0 and
+        type(drained.get('status')) is int and drained['status'] == 0 and
+        type(drained.get('rx_drained')) is int and drained['rx_drained'] == 1 and
+        type(drained.get('tx_drained')) is int and drained['tx_drained'] == 2 and
+        nonframe_exact_int_list(drained.get('rings_before'), NONFRAME_RETAINED_RINGS) and
+        nonframe_exact_int_list(drained.get('rings_after'), [0] * 8) and
+        nonframe_exact_int_list(drained.get('active'), [0, 0, 0, 0]) and
+        type(drained.get('packet_pool_in_use')) is int and drained['packet_pool_in_use'] == 0 and
+        type(drained.get('control_pool_available')) is int and
+        drained['control_pool_available'] == previous + 3 == baseline + 1)
+
+
 def handoff_udp_payload(frame):
     """Parse only a complete, checksummed fixture IPv4/UDP tuple."""
     if not isinstance(frame, bytes) or len(frame) < 42 or frame[12:14] != b'\x08\x00':
@@ -654,20 +701,31 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 reaped = record(primary, 'KER_SESSION_TEST_NONFRAME_REAP_DONE')
                 require(reaped.get('client') == waiting.get('client') and reaped.get('status') == 0 and
                     reaped.get('full_reap_attempts') == 1 and reaped.get('generation_admitted') is False and
-                    reaped.get('active') == [0, 0, 0, 0] and reaped.get('rings') == [0] * 8 and
-                    reaped.get('packet_pool_in_use') == 0 and
-                    reaped.get('control_pool_available') == handoff_census_before.get('generation') + 1,
-                    'bounded ordinary full reap did not retire the dead borrower and restore exact ring state: ' +
+                    nonframe_reap_retained_matches(handoff_census_before, reaped),
+                    'bounded ordinary full reap did not retire the dead borrower while preserving its live consumer queues: ' +
                     repr(reaped))
                 connection = api.Connection(control_path)
                 try:
-                    after_status = connection.request(api.STATUS)
-                    after_owner = connection.request(api.PMD_STATUS)
+                    retained_status = connection.request(api.STATUS)
+                    retained_owner = connection.request(api.PMD_STATUS)
                 finally: connection.close()
-                require(after_status.get('generation') == handoff_census_before.get('generation') + 1 and
-                    after_status.get('process') == handoff_census_before.get('process') - 1 and
-                    after_owner == handoff_owner_before,
-                    'ordinary full reap changed the live owner or failed exact dead-client retirement')
+                require(nonframe_reap_status_matches(handoff_census_before, retained_status,
+                        retained_owner, handoff_owner_before, reaped.get('control_pool_available'), -2),
+                    'full reap status/pool did not bind exact dead-client retirement while preserving live queues')
+                require(os.write(handoff_write, b'D') == 1,
+                    'could not request exact live-owner drain of the retained generation queues')
+                drained = record_handoff_marker(runner, 'KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED',
+                    runner_stderr_path, fatal_profile_diagnostics)
+                require(nonframe_retained_drain_matches(handoff_census_before, reaped, drained),
+                    'live generation-zero consumer did not drain the exact three retained packets: ' + repr(drained))
+                connection = api.Connection(control_path)
+                try:
+                    final_status = connection.request(api.STATUS)
+                    final_owner = connection.request(api.PMD_STATUS)
+                finally: connection.close()
+                require(nonframe_reap_status_matches(handoff_census_before, final_status,
+                        final_owner, handoff_owner_before, drained.get('control_pool_available'), 1),
+                    'final resident status/pool did not bind the exact live-owner ring drain')
                 os.close(handoff_write); handoff_write = -1
                 runner.send_signal(signal.SIGTERM)
                 runner_output, _ = runner.communicate(timeout=25)

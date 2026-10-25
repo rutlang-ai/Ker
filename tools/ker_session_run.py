@@ -759,16 +759,22 @@ def run_session(args, api):
             peer_pidfd_dead=True, seeded_generation=seeded['generation'])), flush=True)
 
     def finish_nonframe_active_reap():
-        nonlocal handoff_fd, nonframe_reap_held
+        nonlocal nonframe_reap_held
         if handoff_mode != 'nonframe-active-reap' or not nonframe_reap_held:
             raise RuntimeError('non-FRAME active-reap release has no held owner operation')
         wait_marker(worker, 'KER_SESSION_TEST_NONFRAME_ACTIVE_RELEASED')
         nonframe_reap_held = False
         print('KER_SESSION_TEST_NONFRAME_OWNER_RESUMED ' + json.dumps(dict(
             owner_pid=worker.pid, operation_released=True)), flush=True)
-        if handoff_fd is not None:
-            close(handoff_fd)
-            handoff_fd = None
+
+    def drain_nonframe_retained_packets():
+        if handoff_mode != 'nonframe-active-reap' or worker is None or worker.poll() is not None:
+            raise RuntimeError('non-FRAME retained-packet drain has no live original owner')
+        if os.write(control_w, b'K') != 1:
+            raise RuntimeError('could not request the original owner to drain retained live rings')
+        drained = record(worker, 'KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED')
+        print('KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED ' + json.dumps(drained), flush=True)
+        return drained
 
     def finish_signal_before_app(packet_expected):
         nonlocal completed
@@ -975,6 +981,9 @@ def run_session(args, api):
                         start_nonframe_active_reap()
                     elif data == b'C':
                         finish_nonframe_active_reap()
+                    elif data == b'D' and handoff_mode == 'nonframe-active-reap':
+                        drain_nonframe_retained_packets()
+                        close(handoff_fd); handoff_fd = None
                     elif action == 'handoff':
                         if handoff_mode != 'frame-positive':
                             close(handoff_fd); handoff_fd = None

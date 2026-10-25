@@ -3979,6 +3979,40 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                     printf("KER_GENERATION_EMPTY_CLEANUP_RELEASED {\"generation\":%u}\n",generation); fflush(stdout);
                     generation_test_step_index=0;
                 }
+            } else if (count == 1 && command == 'K' && generation_detach_test &&
+                generation == 0 && nonframe_reap_active) {
+                struct ker_generation_identity identity = {.session=message.session,.epoch=message.epoch,
+                    .slot=(uint32_t)message.slot,.generation=generation,.process=process,.pid=(uint32_t)getpid()};
+                unsigned before[8]={0},after[8]={0},active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+                const unsigned expected[8]={0,0,1,0,0,1,0,1};
+                if(!generation_test_hold_started||
+                    !atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire))goto cleanup;
+                for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+                    struct rte_ring *ring=generation_test_ring(d,q,g);
+                    if(!ring)goto cleanup;
+                    before[(d*2+q)*2+g]=rte_ring_count(ring);
+                }
+                if(memcmp(before,expected,sizeof(expected)))goto cleanup;
+                unsigned control_before=rte_mempool_avail_count(pool);
+                int status=generation_test_step(generation_rings,&identity,pool,5,
+                    true,false,false,false,false);
+                if(status)goto cleanup;
+                for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+                    struct rte_ring *ring=generation_test_ring(d,q,g);
+                    if(!ring)goto cleanup;
+                    after[(d*2+q)*2+g]=rte_ring_count(ring);
+                }
+                if(ker_generation_test_active_counts(generation_rings,active)||
+                    memcmp(after,(unsigned[8]){0},sizeof(after))||
+                    rte_mempool_avail_count(pool)!=control_before+3||
+                    ker_generation_packet_pool_in_use(generation_rings)!=0)goto cleanup;
+                printf("KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED {\"generation\":%u,\"status\":0,\"rx_drained\":%u,\"tx_drained\":%u,\"rings_before\":[%u,%u,%u,%u,%u,%u,%u,%u],\"rings_after\":[%u,%u,%u,%u,%u,%u,%u,%u],\"active\":[%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u}\n",
+                    generation,before[2]-after[2],(before[5]-after[5])+(before[7]-after[7]),
+                    before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
+                    after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],
+                    active[0],active[1],active[2],active[3],
+                    ker_generation_packet_pool_in_use(generation_rings),rte_mempool_avail_count(pool));
+                fflush(stdout);
             } else if (count == 1 && command == 'd' && generation_detach_test && !peer_only) {
                 struct ker_session_message detached,identity=message;
                 uint64_t capability=0;
