@@ -722,6 +722,10 @@ static bool known_object(struct rte_mbuf *packet)
     return false;
 }
 #ifdef KER_SESSION_TEST_HOOKS
+static struct rte_ring *generation_test_ring(unsigned direction,unsigned q,unsigned g);
+static int generation_test_step(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity,struct rte_mempool *pool,unsigned step,
+    bool detach_test,bool foreign,bool nonowner_detach,bool empty_cleanup,bool tx_full_test);
 struct generation_frame_drain_context {
     struct ker_generation_rings *rings;
     struct ker_generation_identity identity;
