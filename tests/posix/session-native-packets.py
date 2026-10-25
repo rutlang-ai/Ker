@@ -137,6 +137,54 @@ def handoff_udp_payload(frame):
     return udp[8:]
 
 
+def wait_for_handoff_wire_payload(sequence, wire_frames, wire_errors, wire_lock,
+                                  runner, stats_path, runner_stderr_path, timeout=10):
+    """Wait using only the actual packet capture and child diagnostics."""
+    payload = f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with wire_lock:
+            matches = [frame for frame in wire_frames if handoff_udp_payload(frame) == payload]
+            errors = list(wire_errors)
+        if errors:
+            raise RuntimeError('handoff wire peer failed: ' + repr(errors))
+        if matches:
+            return matches[0]
+        if runner is not None and runner.poll() is not None:
+            raise RuntimeError('runner exited before the expected wire payload: ' +
+                json.dumps(dict(sequence=sequence, runner_pid=runner.pid,
+                    runner_returncode=runner.returncode)))
+        time.sleep(0.005)
+    with wire_lock:
+        captured = list(wire_frames)
+        errors = list(wire_errors)
+    rendered = []
+    for frame in captured[:64]:
+        summary = {'length': len(frame), 'hex': frame[:2048].hex()}
+        if len(frame) >= 14:
+            summary.update(ethertype=frame[12:14].hex(), dst_mac=frame[:6].hex(), src_mac=frame[6:12].hex())
+        if len(frame) >= 42 and frame[12:14] == b'\x08\x06':
+            summary.update(arp_opcode=frame[20:22].hex(),
+                arp_sender_ip=socket.inet_ntoa(frame[28:32]), arp_target_ip=socket.inet_ntoa(frame[38:42]))
+        try:
+            parsed = handoff_udp_payload(frame)
+            if parsed is not None: summary['udp_payload'] = parsed.hex()
+        except (IndexError, struct.error):
+            summary['udp_parse_error'] = True
+        rendered.append(summary)
+    try:
+        latest_stats = stats_path.read_text(errors='replace') if stats_path.exists() else ''
+    except OSError as error:
+        latest_stats = 'read failed: ' + repr(error)
+    runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+    raise RuntimeError('original LKL UDP sequence did not reach the wire endpoint: ' + json.dumps(
+        dict(sequence=sequence, expected_payload=payload.hex(), captured_frame_count=len(captured),
+            captured_frames=rendered, captured_frames_truncated=len(captured) > len(rendered),
+            wire_errors=errors, runner_pid=runner.pid if runner is not None else None,
+            runner_returncode=runner.poll() if runner is not None else None,
+            runner_stderr=runner_errors, stats=latest_stats), sort_keys=True))
+
+
 def handoff_udp_test_frame(payload=b'KER-A09-HANDOFF-UDP seq=1\n'):
     app_mac=bytes.fromhex('024b45520002')
     host_mac=bytes.fromhex('024b45520001')
@@ -522,47 +570,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
                 wire_thread=threading.Thread(target=handoff_wire_peer,daemon=True);wire_thread.start()
             def wait_wire_payload(sequence):
-                payload=f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
-                deadline=time.monotonic()+10
-                while time.monotonic()<deadline:
-                    with wire_lock:
-                        matches=[frame for frame in wire_frames if handoff_udp_payload(frame)==payload]
-                        errors=list(wire_errors)
-                    if errors:raise RuntimeError('handoff wire peer failed: '+repr(errors))
-                    if matches:return matches[0]
-                    time.sleep(0.005)
-                with wire_lock:
-                    captured=list(wire_frames)
-                    errors=list(wire_errors)
-                rendered=[]
-                for frame in captured[:64]:
-                    summary={'length':len(frame),'hex':frame[:2048].hex()}
-                    if len(frame)>=14:
-                        summary['ethertype']=frame[12:14].hex()
-                        summary['dst_mac']=frame[:6].hex()
-                        summary['src_mac']=frame[6:12].hex()
-                    if len(frame)>=42 and frame[12:14]==b'\x08\x06':
-                        summary['arp_opcode']=frame[20:22].hex()
-                        summary['arp_sender_ip']=socket.inet_ntoa(frame[28:32])
-                        summary['arp_target_ip']=socket.inet_ntoa(frame[38:42])
-                    try:
-                        parsed=handoff_udp_payload(frame)
-                        if parsed is not None:summary['udp_payload']=parsed.hex()
-                    except (IndexError,struct.error):
-                        summary['udp_parse_error']=True
-                    rendered.append(summary)
-                try: latest_stats=stats_path.read_text(errors='replace') if stats_path.exists() else ''
-                except OSError as error: latest_stats='read failed: '+repr(error)
-                try: drain_startup()
-                except (NameError,UnboundLocalError): pass
-                runner_errors=runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
-                raise RuntimeError('original LKL UDP sequence did not reach the wire endpoint: '+json.dumps(
-                    dict(sequence=sequence,expected_payload=payload.hex(),captured_frame_count=len(captured),
-                        captured_frames=rendered,captured_frames_truncated=len(captured)>len(rendered),
-                        wire_errors=errors,runner_pid=runner.pid if runner is not None else None,
-                        runner_returncode=runner.poll() if runner is not None else None,
-                        runner_stderr=runner_errors,stats=latest_stats,
-                        startup_bytes=startup.hex()),sort_keys=True))
+                return wait_for_handoff_wire_payload(sequence, wire_frames, wire_errors, wire_lock,
+                    runner, stats_path, runner_stderr_path)
             handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
             runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
             if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer',

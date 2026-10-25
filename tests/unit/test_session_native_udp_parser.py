@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import struct
 import sys
+import tempfile
+import threading
 import unittest
 
 
@@ -39,6 +41,33 @@ class NativeHandoffUdpParserTests(unittest.TestCase):
         frame = bytearray(FIXTURE.handoff_udp_test_frame())
         frame[14 + 20:14 + 24] = struct.pack('!HH', 45000, 45002)
         self.assertIsNone(FIXTURE.handoff_udp_payload(bytes(frame)))
+
+    def test_wire_wait_timeout_uses_fixture_capture_and_child_diagnostics(self):
+        class Runner:
+            pid = 4321
+            returncode = None
+
+            @staticmethod
+            def poll():
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            stats = Path(directory) / 'stats.json'
+            stats.write_text('{"stage":"application-started"}')
+            stderr = Path(directory) / 'runner.stderr'
+            stderr.write_text('runner diagnostic')
+            with self.assertRaisesRegex(RuntimeError, 'captured_frame_count') as error:
+                FIXTURE.wait_for_handoff_wire_payload(2, [], [], threading.Lock(),
+                    Runner(), stats, stderr, timeout=0)
+        self.assertIn('runner_pid', str(error.exception))
+        self.assertIn('application-started', str(error.exception))
+        self.assertIn('runner diagnostic', str(error.exception))
+
+    def test_wire_wait_returns_exact_captured_udp_frame(self):
+        frame = FIXTURE.handoff_udp_test_frame(b'KER-A09-HANDOFF-UDP seq=2\n')
+        observed = FIXTURE.wait_for_handoff_wire_payload(2, [frame], [], threading.Lock(),
+            None, Path('/missing/stats.json'), Path('/missing/stderr'), timeout=0.01)
+        self.assertEqual(observed, frame)
 
 
 if __name__ == '__main__':

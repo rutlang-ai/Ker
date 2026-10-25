@@ -151,6 +151,15 @@ def handoff_trigger_action(data):
     return 'invalid'
 
 
+def handoff_successor_owner_key(metrics):
+    """Read the PMD owner key captured by the completed handoff transaction."""
+    handoff = metrics.get('handoff')
+    key = handoff.get('new_owner_key') if isinstance(handoff, dict) else None
+    if type(key) is not int or key <= 0:
+        raise RuntimeError('successful successor owner key is unavailable')
+    return key
+
+
 def validate_parked_owner_cleared(record, worker_pid):
     """Validate the immediate owner-clear record after the PARKED transition."""
     if (not isinstance(record, dict) or set(record) != {'pid', 'owner_key'} or
@@ -995,6 +1004,7 @@ def run_session(args, api):
                     'frame-death-both-prepared','frame-lost-prepare-reply') or app is None or app_pidfd < 0 or app.poll() is not None:
                 raise RuntimeError('UDP handoff trigger is available only for the live positive app')
             sequence = handoff_udp_sequence + 1
+            expected_key = handoff_successor_owner_key(metrics) if sequence == 2 else None
             if (sequence == 1 and handoff_udp_ready) or (sequence == 2 and not handoff_udp_ready):
                 raise RuntimeError('UDP trigger is out of the prewarm/PARKED order')
             payload = f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()

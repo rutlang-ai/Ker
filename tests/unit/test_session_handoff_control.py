@@ -168,6 +168,28 @@ class HandoffControlPathTests(unittest.TestCase):
     def test_positive_handoff_writes_one_h(self):
         self.exercise('positive', b'H', expect_closed=False)
 
+    def test_successor_owner_key_comes_from_completed_handoff_metrics(self):
+        self.assertEqual(self.launcher.handoff_successor_owner_key(
+            {'handoff': {'new_owner_key': 37}}), 37)
+        for metrics in ({}, {'handoff': {}}, {'handoff': {'new_owner_key': 0}},
+                        {'handoff': {'new_owner_key': True}}):
+            with self.subTest(metrics=metrics), self.assertRaises(RuntimeError):
+                self.launcher.handoff_successor_owner_key(metrics)
+
+    def test_actual_udp_trigger_binds_successor_key_locally(self):
+        trigger = nested_code(compile(SOURCE.read_text(), str(SOURCE), 'exec'), 'trigger_handoff_udp')
+        self.assertIsNotNone(trigger)
+        self.assertIn('expected_key', trigger.co_varnames)
+        self.assertNotIn('expected_key', trigger.co_freevars)
+        self.assertNotIn('expected_key', trigger.co_names)
+
+    def test_actual_wire_wait_has_no_runner_startup_scope_dependency(self):
+        compiled = compile(PROFILE_SOURCE.read_text(), str(PROFILE_SOURCE), 'exec')
+        code = nested_code(compiled, 'wait_wire_payload')
+        self.assertIsNotNone(code)
+        self.assertNotIn('startup', code.co_names)
+        self.assertNotIn('drain_startup', code.co_names)
+
     def test_rejected_handoffs_pipeline_two_h_commands(self):
         self.exercise('prepare-enoent', b'HH', expect_closed=False)
 
