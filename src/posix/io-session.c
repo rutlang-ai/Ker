@@ -887,14 +887,31 @@ static int reclaim_control_after_busy(unsigned index)
 {
     return reclaim_control_impl(index,true);
 }
-static bool frame_recovery_active(void)
+static bool frame_recovery_targets(unsigned target_index)
 {
-    if(handoff_state!=HANDOFF_NONE)return true;
-    for(unsigned i=0;i<CLIENTS;i++)
-        if(clients[i].frame_pending||clients[i].reap_deferred||
-            clients[i].reap_deferred_peer_pidfd>=0)return true;
+    if(target_index>=CLIENTS)return true;
+    const struct client *target=&clients[target_index];
+    if(target->frame_pending||target->frame_reap_blocked||target->reap_deferred||
+        target->reap_deferred_peer_pidfd>=0||target->handoff_state!=HANDOFF_NONE||target->pmd_parked)
+        return true;
+    if(handoff_state!=HANDOFF_NONE&&
+        (handoff_client==(int)target_index||handoff_peer==(int)target_index))return true;
+    for(unsigned i=0;i<CLIENTS;i++) {
+        const struct client *other=&clients[i];
+        if(other->frame_pending&&(i==target_index||other->frame_consumer_client==target_index||
+            other->handoff_peer==target_index||
+            (target->pidfd>=0&&other->handoff_peer_client_pidfd==target->pidfd)))return true;
+        if(other->frame_reap_blocked&&
+            (i==target_index||other->frame_reap_blocked_consumer==target_index))return true;
+        if(other->reap_deferred&&
+            (i==target_index||other->reap_deferred_peer_client==target_index||
+                (target->pidfd>=0&&other->reap_deferred_peer_pidfd>=0&&
+                    other->reap_deferred_peer_pidfd==target->pidfd)))return true;
+    }
     return false;
 }
+static bool nonframe_full_reap_allowed(unsigned target_index,int bind_result)
+{ return bind_result==0&&!frame_recovery_targets(target_index); }
 #ifdef KER_SESSION_TEST_HOOKS
 static int verify_tc3_probe_barrier(void)
 {
@@ -1293,7 +1310,7 @@ static void reap_clients(void)
                     int reap=reclaim_control(i);
                     if(reap==-EBUSY) {
                         int bound=bind_deferred_frame_peer(i);
-                        if(bound==0&&!frame_recovery_active()) {
+                        if(nonframe_full_reap_allowed(i,bound)) {
 #ifdef KER_SESSION_TEST_HOOKS
                             if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
                                 uint32_t active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
