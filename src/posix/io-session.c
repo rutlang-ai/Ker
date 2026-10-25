@@ -4260,8 +4260,17 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             device_tx_lease_id=device_rx_lease_id=0;
             printf("KER_SESSION_PMD_PARKED {\"pid\":%ld,\"old_owner_key\":%llu,\"successor_slot\":%u,\"successor_generation\":%u,\"commit\":\"resident-quiesced\"}\n",
                 (long)getpid(),(unsigned long long)key,successor_slot,successor_generation); fflush(stdout);
-            if(parked_owner_wait(control,packet_fd,fd,peer,&message,&message.sequence,
-                    capability,&heartbeat,generation_rings))_Exit(125);
+            int parked_result=parked_owner_wait(control,packet_fd,fd,peer,&message,&message.sequence,
+                    capability,&heartbeat,generation_rings);
+#ifdef KER_SESSION_TEST_HOOKS
+            if(getenv("KER_SESSION_TEST_FRAME_DRAIN")) {
+                printf("KER_SESSION_PARKED_OWNER_EXIT {\"pid\":%ld,\"result\":%d,\"stopping\":%s,\"generation\":%llu,\"process\":%llu}\n",
+                    (long)getpid(),parked_result,stopping?"true":"false",
+                    (unsigned long long)message.generation,(unsigned long long)message.process);
+                fflush(stdout);
+            }
+#endif
+            if(parked_result)_Exit(125);
             printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"exception_to_wire\":%llu,\"exception_from_wire\":%llu,\"exception_to_native\":%llu,\"fragment_to_native\":%llu,\"exception_endpoint_owner_key\":%llu,\"retained\":0,\"status\":0}\n",
                 (unsigned long long)packet_stats.tx,(unsigned long long)packet_stats.rx,
                 (unsigned long long)packet_stats.to_wire,(unsigned long long)packet_stats.from_wire,

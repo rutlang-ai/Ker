@@ -76,6 +76,32 @@ def tap_interfaces_for_process(pid, *, fdinfo_dir=None):
     return names
 
 
+def capture_exited_process_stdout(process, *, max_bytes=262144, budget=0.05):
+    """Read currently available stdout from an exited child without blocking."""
+    if process is None or process.stdout is None or process.poll() is None:
+        raise RuntimeError('stdout capture requires an exited child with a pipe')
+    fd = process.stdout.fileno()
+    output = bytearray()
+    deadline = time.monotonic() + budget
+    while len(output) < max_bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+            break
+        chunk = os.read(fd, min(4096, max_bytes - len(output)))
+        if not chunk:
+            break
+        output.extend(chunk)
+    return bytes(output)
+
+
+def unexpected_worker_exit_record(process, stdout, committed, drained, handoff_frame):
+    """Preserve the worker outcome and frame proof at an unexpected exit."""
+    return dict(pid=process.pid, returncode=process.returncode,
+        stdout=stdout.decode(errors='replace'),
+        frame_committed_records=list(committed),
+        frame_drained_records=list(drained), handoff_frame=handoff_frame)
+
+
 
 def validate_interrupted_cleanup(worker_code, packet_stats, *, packet_expected=True, app_launched=False,
                                  app_code=None, startup=b'', native_stats=None, worker_expected_code=None):
@@ -1458,6 +1484,14 @@ def _run_session_impl(args, api):
                 # Consume a destructor notification before classifying loss.
                 drain_startup()
                 if b'KER_NATIVE_STOPPING\n' not in startup:
+                    unexpected_worker_stdout = capture_exited_process_stdout(worker)
+                    metrics['unexpected_worker_exit'] = unexpected_worker_exit_record(
+                        worker, unexpected_worker_stdout, frame_committed_records,
+                        frame_drained_records, metrics.get('handoff_frame'))
+                    print('KER_SESSION_UNEXPECTED_WORKER_EXIT ' + json.dumps(
+                        metrics['unexpected_worker_exit'], sort_keys=True),
+                        file=sys.stderr, flush=True)
+                    publish()
                     raise RuntimeError('secondary packet worker exited while application was running')
             time.sleep(0.01)
         code = app.wait()

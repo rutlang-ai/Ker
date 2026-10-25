@@ -753,6 +753,28 @@ class HandoffControlPathTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     validate(record, 42)
 
+    def test_unexpected_exited_worker_record_preserves_available_stdout_and_proof(self):
+        process = subprocess.Popen([sys.executable, '-c',
+            "import sys; print('KER_SESSION_PARKED_OWNER_EXIT {\\\"result\\\":-32}', flush=True); sys.exit(125)"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        try:
+            self.assertEqual(process.wait(timeout=2), 125)
+            output = self.launcher.capture_exited_process_stdout(process)
+            committed = [{'object_index': 7, 'packet_pointer': '0xabc'}]
+            drained = [{'object_index': 7, 'packet_pointer': '0xabc'}]
+            handoff = {'same_pointer': True, 'same_bytes': True}
+            record = self.launcher.unexpected_worker_exit_record(
+                process, output, committed, drained, handoff)
+            self.assertEqual(record['returncode'], 125)
+            self.assertIn('KER_SESSION_PARKED_OWNER_EXIT', record['stdout'])
+            self.assertIn('"result":-32', record['stdout'])
+            self.assertEqual(record['frame_committed_records'], committed)
+            self.assertEqual(record['frame_drained_records'], drained)
+            self.assertEqual(record['handoff_frame'], handoff)
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
+
     def test_failure_collector_fallback_preserves_original_reason(self):
         tree = ast.parse(PROFILE_SOURCE.read_text())
         profile = next(node for node in tree.body
