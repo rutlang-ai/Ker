@@ -351,6 +351,59 @@ class HandoffControlPathTests(unittest.TestCase):
         self.assertEqual(self.launcher.handoff_trigger_action(b''), 'invalid')
         self.assertEqual(self.launcher.handoff_trigger_action(b'X'), 'invalid')
 
+    def test_frame_peer_control_stays_open_until_final_quiescence(self):
+        read_fd, write_fd = os.pipe()
+        closed = []
+
+        def close(fd):
+            closed.append(fd)
+            os.close(fd)
+
+        try:
+            keep = self.launcher.close_peer_control_when_safe('frame-positive', write_fd, close)
+            self.assertEqual(keep, write_fd)
+            self.assertEqual(select.select([read_fd], [], [], 0)[0], [])
+            self.assertEqual(os.write(keep, b'G'), 1)
+            self.assertEqual(os.read(read_fd, 1), b'G')
+            self.assertEqual(select.select([read_fd], [], [], 0)[0], [])
+            keep = self.launcher.close_peer_control_when_safe(
+                'frame-positive', keep, close, frame_quiescent=True)
+            self.assertEqual(keep, -1)
+            self.assertEqual(closed, [write_fd])
+            self.assertEqual(os.read(read_fd, 1), b'')
+            positive_read, positive_write = os.pipe()
+            keep = self.launcher.close_peer_control_when_safe('positive', positive_write, close)
+            self.assertEqual(keep, -1)
+            self.assertEqual(closed, [write_fd, positive_write])
+            self.assertEqual(os.read(positive_read, 1), b'')
+            os.close(positive_read)
+        finally:
+            os.close(read_fd)
+            if not closed:
+                os.close(write_fd)
+
+        tree = ast.parse(SOURCE.read_text())
+        run_session = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == 'run_session')
+        calls = [node for node in ast.walk(run_session)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == 'close_peer_control_when_safe']
+        self.assertEqual(len(calls), 2)
+        calls.sort(key=lambda node: node.lineno)
+        worker_waits = [node for node in ast.walk(run_session)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+            node.func.attr == 'communicate' and isinstance(node.func.value, ast.Name) and
+            node.func.value.id == 'worker']
+        self.assertTrue(any(calls[0].lineno < node.lineno < calls[1].lineno for node in worker_waits))
+        quiescent_lines = [node.lineno for node in ast.walk(run_session)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ready' and
+            node.args and isinstance(node.args[0], ast.Constant) and
+            node.args[0].value == 'KER_SESSION_FRAME_QUIESCENT']
+        self.assertTrue(quiescent_lines and calls[1].lineno > quiescent_lines[0])
+        self.assertTrue(any(keyword.arg == 'frame_quiescent' and
+            isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+            for keyword in calls[1].keywords))
+
     def test_frame_marker_stream_consumes_only_enabled_prefix_in_exact_order(self):
         prepare = ('KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS', {'variants': 12,
             'datagram_queued': True, 'ring_unchanged': True, 'pool_unchanged': True,

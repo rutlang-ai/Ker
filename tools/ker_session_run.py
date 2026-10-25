@@ -146,6 +146,15 @@ def close_completed_handoff_trigger(mode, handoff_seen, udp_sequence, fd, close_
     return fd
 
 
+def close_peer_control_when_safe(mode, fd, close_fd, frame_quiescent=False):
+    if fd < 0:
+        return -1
+    if mode == 'frame-positive' and not frame_quiescent:
+        return fd
+    close_fd(fd)
+    return -1
+
+
 def handoff_trigger_action(data):
     if data == b'U':
         return 'udp'
@@ -1434,7 +1443,7 @@ def run_session(args, api):
         if handoff_fd is not None:
             close(handoff_fd); handoff_fd = None
         close(control_w)
-        if peer_control_w >= 0: close(peer_control_w)
+        peer_control_w = close_peer_control_when_safe(handoff_mode, peer_control_w, close)
         try: output, _ = worker.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             worker.kill(); worker.communicate()
@@ -1461,7 +1470,9 @@ def run_session(args, api):
             metrics['handoff_frame'].update(committed_records=list(frame_committed_records),
                 drained_records=list(frame_drained_records),final_batch=final_batch,
                 quiescent=quiescent,bijection=bijection)
-            close(peer_control_w);peer_control_w=-1;publish()
+            peer_control_w = close_peer_control_when_safe(
+                handoff_mode, peer_control_w, close, frame_quiescent=True)
+            publish()
         peer_packet_stats = None
         peer_code = None
         if peer_worker is not None:
