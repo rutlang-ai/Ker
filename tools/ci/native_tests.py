@@ -131,6 +131,22 @@ NOHUGE_TAP = (
     "native-udp-wire-errors",
 )
 
+# These software datapath tests have explicit, provisionable CI dependencies:
+# the pinned TAP retry adapter, DPDK virtio/vhost PMDs, /dev/vhost-net, and two
+# allowed CPUs. They must not silently pass via CTest's skip return code.
+REQUIRED_SOFTWARE_DATAPATH = (
+    "native-fstack-tap-offload-retry",
+    "native-fstack-virtio-kernel-offloads",
+    "native-fstack-native-buffers",
+    "native-fstack-typed-vdev",
+    "native-fstack-rx-lcores",
+    "native-fstack-rx-queues",
+)
+
+# Add a name only after reviewing why that particular test cannot run on the
+# hosted runner. An empty set makes any new/unreviewed skip fail the full job.
+REVIEWED_OPTIONAL_SKIPS: frozenset[str] = frozenset()
+
 
 def summary(message: str) -> None:
     print(message)
@@ -235,6 +251,9 @@ def report_junit(path: Path, expected: set[str] | None = None,
     required_skips = sorted(set(skipped) & required)
     if required_skips:
         malformed.append("required tests skipped: " + ", ".join(required_skips))
+    unreviewed_skips = sorted(set(skipped) - required - REVIEWED_OPTIONAL_SKIPS)
+    if unreviewed_skips:
+        malformed.append("unreviewed CTest skips: " + ", ".join(unreviewed_skips))
     if not cases or failed or malformed or ctest_returncode:
         raise RuntimeError("full CTest graph failed: " + repr(dict(
             ctest_returncode=ctest_returncode, failed=failed, problems=malformed)))
@@ -245,6 +264,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     by_name = {item["name"]: item for item in inventory}
     names = set(by_name)
     missing = sorted((set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) |
+                      set(REQUIRED_SOFTWARE_DATAPATH) |
                       set(SESSION_CTEST) | {SESSION_DIRECT}) - names)
     if missing:
         raise RuntimeError("native CTest inventory is missing required tests: " + repr(missing))
@@ -258,7 +278,8 @@ def run_full_ctest(build: Path, junit: Path) -> None:
             "unexpected": sorted(session_labeled - (set(SESSION_CTEST) | {SESSION_DIRECT})),
         }))
     expected = names - {SESSION_DIRECT}
-    required = set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) | set(SESSION_CTEST)
+    required = (set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) |
+                set(REQUIRED_SOFTWARE_DATAPATH) | set(SESSION_CTEST))
     result = subprocess.run(
         ["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
          "--output-junit", str(junit), "--parallel", "1", "-E", "^" + re.escape(SESSION_DIRECT) + "$"],
@@ -267,7 +288,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     if not junit.is_file():
         raise RuntimeError("full CTest graph did not produce JUnit output")
     report_junit(junit, expected=expected, required=required, ctest_returncode=result.returncode)
-    summary(f"Full native CTest graph: {len(expected)} registered tests; {len(required)} mandatory hosted/session tests; session suite has no skips.")
+    summary(f"Full native CTest graph: {len(expected)} registered tests; {len(required)} mandatory hosted/session/software-datapath tests; unreviewed skips fail.")
 
 
 def _literal_profile_tuple(node: ast.AST) -> set[str] | None:
@@ -456,6 +477,52 @@ def tap_preflight() -> None:
     summary("Required unshare -Urn TUN/TAP create-close preflight: PASS.")
 
 
+def native_datapath_preflight(prefix: Path) -> None:
+    """Fail before CTest unless provisioned virtio/vhost/TAP paths are usable."""
+    require_two_cpus()
+    tap_preflight()
+    resolved_prefix = _resolved_dpdk_prefix(prefix)
+    plugin_directories = {
+        name: dpdk_plugin_directory(resolved_prefix, (name,))
+        for name in ("librte_net_tap.so", "librte_net_virtio.so", "librte_net_vhost.so")
+    }
+    device = Path("/dev/vhost-net")
+    if not device.is_char_device():
+        raise RuntimeError("required /dev/vhost-net character device is unavailable; load vhost_net")
+    try:
+        descriptor = os.open(device, os.O_RDWR | os.O_CLOEXEC)
+    except OSError as error:
+        raise RuntimeError(f"required /dev/vhost-net cannot be opened by the test user: {error}") from error
+    else:
+        os.close(descriptor)
+    summary("Required software datapath preflight: two CPUs, TAP, /dev/vhost-net, and pinned TAP/virtio/vhost PMDs PASS.")
+    for name, directory in sorted(plugin_directories.items()):
+        summary(f"Pinned {name}: {directory}")
+
+
+def verify_tap_retry_source(source: Path, patch: Path) -> dict[str, str]:
+    """Verify the isolated DPDK TAP adapter against its pinned provenance."""
+    source = source.resolve(strict=True)
+    patch = patch.resolve(strict=True)
+    manifest_path = source / "ker-tap-retry-provenance.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        patch_bytes = patch.read_bytes()
+        tap_bytes = (source / "drivers/net/tap/rte_eth_tap.c").read_bytes()
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"TAP retry provenance is incomplete: {error}") from error
+    expected = {
+        "upstream_commit": "d129414711aa7c4954f997acf4c54338574a7d92",
+        "patch_sha256": hashlib.sha256(patch_bytes).hexdigest(),
+        "tap_source_sha256": hashlib.sha256(tap_bytes).hexdigest(),
+        "compatibility_abi": "ker_dpdk_tap_tx_retry_abi=1",
+    }
+    if manifest != expected:
+        raise RuntimeError(f"TAP retry provenance mismatch: expected {expected!r}, got {manifest!r}")
+    summary("Isolated pinned DPDK TAP retry provenance: PASS " + json.dumps(manifest, sort_keys=True))
+    return manifest
+
+
 def _resolved_dpdk_prefix(prefix: Path) -> Path:
     try:
         resolved = prefix.resolve(strict=True)
@@ -524,13 +591,23 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "tap-preflight", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "tap-preflight", "native-datapath-preflight", "verify-tap-retry-source", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | native-datapath-preflight PREFIX | verify-tap-retry-source SOURCE PATCH | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
             raise RuntimeError("tap-preflight takes no additional arguments")
         tap_preflight()
+        return 0
+    if argv[1] == "native-datapath-preflight":
+        if len(argv) != 3:
+            raise RuntimeError("native-datapath-preflight requires the pinned DPDK install prefix")
+        native_datapath_preflight(Path(argv[2]))
+        return 0
+    if argv[1] == "verify-tap-retry-source":
+        if len(argv) != 4:
+            raise RuntimeError("verify-tap-retry-source requires isolated source and checked-in patch paths")
+        verify_tap_retry_source(Path(argv[2]), Path(argv[3]))
         return 0
     if argv[1] == "dpdk-library-path":
         if len(argv) != 3:

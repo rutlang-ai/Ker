@@ -11,13 +11,30 @@ does not pin a separate migration branch or commit.
   directory is an error. A checkout without those sources reports that the
   migration suite is not present; it does not claim a migration result.
 - `pinned-dpdk-build` verifies the DPDK and Linux submodule gitlinks and builds
-  the pinned DPDK drivers and Linux/LKL runtime. When native sources are
+  the pinned DPDK drivers and Linux/LKL runtime. For native source snapshots
+  carrying the TAP retry adapter, it archives the exact pinned DPDK commit to
+  a separate temporary tree, applies the checked-in compatibility patch there,
+  validates the patch/source hashes and adapter ABI manifest, and builds that
+  isolated tree without modifying the submodule. A native migration checkout
+  missing that adapter fails; a checkout with no native migration sources builds
+  the pinned DPDK dependency unchanged and reports native runtime coverage as
+  unavailable. When native sources are
   present, every Ker target is built with strict warnings in `BUILD_TESTING=ON`
   and `OFF` configurations. The testing build runs the complete registered
-  CTest graph (the session packet matrix is run separately with its longer
-  timeout), saves JUnit, and requires every `session`-labeled test to appear and
-  pass without a skip. Other hardware-dependent CTest skips remain visible in
-  the report; any CTest failure or nonzero CTest result fails the job.
+  CTest graph serially (the session packet matrix is run separately with its
+  longer timeout) and saves JUnit. Hosted-safe tests, all session-labeled tests,
+  and the six software datapath tests below must appear and pass without a skip.
+  Any unreviewed skip, CTest failure, or nonzero CTest result fails the job.
+- The six mandatory software datapath tests are
+  `native-fstack-tap-offload-retry`,
+  `native-fstack-virtio-kernel-offloads`, `native-fstack-native-buffers`,
+  `native-fstack-typed-vdev`, `native-fstack-rx-lcores`, and
+  `native-fstack-rx-queues`. The DPDK build enables the TAP, virtio, and vhost
+  PMDs and their required libraries. The job loads `vhost_net`, verifies that
+  `/dev/vhost-net` is a character device the test user can open, checks that two
+  CPUs are allowed, and confirms all three installed PMDs resolve inside the
+  pinned DPDK prefix before CTest starts. Missing capabilities fail the job;
+  CTest skip codes do not count as coverage.
 - The same job provisions TUN, unprivileged user/network namespaces, and a
   hugetlbfs mount backed by 256 requested 2 MiB pages. It fails unless at least
   64 pages remain free and an actual TAP interface can be created and closed
