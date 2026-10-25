@@ -209,6 +209,15 @@ static void *generation_test_hold_rx_dequeue(void *unused)
     struct rte_mbuf *packet=NULL;
     int result=ker_generation_rx_dequeue(generation_test_hold_context.rings,
         &generation_test_hold_context.identity,0,0,&packet);
+#ifdef KER_SESSION_TEST_HOOKS
+    if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+        if(result!=1||!packet||ker_generation_packet_release(generation_test_hold_context.rings,
+                &generation_test_hold_context.identity,packet))_Exit(125);
+        printf("KER_SESSION_TEST_NONFRAME_ACTIVE_RELEASED {\"generation\":0,\"status\":0}\n");
+        fflush(stdout);
+        return NULL;
+    }
+#endif
     fprintf(stderr,"ker session: held generation dequeue returned unexpectedly %d\n",result);
     return NULL;
 }
@@ -217,6 +226,7 @@ static struct ker_worker_exception session_exception_keeper = {.fd=-1};
 static char session_exception_iface[IFNAMSIZ], session_exception_ring[RTE_RING_NAMESIZE];
 static int dead(int fd);
 static int reclaim_control(unsigned index);
+static int reclaim_control_after_busy(unsigned index);
 static void drop_client(unsigned index);
 static uint64_t pmd_key(const struct client *client)
 {
@@ -819,7 +829,7 @@ static void reclaim_pmd(unsigned index)
     atomic_store_explicit(&directory->pmd_tx_lease_id, 0, memory_order_release);
     atomic_store_explicit(&directory->pmd_rx_lease_id, 0, memory_order_release);
 }
-static int reclaim_control(unsigned index)
+static int reclaim_control_impl(unsigned index,bool skip_ready)
 {
     struct client *client = &clients[index];
     if (client->generation_admitted) {
@@ -827,8 +837,10 @@ static int reclaim_control(unsigned index)
         if (!generation_rings) {
             fprintf(stderr,"ker session: generation packet journal lacks exact-death recovery proof\n");_Exit(125);
         }
-        int ready=ker_generation_reap_ready(generation_rings,&identity);
-        if(ready)return ready;
+        if(!skip_ready) {
+            int ready=ker_generation_reap_ready(generation_rings,&identity);
+            if(ready)return ready;
+        }
         client->reap_full_attempts++;
         int result=ker_generation_reap_dead(generation_rings,&identity);
         if(result)return result;
@@ -866,6 +878,22 @@ static int reclaim_control(unsigned index)
     rte_pktmbuf_free(owned);
     client->leased_packet = NULL;
     return 0;
+}
+static int reclaim_control(unsigned index)
+{
+    return reclaim_control_impl(index,false);
+}
+static int reclaim_control_after_busy(unsigned index)
+{
+    return reclaim_control_impl(index,true);
+}
+static bool frame_recovery_active(void)
+{
+    if(handoff_state!=HANDOFF_NONE)return true;
+    for(unsigned i=0;i<CLIENTS;i++)
+        if(clients[i].frame_pending||clients[i].reap_deferred||
+            clients[i].reap_deferred_peer_pidfd>=0)return true;
+    return false;
 }
 #ifdef KER_SESSION_TEST_HOOKS
 static int verify_tc3_probe_barrier(void)
@@ -1265,14 +1293,47 @@ static void reap_clients(void)
                     int reap=reclaim_control(i);
                     if(reap==-EBUSY) {
                         int bound=bind_deferred_frame_peer(i);
-                        if(bound!=1)_Exit(125);
-                        clients[i].reap_deferred=true;
-                        if(!clients[i].reap_deferred_attempts)clients[i].reap_deferred_attempts=1;
-                        if(!clients[i].reap_deferred_deadline_ms)
-                            clients[i].reap_deferred_deadline_ms=monotonic_ms()+KER_SESSION_HANDOFF_TIMEOUT_MS;
-                        if(!clients[i].reap_deferred_peer_is_producer)
-                            clients[i].reap_deferred_retry_ms=monotonic_ms()+100;
-                        continue;
+                        if(bound==0&&!frame_recovery_active()) {
+#ifdef KER_SESSION_TEST_HOOKS
+                            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+                                uint32_t active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+                                if(ker_generation_test_active_counts(generation_rings,active))_Exit(125);
+                                printf("KER_SESSION_TEST_NONFRAME_REAP_WAIT {\"client\":%u,\"status\":%d,\"frame_pending\":false,\"active\":[%u,%u,%u,%u],\"packet_pool_in_use\":%u}\n",
+                                    i,reap,active[0],active[1],active[2],active[3],
+                                    ker_generation_packet_pool_in_use(generation_rings));
+                                fflush(stdout);
+                            }
+#endif
+                            reap=reclaim_control_after_busy(i);
+#ifdef KER_SESSION_TEST_HOOKS
+                            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+                                uint32_t active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+                                unsigned rings[8]={0};
+                                if(ker_generation_test_active_counts(generation_rings,active))_Exit(125);
+                                for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+                                    struct rte_ring *ring=generation_test_ring(d,q,g);
+                                    if(!ring)_Exit(125);
+                                    rings[(d*2+q)*2+g]=rte_ring_count(ring);
+                                }
+                                printf("KER_SESSION_TEST_NONFRAME_REAP_DONE {\"client\":%u,\"status\":%d,\"full_reap_attempts\":%u,\"generation_admitted\":%s,\"active\":[%u,%u,%u,%u],\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u}\n",
+                                    i,reap,clients[i].reap_full_attempts,clients[i].generation_admitted?"true":"false",
+                                    active[0],active[1],active[2],active[3],rings[0],rings[1],rings[2],rings[3],
+                                    rings[4],rings[5],rings[6],rings[7],ker_generation_packet_pool_in_use(generation_rings),
+                                    rte_mempool_avail_count(message_pool));
+                                fflush(stdout);
+                            }
+#endif
+                            if(reap)_Exit(125);
+                        } else {
+                            if(bound!=1)_Exit(125);
+                            clients[i].reap_deferred=true;
+                            if(!clients[i].reap_deferred_attempts)clients[i].reap_deferred_attempts=1;
+                            if(!clients[i].reap_deferred_deadline_ms)
+                                clients[i].reap_deferred_deadline_ms=monotonic_ms()+KER_SESSION_HANDOFF_TIMEOUT_MS;
+                            if(!clients[i].reap_deferred_peer_is_producer)
+                                clients[i].reap_deferred_retry_ms=monotonic_ms()+100;
+                            continue;
+                        }
                     }
                     if(reap)_Exit(125);
 #ifdef KER_SESSION_TEST_HOOKS

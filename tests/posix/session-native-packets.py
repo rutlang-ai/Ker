@@ -394,6 +394,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1',
             'KER_SESSION_TEST_HANDOFF_PENDING_HB': '1'}
         if mode == 'frame-positive': environment['KER_SESSION_TEST_FRAME_DRAIN'] = '1'
+        if mode == 'nonframe-active-reap':
+            environment['KER_SESSION_TEST_NONFRAME_REAP'] = '1'
+            environment['KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE'] = '1'
         if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
             environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = mode.removeprefix('prepare-').upper()
         elif mode.startswith('bad-prepare-error'):
@@ -609,6 +612,65 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 handoff_census_before = connection.request(api.STATUS)
                 handoff_owner_before = connection.request(api.PMD_STATUS)
             finally: connection.close()
+            if mode == 'nonframe-active-reap':
+                require(os.write(handoff_write, b'N') == 1,
+                    'could not start the non-FRAME active-reap regression')
+                killed = record(runner, 'KER_SESSION_TEST_NONFRAME_PEER_KILLED')
+                require(killed == dict(owner_pid=before['attached']['pid'],
+                    peer_pid=before['handoff_peer_attached']['pid'], owner_stopped=True,
+                    peer_pidfd_dead=True, seeded_generation=1),
+                    'regression did not stop the exact owner and kill its attached opposite borrower')
+                waiting = record(primary, 'KER_SESSION_TEST_NONFRAME_REAP_WAIT')
+                require(waiting.get('status') == -errno.EBUSY and waiting.get('frame_pending') is False and
+                    waiting.get('active') == [1, 0, 0, 0] and waiting.get('packet_pool_in_use') == 4,
+                    'resident did not observe the real non-FRAME owner RX operation before full reap: ' + repr(waiting))
+                signal.pidfd_send_signal(owner_pidfd, signal.SIGCONT)
+                require(os.write(handoff_write, b'C') == 1,
+                    'could not allow the stopped owner RX dequeue to finish')
+                resumed = record(runner, 'KER_SESSION_TEST_NONFRAME_OWNER_RESUMED')
+                require(resumed == dict(owner_pid=before['attached']['pid'], operation_released=True),
+                    'the exact owner did not release the held RX object')
+                reaped = record(primary, 'KER_SESSION_TEST_NONFRAME_REAP_DONE')
+                require(reaped.get('client') == waiting.get('client') and reaped.get('status') == 0 and
+                    reaped.get('full_reap_attempts') == 1 and reaped.get('generation_admitted') is False and
+                    reaped.get('active') == [0, 0, 0, 0] and reaped.get('rings') == [0] * 8 and
+                    reaped.get('packet_pool_in_use') == 0 and
+                    reaped.get('control_pool_available') == handoff_census_before.get('generation') + 1,
+                    'bounded ordinary full reap did not retire the dead borrower and restore exact ring state: ' +
+                    repr(reaped))
+                connection = api.Connection(control_path)
+                try:
+                    after_status = connection.request(api.STATUS)
+                    after_owner = connection.request(api.PMD_STATUS)
+                finally: connection.close()
+                require(after_status.get('generation') == handoff_census_before.get('generation') + 1 and
+                    after_status.get('process') == handoff_census_before.get('process') - 1 and
+                    after_owner == handoff_owner_before,
+                    'ordinary full reap changed the live owner or failed exact dead-client retirement')
+                os.close(handoff_write); handoff_write = -1
+                runner.send_signal(signal.SIGTERM)
+                runner_output, _ = runner.communicate(timeout=25)
+                finished = json.loads(stats_path.read_text())
+                runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+                require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
+                    finished.get('native_cleanup') == 'graceful' and finished.get('worker_code') == 0 and
+                    finished.get('app_code') == 143 and finished.get('handoff_peer_code') == -signal.SIGKILL and
+                    finished.get('packet', {}).get('status') == 0 and finished.get('native', {}).get('buffers_live') == 0,
+                    'native app/owner cleanup failed after ordinary full reap: ' + repr(finished) +
+                    runner_output.decode(errors='replace') + runner_text)
+                require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
+                    'non-FRAME active-reap regression left an exact actor alive')
+                primary.stdin.close(); primary.stdin = None
+                primary_output, primary_errors = primary.communicate(timeout=20)
+                drained = [json.loads(line.removeprefix('KER_SESSION_DRAINED '))
+                    for line in primary_output.decode().splitlines() if line.startswith('KER_SESSION_DRAINED ')]
+                require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
+                    primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
+                require(primary.returncode == 0 and drained and drained[-1].get('objects') == 511 and
+                    drained[-1].get('outstanding') == 0,
+                    'resident cleanup failed after non-FRAME full reap: ' + primary_errors.decode(errors='replace'))
+                print('PASS: bounded non-FRAME full reap waited for the real RX dequeue, retired the dead borrower, and restored all rings')
+                return
             if mode == 'frame-positive':
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP prewarm')
                 first_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
@@ -1993,6 +2055,7 @@ def main():
     print('PASS: a generation-admitted same-process peer takes the PMD/exception grant while the original Linux app and parked worker remain alive, then both workers drain cleanly')
     run_live_handoff_profile(args, api, plugin_paths, mode='frame-positive')
     print('PASS: original LKL post-PARKED UDP frame is journaled before prepare and drained by the admitted peer as the exact mbuf pointer/bytes once')
+    run_live_handoff_profile(args, api, plugin_paths, mode='nonframe-active-reap')
     if args.handoff_negative_profiles:
         for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
                 'handoff-control-hup',

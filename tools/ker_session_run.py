@@ -148,6 +148,10 @@ def validate_handoff_peer_cleanup(metrics, peer_present, peer_code, peer_packet_
     """Require packet completion only after validated handoff ownership."""
     if not peer_present:
         return
+    if metrics.get('nonframe_reap_peer_killed'):
+        if peer_code != -signal.SIGKILL or peer_packet_stats is not None:
+            raise RuntimeError('non-FRAME reap fixture did not retain the exact killed standby outcome')
+        return
     if peer_code != 0:
         raise RuntimeError('handoff peer did not exit cleanly')
     committed = (metrics.get('handoff') or {}).get('stage') == 'committed'
@@ -210,7 +214,7 @@ def run_session(args, api):
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
-    handoff_modes = {'positive', 'frame-positive', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    handoff_modes = {'positive', 'frame-positive', 'nonframe-active-reap', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
         'handoff-control-hup',
         'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
         'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
@@ -464,6 +468,8 @@ def run_session(args, api):
             '--generation-rings']
         if os.environ.get('KER_SESSION_TEST_FRAME_DRAIN') == '1':
             peer_arguments.append('--test-generation-frame-drain')
+        if handoff_mode == 'nonframe-active-reap':
+            peer_arguments.append('--generation-detach-test')
         peer_arguments.extend(['--wire-fd', str(peer_wire_fd), '--mtu-fd', str(peer_mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)])
         peer_worker = subprocess.Popen(peer_arguments,
@@ -723,6 +729,47 @@ def run_session(args, api):
         handoff_udp_ready = True
         publish()
 
+    nonframe_reap_held = False
+    def start_nonframe_active_reap():
+        nonlocal nonframe_reap_held
+        if handoff_mode != 'nonframe-active-reap' or peer_worker is None or worker is None:
+            raise RuntimeError('non-FRAME active-reap trigger is unavailable')
+        if os.write(peer_control_w, b'G') != 1:
+            raise RuntimeError('could not seed the opposite generation rings')
+        seeded = wait_marker(peer_worker, 'KER_GENERATION_PROBED')
+        if seeded != {'generation': 1, 'step': 3}:
+            raise RuntimeError('opposite generation did not run the exact ring seed step')
+        if os.write(control_w, b'H') != 1:
+            raise RuntimeError('could not start the real owner RX dequeue')
+        wait_marker(worker, 'KER_GENERATION_ACTIVE_DEQUEUE_HELD')
+        wait_pidfd_process_stopped(worker_pidfd, worker.pid)
+        peer_pidfd = os.pidfd_open(peer_worker.pid)
+        try:
+            if select.select([peer_pidfd], [], [], 0)[0]:
+                raise RuntimeError('opposite generation died before the active-reap profile')
+            signal.pidfd_send_signal(peer_pidfd, signal.SIGKILL)
+            if not select.select([peer_pidfd], [], [], 5)[0]:
+                raise RuntimeError('exact opposite-generation pidfd did not become readable')
+        finally:
+            os.close(peer_pidfd)
+        nonframe_reap_held = True
+        metrics['nonframe_reap_peer_killed'] = True
+        print('KER_SESSION_TEST_NONFRAME_PEER_KILLED ' + json.dumps(dict(
+            owner_pid=worker.pid, peer_pid=peer_worker.pid, owner_stopped=True,
+            peer_pidfd_dead=True, seeded_generation=seeded['generation'])), flush=True)
+
+    def finish_nonframe_active_reap():
+        nonlocal handoff_fd, nonframe_reap_held
+        if handoff_mode != 'nonframe-active-reap' or not nonframe_reap_held:
+            raise RuntimeError('non-FRAME active-reap release has no held owner operation')
+        wait_marker(worker, 'KER_SESSION_TEST_NONFRAME_ACTIVE_RELEASED')
+        nonframe_reap_held = False
+        print('KER_SESSION_TEST_NONFRAME_OWNER_RESUMED ' + json.dumps(dict(
+            owner_pid=worker.pid, operation_released=True)), flush=True)
+        if handoff_fd is not None:
+            close(handoff_fd)
+            handoff_fd = None
+
     def finish_signal_before_app(packet_expected):
         nonlocal completed
         close(control_w)
@@ -776,6 +823,7 @@ def run_session(args, api):
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', str(args.generation), '--process', str(args.process),
             *(['--generation-rings'] if getattr(args, 'generation_rings', False) else []),
+            *(['--generation-detach-test'] if handoff_mode == 'nonframe-active-reap' and args.generation == 0 else []),
             '--packet-fd', str(packet_worker.fileno()), '--wire-fd', str(args.wire_fd),
             '--mtu-fd', str(mtu_worker.fileno()), '--',
             *api.role_arguments(args.eal, 'secondary', paired_pmd=True)],
@@ -923,6 +971,10 @@ def run_session(args, api):
                         trigger_handoff_udp()
                         handoff_fd = close_completed_handoff_trigger(
                             handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close)
+                    elif data == b'N':
+                        start_nonframe_active_reap()
+                    elif data == b'C':
+                        finish_nonframe_active_reap()
                     elif action == 'handoff':
                         if handoff_mode != 'frame-positive':
                             close(handoff_fd); handoff_fd = None
