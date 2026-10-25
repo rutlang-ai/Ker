@@ -4,7 +4,13 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 import json
+import os
+import re
+import shlex
+import signal
+import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 from types import SimpleNamespace
@@ -391,6 +397,98 @@ class NativeTestSelectorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "provenance mismatch"):
                 native_tests.verify_tap_retry_source(source, patch)
 
+    def test_workflow_session_timeout_kills_pipeline_descendants(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8")
+        timeout_line = re.search(r"(?m)^\s*(timeout\b[^\n]*\b900s)\s*\\\s*$", workflow)
+        self.assertIsNotNone(timeout_line, "session workflow timeout command was not found")
+        command = timeout_line.group(1)
+        self.assertNotIn("--foreground", command,
+                         "foreground mode leaves pipeline descendants holding the log pipe")
+        command = command.replace("--kill-after=20s", "--kill-after=1s").replace("900s", "1s")
+        timeout_argv = shlex.split(command)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = Path(temporary) / "grandchild.pid"
+            child = (
+                "trap '' TERM; "
+                "( trap '' TERM; printf '%s\\n' \"$BASHPID\" > \"$1\"; "
+                "while :; do sleep 1; done ) & wait"
+            )
+            def start_timeout(variant: list[str]) -> tuple[subprocess.Popen, float]:
+                pipeline = (shlex.join(variant) + " bash -c " + shlex.quote(child) +
+                            " _ " + shlex.quote(str(pid_file)) + " 2>&1 | cat")
+                started = time.monotonic()
+                process = subprocess.Popen(
+                    ["bash", "-o", "pipefail", "-c", pipeline],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    start_new_session=True,
+                )
+                return process, started
+
+            def terminate_test_tree(process: subprocess.Popen) -> None:
+                if pid_file.is_file():
+                    grandchild = int(pid_file.read_text(encoding="utf-8").strip())
+                    try:
+                        os.killpg(os.getpgid(grandchild), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate(timeout=2)
+
+            process = None
+            try:
+                process, started = start_timeout(timeout_argv)
+                output, _ = process.communicate(timeout=5)
+                elapsed = time.monotonic() - started
+                self.assertNotEqual(process.returncode, 0, output)
+                self.assertLess(elapsed, 4.5, output)
+                self.assertTrue(pid_file.is_file(), output)
+                grandchild = int(pid_file.read_text(encoding="utf-8").strip())
+                for _ in range(20):
+                    try:
+                        os.kill(grandchild, 0)
+                    except ProcessLookupError:
+                        break
+                    stat = Path(f"/proc/{grandchild}/stat")
+                    if not stat.exists() or stat.read_text(encoding="utf-8").split()[2] == "Z":
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail(f"timeout left TERM-ignoring grandchild {grandchild} alive")
+            finally:
+                if process is not None:
+                    terminate_test_tree(process)
+
+            # Reintroducing the old GNU timeout mode causes the pipeline shell
+            # to hang on the descendant's inherited stdout. Bound that mutant
+            # here and kill its entire test tree so the test itself leaves no
+            # orphan behind.
+            pid_file.unlink(missing_ok=True)
+            foreground_argv = list(timeout_argv)
+            foreground_argv.insert(1, "--foreground")
+            process = subprocess.Popen(
+                ["bash", "-o", "pipefail", "-c", shlex.join(foreground_argv) +
+                 " bash -c " + shlex.quote(child) + " _ " + shlex.quote(str(pid_file)) + " 2>&1 | cat"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                start_new_session=True,
+            )
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    process.communicate(timeout=2.5)
+                self.assertTrue(pid_file.is_file(), "foreground mutant did not start descendant")
+            finally:
+                terminate_test_tree(process)
 
 if __name__ == "__main__":
     unittest.main()
