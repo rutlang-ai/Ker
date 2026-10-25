@@ -3,7 +3,9 @@
 import argparse
 import ctypes
 import errno
+import faulthandler
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -12,6 +14,7 @@ import re
 import select
 import shlex
 import signal
+import selectors
 import socket
 import stat
 import struct
@@ -20,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from collections import deque
 
 from hugepage_preflight import hugepage_capacity_error
@@ -41,22 +45,6 @@ def nonframe_reap_pool_delta_matches(before, waiting):
 
 
 NONFRAME_RETAINED_RINGS = [0, 0, 1, 0, 0, 1, 0, 1]
-
-HANDOFF_SUCCESS_PROFILES = ('positive', 'frame-positive')
-HANDOFF_NEGATIVE_PROFILES = (
-    'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
-    'handoff-control-hup', 'prepare-enoent', 'prepare-ebusy', 'prepare-eperm',
-    'bad-prepare-error', 'bad-prepare-error-token', 'bad-prepare-error-capability',
-    'bad-prepare-error-tx-lease', 'bad-prepare-error-rx-lease',
-    'bad-prepare-error-sequence', 'bad-prepare-success')
-
-
-def handoff_profile_expects_failure(mode):
-    if mode in HANDOFF_NEGATIVE_PROFILES:
-        return True
-    if mode in HANDOFF_SUCCESS_PROFILES or mode == 'nonframe-active-reap':
-        return False
-    raise ValueError('unsupported handoff profile: ' + str(mode))
 
 
 def nonframe_exact_int_list(value, expected):
@@ -158,6 +146,8 @@ def handoff_udp_payload(frame):
         if checksum != 0xffff:
             return None
     return udp[8:]
+def _decode_captured_pipe_output(output):
+    return (output or b'').decode(errors='replace')
 
 
 def dpdk_mp_socket_paths(runtime_directory, file_prefix):
@@ -239,6 +229,111 @@ def require_live_eal_mp_channels(profile, primary_stderr, runner_stderr,
         primary=primary_base, owner=dict(pid=owner_pid, socket=path_by_pid[owner_pid]),
         peer=dict(pid=peer_pid, socket=path_by_pid[peer_pid])), sort_keys=True), flush=True)
     return paths
+
+
+def handoff_udp_payload(frame):
+    """Return the exact handoff UDP payload from a complete expected Ethernet frame."""
+    app_mac=bytes.fromhex('024b45520002')
+    host_mac=bytes.fromhex('024b45520001')
+    if len(frame)<14+20+8 or frame[:6]!=host_mac or frame[6:12]!=app_mac or frame[12:14]!=b'\x08\x00':
+        return None
+    ip=frame[14:]
+    ihl=(ip[0]&15)*4
+    if ip[0]>>4!=4 or ihl!=20 or len(ip)<ihl+8 or ip[9]!=17:
+        return None
+    total=struct.unpack('!H',ip[2:4])[0]
+    if total<ihl+8 or len(ip)!=total or (struct.unpack('!H',ip[6:8])[0]&0x3fff):
+        return None
+    udp=ip[ihl:total]
+    udp_len=struct.unpack('!H',udp[4:6])[0]
+    if udp_len<8 or udp_len!=len(udp):
+        return None
+    if ip[12:16]!=socket.inet_aton('198.18.0.2') or ip[16:20]!=socket.inet_aton('198.18.0.1'):
+        return None
+    if struct.unpack('!HH',udp[:4])!=(45000,45001):
+        return None
+    ip_checksum=sum(struct.unpack('!10H',ip[:20]))
+    while ip_checksum>>16: ip_checksum=(ip_checksum&0xffff)+(ip_checksum>>16)
+    if ip_checksum!=0xffff:return None
+    udp_checksum=int.from_bytes(udp[6:8],'big')
+    if udp_checksum:
+        pseudo=ip[12:20]+b'\x00\x11'+struct.pack('!H',len(udp))
+        data=pseudo+udp
+        if len(data)&1:data+=b'\x00'
+        udp_sum=sum(struct.unpack('!'+('H'*(len(data)//2)),data))
+        while udp_sum>>16:udp_sum=(udp_sum&0xffff)+(udp_sum>>16)
+        if udp_sum!=0xffff:return None
+    return udp[8:]
+
+
+def wait_for_handoff_wire_payload(sequence, wire_frames, wire_errors, wire_lock,
+                                  runner, stats_path, runner_stderr_path, timeout=10):
+    """Wait using only the actual packet capture and child diagnostics."""
+    payload = f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with wire_lock:
+            matches = [frame for frame in wire_frames if handoff_udp_payload(frame) == payload]
+            errors = list(wire_errors)
+        if errors:
+            raise RuntimeError('handoff wire peer failed: ' + repr(errors))
+        if matches:
+            return matches[0]
+        if runner is not None and runner.poll() is not None:
+            raise RuntimeError('runner exited before the expected wire payload: ' +
+                json.dumps(dict(sequence=sequence, runner_pid=runner.pid,
+                    runner_returncode=runner.returncode)))
+        time.sleep(0.005)
+    with wire_lock:
+        captured = list(wire_frames)
+        errors = list(wire_errors)
+    rendered = []
+    for frame in captured[:64]:
+        summary = {'length': len(frame), 'hex': frame[:2048].hex()}
+        if len(frame) >= 14:
+            summary.update(ethertype=frame[12:14].hex(), dst_mac=frame[:6].hex(), src_mac=frame[6:12].hex())
+        if len(frame) >= 42 and frame[12:14] == b'\x08\x06':
+            summary.update(arp_opcode=frame[20:22].hex(),
+                arp_sender_ip=socket.inet_ntoa(frame[28:32]), arp_target_ip=socket.inet_ntoa(frame[38:42]))
+        try:
+            parsed = handoff_udp_payload(frame)
+            if parsed is not None: summary['udp_payload'] = parsed.hex()
+        except (IndexError, struct.error):
+            summary['udp_parse_error'] = True
+        rendered.append(summary)
+    try:
+        latest_stats = stats_path.read_text(errors='replace') if stats_path.exists() else ''
+    except OSError as error:
+        latest_stats = 'read failed: ' + repr(error)
+    runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
+    raise RuntimeError('original LKL UDP sequence did not reach the wire endpoint: ' + json.dumps(
+        dict(sequence=sequence, expected_payload=payload.hex(), captured_frame_count=len(captured),
+            captured_frames=rendered, captured_frames_truncated=len(captured) > len(rendered),
+            wire_errors=errors, runner_pid=runner.pid if runner is not None else None,
+            runner_returncode=runner.poll() if runner is not None else None,
+            runner_stderr=runner_errors, stats=latest_stats), sort_keys=True))
+
+
+def handoff_udp_test_frame(payload=b'KER-A09-HANDOFF-UDP seq=1\n'):
+    app_mac=bytes.fromhex('024b45520002')
+    host_mac=bytes.fromhex('024b45520001')
+    source=socket.inet_aton('198.18.0.2')
+    destination=socket.inet_aton('198.18.0.1')
+    udp_length=8+len(payload)
+    udp=struct.pack('!HHHH',45000,45001,udp_length,0)+payload
+    pseudo=source+destination+b'\x00\x11'+struct.pack('!H',udp_length)
+    udp_sum_data=pseudo+udp
+    if len(udp_sum_data)&1:udp_sum_data+=b'\x00'
+    udp_sum=sum(struct.unpack('!'+('H'*(len(udp_sum_data)//2)),udp_sum_data))
+    while udp_sum>>16:udp_sum=(udp_sum&0xffff)+(udp_sum>>16)
+    udp_checksum=(~udp_sum)&0xffff or 0xffff
+    udp=udp[:6]+struct.pack('!H',udp_checksum)+udp[8:]
+    ip=struct.pack('!BBHHHBBH4s4s',0x45,0,20+len(udp),0x1234,0x4000,64,17,0,source,destination)
+    ip_sum=sum(struct.unpack('!10H',ip))
+    while ip_sum>>16:ip_sum=(ip_sum&0xffff)+(ip_sum>>16)
+    ip=ip[:10]+struct.pack('!H',(~ip_sum)&0xffff)+ip[12:]
+    ip+=udp
+    return host_mac+app_mac+b'\x08\x00'+ip
 
 
 def tap_interfaces_for_process(pid):
@@ -397,7 +492,6 @@ def report_hugepage_cleanup_refusal(mode, original_error, cleanup_error):
 
 
 def read_bounded_line(process, timeout=25, max_bytes=1 << 20):
-    """Read one complete line without letting readline block past the deadline."""
     require(process.stdout is not None, 'packet-session stdout is unavailable')
     deadline = time.monotonic() + timeout
     value = bytearray()
@@ -405,17 +499,14 @@ def read_bounded_line(process, timeout=25, max_bytes=1 << 20):
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise RuntimeError('packet-session output timed out before a complete line; '
-                f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+            raise RuntimeError('packet-session output timed out before a complete line')
         readable, _, _ = select.select([fd], [], [], remaining)
         if not readable:
-            raise RuntimeError('packet-session output timed out before a complete line; '
-                f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+            raise RuntimeError('packet-session output timed out before a complete line')
         chunk = os.read(fd, 1)
         if not chunk:
             if value:
-                raise RuntimeError('packet-session output ended before a complete line; '
-                    f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+                raise RuntimeError('packet-session output ended before a complete line')
             return bytes(value)
         value.extend(chunk)
         if len(value) > max_bytes:
@@ -425,7 +516,6 @@ def read_bounded_line(process, timeout=25, max_bytes=1 << 20):
 
 
 def read_bounded_stderr(stderr, timeout=0.1, max_bytes=8192):
-    """Capture a bounded diagnostic without waiting on inherited pipe writers."""
     if stderr is None:
         return ''
     deadline = time.monotonic() + timeout
@@ -464,36 +554,6 @@ def record_handoff_marker(process, prefix, stderr_path, failure_diagnostics):
         return record(process, prefix, stderr_path=stderr_path)
     except RuntimeError as error:
         raise failure_diagnostics(f'runner failed before {prefix}: {error}') from error
-
-
-def communicate_bounded(process, timeout=5):
-    """Collect child output without waiting forever for inherited pipe writers."""
-    if process.stdout is None and process.stderr is None:
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=2)
-        return b'', b''
-    if all(stream is None or stream.closed for stream in (process.stdout, process.stderr)):
-        return b'', b''
-    try:
-        return process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        # A descendant may have inherited either pipe, so killing/reaping the
-        # direct child does not guarantee that communicate() will see EOF.
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=2)
-        output = error.output or b''
-        stderr = error.stderr or b''
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
-        return output, stderr
 
 
 def resolve_dpdk_plugin_dir(plugin_dir, environ=None):
@@ -540,8 +600,66 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     return command
 
 
-def record(process, prefix, stderr_path=None, timeout=25):
-    value = line(process, timeout=timeout, stderr_path=stderr_path)
+_active_handoff_evidence = None
+
+
+def _capture_pidfd_readability(actor_fds, resident_pidfd):
+    """Snapshot readiness while descriptors are live; returned booleans outlive close()."""
+    required = {'app', 'producer', 'consumer'}
+    if set(actor_fds) != required:
+        raise ValueError(f'actor pidfd mapping must name exactly {sorted(required)}')
+    return ({name: bool(select.select([fd], [], [], 0)[0]) for name, fd in actor_fds.items()},
+        bool(resident_pidfd >= 0 and select.select([resident_pidfd], [], [], 0)[0]))
+
+
+def _validate_actor_pidfd_mapping(actor_fds, actor_pids):
+    """Check each named pidfd still names its independently recorded live actor."""
+    required = {'app', 'producer', 'consumer'}
+    if set(actor_fds) != required or set(actor_pids) != required:
+        raise ValueError(f'actor pidfd mapping must name exactly {sorted(required)}')
+    for name in sorted(required):
+        if type(actor_pids[name]) is not int or actor_pids[name] <= 0:
+            raise ValueError(f'{name} has no valid recorded PID')
+        info = Path(f'/proc/self/fdinfo/{actor_fds[name]}').read_text()
+        pid_line = next((line for line in info.splitlines() if line.startswith('Pid:')), None)
+        if pid_line is None or int(pid_line.split(':', 1)[1]) != actor_pids[name]:
+            raise ValueError(f'{name} pidfd does not name its recorded live actor')
+
+
+@contextmanager
+def _handoff_evidence_scope(api, evidence):
+    global _active_handoff_evidence
+    prior_evidence = _active_handoff_evidence
+    original_request = api.Connection.request
+    _active_handoff_evidence = evidence
+    def evidence_request(connection, command, *call_args, **call_kwargs):
+        response = original_request(connection, command, *call_args, **call_kwargs)
+        if command in (api.STATUS, api.PMD_STATUS):
+            evidence['snapshots'].append(dict(command=('STATUS' if command == api.STATUS else 'PMD_STATUS'),
+                command_id=command, value=response))
+        return response
+    api.Connection.request = evidence_request
+    try:
+        yield
+    finally:
+        api.Connection.request = original_request
+        _active_handoff_evidence = prior_evidence
+
+
+@contextmanager
+def _frame_full_traceback_scope(enabled, label):
+    if enabled:
+        print(label, file=sys.stderr, flush=True)
+        faulthandler.dump_traceback_later(45, repeat=False, file=sys.stderr)
+    try:
+        yield
+    finally:
+        if enabled:
+            faulthandler.cancel_dump_traceback_later()
+
+
+def record(process, prefix, timeout=25, stderr_path=None):
+    value = line(process, timeout, stderr_path=stderr_path)
     if not value.startswith(prefix + ' '):
         diagnostic = ''
         if process.poll() is None:
@@ -550,11 +668,63 @@ def record(process, prefix, stderr_path=None, timeout=25):
         if process.poll() is not None and process.stderr is not None:
             diagnostic = read_bounded_stderr(process.stderr)
         raise RuntimeError('unexpected output: ' + value + (('\nchild stderr:\n' + diagnostic) if diagnostic else ''))
-    return json.loads(value[len(prefix) + 1:])
+    parsed = json.loads(value[len(prefix) + 1:])
+    if _active_handoff_evidence is not None:
+        _active_handoff_evidence['resident_markers'].append(dict(
+            pid=process.pid, marker=prefix, value=parsed,
+            raw=value))
+    return parsed
 
 
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
-    profile_expects_failure = handoff_profile_expects_failure(mode)
+    evidence = dict(mode=mode, resident_markers=[], snapshots=[], actors={})
+    with _frame_full_traceback_scope(mode == 'frame-full',
+            'KER_SESSION_FRAME_FULL_PROFILE_BEGIN'):
+        with _handoff_evidence_scope(api, evidence):
+            return _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence)
+
+
+def _is_fatal_handoff_profile(mode):
+    if mode in FATAL_HANDOFF_PROFILES:
+        return True
+    if mode in NONFATAL_HANDOFF_PROFILES:
+        return False
+    raise ValueError(f'unknown handoff profile classification: {mode!r}')
+
+
+FATAL_HANDOFF_PROFILES = frozenset((
+    'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    'bad-prepare-error', 'bad-prepare-error-token', 'bad-prepare-error-capability',
+    'bad-prepare-error-tx-lease', 'bad-prepare-error-rx-lease',
+    'bad-prepare-error-sequence', 'bad-prepare-success'))
+NONFATAL_HANDOFF_PROFILES = frozenset((
+    'positive', 'frame-positive', 'frame-full', 'frame-death-prepared',
+    'frame-death-queued', 'frame-death-producer-active-consumer',
+    'frame-death-consumer-prepared', 'frame-death-consumer-writing',
+    'frame-death-both-prepared', 'frame-lost-prepare-reply',
+    'handoff-control-hup', 'prepare-enoent', 'prepare-ebusy', 'prepare-eperm'))
+
+
+def _stop_timed_out_runner(process, timeout_error, wait_timeout=5):
+    """Stop only the runner process, retain captured bytes, and close our pipe."""
+    output = timeout_error.output or b''
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=wait_timeout)
+    process._ker_session_timeout_stdout = output
+    if process.stdout is not None:
+        process.stdout.close()
+    return output
+
+
+def _collect_profile_cleanup_output(label, process):
+    """Avoid a second communicate() on the deliberately closed timed-out pipe."""
+    if label == 'launcher' and hasattr(process, '_ker_session_timeout_stdout'):
+        return process._ker_session_timeout_stdout, b''
+    return process.communicate(timeout=5)
+
+
+def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
     with tempfile.TemporaryDirectory(prefix='a9-') as directory:
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
@@ -575,6 +745,32 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         if mode == 'nonframe-active-reap':
             environment['KER_SESSION_TEST_NONFRAME_REAP'] = '1'
             environment['KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE'] = '1'
+        if mode == 'frame-positive' or mode in ('frame-full','frame-death-prepared','frame-death-queued',
+                'frame-death-producer-active-consumer','frame-death-consumer-prepared',
+                'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
+            environment['KER_SESSION_TEST_FRAME_DRAIN'] = '1'
+        if mode == 'nonframe-active-reap':
+            environment['KER_SESSION_TEST_NONFRAME_REAP'] = '1'
+            environment['KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE'] = '1'
+        if mode in ('frame-full','frame-death-queued'):
+            environment['KER_SESSION_TEST_FRAME_FULL']='1'
+            environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
+        if mode=='frame-death-prepared':
+            environment['KER_SESSION_TEST_FRAME_DEATH_PREPARED']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
+        if mode in ('frame-death-consumer-prepared','frame-death-both-prepared'):
+            environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_PREPARED']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
+        if mode=='frame-death-both-prepared':
+            environment['KER_SESSION_TEST_FRAME_BOTH_DEAD']='1'
+        if mode=='frame-death-consumer-writing':
+            environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_WRITING']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
+        if mode=='frame-death-queued':
+            environment['KER_SESSION_TEST_FRAME_DEATH_QUEUED']='1'
+            environment['KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT']='1'
+        if mode=='frame-death-producer-active-consumer':
+            environment['KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER']='1'
         if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
             environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = mode.removeprefix('prepare-').upper()
         elif mode.startswith('bad-prepare-error'):
@@ -587,12 +783,21 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         nonframe_status_connection = None
         runner_stderr_handle = None
         wire = endpoint = None
+        wire_stop = threading.Event()
+        wire_frames = []
+        wire_errors = []
+        wire_lock = threading.Lock()
+        wire_thread = None
+        runner_stderr_path = root / 'runner.stderr.log'
         handoff_read = handoff_write = -1
         pidfds = []
+        actor_pidfds = {}
+        actor_pid_values = {}
         resident_pidfd = -1
         actor_proof_ready = False
         handoff_census_before = handoff_owner_before = None
         rejection_timeout_snapshot = None
+        frame_full_stage = None
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
@@ -602,7 +807,6 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 'handoff resident did not start the selected paired PMD/generation adapter')
             wire, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
             wire.setblocking(False)
-            wire_stop=threading.Event(); wire_frames=[]; wire_errors=[]; wire_lock=threading.Lock()
             host_mac=bytes.fromhex('024b45520001')
             def handoff_wire_peer():
                 try:
@@ -620,33 +824,42 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                             if wire.send(reply)!=len(reply):raise RuntimeError('short ARP prewarm reply')
                 except BaseException as error:
                     wire_errors.append(str(error));wire_stop.set()
-            wire_thread=None
-            if mode=='frame-positive':
+            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-producer-active-consumer','frame-death-consumer-prepared',
+                    'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
                 wire_thread=threading.Thread(target=handoff_wire_peer,daemon=True);wire_thread.start()
-            udp_payload=handoff_udp_payload
             def wait_wire_payload(sequence):
-                payload=f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
-                deadline=time.monotonic()+10
-                while time.monotonic()<deadline:
-                    with wire_lock:
-                        matches=[frame for frame in wire_frames if udp_payload(frame)==payload]
-                        errors=list(wire_errors)
-                    if errors:raise RuntimeError('handoff wire peer failed: '+repr(errors))
-                    if matches:return matches[0]
-                    time.sleep(0.005)
-                raise RuntimeError(f'original LKL UDP sequence {sequence} did not reach the wire endpoint')
+                return wait_for_handoff_wire_payload(sequence, wire_frames, wire_errors, wire_lock,
+                    runner, stats_path, runner_stderr_path)
             handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
             runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
-            if mode=='frame-positive': runner_environment['KER_SESSION_TEST_FRAME_REPLAY']='1'
+            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer',
+                    'frame-death-consumer-prepared','frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
+                if mode!='frame-lost-prepare-reply':
+                    runner_environment['KER_SESSION_TEST_FRAME_REPLAY']='1'
+                    runner_environment['KER_SESSION_TEST_FRAME_NEGATIVES']='1'
+            if mode in ('frame-full','frame-death-queued'):
+                runner_environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
+            if mode=='frame-death-queued': runner_environment['KER_SESSION_TEST_FRAME_DEATH_QUEUED']='1'
+            if mode=='frame-death-queued': runner_environment['KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT']='1'
+            if mode=='frame-death-prepared': runner_environment['KER_SESSION_TEST_FRAME_DEATH_PREPARED']='1'
+            if mode in ('frame-death-consumer-prepared','frame-death-both-prepared'):
+                runner_environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_PREPARED']='1'
+            if mode=='frame-death-both-prepared': runner_environment['KER_SESSION_TEST_FRAME_BOTH_DEAD']='1'
+            if mode=='frame-lost-prepare-reply':
+                runner_environment['KER_SESSION_TEST_FRAME_REPLY_LOST']='1'
+                runner_environment['KER_SESSION_TEST_FRAME_REPLY_LOST_HOLD']='1'
+                runner_environment['KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT']='1'
+            if mode=='frame-death-consumer-writing': runner_environment['KER_SESSION_TEST_FRAME_DEATH_CONSUMER_WRITING']='1'
+            if mode=='frame-death-producer-active-consumer': runner_environment['KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER']='1'
             if mode != 'positive':
                 runner_environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
-            runner_stderr_path = root / 'runner.stderr.log'
             runner_stderr_handle = runner_stderr_path.open('wb')
             runner = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
                 '--wire-fd', str(endpoint.fileno()), '--library', str(args.library), '--stats', str(stats_path),
                 '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
                 '--test-live-handoff-fd', str(handoff_read), '--', str(args.app),
-                *(('--handoff-udp-trigger',) if mode=='frame-positive' else ('--signal-ready',))],
+                *(('--handoff-udp-trigger',) if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-producer-active-consumer',
+                    'frame-death-consumer-prepared','frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply') else ('--signal-ready',))],
                 pass_fds=(endpoint.fileno(), handoff_read), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=runner_stderr_handle, env=runner_environment, bufsize=0)
             runner_stderr_handle.close(); runner_stderr_handle = None
@@ -654,6 +867,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             endpoint.close(); endpoint = None
 
             def startup_failure(reason):
+                with wire_lock:
+                    wire_failure_frames=[frame[:2048].hex() for frame in wire_frames[:64]]
+                    wire_failure_errors=list(wire_errors)
+                    wire_failure_count=len(wire_frames)
                 if runner is not None and runner.poll() is None:
                     runner.terminate()
                     try: runner.wait(timeout=5)
@@ -661,22 +878,31 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         runner.kill(); runner.wait()
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    runner_output, _ = communicate_bounded(runner, timeout=5)
+                    try: runner_output, _ = runner.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner_output, _ = runner.communicate()
                 latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
                 try: latest = json.loads(latest_raw) if latest_raw else None
                 except json.JSONDecodeError: latest = None
                 if primary is not None and primary.poll() is None:
                     if primary.stdin is not None:
                         primary.stdin.close(); primary.stdin = None
-                    resident_output, resident_errors = communicate_bounded(primary, timeout=10)
+                    try: resident_output, resident_errors = primary.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        primary.terminate()
+                        try: resident_output, resident_errors = primary.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            primary.kill(); resident_output, resident_errors = primary.communicate()
                 else:
-                    resident_output, resident_errors = communicate_bounded(primary, timeout=5)
+                    resident_output, resident_errors = primary.communicate(timeout=5)
                 runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                 mp_errors = eal_mp_channel_errors(runner_errors, resident_errors.decode(errors='replace'))
                 if mp_errors:
                     reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
                 diagnostic = dict(mode=mode, reason=reason, latest_stats=latest,
                     latest_stats_raw=latest_raw,
+                    wire=dict(frame_count=wire_failure_count,frames_hex=wire_failure_frames,
+                        frames_truncated=wire_failure_count>len(wire_failure_frames),errors=wire_failure_errors),
                     actors=dict(app=dict(pid=(latest or {}).get('app_pid'), returncode=(latest or {}).get('app_code')),
                         owner=dict(pid=((latest or {}).get('attached') or {}).get('pid'),
                             returncode=(latest or {}).get('worker_code')),
@@ -715,15 +941,33 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 before['handoff_peer_early_denial']['queue_owner_key'] == 0 and
                 before['handoff_peer_early_denial']['exception_endpoint_fd'] is False,
                 'resident-admitted same-slot peer or pre-handoff denial differs')
-            app_pidfd = os.pidfd_open(before['app_pid']); pidfds.append(app_pidfd)
-            owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
-            peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
+            actor_pid_values = dict(app=before['app_pid'], producer=before['attached']['pid'],
+                consumer=before['handoff_peer_attached']['pid'])
+            app_pidfd = os.pidfd_open(actor_pid_values['app']); pidfds.append(app_pidfd)
+            actor_pidfds['app'] = app_pidfd
+            owner_pidfd = os.pidfd_open(actor_pid_values['producer']); pidfds.append(owner_pidfd)
+            actor_pidfds['producer'] = owner_pidfd
+            peer_pidfd = os.pidfd_open(actor_pid_values['consumer']); pidfds.append(peer_pidfd)
+            actor_pidfds['consumer'] = peer_pidfd
+            _validate_actor_pidfd_mapping(actor_pidfds, actor_pid_values)
+            evidence['actors'] = dict(resident=dict(pid=primary.pid), app=dict(pid=before['app_pid']),
+                producer=dict(pid=before['attached']['pid'], identity=before['attached']),
+                consumer=dict(pid=before['handoff_peer_attached']['pid'], identity=before['handoff_peer_attached']))
             actor_proof_ready = True
             initial_pages = _private_hugepage_entries(huge_dir_fd, file_prefix,
                 huge_dir_identity[0], os.geteuid())
             require(initial_pages, 'handoff resident created no private hugepage backing files')
 
             def fatal_profile_diagnostics(reason):
+                try:
+                    return _fatal_profile_diagnostics(reason)
+                except Exception as error:
+                    rendered = json.dumps(dict(mode=mode, reason=reason,
+                        diagnostic_capture_error=f'{type(error).__name__}: {error}'), sort_keys=True)
+                    print('KER_SESSION_HANDOFF_PROFILE_FAILURE ' + rendered, flush=True)
+                    return RuntimeError('live handoff profile failed; diagnostic capture also failed: ' + rendered)
+
+            def _fatal_profile_diagnostics(reason):
                 if runner is not None and runner.poll() is None:
                     runner.terminate()
                     try: runner.wait(timeout=5)
@@ -731,7 +975,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         runner.kill(); runner.wait()
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    runner_output, _ = communicate_bounded(runner, timeout=5)
+                    try: runner_output, _ = runner.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        runner.kill(); runner_output, _ = runner.communicate()
                 latest = None
                 latest_raw = ''
                 if stats_path.exists():
@@ -743,9 +989,16 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 if primary is not None and primary.poll() is None:
                     if primary.stdin is not None:
                         primary.stdin.close(); primary.stdin = None
-                    primary_output, primary_errors = communicate_bounded(primary, timeout=10)
+                    try: primary_output, primary_errors = primary.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        primary.terminate()
+                        try: primary_output, primary_errors = primary.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            primary.kill(); primary_output, primary_errors = primary.communicate()
                 elif primary is not None and primary.stdout is not None:
-                    primary_output, primary_errors = communicate_bounded(primary, timeout=5)
+                    try: primary_output, primary_errors = primary.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        primary.kill(); primary_output, primary_errors = primary.communicate()
                 mp_errors = eal_mp_channel_errors(stderr, primary_errors.decode(errors='replace'))
                 if mp_errors:
                     reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
@@ -852,14 +1105,17 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     'resident cleanup failed after non-FRAME full reap: ' + primary_errors.decode(errors='replace'))
                 print('PASS: bounded non-FRAME full reap waited for the real RX dequeue, retired the dead borrower, and restored all rings')
                 return
-            if mode == 'frame-positive':
+            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-consumer-prepared',
+                    'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP prewarm')
                 first_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(first_ack==dict(sequence=1,bytes=len(b'KER-A09-HANDOFF-UDP seq=1\n')),
                     'original app did not acknowledge the pre-handoff UDP prewarm')
-                first_wire_frame=wait_wire_payload(1)
+                try: first_wire_frame=wait_wire_payload(1)
+                except RuntimeError as error: raise startup_failure(str(error)) from error
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
-            if mode != 'frame-positive': os.close(handoff_write); handoff_write = -1
+            if mode not in ('frame-positive','frame-full','frame-death-prepared','frame-death-producer-active-consumer','frame-death-consumer-prepared',
+                    'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'): os.close(handoff_write); handoff_write = -1
             if mode == 'handoff-control-hup':
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
@@ -1023,11 +1279,11 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     resident_returncode=primary.returncode), sort_keys=True), flush=True)
                 print(f'PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, and resumed the packet loop')
                 return
-            if profile_expects_failure:
+            if _is_fatal_handoff_profile(mode):
                 try:
                     runner_output, _ = runner.communicate(timeout=20)
                 except subprocess.TimeoutExpired as error:
-                    runner_output, _ = communicate_bounded(runner, timeout=5)
+                    runner_output = _stop_timed_out_runner(runner, error)
                     raise RuntimeError('fatal handoff fixture did not terminate: ' +
                         (runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else '')) from error
                 runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
@@ -1143,29 +1399,382 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 protocol['replay_prepare']['same_response'] and
                 not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'handoff changed process/endpoint identity or failed exact PREPARE/replay validation')
-            if mode == 'frame-positive':
+            if mode=='frame-death-prepared':
+                require(os.write(handoff_write,b'U')==1,'could not queue original LKL PREPARED-death datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge the PREPARED-death datagram')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    try: after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError): after={}
+                    if after.get('handoff_frame_death'):break
+                    require(runner.poll() is None,'runner exited before PREPARED-death recovery proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                require(proof.get('stage')=='prepared' and proof.get('pidfd_dead') is True and
+                    proof.get('producer_status')==-signal.SIGKILL and
+                    proof.get('prepared',{}).get('packet_still_queued') is True and
+                    proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
+                    proof.get('owner_after_reap',{}).get('generation')==1 and
+                    proof.get('reap',{}).get('tx')==proof.get('prepared',{}).get('tx_before') and
+                    proof.get('reap',{}).get('packet_pool_in_use')==proof.get('prepared',{}).get('pool_before') and
+                    proof.get('reap',{}).get('counters')==proof.get('prepared',{}).get('counters_before'),
+                    'PREPARED producer death did not reclaim exactly one pending packet lease')
+            elif mode=='frame-death-consumer-prepared':
+                require(os.write(handoff_write,b'U')==1,'could not queue original LKL consumer-death datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge consumer-death datagram')
+                deadline=time.monotonic()+12
+                while time.monotonic()<deadline:
+                    try: after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError): after={}
+                    if after.get('handoff_frame_death'):break
+                    require(runner.poll() is None,'runner exited before consumer-death recovery proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                prepared=proof.get('prepared',{}); preserved=proof.get('preserved',{}); cancelled=proof.get('cancelled',{})
+                require(proof.get('stage')=='consumer-prepared' and
+                    prepared.get('packet_still_queued') is True and
+                    prepared.get('tx_prepared')==prepared.get('tx_before') and
+                    prepared.get('pool_prepared')==prepared.get('pool_before')+1 and
+                    prepared.get('counters_prepared')==prepared.get('counters_before') and
+                    proof.get('consumer_pidfd_dead') is True and proof.get('consumer_status')==-signal.SIGKILL and
+                    proof.get('producer_status')==1 and
+                    proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
+                    proof.get('pmd_owner_after_reap',{}).get('token')==0 and
+                    preserved.get('tx')==prepared.get('tx_before') and
+                    preserved.get('packet_pool_in_use')==prepared.get('pool_before')+1 and
+                    preserved.get('counters')==prepared.get('counters_before') and
+                    cancelled.get('tx')==prepared.get('tx_before') and
+                    cancelled.get('packet_pool_in_use')==prepared.get('pool_before') and
+                    cancelled.get('counters')==prepared.get('counters_before') and
+                    proof.get('final_census',{}).get('process')==0 and
+                    proof.get('producer_pid')==before['attached']['pid'] and
+                    proof.get('consumer_pid')==before['handoff_peer_attached']['pid'],
+                    'consumer death did not preserve then exactly cancel its pending packet lease: '+repr(proof))
+            elif mode=='frame-death-both-prepared':
+                require(os.write(handoff_write,b'U')==1,'could not queue original LKL both-actor-death datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge both-actor-death datagram')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    try:barrier=json.loads(stats_path.read_text()).get('handoff_frame_death_barrier',{})
+                    except (OSError,json.JSONDecodeError):barrier={}
+                    if barrier.get('stage')=='prepared-both-live':break
+                    require(runner.poll() is None,'runner exited before the both-dead actor barrier')
+                    time.sleep(0.005)
+                require(barrier.get('producer_pid')==before['attached']['pid'] and
+                    barrier.get('consumer_pid')==before['handoff_peer_attached']['pid'] and
+                    barrier.get('producer_prepared') is True and barrier.get('producer_stopped') is True and
+                    not select.select([owner_pidfd,peer_pidfd,resident_pidfd],[],[],0)[0],
+                    'both-dead barrier did not hold both exact actors and resident live')
+                resident_stop_sent=False
+                try:
+                    signal.pidfd_send_signal(resident_pidfd,signal.SIGSTOP)
+                    resident_stop_sent=True
+                    stop_deadline=time.monotonic()+5
+                    while time.monotonic()<stop_deadline:
+                        require(not select.select([resident_pidfd],[],[],0)[0],
+                            'resident exited before the deterministic both-dead barrier')
+                        state=next(line.split()[1] for line in
+                            Path(f'/proc/{primary.pid}/status').read_text().splitlines()
+                            if line.startswith('State:'))
+                        if state in ('T','t'):break
+                        time.sleep(0.005)
+                    else:raise RuntimeError('exact resident pidfd did not reach stopped state')
+                    signal.pidfd_send_signal(owner_pidfd,signal.SIGKILL)
+                    signal.pidfd_send_signal(peer_pidfd,signal.SIGKILL)
+                    dead_deadline=time.monotonic()+5
+                    while time.monotonic()<dead_deadline:
+                        if (select.select([owner_pidfd],[],[],0)[0] and
+                                select.select([peer_pidfd],[],[],0)[0]):break
+                        time.sleep(0.005)
+                    else:raise RuntimeError('both exact actor pidfds did not become readable while resident was stopped')
+                finally:
+                    if resident_stop_sent and not select.select([resident_pidfd],[],[],0)[0]:
+                        signal.pidfd_send_signal(resident_pidfd,signal.SIGCONT)
+                deadline=time.monotonic()+15
+                while time.monotonic()<deadline:
+                    try:after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError):after={}
+                    if after.get('handoff_frame_death',{}).get('stage')=='both-prepared-actors-dead':break
+                    require(runner.poll() is None,'runner exited before both-dead recovery proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {};prepared=proof.get('prepared',{})
+                reaped=record(primary,'KER_SESSION_FRAME_BOTH_DEAD_REAPED')
+                require(proof.get('stage')=='both-prepared-actors-dead' and
+                    proof.get('producer_pid')==before['attached']['pid'] and
+                    proof.get('consumer_pid')==before['handoff_peer_attached']['pid'] and
+                    proof.get('producer_pidfd_dead') is True and proof.get('consumer_pidfd_dead') is True and
+                    proof.get('producer_status')==-signal.SIGKILL and proof.get('consumer_status')==-signal.SIGKILL and
+                    prepared.get('packet_still_queued') is True and
+                    prepared.get('tx_prepared')==prepared.get('tx_before') and
+                    prepared.get('pool_prepared')==prepared.get('pool_before')+1 and
+                    prepared.get('counters_prepared')==prepared.get('counters_before') and
+                    reaped.get('producer_pid')==proof.get('producer_pid') and
+                    reaped.get('object_index')==prepared.get('object_index') and
+                    reaped.get('lease_id')==prepared.get('lease_id') and
+                    reaped.get('dead_mask')==3 and
+                    reaped.get('tx_after')==0 and reaped.get('packet_pool_in_use')==0 and
+                    reaped.get('counters')==prepared.get('counters_before') and
+                    proof.get('final_census',{}).get('process')==0 and
+                    proof.get('final_owner',{}).get('token')==0,
+                    'both-dead prepared lease was not recovered exactly: '+repr(dict(proof=proof,reaped=reaped)))
+            elif mode=='frame-lost-prepare-reply':
+                require(os.write(handoff_write,b'U')==1,'could not request original LKL ambiguous-PREPARE datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge ambiguous-PREPARE datagram')
+                deadline=time.monotonic()+15
+                while time.monotonic()<deadline:
+                    try:after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError):after={}
+                    if after.get('handoff_frame_loss',{}).get('stage')=='prepare-reply-lost':break
+                    require(runner.poll() is None,'runner exited before lost-reply ownership proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_loss') or {}
+                dropped=record(primary,'KER_SESSION_FRAME_REPLY_DROPPED')
+                reaped=record(primary,'KER_SESSION_FRAME_REPLY_LOST_REAPED')
+                snapshot=api.Connection(control_path)
+                try:surviving_census=snapshot.request(api.STATUS);surviving_owner=snapshot.request(api.PMD_STATUS)
+                finally:snapshot.close()
+                with wire_lock:loss_wire=list(wire_frames);loss_wire_errors=list(wire_errors)
+                seq1_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n' for frame in loss_wire)
+                seq2_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n' for frame in loss_wire)
+                require(proof.get('stage')=='prepare-reply-lost' and proof.get('eof',{}).get('command')==api.FRAME_PREPARE and
+                    proof.get('eof',{}).get('no_retry') is True and proof.get('producer_pidfd_dead') is True and
+                    proof.get('producer_status')==-signal.SIGKILL and dropped.get('pid')==before['attached']['pid'] and
+                    dropped.get('sequence')==proof.get('eof',{}).get('sequence') and
+                    dropped.get('command')==api.FRAME_PREPARE and dropped.get('request_handled_and_cached') is True and
+                    dropped.get('object_index')==reaped.get('object_index') and dropped.get('lease_id')==reaped.get('lease_id') and
+                    dropped.get('sequence')==reaped.get('sequence') and dropped.get('command')==reaped.get('command') and
+                    reaped.get('dead_mask')==1 and
+                    dropped.get('tx')==0 and dropped.get('packet_pool_in_use')==1 and
+                    proof.get('retained',{}).get('tx')==dropped.get('tx') and
+                    proof.get('retained',{}).get('packet_pool_in_use')==dropped.get('packet_pool_in_use') and
+                    proof.get('retained',{}).get('counters')==dropped.get('counters') and
+                    proof.get('retained_census',{}).get('process',0)>=1 and
+                    proof.get('retained_census_after')==proof.get('retained_census') and
+                    proof.get('retained_owner',{}).get('token')==after['handoff']['new_owner_key'] and
+                    proof.get('retained_owner',{}).get('generation')==1 and
+                    proof.get('retained_owner_after')==proof.get('retained_owner') and
+                    reaped.get('producer_pid')==dropped.get('pid') and reaped.get('tx_after')==0 and
+                    reaped.get('packet_pool_in_use')==0 and reaped.get('counters')==dropped.get('counters') and
+                    surviving_census.get('process')==1 and surviving_owner.get('token')==after['handoff']['new_owner_key'] and
+                    surviving_owner.get('generation')==1 and seq1_count==1 and seq2_count==0 and not loss_wire_errors and
+                    'KER_SESSION_FRAME_COMMITTED' not in proof.get('producer_output',''),
+                    'ambiguous PREPARE reply did not retain then exact-pidfd-reap the cached transaction: '+
+                    repr(dict(proof=proof,dropped=dropped,reaped=reaped,census=surviving_census,owner=surviving_owner,
+                        wire=(seq1_count,seq2_count,loss_wire_errors))))
+            elif mode=='frame-death-consumer-writing':
+                snapshot=api.Connection(control_path)
+                try: writing_census_before=snapshot.request(api.STATUS);writing_owner_before=snapshot.request(api.PMD_STATUS)
+                finally:snapshot.close()
+                require(os.write(handoff_write,b'U')==1,'could not queue original LKL WRITING-death datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge WRITING-death datagram')
+                deferred=record(primary,'KER_SESSION_TEST_REAP_DEFERRED')
+                require(deferred.get('generation')==1 and deferred.get('pid')==before['handoff_peer_attached']['pid'] and
+                    deferred.get('status')==-errno.EBUSY and deferred.get('attempt')==1 and
+                    deferred.get('full_reap_attempts')==0 and deferred.get('preflight_only') is True and
+                    deferred.get('tx_before')==deferred.get('tx_after') and
+                    deferred.get('pool_before')==deferred.get('pool_after') and
+                    deferred.get('counters_before')==deferred.get('counters_after'),
+                    'dead consumer WRITING reap did not defer with unchanged ring/pool/counters: '+repr(deferred))
+                snapshot=api.Connection(control_path)
+                try: writing_census_after=snapshot.request(api.STATUS);writing_owner_after=snapshot.request(api.PMD_STATUS)
+                finally:snapshot.close()
+                require(writing_census_after==writing_census_before and writing_owner_after==writing_owner_before and
+                    writing_owner_after.get('token')==after['handoff']['new_owner_key'],
+                    'EBUSY defer changed exact registered actors or the dead consumer PMD owner snapshot')
+                require(not select.select([primary.stdout],[],[],0)[0],
+                    'resident retried the deferred dead-consumer reaper before the producer completion event')
+                require(os.write(handoff_write,b'R')==1,'could not release WRITING actor after verifying EBUSY defer')
+                retry=record(primary,'KER_SESSION_TEST_FRAME_REAP_RETRY')
+                require(isinstance(retry.get('producer'),int) and retry.get('producer')>=0 and
+                    retry.get('consumer')==deferred.get('client') and retry.get('sequence',0)>0 and
+                    retry.get('command')==api.FRAME_COMMIT and retry.get('attempt')==2 and
+                    retry.get('full_reap_attempts')==1 and
+                    retry.get('status')==1 and retry.get('resolved') is True,
+                    'exact queued COMMIT did not produce one bounded successful dead-consumer retry: '+repr(retry))
+                deadline=time.monotonic()+12
+                while time.monotonic()<deadline:
+                    try:after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError):after={}
+                    if after.get('handoff_frame_death',{}).get('stage')=='consumer-writing':break
+                    require(runner.poll() is None,'runner exited before WRITING recovery proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                write_complete=proof.get('write_complete',{});cancelled=proof.get('cancelled',{})
+                require(proof.get('stage')=='consumer-writing' and
+                    proof.get('consumer_pidfd_dead') is True and proof.get('consumer_status')==-signal.SIGKILL and
+                    proof.get('producer_status')==1 and write_complete.get('pool')==deferred.get('pool_before')+1 and
+                    write_complete.get('counters')==deferred.get('counters_after') and
+                    cancelled.get('status')==-errno.ESTALE and cancelled.get('tx')==deferred.get('tx_after') and
+                    cancelled.get('pool')==deferred.get('pool_before') and
+                    cancelled.get('counters')==deferred.get('counters_after') and
+                    proof.get('final_census',{}).get('process')==0 and proof.get('final_pmd_owner',{}).get('token')==0,
+                    'consumer WRITING death did not defer, complete, then stale-cancel exactly: '+repr(proof))
+            elif mode=='frame-death-producer-active-consumer':
+                require(os.write(handoff_write,b'U')==1,'could not request original LKL active-consumer datagram')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge active-consumer datagram')
+                deadline=time.monotonic()+15
+                while time.monotonic()<deadline:
+                    try:after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError):after={}
+                    if after.get('handoff_frame_death_waiting',{}).get('stage')=='producer-dead-active-consumer':break
+                    require(runner.poll() is None,'runner exited before active-consumer producer-death barrier')
+                    time.sleep(0.005)
+                else:raise RuntimeError('runner did not expose dead-producer/held-consumer barrier')
+                committed=after['handoff_frame_death_waiting'].get('committed',{})
+                deferred=record(primary,'KER_SESSION_TEST_REAP_DEFERRED')
+                require(committed.get('generation')==0 and committed.get('queue')==0 and
+                    isinstance(committed.get('object_index'),int) and deferred.get('generation')==0 and
+                    deferred.get('pid')==before['attached']['pid'] and
+                    deferred.get('status')==-errno.EBUSY and deferred.get('full_reap_attempts')==0 and
+                    deferred.get('preflight_only') is True and deferred.get('tx_before')==0 and
+                    deferred.get('tx_after')==0 and deferred.get('pool_before')==1 and
+                    deferred.get('pool_after')==1 and
+                    deferred.get('counters_before')==deferred.get('counters_after'),
+                    'dead-producer readiness changed state or entered full reap while peer held the committed packet: '+repr(deferred))
+                snapshot=api.Connection(control_path)
+                try:held_census=snapshot.request(api.STATUS);held_owner=snapshot.request(api.PMD_STATUS)
+                finally:snapshot.close()
+                require(held_census.get('process')==handoff_census_before.get('process') and
+                    held_census.get('slot')==handoff_census_before.get('slot') and
+                    held_owner==handoff_owner_before,
+                    'preflight EBUSY changed registered actors or exact surviving PMD owner')
+                require(os.write(handoff_write,b'R')==1,'could not release the active peer dequeue after EBUSY validation')
+                completed=record(primary,'KER_SESSION_TEST_REAP_COMPLETED')
+                require(completed.get('status')==0 and completed.get('full_reap_attempts')==1 and
+                    completed.get('tx_after')==0 and completed.get('pool_after')==0 and
+                    completed.get('pidfd_dead') is True,
+                    'readiness retry did not commit exactly one full reap after active dequeue release: '+repr(completed))
+                deadline=time.monotonic()+15
+                while time.monotonic()<deadline:
+                    try:after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError):after={}
+                    if after.get('handoff_frame_death',{}).get('stage')=='producer-active-consumer':break
+                    require(runner.poll() is None,'runner exited before active-consumer recovery completed')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {};drain=proof.get('drain',{})
+                require(proof.get('stage')=='producer-active-consumer' and
+                    proof.get('producer_pidfd_dead') is True and proof.get('producer_status')==-signal.SIGKILL and
+                    proof.get('consumer_still_live') is True and proof.get('consumer_status') is None and
+                    drain.get('object_index')==committed.get('object_index') and
+                    drain.get('packet_pointer')==committed.get('packet_pointer') and
+                    drain.get('frame_hex')==committed.get('frame_hex') and drain.get('tx_after')==0 and
+                    proof.get('final_census',{}).get('process')==1 and
+                    proof.get('final_owner')==handoff_owner_before,
+                    'active live consumer did not retain and release the exact committed packet: '+repr(proof))
+                with wire_lock:active_wire=list(wire_frames);active_wire_errors=list(wire_errors)
+                require(sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n' for frame in active_wire)==1 and
+                    sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n' for frame in active_wire)==0 and
+                    not active_wire_errors,
+                    'active-consumer recovery changed wire delivery of the original UDP datagrams')
+                os.close(handoff_write);handoff_write=-1
+            elif mode=='frame-death-queued':
+                deadline=time.monotonic()+15
+                while time.monotonic()<deadline:
+                    try: after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError): after={}
+                    if after.get('handoff_frame_death'):break
+                    require(runner.poll() is None,'runner exited before queued-death peer drain proof')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame_death') or {}
+                fill=proof.get('fill',{});drain=proof.get('drain',{})
+                require(proof.get('stage')=='queued' and proof.get('pidfd_dead') is True and
+                    proof.get('producer_status')==-signal.SIGKILL and
+                    proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
+                    proof.get('owner_after_reap',{}).get('generation')==1 and
+                    fill.get('count')==64 and fill.get('pool_after')==64 and
+                    proof.get('retained',{}).get('tx')==64 and proof.get('retained',{}).get('packet_pool_in_use')==64 and
+                    proof.get('retained',{}).get('counters')==fill.get('counters_after') and
+                    drain.get('count')==64 and drain.get('tx_after')==0 and
+                    drain.get('pool_before')==64 and drain.get('pool_after')==0 and
+                    drain.get('objects')==fill.get('objects') and
+                    drain.get('counters_before')==fill.get('counters_after') and
+                    drain.get('counters_after')==drain.get('counters_before'),
+                    'live consumer did not drain the exact retained TX journal after producer death')
+                if handoff_write>=0: os.close(handoff_write);handoff_write=-1
+            elif mode == 'frame-positive':
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP post-PARKED frame')
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
                     'original app did not acknowledge the post-PARKED UDP datagram')
+                capture_deadline=time.monotonic()+0.5
+                while time.monotonic()<capture_deadline:
+                    require(runner.poll() is None,'runner exited during bounded post-G wire observation')
+                    time.sleep(0.005)
+                with wire_lock:
+                    wire_snapshot=list(wire_frames);wire_error_snapshot=list(wire_errors)
+                first_payload=b'KER-A09-HANDOFF-UDP seq=1\n'
+                second_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
+                seq1_count=sum(handoff_udp_payload(frame)==first_payload for frame in wire_snapshot)
+                seq2_count=sum(handoff_udp_payload(frame)==second_payload for frame in wire_snapshot)
+                frame_wire_observation=dict(first_wire_frame=bool(first_wire_frame),seq1_count=seq1_count,
+                    seq2_count=seq2_count,errors=wire_error_snapshot)
+            elif mode=='frame-full':
+                frame_full_stage='request-seq2'
+                print('KER_SESSION_FRAME_FULL_STAGE request-seq2', flush=True)
+                require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP full-ring datagram')
+                frame_full_stage='wait-seq2-ack'
+                print('KER_SESSION_FRAME_FULL_STAGE wait-seq2-ack', flush=True)
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge the full-ring UDP datagram')
+                frame_full_stage='wait-full-ring-proof'
+                print('KER_SESSION_FRAME_FULL_STAGE wait-full-ring-proof', flush=True)
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
                     try:after=json.loads(stats_path.read_text())
                     except (OSError,json.JSONDecodeError):after={}
-                    if after.get('handoff_frame'):break
-                    require(runner.poll() is None,'runner exited before exact peer frame drain')
+                    if after.get('handoff_frame_full'):break
+                    require(runner.poll() is None,'runner exited before full-ring cancel/drain proof')
                     time.sleep(0.005)
-                proof=after.get('handoff_frame') or {}
-                commits=proof.get('committed_records',[]);drains=proof.get('drained_records',[])
-                u2_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
-                u2_commits=[item for item in commits if udp_payload(bytes.fromhex(item.get('frame_hex','')))==u2_payload]
-                u2_drains=[item for item in drains if udp_payload(bytes.fromhex(item.get('frame_hex','')))==u2_payload]
-                require(len(u2_commits)==len(u2_drains)==1 and
-                    all(u2_commits[0].get(left)==u2_drains[0].get(right) for left,right in
-                        (('packet_pointer','packet_pointer'),('object_index','object_index'),
-                         ('pool_tag','pool_tag'),('tx_lease_id','lease_id'),('length','length'),('frame_hex','frame_hex'))) and
-                    first_wire_frame and b'KER-A09-HANDOFF-UDP seq=2\n' not in first_wire_frame,
-                    'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
+                fullproof=after.get('handoff_frame_full') or {}
+                frame_full_stage='validate-full-ring-proof'
+                print('KER_SESSION_FRAME_FULL_STAGE validate-full-ring-proof', flush=True)
+                time.sleep(0.5)
+                with wire_lock:
+                    full_wire_snapshot=list(wire_frames);full_wire_errors=list(wire_errors)
+                seq1_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n' for frame in full_wire_snapshot)
+                seq2_count=sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n' for frame in full_wire_snapshot)
+                fill=fullproof.get('fill',{})
+                cancel=fullproof.get('commit_cancel',{})
+                drain=fullproof.get('drain',{})
+                capacity=after.get('frame_full_capacity')
+                require(fill.get('count')==capacity and fill.get('capacity')==capacity and
+                    capacity==64 and
+                    fill.get('pool_before')==0 and fill.get('pool_after')==capacity and
+                    len(fill.get('counters_before',[]))==5 and
+                    fill.get('counters_before')==fill.get('counters_after') and
+                    len(fill.get('objects',[]))==capacity and
+                    [item.get('ordinal') for item in fill.get('objects',[])]==list(range(capacity)) and
+                    len({item.get('index') for item in fill.get('objects',[])})==capacity and
+                    len({item.get('pointer') for item in fill.get('objects',[])})==capacity and
+                    cancel.get('status')==-errno.ENOBUFS and cancel.get('pool_restored') is True and
+                    cancel.get('tx_after')==capacity and cancel.get('tx_capacity')==capacity and
+                    cancel.get('pool_before')==capacity and cancel.get('pool_after')==capacity and
+                    cancel.get('counters_before')==fill.get('counters_after') and
+                    len(cancel.get('counters_after',[]))==5 and
+                    cancel.get('counters_after',[])[:4]==cancel.get('counters_before',[])[:4] and
+                    cancel.get('counters_after',[])[4]==cancel.get('counters_before',[-1]*5)[4]+1 and
+                    drain.get('tx_after')==0 and drain.get('count')==capacity and
+                    drain.get('pool_before')==capacity and drain.get('pool_after')==0 and
+                    drain.get('counters_before')==cancel.get('counters_after') and
+                    drain.get('counters_after')==drain.get('counters_before') and
+                    drain.get('objects')==fill.get('objects') and
+                    seq1_count==1 and seq2_count==0 and not full_wire_errors,
+                    'full generation TX ring did not reject/cancel then drain exactly')
+                frame_full_stage='full-ring-proof-passed'
+                print('KER_SESSION_FRAME_FULL_STAGE full-ring-proof-passed', flush=True)
                 os.close(handoff_write);handoff_write=-1
             runner.send_signal(signal.SIGTERM)
             output, _ = runner.communicate(timeout=20)
@@ -1173,20 +1782,50 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             finished = json.loads(stats_path.read_text())
             if mode=='frame-positive':
                 proof=finished.get('handoff_frame') or {}
-                commits=proof.get('committed_records',[]);drains=proof.get('drained_records',[])
-                commit_ids=[(x.get('pool_tag'),x.get('object_index'),x.get('tx_lease_id')) for x in commits]
-                drain_ids=[(x.get('pool_tag'),x.get('object_index'),x.get('lease_id')) for x in drains]
-                require(len(commits)==len(drains) and len(set(commit_ids))==len(commit_ids) and
-                    len(set(drain_ids))==len(drain_ids) and set(commit_ids)==set(drain_ids) and
-                    proof.get('commit_bijection')=={'committed':len(commits),'drained':len(drains)} and
-                    proof.get('final_batch',{}).get('tx_after')==0 and
-                    proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0},
-                    'frame commits and generic peer drains did not reach exact bijective quiescence: ' +
-                    json.dumps(dict(finished=finished, runner_stderr=errors.decode(errors='replace')), sort_keys=True))
+                commits=proof.get('committed_records',[]);releases=proof.get('drained_records',[])
+                second_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
+                u2_commits=[item for item in commits if handoff_udp_payload(bytes.fromhex(item.get('frame_hex','')))==second_payload]
+                u2_releases=[item for item in releases if handoff_udp_payload(bytes.fromhex(item.get('frame_hex','')))==second_payload]
+                same_u2=(len(u2_commits)==len(u2_releases)==1 and all(
+                    u2_commits[0].get(left)==u2_releases[0].get(right) for left,right in (
+                        ('packet_pointer','packet_pointer'),('object_index','object_index'),
+                        ('pool_tag','pool_tag'),('tx_lease_id','lease_id'),('length','length'),('frame_hex','frame_hex'))))
+                committed_count=proof.get('bijection',{}).get('committed')
+                drained_count=proof.get('bijection',{}).get('drained')
+                frame_positive_checks=dict(
+                    same_u2=same_u2,
+                    commit_bijection=(committed_count==len(commits)),
+                    release_bijection=(drained_count==len(releases)),
+                    bijection_counts_match=(committed_count==drained_count),
+                    tx_empty=(proof.get('final_batch',{}).get('tx_after')==0),
+                    quiescent=(proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0}),
+                    first_wire_frame=bool(frame_wire_observation.get('first_wire_frame')),
+                    seq1_once=(frame_wire_observation.get('seq1_count')==1),
+                    seq2_absent=(frame_wire_observation.get('seq2_count')==0),
+                    wire_peer_clean=(not frame_wire_observation.get('errors')))
+                frame_positive_failure_context=dict(
+                    checks=frame_positive_checks,
+                    stats_stage=finished.get('stage'),
+                    proof=proof,
+                    u2_commits=u2_commits,
+                    u2_releases=u2_releases,
+                    wire_observation=frame_wire_observation,
+                    first_wire_frame=(first_wire_frame.hex() if first_wire_frame is not None else None))
+                require(all(frame_positive_checks.values()),
+                    'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
+            expected_worker_code=(1 if mode=='frame-death-consumer-prepared' else
+                -signal.SIGKILL if mode in ('frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer') else 0)
+            if mode in ('frame-death-both-prepared','frame-lost-prepare-reply'):expected_worker_code=-signal.SIGKILL
+            expected_peer_code=-signal.SIGKILL if mode in ('frame-death-consumer-prepared','frame-death-both-prepared') else 0
+            expected_worker_cleanup=(finished.get('worker_code')==expected_worker_code and finished.get('packet') is None
+                if mode in ('frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer','frame-death-consumer-prepared','frame-death-both-prepared','frame-lost-prepare-reply') else
+                finished.get('worker_code')==0 and finished.get('packet',{}).get('status')==0)
             require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
                 finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and
-                finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and
-                finished.get('handoff_peer_code') == 0 and finished.get('handoff_peer_packet', {}).get('status') == 0 and
+                expected_worker_cleanup and
+                finished.get('handoff_peer_code') == expected_peer_code and
+                (finished.get('handoff_peer_packet') is None if expected_peer_code else
+                    finished.get('handoff_peer_packet', {}).get('status') == 0) and
                 finished.get('native', {}).get('buffers_live') == 0,
                 'live handoff application/worker teardown failed: ' + repr(finished) + errors.decode())
             require(all(select.select([pidfd], [], [], 0)[0] for pidfd in pidfds),
@@ -1203,6 +1842,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             require('KER_SESSION_TEST_HANDOFF_HEARTBEAT_PENDING' in runner_text and
                 'KER_SESSION_TEST_HANDOFF_HEARTBEAT_DRAINED' in runner_text,
                 'positive handoff did not drain its real pending heartbeat before PREPARE')
+            if mode=='frame-positive':
+                require('KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS' in runner_text and
+                    'KER_SESSION_FRAME_CANCEL_REPLAY_PASS' in runner_text,
+                    'frame negative PREPARE or exact CANCEL replay proof is missing')
             require_live_eal_mp_channels(mode, primary_errors.decode(errors='replace'), runner_text,
                 primary_mp_socket, before['attached']['pid'], before['handoff_peer_attached']['pid'])
             require(primary.returncode == 0, 'handoff resident did not exit cleanly: ' + primary_errors.decode())
@@ -1234,7 +1877,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                             except subprocess.TimeoutExpired:
                                 process.kill(); process.wait(timeout=10)
                         if process.poll() is not None:
-                            cleanup_outputs[label] = communicate_bounded(process, timeout=5)
+                            cleanup_outputs[label] = _collect_profile_cleanup_output(label, process)
                         else:
                             raise RuntimeError(f'{label} did not exit during fixture cleanup')
                     except BaseException as error:
@@ -1245,12 +1888,61 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     runner_stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                     final_snapshot = dict(rejection_timeout_snapshot,
                         runner_returncode=runner.poll(), resident_returncode=primary.poll(),
-                        runner_stdout=runner_out.decode(errors='replace'),
+                        runner_stdout=_decode_captured_pipe_output(runner_out),
                         runner_stderr=runner_stderr,
-                        resident_stdout=resident_out.decode(errors='replace'),
-                        resident_stderr=resident_err.decode(errors='replace'))
+                        resident_stdout=_decode_captured_pipe_output(resident_out),
+                        resident_stderr=_decode_captured_pipe_output(resident_err))
                     print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_FINAL ' +
                         json.dumps(final_snapshot, sort_keys=True), flush=True)
+                if mode in ('frame-positive', 'frame-full') and original_error is not None:
+                    failure_stats = None
+                    try: failure_stats = json.loads(stats_path.read_text())
+                    except (OSError, json.JSONDecodeError): pass
+                    runner_out, runner_err = cleanup_outputs.get('launcher', (b'', b''))
+                    resident_out, resident_err = cleanup_outputs.get('resident', (b'', b''))
+                    failure_context = locals().get('frame_positive_failure_context')
+                    raw_runner_stderr = (runner_stderr_path.read_text(errors='replace')
+                        if runner_stderr_path.exists() else '')
+                    if mode == 'frame-full':
+                        with wire_lock:
+                            failure_wire_frames = list(wire_frames)
+                            failure_wire_errors = list(wire_errors)
+                        failure_record = dict(
+                            mode=mode, stage=frame_full_stage, reason=str(original_error),
+                            stats=failure_stats,
+                            wire_seq1_frames=[frame.hex() for frame in failure_wire_frames
+                                if handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n'],
+                            wire_seq2_frames=[frame.hex() for frame in failure_wire_frames
+                                if handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n'],
+                            wire_frame_count=len(failure_wire_frames), wire_errors=failure_wire_errors,
+                            runner_returncode=(runner.returncode if runner is not None else None),
+                            resident_returncode=(primary.returncode if primary is not None else None),
+                            runner_stdout=_decode_captured_pipe_output(runner_out),
+                            runner_stderr=raw_runner_stderr,
+                            runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
+                            resident_stdout=_decode_captured_pipe_output(resident_out),
+                            resident_stderr=_decode_captured_pipe_output(resident_err))
+                        print('KER_SESSION_FRAME_FULL_FAILURE ' +
+                            json.dumps(failure_record, sort_keys=True), flush=True)
+                    else:
+                        failure_record=dict(
+                            reason=str(original_error),
+                            checks=(failure_context or {}).get('checks'),
+                            stage=(failure_context or {}).get('stats_stage'),
+                            handoff_frame=(failure_stats or {}).get('handoff_frame'),
+                            u2_commits=(failure_context or {}).get('u2_commits'),
+                            u2_releases=(failure_context or {}).get('u2_releases'),
+                            wire_observation=(failure_context or {}).get('wire_observation'),
+                            first_wire_frame=(failure_context or {}).get('first_wire_frame'),
+                            runner_returncode=(runner.returncode if runner is not None else None),
+                            resident_returncode=(primary.returncode if primary is not None else None),
+                            runner_stdout=_decode_captured_pipe_output(runner_out),
+                            runner_stderr=raw_runner_stderr,
+                            runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
+                            resident_stdout=_decode_captured_pipe_output(resident_out),
+                            resident_stderr=_decode_captured_pipe_output(resident_err))
+                        print('KER_SESSION_FRAME_POSITIVE_FAILURE ' +
+                            json.dumps(failure_record, sort_keys=True), flush=True)
                 if finalization_errors:
                     raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
                         repr([str(error) for error in finalization_errors]))
@@ -1260,6 +1952,13 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             except BaseException as error:
                 cleanup_error = error
             finally:
+                # Snapshot readiness after actor/hugepage cleanup but before
+                # closing the pidfds. The booleans remain valid evidence later.
+                try:
+                    evidence['actor_pidfd_readable_after_cleanup'], evidence['resident_pidfd_readable_after_cleanup'] = \
+                        _capture_pidfd_readability(actor_pidfds, resident_pidfd)
+                except (OSError, ValueError) as error:
+                    finalization_errors.append(RuntimeError(f'could not snapshot live pidfds: {error}'))
                 # Always release process and directory descriptors, even when
                 # private-directory validation or reporting refuses deletion.
                 closers = []
@@ -1295,6 +1994,41 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             if cleaned_hugepage_files is not None:
                 print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED profile={mode} mode=private '
                     f'files={cleaned_hugepage_files}', flush=True)
+            if original_error is None and cleanup_error is None:
+                evidence['runner_returncode'] = runner.returncode if runner is not None else None
+                evidence['resident_returncode'] = primary.returncode if primary is not None else None
+                evidence['runner_stderr'] = (runner_stderr_path.read_text(errors='replace')
+                    if runner_stderr_path.exists() else '')
+                evidence['resident_stdout'] = (locals().get('primary_output', b'').decode(errors='replace'))
+                evidence['resident_stderr'] = (locals().get('primary_errors', b'').decode(errors='replace'))
+                evidence['stats'] = (json.loads(stats_path.read_text()) if stats_path.exists() else None)
+                evidence['app_returncode'] = (evidence.get('stats') or {}).get('app_code')
+                evidence['producer_returncode'] = (evidence.get('stats') or {}).get('worker_code')
+                evidence['consumer_returncode'] = (evidence.get('stats') or {}).get('handoff_peer_code')
+                frame_locals = locals()
+                evidence['wire_observations'] = {name: [frame.hex() for frame in frame_locals[name]]
+                    for name in ('wire_snapshot', 'full_wire_snapshot', 'active_wire', 'loss_wire')
+                    if name in frame_locals}
+                evidence['wire_errors'] = {name: frame_locals[name] for name in
+                    ('wire_error_snapshot', 'full_wire_errors', 'active_wire_errors', 'loss_wire_errors')
+                    if name in frame_locals}
+                if 'first_wire_frame' in frame_locals:
+                    evidence['wire_observations']['first_wire_frame'] = frame_locals['first_wire_frame'].hex()
+                serial_records = list(evidence['resident_markers'])
+                for stream_name, stream_text in (('runner_stderr', evidence['runner_stderr']),
+                        ('resident_stdout', evidence['resident_stdout']),
+                        ('resident_stderr', evidence['resident_stderr'])):
+                    for raw_line in stream_text.splitlines():
+                        prefix, separator, payload = raw_line.partition(' ')
+                        if separator and prefix.startswith('KER_SESSION_') and payload.startswith('{'):
+                            try: parsed = json.loads(payload)
+                            except json.JSONDecodeError: continue
+                            serial_records.append(dict(source=stream_name, marker=prefix,
+                                value=parsed, raw=raw_line))
+                evidence['serial_records'] = serial_records
+                evidence['capture_sha256'] = hashlib.sha256(
+                    json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                print('KER_SESSION_FRAME_PROFILE_EVIDENCE ' + json.dumps(evidence, sort_keys=True), flush=True)
 
 
 def main():
@@ -2240,12 +2974,28 @@ def main():
     run_live_handoff_profile(args, api, plugin_paths, mode='frame-positive')
     print('PASS: original LKL post-PARKED UDP frame is journaled before prepare and drained by the admitted peer as the exact mbuf pointer/bytes once')
     run_live_handoff_profile(args, api, plugin_paths, mode='nonframe-active-reap')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-full')
+    print('PASS: a full actual generation TX ring rejects/cancels the frame and returns the ring/pool to measured ownership')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-prepared')
+    print('PASS: exact producer pidfd death after PREPARE reclaims the pending lease once')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-consumer-prepared')
+    print('PASS: exact consumer pidfd death preserves a prepared lease until producer cancellation')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-both-prepared')
+    print('PASS: exact producer and consumer pidfd deaths recover one prepared lease without retargeting')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-lost-prepare-reply')
+    print('PASS: lost PREPARE reply is not retried; pending allocation survives control EOF until exact producer pidfd reap')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-consumer-writing')
+    print('PASS: consumer death during packet WRITING defers reap without mutation, then cancels after write completion')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-queued')
+    print('PASS: live opposite-generation consumer drains exact queued objects after producer death')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-death-producer-active-consumer')
+    print('PASS: dead-producer readiness defers without mutation during a live peer dequeue and retries after release')
     if args.handoff_negative_profiles:
         for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
-                'handoff-control-hup', 'prepare-enoent', 'prepare-ebusy', 'prepare-eperm',
-                'bad-prepare-error', 'bad-prepare-error-token', 'bad-prepare-error-capability',
-                'bad-prepare-error-tx-lease', 'bad-prepare-error-rx-lease',
-                'bad-prepare-error-sequence', 'bad-prepare-success'):
+                'handoff-control-hup',
+                'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
+                'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
+                'bad-prepare-error-rx-lease', 'bad-prepare-error-sequence', 'bad-prepare-success'):
             run_live_handoff_profile(args, api, plugin_paths, mode)
     return 0
 

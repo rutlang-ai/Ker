@@ -17,6 +17,8 @@ import selectors
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import types
 import time
 import unittest
@@ -25,7 +27,7 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[2] / 'tools' / 'ker_session_run.py'
 PROFILE_SOURCE = Path(__file__).resolve().parents[1] / 'posix' / 'session-native-packets.py'
 sys.path.insert(0, str(PROFILE_SOURCE.parent))
-PROFILE_SPEC = importlib.util.spec_from_file_location('session_native_packets_line_reader_test', PROFILE_SOURCE)
+PROFILE_SPEC = importlib.util.spec_from_file_location('session_native_packets_capture_test', PROFILE_SOURCE)
 PROFILE = importlib.util.module_from_spec(PROFILE_SPEC)
 PROFILE_SPEC.loader.exec_module(PROFILE)
 
@@ -90,11 +92,15 @@ class HandoffControlPathTests(unittest.TestCase):
             'args': None,
             'close': close,
             'control_w': write_fd,
+            'handoff_fd': read_fd,
             'handoff_mode': mode,
             'handoff_udp_ready': False,
+            'frame_death_complete': False,
+            'frame_death_worker_expected_code': None,
             'metrics': metrics,
             'peer_control_w': -1,
             'peer_worker': Actor(),
+            'peer_worker_pidfd': -1,
             'publish': lambda: None,
             'ready': lambda *_args, **_kwargs: None,
             'wait_marker': wait_marker,
@@ -139,11 +145,15 @@ class HandoffControlPathTests(unittest.TestCase):
             'args': None,
             'close': os.close,
             'control_w': write_fd,
+            'handoff_fd': read_fd,
             'handoff_mode': mode,
             'handoff_udp_ready': False,
+            'frame_death_complete': False,
+            'frame_death_worker_expected_code': None,
             'metrics': metrics,
             'peer_control_w': -1,
             'peer_worker': Actor(),
+            'peer_worker_pidfd': -1,
             'publish': lambda: None,
             'ready': lambda *_args, **_kwargs: None,
             'tap_interfaces_for_process': lambda _pid: {'ker_test0'},
@@ -166,6 +176,28 @@ class HandoffControlPathTests(unittest.TestCase):
 
     def test_positive_handoff_writes_one_h(self):
         self.exercise('positive', b'H', expect_closed=False)
+
+    def test_successor_owner_key_comes_from_completed_handoff_metrics(self):
+        self.assertEqual(self.launcher.handoff_successor_owner_key(
+            {'handoff': {'new_owner_key': 37}}), 37)
+        for metrics in ({}, {'handoff': {}}, {'handoff': {'new_owner_key': 0}},
+                        {'handoff': {'new_owner_key': True}}):
+            with self.subTest(metrics=metrics), self.assertRaises(RuntimeError):
+                self.launcher.handoff_successor_owner_key(metrics)
+
+    def test_actual_udp_trigger_binds_successor_key_locally(self):
+        trigger = nested_code(compile(SOURCE.read_text(), str(SOURCE), 'exec'), 'trigger_handoff_udp')
+        self.assertIsNotNone(trigger)
+        self.assertIn('expected_key', trigger.co_varnames)
+        self.assertNotIn('expected_key', trigger.co_freevars)
+        self.assertNotIn('expected_key', trigger.co_names)
+
+    def test_actual_wire_wait_has_no_runner_startup_scope_dependency(self):
+        compiled = compile(PROFILE_SOURCE.read_text(), str(PROFILE_SOURCE), 'exec')
+        code = nested_code(compiled, 'wait_wire_payload')
+        self.assertIsNotNone(code)
+        self.assertNotIn('startup', code.co_names)
+        self.assertNotIn('drain_startup', code.co_names)
 
     def test_rejected_handoffs_pipeline_two_h_commands(self):
         self.exercise('prepare-enoent', b'HH', expect_closed=False)
@@ -295,9 +327,11 @@ class HandoffControlPathTests(unittest.TestCase):
 
         values = {
             'api': None, 'app': Actor(), 'args': None, 'close': close,
-            'control_w': write_fd, 'handoff_mode': 'handoff-control-hup',
+            'control_w': write_fd, 'handoff_fd': read_fd, 'handoff_mode': 'handoff-control-hup',
             'handoff_udp_ready': False,
-            'metrics': metrics, 'peer_control_w': -1, 'peer_worker': Actor(),
+            'frame_death_complete': False,
+            'frame_death_worker_expected_code': None,
+            'metrics': metrics, 'peer_control_w': -1, 'peer_worker': Actor(), 'peer_worker_pidfd': -1,
             'publish': lambda: None, 'ready': lambda *_args, **_kwargs: None,
             'wait_marker': wait_marker, 'worker': child, 'worker_pidfd': pidfd,
         }
@@ -405,67 +439,465 @@ class HandoffControlPathTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     validate(metrics, True, code, stats)
 
-    def test_session_marker_reader_deadline_covers_partial_pipe_lines(self):
+    def test_mode_specific_trigger_lifecycle_keeps_frame_and_death_profiles_open(self):
+        complete = self.launcher.handoff_trigger_complete
+        close_trigger = self.launcher.close_completed_handoff_trigger
+        u2_modes = ('frame-positive', 'frame-full', 'frame-death-prepared',
+            'frame-death-producer-active-consumer',
+            'frame-death-consumer-prepared', 'frame-death-consumer-writing')
+        for mode in u2_modes:
+            with self.subTest(mode=mode):
+                self.assertFalse(complete(mode, True, 1))
+                self.assertTrue(complete(mode, True, 2))
+                calls = []
+                self.assertEqual(close_trigger(mode, True, 1, 17, calls.append), 17)
+                self.assertEqual(calls, [])
+                self.assertIsNone(close_trigger(mode, True, 2, 17, calls.append))
+                self.assertEqual(calls, [17])
+        self.assertTrue(complete('positive', True, 0))
+        self.assertFalse(complete('positive', False, 0))
+        self.assertEqual(self.launcher.handoff_trigger_action(b'U'), 'udp')
+        self.assertEqual(self.launcher.handoff_trigger_action(b'H'), 'handoff')
+        self.assertEqual(self.launcher.handoff_trigger_action(b''), 'invalid')
+        self.assertEqual(self.launcher.handoff_trigger_action(b'X'), 'invalid')
+
+    def test_frame_peer_control_stays_open_until_final_quiescence(self):
+        read_fd, write_fd = os.pipe()
+        closed = []
+
+        def close(fd):
+            closed.append(fd)
+            os.close(fd)
+
+        try:
+            keep = self.launcher.close_peer_control_when_safe('frame-positive', write_fd, close)
+            self.assertEqual(keep, write_fd)
+            self.assertEqual(select.select([read_fd], [], [], 0)[0], [])
+            self.assertEqual(os.write(keep, b'G'), 1)
+            self.assertEqual(os.read(read_fd, 1), b'G')
+            self.assertEqual(select.select([read_fd], [], [], 0)[0], [])
+            keep = self.launcher.close_peer_control_when_safe(
+                'frame-positive', keep, close, frame_quiescent=True)
+            self.assertEqual(keep, -1)
+            self.assertEqual(closed, [write_fd])
+            self.assertEqual(os.read(read_fd, 1), b'')
+            positive_read, positive_write = os.pipe()
+            keep = self.launcher.close_peer_control_when_safe('positive', positive_write, close)
+            self.assertEqual(keep, -1)
+            self.assertEqual(closed, [write_fd, positive_write])
+            self.assertEqual(os.read(positive_read, 1), b'')
+            os.close(positive_read)
+        finally:
+            os.close(read_fd)
+            if not closed:
+                os.close(write_fd)
+
+        tree = ast.parse(SOURCE.read_text())
+        run_session_wrapper = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == 'run_session')
+        run_session = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_session_impl')
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == '_run_session_impl' for node in ast.walk(run_session_wrapper)))
+        calls = [node for node in ast.walk(run_session)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == 'close_peer_control_when_safe']
+        self.assertEqual(len(calls), 2)
+        calls.sort(key=lambda node: node.lineno)
+        worker_waits = [node for node in ast.walk(run_session)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+            node.func.attr == 'communicate' and isinstance(node.func.value, ast.Name) and
+            node.func.value.id == 'worker']
+        self.assertTrue(any(calls[0].lineno < node.lineno < calls[1].lineno for node in worker_waits))
+        quiescent_lines = [node.lineno for node in ast.walk(run_session)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ready' and
+            node.args and isinstance(node.args[0], ast.Constant) and
+            node.args[0].value == 'KER_SESSION_FRAME_QUIESCENT']
+        self.assertTrue(quiescent_lines and calls[1].lineno > quiescent_lines[0])
+        self.assertTrue(any(keyword.arg == 'frame_quiescent' and
+            isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+            for keyword in calls[1].keywords))
+
+    def test_frame_marker_stream_consumes_only_enabled_prefix_in_exact_order(self):
+        prepare = ('KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS', {'variants': 12,
+            'datagram_queued': True, 'ring_unchanged': True, 'pool_unchanged': True,
+            'frame_length': 60, 'frame_hex': '00' * 60})
+        cancel = ('KER_SESSION_FRAME_CANCEL_REPLAY_PASS', {'prepared_replay': True,
+            'bad_commit_denied': True, 'bad_cancel_denied': True, 'cancel_replay': True,
+            'datagram_queued': True, 'pool_restored': True})
+        committed = ('KER_SESSION_FRAME_COMMITTED', {'object_index': 4})
+
+        def reader(records):
+            remaining = list(records)
+            def ready(prefix, process=None):
+                if not remaining:
+                    raise RuntimeError('unexpected marker ' + prefix)
+                actual, value = remaining.pop(0)
+                if actual != prefix:
+                    raise RuntimeError('out-of-order marker: expected ' + prefix + ', got ' + actual)
+                return value
+            return ready, remaining
+
+        ready, remaining = reader([prepare, cancel, committed])
+        result = self.launcher.read_frame_commit_sequence(object(), ready, True)
+        self.assertEqual(result, (prepare[1], cancel[1], committed[1]))
+        self.assertEqual(remaining, [])
+        ready, remaining = reader([committed])
+        self.assertEqual(self.launcher.read_frame_commit_sequence(object(), ready, False),
+            (None, None, committed[1]))
+        self.assertEqual(remaining, [])
+        for records in ([cancel, committed], [prepare, prepare, cancel, committed],
+                        [prepare, cancel, cancel, committed]):
+            ready, _ = reader(records)
+            with self.assertRaises(RuntimeError):
+                self.launcher.read_frame_commit_sequence(object(), ready, True)
+
+    def test_frame_positive_uses_success_classification_not_fatal_branch(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        wanted = {'_is_fatal_handoff_profile', 'FATAL_HANDOFF_PROFILES',
+            'NONFATAL_HANDOFF_PROFILES'}
+        definitions = [node for node in tree.body if
+            (isinstance(node, ast.FunctionDef) and node.name in wanted) or
+            (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id in wanted for target in node.targets))]
+        namespace = {}
+        exec(compile(ast.Module(body=definitions, type_ignores=[]), str(PROFILE_SOURCE), 'exec'), namespace)
+        profile = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
+        fatal_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Call) and
+            isinstance(node.test.func, ast.Name) and node.test.func.id == '_is_fatal_handoff_profile')
+        self.assertEqual([ast.dump(arg) for arg in fatal_branch.test.args],
+            [ast.dump(ast.Name(id='mode', ctx=ast.Load()))])
+        classify = namespace['_is_fatal_handoff_profile']
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'main')
+        inventory = set()
+        for node in ast.walk(main):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and \
+                    node.func.id == 'run_live_handoff_profile':
+                keyword = next((item for item in node.keywords if item.arg == 'mode'), None)
+                inventory.add(ast.literal_eval(keyword.value) if keyword is not None else 'positive')
+            if isinstance(node, ast.For) and isinstance(node.target, ast.Name) and node.target.id == 'mode' and \
+                    isinstance(node.iter, (ast.Tuple, ast.List)):
+                inventory.update(ast.literal_eval(item) for item in node.iter.elts)
+        fatal = namespace['FATAL_HANDOFF_PROFILES']
+        nonfatal = namespace['NONFATAL_HANDOFF_PROFILES']
+        self.assertEqual(fatal & nonfatal, set())
+        self.assertEqual(inventory, fatal | nonfatal)
+        for mode in sorted((item for item in inventory if item in fatal), key=str):
+            with self.subTest(mode=mode):
+                self.assertTrue(classify(mode))
+        for mode in sorted((item for item in inventory if item in nonfatal), key=str):
+            with self.subTest(mode=mode):
+                self.assertFalse(classify(mode))
+        hup_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'mode' and
+            any(isinstance(item, ast.Constant) and item.value == 'handoff-control-hup'
+                for item in node.test.comparators) and
+            any(isinstance(child, ast.Return) for child in ast.walk(node)))
+        rejection_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'mode' and
+            isinstance(node.test.ops[0], ast.In) and {'prepare-enoent','prepare-ebusy','prepare-eperm'} <=
+                {item.value for item in node.test.comparators[0].elts if isinstance(item, ast.Constant)} and
+            any(isinstance(child, ast.Return) for child in ast.walk(node)))
+        self.assertLess(hup_branch.lineno, fatal_branch.lineno)
+        self.assertLess(rejection_branch.lineno, fatal_branch.lineno)
+        self.assertTrue(any(isinstance(node, (ast.Return, ast.Raise)) for node in ast.walk(hup_branch)))
+        self.assertTrue(any(isinstance(node, ast.Return) for node in ast.walk(rejection_branch)))
+        with self.assertRaisesRegex(ValueError, 'unknown handoff profile'):
+            classify('unexpected-mode')
+
+    def test_timed_out_runner_capture_is_bounded_and_does_not_kill_descendant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child_pid_path = os.path.join(directory, 'child.pid')
+            child_code = 'import time; time.sleep(30)'
+            parent_code = ('import subprocess,sys,time; child=subprocess.Popen([sys.executable,"-c",' +
+                repr(child_code) + ']); open(' + repr(child_pid_path) + ',"w").write(str(child.pid)); '
+                'print("ready",flush=True); time.sleep(30)')
+            runner = subprocess.Popen([sys.executable, '-c', parent_code], stdout=subprocess.PIPE)
+            descendant_pidfd = -1
+            try:
+                deadline = time.monotonic() + 5
+                while not os.path.exists(child_pid_path) and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(os.path.exists(child_pid_path))
+                descendant_pid = int(Path(child_pid_path).read_text())
+                descendant_pidfd = os.pidfd_open(descendant_pid)
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    runner.communicate(timeout=0.05)
+                output = PROFILE._stop_timed_out_runner(runner, caught.exception)
+                self.assertIn(b'ready', output)
+                self.assertIsNotNone(runner.returncode)
+                self.assertTrue(runner.stdout.closed)
+                self.assertEqual(PROFILE._collect_profile_cleanup_output('launcher', runner),
+                    (output, b''))
+                self.assertFalse(select.select([descendant_pidfd], [], [], 0)[0],
+                    'bounded runner capture must not signal an unrelated descendant')
+            finally:
+                if runner.poll() is None:
+                    runner.kill(); runner.wait(timeout=5)
+                if descendant_pidfd >= 0:
+                    try: signal.pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    self.assertTrue(select.select([descendant_pidfd], [], [], 5)[0],
+                        'test-owned descendant did not exit after exact pidfd cleanup')
+                    os.close(descendant_pidfd)
+
+    def test_frame_failure_record_accepts_redirected_optional_stderr(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        decoder = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_decode_captured_pipe_output')
+        profile = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
+        record_assignment = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id == 'failure_record' for target in node.targets) and
+            any(isinstance(child, ast.Constant) and child.value == 'handoff_frame'
+                for child in ast.walk(node)))
+        full_record_assignment = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id == 'failure_record' for target in node.targets) and
+            any(isinstance(child, ast.keyword) and child.arg == 'wire_seq1_frames'
+                for child in ast.walk(node)))
+        full_failure_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and any(isinstance(child, ast.Constant) and
+                isinstance(child.value, str) and child.value.startswith('KER_SESSION_FRAME_FULL_FAILURE')
+                for child in ast.walk(node)))
+        startup_scope = next(node for node in profile.body if isinstance(node, ast.With) and
+            any(isinstance(item.context_expr, ast.Call) and
+                isinstance(item.context_expr.func, ast.Attribute) and item.context_expr.func.attr ==
+                'TemporaryDirectory' for item in node.items))
+        initial_try = next(index for index, node in enumerate(startup_scope.body)
+            if isinstance(node, ast.Try))
+        initialized = set()
+        for statement in startup_scope.body[:initial_try]:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    initialized.update(child.id for child in ast.walk(target) if isinstance(child, ast.Name))
+        self.assertTrue({'wire_stop', 'wire_frames', 'wire_errors', 'wire_lock', 'wire_thread',
+            'runner_stderr_path'} <= initialized)
+        helper_namespace = {}
+        exec(compile(ast.Module(body=[decoder], type_ignores=[]), str(PROFILE_SOURCE), 'exec'),
+            helper_namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            runner_stderr_path = Path(directory) / 'runner.stderr'
+            runner_stderr_path.write_text('raw runner stderr\n')
+            for context in (None, {'checks': {'same_u2': False}, 'stats_stage': 'interrupted',
+                    'proof': {'committed_records': [{'object_index': 4}]},
+                    'u2_commits': [], 'u2_releases': [],
+                    'wire_observation': {'seq1_count': 1, 'seq2_count': 0},
+                    'first_wire_frame': 'abcd'}):
+                with self.subTest(context=context):
+                    values = dict(json=json, _decode_captured_pipe_output=
+                        helper_namespace['_decode_captured_pipe_output'],
+                        original_error=RuntimeError('original oracle failure'),
+                        failure_stats={'handoff_frame': {'tx_count': 0}},
+                        raw_runner_stderr='raw runner stderr\n',
+                        runner_stderr_path=runner_stderr_path,
+                        runner=types.SimpleNamespace(returncode=143),
+                        primary=types.SimpleNamespace(returncode=0),
+                        runner_out=None, runner_err=None, resident_out=b'resident output\n',
+                        resident_err=None, failure_context=context)
+                    isolated = ast.Module(body=[record_assignment], type_ignores=[])
+                    exec(compile(ast.fix_missing_locations(isolated), str(PROFILE_SOURCE), 'exec'),
+                        values)
+                    record = values['failure_record']
+                    self.assertEqual(record['reason'], 'original oracle failure')
+                    self.assertEqual(record['runner_stdout'], '')
+                    self.assertEqual(record['runner_stderr_pipe'], '')
+                    self.assertEqual(record['resident_stderr'], '')
+                    self.assertEqual(record['runner_stderr'], 'raw runner stderr\n')
+                    self.assertEqual(record['runner_returncode'], 143)
+                    self.assertEqual(record['resident_returncode'], 0)
+                    self.assertEqual(record['handoff_frame'], {'tx_count': 0})
+                    self.assertEqual(record['checks'], None if context is None else context['checks'])
+                    self.assertEqual(record['u2_commits'], None if context is None else context['u2_commits'])
+            full_values = dict(
+                mode='frame-full', frame_full_stage='wait-seq2-ack',
+                original_error=RuntimeError('bounded seq2 acknowledgement timeout'),
+                failure_stats={'stage': 'handoff-complete', 'frame_full_capacity': 64},
+                wire_lock=threading.Lock(), wire_frames=[], wire_errors=['no frame peer error'],
+                failure_wire_frames=[], failure_wire_errors=['no frame peer error'],
+                runner=types.SimpleNamespace(returncode=-15),
+                primary=types.SimpleNamespace(returncode=0),
+                runner_out=None, runner_err=None, resident_out=None, resident_err=None,
+                runner_stderr_path=runner_stderr_path,
+                raw_runner_stderr='raw runner stderr\n',
+                _decode_captured_pipe_output=helper_namespace['_decode_captured_pipe_output'])
+            exec(compile(ast.fix_missing_locations(ast.Module(body=[full_record_assignment],
+                type_ignores=[])), str(PROFILE_SOURCE), 'exec'), full_values)
+            full_record = full_values['failure_record']
+            self.assertEqual(full_record['mode'], 'frame-full')
+            self.assertEqual(full_record['stage'], 'wait-seq2-ack')
+            self.assertEqual(full_record['runner_stderr_pipe'], '')
+            self.assertEqual(full_record['resident_stderr'], '')
+            self.assertEqual(full_record['wire_errors'], ['no frame peer error'])
+
+            emitted = []
+            runner_stderr_path.write_text('early stderr\n')
+            early_values = dict(json=json, mode='frame-full', frame_full_stage='before-resident-ready',
+                original_error=RuntimeError('early setup failure'),
+                failure_stats=None, stats_path=Path(directory) / 'not-created-stats.json',
+                cleanup_outputs={'launcher': (None, None), 'resident': (None, None)},
+                runner_out=None, runner_err=None, resident_out=None, resident_err=None,
+                wire_lock=threading.Lock(), wire_frames=[], wire_errors=[],
+                runner=types.SimpleNamespace(returncode=1), primary=None,
+                runner_stderr_path=runner_stderr_path, raw_runner_stderr='early stderr\n',
+                _decode_captured_pipe_output=helper_namespace['_decode_captured_pipe_output'],
+                print=lambda value, **_kwargs: emitted.append(value))
+            exec(compile(ast.fix_missing_locations(ast.Module(body=[full_failure_branch],
+                type_ignores=[])), str(PROFILE_SOURCE), 'exec'), early_values)
+            self.assertEqual(len(emitted), 1)
+            early_record = json.loads(emitted[0].split(' ', 1)[1])
+            self.assertEqual(early_record['stage'], 'before-resident-ready')
+            self.assertEqual(early_record['runner_stderr'], 'early stderr\n')
+            self.assertEqual(early_record['wire_frame_count'], 0)
+
+    def test_record_uses_deadline_for_empty_partial_valid_and_wrong_prefix_pipes(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        names = {'read_bounded_line', 'read_bounded_stderr', 'line', 'record'}
+        functions = [node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name in names]
+        self.assertEqual({node.name for node in functions}, names)
+        namespace = {'os': os, 'select': select, 'time': time, 'Path': Path,
+            'json': json, '_active_handoff_evidence': None,
+            'require': lambda value, message: None if value else (_ for _ in ()).throw(RuntimeError(message))}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(PROFILE_SOURCE), 'exec'), namespace)
+
         def run(source):
-            return subprocess.Popen([sys.executable, '-c', source], stdout=subprocess.PIPE,
+            return subprocess.Popen([os.sys.executable, '-c', source], stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, bufsize=0)
 
-        partial = run("import sys,time;sys.stdout.buffer.write(b'KER_SESSION_READY {');sys.stdout.flush();time.sleep(1)")
+        empty = run('pass')
         try:
-            self.assertTrue(select.select([partial.stdout], [], [], 2)[0],
-                'partial marker bytes did not become readable before the deadline test')
-            started = time.monotonic()
-            with self.assertRaisesRegex(RuntimeError, 'timed out before a complete line') as raised:
-                PROFILE.record(partial, 'KER_SESSION_READY', timeout=0.05)
-            self.assertIn("b'KER_SESSION_READY {'", str(raised.exception))
-            self.assertLess(time.monotonic() - started, 0.5,
-                'partial readable output must not escape the marker deadline')
+            with self.assertRaisesRegex(RuntimeError, 'exited early'):
+                namespace['record'](empty, 'EXPECTED', timeout=1)
+            empty.communicate(timeout=1)
         finally:
-            if partial.poll() is None:
-                partial.kill()
-            partial.communicate(timeout=1)
+            if empty.poll() is None:
+                empty.kill(); empty.wait()
 
-        held_stderr = run('import os,time;os.close(1);time.sleep(1)')
+        held_stderr = run('import os,time;os.close(1);time.sleep(2)')
         started = time.monotonic()
         try:
             with self.assertRaisesRegex(RuntimeError, 'exited early'):
-                PROFILE.record(held_stderr, 'KER_SESSION_READY', timeout=1)
-            self.assertLess(time.monotonic() - started, 0.5,
-                'EOF diagnostics must not wait for inherited stderr writers')
+                namespace['record'](held_stderr, 'EXPECTED', timeout=1)
+            self.assertLess(time.monotonic() - started, 0.5)
         finally:
             if held_stderr.poll() is None:
                 held_stderr.kill()
             held_stderr.communicate(timeout=1)
 
-        wrong_with_inherited_stderr = run(
-            "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(1)'],"
-            "stdout=subprocess.DEVNULL);sys.stdout.write('OTHER {\\\"ok\\\":true}\\n');sys.stdout.flush()")
-        started = time.monotonic()
+        partial = run("import sys,time;sys.stdout.buffer.write(b'EXPECTED {');sys.stdout.flush();time.sleep(2)")
         try:
-            with self.assertRaisesRegex(RuntimeError, 'unexpected output'):
-                PROFILE.record(wrong_with_inherited_stderr, 'KER_SESSION_READY', timeout=1)
-            self.assertLess(time.monotonic() - started, 0.75,
-                'wrong-prefix diagnostics must not wait for descendant-held stderr')
+            with self.assertRaisesRegex(RuntimeError, 'timed out before a complete line'):
+                namespace['record'](partial, 'EXPECTED', timeout=0.05)
         finally:
-            wrong_with_inherited_stderr.communicate(timeout=1)
+            if partial.poll() is None:
+                partial.kill()
+            partial.communicate(timeout=1)
 
-        split = run("import sys,time;sys.stdout.buffer.write(b'KER_SESSION_READY {');sys.stdout.flush();"
-            "time.sleep(0.02);sys.stdout.buffer.write(b'\\\"ok\\\":true}\\n');sys.stdout.flush()")
-        try:
-            self.assertEqual(PROFILE.record(split, 'KER_SESSION_READY', timeout=1), {'ok': True})
-            split.communicate(timeout=1)
-        finally:
-            if split.poll() is None:
-                split.kill(); split.wait()
-
-        partial_eof = run("import sys;sys.stdout.buffer.write(b'KER_SESSION_READY {\\\"ok\\\":true}')")
+        partial_eof = run("import sys;sys.stdout.buffer.write(b'EXPECTED {\\\"ok\\\":true}')")
         try:
             with self.assertRaisesRegex(RuntimeError, 'ended before a complete line'):
-                PROFILE.record(partial_eof, 'KER_SESSION_READY', timeout=1)
+                namespace['record'](partial_eof, 'EXPECTED', timeout=1)
             partial_eof.communicate(timeout=1)
         finally:
             if partial_eof.poll() is None:
                 partial_eof.kill(); partial_eof.wait()
+
+        valid = run("import sys;sys.stdout.buffer.write(b'EXPECTED {\\\"ok\\\":true}\\n');sys.stdout.flush()")
+        try:
+            self.assertEqual(namespace['record'](valid, 'EXPECTED', timeout=1), {'ok': True})
+            valid.communicate(timeout=1)
+        finally:
+            if valid.poll() is None:
+                valid.kill(); valid.wait()
+
+        wrong = run("import sys;sys.stdout.buffer.write(b'OTHER {\\\"ok\\\":true}\\n');sys.stdout.flush()")
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'unexpected output'):
+                namespace['record'](wrong, 'EXPECTED', timeout=1)
+            wrong.communicate(timeout=1)
+        finally:
+            if wrong.poll() is None:
+                wrong.kill(); wrong.wait()
+
+    def test_frame_commit_release_bijection_binds_exact_lease_and_u2_bytes(self):
+        payload=b'KER-A09-HANDOFF-UDP seq=2\n'
+        ip=bytearray(20);ip[0]=0x45;ip[2:4]=(20+8+len(payload)).to_bytes(2,'big')
+        ip[8]=64;ip[9]=17;ip[12:16]=bytes((198,18,0,2));ip[16:20]=bytes((198,18,0,1))
+        checksum_sum=sum((ip[i]<<8)|ip[i+1] for i in range(0,len(ip),2))
+        while checksum_sum>>16:checksum_sum=(checksum_sum&0xffff)+(checksum_sum>>16)
+        ip[10:12]=((~checksum_sum)&0xffff).to_bytes(2,'big')
+        udp=bytes.fromhex('afc8afc9')+(8+len(payload)).to_bytes(2,'big')+b'\0\0'
+        frame=bytes.fromhex('024b45520001024b455200020800')+bytes(ip)+udp+payload
+        commit=dict(port=0,queue=0,generation=0,length=len(frame),object_index=7,
+            pool_tag=91,tx_lease_id=123,packet_pointer='0xabc',frame_hex=frame.hex())
+        release=dict(sequence=0,consumer_generation=1,object_index=7,lease_id=123,
+            pool_tag=91,packet_pointer='0xabc',length=len(frame),frame_hex=frame.hex())
+        result=self.launcher.validate_frame_commit_drain_bijection([commit],[release],payload)
+        self.assertEqual(result['committed'],1);self.assertEqual(result['drained'],1)
+        for bad in ({**release,'lease_id':124},{**release,'packet_pointer':'0xabd'},
+                    {**release,'sequence':2},{**release,'frame_hex':(frame+b'!').hex()}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(RuntimeError):
+                    self.launcher.validate_frame_commit_drain_bijection([commit],[bad],payload)
+        with self.assertRaises(RuntimeError):
+            self.launcher.validate_frame_commit_drain_bijection([commit,commit],[release],payload)
+
+    def test_owner_clear_marker_requires_exact_pid_and_schema(self):
+        validate = self.launcher.validate_parked_owner_cleared
+        validate({'pid': 42, 'owner_key': 0}, 42)
+        for record in ({'pid': 41, 'owner_key': 0}, {'pid': 42, 'owner_key': 3},
+                       {'pid': True, 'owner_key': 0}, {'pid': 42, 'owner_key': 0, 'extra': 1}):
+            with self.subTest(record=record):
+                with self.assertRaises(RuntimeError):
+                    validate(record, 42)
+
+    def test_unexpected_exited_worker_record_preserves_available_stdout_and_proof(self):
+        process = subprocess.Popen([sys.executable, '-c',
+            "import sys; print('KER_SESSION_PARKED_OWNER_EXIT {\\\"result\\\":-32}', flush=True); sys.exit(125)"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        try:
+            self.assertEqual(process.wait(timeout=2), 125)
+            output = self.launcher.capture_exited_process_stdout(process)
+            committed = [{'object_index': 7, 'packet_pointer': '0xabc'}]
+            drained = [{'object_index': 7, 'packet_pointer': '0xabc'}]
+            handoff = {'same_pointer': True, 'same_bytes': True}
+            record = self.launcher.unexpected_worker_exit_record(
+                process, output, committed, drained, handoff)
+            self.assertEqual(record['returncode'], 125)
+            self.assertIn('KER_SESSION_PARKED_OWNER_EXIT', record['stdout'])
+            self.assertIn('"result":-32', record['stdout'])
+            self.assertEqual(record['frame_committed_records'], committed)
+            self.assertEqual(record['frame_drained_records'], drained)
+            self.assertEqual(record['handoff_frame'], handoff)
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
+
+    def test_failure_collector_fallback_preserves_original_reason(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        profile = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
+        wrapper = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.FunctionDef) and node.name == 'fatal_profile_diagnostics')
+        emitted = []
+        namespace = {'json': json, 'mode': 'frame-positive',
+            '_fatal_profile_diagnostics': lambda _reason: (_ for _ in ()).throw(OSError('capture failed')),
+            'print': lambda *args, **kwargs: emitted.append(args[0]),
+            'Exception': Exception, 'RuntimeError': RuntimeError}
+        module = ast.Module(body=[wrapper], type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module), str(PROFILE_SOURCE), 'exec'), namespace)
+        error = namespace['fatal_profile_diagnostics']('original frame failure')
+        self.assertIn('original frame failure', str(error))
+        self.assertIn('capture failed', str(error))
+        record = json.loads(emitted[0].split(' ', 1)[1])
+        self.assertEqual(record['reason'], 'original frame failure')
+        self.assertIn('diagnostic_capture_error', record)
 
 
 if __name__ == '__main__':

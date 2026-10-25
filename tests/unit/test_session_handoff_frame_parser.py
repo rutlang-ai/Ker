@@ -30,7 +30,7 @@ def valid_frame(payload=b'KER-A09-HANDOFF-UDP seq=2\n'):
     ip_length = 20 + len(udp)
     ip = struct.pack('!BBHHHBBH4s4s', 0x45, 0, ip_length, 1, 0, 64, 17, 0, source, destination)
     ip = ip[:10] + struct.pack('!H', checksum(ip)) + ip[12:]
-    return b'\x02\x00\x00\x00\x00\x01\x02\x00\x00\x00\x00\x02\x08\x00' + ip + udp
+    return bytes.fromhex('024b45520001024b455200020800') + ip + udp
 
 
 def load_parser():
