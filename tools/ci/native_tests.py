@@ -456,6 +456,27 @@ def tap_preflight() -> None:
     summary("Required unshare -Urn TUN/TAP create-close preflight: PASS.")
 
 
+def dpdk_runtime_directories(prefix: Path) -> list[Path]:
+    if not prefix.is_dir():
+        raise RuntimeError(f"pinned DPDK install directory is missing: {prefix}")
+    directories = {
+        path.parent for path in prefix.rglob("librte_*.so*")
+        if path.is_file()
+    }
+    if not directories:
+        raise RuntimeError(f"pinned DPDK install has no shared-library files: {prefix}")
+    return sorted(directories)
+
+
+def dpdk_plugin_directory(prefix: Path, required_plugins: tuple[str, ...]) -> Path:
+    if not required_plugins or any("/" in name or not name.endswith(".so") for name in required_plugins):
+        raise RuntimeError("DPDK plugin names must be unversioned .so basenames")
+    for plugin in prefix.rglob(required_plugins[0]):
+        if plugin.is_file() and all((plugin.parent / name).is_file() for name in required_plugins[1:]):
+            return plugin.parent
+    raise RuntimeError(f"pinned DPDK install is missing required plugins: {required_plugins!r}")
+
+
 def require_two_cpus() -> None:
     try:
         count = len(os.sched_getaffinity(0))
@@ -466,13 +487,23 @@ def require_two_cpus() -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "tap-preflight", "verify-session-profiles"}:
-        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE", file=sys.stderr)
+    if len(argv) < 2 or argv[1] not in {"hosted-safe", "nohuge-eal", "nohuge-tap", "report-junit", "full-ctest", "tap-preflight", "verify-session-profiles", "dpdk-library-path", "dpdk-plugin-dir"}:
+        print(f"usage: {argv[0]} full-ctest CTEST_BUILD_DIR JUNIT_FILE | hosted-safe|nohuge-eal|nohuge-tap CTEST_BUILD_DIR | tap-preflight | verify-session-profiles LOG FIXTURE | report-junit JUNIT_FILE | dpdk-library-path PREFIX | dpdk-plugin-dir PREFIX PLUGIN...", file=sys.stderr)
         return 2
     if argv[1] == "tap-preflight":
         if len(argv) != 2:
             raise RuntimeError("tap-preflight takes no additional arguments")
         tap_preflight()
+        return 0
+    if argv[1] == "dpdk-library-path":
+        if len(argv) != 3:
+            raise RuntimeError("dpdk-library-path requires the install prefix")
+        print(os.pathsep.join(str(path) for path in dpdk_runtime_directories(Path(argv[2]))))
+        return 0
+    if argv[1] == "dpdk-plugin-dir":
+        if len(argv) < 4:
+            raise RuntimeError("dpdk-plugin-dir requires an install prefix and plugin names")
+        print(dpdk_plugin_directory(Path(argv[2]), tuple(argv[3:])))
         return 0
     if len(argv) < 3:
         raise RuntimeError(f"{argv[1]} requires an argument")
