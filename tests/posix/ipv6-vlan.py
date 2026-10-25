@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate original Linux IPv6 VLANs with independent host VLAN peers."""
 import argparse
+import atexit
 from contextlib import ExitStack
 import json
 import os
@@ -11,6 +12,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+from dpdk_runtime import private_runtime_environment
 
 PAYLOAD = b'native-ipv6\0'
 DATAGRAM = bytes((i * 17 + 3) % 256 for i in range(1452))
@@ -98,6 +101,10 @@ def main():
         for name in ('launcher', 'library', 'worker', 'app'):
             command += ['--' + name, str(getattr(args, name).resolve())]
         return subprocess.run(command).returncode
+    runtime = tempfile.TemporaryDirectory(prefix='ker-ipv6-vlan-runtime-')
+    atexit.register(runtime.cleanup)
+    env = private_runtime_environment(Path(runtime.name) / 'dpdk')
+    env['KER_NATIVE_VLANS'] = '300=2001:db8:300::2/64'
     ip('link', 'set', 'lo', 'up')
     ip('link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink')
     for name in ('kerhost', 'kerlink'):
@@ -113,7 +120,6 @@ def main():
     eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink'
     base = [sys.executable, str(args.launcher), '--library', str(args.library), '--io-worker', str(args.worker),
             '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', eal, '--no-all-multicast']
-    env = dict(os.environ, KER_NATIVE_VLANS='300=2001:db8:300::2/64')
     with tempfile.TemporaryDirectory(prefix='ker-ipv6-vlan-') as directory:
         root = Path(directory)
         config = root / 'vlans.ini'

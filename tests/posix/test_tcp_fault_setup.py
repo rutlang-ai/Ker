@@ -8,6 +8,8 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 
 SOURCE = Path(__file__).with_name('tcp-interop.py')
@@ -95,6 +97,59 @@ class TcpFaultSetupTests(unittest.TestCase):
                     'kerlink': {'packets': 7, 'drops': 1},
                     'kerhost': {'packets': 2, 'drops': 0},
                 })
+
+    def test_cleanup_deletes_only_exact_owned_root_netem(self):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[1:4] == ['-j', '-s', 'qdisc']:
+                return completed(json.dumps([netem()]))
+            return completed()
+
+        with mock.patch.object(tcp_interop.subprocess, 'run', side_effect=run):
+            tcp_interop.remove_tcp_fault_qdiscs({})
+        self.assertEqual([call[4] for call in calls if call[:3] == ['tc', 'qdisc', 'del']],
+                         ['kerlink', 'kerhost'])
+
+    def test_cleanup_refuses_foreign_root_qdisc_without_deleting_it(self):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            return completed(json.dumps([{'kind': 'fq_codel', 'root': True, 'handle': '8001:'}]))
+
+        with mock.patch.object(tcp_interop.subprocess, 'run', side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, 'unowned root qdisc'):
+                tcp_interop.remove_tcp_fault_qdiscs({})
+        self.assertFalse(any(call[:3] == ['tc', 'qdisc', 'del'] for call in calls))
+
+    def test_server_runs_fault_qdisc_cleanup_after_success_and_error(self):
+        with tempfile.TemporaryDirectory(prefix='tcp-fault-server-cleanup-') as directory:
+            log_path = Path(directory) / 'server.log'
+            with log_path.open('w+') as log, mock.patch.object(
+                    tcp_interop, 'remove_tcp_fault_qdiscs') as cleanup:
+                with tcp_interop.server([sys.executable, '-c',
+                        'print("READY 25001",flush=True); print("DONE",flush=True)'],
+                        25001, log, {}, cleanup_fault_qdiscs=True):
+                    pass
+                cleanup.assert_called_once_with({})
+            with log_path.open('w+') as log, mock.patch.object(
+                    tcp_interop, 'remove_tcp_fault_qdiscs') as cleanup:
+                with self.assertRaisesRegex(ValueError, 'preserve original failure'):
+                    with tcp_interop.server([sys.executable, '-c',
+                            'import time; print("READY 25001",flush=True); time.sleep(30)'],
+                            25001, log, {}, cleanup_fault_qdiscs=True):
+                        raise ValueError('preserve original failure')
+                cleanup.assert_called_once_with({})
+
+    def test_udp_compat_failure_identifies_mode_and_role(self):
+        with tempfile.TemporaryDirectory(prefix='tcp-fault-udp-context-') as directory:
+            args = SimpleNamespace(udp_app=Path(directory) / 'udp-test')
+            with mock.patch.object(tcp_interop, 'server', return_value=nullcontext()), \
+                    mock.patch.object(tcp_interop, 'client', side_effect=RuntimeError('epoll timeout')):
+                with self.assertRaisesRegex(RuntimeError, 'UDP basic server failed: epoll timeout'):
+                    tcp_interop.udp_compat(args, [], Path(directory), {}, None)
 
     def test_gated_client_installs_faults_before_releasing_client(self):
         with tempfile.TemporaryDirectory(prefix='tcp-fault-gate-test-') as directory:
