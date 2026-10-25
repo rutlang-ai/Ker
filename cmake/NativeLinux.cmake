@@ -183,6 +183,11 @@ endif()
 install(FILES "${ker_native_source}/COPYING" "${ker_native_source}/LICENSES/preferred/GPL-2.0"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux)
 if(BUILD_TESTING)
+    add_executable(ker-packet-header-test tests/posix/packet-header.c)
+    target_include_directories(ker-packet-header-test PRIVATE src/posix)
+    target_compile_options(ker-packet-header-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-packet-header COMMAND ker-packet-header-test)
+    set_tests_properties(native-packet-header PROPERTIES TIMEOUT 10 LABELS "fstack;session")
     add_test(NAME native-fstack-session-lease-input
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-lease-input.py"
             --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
@@ -441,6 +446,13 @@ if(BUILD_TESTING)
     target_compile_options(ker-exception-backpressure PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-exception-services-test tests/posix/exception-services.c)
     target_compile_options(ker-exception-services-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-exception-services-signal-test tests/posix/exception-services.c)
+    target_compile_definitions(ker-exception-services-signal-test PRIVATE KER_EXCEPTION_SERVICES_SIGNAL_TEST)
+    target_link_libraries(ker-exception-services-signal-test PRIVATE Threads::Threads)
+    target_compile_options(ker-exception-services-signal-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-exception-services-cross-thread-signal-wakeup
+        COMMAND "$<TARGET_FILE:ker-exception-services-signal-test>" --signal-wakeup-selftest)
+    set_tests_properties(native-exception-services-cross-thread-signal-wakeup PROPERTIES TIMEOUT 5 LABELS "fstack;unit")
     add_test(NAME native-fstack-exception-filter
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/exception-services.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

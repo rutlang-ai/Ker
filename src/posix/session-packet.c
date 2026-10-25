@@ -168,8 +168,7 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
             else {
                 if (n < (ssize_t)(sizeof(struct ker_packet_header) + 14) || n > (ssize_t)sizeof(bytes)) { status = -EMSGSIZE; break; }
                 struct ker_packet_header header; memcpy(&header, bytes, sizeof(header));
-                if (header.flags || header.gso_type || header.header_length || header.gso_size ||
-                    header.checksum_start || header.checksum_offset) { status = -EOPNOTSUPP; break; }
+                if (!ker_packet_tx_header_simple_supported(&header)) { status = -EOPNOTSUPP; break; }
                 rte_pktmbuf_reset(tx_packet);
                 void *data = rte_pktmbuf_append(tx_packet, (uint16_t)(n - sizeof(header)));
                 if (!data) { status = -ENOSPC; break; }
