@@ -411,8 +411,10 @@ class HandoffControlPathTests(unittest.TestCase):
                 stderr=subprocess.PIPE, bufsize=0)
 
         partial = run("import sys,time;sys.stdout.buffer.write(b'KER_SESSION_READY {');sys.stdout.flush();time.sleep(1)")
-        started = time.monotonic()
         try:
+            self.assertTrue(select.select([partial.stdout], [], [], 2)[0],
+                'partial marker bytes did not become readable before the deadline test')
+            started = time.monotonic()
             with self.assertRaisesRegex(RuntimeError, 'timed out before a complete line') as raised:
                 PROFILE.record(partial, 'KER_SESSION_READY', timeout=0.05)
             self.assertIn("b'KER_SESSION_READY {'", str(raised.exception))

@@ -2,6 +2,7 @@
 """Verify the non-FRAME profile's real early-marker diagnostic wrapper."""
 import importlib.util
 from pathlib import Path
+import select
 import subprocess
 import sys
 import tempfile
@@ -54,8 +55,10 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
             'import subprocess,sys; p=subprocess.Popen([sys.executable,"-c",'
             '"import time; time.sleep(10)"]); print(p.pid, flush=True)'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        started = time.monotonic()
         try:
+            self.assertTrue(select.select([process.stdout], [], [], 2)[0],
+                'child PID did not become readable before the bounded-capture test')
+            started = time.monotonic()
             output, errors = self.fixture.communicate_bounded(process, timeout=0.2)
             self.assertLess(time.monotonic() - started, 2)
             child_pid = int(output.decode().strip())
