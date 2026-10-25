@@ -1604,6 +1604,8 @@ def _run_session_impl(args, api):
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
                         handoff_seen = True
+                        handoff_fd = close_completed_handoff_trigger(
+                            handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close)
                     else:
                         close(handoff_fd); handoff_fd = None
                         raise RuntimeError('invalid live-handoff fixture trigger or incomplete trigger EOF')

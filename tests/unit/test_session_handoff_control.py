@@ -341,6 +341,72 @@ class HandoffControlPathTests(unittest.TestCase):
             os.fstat(trigger_read)
         os.close(trigger_write)
 
+    def test_queued_handoff_closes_trigger_pipe_only_after_recovery_ack(self):
+        source = ast.parse(SOURCE.read_text())
+        runner_impl = next(node for node in ast.walk(source)
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_session_impl')
+        dispatch = next(node for node in ast.walk(runner_impl)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'action' and
+            isinstance(node.test.comparators[0], ast.Constant) and
+            node.test.comparators[0].value == 'handoff')
+        perform_index = next(index for index, statement in enumerate(dispatch.body)
+            if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+                node.func.id == 'perform_test_handoff' for node in ast.walk(statement)))
+        seen_index = next(index for index, statement in enumerate(dispatch.body)
+            if isinstance(statement, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id == 'handoff_seen' for target in statement.targets) and
+            isinstance(statement.value, ast.Constant) and statement.value.value is True)
+        close_index = next(index for index, statement in enumerate(dispatch.body)
+            if isinstance(statement, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id == 'handoff_fd' for target in statement.targets) and
+            any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+                node.func.id == 'close_completed_handoff_trigger' for node in ast.walk(statement)))
+        self.assertLess(perform_index, seen_index)
+        self.assertLess(seen_index, close_index,
+            'queued trigger must remain open through perform_test_handoff acknowledgement')
+
+        trigger_read, trigger_write = os.pipe()
+        ack_read, ack_write = os.pipe()
+        acknowledged = threading.Event()
+        failures = []
+
+        def wait_for_ack():
+            try:
+                self.launcher.wait_for_frame_death_fixture_ack(ack_read, timeout=1)
+                acknowledged.set()
+            except BaseException as error:
+                failures.append(error)
+
+        try:
+            self.assertEqual(os.write(trigger_write, b'H'), 1)
+            self.assertEqual(self.launcher.handoff_trigger_action(os.read(trigger_read, 1)), 'handoff')
+            handoff_seen = False
+            waiter = threading.Thread(target=wait_for_ack)
+            waiter.start()
+            self.assertEqual(select.select([ack_read], [], [], 0)[0], [])
+            os.fstat(trigger_read)
+            self.assertEqual(os.write(ack_write, b'A'), 1)
+            waiter.join(2)
+            self.assertFalse(waiter.is_alive())
+            self.assertEqual(failures, [])
+            self.assertTrue(acknowledged.is_set())
+
+            handoff_seen = True
+            trigger_read = self.launcher.close_completed_handoff_trigger(
+                'frame-death-queued', handoff_seen, 0, trigger_read, os.close)
+            self.assertIsNone(trigger_read)
+            os.close(trigger_write)
+            trigger_write = -1
+            os.close(ack_write)
+            ack_write = -1
+            os.close(ack_read)
+            ack_read = -1
+        finally:
+            for fd in (trigger_read, trigger_write, ack_read, ack_write):
+                if fd is not None and fd >= 0:
+                    os.close(fd)
+
     def test_queued_death_ack_timeout_and_eof_do_not_reach_kill(self):
         for close_writer, timeout in ((False, 0.01), (True, 1)):
             with self.subTest(close_writer=close_writer):
