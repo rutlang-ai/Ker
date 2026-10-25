@@ -2444,6 +2444,16 @@
         "native-fstack-realtime-refresh-invalid-nsec"
       ],
       "adaptation": "Adapt the observable two-refresh advancing-realtime scenario through ker_native_sync_realtime and original Linux clock_gettime in a booted private kernel. Each successful refresh must read host CLOCK_REALTIME exactly once and produce normalized seconds/nanoseconds bracketed by independent host observations. Two refreshes separated by a real 2ms sleep must yield strictly advancing native realtime while native monotonic stays inside host monotonic bounds. Separate Ker extension profiles inject host EIO or an invalid nanosecond value, require EIO/EINVAL with no epoch jump, then repeat a successful refresh. No cached F-Stack getter, nullable split-output ABI, fatal refresh-error policy, host clock modification, periodic synchronization or network delivery is claimed."
+    },
+    "native-fstack-session-orphan-safety": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": "test_rx15_primary_purges_orphaned_rings",
+      "ker_ctests": [
+        "native-fstack-session-orphan-live",
+        "native-fstack-session-orphan-identity",
+        "native-fstack-session-orphan-reap"
+      ],
+      "adaptation": "Partial resident-component adaptation using the production generation-ring adapter, real original DPDK EAL/rings/pools and real child pidfds. Three profiles seed16 distinct objects across eight RX/TX rings: exact live identities and six forged identity fields cannot reclaim or alter queued bytes/counts, including forged requests after death proof; confirmed generation1 death reclaims exactly8 objects while preserving generation0 RX and generation1 TX for its live consumer. The consumer either drains exact retained pointers/bytes in FIFO order or dies, allowing the final8 objects to be reclaimed. Replay fails and the127-object pool is fully restored. All adapter calls execute in the primary; children provide lifetimes only, not secondary EALs or packet workers. Remaining: The source no-directory and not-yet-attached-consumer preservation, externally held purge-owner lock/reset timeout, dead-marker retirement with fresh unregistered-consumer packets, and whole-slot reset branches are not qualified. Ker enqueues require admitted target identities rather than directly populating unowned rings. This fixture does not qualify cross-process EAL visibility, full F-Stack directory/reset ABI, external packet delivery or a general reload/crash matrix."
     }
   }
 }

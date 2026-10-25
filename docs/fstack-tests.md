@@ -476,3 +476,9 @@ VLAN 节名校验：`native-fstack-config-lifecycle` 新增三项相关检查，
 `test_ff_get_current_time_advances` 的两次更新后时间严格前进场景，调用生产适配器
 及真实原版Linux时钟。两个相关独立CTest覆盖宿主EIO、非法纳秒值和成功恢复；
 缓存getter、NULL输出参数及F-Stack fatal错误ABI继续保留缺口。
+
+
+RX-15 部分迁移：`native-fstack-session-orphan-live/identity/reap` 以primary组件
+测试验证真实DPDK队列的pidfd拒绝、精确死亡回收、活消费者FIFO保留和最终释放。
+子进程仅提供lifetime，不代表secondary EAL/packet worker。源purge锁与未附加
+消费者等分支仍未完成，案例仅标partial，完整适配数量不增加。

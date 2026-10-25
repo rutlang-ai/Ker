@@ -271,6 +271,18 @@ if(BUILD_TESTING)
             --test "$<TARGET_FILE:ker-session-generation-rings-test>")
     set_tests_properties(native-fstack-session-generation-rings PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
         LABELS "fstack;session;dpdk")
+    add_executable(ker-session-orphan-safety-test
+        tests/posix/session-orphan-safety.c src/posix/session-generation-rings.c)
+    target_include_directories(ker-session-orphan-safety-test PRIVATE src/posix tests)
+    target_compile_options(ker-session-orphan-safety-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-session-orphan-safety-test PRIVATE PkgConfig::DPDK)
+    target_link_options(ker-session-orphan-safety-test PRIVATE -Wl,--disable-new-dtags)
+    set_target_properties(ker-session-orphan-safety-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+    add_test(NAME native-fstack-session-orphan-live COMMAND ker-session-orphan-safety-test live)
+    add_test(NAME native-fstack-session-orphan-identity COMMAND ker-session-orphan-safety-test identity)
+    add_test(NAME native-fstack-session-orphan-reap COMMAND ker-session-orphan-safety-test reap)
+    set_tests_properties(native-fstack-session-orphan-live native-fstack-session-orphan-identity
+        native-fstack-session-orphan-reap PROPERTIES TIMEOUT 20 LABELS "fstack;session;dpdk")
     add_test(NAME native-fstack-session-generation-rings-registration
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-generation-rings-registration.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")

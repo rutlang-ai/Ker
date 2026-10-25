@@ -15,12 +15,12 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 208 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 143 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 13 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 142 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、12 partial、143 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、13 partial、142 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -52,7 +52,7 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共225项记录在
 [后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：155项行为未完成
-（12 partial + 143 blocked），另有15项架构专用和55项上游工具链自测。
+（13 partial + 142 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -1561,3 +1561,27 @@ F-Stack缓存getter、NULL分离输出参数ABI及fatal刷新错误场景继续�
 
 本批Debug/Release各4项realtime CTest通过，21项清单审计测试与
 106文件/433项完整性审计通过；完整迁移门禁仍因155项未完成返回2。
+
+
+## RX-15 resident 孤儿 ring 回收安全
+
+`test_rx15_primary_purges_orphaned_rings` 从blocked推进为partial，继续留在
+issue #218；完整适配仍为208项，13项partial、142项blocked，共155项行为未完成。
+三个独立CTest `native-fstack-session-orphan-live`、`-identity`、`-reap` 使用
+生产generation-ring adapter、真实原版DPDK EAL/ring/mempool及真实子进程pidfd。
+所有adapter调用由primary执行，子进程仅提供实际存活/死亡证据，不是secondary
+EAL或packet-worker集成，也不发送原生Linux网络流量。
+
+每例将16个独立payload对象分布到两代、两队列的八条RX/TX ring。活身份和六种
+错误身份均不能回收或改变队列、对象字节及引用；进程死亡后错误身份仍被拒绝。
+确认gen1死亡后恰好释放8个归属已死消费者的对象，保留gen0 RX与gen1 TX中的
+8个活消费者对象。live/identity例验证原指针、完整字节和FIFO，reap例让最后
+一个消费者也死亡并回收剩余对象。重复reap拒绝，最终127对象池全部恢复；
+销毁前的quiescent telemetry验证TX drop分别为4或8且无full/packet-drop事件。
+
+源用例中的无directory、尚未附加消费者、外部purge锁及reset timeout、dead
+marker退役后保留新未注册消费者数据、完整slot reset分支继续保留缺口。Ker生产
+enqueue要求目标已admit，不能靠直接向未归属ring写对象来冒充这些合同已实现。
+
+本批Debug/Release各3项独立CTest通过，21项清单审计测试和106文件/433项
+完整性审计通过。完整迁移门禁仍因142项blocked及13项partial返回2。
