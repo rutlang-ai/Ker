@@ -276,7 +276,7 @@ class HandoffControlPathTests(unittest.TestCase):
     def test_frame_quiescent_wait_uses_peer_process_at_actual_callsite(self):
         tree = ast.parse(SOURCE.read_text())
         run_session = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and
-            node.name == 'run_session')
+            node.name == '_run_session_impl')
         assignment = next(node for node in ast.walk(run_session) if isinstance(node, ast.Assign) and
             any(isinstance(target, ast.Name) and target.id == 'quiescent' for target in node.targets) and
             isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and

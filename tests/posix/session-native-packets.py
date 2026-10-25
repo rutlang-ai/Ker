@@ -146,6 +146,17 @@ def handoff_udp_payload(frame):
         if checksum != 0xffff:
             return None
     return udp[8:]
+
+def consumer_writing_pool_transition_is_exact(deferred, write_complete, cancelled):
+    """The deferred snapshot includes PREPARE's mbuf; write completion allocates none."""
+    before = deferred.get('pool_before')
+    after = deferred.get('pool_after')
+    completed = write_complete.get('pool')
+    released = cancelled.get('pool')
+    return (type(before) is int and before > 0 and type(after) is int and after == before and
+        type(completed) is int and completed == before and type(released) is int and released == before - 1)
+
+
 def _decode_captured_pipe_output(output):
     return (output or b'').decode(errors='replace')
 
@@ -698,7 +709,7 @@ FATAL_HANDOFF_PROFILES = frozenset((
     'bad-prepare-error-tx-lease', 'bad-prepare-error-rx-lease',
     'bad-prepare-error-sequence', 'bad-prepare-success'))
 NONFATAL_HANDOFF_PROFILES = frozenset((
-    'positive', 'frame-positive', 'frame-full', 'frame-death-prepared',
+    'positive', 'frame-positive', 'nonframe-active-reap', 'frame-full', 'frame-death-prepared',
     'frame-death-queued', 'frame-death-producer-active-consumer',
     'frame-death-consumer-prepared', 'frame-death-consumer-writing',
     'frame-death-both-prepared', 'frame-lost-prepare-reply',
@@ -1637,10 +1648,10 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 write_complete=proof.get('write_complete',{});cancelled=proof.get('cancelled',{})
                 require(proof.get('stage')=='consumer-writing' and
                     proof.get('consumer_pidfd_dead') is True and proof.get('consumer_status')==-signal.SIGKILL and
-                    proof.get('producer_status')==1 and write_complete.get('pool')==deferred.get('pool_before')+1 and
+                    proof.get('producer_status')==1 and
+                    consumer_writing_pool_transition_is_exact(deferred,write_complete,cancelled) and
                     write_complete.get('counters')==deferred.get('counters_after') and
                     cancelled.get('status')==-errno.ESTALE and cancelled.get('tx')==deferred.get('tx_after') and
-                    cancelled.get('pool')==deferred.get('pool_before') and
                     cancelled.get('counters')==deferred.get('counters_after') and
                     proof.get('final_census',{}).get('process')==0 and proof.get('final_pmd_owner',{}).get('token')==0,
                     'consumer WRITING death did not defer, complete, then stale-cancel exactly: '+repr(proof))
