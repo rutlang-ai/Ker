@@ -1215,6 +1215,43 @@ static int generation_test_step(struct ker_generation_rings *rings,
     }
     return -EINVAL;
 }
+static int generation_test_probe_command(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity, struct rte_mempool *pool,
+    unsigned *step_index, bool peer_only, bool generation_test,
+    bool generation_detach_test, bool generation_tx_full_test,
+    bool foreign, bool nonowner_detach, bool empty_cleanup)
+{
+    if (getenv("KER_SESSION_TEST_NONFRAME_REAP"))
+        fprintf(stderr, "KER_SESSION_TEST_GENERATION_PROBE_CONTEXT {\"peer_only\":%s,\"generation_rings_enabled\":%s,\"generation_rings_present\":%s,\"detach_test\":%s,\"step\":%u,\"generation\":%u}\n",
+            peer_only ? "true" : "false", generation_rings_enabled ? "true" : "false",
+            rings ? "true" : "false", generation_detach_test ? "true" : "false",
+            step_index ? *step_index : UINT_MAX, identity ? identity->generation : UINT_MAX);
+    if (!rings || !generation_rings_enabled || !identity || !pool || !step_index || peer_only ||
+        !(generation_test || generation_detach_test || generation_tx_full_test)) return -EOPNOTSUPP;
+    unsigned step = *step_index;
+    int status = generation_test_step(rings, identity, pool, step,
+        generation_detach_test, foreign, nonowner_detach, empty_cleanup, generation_tx_full_test);
+    if (status) return status;
+    printf("KER_GENERATION_PROBED {\"generation\":%u,\"step\":%u}\n", identity->generation, step);
+    fflush(stdout);
+    *step_index = step + 1;
+    return 0;
+}
+/* The paired standby normally accepts only P (PMD acquisition).  This narrow
+ * test command allows the non-frame-reap regression to run the existing G
+ * generation probe before acquisition, but only for its explicit profile. */
+static int generation_test_standby_command(char command, bool opted_in,
+    struct ker_generation_rings *rings, const struct ker_generation_identity *identity,
+    struct rte_mempool *pool, unsigned *step_index, bool peer_only,
+    bool generation_test, bool generation_detach_test, bool generation_tx_full_test,
+    bool foreign, bool nonowner_detach, bool empty_cleanup)
+{
+    if (command != 'G' || !opted_in) return -EAGAIN;
+    if (!generation_detach_test) return -EOPNOTSUPP;
+    return generation_test_probe_command(rings, identity, pool, step_index, peer_only,
+        generation_test, generation_detach_test, generation_tx_full_test,
+        foreign, nonowner_detach, empty_cleanup);
+}
 #endif
 static void drop_client(unsigned i)
 {
@@ -3508,6 +3545,9 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         goto cleanup;
     }
 #endif
+#ifdef KER_SESSION_TEST_HOOKS
+    unsigned generation_test_step_index=generation_detach_test?3U:0U;
+#endif
     if (ring_pmd == 2&&!peer_only) {
         /* A paired standby owns only its coordinate control lease. Do not
          * inspect data leases or touch either device queue before admission.
@@ -3532,9 +3572,28 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             }
             if (!waiters[0].revents) continue;
             char command;
-            if (!(waiters[0].revents & POLLIN) || read(control, &command, 1) != 1 || command != 'P') {
+            if (!(waiters[0].revents & POLLIN) || read(control, &command, 1) != 1) {
                 result = 0; goto cleanup;
             }
+#ifdef KER_SESSION_TEST_HOOKS
+            int standby_probe = generation_test_standby_command(command,
+                getenv("KER_SESSION_TEST_NONFRAME_REAP") != NULL,
+                generation_rings, &(struct ker_generation_identity){.session=message.session,
+                    .epoch=message.epoch,.slot=(uint32_t)message.slot,.generation=generation,
+                    .process=process,.pid=(uint32_t)getpid()}, pool,
+                &generation_test_step_index, peer_only, generation_test, generation_detach_test,
+                generation_tx_full_test, detach_foreign_result, detach_nonowner_result,
+                generation_empty_cleanup_test);
+            if (standby_probe != -EAGAIN) {
+                if (standby_probe) {
+                    fprintf(stderr,"ker session: standby generation probe failed step=%u status=%d\n",
+                        generation_test_step_index,standby_probe);
+                    result=1; goto cleanup;
+                }
+                continue;
+            }
+#endif
+            if (command != 'P') { result = 0; goto cleanup; }
 #ifdef KER_SESSION_TEST_HOOKS
             /* Deterministically leave a real heartbeat ACK queued at the
              * PMD exchange boundary. Without the drain below, acquire_pmd()
@@ -3699,9 +3758,6 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     uint64_t device_sequence = 0;
     uint64_t probe_sequence = 0;
     unsigned deferred_probes = 0;
-#ifdef KER_SESSION_TEST_HOOKS
-    unsigned generation_test_step_index=generation_detach_test?3U:0U;
-#endif
     bool probe_pending = probe_only;
     /* Only a consumed P owns a response that must finish before a queued
      * control byte. Startup --probe-only work remains cancellable. */
@@ -3870,11 +3926,11 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 struct ker_generation_identity identity = {.session=message.session,.epoch=message.epoch,
                     .slot=(uint32_t)message.slot,.generation=generation,.process=process,.pid=(uint32_t)getpid()};
                 if(peer_only||!generation_rings)goto cleanup;
-                int status = generation_test_step(generation_rings,&identity,pool,generation_test_step_index,
-                    generation_detach_test,detach_foreign_result,detach_nonowner_result,generation_empty_cleanup_test,
-                    generation_tx_full_test);
-                if (status) { fprintf(stderr,"ker session: generation adapter probe failed step=%u status=%d\n",generation_test_step_index,status); result=1; goto cleanup; }
-                printf("KER_GENERATION_PROBED {\"generation\":%u,\"step\":%u}\n",generation,generation_test_step_index++); fflush(stdout);
+                unsigned completed_step=generation_test_step_index;
+                int status=generation_test_probe_command(generation_rings,&identity,pool,&generation_test_step_index,
+                    peer_only,generation_test,generation_detach_test,generation_tx_full_test,
+                    detach_foreign_result,detach_nonowner_result,generation_empty_cleanup_test);
+                if (status) { fprintf(stderr,"ker session: generation adapter probe failed step=%u status=%d\n",completed_step,status); result=1; goto cleanup; }
                 if(generation_empty_cleanup_test&&generation_test_step_index==6) {
                     printf("KER_GENERATION_EMPTY_CLEANUP_RELEASED {\"generation\":%u}\n",generation); fflush(stdout);
                     generation_test_step_index=0;
