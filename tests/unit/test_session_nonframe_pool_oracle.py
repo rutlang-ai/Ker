@@ -203,6 +203,21 @@ int main(void) {
                     dict(snapshot, **{key: value}), 9, drained))
         self.assertFalse(fixture.nonframe_final_snapshot_matches(snapshot, True, drained))
 
+    def test_final_status_failure_diagnostic_keeps_all_evidence_fields(self):
+        before = {'generation': 500, 'process': 2}
+        status = {'generation': 501, 'process': 1, 'sequence': 3}
+        owner = {'token': 17, 'generation': 0}
+        owner_before = {'token': 17, 'generation': 0}
+        drained = {'control_pool_available': 501, 'rings_after': [0] * 8}
+        snapshot = {'sequence': 3, 'active': [0, 0, 0, 0], 'packet_pool_in_use': 0}
+        diagnostic = fixture.nonframe_final_status_diagnostic(
+            before, status, owner, owner_before, drained, snapshot)
+        for label, evidence in (('census_before', before), ('final_status', status),
+                                ('final_owner', owner), ('owner_before', owner_before),
+                                ('drain_marker', drained), ('primary_snapshot', snapshot)):
+            self.assertIn(label, diagnostic)
+            self.assertIn(repr(evidence), diagnostic)
+
     def test_runtime_source_has_opt_in_owner_drain_marker(self):
         source = IO_SESSION.read_text()
         callback = source[source.index('static int generation_frame_drain_control('):]
@@ -302,23 +317,26 @@ int main(void) {
 
     def test_status_binds_pool_before_and_after_live_queue_drain(self):
         before = {'generation': 500, 'process': 2}
-        owner = {'token': 17, 'generation': 0}
+        owner_before = {'token': 17, 'generation': 0, 'sequence': 2}
+        owner_after = {'token': 17, 'generation': 0, 'sequence': 4}
         retained_status = {'generation': 498, 'process': 1}
         self.assertTrue(fixture.nonframe_reap_status_matches(
-            before, retained_status, owner, owner, 498, -2))
+            before, retained_status, owner_after, owner_before, 498, -2))
         final_status = {'generation': 501, 'process': 1}
         self.assertTrue(fixture.nonframe_reap_status_matches(
-            before, final_status, owner, owner, 501, 1))
+            before, final_status, owner_after, owner_before, 501, 1))
         # A final-restored pool count cannot be claimed before the explicit
         # consumer drain, and the intermediate count cannot pass afterward.
         self.assertFalse(fixture.nonframe_reap_status_matches(
-            before, retained_status, owner, owner, 501, -2))
+            before, retained_status, owner_after, owner_before, 501, -2))
         self.assertFalse(fixture.nonframe_reap_status_matches(
-            before, final_status, owner, owner, 498, 1))
+            before, final_status, owner_after, owner_before, 498, 1))
         self.assertFalse(fixture.nonframe_reap_status_matches(
-            before, final_status, dict(owner, token=18), owner, 501, 1))
+            before, final_status, dict(owner_after, token=18), owner_before, 501, 1))
         self.assertFalse(fixture.nonframe_reap_status_matches(
-            before, dict(final_status, process=2), owner, owner, 501, 1))
+            before, dict(final_status, process=2), owner_after, owner_before, 501, 1))
+        self.assertFalse(fixture.nonframe_reap_status_matches(
+            before, final_status, dict(owner_after, sequence=True), owner_before, 501, 1))
 
 
 if __name__ == '__main__':

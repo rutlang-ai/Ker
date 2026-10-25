@@ -65,11 +65,16 @@ def nonframe_reap_retained_matches(before, reaped):
 def nonframe_reap_status_matches(before, status, owner, owner_before, pool_available, pool_delta):
     baseline = before.get('generation')
     before_processes = before.get('process')
+    owner_state = {key: value for key, value in owner.items() if key != 'sequence'} if type(owner) is dict else None
+    owner_before_state = ({key: value for key, value in owner_before.items() if key != 'sequence'}
+        if type(owner_before) is dict else None)
     return (type(baseline) is int and type(before_processes) is int and
         type(status.get('generation')) is int and status['generation'] == baseline + pool_delta and
         type(status.get('process')) is int and status['process'] == before_processes - 1 and
         type(pool_available) is int and pool_available == status['generation'] and
-        owner == owner_before)
+        type(owner.get('sequence')) is int and owner['sequence'] > 0 and
+        type(owner_before.get('sequence')) is int and owner_before['sequence'] > 0 and
+        owner_state == owner_before_state)
 
 
 def nonframe_retained_drain_matches(before, reaped, drained):
@@ -95,6 +100,12 @@ def nonframe_final_snapshot_matches(snapshot, sequence, drained):
         type(snapshot.get('packet_pool_in_use')) is int and snapshot['packet_pool_in_use'] == 0 and
         type(snapshot.get('control_pool_available')) is int and
         snapshot['control_pool_available'] == drained.get('control_pool_available'))
+
+
+def nonframe_final_status_diagnostic(before, status, owner, owner_before, drained, snapshot):
+    return ('post-drain resident evidence mismatch: ' + repr(dict(
+        census_before=before, final_status=status, final_owner=owner,
+        owner_before=owner_before, drain_marker=drained, primary_snapshot=snapshot)))
 
 
 def handoff_udp_payload(frame):
@@ -735,9 +746,12 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 final_snapshot = record(primary, 'KER_SESSION_TEST_NONFRAME_FINAL_SNAPSHOT')
                 require(nonframe_reap_status_matches(handoff_census_before, final_status,
                         final_owner, handoff_owner_before, drained.get('control_pool_available'), 1),
-                    'final resident status/pool did not bind the exact live-owner ring drain')
+                    nonframe_final_status_diagnostic(handoff_census_before, final_status,
+                        final_owner, handoff_owner_before, drained, final_snapshot))
                 require(nonframe_final_snapshot_matches(final_snapshot, final_status.get('sequence'), drained),
-                    'primary-only final active/frame-pool snapshot did not bind the post-drain STATUS request: ' + repr(final_snapshot))
+                    'primary-only final snapshot mismatch: ' + nonframe_final_status_diagnostic(
+                        handoff_census_before, final_status, final_owner, handoff_owner_before,
+                        drained, final_snapshot))
                 os.close(handoff_write); handoff_write = -1
                 runner.send_signal(signal.SIGTERM)
                 runner_output, _ = runner.communicate(timeout=25)
