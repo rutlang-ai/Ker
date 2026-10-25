@@ -148,15 +148,54 @@ class NativeTestSelectorTests(unittest.TestCase):
                 native_tests.run_full_ctest(Path("build"), junit)
 
     def test_orphan_session_regressions_are_mandatory_session_inventory(self):
-        orphan_tests = {
-            "native-fstack-session-orphan-identity",
-            "native-fstack-session-orphan-inflight-both",
-            "native-fstack-session-orphan-inflight-rx",
-            "native-fstack-session-orphan-inflight-tx",
-            "native-fstack-session-orphan-live",
-            "native-fstack-session-orphan-reap",
-        }
-        self.assertTrue(orphan_tests <= set(native_tests.SESSION_CTEST))
+        cmake = Path(__file__).resolve().parents[2] / "cmake/NativeLinux.cmake"
+        registrations = set(re.findall(
+            r"add_test\(NAME (native-fstack-session-orphan-[A-Za-z0-9-]+)",
+            cmake.read_text(encoding="utf-8"),
+        ))
+        self.assertTrue(registrations)
+        self.assertTrue(registrations <= set(native_tests.SESSION_CTEST))
+
+        all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
+                     set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
+                     set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT})
+        session_names = set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT}
+        inventory = [{"name": name, "properties": [
+            {"name": "LABELS", "value": ["session", "fstack"]}
+            if name in session_names else {"name": "LABELS", "value": ["fstack"]}
+        ]} for name in sorted(all_names)]
+        for skipped in sorted(registrations):
+            with self.subTest(skipped=skipped), tempfile.TemporaryDirectory() as temporary:
+                junit = Path(temporary) / "full.xml"
+
+                def run(_command, **_kwargs):
+                    cases = "".join(
+                        f'<testcase name="{name}">' + ("<skipped/>" if name == skipped else "") +
+                        "</testcase>" for name in sorted(all_names - {native_tests.SESSION_DIRECT})
+                    )
+                    junit.write_text(f"<testsuites><testsuite>{cases}</testsuite></testsuites>",
+                                     encoding="utf-8")
+                    return SimpleNamespace(returncode=0)
+
+                with mock.patch.object(native_tests, "ctest_inventory", return_value=inventory), \
+                     mock.patch.object(native_tests.subprocess, "run", side_effect=run), \
+                     self.assertRaisesRegex(RuntimeError, "required tests skipped"):
+                    native_tests.run_full_ctest(Path(temporary), junit)
+
+        # A registration omitted from the selector is rejected before execution.
+        missing_inventory = [item for item in inventory
+                             if item["name"] != sorted(registrations)[0]]
+        with mock.patch.object(native_tests, "ctest_inventory", return_value=missing_inventory), \
+             self.assertRaisesRegex(RuntimeError, "missing required tests"):
+            native_tests.run_full_ctest(Path("build"), Path("unused.xml"))
+
+        # Unknown session-labeled registrations remain fail-closed.
+        unknown_inventory = inventory + [{"name": "native-fstack-session-unreviewed", "properties": [
+            {"name": "LABELS", "value": ["session", "fstack"]}
+        ]}]
+        with mock.patch.object(native_tests, "ctest_inventory", return_value=unknown_inventory), \
+             self.assertRaisesRegex(RuntimeError, "session CTest label inventory changed"):
+            native_tests.run_full_ctest(Path("build"), Path("unused.xml"))
 
     def test_full_graph_rejects_each_software_datapath_skip(self):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
