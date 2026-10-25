@@ -82,6 +82,12 @@ SESSION_CTEST = (
     "native-fstack-session-generation-detach",
     "native-fstack-session-generation-empty-config",
     "native-fstack-session-generation-invalid-selected-entry",
+    "native-fstack-session-orphan-identity",
+    "native-fstack-session-orphan-inflight-both",
+    "native-fstack-session-orphan-inflight-rx",
+    "native-fstack-session-orphan-inflight-tx",
+    "native-fstack-session-orphan-live",
+    "native-fstack-session-orphan-reap",
 )
 
 MANDATORY_SESSION_PROFILES = frozenset({

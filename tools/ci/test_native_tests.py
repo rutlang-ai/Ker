@@ -147,6 +147,17 @@ class NativeTestSelectorTests(unittest.TestCase):
                  mock.patch.object(native_tests, "summary"):
                 native_tests.run_full_ctest(Path("build"), junit)
 
+    def test_orphan_session_regressions_are_mandatory_session_inventory(self):
+        orphan_tests = {
+            "native-fstack-session-orphan-identity",
+            "native-fstack-session-orphan-inflight-both",
+            "native-fstack-session-orphan-inflight-rx",
+            "native-fstack-session-orphan-inflight-tx",
+            "native-fstack-session-orphan-live",
+            "native-fstack-session-orphan-reap",
+        }
+        self.assertTrue(orphan_tests <= set(native_tests.SESSION_CTEST))
+
     def test_full_graph_rejects_each_software_datapath_skip(self):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
                      set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
