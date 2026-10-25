@@ -32,6 +32,10 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def _decode_captured_pipe_output(output):
+    return (output or b'').decode(errors='replace')
+
+
 def dpdk_mp_socket_paths(runtime_directory, file_prefix):
     """Return pinned primary/maximum-secondary paths from DPDK's EAL formula."""
     require(isinstance(file_prefix, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', file_prefix) and
@@ -1548,10 +1552,10 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     runner_stderr = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                     final_snapshot = dict(rejection_timeout_snapshot,
                         runner_returncode=runner.poll(), resident_returncode=primary.poll(),
-                        runner_stdout=runner_out.decode(errors='replace'),
+                        runner_stdout=_decode_captured_pipe_output(runner_out),
                         runner_stderr=runner_stderr,
-                        resident_stdout=resident_out.decode(errors='replace'),
-                        resident_stderr=resident_err.decode(errors='replace'))
+                        resident_stdout=_decode_captured_pipe_output(resident_out),
+                        resident_stderr=_decode_captured_pipe_output(resident_err))
                     print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_FINAL ' +
                         json.dumps(final_snapshot, sort_keys=True), flush=True)
                 if mode == 'frame-positive' and original_error is not None:
@@ -1574,11 +1578,11 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                         first_wire_frame=(failure_context or {}).get('first_wire_frame'),
                         runner_returncode=(runner.returncode if runner is not None else None),
                         resident_returncode=(primary.returncode if primary is not None else None),
-                        runner_stdout=runner_out.decode(errors='replace'),
+                        runner_stdout=_decode_captured_pipe_output(runner_out),
                         runner_stderr=raw_runner_stderr,
-                        runner_stderr_pipe=runner_err.decode(errors='replace'),
-                        resident_stdout=resident_out.decode(errors='replace'),
-                        resident_stderr=resident_err.decode(errors='replace'))
+                        runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
+                        resident_stdout=_decode_captured_pipe_output(resident_out),
+                        resident_stderr=_decode_captured_pipe_output(resident_err))
                     print('KER_SESSION_FRAME_POSITIVE_FAILURE ' +
                         json.dumps(failure_record, sort_keys=True), flush=True)
                 if finalization_errors:

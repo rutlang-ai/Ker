@@ -14,6 +14,7 @@ from pathlib import Path
 import select
 import signal
 import subprocess
+import tempfile
 import types
 import time
 import unittest
@@ -405,6 +406,52 @@ class HandoffControlPathTests(unittest.TestCase):
                      'bad-prepare-error-generation', 'bad-prepare-success'):
             with self.subTest(mode=mode):
                 self.assertTrue(classify(mode))
+
+    def test_frame_failure_record_accepts_redirected_optional_stderr(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        decoder = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_decode_captured_pipe_output')
+        profile = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
+        record_assignment = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id == 'failure_record' for target in node.targets))
+        helper_namespace = {}
+        exec(compile(ast.Module(body=[decoder], type_ignores=[]), str(PROFILE_SOURCE), 'exec'),
+            helper_namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            runner_stderr_path = Path(directory) / 'runner.stderr'
+            runner_stderr_path.write_text('raw runner stderr\n')
+            for context in (None, {'checks': {'same_u2': False}, 'stats_stage': 'interrupted',
+                    'proof': {'committed_records': [{'object_index': 4}]},
+                    'u2_commits': [], 'u2_releases': [],
+                    'wire_observation': {'seq1_count': 1, 'seq2_count': 0},
+                    'first_wire_frame': 'abcd'}):
+                with self.subTest(context=context):
+                    values = dict(json=json, _decode_captured_pipe_output=
+                        helper_namespace['_decode_captured_pipe_output'],
+                        original_error=RuntimeError('original oracle failure'),
+                        failure_stats={'handoff_frame': {'tx_count': 0}},
+                        raw_runner_stderr='raw runner stderr\n',
+                        runner_stderr_path=runner_stderr_path,
+                        runner=types.SimpleNamespace(returncode=143),
+                        primary=types.SimpleNamespace(returncode=0),
+                        runner_out=None, runner_err=None, resident_out=b'resident output\n',
+                        resident_err=None, failure_context=context)
+                    isolated = ast.Module(body=[record_assignment], type_ignores=[])
+                    exec(compile(ast.fix_missing_locations(isolated), str(PROFILE_SOURCE), 'exec'),
+                        values)
+                    record = values['failure_record']
+                    self.assertEqual(record['reason'], 'original oracle failure')
+                    self.assertEqual(record['runner_stdout'], '')
+                    self.assertEqual(record['runner_stderr_pipe'], '')
+                    self.assertEqual(record['resident_stderr'], '')
+                    self.assertEqual(record['runner_stderr'], 'raw runner stderr\n')
+                    self.assertEqual(record['runner_returncode'], 143)
+                    self.assertEqual(record['resident_returncode'], 0)
+                    self.assertEqual(record['handoff_frame'], {'tx_count': 0})
+                    self.assertEqual(record['checks'], None if context is None else context['checks'])
+                    self.assertEqual(record['u2_commits'], None if context is None else context['u2_commits'])
 
     def test_frame_commit_release_bijection_binds_exact_lease_and_u2_bytes(self):
         payload=b'KER-A09-HANDOFF-UDP seq=2\n'
