@@ -30,6 +30,43 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def handoff_udp_payload(frame):
+    """Parse only a complete, checksummed fixture IPv4/UDP tuple."""
+    if not isinstance(frame, bytes) or len(frame) < 42 or frame[12:14] != b'\x08\x00':
+        return None
+    ip = frame[14:]
+    version_ihl = ip[0]
+    ihl = (version_ihl & 15) * 4
+    if version_ihl >> 4 != 4 or ihl != 20 or len(ip) < ihl:
+        return None
+    total = struct.unpack('!H', ip[2:4])[0]
+    if total != len(ip) or total < ihl + 8 or ip[9] != 17 or struct.unpack('!H', ip[6:8])[0] & 0x3fff:
+        return None
+    if ip[12:16] != socket.inet_aton('198.18.0.2') or ip[16:20] != socket.inet_aton('198.18.0.1'):
+        return None
+    header = ip[:ihl]
+    total_sum = sum(struct.unpack('!10H', header))
+    while total_sum >> 16:
+        total_sum = (total_sum & 0xffff) + (total_sum >> 16)
+    if total_sum != 0xffff:
+        return None
+    udp = ip[ihl:total]
+    source_port, destination_port, udp_length, udp_checksum = struct.unpack('!HHHH', udp[:8])
+    if (source_port, destination_port) != (45000, 45001) or udp_length != len(udp):
+        return None
+    if udp_checksum:
+        pseudo = ip[12:20] + b'\x00\x11' + struct.pack('!H', udp_length)
+        data = pseudo + udp
+        if len(data) & 1:
+            data += b'\x00'
+        checksum = sum(struct.unpack('!' + 'H' * (len(data) // 2), data))
+        while checksum >> 16:
+            checksum = (checksum & 0xffff) + (checksum >> 16)
+        if checksum != 0xffff:
+            return None
+    return udp[8:]
+
+
 def dpdk_mp_socket_paths(runtime_directory, file_prefix):
     """Return pinned primary/maximum-secondary paths from DPDK's EAL formula."""
     require(isinstance(file_prefix, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', file_prefix) and
@@ -404,18 +441,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             wire_thread=None
             if mode=='frame-positive':
                 wire_thread=threading.Thread(target=handoff_wire_peer,daemon=True);wire_thread.start()
-            def udp_payload(frame):
-                if len(frame)<42 or frame[12:14]!=b'\x08\x00': return None
-                ip=frame[14:]; ihl=(ip[0]&15)*4
-                if ip[0]>>4!=4 or ihl<20 or len(ip)<ihl+8 or ip[9]!=17: return None
-                total=struct.unpack('!H',ip[2:4])[0]
-                if total<ihl+8 or len(ip)<total: return None
-                udp=ip[ihl:total]; udp_len=struct.unpack('!H',udp[4:6])[0]
-                if udp_len<8 or udp_len!=len(udp): return None
-                if ip[12:16]!=socket.inet_aton('198.18.0.2') or ip[16:20]!=socket.inet_aton('198.18.0.1'):
-                    return None
-                if struct.unpack('!HH',udp[:4])!=(45000,45001): return None
-                return udp[8:]
+            udp_payload=handoff_udp_payload
             def wait_wire_payload(sequence):
                 payload=f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
                 deadline=time.monotonic()+10
@@ -889,8 +915,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 proof=after.get('handoff_frame') or {}
                 commits=proof.get('committed_records',[]);drains=proof.get('drained_records',[])
                 u2_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
-                u2_commits=[item for item in commits if u2_payload.hex() in item.get('frame_hex','')]
-                u2_drains=[item for item in drains if item.get('sequence')==2]
+                u2_commits=[item for item in commits if udp_payload(bytes.fromhex(item.get('frame_hex','')))==u2_payload]
+                u2_drains=[item for item in drains if udp_payload(bytes.fromhex(item.get('frame_hex','')))==u2_payload]
                 require(len(u2_commits)==len(u2_drains)==1 and
                     all(u2_commits[0].get(left)==u2_drains[0].get(right) for left,right in
                         (('packet_pointer','packet_pointer'),('object_index','object_index'),

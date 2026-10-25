@@ -275,13 +275,6 @@ static bool frame_consumer_matches(const struct client *producer)
         atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)!=pmd_key(consumer)) return false;
     return true;
 }
-static void frame_store_identity(struct ker_session_message *message,
-    const struct ker_generation_identity *identity)
-{
-    message->session=identity->session; message->epoch=identity->epoch;
-    message->slot=identity->slot; message->generation=identity->generation;
-    message->process=identity->process;
-}
 static int handle_frame_request(struct client *client,const struct ker_session_message *request,
     struct ker_session_message *reply)
 {
@@ -514,12 +507,9 @@ static int generation_frame_drain_control(char command, void *opaque)
         }
         frame_hex[length*2]='\0';
         uintptr_t pointer=(uintptr_t)packet;uint64_t tag=ker_generation_packet_pool_tag(context->rings);
-        static const char expected[]="KER-A09-HANDOFF-UDP seq=2\n";
-        bool seq2=length>=42+sizeof(expected)-1&&bytes[12]==0x08&&bytes[13]==0x00&&
-            bytes[14]==0x45&&bytes[23]==17&&!memcmp(bytes+42,expected,sizeof(expected)-1);
         if(!tag||ker_generation_packet_release(context->rings,&context->identity,packet))return -EUCLEAN;
         printf("KER_SESSION_FRAME_DRAINED {\"sequence\":%u,\"consumer_generation\":%u,\"object_index\":%u,\"lease_id\":%llu,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"frame_hex\":\"%s\"}\n",
-            seq2?2U:0U,context->identity.generation,object_index,(unsigned long long)lease_id,
+            0U,context->identity.generation,object_index,(unsigned long long)lease_id,
             (unsigned long long)tag,(void *)pointer,length,frame_hex);fflush(stdout);released++;
     }
     if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||
@@ -2568,13 +2558,13 @@ static int worker_frame_request(int fd,const struct ker_session_message *identit
 #endif
     require_resident_alive(resident);
     ssize_t n;
-    do n=recv(fd,response,sizeof(*response),MSG_TRUNC); while(n<0&&errno==EINTR&&alive(resident));
+    do n=recv(fd,response,sizeof(*response),MSG_TRUNC); while(n<0&&errno==EINTR&&!dead(resident));
     require_resident_alive(resident);
     if(n<0)return -errno;
     if(n!=sizeof(*response))return -EPROTO;
     if(replay_test) {
         struct ker_session_message replay;
-        do n=recv(fd,&replay,sizeof(replay),MSG_TRUNC); while(n<0&&errno==EINTR&&alive(resident));
+        do n=recv(fd,&replay,sizeof(replay),MSG_TRUNC); while(n<0&&errno==EINTR&&!dead(resident));
         require_resident_alive(resident);
         if(n!=(ssize_t)sizeof(replay)||memcmp(response,&replay,sizeof(replay)))return -EPROTO;
     }

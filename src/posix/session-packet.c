@@ -62,7 +62,11 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet,
     struct ker_worker_exception *exception, const volatile sig_atomic_t *stopping,
     ker_session_heartbeat_fn heartbeat_tick, ker_session_heartbeat_fn heartbeat_pump,
-    void *heartbeat_context, struct ker_session_packet_stats *stats)
+    void *heartbeat_context,
+#ifdef KER_SESSION_TEST_HOOKS
+    ker_session_packet_test_control_fn test_control, void *test_control_context,
+#endif
+    struct ker_session_packet_stats *stats)
 {
     struct rte_ring *rx = rte_ring_lookup(KER_SESSION_PACKET_RX), *tx = rte_ring_lookup(KER_SESSION_PACKET_TX);
     uint16_t actual_mtu;

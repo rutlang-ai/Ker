@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import struct
 
 
 def signal_pidfd(pidfd, signum):
@@ -20,6 +21,44 @@ def signal_pidfd(pidfd, signum):
     if sender is None:
         raise RuntimeError('pidfd_send_signal is required for exact handoff fixture control')
     sender(pidfd, signum)
+
+
+def handoff_ipv4_udp_payload(frame):
+    """Return a complete IPv4/UDP payload only for the fixture's exact tuple."""
+    if not isinstance(frame, bytes) or len(frame) < 14 + 20 + 8 or frame[12:14] != b'\x08\x00':
+        return None
+    ip = frame[14:]
+    version_ihl = ip[0]
+    ihl = (version_ihl & 15) * 4
+    if version_ihl >> 4 != 4 or ihl != 20 or len(ip) < ihl:
+        return None
+    total = struct.unpack('!H', ip[2:4])[0]
+    if total != len(ip) or total < ihl + 8 or ip[9] != 17 or struct.unpack('!H', ip[6:8])[0] & 0x3fff:
+        return None
+    if ip[12:16] != bytes((198, 18, 0, 2)) or ip[16:20] != bytes((198, 18, 0, 1)):
+        return None
+    header = ip[:ihl]
+    words = struct.unpack('!10H', header)
+    total_sum = sum(words)
+    while total_sum >> 16:
+        total_sum = (total_sum & 0xffff) + (total_sum >> 16)
+    if total_sum != 0xffff:
+        return None
+    udp = ip[ihl:total]
+    source_port, destination_port, udp_length, udp_checksum = struct.unpack('!HHHH', udp[:8])
+    if source_port != 45000 or destination_port != 45001 or udp_length != len(udp):
+        return None
+    if udp_checksum:
+        pseudo = ip[12:20] + b'\x00\x11' + struct.pack('!H', udp_length)
+        data = pseudo + udp
+        if len(data) & 1:
+            data += b'\x00'
+        checksum = sum(struct.unpack('!' + 'H' * (len(data) // 2), data))
+        while checksum >> 16:
+            checksum = (checksum & 0xffff) + (checksum >> 16)
+        if checksum != 0xffff:
+            return None
+    return udp[8:]
 
 
 def wait_pidfd_process_stopped(pidfd, pid, timeout=5):
@@ -258,7 +297,9 @@ def run_session(args, api):
         deadline=time.monotonic()+timeout
         while time.monotonic()<deadline:
             for record in frame_committed_records:
-                if payload.hex() in record['frame_hex']:
+                try:frame=bytes.fromhex(record['frame_hex'])
+                except (KeyError,TypeError,ValueError):continue
+                if handoff_ipv4_udp_payload(frame)==payload:
                     return record
             with selectors.DefaultSelector() as selector:
                 selector.register(worker.stdout,selectors.EVENT_READ)
@@ -284,7 +325,7 @@ def run_session(args, api):
                 record=json.loads(raw.split(b' ',1)[1])
                 fields={'sequence','consumer_generation','object_index','lease_id','pool_tag',
                     'packet_pointer','length','frame_hex'}
-                if (set(record)!=fields or type(record.get('sequence')) is not int or record['sequence'] not in (0,2) or
+                if (set(record)!=fields or type(record.get('sequence')) is not int or record['sequence'] != 0 or
                     type(record.get('consumer_generation')) is not int or record['consumer_generation']!=1 or
                     type(record.get('object_index')) is not int or record['object_index']<0 or
                     type(record.get('lease_id')) is not int or record['lease_id']<=0 or
@@ -344,8 +385,11 @@ def run_session(args, api):
                 if committed.get(left)!=drained.get(right):
                     raise RuntimeError('peer release changed committed frame '+left)
         payload=b'KER-A09-HANDOFF-UDP seq=2\n'
-        u2_commits=[item for item in commits if payload.hex() in item.get('frame_hex','')]
-        u2_drains=[item for item in drains if item.get('sequence')==2]
+        def carries_u2(item):
+            try:return handoff_ipv4_udp_payload(bytes.fromhex(item['frame_hex']))==payload
+            except (KeyError,TypeError,ValueError):return False
+        u2_commits=[item for item in commits if carries_u2(item)]
+        u2_drains=[item for item in drains if carries_u2(item)]
         if len(u2_commits)!=1 or len(u2_drains)!=1 or key(u2_commits[0],'tx_lease_id')!=key(u2_drains[0],'lease_id'):
             raise RuntimeError('the original U2 datagram was not committed and drained exactly once')
         return commits,drains
@@ -806,15 +850,17 @@ def run_session(args, api):
             if sequence != 2:
                 return
             committed = wait_for_u2_commit(payload)
+            try:committed_frame=bytes.fromhex(committed.get('frame_hex',''))
+            except (TypeError,ValueError):committed_frame=b''
             if (committed.get('queue') != 0 or committed.get('generation') != 0 or
                 committed.get('packet_pointer') is None or committed.get('object_index') is None or
-                committed.get('pool_tag') is None or payload.hex() not in committed.get('frame_hex', '')):
+                committed.get('pool_tag') is None or handoff_ipv4_udp_payload(committed_frame)!=payload):
                 raise RuntimeError('parked original LKL endpoint did not commit the exact second UDP frame')
             batch_records,batch=request_frame_batch()
             if batch['tx_after']:
                 more_records,final_batch=request_frame_batch()
                 batch_records.extend(more_records);batch=final_batch
-            matches=[item for item in batch_records if item.get('sequence')==2]
+            matches=[item for item in batch_records if handoff_ipv4_udp_payload(bytes.fromhex(item['frame_hex']))==payload]
             if len(matches)!=1 or any(matches[0].get(left)!=committed.get(right) for left,right in
                     (('object_index','object_index'),('pool_tag','pool_tag'),('lease_id','tx_lease_id'),
                      ('packet_pointer','packet_pointer'),('length','length'),('frame_hex','frame_hex'))):
