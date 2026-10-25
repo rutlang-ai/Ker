@@ -128,7 +128,7 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unsupported handoff profile: typo'):
             self.fixture.handoff_profile_expects_failure('typo')
         self.assertIn('runner.communicate(timeout=20)', branch)
-        self.assertIn('for mode in HANDOFF_NEGATIVE_PROFILES:', source)
+        self.assertIn('if mode in HANDOFF_NEGATIVE_PROFILES:', source)
         self.assertIn('profile_expects_failure = handoff_profile_expects_failure(mode)', source)
 
 

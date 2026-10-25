@@ -1,6 +1,7 @@
 """Unit checks for the native CTest selector and its no-skip contract."""
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import hashlib
 import json
@@ -319,6 +320,38 @@ class NativeTestSelectorTests(unittest.TestCase):
                     log.write_text("\n".join(lines), encoding="utf-8")
                     with self.assertRaisesRegex(RuntimeError, "malformed capture digest"):
                         native_tests.verify_session_profiles(log, source)
+
+    def test_checked_in_session_fixture_inventory_matches_classifier_negative_profiles(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
+        expected, structured = native_tests.expected_session_profiles(source)
+        self.assertEqual(expected, native_tests.MANDATORY_SESSION_PROFILES)
+        self.assertFalse(structured)
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        constant = next(node.value for node in tree.body if isinstance(node, ast.Assign) and
+                        len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and
+                        node.targets[0].id == "HANDOFF_NEGATIVE_PROFILES")
+        self.assertEqual(native_tests._literal_profile_tuple(constant),
+                         native_tests.MANDATORY_NEGATIVE_PROFILES)
+
+    def test_session_profile_inventory_fails_closed_for_missing_renamed_or_unsupported_values(self):
+        valid = self.fixture_source(False)
+        literal = repr(tuple(sorted(native_tests.MANDATORY_NEGATIVE_PROFILES)))
+        mutations = (
+            (valid.replace(literal, literal.replace("'bad-capability'", "'renamed-capability'", 1)),
+             "negative-profile loop differs"),
+            (valid.replace("for mode in " + literal,
+                           "for mode in " + literal.replace("'bad-capability', ", "", 1)),
+             "negative-profile loop differs"),
+            (valid.replace("for mode in " + literal, "for mode in get_negative_profiles()"),
+             "negative-profile loop differs"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "fixture.py"
+            for mutated, message in mutations:
+                with self.subTest(source=mutated):
+                    source.write_text(mutated, encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        native_tests.expected_session_profiles(source)
 
     def test_nohuge_eal_does_not_require_tun_but_required_tap_preflight_fails_closed(self):
         with mock.patch.object(native_tests, "nohuge_prerequisite", return_value=(False, "no TUN")):

@@ -2241,7 +2241,11 @@ def main():
     print('PASS: original LKL post-PARKED UDP frame is journaled before prepare and drained by the admitted peer as the exact mbuf pointer/bytes once')
     run_live_handoff_profile(args, api, plugin_paths, mode='nonframe-active-reap')
     if args.handoff_negative_profiles:
-        for mode in HANDOFF_NEGATIVE_PROFILES:
+        for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+                'handoff-control-hup', 'prepare-enoent', 'prepare-ebusy', 'prepare-eperm',
+                'bad-prepare-error', 'bad-prepare-error-token', 'bad-prepare-error-capability',
+                'bad-prepare-error-tx-lease', 'bad-prepare-error-rx-lease',
+                'bad-prepare-error-sequence', 'bad-prepare-success'):
             run_live_handoff_profile(args, api, plugin_paths, mode)
     return 0
 
