@@ -567,9 +567,17 @@ def _stop_timed_out_runner(process, timeout_error, wait_timeout=5):
     if process.poll() is None:
         process.kill()
     process.wait(timeout=wait_timeout)
+    process._ker_session_timeout_stdout = output
     if process.stdout is not None:
         process.stdout.close()
     return output
+
+
+def _collect_profile_cleanup_output(label, process):
+    """Avoid a second communicate() on the deliberately closed timed-out pipe."""
+    if label == 'launcher' and hasattr(process, '_ker_session_timeout_stdout'):
+        return process._ker_session_timeout_stdout, b''
+    return process.communicate(timeout=5)
 
 
 def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
@@ -1639,7 +1647,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                             except subprocess.TimeoutExpired:
                                 process.kill(); process.wait(timeout=10)
                         if process.poll() is not None:
-                            cleanup_outputs[label] = process.communicate(timeout=5)
+                            cleanup_outputs[label] = _collect_profile_cleanup_output(label, process)
                         else:
                             raise RuntimeError(f'{label} did not exit during fixture cleanup')
                     except BaseException as error:

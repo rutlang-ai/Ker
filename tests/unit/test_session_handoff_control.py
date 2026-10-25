@@ -486,6 +486,22 @@ class HandoffControlPathTests(unittest.TestCase):
         for mode in sorted((item for item in inventory if item in nonfatal), key=str):
             with self.subTest(mode=mode):
                 self.assertFalse(classify(mode))
+        hup_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'mode' and
+            any(isinstance(item, ast.Constant) and item.value == 'handoff-control-hup'
+                for item in node.test.comparators) and
+            any(isinstance(child, ast.Return) for child in ast.walk(node)))
+        rejection_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'mode' and
+            isinstance(node.test.ops[0], ast.In) and {'prepare-enoent','prepare-ebusy','prepare-eperm'} <=
+                {item.value for item in node.test.comparators[0].elts if isinstance(item, ast.Constant)} and
+            any(isinstance(child, ast.Return) for child in ast.walk(node)))
+        self.assertLess(hup_branch.lineno, fatal_branch.lineno)
+        self.assertLess(rejection_branch.lineno, fatal_branch.lineno)
+        self.assertTrue(any(isinstance(node, (ast.Return, ast.Raise)) for node in ast.walk(hup_branch)))
+        self.assertTrue(any(isinstance(node, ast.Return) for node in ast.walk(rejection_branch)))
         with self.assertRaisesRegex(ValueError, 'unknown handoff profile'):
             classify('unexpected-mode')
 
@@ -511,6 +527,8 @@ class HandoffControlPathTests(unittest.TestCase):
                 self.assertIn(b'ready', output)
                 self.assertIsNotNone(runner.returncode)
                 self.assertTrue(runner.stdout.closed)
+                self.assertEqual(PROFILE._collect_profile_cleanup_output('launcher', runner),
+                    (output, b''))
                 self.assertFalse(select.select([descendant_pidfd], [], [], 0)[0],
                     'bounded runner capture must not signal an unrelated descendant')
             finally:
