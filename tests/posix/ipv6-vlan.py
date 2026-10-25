@@ -127,6 +127,10 @@ def main():
         for n, mode in enumerate(('ini-large', 'cli-scatter')):
             stats, capture = root / (mode + '.json'), root / mode
             capture.mkdir()
+            # Each profile starts a fresh TAP endpoint but reuses this host
+            # VLAN. Discard the previous endpoint's dynamic ARP entry so the
+            # host resolves the current endpoint through normal ARP.
+            ip('-4', 'neigh', 'flush', 'dev', 'kerhost.100')
             options = ['--config', str(config)]
             if mode == 'cli-scatter':
                 override = root / 'override.ini'; override.write_text('[vlan.300]\naddresses=2001:db8:300::2/64\n')
@@ -180,6 +184,11 @@ def main():
                     require(record['native']['active_opens'] == 3 and record['native']['passive_opens'] == 3 and
                             record['native']['udp6_in_datagrams'] == 6 and record['native']['udp6_out_datagrams'] == 6 and
                             record['native']['udp_in_datagrams'] == 1, 'traffic bypassed original Linux: ' + str(record))
+                    neighbors = json.loads(subprocess.check_output(
+                        ['ip', '-j', '-4', 'neigh', 'show', 'to', '198.19.100.2', 'dev', 'kerhost.100']))
+                    require(any(entry.get('lladdr', '').lower() == record['io']['mac'].lower()
+                                for entry in neighbors),
+                            'host IPv4 ARP did not resolve the current native endpoint: ' + str(neighbors))
                     for tag, address in ADDRESSES:
                         neighbors = json.loads(subprocess.check_output(['ip', '-j', '-6', 'neigh', 'show', 'dev', f'kerhost.{tag}']))
                         require(any(p.get('dst') == address and p.get('lladdr', '').lower() == record['io']['mac'].lower()
@@ -188,6 +197,15 @@ def main():
                     print('PASS: ' + mode + ' IPv6 VLAN/VIP TCP/UDP, metadata, NDP, wire tags/checksums and mixed IPv4', flush=True)
                 except Exception:
                     log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
+                    try:
+                        neighbors = subprocess.check_output(
+                            ['ip', '-j', '-4', 'neigh', 'show', 'dev', 'kerhost.100'], text=True).strip()
+                        link_stats = subprocess.check_output(
+                            ['ip', '-s', 'link', 'show', 'dev', 'kerhost.100'], text=True).strip()
+                        print('IPv4 VLAN neighbor state: ' + neighbors, file=sys.stderr)
+                        print('IPv4 VLAN link counters:\n' + link_stats, file=sys.stderr)
+                    except subprocess.SubprocessError as diagnostic_error:
+                        print('IPv4 VLAN diagnostics failed: ' + str(diagnostic_error), file=sys.stderr)
                     raise
                 finally:
                     if process.poll() is None:
