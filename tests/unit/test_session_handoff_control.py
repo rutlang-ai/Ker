@@ -6,12 +6,17 @@ actual nested handoff function the marker sequence emitted by the C success and
 error paths. Neither proves EAL, packet, or native handoff behavior.
 """
 import errno
+import ast
+import io
 import importlib.util
+import json
 import os
 from pathlib import Path
 import select
+import selectors
 import signal
 import subprocess
+import sys
 import types
 import time
 import unittest
@@ -230,6 +235,40 @@ class HandoffControlPathTests(unittest.TestCase):
             os.close(read_fd)
             if write_fd >= 0:
                 os.close(write_fd)
+
+    def test_frame_quiescent_wait_uses_peer_process_at_actual_callsite(self):
+        tree = ast.parse(SOURCE.read_text())
+        run_session = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and
+            node.name == 'run_session')
+        assignment = next(node for node in ast.walk(run_session) if isinstance(node, ast.Assign) and
+            any(isinstance(target, ast.Name) and target.id == 'quiescent' for target in node.targets) and
+            isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and
+            node.value.func.id == 'ready')
+        call = assignment.value
+        self.assertEqual(len(call.args), 1)
+        self.assertEqual(ast.literal_eval(call.args[0]), 'KER_SESSION_FRAME_QUIESCENT')
+        self.assertEqual([(item.arg, ast.dump(item.value)) for item in call.keywords],
+            [('process', "Name(id='peer_worker', ctx=Load())")])
+
+        worker_read, worker_write = os.pipe()
+        peer_read, peer_write = os.pipe()
+        worker_line = b'KER_SESSION_FRAME_QUIESCENT {"tx_count":99,"packet_pool_in_use":99}\n'
+        peer_line = b'KER_SESSION_FRAME_QUIESCENT {"tx_count":0,"packet_pool_in_use":0}\n'
+        os.write(worker_write, worker_line); os.close(worker_write)
+        os.write(peer_write, peer_line); os.close(peer_write)
+        with io.FileIO(worker_read, 'rb', closefd=True) as worker_stdout, \
+                io.FileIO(peer_read, 'rb', closefd=True) as peer_stdout:
+            worker = types.SimpleNamespace(stdout=worker_stdout)
+            peer_worker = types.SimpleNamespace(stdout=peer_stdout)
+            metrics = {}
+            ready_code = nested_code(compile(SOURCE.read_text(), str(SOURCE), 'exec'), 'ready')
+            ready = types.FunctionType(ready_code,
+                {'time': time, 'selectors': selectors, 'RuntimeError': RuntimeError, 'json': json, 'sys': sys},
+                'ready', closure=(cell(lambda _line: False), cell(metrics), cell(worker)))
+            result = eval(compile(ast.Expression(call), str(SOURCE), 'eval'),
+                {'ready': ready, 'peer_worker': peer_worker})
+            self.assertEqual(result, {'tx_count': 0, 'packet_pool_in_use': 0})
+            self.assertEqual(worker_stdout.readline(), worker_line)
 
     def test_hup_boundary_wait_failure_still_resumes_exact_worker(self):
         read_fd, write_fd = os.pipe()

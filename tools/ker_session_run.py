@@ -959,7 +959,7 @@ def run_session(args, api):
             else:raise RuntimeError('peer frame TX ring did not reach empty after producer exit')
             if peer_control_w<0 or os.write(peer_control_w,b'Q')!=1:
                 raise RuntimeError('could not request final peer frame quiescence')
-            quiescent=ready(peer_worker,'KER_SESSION_FRAME_QUIESCENT')
+            quiescent=ready('KER_SESSION_FRAME_QUIESCENT',process=peer_worker)
             if quiescent!={'tx_count':0,'packet_pool_in_use':0}:
                 raise RuntimeError('peer frame ring or packet pool remained nonempty')
             commits,drains=validate_frame_commit_drain_bijection()
