@@ -325,7 +325,7 @@
       "id": "configuration-contracts",
       "title": "Resolve remaining typed configuration and intentional schema differences",
       "disposition": "contract-review",
-      "reason": "Ker typed settings and Linux defaults differ from F-Stack global structures, permissive handlers, FreeBSD boot fields and several fixture/default/ignore contracts. Existing subset coverage must not be promoted to complete fixture equivalence. VLAN configuration-record list allocation rejection now qualifies through the production loader. RX core-list allocation failure evidence does not qualify the remaining global F-Stack proc_lcore allocation contract. The explicit disabled-jumbo MTU policy is now adapted separately by native-fstack-mtu-enable-config/live; it no longer remains in this group. The source no-options startup failure (misnamed empty_ini) is now separately adapted by native-fstack-config-lifecycle; valid Ker CLI-only configuration remains supported.",
+      "reason": "Ker typed settings and Linux defaults differ from F-Stack global structures, permissive handlers, FreeBSD boot fields and several fixture/default/ignore contracts. Existing subset coverage must not be promoted to complete fixture equivalence. VLAN configuration-record list allocation rejection now qualifies through the production loader. RX core-list allocation failure evidence does not qualify the remaining global F-Stack proc_lcore allocation contract. The explicit disabled-jumbo MTU policy is now adapted separately by native-fstack-mtu-enable-config/live; it no longer remains in this group. The source no-options startup failure (misnamed empty_ini) is now separately adapted by native-fstack-config-lifecycle; valid Ker CLI-only configuration remains supported. Malformed VLAN section failure is now adapted through the actual Ker typed reader/CLI; permissive orphan/filter and out-of-array skip contracts remain in this group.",
       "evidence": [
         "tools/ker-run.py",
         "tests/posix/test_ker_run_config.py",
@@ -344,7 +344,6 @@
         "tests/unit/test_ff_config.c::test_ff_load_config_portlist_nonint",
         "tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state",
         "tests/unit/test_ff_config.c::test_vlan_cfg_handler_id_not_in_filter_returns_one",
-        "tests/unit/test_ff_config.c::test_vlan_cfg_handler_bad_section_returns_zero",
         "tests/unit/test_ff_config.c::test_port_cfg_handler_bad_section_returns_zero",
         "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
         "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",

@@ -464,3 +464,9 @@ MTU 禁用策略：`native-fstack-mtu-enable-config` 与 `native-fstack-mtu-enab
 缺失启动配置：`native-fstack-config-lifecycle` 的三项追加检查对应固定源
 `test_ff_load_config_empty_ini` 的真实无参数调用，并扩展参数缺失、命令缺失和
 恢复。该源用例没有读取空文件；Ker完整CLI无需配置文件的既有行为继续保留。
+
+
+VLAN 节名校验：`native-fstack-config-lifecycle` 新增三项相关检查，适配
+`test_vlan_cfg_handler_bad_section_returns_zero` 的加载失败场景。Ker使用
+`[vlan.ID]`，验证畸形ID的真实CLI拒绝、worker/application未启动及修正后的恢复。
+孤立/filter与越界数组的成功跳过不是本批适配内容。
