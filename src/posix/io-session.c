@@ -1217,6 +1217,27 @@ static int generation_detach_seed(struct ker_generation_rings *rings,
     }
     return 0;
 }
+static void generation_test_nonframe_log_drain_failure(const char *phase,unsigned direction,unsigned q,
+    int expected,int api_status,const struct rte_mbuf *packet,bool release_attempted,int release_status,
+    struct ker_generation_rings *rings)
+{
+    if(!getenv("KER_SESSION_TEST_NONFRAME_REAP"))return;
+    unsigned counts[8],active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    for(unsigned d=0;d<2;d++)for(unsigned queue=0;queue<2;queue++)for(unsigned g=0;g<2;g++){
+        unsigned index=(d*2+queue)*2+g;
+        struct rte_ring *ring=generation_test_ring(d,queue,g);
+        counts[index]=ring?rte_ring_count(ring):UINT32_MAX;
+    }
+    int active_status=ker_generation_test_active_counts(rings,active);
+    char release_status_json[16];
+    if(release_attempted)snprintf(release_status_json,sizeof(release_status_json),"%d",release_status);
+    else strcpy(release_status_json,"null");
+    fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"%s\",\"direction\":\"%s\",\"queue\":%u,\"expected\":%d,\"api_status\":%d,\"packet_null\":%s,\"release_attempted\":%s,\"release_status\":%s,\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"active_status\":%d,\"active\":[%u,%u,%u,%u]}\n",
+        phase,direction?"tx":"rx",q,expected,api_status,packet?"false":"true",
+        release_attempted?"true":"false",release_status_json,
+        counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],counts[6],counts[7],
+        active_status,active[0],active[1],active[2],active[3]);fflush(stderr);
+}
 static int generation_detach_release_retained(struct ker_generation_rings *rings,
     const struct ker_generation_identity *identity,bool foreign,bool nonowner_detach,bool empty_cleanup)
 {
@@ -1224,22 +1245,26 @@ static int generation_detach_release_retained(struct ker_generation_rings *rings
         struct rte_mbuf *packet=NULL;
         int expected_rx=empty_cleanup?1:((identity->generation==0&&q==0)?0:1);
         int got=ker_generation_rx_dequeue(rings,identity,0,q,&packet);
-        if(got!=expected_rx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet)))) {
-            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
-                fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"step5_rx\",\"queue\":%u,\"expected\":%d,\"got\":%d,\"packet\":%s}\n",
-                    q,expected_rx,got,packet?"true":"false");fflush(stderr);
-            }
+        int release_status=0;
+        bool release_attempted=got==expected_rx&&got==1&&packet;
+        if(release_attempted)
+            release_status=ker_generation_packet_release(rings,identity,packet);
+        if(got!=expected_rx||(!got&&packet)||(got==1&&(!packet||release_status))) {
+            generation_test_nonframe_log_drain_failure("step5_dequeue",0,q,expected_rx,got,packet,
+                release_attempted,release_status,rings);
             return -EUCLEAN;
         }
         packet=NULL;
         int expected_tx=1;
         if(!empty_cleanup&&identity->generation==1&&q==1&&!foreign&&!nonowner_detach)expected_tx=0;
         got=ker_generation_tx_dequeue_peer(rings,identity,0,q,&packet);
-        if(got!=expected_tx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet)))) {
-            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
-                fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"step5_tx\",\"queue\":%u,\"expected\":%d,\"got\":%d,\"packet\":%s}\n",
-                    q,expected_tx,got,packet?"true":"false");fflush(stderr);
-            }
+        release_status=0;
+        release_attempted=got==expected_tx&&got==1&&packet;
+        if(release_attempted)
+            release_status=ker_generation_packet_release(rings,identity,packet);
+        if(got!=expected_tx||(!got&&packet)||(got==1&&(!packet||release_status))) {
+            generation_test_nonframe_log_drain_failure("step5_dequeue",1,q,expected_tx,got,packet,
+                release_attempted,release_status,rings);
             return -EUCLEAN;
         }
     }
