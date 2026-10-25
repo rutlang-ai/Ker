@@ -12,7 +12,6 @@ import re
 import select
 import shlex
 import signal
-import selectors
 import socket
 import stat
 import struct
@@ -381,16 +380,62 @@ def report_hugepage_cleanup_refusal(mode, original_error, cleanup_error):
         raise cleanup_error.with_traceback(cleanup_error.__traceback__)
 
 
+def read_bounded_line(process, timeout=25, max_bytes=1 << 20):
+    """Read one complete line without letting readline block past the deadline."""
+    require(process.stdout is not None, 'packet-session stdout is unavailable')
+    deadline = time.monotonic() + timeout
+    value = bytearray()
+    fd = process.stdout.fileno()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('packet-session output timed out before a complete line; '
+                f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            raise RuntimeError('packet-session output timed out before a complete line; '
+                f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+        chunk = os.read(fd, 1)
+        if not chunk:
+            if value:
+                raise RuntimeError('packet-session output ended before a complete line; '
+                    f'partial bytes={bytes(value[:256])!r}, truncated={len(value) > 256}')
+            return bytes(value)
+        value.extend(chunk)
+        if len(value) > max_bytes:
+            raise RuntimeError('packet-session output line exceeded its byte limit')
+        if chunk == b'\n':
+            return bytes(value)
+
+
+def read_bounded_stderr(stderr, timeout=0.1, max_bytes=8192):
+    """Capture a bounded diagnostic without waiting on inherited pipe writers."""
+    if stderr is None:
+        return ''
+    deadline = time.monotonic() + timeout
+    value = bytearray()
+    fd = stderr.fileno()
+    while len(value) < max_bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            break
+        chunk = os.read(fd, min(4096, max_bytes - len(value)))
+        if not chunk:
+            break
+        value.extend(chunk)
+    return value.decode(errors='replace')
+
+
 def line(process, timeout=25, stderr_path=None):
-    with selectors.DefaultSelector() as selector:
-        selector.register(process.stdout, selectors.EVENT_READ)
-        require(selector.select(timeout), 'packet-session output timed out')
-    value = process.stdout.readline()
+    value = read_bounded_line(process, timeout)
     if not value:
         if stderr_path is not None:
             diagnostic = Path(stderr_path).read_text(errors='replace') if Path(stderr_path).exists() else ''
         elif process.stderr is not None:
-            diagnostic = process.stderr.read().decode(errors='replace')
+            diagnostic = read_bounded_stderr(process.stderr)
         else:
             diagnostic = ''
         raise RuntimeError('packet-session exited early: ' + diagnostic)
@@ -449,15 +494,15 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     return command
 
 
-def record(process, prefix, stderr_path=None):
-    value = line(process, stderr_path=stderr_path)
+def record(process, prefix, stderr_path=None, timeout=25):
+    value = line(process, timeout=timeout, stderr_path=stderr_path)
     if not value.startswith(prefix + ' '):
         diagnostic = ''
         if process.poll() is None:
             try: process.wait(timeout=3)
             except subprocess.TimeoutExpired: pass
         if process.poll() is not None and process.stderr is not None:
-            diagnostic = process.stderr.read().decode(errors='replace')
+            diagnostic = read_bounded_stderr(process.stderr)
         raise RuntimeError('unexpected output: ' + value + (('\nchild stderr:\n' + diagnostic) if diagnostic else ''))
     return json.loads(value[len(prefix) + 1:])
 
