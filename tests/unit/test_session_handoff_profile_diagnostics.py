@@ -11,6 +11,7 @@ import unittest
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / 'posix' / 'session-native-packets.py'
+LAUNCHER = Path(__file__).resolve().parents[2] / 'tools' / 'ker_session_run.py'
 
 
 class HandoffProfileDiagnosticsTests(unittest.TestCase):
@@ -20,6 +21,9 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('session_native_packets_diag_test', FIXTURE)
         cls.fixture = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.fixture)
+        launcher_spec = importlib.util.spec_from_file_location('ker_session_run_eof_test', LAUNCHER)
+        cls.launcher = importlib.util.module_from_spec(launcher_spec)
+        launcher_spec.loader.exec_module(cls.launcher)
 
     def test_nonframe_peer_marker_uses_redirected_stderr_and_failure_snapshot(self):
         with tempfile.TemporaryDirectory(prefix='session-handoff-marker-') as directory:
@@ -73,6 +77,27 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
             for stream in (process.stdout, process.stderr):
                 if stream is not None and not stream.closed:
                     stream.close()
+
+    def test_frame_owner_waits_for_exit_after_stdout_eof(self):
+        source = LAUNCHER.read_text()
+        finish = source[source.index('    def finish_frame_owner_output():'):
+            source.index('    def validate_frame_commit_drain_bijection():')]
+        self.assertIn('wait_after_pipe_eof(worker,', finish)
+        process = subprocess.Popen([sys.executable, '-c',
+            'import os,sys; os.close(1); sys.stdin.buffer.read(1)'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 1)[0])
+            self.assertIsNone(process.poll(), 'fixture must observe EOF before process exit')
+            process.stdin.write(b'x')
+            process.stdin.flush()
+            process.stdin.close()
+            self.assertEqual(self.launcher.wait_after_pipe_eof(process, 1,
+                'fixture process did not exit'), 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=1)
 
     def test_failure_diagnostics_use_bounded_capture_for_fallbacks(self):
         source = FIXTURE.read_text()

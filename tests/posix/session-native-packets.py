@@ -1181,7 +1181,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     proof.get('commit_bijection')=={'committed':len(commits),'drained':len(drains)} and
                     proof.get('final_batch',{}).get('tx_after')==0 and
                     proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0},
-                    'frame commits and generic peer drains did not reach exact bijective quiescence')
+                    'frame commits and generic peer drains did not reach exact bijective quiescence: ' +
+                    json.dumps(dict(finished=finished, runner_stderr=errors.decode(errors='replace')), sort_keys=True))
             require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
                 finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and
                 finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and

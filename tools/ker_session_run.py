@@ -196,6 +196,14 @@ def reject_handoff_trigger_eof(mode, handoff_seen, udp_sequence):
     raise RuntimeError('handoff trigger pipe reached unexpected EOF')
 
 
+def wait_after_pipe_eof(process, timeout, failure_message):
+    """Wait for process exit after pipe EOF, which can precede waitpid readiness."""
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(failure_message) from error
+
+
 def run_session(args, api):
     address = ipaddress.ip_interface(args.address or '198.18.0.2/24')
     address6 = ipaddress.ip_interface(args.address6) if args.address6 else None
@@ -404,7 +412,8 @@ def run_session(args, api):
             raw=worker.stdout.readline()
             if not raw:eof=True;continue
             if not capture_frame_owner_line(raw):worker_deferred_output.append(raw)
-        if worker.poll() is None:raise RuntimeError('parked frame producer remained live after app teardown')
+        wait_after_pipe_eof(worker, max(0,deadline-time.monotonic()),
+            'parked frame producer remained live after app teardown')
 
     def validate_frame_commit_drain_bijection():
         def key(record, lease_field):
