@@ -456,24 +456,61 @@ def tap_preflight() -> None:
     summary("Required unshare -Urn TUN/TAP create-close preflight: PASS.")
 
 
+def _resolved_dpdk_prefix(prefix: Path) -> Path:
+    try:
+        resolved = prefix.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError(f"pinned DPDK install directory is missing: {prefix}") from error
+    if not resolved.is_dir():
+        raise RuntimeError(f"pinned DPDK install path is not a directory: {prefix}")
+    return resolved
+
+
+def _validated_dpdk_file(prefix: Path, candidate: Path) -> Path:
+    try:
+        target = candidate.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError(f"pinned DPDK file is missing or dangling: {candidate}") from error
+    if not target.is_file():
+        raise RuntimeError(f"pinned DPDK target is not a regular file: {candidate} -> {target}")
+    try:
+        target.relative_to(prefix)
+    except ValueError as error:
+        raise RuntimeError(f"pinned DPDK file escapes install prefix: {candidate} -> {target}") from error
+    return target
+
+
 def dpdk_runtime_directories(prefix: Path) -> list[Path]:
-    if not prefix.is_dir():
-        raise RuntimeError(f"pinned DPDK install directory is missing: {prefix}")
+    resolved_prefix = _resolved_dpdk_prefix(prefix)
     directories = {
-        path.parent for path in prefix.rglob("librte_*.so*")
-        if path.is_file()
+        _validated_dpdk_file(resolved_prefix, path).parent
+        for path in resolved_prefix.rglob("librte_*.so*")
     }
     if not directories:
-        raise RuntimeError(f"pinned DPDK install has no shared-library files: {prefix}")
+        raise RuntimeError(f"pinned DPDK install has no shared-library files: {resolved_prefix}")
     return sorted(directories)
 
 
 def dpdk_plugin_directory(prefix: Path, required_plugins: tuple[str, ...]) -> Path:
     if not required_plugins or any("/" in name or not name.endswith(".so") for name in required_plugins):
         raise RuntimeError("DPDK plugin names must be unversioned .so basenames")
-    for plugin in prefix.rglob(required_plugins[0]):
-        if plugin.is_file() and all((plugin.parent / name).is_file() for name in required_plugins[1:]):
-            return plugin.parent
+    resolved_prefix = _resolved_dpdk_prefix(prefix)
+    for plugin in resolved_prefix.rglob(required_plugins[0]):
+        _validated_dpdk_file(resolved_prefix, plugin)
+        plugin_directory = plugin.parent.resolve(strict=True)
+        try:
+            plugin_directory.relative_to(resolved_prefix)
+        except ValueError as error:
+            raise RuntimeError(f"pinned DPDK plugin directory escapes install prefix: {plugin_directory}") from error
+        missing = False
+        for name in required_plugins[1:]:
+            sibling = plugin_directory / name
+            if not sibling.exists() and not sibling.is_symlink():
+                missing = True
+                break
+            _validated_dpdk_file(resolved_prefix, sibling)
+        if not missing:
+            return plugin_directory
     raise RuntimeError(f"pinned DPDK install is missing required plugins: {required_plugins!r}")
 
 
