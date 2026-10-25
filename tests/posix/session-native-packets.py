@@ -42,6 +42,22 @@ def nonframe_reap_pool_delta_matches(before, waiting):
 
 NONFRAME_RETAINED_RINGS = [0, 0, 1, 0, 0, 1, 0, 1]
 
+HANDOFF_SUCCESS_PROFILES = ('positive', 'frame-positive')
+HANDOFF_NEGATIVE_PROFILES = (
+    'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    'handoff-control-hup', 'prepare-enoent', 'prepare-ebusy', 'prepare-eperm',
+    'bad-prepare-error', 'bad-prepare-error-token', 'bad-prepare-error-capability',
+    'bad-prepare-error-tx-lease', 'bad-prepare-error-rx-lease',
+    'bad-prepare-error-sequence', 'bad-prepare-success')
+
+
+def handoff_profile_expects_failure(mode):
+    if mode in HANDOFF_NEGATIVE_PROFILES:
+        return True
+    if mode in HANDOFF_SUCCESS_PROFILES or mode == 'nonframe-active-reap':
+        return False
+    raise ValueError('unsupported handoff profile: ' + str(mode))
+
 
 def nonframe_exact_int_list(value, expected):
     return (type(value) is list and len(value) == len(expected) and
@@ -538,6 +554,7 @@ def record(process, prefix, stderr_path=None, timeout=25):
 
 
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
+    profile_expects_failure = handoff_profile_expects_failure(mode)
     with tempfile.TemporaryDirectory(prefix='a9-') as directory:
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
@@ -1006,7 +1023,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     resident_returncode=primary.returncode), sort_keys=True), flush=True)
                 print(f'PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, and resumed the packet loop')
                 return
-            if mode != 'positive':
+            if profile_expects_failure:
                 try:
                     runner_output, _ = runner.communicate(timeout=20)
                 except subprocess.TimeoutExpired as error:
@@ -2223,11 +2240,7 @@ def main():
     print('PASS: original LKL post-PARKED UDP frame is journaled before prepare and drained by the admitted peer as the exact mbuf pointer/bytes once')
     run_live_handoff_profile(args, api, plugin_paths, mode='nonframe-active-reap')
     if args.handoff_negative_profiles:
-        for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
-                'handoff-control-hup',
-                'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
-                'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
-                'bad-prepare-error-rx-lease', 'bad-prepare-error-sequence', 'bad-prepare-success'):
+        for mode in HANDOFF_NEGATIVE_PROFILES:
             run_live_handoff_profile(args, api, plugin_paths, mode)
     return 0
 

@@ -77,10 +77,27 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
             source.index('            try:\n                ready_line = line(runner')]
         diagnostic_helpers += source[source.index('            def fatal_profile_diagnostics(reason):'):
             source.index("            require(not select.select([app_pidfd, owner_pidfd, peer_pidfd]")]
-        diagnostic_helpers += source[source.index("            if mode != 'positive':"):
+        diagnostic_helpers += source[source.index('            if profile_expects_failure:'):
             source.index("            if mode == 'timeout':")]
         self.assertNotIn('communicate()', diagnostic_helpers)
         self.assertIn('communicate_bounded(', diagnostic_helpers)
+
+    def test_positive_modes_are_not_classified_as_fatal_negative_profiles(self):
+        source = FIXTURE.read_text()
+        branch = source[source.index('            if profile_expects_failure:'):
+            source.index("            if mode == 'timeout':")]
+        self.assertEqual(self.fixture.HANDOFF_SUCCESS_PROFILES, ('positive', 'frame-positive'))
+        self.assertFalse(self.fixture.handoff_profile_expects_failure('positive'))
+        self.assertFalse(self.fixture.handoff_profile_expects_failure('frame-positive'))
+        self.assertFalse(self.fixture.handoff_profile_expects_failure('nonframe-active-reap'))
+        self.assertTrue(self.fixture.handoff_profile_expects_failure('bad-capability'))
+        self.assertTrue(self.fixture.handoff_profile_expects_failure('peer-death'))
+        self.assertTrue(self.fixture.handoff_profile_expects_failure('timeout'))
+        with self.assertRaisesRegex(ValueError, 'unsupported handoff profile: typo'):
+            self.fixture.handoff_profile_expects_failure('typo')
+        self.assertIn('runner.communicate(timeout=20)', branch)
+        self.assertIn('for mode in HANDOFF_NEGATIVE_PROFILES:', source)
+        self.assertIn('profile_expects_failure = handoff_profile_expects_failure(mode)', source)
 
 
 if __name__ == '__main__':
