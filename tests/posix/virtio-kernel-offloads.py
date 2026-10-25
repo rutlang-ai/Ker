@@ -108,7 +108,7 @@ def main():
                 subprocess.run(['ip', *family, 'neigh', 'flush', 'dev', 'offhost'], check=True)
             sockets = []
             wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
-            wire.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            offloads.configure_capture_socket(wire)
             wire.bind(('offhost', 0))
             stop = threading.Event()
             process = None

@@ -296,6 +296,10 @@ jobs:
           test -c /dev/vhost-net
           sudo chown "$(id -u):$(id -g)" /dev/vhost-net
           sudo chmod 0600 /dev/vhost-net
+          rmem_max="$(sysctl -n net.core.rmem_max)"
+          if (( rmem_max < 4194304 )); then
+            sudo sysctl -w net.core.rmem_max=4194304
+          fi
           sudo sysctl -w vm.nr_hugepages=256
           sudo mkdir -p /dev/hugepages
           if ! mountpoint -q /dev/hugepages; then
