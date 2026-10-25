@@ -29,16 +29,16 @@ if port == 'aux0' and os.environ.get('FAKE_AUX_MALFORMED') == '1':
 if port == 'aux0' and os.environ.get('FAKE_AUX_SIGNAL') == '1':
     Path(os.environ['FAKE_AUX_PID_FILE']).write_text(str(os.getpid()))
     def stop(signum, frame):
-        print('KER_IO_DONE {{}}', flush=True)
+        print('KER_IO_DONE {{"outstanding": 0}}', flush=True)
         Path(os.environ['FAKE_AUX_DONE_FILE']).write_text(str(time.monotonic_ns()))
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)
-    print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02'}}), flush=True)
+    print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02', 'tx_offload_features': 0}}), flush=True)
     while True: signal.pause()
-print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:01'}}), flush=True)
+print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}), flush=True)
 while os.read(fd, 1):
     pass
-print('KER_IO_DONE {{}}', flush=True)
+print('KER_IO_DONE {{"outstanding": 0}}', flush=True)
 sys.exit(int(os.environ.get('FAKE_AUX_WORKER_EXIT' if port == 'aux0' else 'FAKE_WORKER_EXIT', '0')))
 '''
 
