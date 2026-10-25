@@ -89,8 +89,8 @@ def main():
                     require(record['io']['memory_bytes'] == expected * 1024 * 1024,
                             f'actual EAL memory allocation mismatch: {record["io"]}')
                     expected_max_mtu = 1500 if name == 'ini-32' else 9000
-                    require(record['io']['max_mtu'] == expected_max_mtu,
-                            f'actual worker max-MTU geometry mismatch: {record["io"]}')
+                    require(record['max_mtu'] == expected_max_mtu,
+                            f'actual worker max-MTU geometry mismatch: {record}')
                     require(record['io']['hugepages'] is False, 'EAL regular-page policy not applied')
                     require(record['stop_requests'] or record['control_eof'], 'control shutdown not observed')
                     require(record['outstanding'] == 0 and record['native']['passive_opens'] == 1 and
