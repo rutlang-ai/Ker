@@ -298,7 +298,8 @@ jobs:
               --worker "$worker" --tool tools/ker-session.py --library "$library" \
               --app "$app" --dpdk-plugin-dir "$plugin_dir" --huge-dir /dev/hugepages \
               --handoff-negative-profiles 2>&1 | tee "$RUNNER_TEMP/session-native-packets.log"
-          python3 tools/ci/native_tests.py verify-session-profiles "$RUNNER_TEMP/session-native-packets.log"
+          python3 tools/ci/native_tests.py verify-session-profiles \
+            "$RUNNER_TEMP/session-native-packets.log" tests/posix/session-native-packets.py
 
       - name: Run native Python migration unit tests
         if: steps.native.outputs.present == 'true'

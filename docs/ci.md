@@ -23,10 +23,13 @@ does not pin a separate migration branch or commit.
   64 pages remain free and an actual TAP interface can be created and closed
   inside `unshare -Urn`. It then runs
   `tests/posix/session-native-packets.py` directly with the full negative handoff
-  profile set under a 900-second timeout. The verifier requires all 27 unique
-  structured profile records, their capture digests, and the positive handoff
-  success markers. CTest JUnit and the direct session log are uploaded as CI
-  artifacts.
+  profile set under a 900-second timeout. Verification derives the profile set
+  from the checked-out fixture, requires the positive/frame/non-FRAME profiles
+  and all 16 negative profiles, and requires the full eight-profile recovery
+  set whenever that code is present. Each profile must emit exact EAL-channel
+  and private-hugepage-cleanup records. The expanded 27-profile fixture also
+  emits structured records with content-verified capture digests. CTest JUnit
+  and the direct session log are uploaded as CI artifacts.
 
 The native checks are capability-detected from the current source tree. A
 source tree with only part of the native backend fails instead of silently

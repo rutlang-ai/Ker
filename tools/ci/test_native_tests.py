@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -11,6 +13,43 @@ import native_tests
 
 
 class NativeTestSelectorTests(unittest.TestCase):
+    def fixture_source(self, recovery: bool) -> str:
+        recovery_calls = "".join(
+            f"    run_live_handoff_profile(args, api, plugin_paths, mode={mode!r})\n"
+            for mode in sorted(native_tests.FRAME_RECOVERY_PROFILES)) if recovery else ""
+        evidence = "    marker = 'KER_SESSION_FRAME_PROFILE_EVIDENCE'\n" if recovery else ""
+        negative = tuple(sorted(native_tests.MANDATORY_NEGATIVE_PROFILES))
+        return (
+            "def run_live_handoff_profile(args, api, plugins, mode='positive'): pass\n"
+            "def main(args, api, plugins):\n"
+            "    run_live_handoff_profile(args, api, plugins)\n"
+            "    run_live_handoff_profile(args, api, plugins, mode='frame-positive')\n"
+            "    run_live_handoff_profile(args, api, plugins, mode='nonframe-active-reap')\n"
+            + recovery_calls +
+            "    if args.handoff_negative_profiles:\n"
+            f"        for mode in {negative!r}:\n"
+            "            run_live_handoff_profile(args, api, plugins, mode=mode)\n"
+            + evidence
+        )
+
+    def session_log(self, profiles, structured: bool) -> list[str]:
+        lines = []
+        for mode in sorted(profiles):
+            channels = dict(profile=mode, primary="/run/dpdk/base", owner=dict(pid=100, socket="owner.sock"),
+                            peer=dict(pid=101, socket="peer.sock"))
+            lines.append("KER_SESSION_HANDOFF_EAL_CHANNELS " + json.dumps(channels, sort_keys=True))
+            lines.append(f"KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED profile={mode} mode=private pages=0")
+            if structured:
+                evidence = dict(mode=mode, resident_markers=[], snapshots=[], actors={})
+                evidence["capture_sha256"] = hashlib.sha256(json.dumps(
+                    evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                lines.append("KER_SESSION_FRAME_PROFILE_EVIDENCE " + json.dumps(evidence, sort_keys=True))
+            else:
+                lines.append(native_tests._legacy_profile_success_marker(mode))
+        lines += [native_tests._legacy_profile_success_marker("positive"),
+                  native_tests._legacy_profile_success_marker("frame-positive")]
+        return lines
+
     def junit_run(self, skipped: bool = False, failure: bool = False, error: bool = False,
                   returncode: int = 0, names: tuple[str, ...] = ("required-a",)):
         def run(command, **_kwargs):
@@ -119,22 +158,67 @@ class NativeTestSelectorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "required tests skipped"):
                 native_tests.report_junit(report, expected={"required-a"}, required={"required-a"})
 
-    def test_session_profile_verifier_requires_exact_profiles_digest_and_success_markers(self):
-        record = {"mode": "positive", "capture_sha256": "abc"}
-        lines = ["KER_SESSION_FRAME_PROFILE_EVIDENCE " + __import__("json").dumps(
-            dict(record, mode=mode)) for mode in sorted(native_tests.SESSION_PROFILES)]
-        lines += ["PASS: a generation-admitted same-process peer takes the PMD/exception grant",
-                  "PASS: original LKL post-PARKED UDP frame is journaled before prepare"]
+    def test_session_profile_verifier_supports_exact_legacy19_and_structured27_sets(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "session.log"
-            log.write_text("\n".join(lines), encoding="utf-8")
-            native_tests.verify_session_profiles(log)
-            log.write_text("\n".join(lines[:-1]), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "terminal success marker"):
-                native_tests.verify_session_profiles(log)
-            log.write_text("\n".join(lines + [lines[0]]), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "profile set mismatch"):
-                native_tests.verify_session_profiles(log)
+            for recovery in (False, True):
+                source = Path(temporary) / f"fixture-{recovery}.py"
+                source.write_text(self.fixture_source(recovery), encoding="utf-8")
+                expected, structured = native_tests.expected_session_profiles(source)
+                self.assertEqual(len(expected), 27 if recovery else 19)
+                self.assertEqual(structured, recovery)
+                lines = self.session_log(expected, structured)
+                log.write_text("\n".join(lines), encoding="utf-8")
+                native_tests.verify_session_profiles(log, source)
+
+                missing_eal = [line for line in lines if not line.startswith("KER_SESSION_HANDOFF_EAL_CHANNELS ")]
+                log.write_text("\n".join(missing_eal), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "EAL-channel profile set mismatch"):
+                    native_tests.verify_session_profiles(log, source)
+
+                lines = self.session_log(expected, structured)
+                extra = dict(profile="unexpected", primary="/run/dpdk/base",
+                             owner=dict(pid=100, socket="owner.sock"),
+                             peer=dict(pid=101, socket="peer.sock"))
+                lines.append("KER_SESSION_HANDOFF_EAL_CHANNELS " + json.dumps(extra, sort_keys=True))
+                log.write_text("\n".join(lines), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "EAL-channel profile set mismatch"):
+                    native_tests.verify_session_profiles(log, source)
+
+                lines = self.session_log(expected, structured)
+                missing_cleanup = [line for line in lines if "HUGEPAGES_RECLAIMED" not in line]
+                log.write_text("\n".join(missing_cleanup), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "hugepage-cleanup profile set mismatch"):
+                    native_tests.verify_session_profiles(log, source)
+
+                lines = self.session_log(expected, structured)
+                lines.append("KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED profile=unexpected mode=private files=0")
+                log.write_text("\n".join(lines), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "hugepage-cleanup profile set mismatch"):
+                    native_tests.verify_session_profiles(log, source)
+
+                lines = self.session_log(expected, structured)
+                lines.append("KER_SESSION_HANDOFF_HUGEPAGE_CLEANUP_REFUSED {}")
+                log.write_text("\n".join(lines), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "cleanup refusal"):
+                    native_tests.verify_session_profiles(log, source)
+
+                lines = self.session_log(expected, structured)
+                if structured:
+                    evidence_index = next(i for i, line in enumerate(lines)
+                                          if line.startswith("KER_SESSION_FRAME_PROFILE_EVIDENCE "))
+                    record = json.loads(lines[evidence_index].split(" ", 1)[1])
+                    record["capture_sha256"] = "0" * 64
+                    lines[evidence_index] = "KER_SESSION_FRAME_PROFILE_EVIDENCE " + json.dumps(record, sort_keys=True)
+                    log.write_text("\n".join(lines), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, "digest does not match"):
+                        native_tests.verify_session_profiles(log, source)
+
+                    record["capture_sha256"] = "not-a-digest"
+                    lines[evidence_index] = "KER_SESSION_FRAME_PROFILE_EVIDENCE " + json.dumps(record, sort_keys=True)
+                    log.write_text("\n".join(lines), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, "malformed capture digest"):
+                        native_tests.verify_session_profiles(log, source)
 
     def test_nohuge_eal_does_not_require_tun_but_required_tap_preflight_fails_closed(self):
         with mock.patch.object(native_tests, "nohuge_prerequisite", return_value=(False, "no TUN")):
