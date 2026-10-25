@@ -16,6 +16,7 @@ import tempfile
 from dpdk_runtime import private_runtime_environment
 
 PAYLOAD = b'native-ipv6\0'
+IPV4_FINAL_ACK = b'native-vlan-final-ack\0'
 DATAGRAM = bytes((i * 17 + 3) % 256 for i in range(1452))
 ADDRESSES = ((100, '2001:db8:100::2'), (100, '2001:db8:100::3'), (200, '2001:db8:200::2'))
 VLANS = ('100=198.19.100.2/24,2001:db8:100::2/64,2001:db8:100::3/128', '200=2001:db8:200::2/64')
@@ -177,13 +178,14 @@ def main():
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
                         peer.settimeout(8); peer.connect(('198.19.100.2', port)); peer.send(PAYLOAD)
                         require(peer.recv(256) == PAYLOAD, 'mixed IPv4 VLAN traffic failed')
+                        peer.send(IPV4_FINAL_ACK)
                     output = process.communicate(timeout=20)[0]
                     require(process.returncode == 0 and 'PASS:' in output, 'native app failed: ' + output)
                     record = json.loads(stats.read_text())
                     require(record['outstanding'] == 0 and record['tx'] and record['rx'], 'worker traffic/reclamation missing')
                     require(record['native']['active_opens'] == 3 and record['native']['passive_opens'] == 3 and
                             record['native']['udp6_in_datagrams'] == 6 and record['native']['udp6_out_datagrams'] == 6 and
-                            record['native']['udp_in_datagrams'] == 1, 'traffic bypassed original Linux: ' + str(record))
+                            record['native']['udp_in_datagrams'] == 2, 'traffic bypassed original Linux: ' + str(record))
                     neighbors = json.loads(subprocess.check_output(
                         ['ip', '-j', '-4', 'neigh', 'show', 'to', '198.19.100.2', 'dev', 'kerhost.100']))
                     require(any(entry.get('lladdr', '').lower() == record['io']['mac'].lower()
@@ -197,6 +199,8 @@ def main():
                     print('PASS: ' + mode + ' IPv6 VLAN/VIP TCP/UDP, metadata, NDP, wire tags/checksums and mixed IPv4', flush=True)
                 except Exception:
                     log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
+                    print(f'native process return code: {process.poll()}', file=sys.stderr)
+                    print('native stats: ' + (stats.read_text() if stats.exists() else '<not written>'), file=sys.stderr)
                     try:
                         neighbors = subprocess.check_output(
                             ['ip', '-j', '-4', 'neigh', 'show', 'dev', 'kerhost.100'], text=True).strip()
