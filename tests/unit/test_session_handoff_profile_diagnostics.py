@@ -49,8 +49,10 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
 
     def test_nonframe_callsite_uses_profile_failure_diagnostics(self):
         source = FIXTURE.read_text()
-        branch = source[source.index("if mode == 'nonframe-active-reap':", source.index('def run_live_handoff_profile')):]
-        branch = branch[:branch.index("            if mode == 'frame-positive':")]
+        branch = source[source.index("if mode == 'nonframe-active-reap':",
+            source.index('handoff_census_before = connection.request')):]
+        boundary = branch.index("if mode in ('frame-positive'")
+        branch = branch[:boundary]
         self.assertIn("record_handoff_marker(runner, 'KER_SESSION_TEST_NONFRAME_PEER_KILLED'", branch)
         self.assertIn('runner_stderr_path, fatal_profile_diagnostics)', branch)
 

@@ -74,6 +74,53 @@ class HandoffControlPathTests(unittest.TestCase):
         cls.launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.launcher)
 
+    def test_frame_profiles_prewarm_original_udp_before_handoff_exhaustively(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        test_body = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
+        prewarm = next(node for node in ast.walk(test_body)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'mode' and
+            isinstance(node.test.ops[0], ast.In) and isinstance(node.test.comparators[0], ast.Tuple) and
+            'frame-death-producer-active-consumer' in
+                {item.value for item in node.test.comparators[0].elts if isinstance(item, ast.Constant)} and
+            any(isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and
+                child.func.attr == 'write' and ast.unparse(child).startswith("os.write(handoff_write, b'U')")
+                for statement in node.body for child in ast.walk(statement)))
+        prewarm_modes = {item.value for item in prewarm.test.comparators[0].elts
+            if isinstance(item, ast.Constant)}
+        self.assertEqual(prewarm_modes, self.launcher.FRAME_U2_TRIGGER_MODES)
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+            node.func.attr == 'write' and ast.unparse(node).startswith("os.write(handoff_write, b'U')")
+            for statement in prewarm.body for node in ast.walk(statement)))
+        handoff_write = next(node for node in ast.walk(test_body)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+            node.func.attr == 'write' and ast.unparse(node).startswith("os.write(handoff_write, b'H')"))
+        self.assertLess(prewarm.lineno, handoff_write.lineno,
+            'the original Linux UDP prewarm must precede H for every U2 profile')
+
+    def test_consumer_death_markers_use_the_emitted_pool_schema(self):
+        counters = [0, 1, 2, 3, 4]
+        prepared = {'tx_before': 0, 'pool_before': 6, 'counters_before': counters}
+        preserved = {'tx': 0, 'pool': 7, 'counters': counters}
+        cancelled = {'tx': 0, 'pool': 6, 'counters': counters}
+        self.assertTrue(PROFILE.frame_prepared_consumer_pool_is_exact(prepared, preserved))
+        self.assertTrue(PROFILE.frame_cancelled_consumer_pool_is_exact(prepared, cancelled))
+        self.assertFalse(PROFILE.frame_prepared_consumer_pool_is_exact(prepared,
+            {'tx': 0, 'packet_pool_in_use': 7, 'counters': counters}))
+        self.assertFalse(PROFILE.frame_cancelled_consumer_pool_is_exact(prepared,
+            {'tx': 0, 'packet_pool_in_use': 6, 'counters': counters}))
+        self.assertFalse(PROFILE.frame_prepared_consumer_pool_is_exact(prepared,
+            {'tx': 1, 'pool': 7, 'counters': counters}))
+
+    def test_active_consumer_recovery_compares_the_successor_owner(self):
+        old_owner = {'token': 14, 'generation': 0}
+        successor = {'token': 38, 'generation': 1}
+        self.assertTrue(PROFILE.active_consumer_kept_handoff_owner(
+            {'final_owner': successor}, {'resident': successor}))
+        self.assertFalse(PROFILE.active_consumer_kept_handoff_owner(
+            {'final_owner': old_owner}, {'resident': successor}))
+
     def exercise(self, mode, expected, expect_closed):
         read_fd, write_fd = os.pipe()
         metrics = {'exception_endpoint_name': 'ker_test0'}
@@ -666,7 +713,9 @@ class HandoffControlPathTests(unittest.TestCase):
         rejection_branch = next(node for node in ast.walk(profile)
             if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
             isinstance(node.test.left, ast.Name) and node.test.left.id == 'mode' and
-            isinstance(node.test.ops[0], ast.In) and {'prepare-enoent','prepare-ebusy','prepare-eperm'} <=
+            isinstance(node.test.ops[0], ast.In) and
+            isinstance(node.test.comparators[0], (ast.Tuple, ast.List)) and
+            {'prepare-enoent','prepare-ebusy','prepare-eperm'} <=
                 {item.value for item in node.test.comparators[0].elts if isinstance(item, ast.Constant)} and
             any(isinstance(child, ast.Return) for child in ast.walk(node)))
         self.assertLess(hup_branch.lineno, fatal_branch.lineno)

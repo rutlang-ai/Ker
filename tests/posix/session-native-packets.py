@@ -29,6 +29,26 @@ from collections import deque
 from hugepage_preflight import hugepage_capacity_error
 
 
+def frame_prepared_consumer_pool_is_exact(prepared, preserved):
+    before = prepared.get('pool_before')
+    return (type(before) is int and before >= 0 and
+        preserved.get('tx') == prepared.get('tx_before') and
+        preserved.get('pool') == before + 1 and
+        preserved.get('counters') == prepared.get('counters_before'))
+
+
+def frame_cancelled_consumer_pool_is_exact(prepared, cancelled):
+    before = prepared.get('pool_before')
+    return (type(before) is int and before >= 0 and
+        cancelled.get('tx') == prepared.get('tx_before') and
+        cancelled.get('pool') == before and
+        cancelled.get('counters') == prepared.get('counters_before'))
+
+
+def active_consumer_kept_handoff_owner(proof, handoff):
+    return proof.get('final_owner') == handoff.get('resident')
+
+
 def require(value, message):
     if not value: raise RuntimeError(message)
 
@@ -1141,8 +1161,9 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     'resident cleanup failed after non-FRAME full reap: ' + primary_errors.decode(errors='replace'))
                 print('PASS: bounded non-FRAME full reap waited for the real RX dequeue, retired the dead borrower, and restored all rings')
                 return
-            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-consumer-prepared',
-                    'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
+            if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-producer-active-consumer',
+                    'frame-death-consumer-prepared','frame-death-consumer-writing','frame-death-both-prepared',
+                    'frame-lost-prepare-reply'):
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP prewarm')
                 first_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(first_ack==dict(sequence=1,bytes=len(b'KER-A09-HANDOFF-UDP seq=1\n')),
@@ -1481,11 +1502,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
                     proof.get('pmd_owner_after_reap',{}).get('token')==0 and
                     preserved.get('tx')==prepared.get('tx_before') and
-                    preserved.get('packet_pool_in_use')==prepared.get('pool_before')+1 and
-                    preserved.get('counters')==prepared.get('counters_before') and
-                    cancelled.get('tx')==prepared.get('tx_before') and
-                    cancelled.get('packet_pool_in_use')==prepared.get('pool_before') and
-                    cancelled.get('counters')==prepared.get('counters_before') and
+                    frame_prepared_consumer_pool_is_exact(prepared,preserved) and
+                    frame_cancelled_consumer_pool_is_exact(prepared,cancelled) and
                     proof.get('final_census',{}).get('process')==0 and
                     proof.get('producer_pid')==before['attached']['pid'] and
                     proof.get('consumer_pid')==before['handoff_peer_attached']['pid'],
@@ -1707,7 +1725,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     drain.get('packet_pointer')==committed.get('packet_pointer') and
                     drain.get('frame_hex')==committed.get('frame_hex') and drain.get('tx_after')==0 and
                     proof.get('final_census',{}).get('process')==1 and
-                    proof.get('final_owner')==handoff_owner_before,
+                    active_consumer_kept_handoff_owner(proof,after['handoff']),
                     'active live consumer did not retain and release the exact committed packet: '+repr(proof))
                 with wire_lock:active_wire=list(wire_frames);active_wire_errors=list(wire_errors)
                 require(sum(handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n' for frame in active_wire)==1 and
