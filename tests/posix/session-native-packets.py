@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from collections import deque
 
 from hugepage_preflight import hugepage_capacity_error
@@ -364,6 +365,32 @@ def namespace_reexec_command(args, plugin_dir, script=None):
 _active_handoff_evidence = None
 
 
+def _capture_pidfd_readability(actor_fds, resident_pidfd):
+    """Snapshot readiness while descriptors are live; returned booleans outlive close()."""
+    return ({name: bool(select.select([fd], [], [], 0)[0]) for name, fd in actor_fds.items()},
+        bool(resident_pidfd >= 0 and select.select([resident_pidfd], [], [], 0)[0]))
+
+
+@contextmanager
+def _handoff_evidence_scope(api, evidence):
+    global _active_handoff_evidence
+    prior_evidence = _active_handoff_evidence
+    original_request = api.Connection.request
+    _active_handoff_evidence = evidence
+    def evidence_request(connection, command, *call_args, **call_kwargs):
+        response = original_request(connection, command, *call_args, **call_kwargs)
+        if command in (api.STATUS, api.PMD_STATUS):
+            evidence['snapshots'].append(dict(command=('STATUS' if command == api.STATUS else 'PMD_STATUS'),
+                command_id=command, value=response))
+        return response
+    api.Connection.request = evidence_request
+    try:
+        yield
+    finally:
+        api.Connection.request = original_request
+        _active_handoff_evidence = prior_evidence
+
+
 def record(process, prefix):
     value = line(process)
     if not value.startswith(prefix + ' '):
@@ -383,19 +410,13 @@ def record(process, prefix):
 
 
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
-    global _active_handoff_evidence
+    evidence = dict(mode=mode, resident_markers=[], snapshots=[], actors={})
+    with _handoff_evidence_scope(api, evidence):
+        return _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence)
+
+
+def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
     with tempfile.TemporaryDirectory(prefix='a9-') as directory:
-        prior_evidence = _active_handoff_evidence
-        evidence = dict(mode=mode, resident_markers=[], snapshots=[], actors={})
-        _active_handoff_evidence = evidence
-        original_request = api.Connection.request
-        def evidence_request(connection, command, *call_args, **call_kwargs):
-            response = original_request(connection, command, *call_args, **call_kwargs)
-            if command in (api.STATUS, api.PMD_STATUS):
-                evidence['snapshots'].append(dict(command=('STATUS' if command == api.STATUS else 'PMD_STATUS'),
-                    command_id=command, value=response))
-            return response
-        api.Connection.request = evidence_request
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
         file_prefix = f'a9-{os.urandom(16).hex()}'
@@ -1484,6 +1505,14 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             except BaseException as error:
                 cleanup_error = error
             finally:
+                # Snapshot readiness after actor/hugepage cleanup but before
+                # closing the pidfds. The booleans remain valid evidence later.
+                actor_fds = dict(zip(('app', 'producer', 'consumer'), pidfds))
+                try:
+                    evidence['actor_pidfd_readable_after_cleanup'], evidence['resident_pidfd_readable_after_cleanup'] = \
+                        _capture_pidfd_readability(actor_fds, resident_pidfd)
+                except OSError as error:
+                    finalization_errors.append(RuntimeError(f'could not snapshot live pidfds: {error}'))
                 # Always release process and directory descriptors, even when
                 # private-directory validation or reporting refuses deletion.
                 closers = []
@@ -1518,11 +1547,6 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED profile={mode} mode=private '
                     f'files={cleaned_hugepage_files}', flush=True)
             if original_error is None and cleanup_error is None:
-                actor_fds = dict(zip(('app', 'producer', 'consumer'), pidfds))
-                evidence['actor_pidfd_readable_after_cleanup'] = {
-                    name: bool(select.select([fd], [], [], 0)[0]) for name, fd in actor_fds.items()}
-                evidence['resident_pidfd_readable_after_cleanup'] = bool(
-                    resident_pidfd >= 0 and select.select([resident_pidfd], [], [], 0)[0])
                 evidence['runner_returncode'] = runner.returncode if runner is not None else None
                 evidence['resident_returncode'] = primary.returncode if primary is not None else None
                 evidence['runner_stderr'] = (runner_stderr_path.read_text(errors='replace')
@@ -1557,8 +1581,6 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 evidence['capture_sha256'] = hashlib.sha256(
                     json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
                 print('KER_SESSION_FRAME_PROFILE_EVIDENCE ' + json.dumps(evidence, sort_keys=True), flush=True)
-            api.Connection.request = original_request
-            _active_handoff_evidence = prior_evidence
 
 
 def main():

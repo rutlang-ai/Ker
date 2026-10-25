@@ -373,7 +373,7 @@ class HandoffControlPathTests(unittest.TestCase):
     def test_failure_collector_fallback_preserves_original_reason(self):
         tree = ast.parse(PROFILE_SOURCE.read_text())
         profile = next(node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == 'run_live_handoff_profile')
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
         wrapper = next(node for node in ast.walk(profile)
             if isinstance(node, ast.FunctionDef) and node.name == 'fatal_profile_diagnostics')
         emitted = []
