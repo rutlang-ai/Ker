@@ -1285,9 +1285,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_empty_ini",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The pinned case named empty_ini invokes the loader with no -c and no other arguments; it does not open an empty file. The real Ker CLI likewise rejects the exact no-options invocation and reports all missing startup settings before library/worker/application setup. Tests also cover progressively supplied CLI fields, missing application, valid CLI-only and empty-file-plus-CLI recovery. Ker allows a complete CLI-only configuration and reports argparse exit2 instead of the F-Stack internal return-1; config filename/global layout equivalence is not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-config-lifecycle",
+          "provenance_case": "native-fstack-missing-launch-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_isolated",

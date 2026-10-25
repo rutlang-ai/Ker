@@ -41,6 +41,62 @@ class ConfigLifecycleTests(unittest.TestCase):
         self.assertNotIn('Traceback', result.stderr)
         self.assertNotIn('missing-ker-library', result.stderr.splitlines()[-1])
 
+    def test_missing_startup_settings_reject_before_worker_or_application(self):
+        marker = Path(self.directory.name) / 'executed'
+        worker = Path(self.directory.name) / 'worker'
+        worker.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\nexit 99\n')
+        worker.chmod(0o700)
+        # Upstream empty_ini actually invokes ff_load_config with no -c and
+        # no other options; it never creates or reads an empty INI file.
+        for options, missing in (([], ('address', 'port', 'eal')),
+                                 (['--address', '198.18.0.2/24'], ('port', 'eal')),
+                                 (BASE[:-1], ('eal',))):
+            with self.subTest(options=options):
+                result = subprocess.run([sys.executable, str(SOURCE), *options,
+                    '--io-worker', str(worker), '--library', '/missing-ker-library',
+                    '--', str(worker)], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                diagnostic = result.stderr.splitlines()[-1]
+                self.assertTrue(diagnostic.endswith('required via CLI or --config: ' +
+                    ', '.join('--' + name for name in missing)), diagnostic)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertFalse(marker.exists())
+        # Also check the exact no-options invocation used by the source.
+        result = subprocess.run([sys.executable, str(SOURCE)], capture_output=True,
+                                text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('required via CLI or --config: --address, --port, --eal',
+                      result.stderr.splitlines()[-1])
+        self.assertEqual(self.parse(MINIMAL).port, 'net_tap0')
+
+    def test_missing_application_rejects_after_valid_settings(self):
+        result = subprocess.run([sys.executable, str(SOURCE), *BASE,
+            '--library', '/missing-ker-library', '--io-worker', '/missing-worker'],
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertTrue(result.stderr.splitlines()[-1].endswith(
+            'an application command is required after --'), result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(self.parse(MINIMAL).command, ['/bin/true'])
+
+    def test_valid_cli_needs_no_config_file_and_empty_file_needs_cli_settings(self):
+        cli = launcher.parse_arguments([*BASE, '--', '/bin/true'])
+        empty = self.parse('', BASE)
+        minimal = self.parse(MINIMAL)
+        for args in (cli, empty, minimal):
+            self.assertEqual(str(args.address), '198.18.0.2/24')
+            self.assertEqual(args.port, 'net_tap0')
+            self.assertEqual(args.command, ['/bin/true'])
+        self.assertEqual(cli.eal_args, empty.eal_args)
+        self.path.write_text('')
+        result = subprocess.run([sys.executable, str(SOURCE), '--config', str(self.path),
+            '--library', '/missing-ker-library', '--', '/bin/true'],
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('required via CLI or --config: --address, --port, --eal',
+                      result.stderr.splitlines()[-1])
+        self.assertNotIn('Traceback', result.stderr)
+
     def test_minimal_populates_typed_settings_and_defaults(self):
         args = self.parse(MINIMAL)
         self.assertEqual(str(args.address), '198.18.0.2/24')
