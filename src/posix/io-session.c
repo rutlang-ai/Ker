@@ -77,6 +77,13 @@ struct client {
     unsigned handoff_rx_queues, handoff_tx_queues;
     uint16_t handoff_port;
     bool handoff_pmd_configured, pmd_parked;
+    bool frame_pending;
+    uint32_t frame_object_index;
+    uint64_t frame_pool_tag, frame_lease_id, frame_capability;
+    uint16_t frame_port, frame_queue;
+    unsigned frame_consumer_client;
+    int frame_consumer_pidfd, frame_producer_pidfd;
+    struct ker_generation_identity frame_producer_identity, frame_consumer_identity;
     uint64_t pmd_tx_lease_id, pmd_rx_lease_id;
     uint64_t peer_capability, detach_capability;
     unsigned detach_peer_slot, detach_rx_count, detach_tx_count;
@@ -203,6 +210,157 @@ static struct ker_generation_identity generation_identity(const struct client *c
         .epoch=slots[client->slot].epoch,.slot=client->slot,
         .generation=client->generation,.process=client->process,.pid=(uint32_t)client->pid};
 }
+static bool frame_identity_equal(const struct ker_generation_identity *a,
+    const struct ker_generation_identity *b)
+{
+    return a->session==b->session && a->epoch==b->epoch && a->slot==b->slot &&
+        a->generation==b->generation && a->process==b->process && a->pid==b->pid;
+}
+static bool frame_command(uint64_t command)
+{
+    return command==KER_SESSION_FRAME_PREPARE || command==KER_SESSION_FRAME_COMMIT ||
+        command==KER_SESSION_FRAME_CANCEL;
+}
+enum frame_resolution { FRAME_COMMITTED, FRAME_CANCELLED, FRAME_DEAD_REAPED };
+static void frame_pending_clear(struct client *client, enum frame_resolution resolution)
+{
+    if (!client) return;
+    if (resolution < FRAME_COMMITTED || resolution > FRAME_DEAD_REAPED || !client->frame_pending)
+        _Exit(125);
+    if (client->frame_consumer_pidfd>=0) close(client->frame_consumer_pidfd);
+    if (client->frame_producer_pidfd>=0) close(client->frame_producer_pidfd);
+    client->frame_pending=false;
+    client->frame_object_index=0;
+    client->frame_pool_tag=client->frame_lease_id=client->frame_capability=0;
+    client->frame_port=client->frame_queue=0;
+    client->frame_consumer_client=UINT_MAX;
+    client->frame_consumer_pidfd=client->frame_producer_pidfd=-1;
+    memset(&client->frame_producer_identity,0,sizeof(client->frame_producer_identity));
+    memset(&client->frame_consumer_identity,0,sizeof(client->frame_consumer_identity));
+}
+static bool frame_source_matches(const struct client *producer)
+{
+    if (!producer || producer->kind!=ATTACHED || producer->peer_only ||
+        !producer->generation_admitted || !producer->pmd_parked ||
+        producer->handoff_state!=HANDOFF_PARKED || producer->slot>=KER_SESSION_SLOTS ||
+        producer->generation>=KER_SESSION_GENERATIONS || producer->process>=KER_SESSION_PROCESSES ||
+        producer->handoff_owner_pidfd!=producer->pidfd || producer->handoff_owner_pid!=producer->pid ||
+        producer->handoff_owner_slot!=producer->slot || producer->handoff_owner_generation!=producer->generation ||
+        producer->handoff_owner_process!=producer->process ||
+        producer->handoff_owner_epoch!=slots[producer->slot].epoch || dead(producer->pidfd)) return false;
+    return true;
+}
+static bool frame_consumer_matches(const struct client *producer)
+{
+    if (!producer || !producer->frame_pending || !frame_source_matches(producer) ||
+        producer->frame_consumer_client>=CLIENTS || pmd_client!=(int)producer->frame_consumer_client ||
+        producer->frame_consumer_pidfd<0 || producer->frame_producer_pidfd<0 ||
+        dead(producer->frame_consumer_pidfd) || dead(producer->frame_producer_pidfd)) return false;
+    const struct client *consumer=&clients[producer->frame_consumer_client];
+    if (consumer->kind!=ATTACHED || consumer->peer_only || !consumer->generation_admitted ||
+        dead(consumer->pidfd) || consumer->pidfd<0 ||
+        producer->handoff_peer!=(unsigned)producer->frame_consumer_client ||
+        producer->handoff_peer_pidfd<0 || dead(producer->handoff_peer_pidfd) ||
+        producer->handoff_peer_client_pidfd!=consumer->pidfd ||
+        consumer->pid!=(pid_t)producer->frame_consumer_identity.pid ||
+        consumer->slot!=producer->frame_consumer_identity.slot ||
+        consumer->generation!=producer->frame_consumer_identity.generation ||
+        consumer->generation!=(producer->generation^1U) ||
+        consumer->process!=producer->frame_consumer_identity.process ||
+        slots[consumer->slot].epoch!=producer->frame_consumer_identity.epoch ||
+        producer->frame_consumer_identity.session!=directory->session ||
+        atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)!=pmd_key(consumer)) return false;
+    return true;
+}
+static int handle_frame_request(struct client *client,const struct ker_session_message *request,
+    struct ker_session_message *reply)
+{
+    if (!generation_rings_enabled || !generation_rings || ring_pmd!=2 || request->status ||
+        request->session!=directory->session || request->slot!=client->slot ||
+        request->epoch!=slots[client->slot].epoch || request->generation!=client->generation ||
+        request->process!=client->process || request->token!=slots[client->slot].token ||
+        request->capability!=client->handoff_capability || !client->handoff_capability ||
+        !frame_source_matches(client)) return -EPERM;
+    uint64_t tag=ker_generation_packet_pool_tag(generation_rings);
+    if (!tag || request->packet_pool_tag!=tag || request->packet_port!=0 || request->packet_queue>=2)
+        return -EOPNOTSUPP;
+    if (request->command==KER_SESSION_FRAME_PREPARE) {
+        if (client->frame_pending || request->packet_object_index!=UINT32_MAX ||
+            request->tx_lease_id || request->rx_lease_id) return -EBUSY;
+        unsigned peer=(unsigned)client->handoff_peer;
+        if (peer>=CLIENTS || pmd_client!=(int)peer || dead(client->handoff_peer_pidfd) ||
+            dead(client->handoff_peer_client_pidfd)) return -ESTALE;
+        struct client *consumer=&clients[peer];
+        if (consumer->kind!=ATTACHED || consumer->peer_only || !consumer->generation_admitted ||
+            dead(consumer->pidfd) || consumer->pidfd!=client->handoff_peer_client_pidfd ||
+            consumer->pid!=client->handoff_peer_pid || consumer->slot!=client->handoff_peer_slot ||
+            consumer->generation!=client->handoff_peer_generation ||
+            consumer->process!=client->handoff_peer_process ||
+            slots[consumer->slot].epoch!=client->handoff_peer_epoch ||
+            consumer->generation!=(client->generation^1U) ||
+            atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)!=pmd_key(consumer)) return -ESTALE;
+        int source_pidfd=fcntl(client->pidfd,F_DUPFD_CLOEXEC,3);
+        if (source_pidfd<0) return -errno;
+        int consumer_pidfd=fcntl(consumer->pidfd,F_DUPFD_CLOEXEC,3);
+        if (consumer_pidfd<0) { close(source_pidfd); return -errno; }
+        if (dead(source_pidfd) || dead(consumer_pidfd)) {
+            close(source_pidfd); close(consumer_pidfd); return -ESTALE;
+        }
+        struct ker_generation_identity source_identity=generation_identity(client);
+        struct ker_generation_identity consumer_identity=generation_identity(consumer);
+        uint32_t object_index=UINT32_MAX; uint64_t lease=0;
+        int result=ker_generation_packet_prepare(generation_rings,&source_identity,&consumer_identity,
+            request->packet_port,request->packet_queue,&object_index,&lease);
+        if (result) { close(source_pidfd); close(consumer_pidfd); return result; }
+        if (dead(source_pidfd) || dead(consumer_pidfd)) {
+            if (ker_generation_packet_cancel(generation_rings,&source_identity,object_index,lease)) _Exit(125);
+            close(source_pidfd); close(consumer_pidfd); return -ESTALE;
+        }
+        client->frame_pending=true; client->frame_object_index=object_index;
+        client->frame_pool_tag=tag; client->frame_lease_id=lease; client->frame_capability=client->handoff_capability;
+        client->frame_port=request->packet_port; client->frame_queue=request->packet_queue;
+        client->frame_consumer_client=peer; client->frame_consumer_pidfd=consumer_pidfd;
+        client->frame_producer_pidfd=source_pidfd; client->frame_producer_identity=source_identity;
+        client->frame_consumer_identity=consumer_identity;
+        reply->packet_object_index=object_index; reply->tx_lease_id=lease;
+        return 0;
+    }
+    if (!client->frame_pending || request->packet_object_index!=client->frame_object_index ||
+        request->packet_pool_tag!=client->frame_pool_tag || request->packet_port!=client->frame_port ||
+        request->packet_queue!=client->frame_queue || request->tx_lease_id!=client->frame_lease_id ||
+        request->rx_lease_id || request->capability!=client->frame_capability ||
+        !frame_identity_equal(&client->frame_producer_identity,&(struct ker_generation_identity){
+            .session=request->session,.epoch=request->epoch,.slot=(uint32_t)request->slot,
+            .generation=(uint32_t)request->generation,.process=(uint32_t)request->process,
+            .pid=(uint32_t)client->pid})) return -ESTALE;
+    struct ker_generation_identity source_identity=client->frame_producer_identity;
+    if (request->command==KER_SESSION_FRAME_CANCEL) {
+        int result=ker_generation_packet_cancel(generation_rings,&source_identity,
+            client->frame_object_index,client->frame_lease_id);
+        if (!result) frame_pending_clear(client,FRAME_CANCELLED);
+        return result;
+    }
+    if (request->command!=KER_SESSION_FRAME_COMMIT) return -EOPNOTSUPP;
+    if (!frame_consumer_matches(client)) {
+        int cancel=ker_generation_packet_cancel(generation_rings,&source_identity,
+            client->frame_object_index,client->frame_lease_id);
+        if (cancel) _Exit(125);
+        frame_pending_clear(client,FRAME_CANCELLED);
+        return -ESTALE;
+    }
+    int result=ker_generation_packet_commit(generation_rings,&source_identity,
+        client->frame_port,client->frame_queue,client->frame_object_index,client->frame_lease_id);
+    if (!result) { frame_pending_clear(client,FRAME_COMMITTED); return 0; }
+    /* Commit can fail after write_complete only while the journal is PREPARED
+     * (most notably a full ring). Return that exact object exactly once before
+     * making the failure visible; ambiguity terminates the resident. */
+    int cancel=ker_generation_packet_cancel(generation_rings,&source_identity,
+        client->frame_object_index,client->frame_lease_id);
+    if (cancel) _Exit(125);
+    frame_pending_clear(client,FRAME_CANCELLED);
+    return result;
+}
+
 static int selected_peer_only(unsigned source_index, unsigned *peer_slot, uint64_t *peer_epoch,
     unsigned *peer_client)
 {
@@ -366,6 +524,8 @@ static void reclaim_control(unsigned index)
             fprintf(stderr,"ker session: generation packet journal lacks exact-death recovery proof\n");_Exit(125);
         }
         client->generation_admitted=false;
+        /* A producer lease is cleared only after exact PIDFD-death recovery. */
+        if (client->frame_pending) frame_pending_clear(client,FRAME_DEAD_REAPED);
     }
     struct rte_mbuf *owned = client->leased_packet;
     /* The private resident journal predates RESERVE's acknowledgement. Queue
@@ -702,7 +862,8 @@ static int generation_test_step(struct ker_generation_rings *rings,
 #endif
 static void drop_client(unsigned i)
 {
-    if (clients[i].handoff_state!=HANDOFF_NONE && clients[i].handoff_peer_pidfd>=0)
+    if (clients[i].frame_pending) _Exit(125);
+    if (clients[i].handoff_peer_pidfd>=0)
         close(clients[i].handoff_peer_pidfd);
     for(unsigned s=1;s<KER_SESSION_SLOTS;s++)
         if(slots[s].peer_child==(int)i){
@@ -711,7 +872,10 @@ static void drop_client(unsigned i)
         }
     if (clients[i].fd >= 0) close(clients[i].fd);
     if (clients[i].pidfd >= 0) close(clients[i].pidfd);
-    clients[i] = (struct client){.fd = -1, .pidfd = -1};
+    clients[i] = (struct client){.fd = -1, .pidfd = -1,
+        .handoff_peer_pidfd = -1,
+        .frame_consumer_pidfd = -1, .frame_producer_pidfd = -1,
+        .frame_consumer_client = UINT_MAX};
 }
 /* Only registered EAL borrowers and masters need lifetime tracking after EOF. */
 static void disconnect_client(unsigned i)
@@ -879,18 +1043,21 @@ static int handle(unsigned i, const struct ker_session_message *request,
 {
     struct client *client = &clients[i];
     *reply = *request;
-    reply->session = directory->session;
+    if (!frame_command(request->command)) reply->session = directory->session;
     if (request->magic != KER_SESSION_MAGIC || request->version != KER_SESSION_VERSION ||
         (request->status && request->command != KER_SESSION_PEER_STATUS) ||
         request->status < 0 || request->status > 1 || !request->sequence) return -EPROTO;
     if ((request->tx_lease_id || request->rx_lease_id) &&
         request->command != KER_SESSION_PMD_HANDOFF_PREPARE &&
-        request->command != KER_SESSION_PMD_HANDOFF_QUIESCED) return -EINVAL;
-    if (client->pmd_parked && request->command!=KER_SESSION_HEARTBEAT) return -EPERM;
+        request->command != KER_SESSION_PMD_HANDOFF_QUIESCED && !frame_command(request->command)) return -EINVAL;
+    if (!frame_command(request->command) &&
+        (request->packet_pool_tag || request->packet_object_index || request->packet_port || request->packet_queue))
+        return -EINVAL;
+    if (client->pmd_parked && request->command!=KER_SESSION_HEARTBEAT && !frame_command(request->command)) return -EPERM;
     if (request->capability && request->command!=KER_SESSION_RESERVE &&
         request->command!=KER_SESSION_ATTACHED && request->command!=KER_SESSION_PEER_RESERVE &&
         request->command!=KER_SESSION_RING_DETACH && request->command!=KER_SESSION_RING_DETACH_ARM &&
-        request->command!=KER_SESSION_PMD_HANDOFF_QUIESCED)
+        request->command!=KER_SESSION_PMD_HANDOFF_QUIESCED && !frame_command(request->command))
         return -EINVAL;
     if (request->command == KER_SESSION_EPOCH_LIVE && client->kind == UNBOUND) {
         if (request->session || request->token || request->slot || request->generation || request->process || request->capability) return -EINVAL;
@@ -1134,6 +1301,7 @@ static int handle(unsigned i, const struct ker_session_message *request,
         return -ESTALE;
     if (request->generation >= KER_SESSION_GENERATIONS || request->process >= KER_SESSION_PROCESSES)
         return -EINVAL;
+    if (frame_command(request->command)) return handle_frame_request(client,request,reply);
     if (request->command == KER_SESSION_RELEASE) {
         if (client->kind != MASTER || client->slot != s) return -EPERM;
         int result = release_slot(s);
@@ -1359,8 +1527,7 @@ static int handle(unsigned i, const struct ker_session_message *request,
         reply->tx_lease_id=tx_id; reply->rx_lease_id=rx_id;
         if (handoff_state==HANDOFF_PARKED) {
             if (handoff_client<0 || (int)i!=handoff_peer || dead(clients[handoff_client].pidfd)) _Exit(125);
-            if(clients[handoff_client].handoff_peer_pidfd>=0)close(clients[handoff_client].handoff_peer_pidfd);
-            clients[handoff_client].handoff_peer_pidfd=-1;
+            /* Keep the parked owner's exact peer PIDFD for pending frame leases. */
             handoff_state=HANDOFF_NONE; handoff_client=handoff_peer=-1; handoff_capability=0;
         }
         return 0;
@@ -1534,7 +1701,10 @@ static int accept_client(int listener)
         close(fd); return -EOPNOTSUPP;
     }
     for (unsigned i = 0; i < CLIENTS; i++) if (clients[i].kind == UNUSED) {
-        clients[i] = (struct client){.fd = fd, .pidfd = pidfd, .pid = credential.pid, .kind = UNBOUND};
+        clients[i] = (struct client){.fd = fd, .pidfd = pidfd, .pid = credential.pid, .kind = UNBOUND,
+            .handoff_peer_pidfd = -1,
+            .frame_consumer_pidfd = -1, .frame_producer_pidfd = -1,
+            .frame_consumer_client = UINT_MAX};
         return 0;
     }
     close(pidfd); close(fd); return 0;
@@ -1555,7 +1725,10 @@ static int primary(const char *path, int control)
 #endif
     struct stat socket_identity = {0};
     bool bound = false;
-    for (unsigned i = 0; i < CLIENTS; i++) clients[i] = (struct client){.fd = -1, .pidfd = -1};
+    for (unsigned i = 0; i < CLIENTS; i++) clients[i] = (struct client){.fd = -1, .pidfd = -1,
+        .handoff_peer_pidfd = -1,
+        .frame_consumer_pidfd = -1, .frame_producer_pidfd = -1,
+        .frame_consumer_client = UINT_MAX};
     for (unsigned i = 0; i < KER_SESSION_SLOTS; i++) slots[i].master = -1;
     zone = rte_memzone_reserve(KER_SESSION_ZONE, sizeof(*directory), SOCKET_ID_ANY, 0);
     if (!zone) goto cleanup;
