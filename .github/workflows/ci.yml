@@ -342,7 +342,7 @@ jobs:
           test -r "$plugin_dir/librte_mempool_ring.so"
           test -r "$plugin_dir/librte_net_ring.so"
           set -o pipefail
-          timeout --foreground --signal=TERM --kill-after=20s 900s \
+          timeout --signal=TERM --kill-after=20s 900s \
             python3 tests/posix/session-native-packets.py \
               --worker "$worker" --tool tools/ker-session.py --library "$library" \
               --app "$app" --dpdk-plugin-dir "$plugin_dir" --huge-dir /dev/hugepages \
