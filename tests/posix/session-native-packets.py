@@ -1450,12 +1450,28 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     u2_commits[0].get(left)==u2_releases[0].get(right) for left,right in (
                         ('packet_pointer','packet_pointer'),('object_index','object_index'),
                         ('pool_tag','pool_tag'),('tx_lease_id','lease_id'),('length','length'),('frame_hex','frame_hex'))))
-                require(same_u2 and proof.get('bijection',{}).get('committed')==len(commits)==
-                    proof.get('bijection',{}).get('drained')==len(releases) and
-                    proof.get('final_batch',{}).get('tx_after')==0 and
-                    proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0} and
-                    frame_wire_observation.get('first_wire_frame') and frame_wire_observation.get('seq1_count')==1 and
-                    frame_wire_observation.get('seq2_count')==0 and not frame_wire_observation.get('errors'),
+                committed_count=proof.get('bijection',{}).get('committed')
+                drained_count=proof.get('bijection',{}).get('drained')
+                frame_positive_checks=dict(
+                    same_u2=same_u2,
+                    commit_bijection=(committed_count==len(commits)),
+                    release_bijection=(drained_count==len(releases)),
+                    bijection_counts_match=(committed_count==drained_count),
+                    tx_empty=(proof.get('final_batch',{}).get('tx_after')==0),
+                    quiescent=(proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0}),
+                    first_wire_frame=bool(frame_wire_observation.get('first_wire_frame')),
+                    seq1_once=(frame_wire_observation.get('seq1_count')==1),
+                    seq2_absent=(frame_wire_observation.get('seq2_count')==0),
+                    wire_peer_clean=(not frame_wire_observation.get('errors')))
+                frame_positive_failure_context=dict(
+                    checks=frame_positive_checks,
+                    stats_stage=finished.get('stage'),
+                    proof=proof,
+                    u2_commits=u2_commits,
+                    u2_releases=u2_releases,
+                    wire_observation=frame_wire_observation,
+                    first_wire_frame=(first_wire_frame.hex() if first_wire_frame is not None else None))
+                require(all(frame_positive_checks.values()),
                     'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
             expected_worker_code=(1 if mode=='frame-death-consumer-prepared' else
                 -signal.SIGKILL if mode in ('frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer') else 0)
@@ -1538,6 +1554,33 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                         resident_stderr=resident_err.decode(errors='replace'))
                     print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_FINAL ' +
                         json.dumps(final_snapshot, sort_keys=True), flush=True)
+                if mode == 'frame-positive' and original_error is not None:
+                    failure_stats = None
+                    try: failure_stats = json.loads(stats_path.read_text())
+                    except (OSError, json.JSONDecodeError): pass
+                    runner_out, runner_err = cleanup_outputs.get('launcher', (b'', b''))
+                    resident_out, resident_err = cleanup_outputs.get('resident', (b'', b''))
+                    failure_context = locals().get('frame_positive_failure_context')
+                    raw_runner_stderr = (runner_stderr_path.read_text(errors='replace')
+                        if runner_stderr_path.exists() else '')
+                    failure_record=dict(
+                        reason=str(original_error),
+                        checks=(failure_context or {}).get('checks'),
+                        stage=(failure_context or {}).get('stats_stage'),
+                        handoff_frame=(failure_stats or {}).get('handoff_frame'),
+                        u2_commits=(failure_context or {}).get('u2_commits'),
+                        u2_releases=(failure_context or {}).get('u2_releases'),
+                        wire_observation=(failure_context or {}).get('wire_observation'),
+                        first_wire_frame=(failure_context or {}).get('first_wire_frame'),
+                        runner_returncode=(runner.returncode if runner is not None else None),
+                        resident_returncode=(primary.returncode if primary is not None else None),
+                        runner_stdout=runner_out.decode(errors='replace'),
+                        runner_stderr=raw_runner_stderr,
+                        runner_stderr_pipe=runner_err.decode(errors='replace'),
+                        resident_stdout=resident_out.decode(errors='replace'),
+                        resident_stderr=resident_err.decode(errors='replace'))
+                    print('KER_SESSION_FRAME_POSITIVE_FAILURE ' +
+                        json.dumps(failure_record, sort_keys=True), flush=True)
                 if finalization_errors:
                     raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
                         repr([str(error) for error in finalization_errors]))
