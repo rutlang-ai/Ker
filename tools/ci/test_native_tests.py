@@ -152,6 +152,45 @@ class NativeTestSelectorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing required plugins"):
                 native_tests.dpdk_plugin_directory(prefix, ("librte_missing.so",))
 
+    def test_dpdk_discovery_rejects_missing_dangling_and_out_of_prefix_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            outside = root / "outside.so"
+            outside.write_bytes(b"outside install")
+
+            missing = root / "missing"
+            missing.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "no shared-library files"):
+                native_tests.dpdk_runtime_directories(missing)
+            with self.assertRaisesRegex(RuntimeError, "missing required plugins"):
+                native_tests.dpdk_plugin_directory(missing, ("librte_mempool_ring.so",))
+
+            dangling_runtime = root / "dangling-runtime"
+            dangling_runtime.mkdir()
+            (dangling_runtime / "librte_eal.so").symlink_to("missing-version.so")
+            with self.assertRaisesRegex(RuntimeError, "missing or dangling"):
+                native_tests.dpdk_runtime_directories(dangling_runtime)
+
+            dangling_plugin = root / "dangling-plugin" / "pmds"
+            dangling_plugin.mkdir(parents=True)
+            (dangling_plugin / "librte_mempool_ring.so").symlink_to("missing-version.so")
+            with self.assertRaisesRegex(RuntimeError, "missing or dangling"):
+                native_tests.dpdk_plugin_directory(
+                    dangling_plugin.parents[0], ("librte_mempool_ring.so",))
+
+            escaping_runtime = root / "escaping-runtime"
+            escaping_runtime.mkdir()
+            (escaping_runtime / "librte_eal.so").symlink_to(outside)
+            with self.assertRaisesRegex(RuntimeError, "escapes install prefix"):
+                native_tests.dpdk_runtime_directories(escaping_runtime)
+
+            escaping_plugin = root / "escaping-plugin" / "pmds"
+            escaping_plugin.mkdir(parents=True)
+            (escaping_plugin / "librte_mempool_ring.so").symlink_to(outside)
+            with self.assertRaisesRegex(RuntimeError, "escapes install prefix"):
+                native_tests.dpdk_plugin_directory(
+                    escaping_plugin.parents[0], ("librte_mempool_ring.so",))
+
     def test_junit_rejects_nonzero_ctest_even_when_xml_is_green(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary) / "ctest.xml"
