@@ -84,16 +84,21 @@ class NativeTestSelectorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "skipped"):
                 native_tests.run_group(Path("build"), "selector test", ("required-a",))
 
-    def test_full_junit_report_allows_and_reports_nonrequired_hardware_skip(self):
+    def test_full_junit_report_allows_only_explicitly_reviewed_optional_skip(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary) / "ctest.xml"
             report.write_text(
                 '<testsuites><testsuite><testcase name="required-a"/>'
                 '<testcase name="hardware-test"><skipped/></testcase></testsuite></testsuites>', encoding="utf-8")
-            with mock.patch.object(native_tests, "summary") as summary:
+            with mock.patch.object(native_tests, "REVIEWED_OPTIONAL_SKIPS", frozenset({"hardware-test"})), \
+                 mock.patch.object(native_tests, "summary") as summary:
                 native_tests.report_junit(report, expected={"required-a", "hardware-test"},
                                           required={"required-a"})
             self.assertTrue(any("hardware-test" in call.args[0] for call in summary.call_args_list))
+            with mock.patch.object(native_tests, "REVIEWED_OPTIONAL_SKIPS", frozenset()), \
+                 self.assertRaisesRegex(RuntimeError, "unreviewed CTest skips"):
+                native_tests.report_junit(report, expected={"required-a", "hardware-test"},
+                                          required={"required-a"})
 
     def test_junit_rejects_duplicate_and_missing_records(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -105,7 +110,8 @@ class NativeTestSelectorTests(unittest.TestCase):
 
     def test_full_graph_requires_every_session_test_and_reports_full_inventory(self):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
-                     set(native_tests.NOHUGE_TAP) | set(native_tests.SESSION_CTEST) |
+                     set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
+                     set(native_tests.SESSION_CTEST) |
                      {native_tests.SESSION_DIRECT, "optional-hardware"})
         inventory = [{"name": name, "properties": [
             {"name": "LABELS", "value": ["session", "fstack"]}
@@ -128,10 +134,39 @@ class NativeTestSelectorTests(unittest.TestCase):
                                  encoding="utf-8")
                 return SimpleNamespace(returncode=0)
 
-            with mock.patch.object(native_tests, "ctest_inventory", return_value=inventory), \
+            with mock.patch.object(native_tests, "REVIEWED_OPTIONAL_SKIPS", frozenset({"optional-hardware"})), \
+                 mock.patch.object(native_tests, "ctest_inventory", return_value=inventory), \
                  mock.patch.object(native_tests.subprocess, "run", side_effect=run), \
                  mock.patch.object(native_tests, "summary"):
                 native_tests.run_full_ctest(Path("build"), junit)
+
+    def test_full_graph_rejects_each_software_datapath_skip(self):
+        all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
+                     set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
+                     set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT})
+        inventory = [{"name": name, "properties": [
+            {"name": "LABELS", "value": ["session", "fstack"]}
+            if name in set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT}
+            else {"name": "LABELS", "value": ["fstack"]}
+        ]} for name in sorted(all_names)]
+        for skipped in native_tests.REQUIRED_SOFTWARE_DATAPATH:
+            with self.subTest(skipped=skipped), tempfile.TemporaryDirectory() as temporary:
+                junit = Path(temporary) / "full.xml"
+
+                def run(_command, **_kwargs):
+                    expected = sorted(all_names - {native_tests.SESSION_DIRECT})
+                    cases = "".join(
+                        f'<testcase name="{name}">' + ("<skipped/>" if name == skipped else "") +
+                        "</testcase>" for name in expected)
+                    junit.write_text("<testsuites><testsuite>" + cases + "</testsuite></testsuites>",
+                                     encoding="utf-8")
+                    return SimpleNamespace(returncode=0)
+
+                with mock.patch.object(native_tests, "ctest_inventory", return_value=inventory), \
+                     mock.patch.object(native_tests.subprocess, "run", side_effect=run), \
+                     mock.patch.object(native_tests, "summary"), \
+                     self.assertRaisesRegex(RuntimeError, "required tests skipped"):
+                    native_tests.run_full_ctest(Path("build"), junit)
 
     def test_dpdk_runtime_discovery_follows_meson_unversioned_plugin_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -283,6 +318,78 @@ class NativeTestSelectorTests(unittest.TestCase):
         with mock.patch.object(native_tests, "nohuge_prerequisite", return_value=(False, "no TUN")):
             with self.assertRaisesRegex(RuntimeError, "required unshare/TUN TAP preflight"):
                 native_tests.tap_preflight()
+
+    def test_native_datapath_preflight_requires_pinned_pm_ds_device_and_two_cpus(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary)
+            directories = []
+
+            def plugin(_prefix, names):
+                self.assertEqual(len(names), 1)
+                directories.append(names[0])
+                return prefix / "lib64" / "dpdk" / "pmds-27.0"
+
+            with mock.patch.object(native_tests, "require_two_cpus") as cpus, \
+                 mock.patch.object(native_tests, "tap_preflight") as tap, \
+                 mock.patch.object(native_tests, "dpdk_plugin_directory", side_effect=plugin), \
+                 mock.patch.object(Path, "is_char_device", return_value=True), \
+                 mock.patch.object(native_tests.os, "open", return_value=77) as open_device, \
+                 mock.patch.object(native_tests.os, "close") as close_device, \
+                 mock.patch.object(native_tests, "summary"):
+                native_tests.native_datapath_preflight(prefix)
+            cpus.assert_called_once_with()
+            tap.assert_called_once_with()
+            self.assertCountEqual(directories, ("librte_net_tap.so", "librte_net_virtio.so",
+                                                "librte_net_vhost.so"))
+            open_device.assert_called_once_with(Path("/dev/vhost-net"), native_tests.os.O_RDWR |
+                                                native_tests.os.O_CLOEXEC)
+            close_device.assert_called_once_with(77)
+
+            with mock.patch.object(native_tests, "require_two_cpus"), \
+                 mock.patch.object(native_tests, "tap_preflight"), \
+                 mock.patch.object(native_tests, "dpdk_plugin_directory", side_effect=plugin), \
+                 mock.patch.object(Path, "is_char_device", return_value=False), \
+                 mock.patch.object(native_tests.os, "open") as open_device:
+                with self.assertRaisesRegex(RuntimeError, "vhost-net character device"):
+                    native_tests.native_datapath_preflight(prefix)
+                open_device.assert_not_called()
+
+    def test_tap_retry_manifest_binds_exact_pinned_patch_and_prepared_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "dpdk"
+            tap = source / "drivers/net/tap/rte_eth_tap.c"
+            tap.parent.mkdir(parents=True)
+            tap.write_text("patched TAP source\n", encoding="utf-8")
+            patch = root / "tap.patch"
+            patch.write_text("pinned patch\n", encoding="utf-8")
+            manifest = {
+                "upstream_commit": "d129414711aa7c4954f997acf4c54338574a7d92",
+                "patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+                "tap_source_sha256": hashlib.sha256(tap.read_bytes()).hexdigest(),
+                "compatibility_abi": "ker_dpdk_tap_tx_retry_abi=1",
+            }
+            (source / "ker-tap-retry-provenance.json").write_text(
+                json.dumps(manifest), encoding="utf-8")
+            with mock.patch.object(native_tests, "summary"):
+                self.assertEqual(native_tests.verify_tap_retry_source(source, patch), manifest)
+
+            bad_manifest = dict(manifest, upstream_commit="un-pinned")
+            (source / "ker-tap-retry-provenance.json").write_text(
+                json.dumps(bad_manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "provenance mismatch"):
+                native_tests.verify_tap_retry_source(source, patch)
+
+            (source / "ker-tap-retry-provenance.json").write_text(
+                json.dumps(manifest), encoding="utf-8")
+            patch.write_text("different patch\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "provenance mismatch"):
+                native_tests.verify_tap_retry_source(source, patch)
+
+            patch.write_text("pinned patch\n", encoding="utf-8")
+            tap.write_text("changed source\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "provenance mismatch"):
+                native_tests.verify_tap_retry_source(source, patch)
 
 
 if __name__ == "__main__":

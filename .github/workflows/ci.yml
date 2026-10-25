@@ -172,10 +172,24 @@ jobs:
           KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
           KER_DPDK_JOBS: '2'
         run: |
-          meson setup "$KER_DPDK_BUILD_DIR" third_party/dpdk \
+          set -euo pipefail
+          dpdk_source=third_party/dpdk
+          if [[ "${{ steps.native.outputs.present }}" == true ]] && \
+              [[ -f tools/prepare-dpdk-tap-retry.py && -f compat/dpdk/tap-tx-retry.patch ]]; then
+            dpdk_source="$RUNNER_TEMP/dpdk-tap-retry-source"
+            python3 tools/prepare-dpdk-tap-retry.py \
+              --source third_party/dpdk --output "$dpdk_source"
+            python3 tools/ci/native_tests.py verify-tap-retry-source \
+              "$dpdk_source" compat/dpdk/tap-tx-retry.patch
+            echo "Prepared isolated patched DPDK source: $dpdk_source"
+          elif [[ "${{ steps.native.outputs.present }}" == true ]]; then
+            echo 'Native source snapshot lacks the isolated TAP retry adapter required by the migration datapath tests.' >&2
+            exit 1
+          fi
+          meson setup "$KER_DPDK_BUILD_DIR" "$dpdk_source" \
             --prefix "$KER_DPDK_PREFIX" --libdir lib64 \
-            -Denable_libs=eal,ring,mempool,mbuf,ethdev,gso \
-            -Denable_drivers=bus/vdev,mempool/ring,net/null,net/ring,net/tap \
+            -Denable_libs=eal,ring,mempool,mbuf,ethdev,gso,vhost,cryptodev,hash,pci,dmadev,kvargs \
+            -Denable_drivers=bus/vdev,bus/pci,mempool/ring,net/null,net/ring,net/tap,net/virtio,net/vhost \
             -Ddisable_apps='*' -Dtests=false -Dplatform=generic
           meson compile -C "$KER_DPDK_BUILD_DIR" -j 2
           meson install -C "$KER_DPDK_BUILD_DIR" --no-rebuild
@@ -278,6 +292,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo modprobe tun
+          sudo modprobe vhost_net
+          test -c /dev/vhost-net
+          sudo chown "$(id -u):$(id -g)" /dev/vhost-net
+          sudo chmod 0600 /dev/vhost-net
           sudo sysctl -w vm.nr_hugepages=256
           sudo mkdir -p /dev/hugepages
           if ! mountpoint -q /dev/hugepages; then
@@ -293,7 +311,7 @@ jobs:
             echo "Required native integration needs at least 64 free 2 MiB hugepages; found ${free_pages}." >&2
             exit 1
           fi
-          python3 tools/ci/native_tests.py tap-preflight
+          python3 tools/ci/native_tests.py native-datapath-preflight "$RUNNER_TEMP/dpdk-install"
 
       - name: Run the full native CTest graph with JUnit accounting
         if: steps.native.outputs.present == 'true'
