@@ -15,6 +15,7 @@ import select
 import signal
 import subprocess
 import tempfile
+import threading
 import types
 import time
 import unittest
@@ -468,7 +469,31 @@ class HandoffControlPathTests(unittest.TestCase):
             if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
         record_assignment = next(node for node in ast.walk(profile)
             if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
-                target.id == 'failure_record' for target in node.targets))
+                target.id == 'failure_record' for target in node.targets) and
+            any(isinstance(child, ast.Constant) and child.value == 'handoff_frame'
+                for child in ast.walk(node)))
+        full_record_assignment = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id == 'failure_record' for target in node.targets) and
+            any(isinstance(child, ast.keyword) and child.arg == 'wire_seq1_frames'
+                for child in ast.walk(node)))
+        full_failure_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and any(isinstance(child, ast.Constant) and
+                isinstance(child.value, str) and child.value.startswith('KER_SESSION_FRAME_FULL_FAILURE')
+                for child in ast.walk(node)))
+        startup_scope = next(node for node in profile.body if isinstance(node, ast.With) and
+            any(isinstance(item.context_expr, ast.Call) and
+                isinstance(item.context_expr.func, ast.Attribute) and item.context_expr.func.attr ==
+                'TemporaryDirectory' for item in node.items))
+        initial_try = next(index for index, node in enumerate(startup_scope.body)
+            if isinstance(node, ast.Try))
+        initialized = set()
+        for statement in startup_scope.body[:initial_try]:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    initialized.update(child.id for child in ast.walk(target) if isinstance(child, ast.Name))
+        self.assertTrue({'wire_stop', 'wire_frames', 'wire_errors', 'wire_lock', 'wire_thread',
+            'runner_stderr_path'} <= initialized)
         helper_namespace = {}
         exec(compile(ast.Module(body=[decoder], type_ignores=[]), str(PROFILE_SOURCE), 'exec'),
             helper_namespace)
@@ -505,6 +530,116 @@ class HandoffControlPathTests(unittest.TestCase):
                     self.assertEqual(record['handoff_frame'], {'tx_count': 0})
                     self.assertEqual(record['checks'], None if context is None else context['checks'])
                     self.assertEqual(record['u2_commits'], None if context is None else context['u2_commits'])
+            full_values = dict(
+                mode='frame-full', frame_full_stage='wait-seq2-ack',
+                original_error=RuntimeError('bounded seq2 acknowledgement timeout'),
+                failure_stats={'stage': 'handoff-complete', 'frame_full_capacity': 64},
+                wire_lock=threading.Lock(), wire_frames=[], wire_errors=['no frame peer error'],
+                failure_wire_frames=[], failure_wire_errors=['no frame peer error'],
+                runner=types.SimpleNamespace(returncode=-15),
+                primary=types.SimpleNamespace(returncode=0),
+                runner_out=None, runner_err=None, resident_out=None, resident_err=None,
+                runner_stderr_path=runner_stderr_path,
+                raw_runner_stderr='raw runner stderr\n',
+                _decode_captured_pipe_output=helper_namespace['_decode_captured_pipe_output'])
+            exec(compile(ast.fix_missing_locations(ast.Module(body=[full_record_assignment],
+                type_ignores=[])), str(PROFILE_SOURCE), 'exec'), full_values)
+            full_record = full_values['failure_record']
+            self.assertEqual(full_record['mode'], 'frame-full')
+            self.assertEqual(full_record['stage'], 'wait-seq2-ack')
+            self.assertEqual(full_record['runner_stderr_pipe'], '')
+            self.assertEqual(full_record['resident_stderr'], '')
+            self.assertEqual(full_record['wire_errors'], ['no frame peer error'])
+
+            emitted = []
+            runner_stderr_path.write_text('early stderr\n')
+            early_values = dict(json=json, mode='frame-full', frame_full_stage='before-resident-ready',
+                original_error=RuntimeError('early setup failure'),
+                failure_stats=None, stats_path=Path(directory) / 'not-created-stats.json',
+                cleanup_outputs={'launcher': (None, None), 'resident': (None, None)},
+                runner_out=None, runner_err=None, resident_out=None, resident_err=None,
+                wire_lock=threading.Lock(), wire_frames=[], wire_errors=[],
+                runner=types.SimpleNamespace(returncode=1), primary=None,
+                runner_stderr_path=runner_stderr_path, raw_runner_stderr='early stderr\n',
+                _decode_captured_pipe_output=helper_namespace['_decode_captured_pipe_output'],
+                print=lambda value, **_kwargs: emitted.append(value))
+            exec(compile(ast.fix_missing_locations(ast.Module(body=[full_failure_branch],
+                type_ignores=[])), str(PROFILE_SOURCE), 'exec'), early_values)
+            self.assertEqual(len(emitted), 1)
+            early_record = json.loads(emitted[0].split(' ', 1)[1])
+            self.assertEqual(early_record['stage'], 'before-resident-ready')
+            self.assertEqual(early_record['runner_stderr'], 'early stderr\n')
+            self.assertEqual(early_record['wire_frame_count'], 0)
+
+    def test_record_uses_deadline_for_empty_partial_valid_and_wrong_prefix_pipes(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        names = {'read_bounded_line', 'read_bounded_stderr', 'line', 'record'}
+        functions = [node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name in names]
+        self.assertEqual({node.name for node in functions}, names)
+        namespace = {'os': os, 'select': select, 'time': time, 'Path': Path,
+            'json': json, '_active_handoff_evidence': None,
+            'require': lambda value, message: None if value else (_ for _ in ()).throw(RuntimeError(message))}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(PROFILE_SOURCE), 'exec'), namespace)
+
+        def run(source):
+            return subprocess.Popen([os.sys.executable, '-c', source], stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, bufsize=0)
+
+        empty = run('pass')
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'exited early'):
+                namespace['record'](empty, 'EXPECTED', timeout=1)
+            empty.communicate(timeout=1)
+        finally:
+            if empty.poll() is None:
+                empty.kill(); empty.wait()
+
+        held_stderr = run('import os,time;os.close(1);time.sleep(2)')
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'exited early'):
+                namespace['record'](held_stderr, 'EXPECTED', timeout=1)
+            self.assertLess(time.monotonic() - started, 0.5)
+        finally:
+            if held_stderr.poll() is None:
+                held_stderr.kill()
+            held_stderr.communicate(timeout=1)
+
+        partial = run("import sys,time;sys.stdout.buffer.write(b'EXPECTED {');sys.stdout.flush();time.sleep(2)")
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'timed out before a complete line'):
+                namespace['record'](partial, 'EXPECTED', timeout=0.05)
+        finally:
+            if partial.poll() is None:
+                partial.kill()
+            partial.communicate(timeout=1)
+
+        partial_eof = run("import sys;sys.stdout.buffer.write(b'EXPECTED {\\\"ok\\\":true}')")
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'ended before a complete line'):
+                namespace['record'](partial_eof, 'EXPECTED', timeout=1)
+            partial_eof.communicate(timeout=1)
+        finally:
+            if partial_eof.poll() is None:
+                partial_eof.kill(); partial_eof.wait()
+
+        valid = run("import sys;sys.stdout.buffer.write(b'EXPECTED {\\\"ok\\\":true}\\n');sys.stdout.flush()")
+        try:
+            self.assertEqual(namespace['record'](valid, 'EXPECTED', timeout=1), {'ok': True})
+            valid.communicate(timeout=1)
+        finally:
+            if valid.poll() is None:
+                valid.kill(); valid.wait()
+
+        wrong = run("import sys;sys.stdout.buffer.write(b'OTHER {\\\"ok\\\":true}\\n');sys.stdout.flush()")
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'unexpected output'):
+                namespace['record'](wrong, 'EXPECTED', timeout=1)
+            wrong.communicate(timeout=1)
+        finally:
+            if wrong.poll() is None:
+                wrong.kill(); wrong.wait()
 
     def test_frame_commit_release_bijection_binds_exact_lease_and_u2_bytes(self):
         payload=b'KER-A09-HANDOFF-UDP seq=2\n'

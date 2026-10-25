@@ -354,16 +354,57 @@ def report_hugepage_cleanup_refusal(mode, original_error, cleanup_error):
         raise cleanup_error.with_traceback(cleanup_error.__traceback__)
 
 
+def read_bounded_line(process, timeout=25, max_bytes=1 << 20):
+    require(process.stdout is not None, 'packet-session stdout is unavailable')
+    deadline = time.monotonic() + timeout
+    value = bytearray()
+    fd = process.stdout.fileno()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('packet-session output timed out before a complete line')
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            raise RuntimeError('packet-session output timed out before a complete line')
+        chunk = os.read(fd, 1)
+        if not chunk:
+            if value:
+                raise RuntimeError('packet-session output ended before a complete line')
+            return bytes(value)
+        value.extend(chunk)
+        if len(value) > max_bytes:
+            raise RuntimeError('packet-session output line exceeded its byte limit')
+        if chunk == b'\n':
+            return bytes(value)
+
+
+def read_bounded_stderr(stderr, timeout=0.1, max_bytes=8192):
+    if stderr is None:
+        return ''
+    deadline = time.monotonic() + timeout
+    value = bytearray()
+    fd = stderr.fileno()
+    while len(value) < max_bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            break
+        chunk = os.read(fd, min(4096, max_bytes - len(value)))
+        if not chunk:
+            break
+        value.extend(chunk)
+    return value.decode(errors='replace')
+
+
 def line(process, timeout=25, stderr_path=None):
-    with selectors.DefaultSelector() as selector:
-        selector.register(process.stdout, selectors.EVENT_READ)
-        require(selector.select(timeout), 'packet-session output timed out')
-    value = process.stdout.readline()
+    value = read_bounded_line(process, timeout)
     if not value:
         if stderr_path is not None:
             diagnostic = Path(stderr_path).read_text(errors='replace') if Path(stderr_path).exists() else ''
         elif process.stderr is not None:
-            diagnostic = process.stderr.read().decode(errors='replace')
+            diagnostic = read_bounded_stderr(process.stderr)
         else:
             diagnostic = ''
         raise RuntimeError('packet-session exited early: ' + diagnostic)
@@ -460,15 +501,15 @@ def _handoff_evidence_scope(api, evidence):
         _active_handoff_evidence = prior_evidence
 
 
-def record(process, prefix):
-    value = line(process)
+def record(process, prefix, timeout=25):
+    value = line(process, timeout)
     if not value.startswith(prefix + ' '):
         diagnostic = ''
         if process.poll() is None:
             try: process.wait(timeout=3)
             except subprocess.TimeoutExpired: pass
         if process.poll() is not None and process.stderr is not None:
-            diagnostic = process.stderr.read().decode(errors='replace')
+            diagnostic = read_bounded_stderr(process.stderr)
         raise RuntimeError('unexpected output: ' + value + (('\nchild stderr:\n' + diagnostic) if diagnostic else ''))
     parsed = json.loads(value[len(prefix) + 1:])
     if _active_handoff_evidence is not None:
@@ -538,6 +579,12 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
         primary = runner = None
         runner_stderr_handle = None
         wire = endpoint = None
+        wire_stop = threading.Event()
+        wire_frames = []
+        wire_errors = []
+        wire_lock = threading.Lock()
+        wire_thread = None
+        runner_stderr_path = root / 'runner.stderr.log'
         handoff_read = handoff_write = -1
         pidfds = []
         actor_pidfds = {}
@@ -546,6 +593,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
         actor_proof_ready = False
         handoff_census_before = handoff_owner_before = None
         rejection_timeout_snapshot = None
+        frame_full_stage = None
         try:
             primary = subprocess.Popen([sys.executable, str(args.tool), 'serve', *common],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
@@ -555,7 +603,6 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 'handoff resident did not start the selected paired PMD/generation adapter')
             wire, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
             wire.setblocking(False)
-            wire_stop=threading.Event(); wire_frames=[]; wire_errors=[]; wire_lock=threading.Lock()
             host_mac=bytes.fromhex('024b45520001')
             def handoff_wire_peer():
                 try:
@@ -573,7 +620,6 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                             if wire.send(reply)!=len(reply):raise RuntimeError('short ARP prewarm reply')
                 except BaseException as error:
                     wire_errors.append(str(error));wire_stop.set()
-            wire_thread=None
             if mode in ('frame-positive','frame-full','frame-death-prepared','frame-death-producer-active-consumer','frame-death-consumer-prepared',
                     'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
                 wire_thread=threading.Thread(target=handoff_wire_peer,daemon=True);wire_thread.start()
@@ -603,7 +649,6 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
             if mode=='frame-death-producer-active-consumer': runner_environment['KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER']='1'
             if mode != 'positive':
                 runner_environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
-            runner_stderr_path = root / 'runner.stderr.log'
             runner_stderr_handle = runner_stderr_path.open('wb')
             runner = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
                 '--wire-fd', str(endpoint.fileno()), '--library', str(args.library), '--stats', str(stats_path),
@@ -1395,10 +1440,13 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 frame_wire_observation=dict(first_wire_frame=bool(first_wire_frame),seq1_count=seq1_count,
                     seq2_count=seq2_count,errors=wire_error_snapshot)
             elif mode=='frame-full':
+                frame_full_stage='request-seq2'
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP full-ring datagram')
+                frame_full_stage='wait-seq2-ack'
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
                     'original app did not acknowledge the full-ring UDP datagram')
+                frame_full_stage='wait-full-ring-proof'
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
                     try:after=json.loads(stats_path.read_text())
@@ -1407,6 +1455,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     require(runner.poll() is None,'runner exited before full-ring cancel/drain proof')
                     time.sleep(0.005)
                 fullproof=after.get('handoff_frame_full') or {}
+                frame_full_stage='validate-full-ring-proof'
                 time.sleep(0.5)
                 with wire_lock:
                     full_wire_snapshot=list(wire_frames);full_wire_errors=list(wire_errors)
@@ -1439,6 +1488,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     drain.get('objects')==fill.get('objects') and
                     seq1_count==1 and seq2_count==0 and not full_wire_errors,
                     'full generation TX ring did not reject/cancel then drain exactly')
+                frame_full_stage='full-ring-proof-passed'
                 os.close(handoff_write);handoff_write=-1
             runner.send_signal(signal.SIGTERM)
             output, _ = runner.communicate(timeout=20)
@@ -1558,7 +1608,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                         resident_stderr=_decode_captured_pipe_output(resident_err))
                     print('KER_SESSION_PREPARE_REJECTION_TIMEOUT_FINAL ' +
                         json.dumps(final_snapshot, sort_keys=True), flush=True)
-                if mode == 'frame-positive' and original_error is not None:
+                if mode in ('frame-positive', 'frame-full') and original_error is not None:
                     failure_stats = None
                     try: failure_stats = json.loads(stats_path.read_text())
                     except (OSError, json.JSONDecodeError): pass
@@ -1567,24 +1617,46 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     failure_context = locals().get('frame_positive_failure_context')
                     raw_runner_stderr = (runner_stderr_path.read_text(errors='replace')
                         if runner_stderr_path.exists() else '')
-                    failure_record=dict(
-                        reason=str(original_error),
-                        checks=(failure_context or {}).get('checks'),
-                        stage=(failure_context or {}).get('stats_stage'),
-                        handoff_frame=(failure_stats or {}).get('handoff_frame'),
-                        u2_commits=(failure_context or {}).get('u2_commits'),
-                        u2_releases=(failure_context or {}).get('u2_releases'),
-                        wire_observation=(failure_context or {}).get('wire_observation'),
-                        first_wire_frame=(failure_context or {}).get('first_wire_frame'),
-                        runner_returncode=(runner.returncode if runner is not None else None),
-                        resident_returncode=(primary.returncode if primary is not None else None),
-                        runner_stdout=_decode_captured_pipe_output(runner_out),
-                        runner_stderr=raw_runner_stderr,
-                        runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
-                        resident_stdout=_decode_captured_pipe_output(resident_out),
-                        resident_stderr=_decode_captured_pipe_output(resident_err))
-                    print('KER_SESSION_FRAME_POSITIVE_FAILURE ' +
-                        json.dumps(failure_record, sort_keys=True), flush=True)
+                    if mode == 'frame-full':
+                        with wire_lock:
+                            failure_wire_frames = list(wire_frames)
+                            failure_wire_errors = list(wire_errors)
+                        failure_record = dict(
+                            mode=mode, stage=frame_full_stage, reason=str(original_error),
+                            stats=failure_stats,
+                            wire_seq1_frames=[frame.hex() for frame in failure_wire_frames
+                                if handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=1\n'],
+                            wire_seq2_frames=[frame.hex() for frame in failure_wire_frames
+                                if handoff_udp_payload(frame)==b'KER-A09-HANDOFF-UDP seq=2\n'],
+                            wire_frame_count=len(failure_wire_frames), wire_errors=failure_wire_errors,
+                            runner_returncode=(runner.returncode if runner is not None else None),
+                            resident_returncode=(primary.returncode if primary is not None else None),
+                            runner_stdout=_decode_captured_pipe_output(runner_out),
+                            runner_stderr=raw_runner_stderr,
+                            runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
+                            resident_stdout=_decode_captured_pipe_output(resident_out),
+                            resident_stderr=_decode_captured_pipe_output(resident_err))
+                        print('KER_SESSION_FRAME_FULL_FAILURE ' +
+                            json.dumps(failure_record, sort_keys=True), flush=True)
+                    else:
+                        failure_record=dict(
+                            reason=str(original_error),
+                            checks=(failure_context or {}).get('checks'),
+                            stage=(failure_context or {}).get('stats_stage'),
+                            handoff_frame=(failure_stats or {}).get('handoff_frame'),
+                            u2_commits=(failure_context or {}).get('u2_commits'),
+                            u2_releases=(failure_context or {}).get('u2_releases'),
+                            wire_observation=(failure_context or {}).get('wire_observation'),
+                            first_wire_frame=(failure_context or {}).get('first_wire_frame'),
+                            runner_returncode=(runner.returncode if runner is not None else None),
+                            resident_returncode=(primary.returncode if primary is not None else None),
+                            runner_stdout=_decode_captured_pipe_output(runner_out),
+                            runner_stderr=raw_runner_stderr,
+                            runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
+                            resident_stdout=_decode_captured_pipe_output(resident_out),
+                            resident_stderr=_decode_captured_pipe_output(resident_err))
+                        print('KER_SESSION_FRAME_POSITIVE_FAILURE ' +
+                            json.dumps(failure_record, sort_keys=True), flush=True)
                 if finalization_errors:
                     raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
                         repr([str(error) for error in finalization_errors]))
