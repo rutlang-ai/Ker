@@ -922,10 +922,49 @@ class AdditionalWorker:
 def unexpected_worker_exit(worker, additional):
     if worker.poll() is not None:
         return 'DPDK worker stopped while the application was running'
+    return unexpected_additional_worker_exit(additional)
+
+
+def unexpected_additional_worker_exit(additional):
     stopped = [extra.interface['name'] for extra in additional if extra.process.poll() is not None]
     if stopped:
         return 'additional DPDK worker stopped while the application was running: ' + ', '.join(stopped)
     return None
+
+
+def drain_startup_status(startup_read, startup_status):
+    while True:
+        try:
+            extra = os.read(startup_read, 4096)
+        except BlockingIOError:
+            break
+        if not extra:
+            break
+        startup_status += extra
+    return startup_status
+
+
+def normal_native_shutdown_markers(startup_status):
+    lines = startup_status.splitlines()
+    if any(line == b'KER_NATIVE_INCOMPLETE' for line in lines):
+        return False
+    required = (b'KER_NATIVE_READY', b'KER_NATIVE_STOPPING', b'KER_NATIVE_DONE')
+    positions = {}
+    for marker in required:
+        matches = [index for index, line in enumerate(lines) if line == marker]
+        if len(matches) != 1:
+            return False
+        positions[marker] = matches[0]
+    if not positions[required[0]] < positions[required[1]] < positions[required[2]]:
+        return False
+    for index, line in enumerate(lines):
+        if line.startswith(b'KER_NATIVE_'):
+            if line in required or line == b'KER_NATIVE_INCOMPLETE':
+                continue
+            if line.startswith(b'KER_NATIVE_STATS ') and positions[required[1]] < index < positions[required[2]]:
+                continue
+            return False
+    return True
 
 
 def collect_worker(process, stats):
@@ -1100,10 +1139,26 @@ def main():
                 if exit_code < 0:
                     preserve_signal = True
                 elif not run_finished:
-                    failure = unexpected_worker_exit(worker, additional)
+                    startup_status = drain_startup_status(startup_read, startup_status)
+                    failure = unexpected_additional_worker_exit(additional)
                     if failure:
                         exit_code = 125
                         raise RuntimeError(failure)
+                    if worker.poll() is not None:
+                        if b'KER_NATIVE_STOPPING\n' not in startup_status:
+                            exit_code = 125
+                            raise RuntimeError('DPDK worker stopped while the application was running')
+                        if not normal_native_shutdown_markers(startup_status):
+                            exit_code = 125
+                            raise RuntimeError('DPDK worker stopped with invalid native shutdown marker sequence')
+                        stats, failed = collect_worker(worker, stats)
+                        worker_finished = True
+                        infrastructure_failure |= failed or stats is None or stats.get('outstanding', 1) != 0
+                    else:
+                        failure = unexpected_worker_exit(worker, additional)
+                        if failure:
+                            exit_code = 125
+                            raise RuntimeError(failure)
                 break
             except subprocess.TimeoutExpired:
                 try:
@@ -1150,6 +1205,9 @@ def main():
                     run_finished = True
                     run_parent.send(b'FAIL\n' if failed else b'OK\n')
                 if b'KER_NATIVE_STOPPING\n' in startup_status and not run_finished:
+                    failure = unexpected_additional_worker_exit(additional)
+                    if failure:
+                        raise RuntimeError(failure)
                     if stopping_at is None:
                         stopping_at = time.monotonic()
                     if time.monotonic() - stopping_at > 5:
@@ -1209,6 +1267,7 @@ def main():
             if not worker_finished:
                 stats, failed = collect_worker(worker, stats)
                 infrastructure_failure |= failed
+            infrastructure_failure |= stats is None or stats.get('outstanding', 1) != 0
             if stats is not None:
                 stats['io'] = info
                 for line in startup_status.splitlines():
