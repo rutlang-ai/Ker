@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """Guard ethdev tests against mixing host and pinned Linux Ethernet headers."""
 from pathlib import Path
+import re
 import sys
 
 root = Path(sys.argv[1])
+include_re = re.compile(r'(?m)^\s*#\s*include\s*[<"]([^>"]+)[>"]')
+host_header = 'linux/if_' + 'ether.h'
+
+def has_host_uapi_include(text):
+    return any(match.group(1) == host_header for match in include_re.finditer(text))
+
+# Keep the guard's directive matcher exercised without spelling the forbidden
+# include token contiguously in this script.
+host_directive = '#include <linux/if_' + 'ether.h>'
+assert has_host_uapi_include(host_directive)
+assert not has_host_uapi_include('// ' + host_directive)
+
 sources = (
     'ethdev-rx.c',
     'ethdev-external-lifetime.c',
@@ -17,8 +30,13 @@ sources = (
 for name in sources:
     text = (root / 'tests' / name).read_text()
     assert '#include "compat/ethernet-abi.h"' in text, name
-    assert '#include <linux/if_ether.h>' not in text, name
-    assert '#include "linux/if_ether.h"' not in text, name
+
+owned_sources = sorted((root / 'src').rglob('*.c')) + sorted((root / 'src').rglob('*.h'))
+owned_sources += sorted((root / 'tests').rglob('*.c')) + sorted((root / 'tests').rglob('*.h'))
+importers = sorted(path for path in (root / 'tools').glob('import-*.py') if path.is_file())
+for path in owned_sources + importers:
+    text = path.read_text()
+    assert not has_host_uapi_include(text), path.relative_to(root)
 
 abi = (root / 'src/compat/ethernet-abi.h').read_text()
 for check in (
