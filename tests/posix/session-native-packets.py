@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import errno
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -360,6 +361,9 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     return command
 
 
+_active_handoff_evidence = None
+
+
 def record(process, prefix):
     value = line(process)
     if not value.startswith(prefix + ' '):
@@ -370,11 +374,28 @@ def record(process, prefix):
         if process.poll() is not None and process.stderr is not None:
             diagnostic = process.stderr.read().decode(errors='replace')
         raise RuntimeError('unexpected output: ' + value + (('\nchild stderr:\n' + diagnostic) if diagnostic else ''))
-    return json.loads(value[len(prefix) + 1:])
+    parsed = json.loads(value[len(prefix) + 1:])
+    if _active_handoff_evidence is not None:
+        _active_handoff_evidence['resident_markers'].append(dict(
+            pid=process.pid, marker=prefix, value=parsed,
+            raw=value))
+    return parsed
 
 
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
+    global _active_handoff_evidence
     with tempfile.TemporaryDirectory(prefix='a9-') as directory:
+        prior_evidence = _active_handoff_evidence
+        evidence = dict(mode=mode, resident_markers=[], snapshots=[], actors={})
+        _active_handoff_evidence = evidence
+        original_request = api.Connection.request
+        def evidence_request(connection, command, *call_args, **call_kwargs):
+            response = original_request(connection, command, *call_args, **call_kwargs)
+            if command in (api.STATUS, api.PMD_STATUS):
+                evidence['snapshots'].append(dict(command=('STATUS' if command == api.STATUS else 'PMD_STATUS'),
+                    command_id=command, value=response))
+            return response
+        api.Connection.request = evidence_request
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
         plugin_options = dpdk_plugin_eal_options(plugin_paths)
         file_prefix = f'a9-{os.urandom(16).hex()}'
@@ -617,6 +638,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             app_pidfd = os.pidfd_open(before['app_pid']); pidfds.append(app_pidfd)
             owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
             peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
+            evidence['actors'] = dict(resident=dict(pid=primary.pid), app=dict(pid=before['app_pid']),
+                producer=dict(pid=before['attached']['pid'], identity=before['attached']),
+                consumer=dict(pid=before['handoff_peer_attached']['pid'], identity=before['handoff_peer_attached']))
             actor_proof_ready = True
             initial_pages = _private_hugepage_entries(huge_dir_fd, file_prefix,
                 huge_dir_identity[0], os.geteuid())
@@ -1493,6 +1517,48 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             if cleaned_hugepage_files is not None:
                 print(f'KER_SESSION_HANDOFF_HUGEPAGES_RECLAIMED profile={mode} mode=private '
                     f'files={cleaned_hugepage_files}', flush=True)
+            if original_error is None and cleanup_error is None:
+                actor_fds = dict(zip(('app', 'producer', 'consumer'), pidfds))
+                evidence['actor_pidfd_readable_after_cleanup'] = {
+                    name: bool(select.select([fd], [], [], 0)[0]) for name, fd in actor_fds.items()}
+                evidence['resident_pidfd_readable_after_cleanup'] = bool(
+                    resident_pidfd >= 0 and select.select([resident_pidfd], [], [], 0)[0])
+                evidence['runner_returncode'] = runner.returncode if runner is not None else None
+                evidence['resident_returncode'] = primary.returncode if primary is not None else None
+                evidence['runner_stderr'] = (runner_stderr_path.read_text(errors='replace')
+                    if runner_stderr_path.exists() else '')
+                evidence['resident_stdout'] = (locals().get('primary_output', b'').decode(errors='replace'))
+                evidence['resident_stderr'] = (locals().get('primary_errors', b'').decode(errors='replace'))
+                evidence['stats'] = (json.loads(stats_path.read_text()) if stats_path.exists() else None)
+                evidence['app_returncode'] = (evidence.get('stats') or {}).get('app_code')
+                evidence['producer_returncode'] = (evidence.get('stats') or {}).get('worker_code')
+                evidence['consumer_returncode'] = (evidence.get('stats') or {}).get('handoff_peer_code')
+                frame_locals = locals()
+                evidence['wire_observations'] = {name: [frame.hex() for frame in frame_locals[name]]
+                    for name in ('wire_snapshot', 'full_wire_snapshot', 'active_wire', 'loss_wire')
+                    if name in frame_locals}
+                evidence['wire_errors'] = {name: frame_locals[name] for name in
+                    ('wire_error_snapshot', 'full_wire_errors', 'active_wire_errors', 'loss_wire_errors')
+                    if name in frame_locals}
+                if 'first_wire_frame' in frame_locals:
+                    evidence['wire_observations']['first_wire_frame'] = frame_locals['first_wire_frame'].hex()
+                serial_records = list(evidence['resident_markers'])
+                for stream_name, stream_text in (('runner_stderr', evidence['runner_stderr']),
+                        ('resident_stdout', evidence['resident_stdout']),
+                        ('resident_stderr', evidence['resident_stderr'])):
+                    for raw_line in stream_text.splitlines():
+                        prefix, separator, payload = raw_line.partition(' ')
+                        if separator and prefix.startswith('KER_SESSION_') and payload.startswith('{'):
+                            try: parsed = json.loads(payload)
+                            except json.JSONDecodeError: continue
+                            serial_records.append(dict(source=stream_name, marker=prefix,
+                                value=parsed, raw=raw_line))
+                evidence['serial_records'] = serial_records
+                evidence['capture_sha256'] = hashlib.sha256(
+                    json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                print('KER_SESSION_FRAME_PROFILE_EVIDENCE ' + json.dumps(evidence, sort_keys=True), flush=True)
+            api.Connection.request = original_request
+            _active_handoff_evidence = prior_evidence
 
 
 def main():
