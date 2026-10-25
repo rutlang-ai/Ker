@@ -127,6 +127,10 @@ int ker_generation_packet_release(struct ker_generation_rings *rings,
 
 #ifdef KER_SESSION_TEST_HOOKS
 uint32_t ker_generation_packet_pool_in_use(struct ker_generation_rings *rings);
+int ker_generation_test_packet_object_index(struct ker_generation_rings *rings,
+    const struct rte_mbuf *packet,uint32_t *object_index);
+int ker_generation_test_tx_snapshot(struct ker_generation_rings *rings,uint16_t port,
+    uint16_t queue,uint32_t generation,uint32_t *count,uint32_t *packet_pool_in_use);
 int ker_generation_test_packet_table_duplicate(struct ker_generation_rings *rings,
     uint32_t index,uint32_t duplicate_index,uintptr_t *original);
 int ker_generation_test_packet_table_restore(struct ker_generation_rings *rings,
