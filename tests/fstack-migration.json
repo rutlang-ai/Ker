@@ -1915,9 +1915,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_disabled_port_over_1500_fails",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Ker adapts the disabled-jumbo policy through [dpdk] mtu_enable=0 / --no-mtu-enable: requested MTU above1500 is rejected before worker/application setup, while standard MTU succeeds. The effective startup/live ceiling on every interface is capped at1500, preserving any lower configured maximum. Tests cover CLI precedence, invalid limits, state isolation, additional interfaces and actual original-Linux/DPDK live MTU rejection followed by bidirectional ICMP and exact buffer reclamation. Ker preserves its existing enabled default; source global config ABI and whole fixture schema are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-mtu-enable-config",
+          "provenance_case": "native-fstack-mtu-enable"
+        },
+        {
+          "ctest": "native-fstack-mtu-enable-live",
+          "provenance_case": "native-fstack-mtu-enable"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_mtu_large_65535_fails",

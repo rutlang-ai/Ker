@@ -140,7 +140,7 @@ def exception_ports(value):
     return ','.join(result)
 
 
-CONFIG_DEFAULTS = dict(rx_lcores=None, exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None, exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0, exception_console_rate=0, exception_general_rate=0, tx_offloads='off', rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, address=None, gateway=None, port=None, eal=None,
+CONFIG_DEFAULTS = dict(rx_lcores=None, exception_mode='ethertype', exception_policy='accept', exception_tcp_ports=None, exception_udp_ports=None, exception_iface=None, exception_type=0, exception_queue=256, exception_rate=0, exception_console_rate=0, exception_general_rate=0, tx_offloads='off', rss=False, queues=1, interfaces=(), nb_bond=0, bonds=(), nb_vdev=0, vdevs=(), base_virtaddr=None, file_prefix=None, eal_log_level=None, memory_mb=None, no_huge=None, tx_delay_us=0, numa=True, memory_channels=None, idle_sleep_us=1000, promiscuous=None, vlan_gateways=(), vlan_gateways6=(), ephemeral_ports=None, vlans=(), mbuf_mode='large', sysctls=(), gateway6=None, address6=None, vip_addresses6=(), vip_addresses=(), lcore_mask=None, tcp_ecn=None, mtu=1500, max_mtu=9000, mtu_enable=True, address=None, gateway=None, port=None, eal=None,
     all_multicast=False, log_dir=None, log_level=None, pcap_dir=None,
     pcap_snaplen=65535, pcap_max_bytes=16 * 1024 * 1024, pcap_nsec=False,
     shutdown_timeout_ms=5000, stats=None, command=[])
@@ -162,7 +162,7 @@ CONFIG_SCHEMA = {
     'network': {'vip_addresses6': ('vip_addresses6', vip_addresses6), 'ephemeral_ports': ('ephemeral_ports', ephemeral_ports), 'gateway6': ('gateway6', ipaddress.IPv6Address), 'address6': ('address6', ipaddress.IPv6Interface), 'vip_addresses': ('vip_addresses', vip_addresses), 'tcp_ecn': ('tcp_ecn', str),
                 'mtu': ('mtu', int), 'max_mtu': ('max_mtu', int), 'address': ('address', ipaddress.IPv4Interface),
                 'gateway': ('gateway', ipaddress.IPv4Address)},
-    'dpdk': {'rx_lcores': ('rx_lcores', str), 'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str), 'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str), 'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int), 'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int), 'exception_console_rate': ('exception_console_rate', int), 'exception_general_rate': ('exception_general_rate', int), 'tx_offloads': ('tx_offloads', str), 'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
+    'dpdk': {'mtu_enable': ('mtu_enable', bool), 'rx_lcores': ('rx_lcores', str), 'exception_mode': ('exception_mode', str), 'exception_policy': ('exception_policy', str), 'exception_tcp_ports': ('exception_tcp_ports', str), 'exception_udp_ports': ('exception_udp_ports', str), 'exception_iface': ('exception_iface', str), 'exception_type': ('exception_type', int), 'exception_queue': ('exception_queue', int), 'exception_rate': ('exception_rate', int), 'exception_console_rate': ('exception_console_rate', int), 'exception_general_rate': ('exception_general_rate', int), 'tx_offloads': ('tx_offloads', str), 'rss': ('rss', bool), 'queues': ('queues', int), 'nb_bond': ('nb_bond', int), 'nb_vdev': ('nb_vdev', int), 'base_virtaddr': ('base_virtaddr', base_virtaddr), 'file_prefix': ('file_prefix', str), 'log_level': ('eal_log_level', int), 'memory': ('memory_mb', int), 'no_huge': ('no_huge', bool), 'pkt_tx_delay': ('tx_delay_us', int), 'numa_on': ('numa', bool), 'channel': ('memory_channels', int), 'mbuf_mode': ('mbuf_mode', str), 'lcore_mask': ('lcore_mask', str), 'port': ('port', str), 'eal': ('eal', str),
              'idle_sleep': ('idle_sleep_us', int), 'all_multicast': ('all_multicast', bool), 'promiscuous': ('promiscuous', bool)},
     'logging': {'directory': ('log_dir', Path), 'level': ('log_level', int)},
     'capture': {'directory': ('pcap_dir', Path), 'snaplen': ('pcap_snaplen', int),
@@ -474,6 +474,8 @@ def parse_arguments(argv=None):
     parser.add_argument('--queues', type=int, help='active DPDK RX/TX pairs, 1..16; all RX queues polled, application TX uses queue 0')
     parser.add_argument('--mbuf-mode', choices=('large', 'scatter'), help='DPDK packet storage; scatter uses chained standard-size mbufs')
     parser.add_argument('--mtu', type=int, help='native and DPDK interface MTU, 1280..9000 (default 1500)')
+    parser.add_argument('--mtu-enable', action=argparse.BooleanOptionalAction,
+        help='allow MTU above 1500; disabling caps startup/live MTU on every interface (default enabled)')
     parser.add_argument('--max-mtu', type=int, help='startup/live MTU ceiling and large-buffer capacity, 1280..9000 (default 9000)')
     parser.add_argument('--tcp-ecn', choices=tuple(TCP_ECN),
         help='off, passive acceptance, or active/passive ECN; default preserves Linux policy')
@@ -643,6 +645,8 @@ def parse_arguments(argv=None):
         parser.error('--mtu must be in 1280..9000')
     if not 1280 <= args.max_mtu <= 9000:
         parser.error('--max-mtu must be in 1280..9000')
+    if not args.mtu_enable:
+        args.max_mtu = min(args.max_mtu, 1500)
     if args.mtu > args.max_mtu:
         parser.error('--mtu must not exceed --max-mtu')
     if args.tcp_ecn is not None and args.tcp_ecn not in TCP_ECN:
@@ -775,6 +779,11 @@ def parse_arguments(argv=None):
     for interface in args.interfaces:
         for key in ('mtu', 'max_mtu', 'mbuf_mode', 'queues', 'rss', 'tx_offloads'):
             interface.setdefault(key, getattr(args, key))
+        # Validate the configured ceiling before deriving the global policy cap.
+        if not 1280 <= interface['max_mtu'] <= 9000:
+            parser.error('additional interface max_mtu must be in 1280..9000')
+        if not args.mtu_enable:
+            interface['max_mtu'] = min(interface['max_mtu'], 1500)
         if not 1280 <= interface['mtu'] <= interface['max_mtu'] <= 9000:
             parser.error('additional interface MTU must satisfy 1280 <= mtu <= max_mtu <= 9000')
         if interface['tx_offloads'] not in TX_OFFLOADS:

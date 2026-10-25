@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 204 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 205 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 147 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 146 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为204 scenario-adapted、12 partial、147 blocked，共159项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为205 scenario-adapted、12 partial、146 blocked，共158项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共229项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：159项行为未完成
-（12 partial + 147 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共228项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：158项行为未完成
+（12 partial + 146 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -71,7 +71,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 3 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
-| Resolve remaining typed configuration and intentional schema differences | 17 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
+| Resolve remaining typed configuration and intentional schema differences | 16 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
 | Resolve unmapped host memory, time, environment and kqueue helpers | 9 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
@@ -295,7 +295,7 @@ IPv6 jumbo 外部互通现由 ICMP 静态/动态清单验证；1280 下限保证
 `[network] max_mtu` / `--max-mtu` 提供独立部署上限（默认 9000，范围 1280–9000），请求 MTU 不得超过它。
 9000 请求对 2000 上限在启动前拒绝；CLI 覆盖上限到 9000 后执行同一真实 jumbo 互通测试。
 `test_mtu_port_over_max_fails` 已从部分覆盖转为场景适配；此上限不是硬件能力探测；动态 MTU 适配下，large pool 会按上限预留帧容量。
-F-Stack mtu_enable 禁用分支及其内部配置 ABI 继续保留缺口。
+显式 mtu_enable 禁用分支已由后续 MTU policy 批次适配；内部配置 ABI 不声明等价。
 
 ## TCP ECN 策略
 
@@ -1488,3 +1488,23 @@ TX checksum/TSO software-path evidence is separate: the approved host-only resul
 CTest profiles on TAP and virtio/vhost-kernel. The tested offload source blobs are byte-identical
 to qualified parent `87a705d96a368dfa30606df830b81a756b9c08f5`; the 13-suite session guest adds no
 offload run. No physical-NIC result is claimed; issue #221 remains open.
+
+
+## MTU 禁用策略迁移
+
+`test_mtu_disabled_port_over_1500_fails` 通过 `[dpdk] mtu_enable=0` 或
+`--no-mtu-enable` 适配。主接口与所有附加接口的有效 `max_mtu` 均取配置上限与
+1500 的较小值，因此启动请求和运行中的 MTU 修改都受同一上限约束。
+Ker 保持已有的默认启用行为，区别于 F-Stack 默认关闭；这里只适配显式禁用场景。
+
+`native-fstack-mtu-enable-config` 的五项检查覆盖 1280/1500 边界、1501/2000/9000
+拒绝、worker/application 尚未执行、CLI 覆盖、重复键、更低上限、配置恢复和
+附加接口无法扩大上限。非法配置上限在求有效上限前仍拒绝。
+`native-fstack-mtu-enable-live` 比较显式 1500 ceiling、CLI 禁用与 INI 禁用：原版 Linux
+在三个阶段保持 MTU1500，拒绝9000后双向 IPv4/IPv6 ICMP仍成功，真实 TAP MTU、
+DPDK counters、抓包 checksum 和零 outstanding 都须通过。
+当前共205项 scenario-adapted、12项 partial、146项 blocked；158项行为仍未完成。
+
+本批验证：相关8项CTest通过；扩充INI运行profile后专用live CTest再次通过。
+配置相关80项Python检查、专用5项检查及21项清单审计测试通过，
+106个固定源文件/433项清单完整性审计通过；全量完成门禁仍因158项未完成而失败。

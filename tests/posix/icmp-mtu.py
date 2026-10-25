@@ -95,14 +95,20 @@ def main():
     parser.add_argument('--queues', type=int, default=1)
     parser.add_argument('--rx-lcores')
     parser.add_argument('--dynamic', action='store_true')
+    parser.add_argument('--mtu-policy-only', action='store_true',
+                        help='run explicit-ceiling and CLI/INI disabled-jumbo live policy profiles')
     parser.add_argument('--failure-library', type=Path)
     args = parser.parse_args()
+    if args.mtu_policy_only and not args.dynamic:
+        parser.error('--mtu-policy-only requires --dynamic')
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside', '--queues', str(args.queues)]
         for name in ('launcher', 'library', 'worker', 'app'):
             command += ['--' + name, str(getattr(args, name).resolve())]
         if args.rx_lcores is not None:
             command += ['--rx-lcores', args.rx_lcores]
+        if args.mtu_policy_only:
+            command += ['--mtu-policy-only']
         if args.dynamic:
             require(args.failure_library and args.failure_library.is_file(), 'missing PMD failure fixture')
             command += ['--dynamic', '--failure-library', str(args.failure_library.resolve())]
@@ -124,12 +130,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ker-icmp-mtu-') as directory:
         root = Path(directory)
         profiles = ((1500, 'large', ''), (1500, 'scatter', ''), (1500, 'large', 'before'), (1500, 'large', 'after'), (1500, 'large', 'rollback'), (1500, 'large', 'read-error'), (1500, 'large', 'read-mismatch'), (1500, 'large', 'rollback-read-error'), (1500, 'large', 'rollback-read-mismatch'), (1500, 'large', 'ceiling')) if args.dynamic else ((1500, 'large', ''), (9000, 'large', ''), (9000, 'scatter', ''))
+        if args.mtu_policy_only:
+            profiles = tuple((1500, 'large', policy) for policy in ('ceiling', 'disabled', 'disabled-ini'))
+        elif args.dynamic:
+            profiles += ((1500, 'large', 'disabled'),)
         for mtu, mode, failure in profiles:
             name = str(mtu) + '-' + mode + ('-' + failure if failure else '')
             injected = failure in ('before', 'after', 'rollback', 'read-error', 'read-mismatch',
                                    'rollback-read-error', 'rollback-read-mismatch')
             readback_fault = failure in ('read-error', 'read-mismatch', 'rollback-read-error', 'rollback-read-mismatch')
-            ceiling = failure == 'ceiling'
+            ceiling = failure in ('ceiling', 'disabled', 'disabled-ini')
             for interface in ('kerhost', 'kerlink'):
                 subprocess.run(['ip', 'link', 'set', interface, 'mtu', str(mtu)], check=True)
             subprocess.run(['ip', 'neigh', 'flush', 'dev', 'kerhost'], check=True)
@@ -142,6 +152,15 @@ def main():
                 '--mtu', str(mtu), '--max-mtu', '1500' if ceiling else '9000', '--mbuf-mode', mode,
                 '--stats', str(stats), '--pcap-dir', str(capture), '--pcap-snaplen', '65535',
                 '--', str(args.app), ('dynamic-fault' if readback_fault else ('dynamic-reject' if injected else ('dynamic-ceiling' if ceiling else 'dynamic'))) if args.dynamic else 'native', str(mtu), '198.18.0.1', '2001:db8:1::1']
+            if failure in ('disabled', 'disabled-ini'):
+                index = command.index('--max-mtu')
+                command[index + 1] = '9000'
+                if failure == 'disabled-ini':
+                    config = root / 'disabled.ini'
+                    config.write_text('[dpdk]\nmtu_enable=0\n')
+                    command[index:index] = ['--config', str(config)]
+                else:
+                    command[index:index] = ['--no-mtu-enable']
             if args.rx_lcores is not None:
                 index = command.index('--'); command[index:index] = ['--rx-lcores', args.rx_lcores]
             with (root / (name + '.log')).open('w+') as log:
@@ -225,6 +244,8 @@ def main():
                     require(record['io']['queues'] == args.queues and len(record['rx_by_queue']) == args.queues,
                             'queue count differs from actual worker setup')
                     if args.dynamic:
+                        require(record['max_mtu'] == (1500 if ceiling else 9000),
+                                'effective MTU policy ceiling did not reach the native runtime')
                         require(record['mtu_final'] == 1500 and record['mtu_changes'] == (0 if ceiling else 2),
                                 'missing live PMD MTU transition evidence')
                     if (mtu == 9000 or args.dynamic) and mode == 'scatter':
