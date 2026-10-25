@@ -1385,9 +1385,10 @@ static void reap_clients(void)
                             if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
                                 uint32_t active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
                                 if(ker_generation_test_active_counts(generation_rings,active))_Exit(125);
-                                printf("KER_SESSION_TEST_NONFRAME_REAP_WAIT {\"client\":%u,\"status\":%d,\"frame_pending\":false,\"active\":[%u,%u,%u,%u],\"packet_pool_in_use\":%u}\n",
+                                printf("KER_SESSION_TEST_NONFRAME_REAP_WAIT {\"client\":%u,\"status\":%d,\"frame_pending\":false,\"active\":[%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u,\"control_pool_in_use\":%u}\n",
                                     i,reap,active[0],active[1],active[2],active[3],
-                                    ker_generation_packet_pool_in_use(generation_rings));
+                                    ker_generation_packet_pool_in_use(generation_rings),
+                                    rte_mempool_avail_count(message_pool),rte_mempool_in_use_count(message_pool));
                                 fflush(stdout);
                             }
 #endif

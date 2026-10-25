@@ -30,6 +30,17 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def nonframe_reap_pool_delta_matches(before, waiting):
+    available = before.get('generation')
+    in_use = before.get('token')
+    return (type(available) is int and available >= 4 and type(in_use) is int and in_use >= 0 and
+        type(waiting.get('control_pool_available')) is int and
+        waiting['control_pool_available'] == available - 4 and
+        type(waiting.get('control_pool_in_use')) is int and
+        waiting['control_pool_in_use'] == in_use + 4 and
+        type(waiting.get('packet_pool_in_use')) is int and waiting['packet_pool_in_use'] == 0)
+
+
 def handoff_udp_payload(frame):
     """Parse only a complete, checksummed fixture IPv4/UDP tuple."""
     if not isinstance(frame, bytes) or len(frame) < 42 or frame[12:14] != b'\x08\x00':
@@ -631,7 +642,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     'regression did not stop the exact owner and kill its attached opposite borrower')
                 waiting = record(primary, 'KER_SESSION_TEST_NONFRAME_REAP_WAIT')
                 require(waiting.get('status') == -errno.EBUSY and waiting.get('frame_pending') is False and
-                    waiting.get('active') == [1, 0, 0, 0] and waiting.get('packet_pool_in_use') == 4,
+                    waiting.get('active') == [1, 0, 0, 0] and
+                    nonframe_reap_pool_delta_matches(handoff_census_before, waiting),
                     'resident did not observe the real non-FRAME owner RX operation before full reap: ' + repr(waiting))
                 signal.pidfd_send_signal(owner_pidfd, signal.SIGCONT)
                 require(os.write(handoff_write, b'C') == 1,
