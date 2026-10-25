@@ -92,11 +92,15 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
             process.stdin.write(b'x')
             process.stdin.flush()
             process.stdin.close()
+            process.stdin = None
             self.assertEqual(self.launcher.wait_after_pipe_eof(process, 1,
                 'fixture process did not exit'), 0)
         finally:
             if process.poll() is None:
                 process.kill()
+            if process.stdin is not None:
+                process.stdin.close()
+                process.stdin = None
             process.communicate(timeout=1)
 
     def test_failure_diagnostics_use_bounded_capture_for_fallbacks(self):
