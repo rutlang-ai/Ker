@@ -902,7 +902,7 @@ static bool frame_recovery_targets(unsigned target_index)
             other->handoff_peer==target_index||
             (target->pidfd>=0&&other->handoff_peer_client_pidfd==target->pidfd)))return true;
         if(other->frame_reap_blocked&&
-            (i==target_index||other->frame_reap_blocked_consumer==target_index))return true;
+            (i==target_index||other->frame_reap_consumer_client==target_index))return true;
         if(other->reap_deferred&&
             (i==target_index||other->reap_deferred_peer_client==target_index||
                 (target->pidfd>=0&&other->reap_deferred_peer_pidfd>=0&&

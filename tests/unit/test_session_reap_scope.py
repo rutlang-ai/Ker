@@ -29,17 +29,21 @@ class ReapScopeTests(unittest.TestCase):
         source = SOURCE.read_text()
         target_classifier = c_function(source, 'static bool frame_recovery_targets(unsigned target_index)\n')
         decision = c_function(source, 'static bool nonframe_full_reap_allowed(unsigned target_index,int bind_result)\n')
+        enum_start = source.index('enum kind {')
+        enum_end = source.index(';', enum_start) + 1
+        client_start = source.index('struct client {')
+        client_end = source.index('\n};', client_start) + 3
+        client_declaration = source[client_start:client_end]
         harness = r'''#include <stdbool.h>
 #include <stdint.h>
+#include <sys/types.h>
 #define CLIENTS 4
 #define HANDOFF_NONE 0U
-struct client {
-    int pidfd, handoff_peer_pidfd, handoff_peer_client_pidfd;
-    int reap_deferred_peer_pidfd;
-    unsigned handoff_state, handoff_peer, frame_consumer_client;
-    unsigned frame_reap_blocked_consumer, reap_deferred_peer_client;
-    bool frame_pending, frame_reap_blocked, reap_deferred, pmd_parked;
-};
+struct ker_session_message { unsigned char bytes[128]; };
+struct ker_generation_identity { unsigned char bytes[64]; };
+struct ker_generation_cleanup_config { unsigned char bytes[32]; };
+struct rte_mbuf;
+''' + source[enum_start:enum_end] + '\n' + client_declaration + r'''
 static struct client clients[CLIENTS];
 static unsigned handoff_state = HANDOFF_NONE;
 static int handoff_client = -1, handoff_peer = -1;
@@ -66,8 +70,12 @@ int main(void) {
     clients[0].handoff_peer=2;
     clients[0].handoff_peer_client_pidfd=clients[2].pidfd;
     if (!frame_recovery_targets(2) || nonframe_full_reap_allowed(2,0)) return 12;
+    clients[0].frame_pending=false;
+    clients[0].frame_reap_blocked=true;
+    clients[0].frame_reap_consumer_client=2;
+    if (!frame_recovery_targets(2) || nonframe_full_reap_allowed(2,0)) return 13;
     /* The actual binder must still succeed before the fallback is allowed. */
-    if (nonframe_full_reap_allowed(2,1) || nonframe_full_reap_allowed(2,-1)) return 13;
+    if (nonframe_full_reap_allowed(2,1) || nonframe_full_reap_allowed(2,-1)) return 14;
     return 0;
 }
 '''
