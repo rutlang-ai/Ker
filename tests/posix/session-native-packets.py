@@ -367,8 +367,25 @@ _active_handoff_evidence = None
 
 def _capture_pidfd_readability(actor_fds, resident_pidfd):
     """Snapshot readiness while descriptors are live; returned booleans outlive close()."""
+    required = {'app', 'producer', 'consumer'}
+    if set(actor_fds) != required:
+        raise ValueError(f'actor pidfd mapping must name exactly {sorted(required)}')
     return ({name: bool(select.select([fd], [], [], 0)[0]) for name, fd in actor_fds.items()},
         bool(resident_pidfd >= 0 and select.select([resident_pidfd], [], [], 0)[0]))
+
+
+def _validate_actor_pidfd_mapping(actor_fds, actor_pids):
+    """Check each named pidfd still names its independently recorded live actor."""
+    required = {'app', 'producer', 'consumer'}
+    if set(actor_fds) != required or set(actor_pids) != required:
+        raise ValueError(f'actor pidfd mapping must name exactly {sorted(required)}')
+    for name in sorted(required):
+        if type(actor_pids[name]) is not int or actor_pids[name] <= 0:
+            raise ValueError(f'{name} has no valid recorded PID')
+        info = Path(f'/proc/self/fdinfo/{actor_fds[name]}').read_text()
+        pid_line = next((line for line in info.splitlines() if line.startswith('Pid:')), None)
+        if pid_line is None or int(pid_line.split(':', 1)[1]) != actor_pids[name]:
+            raise ValueError(f'{name} pidfd does not name its recorded live actor')
 
 
 @contextmanager
@@ -467,6 +484,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
         wire = endpoint = None
         handoff_read = handoff_write = -1
         pidfds = []
+        actor_pidfds = {}
+        actor_pid_values = {}
         resident_pidfd = -1
         actor_proof_ready = False
         handoff_census_before = handoff_owner_before = None
@@ -656,9 +675,15 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 before['handoff_peer_early_denial']['queue_owner_key'] == 0 and
                 before['handoff_peer_early_denial']['exception_endpoint_fd'] is False,
                 'resident-admitted same-slot peer or pre-handoff denial differs')
-            app_pidfd = os.pidfd_open(before['app_pid']); pidfds.append(app_pidfd)
-            owner_pidfd = os.pidfd_open(before['attached']['pid']); pidfds.append(owner_pidfd)
-            peer_pidfd = os.pidfd_open(before['handoff_peer_attached']['pid']); pidfds.append(peer_pidfd)
+            actor_pid_values = dict(app=before['app_pid'], producer=before['attached']['pid'],
+                consumer=before['handoff_peer_attached']['pid'])
+            app_pidfd = os.pidfd_open(actor_pid_values['app']); pidfds.append(app_pidfd)
+            actor_pidfds['app'] = app_pidfd
+            owner_pidfd = os.pidfd_open(actor_pid_values['producer']); pidfds.append(owner_pidfd)
+            actor_pidfds['producer'] = owner_pidfd
+            peer_pidfd = os.pidfd_open(actor_pid_values['consumer']); pidfds.append(peer_pidfd)
+            actor_pidfds['consumer'] = peer_pidfd
+            _validate_actor_pidfd_mapping(actor_pidfds, actor_pid_values)
             evidence['actors'] = dict(resident=dict(pid=primary.pid), app=dict(pid=before['app_pid']),
                 producer=dict(pid=before['attached']['pid'], identity=before['attached']),
                 consumer=dict(pid=before['handoff_peer_attached']['pid'], identity=before['handoff_peer_attached']))
@@ -1507,11 +1532,10 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
             finally:
                 # Snapshot readiness after actor/hugepage cleanup but before
                 # closing the pidfds. The booleans remain valid evidence later.
-                actor_fds = dict(zip(('app', 'producer', 'consumer'), pidfds))
                 try:
                     evidence['actor_pidfd_readable_after_cleanup'], evidence['resident_pidfd_readable_after_cleanup'] = \
-                        _capture_pidfd_readability(actor_fds, resident_pidfd)
-                except OSError as error:
+                        _capture_pidfd_readability(actor_pidfds, resident_pidfd)
+                except (OSError, ValueError) as error:
                     finalization_errors.append(RuntimeError(f'could not snapshot live pidfds: {error}'))
                 # Always release process and directory descriptors, even when
                 # private-directory validation or reporting refuses deletion.
