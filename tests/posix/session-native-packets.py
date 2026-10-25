@@ -887,9 +887,14 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     require(runner.poll() is None,'runner exited before exact peer frame drain')
                     time.sleep(0.005)
                 proof=after.get('handoff_frame') or {}
-                require(proof.get('same_pointer') is True and proof.get('same_bytes') is True and
-                    proof.get('peer_release_once') is True and proof.get('committed',{}).get('frame_hex') and
-                    proof.get('committed',{}).get('object_index')==proof.get('drained',{}).get('object_index') and
+                commits=proof.get('committed_records',[]);drains=proof.get('drained_records',[])
+                u2_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
+                u2_commits=[item for item in commits if u2_payload.hex() in item.get('frame_hex','')]
+                u2_drains=[item for item in drains if item.get('sequence')==2]
+                require(len(u2_commits)==len(u2_drains)==1 and
+                    all(u2_commits[0].get(left)==u2_drains[0].get(right) for left,right in
+                        (('packet_pointer','packet_pointer'),('object_index','object_index'),
+                         ('pool_tag','pool_tag'),('tx_lease_id','lease_id'),('length','length'),('frame_hex','frame_hex'))) and
                     first_wire_frame and b'KER-A09-HANDOFF-UDP seq=2\n' not in first_wire_frame,
                     'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
                 os.close(handoff_write);handoff_write=-1
@@ -897,6 +902,17 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             output, _ = runner.communicate(timeout=20)
             errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
             finished = json.loads(stats_path.read_text())
+            if mode=='frame-positive':
+                proof=finished.get('handoff_frame') or {}
+                commits=proof.get('committed_records',[]);drains=proof.get('drained_records',[])
+                commit_ids=[(x.get('pool_tag'),x.get('object_index'),x.get('tx_lease_id')) for x in commits]
+                drain_ids=[(x.get('pool_tag'),x.get('object_index'),x.get('lease_id')) for x in drains]
+                require(len(commits)==len(drains) and len(set(commit_ids))==len(commit_ids) and
+                    len(set(drain_ids))==len(drain_ids) and set(commit_ids)==set(drain_ids) and
+                    proof.get('commit_bijection')=={'committed':len(commits),'drained':len(drains)} and
+                    proof.get('final_batch',{}).get('tx_after')==0 and
+                    proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0},
+                    'frame commits and generic peer drains did not reach exact bijective quiescence')
             require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
                 finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and
                 finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and

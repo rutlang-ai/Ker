@@ -483,45 +483,49 @@ struct generation_frame_drain_context {
 };
 static int generation_frame_drain_control(char command, void *opaque)
 {
-    if(command!='G')return 0;
     struct generation_frame_drain_context *context=opaque;
+    if(!context||!context->rings)return -EINVAL;
     uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
-    if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||tx_before!=1)
-        return -EUCLEAN;
-    struct rte_mbuf *packet=NULL;
-    int dequeued=ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&packet);
-    if(dequeued!=1||!packet||packet->nb_segs!=1||
-        rte_mbuf_refcnt_read(packet)!=1||(packet->ol_flags&RTE_MBUF_F_EXTERNAL)||
-        packet->pkt_len<14||packet->pkt_len>1518||packet->data_len!=packet->pkt_len)return -EUCLEAN;
-    const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
-    static const char expected[]="KER-A09-HANDOFF-UDP seq=2\n";
-    const uint8_t app_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x02};
-    const uint8_t host_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x01};
-    const size_t payload_length=sizeof(expected)-1, frame_length=14+20+8+payload_length;
-    if(packet->pkt_len!=frame_length||memcmp(bytes,host_mac,6)||memcmp(bytes+6,app_mac,6)||
-        bytes[12]!=0x08||bytes[13]!=0x00||bytes[14]!=0x45||bytes[23]!=17||
-        bytes[20]!=0||bytes[21]!=0||bytes[26]!=198||bytes[27]!=18||bytes[28]!=0||bytes[29]!=2||
-        bytes[30]!=198||bytes[31]!=18||bytes[32]!=0||bytes[33]!=1||
-        bytes[34]!=0xaf||bytes[35]!=0xc8||bytes[36]!=0xaf||bytes[37]!=0xc9||
-        memcmp(bytes+42,expected,payload_length))return -EPROTO;
-    uint16_t ip_total=(uint16_t)((bytes[16]<<8)|bytes[17]);
-    uint16_t udp_length=(uint16_t)((bytes[38]<<8)|bytes[39]);
-    if(ip_total!=20+8+payload_length||udp_length!=8+payload_length)return -EPROTO;
-    uint32_t object_index=UINT32_MAX;
-    if(ker_generation_test_packet_object_index(context->rings,packet,&object_index))return -EUCLEAN;
-    char frame_hex[1518*2+1];
-    static const char hex[]="0123456789abcdef";
-    for(unsigned i=0;i<packet->pkt_len;i++){frame_hex[i*2]=hex[bytes[i]>>4];frame_hex[i*2+1]=hex[bytes[i]&15];}
-    frame_hex[packet->pkt_len*2]='\0';
-    uintptr_t pointer=(uintptr_t)packet;
-    uint64_t tag=ker_generation_packet_pool_tag(context->rings);
-    uint16_t length=packet->pkt_len;
-    if(!tag||ker_generation_packet_release(context->rings,&context->identity,packet)||
-        ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||
-        tx_after!=0||pool_after+1!=pool_before)return -EUCLEAN;
-    printf("KER_SESSION_FRAME_DRAINED {\"sequence\":2,\"object_index\":%u,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"tx_before\":%u,\"tx_after\":%u,\"pool_in_use_before\":%u,\"pool_in_use_after\":%u,\"frame_hex\":\"%s\"}\n",
-        object_index,(unsigned long long)tag,(void *)pointer,(unsigned)length,tx_before,tx_after,
-        pool_before,pool_after,frame_hex);fflush(stdout);
+    if(command=='Q') {
+        if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||tx_after||pool_after)
+            return -EUCLEAN;
+        printf("KER_SESSION_FRAME_QUIESCENT {\"tx_count\":%u,\"packet_pool_in_use\":%u}\n",tx_after,pool_after);
+        fflush(stdout);return 1;
+    }
+    if(command!='G')return 0;
+    if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||
+        tx_before>KER_GENERATION_RING_CAPACITY)return -EUCLEAN;
+    unsigned released=0;
+    for(uint32_t n=0;n<KER_GENERATION_RING_CAPACITY;n++) {
+        struct rte_mbuf *packet=NULL;
+        int dequeued=ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&packet);
+        if(dequeued==0)break;
+        if(dequeued!=1||!packet||packet->nb_segs!=1||rte_mbuf_refcnt_read(packet)!=1||
+            (packet->ol_flags&RTE_MBUF_F_EXTERNAL)||packet->pkt_len<14||packet->pkt_len>1518||
+            packet->data_len!=packet->pkt_len)return -EUCLEAN;
+        const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
+        uint32_t object_index=UINT32_MAX;uint64_t lease_id=0;
+        if(ker_generation_test_packet_lease_identity(context->rings,&context->identity,packet,
+                &object_index,&lease_id))return -EUCLEAN;
+        char frame_hex[1518*2+1];static const char hex[]="0123456789abcdef";
+        unsigned length=packet->pkt_len;
+        for(unsigned i=0;i<length;i++){
+            frame_hex[i*2]=hex[bytes[i]>>4];frame_hex[i*2+1]=hex[bytes[i]&15];
+        }
+        frame_hex[length*2]='\0';
+        uintptr_t pointer=(uintptr_t)packet;uint64_t tag=ker_generation_packet_pool_tag(context->rings);
+        static const char expected[]="KER-A09-HANDOFF-UDP seq=2\n";
+        bool seq2=length>=42+sizeof(expected)-1&&bytes[12]==0x08&&bytes[13]==0x00&&
+            bytes[14]==0x45&&bytes[23]==17&&!memcmp(bytes+42,expected,sizeof(expected)-1);
+        if(!tag||ker_generation_packet_release(context->rings,&context->identity,packet))return -EUCLEAN;
+        printf("KER_SESSION_FRAME_DRAINED {\"sequence\":%u,\"consumer_generation\":%u,\"object_index\":%u,\"lease_id\":%llu,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"frame_hex\":\"%s\"}\n",
+            seq2?2U:0U,context->identity.generation,object_index,(unsigned long long)lease_id,
+            (unsigned long long)tag,(void *)pointer,length,frame_hex);fflush(stdout);released++;
+    }
+    if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||
+        tx_before>released+tx_after)return -EUCLEAN;
+    printf("KER_SESSION_FRAME_BATCH {\"drained\":%u,\"tx_before\":%u,\"tx_after\":%u,\"pool_in_use_before\":%u,\"pool_in_use_after\":%u}\n",
+        released,tx_before,tx_after,pool_before,pool_after);fflush(stdout);
     return 1;
 }
 #endif
@@ -2662,11 +2666,8 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
         if(parked_frame_cancel(fd,resident,identity,sequence,capability,heartbeat,&prepared))_Exit(125);
         return consumed<0?-receive_errno:(complete?complete:-EIO);
     }
-    struct ker_session_message committed;
-    result=worker_frame_request(fd,identity,sequence,resident,capability,
-        KER_SESSION_FRAME_COMMIT,prepared.packet_pool_tag,prepared.packet_object_index,
-        prepared.packet_port,prepared.packet_queue,prepared.tx_lease_id,heartbeat,&committed);
-    if(result)return result;
+    /* The admitted peer may dequeue and release as soon as COMMIT publishes.
+     * Snapshot the exact producer-owned bytes and pointer before that point. */
     char frame_hex[1518*2+1];
     static const char hex[]="0123456789abcdef";
     const uint8_t *committed_bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
@@ -2674,9 +2675,16 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
         frame_hex[i*2]=hex[committed_bytes[i]>>4];frame_hex[i*2+1]=hex[committed_bytes[i]&15];
     }
     frame_hex[frame_length*2]='\0';
-    printf("KER_SESSION_FRAME_COMMITTED {\"port\":%u,\"queue\":%u,\"generation\":%llu,\"length\":%u,\"object_index\":%u,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"frame_hex\":\"%s\"}\n",
+    uintptr_t packet_pointer=(uintptr_t)packet;
+    struct ker_session_message committed;
+    result=worker_frame_request(fd,identity,sequence,resident,capability,
+        KER_SESSION_FRAME_COMMIT,prepared.packet_pool_tag,prepared.packet_object_index,
+        prepared.packet_port,prepared.packet_queue,prepared.tx_lease_id,heartbeat,&committed);
+    if(result)return result;
+    printf("KER_SESSION_FRAME_COMMITTED {\"port\":%u,\"queue\":%u,\"generation\":%llu,\"length\":%u,\"object_index\":%u,\"pool_tag\":%llu,\"tx_lease_id\":%llu,\"packet_pointer\":\"%p\",\"frame_hex\":\"%s\"}\n",
         prepared.packet_port,prepared.packet_queue,(unsigned long long)identity->generation,frame_length,
-        prepared.packet_object_index,(unsigned long long)tag,(void *)packet,frame_hex); fflush(stdout);
+        prepared.packet_object_index,(unsigned long long)tag,(unsigned long long)prepared.tx_lease_id,
+        (void *)packet_pointer,frame_hex); fflush(stdout);
     return 1;
 }
 
