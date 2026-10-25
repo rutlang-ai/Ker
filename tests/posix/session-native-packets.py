@@ -82,10 +82,19 @@ def nonframe_retained_drain_matches(before, reaped, drained):
         type(drained.get('tx_drained')) is int and drained['tx_drained'] == 2 and
         nonframe_exact_int_list(drained.get('rings_before'), NONFRAME_RETAINED_RINGS) and
         nonframe_exact_int_list(drained.get('rings_after'), [0] * 8) and
-        nonframe_exact_int_list(drained.get('active'), [0, 0, 0, 0]) and
-        type(drained.get('packet_pool_in_use')) is int and drained['packet_pool_in_use'] == 0 and
         type(drained.get('control_pool_available')) is int and
         drained['control_pool_available'] == previous + 3 == baseline + 1)
+
+
+def nonframe_final_snapshot_matches(snapshot, sequence, drained):
+    return (type(sequence) is int and sequence > 0 and
+        type(snapshot.get('sequence')) is int and snapshot['sequence'] == sequence and
+        type(snapshot.get('active_status')) is int and snapshot['active_status'] == 0 and
+        nonframe_exact_int_list(snapshot.get('active'), [0, 0, 0, 0]) and
+        nonframe_exact_int_list(snapshot.get('rings'), [0] * 8) and
+        type(snapshot.get('packet_pool_in_use')) is int and snapshot['packet_pool_in_use'] == 0 and
+        type(snapshot.get('control_pool_available')) is int and
+        snapshot['control_pool_available'] == drained.get('control_pool_available'))
 
 
 def handoff_udp_payload(frame):
@@ -472,6 +481,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         if mode == 'handoff-control-hup': environment['KER_SESSION_TEST_HANDOFF_CONTROL_HUP'] = '1'
         if mode is not None: environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
         primary = runner = None
+        nonframe_status_connection = None
         runner_stderr_handle = None
         wire = endpoint = None
         handoff_read = handoff_write = -1
@@ -704,11 +714,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     nonframe_reap_retained_matches(handoff_census_before, reaped),
                     'bounded ordinary full reap did not retire the dead borrower while preserving its live consumer queues: ' +
                     repr(reaped))
-                connection = api.Connection(control_path)
-                try:
-                    retained_status = connection.request(api.STATUS)
-                    retained_owner = connection.request(api.PMD_STATUS)
-                finally: connection.close()
+                nonframe_status_connection = api.Connection(control_path)
+                retained_status = nonframe_status_connection.request(api.STATUS)
+                retained_owner = nonframe_status_connection.request(api.PMD_STATUS)
                 require(nonframe_reap_status_matches(handoff_census_before, retained_status,
                         retained_owner, handoff_owner_before, reaped.get('control_pool_available'), -2),
                     'full reap status/pool did not bind exact dead-client retirement while preserving live queues')
@@ -718,14 +726,18 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     runner_stderr_path, fatal_profile_diagnostics)
                 require(nonframe_retained_drain_matches(handoff_census_before, reaped, drained),
                     'live generation-zero consumer did not drain the exact three retained packets: ' + repr(drained))
-                connection = api.Connection(control_path)
                 try:
-                    final_status = connection.request(api.STATUS)
-                    final_owner = connection.request(api.PMD_STATUS)
-                finally: connection.close()
+                    final_status = nonframe_status_connection.request(api.STATUS)
+                    final_owner = nonframe_status_connection.request(api.PMD_STATUS)
+                finally:
+                    nonframe_status_connection.close()
+                    nonframe_status_connection = None
+                final_snapshot = record(primary, 'KER_SESSION_TEST_NONFRAME_FINAL_SNAPSHOT')
                 require(nonframe_reap_status_matches(handoff_census_before, final_status,
                         final_owner, handoff_owner_before, drained.get('control_pool_available'), 1),
                     'final resident status/pool did not bind the exact live-owner ring drain')
+                require(nonframe_final_snapshot_matches(final_snapshot, final_status.get('sequence'), drained),
+                    'primary-only final active/frame-pool snapshot did not bind the post-drain STATUS request: ' + repr(final_snapshot))
                 os.close(handoff_write); handoff_write = -1
                 runner.send_signal(signal.SIGTERM)
                 runner_output, _ = runner.communicate(timeout=25)
@@ -1161,6 +1173,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 # private-directory validation or reporting refuses deletion.
                 closers = []
                 if endpoint is not None: closers.append(endpoint.close)
+                if nonframe_status_connection is not None:
+                    closers.append(nonframe_status_connection.close)
                 wire_stop.set()
                 if wire_thread is not None:
                     wire_thread.join(timeout=2)

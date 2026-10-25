@@ -199,6 +199,8 @@ static struct rte_ring *generation_test_original[8];
 static struct rte_mbuf *generation_test_original_packet[8];
 static bool generation_test_hold_started;
 static bool generation_test_hold_joined;
+static bool generation_test_nonframe_reap_completed;
+static bool generation_test_nonframe_final_snapshot_emitted;
 static _Atomic unsigned generation_test_hold_completed;
 static pthread_t generation_test_hold_thread;
 static struct {
@@ -781,7 +783,7 @@ static int generation_test_nonframe_drain(struct generation_frame_drain_context 
             atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire));fflush(stderr);
         return -EUCLEAN;
     }
-    unsigned before[8]={0},after[8]={0},active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    unsigned before[8]={0},after[8]={0};
     const unsigned expected[8]={0,0,1,0,0,1,0,1};
     for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
         struct rte_ring *ring=generation_test_ring(d,q,g);
@@ -805,21 +807,16 @@ static int generation_test_nonframe_drain(struct generation_frame_drain_context 
         if(!ring){fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"after_ring_lookup\",\"direction\":%u,\"queue\":%u,\"generation\":%u}\n",d,q,g);fflush(stderr);return -EUCLEAN;}
         after[(d*2+q)*2+g]=rte_ring_count(ring);
     }
-    int active_status=ker_generation_test_active_counts(context->rings,active);
     unsigned control_after=rte_mempool_avail_count(context->message_pool);
-    unsigned packet_after=ker_generation_packet_pool_in_use(context->rings);
-    if(active_status||memcmp(after,(unsigned[8]){0},sizeof(after))||
-        control_after!=control_before+3||packet_after!=0) {
-        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"after_drain_invariants\",\"active_status\":%d,\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"control_before\":%u,\"control_after\":%u,\"packet_after\":%u,\"active\":[%u,%u,%u,%u]}\n",
-            active_status,after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],
-            control_before,control_after,packet_after,active[0],active[1],active[2],active[3]);fflush(stderr);
+    if(memcmp(after,(unsigned[8]){0},sizeof(after))||control_after!=control_before+3) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"after_drain_invariants\",\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"control_before\":%u,\"control_after\":%u}\n",
+            after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],control_before,control_after);fflush(stderr);
         return -EUCLEAN;
     }
-    printf("KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED {\"generation\":%u,\"status\":0,\"rx_drained\":%u,\"tx_drained\":%u,\"rings_before\":[%u,%u,%u,%u,%u,%u,%u,%u],\"rings_after\":[%u,%u,%u,%u,%u,%u,%u,%u],\"active\":[%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u}\n",
+    printf("KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED {\"generation\":%u,\"status\":0,\"rx_drained\":%u,\"tx_drained\":%u,\"rings_before\":[%u,%u,%u,%u,%u,%u,%u,%u],\"rings_after\":[%u,%u,%u,%u,%u,%u,%u,%u],\"control_pool_available\":%u}\n",
         context->identity.generation,before[2]-after[2],(before[5]-after[5])+(before[7]-after[7]),
         before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
         after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],
-        active[0],active[1],active[2],active[3],ker_generation_packet_pool_in_use(context->rings),
         rte_mempool_avail_count(context->message_pool));
     fflush(stdout);
     return 1;
@@ -1222,21 +1219,20 @@ static void generation_test_nonframe_log_drain_failure(const char *phase,unsigne
     struct ker_generation_rings *rings)
 {
     if(!getenv("KER_SESSION_TEST_NONFRAME_REAP"))return;
-    unsigned counts[8],active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    unsigned counts[8];
     for(unsigned d=0;d<2;d++)for(unsigned queue=0;queue<2;queue++)for(unsigned g=0;g<2;g++){
         unsigned index=(d*2+queue)*2+g;
         struct rte_ring *ring=generation_test_ring(d,queue,g);
         counts[index]=ring?rte_ring_count(ring):UINT32_MAX;
     }
-    int active_status=ker_generation_test_active_counts(rings,active);
+    (void)rings;
     char release_status_json[16];
     if(release_attempted)snprintf(release_status_json,sizeof(release_status_json),"%d",release_status);
     else strcpy(release_status_json,"null");
-    fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"%s\",\"direction\":\"%s\",\"queue\":%u,\"expected\":%d,\"api_status\":%d,\"packet_null\":%s,\"release_attempted\":%s,\"release_status\":%s,\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"active_status\":%d,\"active\":[%u,%u,%u,%u]}\n",
+    fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"%s\",\"direction\":\"%s\",\"queue\":%u,\"expected\":%d,\"api_status\":%d,\"packet_null\":%s,\"release_attempted\":%s,\"release_status\":%s,\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u]}\n",
         phase,direction?"tx":"rx",q,expected,api_status,packet?"false":"true",
         release_attempted?"true":"false",release_status_json,
-        counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],counts[6],counts[7],
-        active_status,active[0],active[1],active[2],active[3]);fflush(stderr);
+        counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],counts[6],counts[7]);fflush(stderr);
 }
 static int generation_detach_release_retained(struct ker_generation_rings *rings,
     const struct ker_generation_identity *identity,bool foreign,bool nonowner_detach,bool empty_cleanup)
@@ -1537,6 +1533,10 @@ static void reap_clients(void)
                             }
 #endif
                             if(reap)_Exit(125);
+#ifdef KER_SESSION_TEST_HOOKS
+                            if(getenv("KER_SESSION_TEST_NONFRAME_REAP"))
+                                generation_test_nonframe_reap_completed=true;
+#endif
                         } else {
                             if(bound!=1)_Exit(125);
                             clients[i].reap_deferred=true;
@@ -1673,6 +1673,27 @@ static int directory_test_corrupt_header(char field)
     }
     return 0;
 }
+static void generation_test_nonframe_primary_snapshot(uint64_t sequence)
+{
+    if(!getenv("KER_SESSION_TEST_NONFRAME_REAP")||!generation_test_nonframe_reap_completed||
+        generation_test_nonframe_final_snapshot_emitted||!generation_rings||!message_pool)return;
+    unsigned rings[8],active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+        unsigned index=(d*2+q)*2+g;
+        struct rte_ring *ring=generation_test_ring(d,q,g);
+        if(!ring)return;
+        rings[index]=rte_ring_count(ring);
+    }
+    if(memcmp(rings,(unsigned[8]){0},sizeof(rings)))return;
+    int active_status=ker_generation_test_active_counts(generation_rings,active);
+    unsigned packet_pool_in_use=ker_generation_packet_pool_in_use(generation_rings);
+    printf("KER_SESSION_TEST_NONFRAME_FINAL_SNAPSHOT {\"sequence\":%llu,\"active_status\":%d,\"active\":[%u,%u,%u,%u],\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u}\n",
+        (unsigned long long)sequence,active_status,active[0],active[1],active[2],active[3],
+        rings[0],rings[1],rings[2],rings[3],rings[4],rings[5],rings[6],rings[7],
+        packet_pool_in_use,rte_mempool_avail_count(message_pool));
+    fflush(stdout);
+    generation_test_nonframe_final_snapshot_emitted=true;
+}
 #endif
 static int handle(unsigned i, const struct ker_session_message *request,
     struct ker_session_message *reply)
@@ -1757,6 +1778,9 @@ static int handle(unsigned i, const struct ker_session_message *request,
             reply->slot += !!slots[s].epoch;
             reply->process += users(s);
         }
+#ifdef KER_SESSION_TEST_HOOKS
+        generation_test_nonframe_primary_snapshot(request->sequence);
+#endif
         return 0;
     }
     if (request->command == KER_SESSION_MASTER) {

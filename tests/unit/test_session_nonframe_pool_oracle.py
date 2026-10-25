@@ -64,7 +64,8 @@ class NonframePoolOracleTests(unittest.TestCase):
         self.assertIn('generation_test_join_nonframe_hold(context->rings,&context->identity)', source)
         self.assertIn('return generation_test_nonframe_drain(opaque);', source)
 
-        harness = r'''#include <stdbool.h>
+        harness = r'''#define _POSIX_C_SOURCE 200809L
+#include <stdbool.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -169,7 +170,7 @@ int main(void) {
         drained = {
             'generation': 0, 'status': 0, 'rx_drained': 1, 'tx_drained': 2,
             'rings_before': [0, 0, 1, 0, 0, 1, 0, 1], 'rings_after': [0] * 8,
-            'active': [0, 0, 0, 0], 'packet_pool_in_use': 0, 'control_pool_available': 501,
+            'control_pool_available': 501,
         }
         self.assertTrue(fixture.nonframe_reap_retained_matches(before, reaped))
         self.assertTrue(fixture.nonframe_retained_drain_matches(before, reaped, drained))
@@ -188,6 +189,20 @@ int main(void) {
         self.assertFalse(fixture.nonframe_retained_drain_matches(
             before, reaped, dict(drained, rx_drained=True)))
 
+    def test_primary_only_final_snapshot_is_bound_to_post_drain_status(self):
+        drained = {'control_pool_available': 501}
+        snapshot = {'sequence': 9, 'active_status': 0, 'active': [0, 0, 0, 0],
+                    'rings': [0] * 8, 'packet_pool_in_use': 0,
+                    'control_pool_available': 501}
+        self.assertTrue(fixture.nonframe_final_snapshot_matches(snapshot, 9, drained))
+        for key, value in (('sequence', 8), ('active_status', -22),
+                           ('active', [0, 0, 0, 1]), ('rings', [0, 0, 0, 0, 0, 0, 0, 1]),
+                           ('packet_pool_in_use', 1), ('control_pool_available', 502)):
+            with self.subTest(key=key):
+                self.assertFalse(fixture.nonframe_final_snapshot_matches(
+                    dict(snapshot, **{key: value}), 9, drained))
+        self.assertFalse(fixture.nonframe_final_snapshot_matches(snapshot, True, drained))
+
     def test_runtime_source_has_opt_in_owner_drain_marker(self):
         source = IO_SESSION.read_text()
         callback = source[source.index('static int generation_frame_drain_control('):]
@@ -196,6 +211,94 @@ int main(void) {
         self.assertIn('return generation_test_nonframe_drain(opaque);', source)
         self.assertIn('generation_test_step(context->rings,&context->identity,context->message_pool,5', source)
         self.assertIn('KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED', source)
+
+    def test_secondary_drain_uses_only_secondary_safe_observations(self):
+        source = IO_SESSION.read_text()
+        drain = source[source.index('static int generation_test_nonframe_drain('):]
+        drain = drain[:drain.index('\nstatic int generation_test_nonframe_drain_dispatch')]
+        self.assertNotIn('ker_generation_test_active_counts(', drain)
+        self.assertNotIn('ker_generation_packet_pool_in_use(', drain)
+        self.assertIn('generation_test_nonframe_primary_snapshot(request->sequence)', source)
+
+    def test_primary_snapshot_executes_primary_only_apis_after_empty_rings(self):
+        source = IO_SESSION.read_text()
+        start = source.index('static void generation_test_nonframe_primary_snapshot(')
+        brace = source.index('{', start)
+        depth = 0
+        end = None
+        for offset in range(brace, len(source)):
+            if source[offset] == '{': depth += 1
+            elif source[offset] == '}':
+                depth -= 1
+                if depth == 0:
+                    end = offset + 1
+                    break
+        self.assertIsNotNone(end)
+        helper = source[start:end]
+        harness = r'''#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+extern int setenv(const char *,const char *,int);
+struct rte_ring { unsigned count; };
+struct ker_generation_rings { bool primary; };
+struct rte_mempool { unsigned available; };
+static bool generation_test_nonframe_reap_completed;
+static bool generation_test_nonframe_final_snapshot_emitted;
+static struct ker_generation_rings primary_rings={true};
+static struct ker_generation_rings *generation_rings=&primary_rings;
+static struct rte_mempool pool={501};
+static struct rte_mempool *message_pool=&pool;
+static struct rte_ring ring_table[8];
+static unsigned active_values[4]={0,0,0,0}, packet_pool=0;
+static unsigned active_calls, packet_calls;
+static struct rte_ring *generation_test_ring(unsigned d,unsigned q,unsigned g) {
+ return &ring_table[(d*2+q)*2+g];
+}
+static unsigned rte_ring_count(struct rte_ring *ring) { return ring->count; }
+static int ker_generation_test_active_counts(struct ker_generation_rings *r,unsigned counts[4]) {
+ if(!r||!r->primary)return -22;
+ active_calls++;memcpy(counts,active_values,sizeof(active_values));return 0;
+}
+static unsigned ker_generation_packet_pool_in_use(struct ker_generation_rings *r) {
+ if(!r||!r->primary)return UINT32_MAX;
+ packet_calls++;return packet_pool;
+}
+static unsigned rte_mempool_avail_count(struct rte_mempool *p) { return p->available; }
+'''+helper+r'''
+int main(void) {
+ if(setenv("KER_SESSION_TEST_NONFRAME_REAP","1",1))return 1;
+ generation_test_nonframe_primary_snapshot(1);
+ if(active_calls||packet_calls||generation_test_nonframe_final_snapshot_emitted)return 2;
+ generation_test_nonframe_reap_completed=true;ring_table[0].count=1;
+ generation_test_nonframe_primary_snapshot(2);
+ if(active_calls||packet_calls||generation_test_nonframe_final_snapshot_emitted)return 3;
+ ring_table[0].count=0;
+ generation_test_nonframe_primary_snapshot(77);
+ if(active_calls!=1||packet_calls!=1||!generation_test_nonframe_final_snapshot_emitted)return 4;
+ generation_test_nonframe_primary_snapshot(78);
+ if(active_calls!=1||packet_calls!=1)return 5;
+ return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='ker-nonframe-primary-snapshot-') as directory:
+            source_path = Path(directory) / 'snapshot.c'
+            executable = Path(directory) / 'snapshot'
+            source_path.write_text(harness)
+            compiled = subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                                       str(source_path), '-o', str(executable)],
+                                      capture_output=True, text=True, check=False)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            result = subprocess.run([str(executable)], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = result.stdout.splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertTrue(lines[0].startswith('KER_SESSION_TEST_NONFRAME_FINAL_SNAPSHOT '))
+            marker = json.loads(lines[0].split(' ', 1)[1])
+            self.assertEqual(marker['sequence'], 77)
+            self.assertEqual(marker['active'], [0, 0, 0, 0])
+            self.assertEqual(marker['packet_pool_in_use'], 0)
 
     def test_status_binds_pool_before_and_after_live_queue_drain(self):
         before = {'generation': 500, 'process': 2}
