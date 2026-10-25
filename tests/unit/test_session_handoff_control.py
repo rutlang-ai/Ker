@@ -6,12 +6,17 @@ actual nested handoff function the marker sequence emitted by the C success and
 error paths. Neither proves EAL, packet, or native handoff behavior.
 """
 import errno
+import ast
+import io
 import importlib.util
+import json
 import os
 from pathlib import Path
 import select
+import selectors
 import signal
 import subprocess
+import sys
 import types
 import time
 import unittest
@@ -81,6 +86,7 @@ class HandoffControlPathTests(unittest.TestCase):
             'close': close,
             'control_w': write_fd,
             'handoff_mode': mode,
+            'handoff_udp_ready': False,
             'metrics': metrics,
             'peer_control_w': -1,
             'peer_worker': Actor(),
@@ -129,6 +135,7 @@ class HandoffControlPathTests(unittest.TestCase):
             'close': os.close,
             'control_w': write_fd,
             'handoff_mode': mode,
+            'handoff_udp_ready': False,
             'metrics': metrics,
             'peer_control_w': -1,
             'peer_worker': Actor(),
@@ -161,6 +168,108 @@ class HandoffControlPathTests(unittest.TestCase):
     def test_control_hup_closes_writer_after_h(self):
         self.exercise('handoff-control-hup', b'H', expect_closed=True)
 
+    def test_frame_positive_trigger_fd_closes_after_second_udp_before_app_exit(self):
+        read_fd, write_fd = os.pipe()
+        handoff_seen = False
+        sequence = 0
+        try:
+            for command in (b'U', b'H', b'U'):
+                os.write(write_fd, command)
+                self.assertTrue(select.select([read_fd], [], [], 1)[0])
+                data = os.read(read_fd, 1)
+                action = self.launcher.handoff_trigger_action(data)
+                if action == 'udp':
+                    sequence += 1
+                elif action == 'handoff':
+                    handoff_seen = True
+                else:
+                    self.fail('unexpected trigger command: ' + repr(data))
+                read_fd = self.launcher.close_completed_handoff_trigger(
+                    'frame-positive', handoff_seen, sequence, read_fd, os.close)
+                if command != b'U' or sequence != 2:
+                    self.assertIsNotNone(read_fd)
+            self.assertIsNone(read_fd)
+            self.assertTrue(self.launcher.handoff_trigger_complete(
+                'frame-positive', handoff_seen, sequence))
+            self.launcher.require_complete_handoff_trigger('frame-positive', handoff_seen, sequence)
+            with self.assertRaises(BrokenPipeError):
+                os.write(write_fd, b'U')
+            os.close(write_fd)
+            write_fd = -1
+        finally:
+            if read_fd is not None:
+                os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+
+    def test_incomplete_trigger_eof_before_sigterm_is_rejected(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b'H')
+            self.assertEqual(self.launcher.handoff_trigger_action(os.read(read_fd, 1)), 'handoff')
+            os.close(write_fd)
+            write_fd = -1
+            self.assertTrue(select.select([read_fd], [], [], 1)[0])
+            self.assertEqual(os.read(read_fd, 1), b'')
+            with self.assertRaisesRegex(RuntimeError, 'EOF before'):
+                self.launcher.reject_handoff_trigger_eof('frame-positive', True, 0)
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+
+    def test_sigterm_first_rejects_incomplete_sequence_before_pipe_eof(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b'H')
+            self.assertEqual(self.launcher.handoff_trigger_action(os.read(read_fd, 1)), 'handoff')
+            with self.assertRaisesRegex(RuntimeError, 'exited before'):
+                self.launcher.require_complete_handoff_trigger('frame-positive', True, 0)
+            os.close(write_fd)
+            write_fd = -1
+            self.assertTrue(select.select([read_fd], [], [], 1)[0])
+            self.assertEqual(os.read(read_fd, 1), b'')
+            with self.assertRaisesRegex(RuntimeError, 'EOF before'):
+                self.launcher.reject_handoff_trigger_eof('frame-positive', True, 0)
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+
+    def test_frame_quiescent_wait_uses_peer_process_at_actual_callsite(self):
+        tree = ast.parse(SOURCE.read_text())
+        run_session = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and
+            node.name == 'run_session')
+        assignment = next(node for node in ast.walk(run_session) if isinstance(node, ast.Assign) and
+            any(isinstance(target, ast.Name) and target.id == 'quiescent' for target in node.targets) and
+            isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and
+            node.value.func.id == 'ready')
+        call = assignment.value
+        self.assertEqual(len(call.args), 1)
+        self.assertEqual(ast.literal_eval(call.args[0]), 'KER_SESSION_FRAME_QUIESCENT')
+        self.assertEqual([(item.arg, ast.dump(item.value)) for item in call.keywords],
+            [('process', "Name(id='peer_worker', ctx=Load())")])
+
+        worker_read, worker_write = os.pipe()
+        peer_read, peer_write = os.pipe()
+        worker_line = b'KER_SESSION_FRAME_QUIESCENT {"tx_count":99,"packet_pool_in_use":99}\n'
+        peer_line = b'KER_SESSION_FRAME_QUIESCENT {"tx_count":0,"packet_pool_in_use":0}\n'
+        os.write(worker_write, worker_line); os.close(worker_write)
+        os.write(peer_write, peer_line); os.close(peer_write)
+        with io.FileIO(worker_read, 'rb', closefd=True) as worker_stdout, \
+                io.FileIO(peer_read, 'rb', closefd=True) as peer_stdout:
+            worker = types.SimpleNamespace(stdout=worker_stdout)
+            peer_worker = types.SimpleNamespace(stdout=peer_stdout)
+            metrics = {}
+            ready_code = nested_code(compile(SOURCE.read_text(), str(SOURCE), 'exec'), 'ready')
+            ready = types.FunctionType(ready_code,
+                {'time': time, 'selectors': selectors, 'RuntimeError': RuntimeError, 'json': json, 'sys': sys},
+                'ready', closure=(cell(lambda _line: False), cell(metrics), cell(worker)))
+            result = eval(compile(ast.Expression(call), str(SOURCE), 'eval'),
+                {'ready': ready, 'peer_worker': peer_worker})
+            self.assertEqual(result, {'tx_count': 0, 'packet_pool_in_use': 0})
+            self.assertEqual(worker_stdout.readline(), worker_line)
+
     def test_hup_boundary_wait_failure_still_resumes_exact_worker(self):
         read_fd, write_fd = os.pipe()
         child = subprocess.Popen([os.sys.executable, '-c', 'import time; time.sleep(30)'])
@@ -182,6 +291,7 @@ class HandoffControlPathTests(unittest.TestCase):
         values = {
             'api': None, 'app': Actor(), 'args': None, 'close': close,
             'control_w': write_fd, 'handoff_mode': 'handoff-control-hup',
+            'handoff_udp_ready': False,
             'metrics': metrics, 'peer_control_w': -1, 'peer_worker': Actor(),
             'publish': lambda: None, 'ready': lambda *_args, **_kwargs: None,
             'wait_marker': wait_marker, 'worker': child, 'worker_pidfd': pidfd,

@@ -30,6 +30,43 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def handoff_udp_payload(frame):
+    """Parse only a complete, checksummed fixture IPv4/UDP tuple."""
+    if not isinstance(frame, bytes) or len(frame) < 42 or frame[12:14] != b'\x08\x00':
+        return None
+    ip = frame[14:]
+    version_ihl = ip[0]
+    ihl = (version_ihl & 15) * 4
+    if version_ihl >> 4 != 4 or ihl != 20 or len(ip) < ihl:
+        return None
+    total = struct.unpack('!H', ip[2:4])[0]
+    if total != len(ip) or total < ihl + 8 or ip[9] != 17 or struct.unpack('!H', ip[6:8])[0] & 0x3fff:
+        return None
+    if ip[12:16] != socket.inet_aton('198.18.0.2') or ip[16:20] != socket.inet_aton('198.18.0.1'):
+        return None
+    header = ip[:ihl]
+    total_sum = sum(struct.unpack('!10H', header))
+    while total_sum >> 16:
+        total_sum = (total_sum & 0xffff) + (total_sum >> 16)
+    if total_sum != 0xffff:
+        return None
+    udp = ip[ihl:total]
+    source_port, destination_port, udp_length, udp_checksum = struct.unpack('!HHHH', udp[:8])
+    if (source_port, destination_port) != (45000, 45001) or udp_length != len(udp):
+        return None
+    if udp_checksum:
+        pseudo = ip[12:20] + b'\x00\x11' + struct.pack('!H', udp_length)
+        data = pseudo + udp
+        if len(data) & 1:
+            data += b'\x00'
+        checksum = sum(struct.unpack('!' + 'H' * (len(data) // 2), data))
+        while checksum >> 16:
+            checksum = (checksum & 0xffff) + (checksum >> 16)
+        if checksum != 0xffff:
+            return None
+    return udp[8:]
+
+
 def dpdk_mp_socket_paths(runtime_directory, file_prefix):
     """Return pinned primary/maximum-secondary paths from DPDK's EAL formula."""
     require(isinstance(file_prefix, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', file_prefix) and
@@ -356,6 +393,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             '--paired-pmd', '--generation-rings']
         environment = os.environ | {'RUNTIME_DIRECTORY': str(root), 'PYTHONDONTWRITEBYTECODE': '1',
             'KER_SESSION_TEST_HANDOFF_PENDING_HB': '1'}
+        if mode == 'frame-positive': environment['KER_SESSION_TEST_FRAME_DRAIN'] = '1'
         if mode in ('prepare-enoent', 'prepare-ebusy', 'prepare-eperm'):
             environment['KER_SESSION_TEST_HANDOFF_PREPARE_REJECT'] = mode.removeprefix('prepare-').upper()
         elif mode.startswith('bad-prepare-error'):
@@ -381,8 +419,43 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             require(ready['ring_pmd'] and ready['ports'] == 1 and ready['slot'] == 0,
                 'handoff resident did not start the selected paired PMD/generation adapter')
             wire, endpoint = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+            wire.setblocking(False)
+            wire_stop=threading.Event(); wire_frames=[]; wire_errors=[]; wire_lock=threading.Lock()
+            host_mac=bytes.fromhex('024b45520001')
+            def handoff_wire_peer():
+                try:
+                    while not wire_stop.is_set():
+                        readable,_,_=select.select([wire],[],[],0.02)
+                        if not readable:continue
+                        frame=wire.recv(65536)
+                        with wire_lock:wire_frames.append(frame)
+                        if(len(frame)>=42 and frame[12:14]==b'\x08\x06' and frame[20:22]==b'\x00\x01' and
+                            frame[28:32]==socket.inet_aton('198.18.0.2') and
+                            frame[38:42]==socket.inet_aton('198.18.0.1')):
+                            reply=(frame[6:12]+host_mac+b'\x08\x06'+
+                                struct.pack('!HHBBH',1,0x0800,6,4,2)+host_mac+
+                                socket.inet_aton('198.18.0.1')+frame[6:12]+frame[28:32])
+                            if wire.send(reply)!=len(reply):raise RuntimeError('short ARP prewarm reply')
+                except BaseException as error:
+                    wire_errors.append(str(error));wire_stop.set()
+            wire_thread=None
+            if mode=='frame-positive':
+                wire_thread=threading.Thread(target=handoff_wire_peer,daemon=True);wire_thread.start()
+            udp_payload=handoff_udp_payload
+            def wait_wire_payload(sequence):
+                payload=f'KER-A09-HANDOFF-UDP seq={sequence}\n'.encode()
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    with wire_lock:
+                        matches=[frame for frame in wire_frames if udp_payload(frame)==payload]
+                        errors=list(wire_errors)
+                    if errors:raise RuntimeError('handoff wire peer failed: '+repr(errors))
+                    if matches:return matches[0]
+                    time.sleep(0.005)
+                raise RuntimeError(f'original LKL UDP sequence {sequence} did not reach the wire endpoint')
             handoff_read, handoff_write = os.pipe2(os.O_CLOEXEC)
             runner_environment = environment | {'KER_SESSION_TEST_HANDOFF_REPLAY_PREPARE': '1'}
+            if mode=='frame-positive': runner_environment['KER_SESSION_TEST_FRAME_REPLAY']='1'
             if mode != 'positive':
                 runner_environment['KER_SESSION_TEST_HANDOFF_MODE'] = mode
             runner_stderr_path = root / 'runner.stderr.log'
@@ -390,7 +463,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             runner = subprocess.Popen([sys.executable, str(args.tool), 'run', *common,
                 '--wire-fd', str(endpoint.fileno()), '--library', str(args.library), '--stats', str(stats_path),
                 '--address', '198.18.0.2/24', '--address6', '2001:db8:1::2/64',
-                '--test-live-handoff-fd', str(handoff_read), '--', str(args.app), '--signal-ready'],
+                '--test-live-handoff-fd', str(handoff_read), '--', str(args.app),
+                *(('--handoff-udp-trigger',) if mode=='frame-positive' else ('--signal-ready',))],
                 pass_fds=(endpoint.fileno(), handoff_read), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=runner_stderr_handle, env=runner_environment, bufsize=0)
             runner_stderr_handle.close(); runner_stderr_handle = None
@@ -535,8 +609,14 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 handoff_census_before = connection.request(api.STATUS)
                 handoff_owner_before = connection.request(api.PMD_STATUS)
             finally: connection.close()
+            if mode == 'frame-positive':
+                require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP prewarm')
+                first_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(first_ack==dict(sequence=1,bytes=len(b'KER-A09-HANDOFF-UDP seq=1\n')),
+                    'original app did not acknowledge the pre-handoff UDP prewarm')
+                first_wire_frame=wait_wire_payload(1)
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
-            os.close(handoff_write); handoff_write = -1
+            if mode != 'frame-positive': os.close(handoff_write); handoff_write = -1
             if mode == 'handoff-control-hup':
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
@@ -820,10 +900,45 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 protocol['replay_prepare']['same_response'] and
                 not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'handoff changed process/endpoint identity or failed exact PREPARE/replay validation')
+            if mode == 'frame-positive':
+                require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP post-PARKED frame')
+                second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
+                require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
+                    'original app did not acknowledge the post-PARKED UDP datagram')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    try:after=json.loads(stats_path.read_text())
+                    except (OSError,json.JSONDecodeError):after={}
+                    if after.get('handoff_frame'):break
+                    require(runner.poll() is None,'runner exited before exact peer frame drain')
+                    time.sleep(0.005)
+                proof=after.get('handoff_frame') or {}
+                commits=proof.get('committed_records',[]);drains=proof.get('drained_records',[])
+                u2_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
+                u2_commits=[item for item in commits if udp_payload(bytes.fromhex(item.get('frame_hex','')))==u2_payload]
+                u2_drains=[item for item in drains if udp_payload(bytes.fromhex(item.get('frame_hex','')))==u2_payload]
+                require(len(u2_commits)==len(u2_drains)==1 and
+                    all(u2_commits[0].get(left)==u2_drains[0].get(right) for left,right in
+                        (('packet_pointer','packet_pointer'),('object_index','object_index'),
+                         ('pool_tag','pool_tag'),('tx_lease_id','lease_id'),('length','length'),('frame_hex','frame_hex'))) and
+                    first_wire_frame and b'KER-A09-HANDOFF-UDP seq=2\n' not in first_wire_frame,
+                    'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
+                os.close(handoff_write);handoff_write=-1
             runner.send_signal(signal.SIGTERM)
             output, _ = runner.communicate(timeout=20)
             errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
             finished = json.loads(stats_path.read_text())
+            if mode=='frame-positive':
+                proof=finished.get('handoff_frame') or {}
+                commits=proof.get('committed_records',[]);drains=proof.get('drained_records',[])
+                commit_ids=[(x.get('pool_tag'),x.get('object_index'),x.get('tx_lease_id')) for x in commits]
+                drain_ids=[(x.get('pool_tag'),x.get('object_index'),x.get('lease_id')) for x in drains]
+                require(len(commits)==len(drains) and len(set(commit_ids))==len(commit_ids) and
+                    len(set(drain_ids))==len(drain_ids) and set(commit_ids)==set(drain_ids) and
+                    proof.get('commit_bijection')=={'committed':len(commits),'drained':len(drains)} and
+                    proof.get('final_batch',{}).get('tx_after')==0 and
+                    proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0},
+                    'frame commits and generic peer drains did not reach exact bijective quiescence')
             require(runner.returncode == 143 and finished.get('stage') == 'interrupted' and
                 finished.get('native_cleanup') == 'graceful' and finished.get('app_code') == 143 and
                 finished.get('worker_code') == 0 and finished.get('packet', {}).get('status') == 0 and
@@ -905,6 +1020,11 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 # private-directory validation or reporting refuses deletion.
                 closers = []
                 if endpoint is not None: closers.append(endpoint.close)
+                wire_stop.set()
+                if wire_thread is not None:
+                    wire_thread.join(timeout=2)
+                    if wire_thread.is_alive():
+                        finalization_errors.append(RuntimeError('handoff wire peer did not stop'))
                 if wire is not None: closers.append(wire.close)
                 for process in (runner, primary):
                     if process is not None:
@@ -1871,6 +1991,8 @@ def main():
             if exception_capture is not None: exception_capture.close()
     run_live_handoff_profile(args, api, plugin_paths)
     print('PASS: a generation-admitted same-process peer takes the PMD/exception grant while the original Linux app and parked worker remain alive, then both workers drain cleanly')
+    run_live_handoff_profile(args, api, plugin_paths, mode='frame-positive')
+    print('PASS: original LKL post-PARKED UDP frame is journaled before prepare and drained by the admitted peer as the exact mbuf pointer/bytes once')
     if args.handoff_negative_profiles:
         for mode in ('bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
                 'handoff-control-hup',
