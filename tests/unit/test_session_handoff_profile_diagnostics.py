@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -47,6 +48,39 @@ class HandoffProfileDiagnosticsTests(unittest.TestCase):
         branch = branch[:branch.index("            if mode == 'frame-positive':")]
         self.assertIn("record_handoff_marker(runner, 'KER_SESSION_TEST_NONFRAME_PEER_KILLED'", branch)
         self.assertIn('runner_stderr_path, fatal_profile_diagnostics)', branch)
+
+    def test_bounded_capture_does_not_wait_for_descendant_pipe_writers(self):
+        process = subprocess.Popen([sys.executable, '-c',
+            'import subprocess,sys; p=subprocess.Popen([sys.executable,"-c",'
+            '"import time; time.sleep(10)"]); print(p.pid, flush=True)'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        started = time.monotonic()
+        try:
+            output, errors = self.fixture.communicate_bounded(process, timeout=0.2)
+            self.assertLess(time.monotonic() - started, 2)
+            child_pid = int(output.decode().strip())
+            self.assertEqual(errors, b'')
+            self.assertIsNotNone(process.poll())
+        finally:
+            try:
+                import os
+                os.killpg(process.pid, 9)
+            except ProcessLookupError:
+                pass
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+
+    def test_failure_diagnostics_use_bounded_capture_for_fallbacks(self):
+        source = FIXTURE.read_text()
+        diagnostic_helpers = source[source.index('            def startup_failure(reason):'):
+            source.index('            try:\n                ready_line = line(runner')]
+        diagnostic_helpers += source[source.index('            def fatal_profile_diagnostics(reason):'):
+            source.index("            require(not select.select([app_pidfd, owner_pidfd, peer_pidfd]")]
+        diagnostic_helpers += source[source.index("            if mode != 'positive':"):
+            source.index("            if mode == 'timeout':")]
+        self.assertNotIn('communicate()', diagnostic_helpers)
+        self.assertIn('communicate_bounded(', diagnostic_helpers)
 
 
 if __name__ == '__main__':

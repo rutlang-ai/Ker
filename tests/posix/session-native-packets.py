@@ -450,6 +450,36 @@ def record_handoff_marker(process, prefix, stderr_path, failure_diagnostics):
         raise failure_diagnostics(f'runner failed before {prefix}: {error}') from error
 
 
+def communicate_bounded(process, timeout=5):
+    """Collect child output without waiting forever for inherited pipe writers."""
+    if process.stdout is None and process.stderr is None:
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+        return b'', b''
+    if all(stream is None or stream.closed for stream in (process.stdout, process.stderr)):
+        return b'', b''
+    try:
+        return process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        # A descendant may have inherited either pipe, so killing/reaping the
+        # direct child does not guarantee that communicate() will see EOF.
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        output = error.output or b''
+        stderr = error.stderr or b''
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        return output, stderr
+
+
 def resolve_dpdk_plugin_dir(plugin_dir, environ=None):
     environment = os.environ if environ is None else environ
     configured = plugin_dir if plugin_dir is not None else environment.get('KER_DPDK_PLUGIN_DIR')
@@ -614,23 +644,16 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         runner.kill(); runner.wait()
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    try: runner_output, _ = runner.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = communicate_bounded(runner, timeout=5)
                 latest_raw = stats_path.read_text(errors='replace') if stats_path.exists() else ''
                 try: latest = json.loads(latest_raw) if latest_raw else None
                 except json.JSONDecodeError: latest = None
                 if primary is not None and primary.poll() is None:
                     if primary.stdin is not None:
                         primary.stdin.close(); primary.stdin = None
-                    try: resident_output, resident_errors = primary.communicate(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        primary.terminate()
-                        try: resident_output, resident_errors = primary.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            primary.kill(); resident_output, resident_errors = primary.communicate()
+                    resident_output, resident_errors = communicate_bounded(primary, timeout=10)
                 else:
-                    resident_output, resident_errors = primary.communicate(timeout=5)
+                    resident_output, resident_errors = communicate_bounded(primary, timeout=5)
                 runner_errors = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
                 mp_errors = eal_mp_channel_errors(runner_errors, resident_errors.decode(errors='replace'))
                 if mp_errors:
@@ -691,9 +714,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                         runner.kill(); runner.wait()
                 runner_output = b''
                 if runner is not None and runner.stdout is not None:
-                    try: runner_output, _ = runner.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = communicate_bounded(runner, timeout=5)
                 latest = None
                 latest_raw = ''
                 if stats_path.exists():
@@ -705,16 +726,9 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 if primary is not None and primary.poll() is None:
                     if primary.stdin is not None:
                         primary.stdin.close(); primary.stdin = None
-                    try: primary_output, primary_errors = primary.communicate(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        primary.terminate()
-                        try: primary_output, primary_errors = primary.communicate(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            primary.kill(); primary_output, primary_errors = primary.communicate()
+                    primary_output, primary_errors = communicate_bounded(primary, timeout=10)
                 elif primary is not None and primary.stdout is not None:
-                    try: primary_output, primary_errors = primary.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        primary.kill(); primary_output, primary_errors = primary.communicate()
+                    primary_output, primary_errors = communicate_bounded(primary, timeout=5)
                 mp_errors = eal_mp_channel_errors(stderr, primary_errors.decode(errors='replace'))
                 if mp_errors:
                     reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
@@ -996,7 +1010,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 try:
                     runner_output, _ = runner.communicate(timeout=20)
                 except subprocess.TimeoutExpired as error:
-                    runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output, _ = communicate_bounded(runner, timeout=5)
                     raise RuntimeError('fatal handoff fixture did not terminate: ' +
                         (runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else '')) from error
                 runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''
@@ -1202,7 +1216,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                             except subprocess.TimeoutExpired:
                                 process.kill(); process.wait(timeout=10)
                         if process.poll() is not None:
-                            cleanup_outputs[label] = process.communicate(timeout=5)
+                            cleanup_outputs[label] = communicate_bounded(process, timeout=5)
                         else:
                             raise RuntimeError(f'{label} did not exit during fixture cleanup')
                     except BaseException as error:
