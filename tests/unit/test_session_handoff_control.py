@@ -577,8 +577,8 @@ class HandoffControlPathTests(unittest.TestCase):
             'frame-death-prepared': (-signal.SIGKILL, 0),
             'frame-death-queued': (-signal.SIGKILL, 0),
             'frame-death-producer-active-consumer': (-signal.SIGKILL, 0),
-            'frame-death-consumer-prepared': (1, -signal.SIGKILL),
-            'frame-death-consumer-writing': (1, -signal.SIGKILL),
+            'frame-death-consumer-prepared': (125, -signal.SIGKILL),
+            'frame-death-consumer-writing': (125, -signal.SIGKILL),
             'frame-death-both-prepared': (-signal.SIGKILL, -signal.SIGKILL),
             'frame-lost-prepare-reply': (-signal.SIGKILL, 0),
             'frame-positive': (0, 0),
@@ -593,6 +593,44 @@ class HandoffControlPathTests(unittest.TestCase):
         for mode in ('frame-death-prepared', 'frame-death-queued',
                      'frame-death-producer-active-consumer', 'frame-positive', 'frame-full'):
             self.assertFalse(self.launcher.frame_consumer_death_was_expected(mode), mode)
+
+    def test_consumer_death_exit_requires_cancel_marker_and_exact_125(self):
+        validate = self.launcher.require_frame_consumer_death_worker_exit
+        cancelled = {'status': -errno.ESTALE}
+        for mode in ('frame-death-consumer-prepared', 'frame-death-consumer-writing'):
+            with self.subTest(mode=mode):
+                self.assertEqual(validate(mode, 125, cancelled), 125)
+                for status in (0, 1, -signal.SIGKILL):
+                    with self.subTest(status=status), self.assertRaises(RuntimeError):
+                        validate(mode, status, cancelled)
+                with self.assertRaises(RuntimeError):
+                    validate(mode, 125, {'status': 0})
+        with self.assertRaises(ValueError):
+            validate('frame-death-prepared', 125, cancelled)
+
+        tree = ast.parse(SOURCE.read_text())
+        runner = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_session_impl')
+        cancel_lines = [node.lineno for node in ast.walk(runner)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and
+            isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'cancelled' and
+            any(isinstance(arg, ast.Constant) and
+                arg.value == 'KER_SESSION_FRAME_CONSUMER_DEATH_CANCELLED'
+                for arg in node.value.args)]
+        check_lines = [node.lineno for node in ast.walk(runner)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == 'require_frame_consumer_death_worker_exit']
+        communicate_lines = [node.lineno for node in ast.walk(runner)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+            node.func.attr == 'communicate' and isinstance(node.func.value, ast.Name) and
+            node.func.value.id == 'worker']
+        self.assertEqual(len(cancel_lines), 2)
+        self.assertEqual(len(check_lines), 2)
+        for cancel_line, check_line in zip(sorted(cancel_lines), sorted(check_lines)):
+            self.assertLess(cancel_line, check_line,
+                'exact stale-consumer cancellation must be observed before accepting producer status')
+            self.assertTrue(any(cancel_line < line < check_line for line in communicate_lines),
+                'producer exit status must be collected after cancellation and before validation')
 
     def test_frame_peer_control_stays_open_until_final_quiescence(self):
         read_fd, write_fd = os.pipe()

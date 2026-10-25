@@ -160,6 +160,21 @@ def decode_optional_stderr(data):
     return (data or b'').decode(errors='replace')
 
 
+FRAME_CONSUMER_DEATH_WORKER_MODES = frozenset((
+    'frame-death-consumer-prepared', 'frame-death-consumer-writing'))
+
+
+def require_frame_consumer_death_worker_exit(mode, status, cancelled):
+    """Accept fail-closed exit only after the exact stale-consumer cancel."""
+    if mode not in FRAME_CONSUMER_DEATH_WORKER_MODES:
+        raise ValueError('unexpected consumer-death worker mode')
+    if not isinstance(cancelled, dict) or cancelled.get('status') != -errno.ESTALE:
+        raise RuntimeError('producer did not confirm exact stale-consumer cancellation')
+    if type(status) is not int or status != 125:
+        raise RuntimeError(f'producer did not fail closed after cancellation: {status}')
+    return status
+
+
 INTENTIONAL_FRAME_CONSUMER_DEATH_MODES = frozenset((
     'frame-death-consumer-prepared', 'frame-death-consumer-writing',
     'frame-death-both-prepared'))
@@ -1273,7 +1288,7 @@ def _run_session_impl(args, api):
                 write_complete=ready('KER_SESSION_FRAME_CONSUMER_DEATH_WRITE_COMPLETE')
                 cancelled=ready('KER_SESSION_FRAME_CONSUMER_DEATH_CANCELLED')
                 producer_output,_=worker.communicate(timeout=10)
-                if worker.returncode!=1:raise RuntimeError('WRITING producer did not fail stale COMMIT closed')
+                require_frame_consumer_death_worker_exit(handoff_mode,worker.returncode,cancelled)
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
                     snap=api.Connection(args.socket)
@@ -1287,7 +1302,7 @@ def _run_session_impl(args, api):
                     producer_output=producer_output.decode(errors='replace'),final_census=final_census,
                     final_pmd_owner=final_owner)
                 frame_death_complete=True
-                frame_death_worker_expected_code=1
+                frame_death_worker_expected_code=125
                 metrics['stage']='handoff-complete';publish()
                 return
             if handoff_mode in ('frame-death-prepared','frame-death-consumer-prepared','frame-death-both-prepared'):
@@ -1356,8 +1371,7 @@ def _run_session_impl(args, api):
                     preserved=wait_marker(worker,'KER_SESSION_FRAME_CONSUMER_DEATH_PENDING_PRESERVED')
                     cancelled=wait_marker(worker,'KER_SESSION_FRAME_CONSUMER_DEATH_CANCELLED')
                     worker_output,_=worker.communicate(timeout=10)
-                    if worker.returncode!=1:
-                        raise RuntimeError('producer did not return after the exact stale-consumer cancellation')
+                    require_frame_consumer_death_worker_exit(handoff_mode,worker.returncode,cancelled)
                     deadline=time.monotonic()+10
                     while time.monotonic()<deadline:
                         snapshot_connection=api.Connection(args.socket)
@@ -1374,7 +1388,7 @@ def _run_session_impl(args, api):
                         consumer_output=peer_output.decode(errors='replace'),consumer_stderr=decode_optional_stderr(peer_errors),
                         producer_output=worker_output.decode(errors='replace'))
                     frame_death_complete=True
-                    frame_death_worker_expected_code=1
+                    frame_death_worker_expected_code=125
                     metrics['stage']='handoff-complete';publish()
                     return
                 signal.pidfd_send_signal(worker_pidfd,signal.SIGKILL)

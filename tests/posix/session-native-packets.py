@@ -750,8 +750,8 @@ FRAME_PROFILE_EXIT_CODES = {
     'frame-death-prepared': (-signal.SIGKILL, 0),
     'frame-death-queued': (-signal.SIGKILL, 0),
     'frame-death-producer-active-consumer': (-signal.SIGKILL, 0),
-    'frame-death-consumer-prepared': (1, -signal.SIGKILL),
-    'frame-death-consumer-writing': (1, -signal.SIGKILL),
+    'frame-death-consumer-prepared': (125, -signal.SIGKILL),
+    'frame-death-consumer-writing': (125, -signal.SIGKILL),
     'frame-death-both-prepared': (-signal.SIGKILL, -signal.SIGKILL),
     'frame-lost-prepare-reply': (-signal.SIGKILL, 0),
 }
@@ -1508,7 +1508,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     prepared.get('pool_prepared')==prepared.get('pool_before')+1 and
                     prepared.get('counters_prepared')==prepared.get('counters_before') and
                     proof.get('consumer_pidfd_dead') is True and proof.get('consumer_status')==-signal.SIGKILL and
-                    proof.get('producer_status')==1 and
+                    proof.get('producer_status')==125 and
                     proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
                     proof.get('pmd_owner_after_reap',{}).get('token')==0 and
                     preserved.get('tx')==prepared.get('tx_before') and
@@ -1676,7 +1676,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 write_complete=proof.get('write_complete',{});cancelled=proof.get('cancelled',{})
                 require(proof.get('stage')=='consumer-writing' and
                     proof.get('consumer_pidfd_dead') is True and proof.get('consumer_status')==-signal.SIGKILL and
-                    proof.get('producer_status')==1 and
+                    proof.get('producer_status')==125 and
                     consumer_writing_pool_transition_is_exact(deferred,write_complete,cancelled) and
                     write_complete.get('counters')==deferred.get('counters_after') and
                     cancelled.get('status')==-errno.ESTALE and cancelled.get('tx')==deferred.get('tx_after') and
