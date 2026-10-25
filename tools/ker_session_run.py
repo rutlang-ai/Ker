@@ -1,5 +1,6 @@
 """Launch an original Linux instance on a granted secondary packet session."""
 import errno
+import faulthandler
 import ipaddress
 import json
 import os
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 
 
 def signal_pidfd(pidfd, signum):
@@ -301,7 +303,26 @@ def validate_handoff_peer_cleanup(metrics, peer_present, peer_code, peer_packet_
         raise RuntimeError('control-only handoff peer unexpectedly reported packet completion')
 
 
+@contextmanager
+def _frame_full_traceback_scope(enabled):
+    if enabled:
+        print('KER_SESSION_FRAME_FULL_RUNNER_BEGIN', file=sys.stderr, flush=True)
+        faulthandler.dump_traceback_later(45, repeat=False, file=sys.stderr)
+    try:
+        yield
+    finally:
+        if enabled:
+            faulthandler.cancel_dump_traceback_later()
+
+
 def run_session(args, api):
+    enabled = (getattr(args, 'test_live_handoff_fd', None) is not None and
+        os.environ.get('KER_SESSION_TEST_HANDOFF_MODE') == 'frame-full')
+    with _frame_full_traceback_scope(enabled):
+        return _run_session_impl(args, api)
+
+
+def _run_session_impl(args, api):
     address = ipaddress.ip_interface(args.address or '198.18.0.2/24')
     address6 = ipaddress.ip_interface(args.address6) if args.address6 else None
     for item, version in ((address, 4), (address6, 6)):
@@ -819,8 +840,12 @@ def run_session(args, api):
         handoff_udp_ready = True
         publish()
         if handoff_mode in ('frame-full','frame-death-queued'):
+            if handoff_mode == 'frame-full':
+                print('KER_SESSION_FRAME_FULL_STAGE fill-request', file=sys.stderr, flush=True)
             if os.write(control_w,b'F')!=1: raise RuntimeError('could not request actual generation TX ring fill')
             filled=wait_marker(worker,'KER_SESSION_FRAME_FULL_FILLED')
+            if handoff_mode == 'frame-full':
+                print('KER_SESSION_FRAME_FULL_STAGE fill-complete', file=sys.stderr, flush=True)
             if (not isinstance(filled.get('count'),int) or filled['count']<=0 or
                 filled.get('capacity')!=filled.get('count') or
                 filled.get('pool_before')!=0 or filled.get('pool_after')!=filled['count'] or

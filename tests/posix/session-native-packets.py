@@ -3,6 +3,7 @@
 import argparse
 import ctypes
 import errno
+import faulthandler
 import fcntl
 import hashlib
 import importlib.util
@@ -501,6 +502,18 @@ def _handoff_evidence_scope(api, evidence):
         _active_handoff_evidence = prior_evidence
 
 
+@contextmanager
+def _frame_full_traceback_scope(enabled, label):
+    if enabled:
+        print(label, file=sys.stderr, flush=True)
+        faulthandler.dump_traceback_later(45, repeat=False, file=sys.stderr)
+    try:
+        yield
+    finally:
+        if enabled:
+            faulthandler.cancel_dump_traceback_later()
+
+
 def record(process, prefix, timeout=25):
     value = line(process, timeout)
     if not value.startswith(prefix + ' '):
@@ -521,8 +534,10 @@ def record(process, prefix, timeout=25):
 
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
     evidence = dict(mode=mode, resident_markers=[], snapshots=[], actors={})
-    with _handoff_evidence_scope(api, evidence):
-        return _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence)
+    with _frame_full_traceback_scope(mode == 'frame-full',
+            'KER_SESSION_FRAME_FULL_PROFILE_BEGIN'):
+        with _handoff_evidence_scope(api, evidence):
+            return _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence)
 
 
 def _is_fatal_handoff_profile(mode):
@@ -1441,12 +1456,15 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     seq2_count=seq2_count,errors=wire_error_snapshot)
             elif mode=='frame-full':
                 frame_full_stage='request-seq2'
+                print('KER_SESSION_FRAME_FULL_STAGE request-seq2', flush=True)
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP full-ring datagram')
                 frame_full_stage='wait-seq2-ack'
+                print('KER_SESSION_FRAME_FULL_STAGE wait-seq2-ack', flush=True)
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
                     'original app did not acknowledge the full-ring UDP datagram')
                 frame_full_stage='wait-full-ring-proof'
+                print('KER_SESSION_FRAME_FULL_STAGE wait-full-ring-proof', flush=True)
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
                     try:after=json.loads(stats_path.read_text())
@@ -1456,6 +1474,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     time.sleep(0.005)
                 fullproof=after.get('handoff_frame_full') or {}
                 frame_full_stage='validate-full-ring-proof'
+                print('KER_SESSION_FRAME_FULL_STAGE validate-full-ring-proof', flush=True)
                 time.sleep(0.5)
                 with wire_lock:
                     full_wire_snapshot=list(wire_frames);full_wire_errors=list(wire_errors)
@@ -1489,6 +1508,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     seq1_count==1 and seq2_count==0 and not full_wire_errors,
                     'full generation TX ring did not reject/cancel then drain exactly')
                 frame_full_stage='full-ring-proof-passed'
+                print('KER_SESSION_FRAME_FULL_STAGE full-ring-proof-passed', flush=True)
                 os.close(handoff_write);handoff_write=-1
             runner.send_signal(signal.SIGTERM)
             output, _ = runner.communicate(timeout=20)
