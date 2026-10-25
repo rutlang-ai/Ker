@@ -46,7 +46,17 @@ def frame_cancelled_consumer_pool_is_exact(prepared, cancelled):
 
 
 def active_consumer_kept_handoff_owner(proof, handoff):
-    return proof.get('final_owner') == handoff.get('resident')
+    return same_owner_snapshot(proof.get('final_owner'), handoff.get('resident'))
+
+
+def same_owner_snapshot(actual, expected):
+    """Compare the exact PMD owner while allowing each STATUS read's sequence."""
+    if (not isinstance(actual, dict) or not isinstance(expected, dict) or
+            type(actual.get('sequence')) is not int or actual['sequence'] <= 0 or
+            type(expected.get('sequence')) is not int or expected['sequence'] <= 0):
+        return False
+    return ({key: value for key, value in actual.items() if key != 'sequence'} ==
+        {key: value for key, value in expected.items() if key != 'sequence'})
 
 
 def require(value, message):
@@ -1700,9 +1710,10 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 snapshot=api.Connection(control_path)
                 try:held_census=snapshot.request(api.STATUS);held_owner=snapshot.request(api.PMD_STATUS)
                 finally:snapshot.close()
+                handoff_resident_owner=after['handoff']['resident']
                 require(held_census.get('process')==handoff_census_before.get('process') and
                     held_census.get('slot')==handoff_census_before.get('slot') and
-                    held_owner==handoff_owner_before,
+                    same_owner_snapshot(held_owner,handoff_resident_owner),
                     'preflight EBUSY changed registered actors or exact surviving PMD owner')
                 require(os.write(handoff_write,b'R')==1,'could not release the active peer dequeue after EBUSY validation')
                 completed=record(primary,'KER_SESSION_TEST_REAP_COMPLETED')
@@ -1994,6 +2005,31 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                             resident_stderr=_decode_captured_pipe_output(resident_err))
                         print('KER_SESSION_FRAME_POSITIVE_FAILURE ' +
                             json.dumps(failure_record, sort_keys=True), flush=True)
+                if mode in ('frame-death-consumer-prepared','frame-death-consumer-writing',
+                        'frame-death-producer-active-consumer') and original_error is not None:
+                    latest_stats = None
+                    latest_stats_raw = ''
+                    if stats_path.exists():
+                        latest_stats_raw = stats_path.read_text(errors='replace')
+                        try: latest_stats = json.loads(latest_stats_raw)
+                        except json.JSONDecodeError: pass
+                    runner_out, runner_err = cleanup_outputs.get('launcher', (b'', b''))
+                    resident_out, resident_err = cleanup_outputs.get('resident', (b'', b''))
+                    diagnostic = dict(mode=mode, reason=f'{type(original_error).__name__}: {original_error}',
+                        latest_stats=latest_stats, latest_stats_raw=latest_stats_raw,
+                        runner_returncode=runner.returncode if runner is not None else None,
+                        runner_stdout=_decode_captured_pipe_output(runner_out),
+                        runner_stderr=(runner_stderr_path.read_text(errors='replace')
+                            if runner_stderr_path.exists() else ''),
+                        runner_stderr_pipe=_decode_captured_pipe_output(runner_err),
+                        resident_returncode=primary.returncode if primary is not None else None,
+                        resident_stdout=_decode_captured_pipe_output(resident_out),
+                        resident_stderr=_decode_captured_pipe_output(resident_err),
+                        resident_markers=list(evidence['resident_markers']),
+                        status_snapshots=list(evidence['snapshots']),
+                        actor_pids=dict(actor_pid_values))
+                    print('KER_SESSION_FRAME_RECOVERY_FAILURE ' +
+                        json.dumps(diagnostic, sort_keys=True), flush=True)
                 if finalization_errors:
                     raise RuntimeError('handoff actor/pipe cleanup failed before hugepage cleanup: ' +
                         repr([str(error) for error in finalization_errors]))

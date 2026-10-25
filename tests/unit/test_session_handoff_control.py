@@ -114,12 +114,31 @@ class HandoffControlPathTests(unittest.TestCase):
             {'tx': 1, 'pool': 7, 'counters': counters}))
 
     def test_active_consumer_recovery_compares_the_successor_owner(self):
-        old_owner = {'token': 14, 'generation': 0}
-        successor = {'token': 38, 'generation': 1}
+        old_owner = {'sequence': 7, 'token': 14, 'generation': 0}
+        successor = {'sequence': 19, 'token': 38, 'generation': 1, 'slot': 1}
         self.assertTrue(PROFILE.active_consumer_kept_handoff_owner(
-            {'final_owner': successor}, {'resident': successor}))
+            {'final_owner': dict(successor, sequence=20)}, {'resident': successor}))
         self.assertFalse(PROFILE.active_consumer_kept_handoff_owner(
             {'final_owner': old_owner}, {'resident': successor}))
+        self.assertFalse(PROFILE.active_consumer_kept_handoff_owner(
+            {'final_owner': dict(successor, token=39)}, {'resident': successor}))
+        self.assertFalse(PROFILE.active_consumer_kept_handoff_owner(
+            {'final_owner': dict(successor, sequence=0)}, {'resident': successor}))
+
+    def test_active_consumer_held_owner_uses_completed_handoff_snapshot(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        profile = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and
+            node.name == '_run_live_handoff_profile_impl')
+        owner_compare = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == 'same_owner_snapshot' and len(node.args) == 2 and
+            all(isinstance(arg, ast.Name) for arg in node.args) and
+            [arg.id for arg in node.args] == ['held_owner', 'handoff_resident_owner'])
+        self.assertIsNotNone(owner_compare)
+        assignment = next(node for node in ast.walk(profile) if isinstance(node, ast.Assign) and
+            any(isinstance(target, ast.Name) and target.id == 'handoff_resident_owner'
+                for target in node.targets))
+        self.assertEqual(ast.unparse(assignment.value), "after['handoff']['resident']")
 
     def exercise(self, mode, expected, expect_closed):
         read_fd, write_fd = os.pipe()
