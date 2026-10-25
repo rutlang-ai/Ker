@@ -977,6 +977,24 @@ static int reclaim_control(unsigned index)
         if(result) {
             fprintf(stderr,"ker session: generation packet journal lacks exact-death recovery proof: %d\n",result);_Exit(125);
         }
+#ifdef KER_SESSION_TEST_HOOKS
+        if((getenv("KER_SESSION_TEST_FRAME_BOTH_DEAD")||getenv("KER_SESSION_TEST_FRAME_REPLY_LOST"))&&
+            client->frame_pending) {
+            uint32_t tx_after=UINT32_MAX,pool_after=UINT32_MAX;
+            struct ker_generation_test_counters counters_after;
+            if(ker_generation_test_tx_snapshot(generation_rings,0,0,0,&tx_after,&pool_after)||tx_after||pool_after||
+                ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters_after))_Exit(125);
+            const char *marker=getenv("KER_SESSION_TEST_FRAME_REPLY_LOST")?
+                "KER_SESSION_FRAME_REPLY_LOST_REAPED":"KER_SESSION_FRAME_BOTH_DEAD_REAPED";
+            printf("%s {\"producer_pid\":%ld,\"slot\":%u,\"generation\":%u,\"process\":%u,\"sequence\":%llu,\"command\":%llu,\"object_index\":%u,\"lease_id\":%llu,\"tx_after\":%u,\"packet_pool_in_use\":%u,\"counters\":[%llu,%llu,%llu,%llu,%llu]}\n",
+                marker,(long)client->pid,client->slot,client->generation,client->process,
+                (unsigned long long)client->request.sequence,(unsigned long long)client->request.command,
+                client->frame_object_index,(unsigned long long)client->frame_lease_id,tx_after,pool_after,
+                (unsigned long long)counters_after.rx_full,(unsigned long long)counters_after.tx_full,
+                (unsigned long long)counters_after.tx_drop,(unsigned long long)counters_after.packet_drop,
+                (unsigned long long)counters_after.packet_full);fflush(stdout);
+        }
+#endif
         client->generation_admitted=false;
         /* Exact producer death is the only non-commit path that clears a
          * resident frame lease after the generation journal has recovered it. */
@@ -2208,6 +2226,24 @@ static void receive_request(unsigned i)
         }
     }
 #endif
+#ifdef KER_SESSION_TEST_HOOKS
+    if(getenv("KER_SESSION_TEST_FRAME_REPLY_LOST") && request.command==KER_SESSION_FRAME_PREPARE &&
+        reply.status==0 && client->frame_pending && client->frame_object_index==reply.packet_object_index &&
+        client->frame_lease_id==reply.tx_lease_id) {
+        uint32_t tx=UINT32_MAX,pool=UINT32_MAX;
+        struct ker_generation_test_counters counters;
+        if(ker_generation_test_tx_snapshot(generation_rings,0,0,0,&tx,&pool)||
+            ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters))_Exit(125);
+        printf("KER_SESSION_FRAME_REPLY_DROPPED {\"pid\":%ld,\"sequence\":%llu,\"command\":%llu,\"object_index\":%u,\"lease_id\":%llu,\"tx\":%u,\"packet_pool_in_use\":%u,\"counters\":[%llu,%llu,%llu,%llu,%llu],\"request_handled_and_cached\":true}\n",
+            (long)client->pid,(unsigned long long)request.sequence,(unsigned long long)request.command,
+            client->frame_object_index,(unsigned long long)client->frame_lease_id,tx,pool,
+            (unsigned long long)counters.rx_full,(unsigned long long)counters.tx_full,
+            (unsigned long long)counters.tx_drop,(unsigned long long)counters.packet_drop,
+            (unsigned long long)counters.packet_full);fflush(stdout);
+        close(client->fd);client->fd=-1;
+        return;
+    }
+#endif
     ssize_t sent;
     if (!reply.status && request.command == KER_SESSION_PMD_ACQUIRE && ring_pmd == 2) {
         char control[CMSG_SPACE(sizeof(int))] = {0};
@@ -3097,6 +3133,16 @@ static int worker_frame_request(int fd,const struct ker_session_message *identit
     ssize_t n;
     do n=recv(fd,response,sizeof(*response),MSG_TRUNC); while(n<0&&errno==EINTR&&!dead(resident));
     require_resident_alive(resident);
+    if(n==0) {
+#ifdef KER_SESSION_TEST_HOOKS
+        if(getenv("KER_SESSION_TEST_FRAME_REPLY_LOST")&&command==KER_SESSION_FRAME_PREPARE) {
+            printf("KER_SESSION_TEST_FRAME_REPLY_EOF {\"command\":%llu,\"sequence\":%llu,\"no_retry\":true}\n",
+                (unsigned long long)command,(unsigned long long)request.sequence);fflush(stdout);
+            if(getenv("KER_SESSION_TEST_FRAME_REPLY_LOST_HOLD"))raise(SIGSTOP);
+        }
+#endif
+        return -ECONNRESET;
+    }
     if(n<0)return -errno;
     if(n!=sizeof(*response))return -EPROTO;
     if(replay_test) {
