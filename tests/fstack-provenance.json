@@ -2418,6 +2418,14 @@
         "native-fstack-mtu-enable-live"
       ],
       "adaptation": "Ker adapts the disabled-jumbo policy through [dpdk] mtu_enable=0 / --no-mtu-enable: requested MTU above1500 is rejected before worker/application setup, while standard MTU succeeds. The effective startup/live ceiling on every interface is capped at1500, preserving any lower configured maximum. Tests cover CLI precedence, invalid limits, state isolation, additional interfaces and actual original-Linux/DPDK live MTU rejection followed by bidirectional ICMP and exact buffer reclamation. Ker preserves its existing enabled default; source global config ABI and whole fixture schema are not claimed."
+    },
+    "native-fstack-missing-launch-config": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_ff_load_config_empty_ini",
+      "ker_ctests": [
+        "native-fstack-config-lifecycle"
+      ],
+      "adaptation": "The pinned case named empty_ini invokes the loader with no -c and no other arguments; it does not open an empty file. The real Ker CLI likewise rejects the exact no-options invocation and reports all missing startup settings before library/worker/application setup. Tests also cover progressively supplied CLI fields, missing application, valid CLI-only and empty-file-plus-CLI recovery. Ker allows a complete CLI-only configuration and reports argparse exit2 instead of the F-Stack internal return-1; config filename/global layout equivalence is not claimed."
     }
   }
 }

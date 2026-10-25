@@ -459,3 +459,8 @@ MTU 禁用策略：`native-fstack-mtu-enable-config` 与 `native-fstack-mtu-enab
 启动及运行时 ceiling 都不超过1500；更低配置仍保留，CLI可覆盖策略。配置检查与
 原版 Linux/真实 TAP 的动态拒绝、继续收发及回收分别执行。这里只新增一项源案例
 适配，五个配置检查及运行扩展不另计为五项上游迁移。
+
+
+缺失启动配置：`native-fstack-config-lifecycle` 的三项追加检查对应固定源
+`test_ff_load_config_empty_ini` 的真实无参数调用，并扩展参数缺失、命令缺失和
+恢复。该源用例没有读取空文件；Ker完整CLI无需配置文件的既有行为继续保留。
