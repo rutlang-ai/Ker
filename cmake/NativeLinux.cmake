@@ -556,6 +556,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-launcher-config
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_config.py")
     set_tests_properties(native-fstack-launcher-config PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-mtu-enable-config
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_mtu_enable.py")
+    set_tests_properties(native-fstack-mtu-enable-config PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-config-lifecycle
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_config_lifecycle.py")
     set_tests_properties(native-fstack-config-lifecycle PROPERTIES TIMEOUT 30 LABELS fstack)
@@ -1126,6 +1129,12 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic
             --failure-library "$<TARGET_FILE:ker-mtu-failure>")
     set_tests_properties(native-fstack-live-mtu PROPERTIES TIMEOUT 120 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-mtu-enable-live
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-icmp-mtu-test>" --dynamic
+            --mtu-policy-only --failure-library "$<TARGET_FILE:ker-mtu-failure>")
+    set_tests_properties(native-fstack-mtu-enable-live PROPERTIES TIMEOUT 60 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-rx-lcores-mtu
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/icmp-mtu.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

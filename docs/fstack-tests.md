@@ -452,3 +452,10 @@ UDP 计数。见 [共存合同及四条尚未迁移的配置断言](stack-coexis
 进程模式：`native-fstack-eal-file-prefix` 还验证主/附加接口显式 secondary
 在 worker exec 前拒绝，已有 primary 存活并完成 TCP/UDP，auto 实际选择 primary
 及 CLI primary 覆盖旧 INI secondary。见[六项仍未完成的源进程合同](process-modes.md)。
+
+
+MTU 禁用策略：`native-fstack-mtu-enable-config` 与 `native-fstack-mtu-enable-live`
+分组适配 `test_mtu_disabled_port_over_1500_fails`。显式关闭 jumbo 后，每个接口的
+启动及运行时 ceiling 都不超过1500；更低配置仍保留，CLI可覆盖策略。配置检查与
+原版 Linux/真实 TAP 的动态拒绝、继续收发及回收分别执行。这里只新增一项源案例
+适配，五个配置检查及运行扩展不另计为五项上游迁移。

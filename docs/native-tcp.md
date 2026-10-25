@@ -428,6 +428,10 @@ launcher 清除 ambient `KER_NATIVE_VIP_ADDRESSES`，仅传递最终验证过的
 ### MTU 部署上限
 
 `--max-mtu 2000` 或 `[network] max_mtu=2000` 将当前 launcher 的 MTU 上限限制为 2000；默认 9000，合法范围 1280–9000。
+`[dpdk] mtu_enable=0` 或 `--no-mtu-enable` 将所有接口的有效 `max_mtu` 限制到1500，
+同时保留更低的显式上限。该策略也限制运行中的 MTU 变更，附加接口不能扩大它；
+`--mtu-enable` 可覆盖 INI 禁用值。省略策略保持 Ker 已有的启用行为。
+
 `mtu` 大于 `max_mtu` 在设备/库初始化前返回 2；CLI 可分别覆盖 INI 中的请求值或上限。
 此值同时限制启动配置与运行中的 primary interface MTU。large 模式按 max_mtu 预留完整帧容量，
 以支持运行时增长而无需替换仍可能由 PMD 持有的 pool；默认 9000 因而比旧版固定 1500 的 pool 占用更多内存。
