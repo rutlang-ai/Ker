@@ -7,7 +7,7 @@
 #include "runtime/tx-ring.h"
 #include "runtime/worker.h"
 #include <errno.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <netinet/ip.h>
 #include <pthread.h>
 #include <rte_eth_ring.h>

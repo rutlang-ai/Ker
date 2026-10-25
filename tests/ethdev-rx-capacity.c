@@ -5,7 +5,7 @@
 #include "runtime/skb.h"
 #include <errno.h>
 #include <limits.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <rte_eth_ring.h>
 #include <rte_ethdev.h>
 #include <rte_ring.h>
