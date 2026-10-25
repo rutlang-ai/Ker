@@ -57,6 +57,14 @@ def client(command, env):
     return result.stdout
 
 
+def validate_fault_evidence(client_output, native_stats, client_endpoint):
+    match = re.search(r"TCP_INFO total_retrans=(\d+)", client_output)
+    if not match or int(match[1]) == 0:
+        raise RuntimeError(f'{client_endpoint} TCP retransmission was not exercised')
+    if not native_stats['out_of_order_queued']:
+        raise RuntimeError('native TCP out-of-order reassembly was not exercised: ' + str(native_stats))
+
+
 def application_environment(args, launcher, work, env):
     if not args.environment_app:
         return
@@ -1929,10 +1937,6 @@ def inside(args):
                         connect = native + connect
                     with server(listen, port, log, env):
                         received = client(connect, env)
-                        if args.faults and not native_server:
-                            match = re.search(r"TCP_INFO total_retrans=(\d+)", received)
-                            if not match or int(match[1]) == 0:
-                                raise RuntimeError("native TCP retransmission was not exercised")
                     stats = json.loads(stats_path.read_text())
                     if not (stats['tx'] > 0 and stats['rx'] > 0 and stats['outstanding'] == 0):
                         raise RuntimeError('no verified DPDK traffic or incomplete reclamation: ' + str(stats))
@@ -1958,10 +1962,11 @@ def inside(args):
                         if 'ker.io ready port=net_tap0' not in text or 'ker.io stopped status=0' not in text:
                             raise RuntimeError('worker lifecycle log is missing: ' + text)
                     native_stats = stats['native']
+                    if args.faults:
+                        validate_fault_evidence(received, native_stats,
+                            'host' if native_server else 'native')
                     if not native_stats['passive_opens' if native_server else 'active_opens']:
                         raise RuntimeError('native kernel did not record the TCP open')
-                    if args.faults and (not native_stats['retransmitted_segments'] or not native_stats['out_of_order_queued']):
-                        raise RuntimeError('native retransmission/reordering was not exercised: ' + str(native_stats))
                     if args.zero_window and not native_stats['zero_window_probes']:
                         raise RuntimeError('native zero-window probing was not exercised: ' + str(native_stats))
                     print(('native passive' if native_server else 'native active') + ': ' + json.dumps(stats), flush=True)
