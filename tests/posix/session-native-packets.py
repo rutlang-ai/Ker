@@ -1365,14 +1365,6 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
                     'original app did not acknowledge the post-PARKED UDP datagram')
-                deadline=time.monotonic()+10
-                while time.monotonic()<deadline:
-                    try:after=json.loads(stats_path.read_text())
-                    except (OSError,json.JSONDecodeError):after={}
-                    if after.get('handoff_frame'):break
-                    require(runner.poll() is None,'runner exited before exact peer frame drain')
-                    time.sleep(0.005)
-                proof=after.get('handoff_frame') or {}
                 capture_deadline=time.monotonic()+0.5
                 while time.monotonic()<capture_deadline:
                     require(runner.poll() is None,'runner exited during bounded post-G wire observation')
@@ -1383,13 +1375,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 second_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
                 seq1_count=sum(handoff_udp_payload(frame)==first_payload for frame in wire_snapshot)
                 seq2_count=sum(handoff_udp_payload(frame)==second_payload for frame in wire_snapshot)
-                require(proof.get('same_pointer') is True and proof.get('same_bytes') is True and
-                    proof.get('peer_release_once') is True and proof.get('committed',{}).get('frame_hex') and
-                    proof.get('committed',{}).get('object_index')==proof.get('drained',{}).get('object_index') and
-                    proof.get('drained',{}).get('tx_before')==1 and proof.get('drained',{}).get('tx_after')==0 and
-                    proof.get('packet_pool_released_once') is True and
-                    first_wire_frame and seq1_count==1 and seq2_count==0 and not wire_error_snapshot,
-                    'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
+                frame_wire_observation=dict(first_wire_frame=bool(first_wire_frame),seq1_count=seq1_count,
+                    seq2_count=seq2_count,errors=wire_error_snapshot)
             elif mode=='frame-full':
                 require(os.write(handoff_write,b'U')==1,'could not request original LKL UDP full-ring datagram')
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
@@ -1440,6 +1427,23 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
             output, _ = runner.communicate(timeout=20)
             errors = runner_stderr_path.read_bytes() if runner_stderr_path.exists() else b''
             finished = json.loads(stats_path.read_text())
+            if mode=='frame-positive':
+                proof=finished.get('handoff_frame') or {}
+                commits=proof.get('committed_records',[]);releases=proof.get('drained_records',[])
+                second_payload=b'KER-A09-HANDOFF-UDP seq=2\n'
+                u2_commits=[item for item in commits if second_payload.hex() in item.get('frame_hex','')]
+                u2_releases=[item for item in releases if item.get('sequence')==2]
+                same_u2=(len(u2_commits)==len(u2_releases)==1 and all(
+                    u2_commits[0].get(left)==u2_releases[0].get(right) for left,right in (
+                        ('packet_pointer','packet_pointer'),('object_index','object_index'),
+                        ('pool_tag','pool_tag'),('tx_lease_id','lease_id'),('length','length'),('frame_hex','frame_hex'))))
+                require(same_u2 and proof.get('bijection',{}).get('committed')==len(commits)==
+                    proof.get('bijection',{}).get('drained')==len(releases) and
+                    proof.get('final_batch',{}).get('tx_after')==0 and
+                    proof.get('quiescent')=={'tx_count':0,'packet_pool_in_use':0} and
+                    frame_wire_observation.get('first_wire_frame') and frame_wire_observation.get('seq1_count')==1 and
+                    frame_wire_observation.get('seq2_count')==0 and not frame_wire_observation.get('errors'),
+                    'post-PARKED original LKL frame was not drained as the exact same generation-ring object')
             expected_worker_code=(1 if mode=='frame-death-consumer-prepared' else
                 -signal.SIGKILL if mode in ('frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer') else 0)
             if mode in ('frame-death-both-prepared','frame-lost-prepare-reply'):expected_worker_code=-signal.SIGKILL

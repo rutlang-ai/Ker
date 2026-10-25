@@ -350,6 +350,27 @@ int ker_generation_test_packet_object_index(struct ker_generation_rings *r,
         }
     return -EUCLEAN;
 }
+int ker_generation_test_packet_lease_identity(struct ker_generation_rings *r,
+    const struct ker_generation_identity *consumer,const struct rte_mbuf *packet,
+    uint32_t *object_index,uint64_t *lease_id)
+{
+    if(object_index)*object_index=UINT32_MAX;
+    if(lease_id)*lease_id=0;
+    /* Check registry membership before reading any mbuf field. */
+    if(!r||!r->directory||!consumer||!packet||!object_index||!lease_id||
+        !known_pool_object(r,packet))return -EINVAL;
+    if(packet->pool!=r->packet_pool)return -EPROTO;
+    for(uint32_t i=0;i<r->directory->journal_count;i++){
+        struct journal_entry *j=&r->journal[i];
+        if(atomic_load_explicit(&j->state,memory_order_acquire)!=JOURNAL_INFLIGHT||
+            j->packet!=packet||!same_identity(&j->consumer,consumer))continue;
+        uint32_t index;
+        if(ker_generation_test_packet_object_index(r,packet,&index))return -EUCLEAN;
+        if(!j->lease_id)return -EUCLEAN;
+        *object_index=index;*lease_id=j->lease_id;return 0;
+    }
+    return -ESTALE;
+}
 int ker_generation_test_tx_snapshot(struct ker_generation_rings *r,uint16_t port,
     uint16_t queue,uint32_t generation,uint32_t *count,uint32_t *packet_pool_in_use)
 {

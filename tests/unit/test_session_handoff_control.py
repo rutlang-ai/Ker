@@ -330,7 +330,8 @@ class HandoffControlPathTests(unittest.TestCase):
 
     def test_frame_marker_stream_consumes_only_enabled_prefix_in_exact_order(self):
         prepare = ('KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS', {'variants': 12,
-            'datagram_queued': True, 'ring_unchanged': True, 'pool_unchanged': True})
+            'datagram_queued': True, 'ring_unchanged': True, 'pool_unchanged': True,
+            'frame_length': 60, 'frame_hex': '00' * 60})
         cancel = ('KER_SESSION_FRAME_CANCEL_REPLAY_PASS', {'prepared_replay': True,
             'bad_commit_denied': True, 'bad_cancel_denied': True, 'cancel_replay': True,
             'datagram_queued': True, 'pool_restored': True})
@@ -360,6 +361,26 @@ class HandoffControlPathTests(unittest.TestCase):
             ready, _ = reader(records)
             with self.assertRaises(RuntimeError):
                 self.launcher.read_frame_commit_sequence(object(), ready, True)
+
+    def test_frame_commit_release_bijection_binds_exact_lease_and_u2_bytes(self):
+        payload=b'KER-A09-HANDOFF-UDP seq=2\n'
+        ip=bytearray(20);ip[0]=0x45;ip[2:4]=(20+8+len(payload)).to_bytes(2,'big')
+        ip[8]=64;ip[9]=17;ip[12:16]=bytes((198,18,0,2));ip[16:20]=bytes((198,18,0,1))
+        udp=bytes.fromhex('afc8afc9')+(8+len(payload)).to_bytes(2,'big')+b'\0\0'
+        frame=bytes.fromhex('024b45520001024b455200020800')+bytes(ip)+udp+payload
+        commit=dict(port=0,queue=0,generation=0,length=len(frame),object_index=7,
+            pool_tag=91,tx_lease_id=123,packet_pointer='0xabc',frame_hex=frame.hex())
+        release=dict(sequence=2,consumer_generation=1,object_index=7,lease_id=123,
+            pool_tag=91,packet_pointer='0xabc',length=len(frame),frame_hex=frame.hex())
+        result=self.launcher.validate_frame_commit_drain_bijection([commit],[release],payload)
+        self.assertEqual(result['committed'],1);self.assertEqual(result['drained'],1)
+        for bad in ({**release,'lease_id':124},{**release,'packet_pointer':'0xabd'},
+                    {**release,'sequence':0},{**release,'frame_hex':(frame+b'!').hex()}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(RuntimeError):
+                    self.launcher.validate_frame_commit_drain_bijection([commit],[bad],payload)
+        with self.assertRaises(RuntimeError):
+            self.launcher.validate_frame_commit_drain_bijection([commit,commit],[release],payload)
 
     def test_owner_clear_marker_requires_exact_pid_and_schema(self):
         validate = self.launcher.validate_parked_owner_cleared

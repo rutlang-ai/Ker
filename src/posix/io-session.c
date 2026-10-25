@@ -747,6 +747,56 @@ static int generation_frame_drain_control(char command, void *opaque)
             (unsigned long long)counters.packet_full);fflush(stdout);return 1;
     }
 #endif
+#ifdef KER_SESSION_TEST_HOOKS
+    /* Generic frame-positive observer: keep this opt-in path separate from
+     * the profile-specific full-ring and crash-window controls below. */
+    if(getenv("KER_SESSION_TEST_FRAME_GENERIC_DRAIN")) {
+        if(command=='Q') {
+            uint32_t count=0,in_use=0;
+            if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&count,&in_use)||count||in_use)
+                return -EUCLEAN;
+            printf("KER_SESSION_FRAME_QUIESCENT {\"tx_count\":0,\"packet_pool_in_use\":0}\n");
+            fflush(stdout);return 0;
+        }
+        if(command!='G')return 0;
+        uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
+        if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||
+            tx_before>KER_GENERATION_RING_CAPACITY)return -EUCLEAN;
+        unsigned released=0;
+        for(uint32_t n=0;n<KER_GENERATION_RING_CAPACITY;n++) {
+            struct rte_mbuf *packet=NULL;
+            int dequeue=ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&packet);
+            if(dequeue==0)break;
+            if(dequeue!=1||!packet||packet->nb_segs!=1||rte_mbuf_refcnt_read(packet)!=1||
+                (packet->ol_flags&RTE_MBUF_F_EXTERNAL)||packet->pkt_len<14||packet->pkt_len>1518||
+                packet->data_len!=packet->pkt_len)return -EUCLEAN;
+            const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
+            uint32_t object_index=UINT32_MAX;uint64_t lease_id=0;
+            if(ker_generation_test_packet_lease_identity(context->rings,&context->identity,packet,
+                    &object_index,&lease_id))return -EUCLEAN;
+            char frame_hex[1518*2+1];static const char hex[]="0123456789abcdef";
+            unsigned length=packet->pkt_len;
+            for(unsigned i=0;i<length;i++) {
+                frame_hex[i*2]=hex[bytes[i]>>4];frame_hex[i*2+1]=hex[bytes[i]&15];
+            }
+            frame_hex[length*2]='\0';
+            uintptr_t pointer=(uintptr_t)packet;uint64_t tag=ker_generation_packet_pool_tag(context->rings);
+            bool seq2=false;static const char expected[]="KER-A09-HANDOFF-UDP seq=2\n";
+            if(length>=42+sizeof(expected)-1&&bytes[12]==0x08&&bytes[13]==0x00&&bytes[14]==0x45&&
+                bytes[23]==17&&!memcmp(bytes+42,expected,sizeof(expected)-1))seq2=true;
+            if(!tag||ker_generation_packet_release(context->rings,&context->identity,packet))return -EUCLEAN;
+            printf("KER_SESSION_FRAME_DRAINED {\"sequence\":%u,\"consumer_generation\":%u,\"object_index\":%u,\"lease_id\":%llu,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"frame_hex\":\"%s\"}\n",
+                seq2?2U:0U,context->identity.generation,object_index,(unsigned long long)lease_id,
+                (unsigned long long)tag,(void *)pointer,length,frame_hex);
+            fflush(stdout);released++;
+        }
+        if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||
+            tx_before>released+tx_after)return -EUCLEAN;
+        printf("KER_SESSION_FRAME_BATCH {\"drained\":%u,\"tx_before\":%u,\"tx_after\":%u,\"pool_in_use_before\":%u,\"pool_in_use_after\":%u}\n",
+            released,tx_before,tx_after,pool_before,pool_after);
+        fflush(stdout);return 1;
+    }
+#endif
     if(command!='G')return 0;
 #ifdef KER_SESSION_TEST_HOOKS
         if(getenv("KER_SESSION_TEST_FRAME_DEATH_EMPTY")) {
@@ -3385,7 +3435,16 @@ static int frame_negative_prepares_leave_datagram(int packet_fd,int fd,int resid
         ssize_t n=recvmsg(packet_fd,&msg,MSG_PEEK|MSG_TRUNC|MSG_DONTWAIT);
         if(n!=(ssize_t)peek_length||memcmp(observed,peek_bytes,peek_length))return -EUCLEAN;
     }
-    printf("KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS {\"variants\":12,\"datagram_queued\":true,\"ring_unchanged\":true,\"pool_unchanged\":true}\n");
+    size_t frame_length=peek_length-sizeof(struct ker_packet_header);
+    const uint8_t *frame=peek_bytes+sizeof(struct ker_packet_header);
+    char frame_hex[1518*2+1];static const char hex[]="0123456789abcdef";
+    if(frame_length>1518)return -EMSGSIZE;
+    for(size_t i=0;i<frame_length;i++){
+        frame_hex[i*2]=hex[frame[i]>>4];frame_hex[i*2+1]=hex[frame[i]&15];
+    }
+    frame_hex[frame_length*2]='\0';
+    printf("KER_SESSION_FRAME_NEGATIVE_PREPARES_PASS {\"variants\":12,\"datagram_queued\":true,\"ring_unchanged\":true,\"pool_unchanged\":true,\"frame_length\":%zu,\"frame_hex\":\"%s\"}\n",
+        frame_length,frame_hex);
     fflush(stdout);return 0;
 }
 static int frame_prepare_cancel_replay(int packet_fd,int fd,int resident,
@@ -3424,6 +3483,9 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
     struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings)
 {
+#ifdef KER_SESSION_TEST_HOOKS
+    static bool frame_negative_prefix_done;
+#endif
     if(!rings||!generation_rings_enabled||!identity||!capability)return -EOPNOTSUPP;
     uint8_t peek_bytes[sizeof(struct ker_packet_header)+1518];
     struct iovec peek_iov={.iov_base=peek_bytes,.iov_len=sizeof(peek_bytes)};
@@ -3448,13 +3510,14 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     }
 #endif
 #ifdef KER_SESSION_TEST_HOOKS
-    if(getenv("KER_SESSION_TEST_FRAME_NEGATIVES")) {
+    if(getenv("KER_SESSION_TEST_FRAME_NEGATIVES")&&!frame_negative_prefix_done) {
         int negatives=frame_negative_prepares_leave_datagram(packet_fd,fd,resident,identity,sequence,
             capability,rings,peek_bytes,(size_t)peek);
         if(negatives)return negatives;
         int canceled=frame_prepare_cancel_replay(packet_fd,fd,resident,identity,sequence,
             capability,heartbeat,rings,peek_bytes,(size_t)peek,tag);
         if(canceled)return canceled;
+        frame_negative_prefix_done=true;
     }
 #endif
 #ifdef KER_SESSION_TEST_HOOKS
@@ -3600,9 +3663,10 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
 #endif
         return result;
     }
-    printf("KER_SESSION_FRAME_COMMITTED {\"port\":%u,\"queue\":%u,\"generation\":%llu,\"length\":%u,\"object_index\":%u,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"frame_hex\":\"%s\"}\n",
+    printf("KER_SESSION_FRAME_COMMITTED {\"port\":%u,\"queue\":%u,\"generation\":%llu,\"length\":%u,\"object_index\":%u,\"pool_tag\":%llu,\"tx_lease_id\":%llu,\"packet_pointer\":\"%p\",\"frame_hex\":\"%s\"}\n",
         prepared.packet_port,prepared.packet_queue,(unsigned long long)identity->generation,frame_length,
-        prepared.packet_object_index,(unsigned long long)tag,packet_pointer_snapshot,frame_hex); fflush(stdout);
+        prepared.packet_object_index,(unsigned long long)tag,(unsigned long long)prepared.tx_lease_id,
+        packet_pointer_snapshot,frame_hex); fflush(stdout);
     return 1;
 }
 

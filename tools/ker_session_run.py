@@ -112,10 +112,15 @@ def validate_frame_committed_record(record, payload):
     if (not isinstance(record, dict) or record.get('queue') != 0 or record.get('generation') != 0 or
             not isinstance(record.get('object_index'), int) or record.get('object_index') < 0 or
             not isinstance(record.get('pool_tag'), int) or record.get('pool_tag') <= 0 or
+            type(record.get('tx_lease_id')) is not int or record['tx_lease_id'] <= 0 or
             not isinstance(record.get('packet_pointer'), str) or not record['packet_pointer'] or
             not isinstance(record.get('length'), int) or record.get('length') < 14 or
             not isinstance(record.get('frame_hex'), str) or payload.hex() not in record['frame_hex']):
         raise RuntimeError('parked original LKL endpoint did not commit the exact second UDP frame')
+    try: frame=bytes.fromhex(record['frame_hex'])
+    except ValueError as error: raise RuntimeError('producer committed malformed frame bytes') from error
+    if len(frame)!=record['length']:
+        raise RuntimeError('producer committed frame length does not match its bytes')
     return record
 
 
@@ -155,12 +160,16 @@ def validate_parked_owner_cleared(record, worker_pid):
 
 
 def validate_frame_negative_markers(prepare, cancel):
-    prepare_fields = {'variants', 'datagram_queued', 'ring_unchanged', 'pool_unchanged'}
+    prepare_fields = {'variants', 'datagram_queued', 'ring_unchanged', 'pool_unchanged', 'frame_length', 'frame_hex'}
     if (not isinstance(prepare, dict) or set(prepare) != prepare_fields or
             type(prepare.get('variants')) is not int or prepare['variants'] != 12 or
             any(prepare.get(field) is not True for field in
                 ('datagram_queued', 'ring_unchanged', 'pool_unchanged'))):
         raise RuntimeError('frame-negative PREPARES summary did not match the exact expected result: ' + repr(prepare))
+    try: frame=bytes.fromhex(prepare['frame_hex'])
+    except (TypeError,ValueError) as error: raise RuntimeError('negative PREPARE bytes are malformed') from error
+    if type(prepare['frame_length']) is not int or prepare['frame_length']!=len(frame):
+        raise RuntimeError('negative PREPARE frame length mismatch')
     cancel_fields = {'prepared_replay', 'bad_commit_denied', 'bad_cancel_denied',
         'cancel_replay', 'datagram_queued', 'pool_restored'}
     if (not isinstance(cancel, dict) or set(cancel) != cancel_fields or
@@ -182,6 +191,73 @@ def read_frame_commit_sequence(worker, ready, include_negatives):
     negative_prepares, cancel_replay = read_frame_negative_prefix(worker, ready, include_negatives)
     committed = ready('KER_SESSION_FRAME_COMMITTED', process=worker)
     return negative_prepares, cancel_replay, committed
+
+
+def valid_frame_pointer(value):
+    return (isinstance(value, str) and value.startswith('0x') and len(value) > 2 and
+        value[2] in '123456789abcdef' and all(char in '0123456789abcdef' for char in value[2:]))
+
+
+def validate_frame_record_pair(commit, release):
+    for commit_field, release_field in (
+            ('packet_pointer', 'packet_pointer'), ('length', 'length'), ('frame_hex', 'frame_hex'),
+            ('pool_tag', 'pool_tag'), ('object_index', 'object_index'), ('tx_lease_id', 'lease_id')):
+        if commit.get(commit_field) != release.get(release_field):
+            raise RuntimeError('peer TX release changed committed packet ' + commit_field)
+
+
+def frame_matches_expected_u2(frame, expected_payload):
+    return (len(frame)==14+20+8+len(expected_payload) and
+        frame[:6]==bytes.fromhex('024b45520001') and frame[6:12]==bytes.fromhex('024b45520002') and
+        frame[12:14]==b'\x08\x00' and frame[14]==0x45 and frame[23]==17 and
+        not (int.from_bytes(frame[20:22],'big')&0x3fff) and
+        frame[26:30]==bytes((198,18,0,2)) and frame[30:34]==bytes((198,18,0,1)) and
+        frame[34:38]==bytes.fromhex('afc8afc9') and
+        int.from_bytes(frame[16:18],'big')==20+8+len(expected_payload) and
+        int.from_bytes(frame[38:40],'big')==8+len(expected_payload) and frame[42:]==expected_payload)
+
+
+def validate_frame_commit_drain_bijection(committed, drained, expected_payload):
+    """Bind each committed producer lease to one exact consumer release."""
+    def key(record, lease_name):
+        values = (record.get('pool_tag'), record.get('object_index'), record.get(lease_name))
+        if (type(values[0]) is not int or values[0] <= 0 or type(values[1]) is not int or
+                values[1] < 0 or type(values[2]) is not int or values[2] <= 0):
+            raise RuntimeError('frame ownership record lacks pool/object/lease identity')
+        return values
+
+    commits = {}
+    for record in committed:
+        identity = key(record, 'tx_lease_id')
+        if identity in commits: raise RuntimeError('duplicate producer frame lease')
+        commits[identity] = record
+    releases = {}
+    for record in drained:
+        identity = key(record, 'lease_id')
+        if identity in releases: raise RuntimeError('duplicate consumer frame release')
+        releases[identity] = record
+    if set(commits) != set(releases):
+        raise RuntimeError('producer commit and peer release sets are not identical')
+    u2 = []
+    for identity, commit in commits.items():
+        release = releases[identity]
+        if (commit.get('generation') != 0 or commit.get('queue') != 0 or
+                release.get('consumer_generation') != 1):
+            raise RuntimeError('frame lease came from an unexpected queue or generation')
+        validate_frame_record_pair(commit, release)
+        try: frame = bytes.fromhex(commit['frame_hex'])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError('committed frame has invalid hex') from error
+        if len(frame) != commit.get('length'):
+            raise RuntimeError('committed frame length differs from captured bytes')
+        if frame_matches_expected_u2(frame,expected_payload):
+            if release.get('sequence') != 2: raise RuntimeError('U2 release has wrong sequence label')
+            u2.append(identity)
+        elif release.get('sequence') != 0:
+            raise RuntimeError('background frame was mislabeled as U2')
+    if len(u2) != 1:
+        raise RuntimeError('expected exactly one committed and released U2 frame')
+    return dict(committed=len(commits), drained=len(releases), u2_identity=list(u2[0]))
 
 
 def validate_handoff_peer_cleanup(metrics, peer_present, peer_code, peer_packet_stats):
@@ -239,6 +315,9 @@ def run_session(args, api):
     handoff_udp_ready = False
     frame_death_complete = False
     frame_death_worker_expected_code = None
+    frame_committed_records = []
+    frame_drained_records = []
+    frame_last_drain = 0.0
     peer_control_w = peer_wire_fd = -1
     peer_packet_worker = peer_packet_app = peer_mtu_worker = peer_mtu_app = None
     owned = {args.wire_fd}
@@ -257,6 +336,29 @@ def run_session(args, api):
         nonlocal received_signal
         if received_signal is None:
             received_signal = signum
+
+    def capture_frame_owner_line(raw):
+        if handoff_mode != 'frame-positive' or not raw.startswith(b'KER_SESSION_FRAME_COMMITTED '):
+            return False
+        record = json.loads(raw.split(b' ', 1)[1])
+        fields = {'port','queue','generation','length','object_index','pool_tag','tx_lease_id',
+            'packet_pointer','frame_hex'}
+        if (set(record) != fields or type(record.get('port')) is not int or record['port'] != 0 or
+                type(record.get('queue')) is not int or record['queue'] != 0 or
+                type(record.get('generation')) is not int or record['generation'] != 0 or
+                type(record.get('length')) is not int or not 14 <= record['length'] <= 1518 or
+                type(record.get('object_index')) is not int or record['object_index'] < 0 or
+                type(record.get('pool_tag')) is not int or record['pool_tag'] <= 0 or
+                type(record.get('tx_lease_id')) is not int or record['tx_lease_id'] <= 0 or
+                not valid_frame_pointer(record.get('packet_pointer'))):
+            raise RuntimeError('producer commit lacks exact frame object identity')
+        try: frame = bytes.fromhex(record['frame_hex'])
+        except (TypeError, ValueError) as error: raise RuntimeError('producer commit frame hex is invalid') from error
+        if len(frame) != record['length']:
+            raise RuntimeError('producer commit frame length mismatch')
+        frame_committed_records.append(record)
+        print(raw.decode(errors='replace').rstrip(),file=sys.stderr,flush=True)
+        return True
 
     def publish():
         if args.stats is None: return
@@ -291,18 +393,21 @@ def run_session(args, api):
 
     def ready(*prefixes, process=None):
         process = worker if process is None else process
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            if not selector.select(20):
-                raise RuntimeError('secondary packet startup timed out')
-        line = process.stdout.readline()
-        prefix = next((value for value in prefixes if line.startswith(value.encode() + b' ')), None)
-        if prefix is None:
-            raise RuntimeError('secondary packet startup failed: ' + line.decode(errors='replace'))
-        value = json.loads(line[len(prefix) + 1:])
-        if prefix != 'KER_SESSION_PMD_STANDBY' or 'standby' not in metrics:
-            print(line.decode().rstrip(), file=sys.stderr, flush=True)
-        return (prefix, value) if len(prefixes) > 1 else value
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                if not selector.select(max(0, deadline-time.monotonic())): break
+            line = process.stdout.readline()
+            prefix = next((value for value in prefixes if line.startswith(value.encode() + b' ')), None)
+            if prefix is None:
+                if process is worker and capture_frame_owner_line(line): continue
+                raise RuntimeError('secondary packet startup failed: ' + line.decode(errors='replace'))
+            value = json.loads(line[len(prefix) + 1:])
+            if prefix != 'KER_SESSION_PMD_STANDBY' or 'standby' not in metrics:
+                print(line.decode().rstrip(), file=sys.stderr, flush=True)
+            return (prefix, value) if len(prefixes) > 1 else value
+        raise RuntimeError('secondary packet startup timed out')
 
     def wait_marker(process, prefix, timeout=10):
         deadline = time.monotonic() + timeout
@@ -317,8 +422,79 @@ def run_session(args, api):
             if line.startswith(prefix.encode() + b' '):
                 print(line.decode().rstrip(), file=sys.stderr, flush=True)
                 return json.loads(line[len(prefix)+1:])
+            if process is worker and capture_frame_owner_line(line): continue
             print(line.decode().rstrip(), file=sys.stderr, flush=True)
         raise RuntimeError('timed out waiting for ' + prefix)
+
+    def drain_frame_owner_output(timeout=0):
+        if handoff_mode != 'frame-positive' or worker is None or worker.stdout is None:
+            return
+        deadline = time.monotonic() + timeout
+        first = True
+        while True:
+            wait = max(0, deadline-time.monotonic()) if first else 0
+            first = False
+            with selectors.DefaultSelector() as selector:
+                selector.register(worker.stdout, selectors.EVENT_READ)
+                if not selector.select(wait): return
+            raw = worker.stdout.readline()
+            if not raw: return
+            if not capture_frame_owner_line(raw):
+                print(raw.decode(errors='replace').rstrip(), file=sys.stderr, flush=True)
+
+    def wait_for_frame_commit(payload, timeout=10):
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            for record in frame_committed_records:
+                if payload.hex() in record.get('frame_hex',''):
+                    validate_frame_committed_record(record,payload)
+                    if type(record.get('tx_lease_id')) is not int or record['tx_lease_id']<=0:
+                        raise RuntimeError('producer commit omitted its exact TX lease')
+                    return record
+            with selectors.DefaultSelector() as selector:
+                selector.register(worker.stdout,selectors.EVENT_READ)
+                if not selector.select(max(0,deadline-time.monotonic())): break
+            raw=worker.stdout.readline()
+            if not raw: raise RuntimeError('producer exited before committing original U2')
+            if not capture_frame_owner_line(raw):
+                print(raw.decode(errors='replace').rstrip(),file=sys.stderr,flush=True)
+        raise RuntimeError('timed out waiting for original U2 frame commit')
+
+    def request_frame_batch():
+        if peer_control_w < 0 or peer_worker is None or peer_worker.poll() is not None:
+            raise RuntimeError('frame consumer is unavailable')
+        if os.write(peer_control_w, b'G') != 1: raise RuntimeError('short frame drain request')
+        records=[]; deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            with selectors.DefaultSelector() as selector:
+                selector.register(peer_worker.stdout,selectors.EVENT_READ)
+                if not selector.select(max(0,deadline-time.monotonic())): break
+            raw=peer_worker.stdout.readline()
+            if not raw: raise RuntimeError('frame peer exited before batch completion')
+            if raw.startswith(b'KER_SESSION_FRAME_DRAINED '):
+                print(raw.decode(errors='replace').rstrip(),file=sys.stderr,flush=True)
+                record=json.loads(raw.split(b' ',1)[1])
+                fields={'sequence','consumer_generation','object_index','lease_id','pool_tag','packet_pointer','length','frame_hex'}
+                if (set(record)!=fields or type(record.get('sequence')) is not int or record['sequence'] not in (0,2) or
+                    record.get('consumer_generation')!=1 or type(record.get('object_index')) is not int or record['object_index']<0 or
+                    type(record.get('lease_id')) is not int or record['lease_id']<=0 or
+                    type(record.get('pool_tag')) is not int or record['pool_tag']<=0 or
+                    not valid_frame_pointer(record.get('packet_pointer')) or type(record.get('length')) is not int or
+                    not 14<=record['length']<=1518): raise RuntimeError('peer release record has invalid identity')
+                try: frame=bytes.fromhex(record['frame_hex'])
+                except (TypeError,ValueError) as error: raise RuntimeError('peer release frame is malformed') from error
+                if len(frame)!=record['length']: raise RuntimeError('peer release frame length mismatch')
+                records.append(record); continue
+            if raw.startswith(b'KER_SESSION_FRAME_BATCH '):
+                print(raw.decode(errors='replace').rstrip(),file=sys.stderr,flush=True)
+                batch=json.loads(raw.split(b' ',1)[1])
+                fields={'drained','tx_before','tx_after','pool_in_use_before','pool_in_use_after'}
+                if (set(batch)!=fields or any(type(batch.get(k)) is not int or batch[k]<0 for k in fields) or
+                    batch['drained']!=len(records) or batch['tx_before']>64 or batch['tx_after']>64):
+                    raise RuntimeError('peer batch counters do not match release records')
+                return records,batch
+            raise RuntimeError('unexpected peer frame output: '+raw.decode(errors='replace').rstrip())
+        raise RuntimeError('timed out waiting for peer frame batch')
 
     def start_handoff_peer(ticket):
         nonlocal peer_worker, peer_control_w, peer_packet_worker, peer_packet_app, peer_worker_pidfd
@@ -334,6 +510,7 @@ def run_session(args, api):
         os.set_blocking(peer_control_w, False)
         peer_environment = os.environ.copy()
         peer_environment.pop('KER_SESSION_TEST_HANDOFF_PENDING_HB', None)
+        peer_environment.pop('KER_SESSION_TEST_FRAME_GENERIC_DRAIN', None)
         peer_arguments = [str(worker_path), '--role', 'secondary', '--paired-pmd', '--standby',
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', '1', '--process', str(args.process), '--packet-fd', str(peer_packet_worker.fileno()),
@@ -342,6 +519,8 @@ def run_session(args, api):
             peer_arguments.append('--test-generation-frame-drain')
         if os.environ.get('KER_SESSION_TEST_FRAME_DRAIN_FULL') == '1':
             peer_environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
+        if handoff_mode == 'frame-positive':
+            peer_environment['KER_SESSION_TEST_FRAME_GENERIC_DRAIN']='1'
         if os.environ.get('KER_SESSION_TEST_FRAME_DEATH_EMPTY') == '1':
             peer_environment['KER_SESSION_TEST_FRAME_DEATH_EMPTY']='1'
         if os.environ.get('KER_SESSION_TEST_FRAME_DEATH_SNAPSHOT') == '1':
@@ -1086,11 +1265,30 @@ def run_session(args, api):
                 metrics['handoff_frame_full']=dict(fill=metrics['frame_full_fill'],
                     commit_cancel=full,drain=drained_full)
                 publish();return
-            _, _, committed = read_frame_commit_sequence(worker, ready, False)
+            if handoff_mode == 'frame-positive':
+                committed = wait_for_frame_commit(payload)
+                if include_negatives and (not frame_committed_records or
+                        frame_committed_records[0].get('frame_hex') != negative_prepares.get('frame_hex') or
+                        frame_committed_records[0].get('length') != negative_prepares.get('frame_length')):
+                    raise RuntimeError('first committed frame differs from the frame preserved by negative PREPARE checks')
+            else:
+                _, _, committed = read_frame_commit_sequence(worker, ready, False)
             if include_negatives and (negative_prepares['variants'] != 12 or
                     not cancel_replay['cancel_replay']):
                 raise RuntimeError('frame test-only negative controls did not complete before COMMIT')
             validate_frame_committed_record(committed,payload)
+            if handoff_mode == 'frame-positive':
+                records,batch=request_frame_batch()
+                matching=[record for record in records if record.get('sequence')==2]
+                if len(matching)!=1:
+                    raise RuntimeError('initial peer batch did not release exactly one U2 frame')
+                validate_frame_record_pair(committed,matching[0])
+                frame_drained_records.extend(records)
+                if batch['tx_before']>batch['drained']+batch['tx_after']:
+                    raise RuntimeError('initial peer batch released more objects than were queued')
+                metrics['handoff_frame']=dict(committed_records=list(frame_committed_records),
+                    drained_records=list(frame_drained_records),initial_batch=batch)
+                frame_last_drain=time.monotonic();publish()
             if handoff_mode=='frame-death-producer-active-consumer':
                 if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
                     raise RuntimeError('could not start live consumer dequeue before producer death')
@@ -1142,23 +1340,24 @@ def run_session(args, api):
                 frame_death_complete=True
                 frame_death_worker_expected_code=-signal.SIGKILL
                 metrics['stage']='handoff-complete';publish();return
-            if peer_control_w < 0 or os.write(peer_control_w, b'G') != 1:
-                raise RuntimeError('could not request exact admitted-peer TX journal drain')
-            drained = ready('KER_SESSION_FRAME_DRAINED', process=peer_worker)
-            for field in ('object_index', 'pool_tag', 'packet_pointer', 'length', 'frame_hex'):
-                if drained.get(field) != committed.get(field):
-                    raise RuntimeError('peer TX drain changed committed packet ' + field)
-            if drained.get('sequence') != 2:
-                raise RuntimeError('peer TX drain returned the wrong original app datagram')
-            if (drained.get('tx_before') != 1 or drained.get('tx_after') != 0 or
-                not isinstance(drained.get('pool_in_use_before'), int) or
-                drained.get('pool_in_use_after') + 1 != drained.get('pool_in_use_before')):
-                raise RuntimeError('peer TX drain did not report the exact one-object ring/pool release')
-            metrics['handoff_frame'] = dict(committed=committed, drained=drained,
-                same_pointer=True, same_bytes=True, peer_release_once=True,
-                ring_empty_after=drained['tx_after']==0,
-                packet_pool_released_once=(drained['pool_in_use_before']-drained['pool_in_use_after']==1))
-            publish()
+            if handoff_mode != 'frame-positive':
+                if peer_control_w < 0 or os.write(peer_control_w, b'G') != 1:
+                    raise RuntimeError('could not request exact admitted-peer TX journal drain')
+                drained = ready('KER_SESSION_FRAME_DRAINED', process=peer_worker)
+                for field in ('object_index', 'pool_tag', 'packet_pointer', 'length', 'frame_hex'):
+                    if drained.get(field) != committed.get(field):
+                        raise RuntimeError('peer TX drain changed committed packet ' + field)
+                if drained.get('sequence') != 2:
+                    raise RuntimeError('peer TX drain returned the wrong original app datagram')
+                if (drained.get('tx_before') != 1 or drained.get('tx_after') != 0 or
+                    not isinstance(drained.get('pool_in_use_before'), int) or
+                    drained.get('pool_in_use_after') + 1 != drained.get('pool_in_use_before')):
+                    raise RuntimeError('peer TX drain did not report the exact one-object ring/pool release')
+                metrics['handoff_frame'] = dict(committed=committed, drained=drained,
+                    same_pointer=True, same_bytes=True, peer_release_once=True,
+                    ring_empty_after=drained['tx_after']==0,
+                    packet_pool_released_once=(drained['pool_in_use_before']-drained['pool_in_use_after']==1))
+                publish()
 
         while app.poll() is None:
             if received_signal is not None:
@@ -1187,6 +1386,15 @@ def run_session(args, api):
                         close(handoff_fd); handoff_fd = None
                         raise RuntimeError('invalid live-handoff fixture trigger')
             drain_startup()
+            if handoff_mode == 'frame-positive':
+                drain_frame_owner_output(0)
+                if (handoff_udp_sequence == 2 and peer_worker is not None and peer_worker.poll() is None and
+                        time.monotonic()-frame_last_drain >= 0.025):
+                    records,batch=request_frame_batch()
+                    frame_drained_records.extend(records)
+                    metrics['handoff_frame']['drained_records']=list(frame_drained_records)
+                    metrics['handoff_frame'].setdefault('batches',[]).append(batch)
+                    frame_last_drain=time.monotonic();publish()
             if b'KER_NATIVE_READY\n' not in startup and time.monotonic() >= deadline:
                 raise RuntimeError('native Linux startup timed out')
             if b'KER_NATIVE_STOPPING\n' in startup:
@@ -1217,6 +1425,24 @@ def run_session(args, api):
         for line in output.decode().splitlines():
             if line.startswith('KER_SESSION_PACKET_DONE '):
                 packet_stats = json.loads(line.removeprefix('KER_SESSION_PACKET_DONE '))
+            elif line.startswith('KER_SESSION_FRAME_COMMITTED '):
+                capture_frame_owner_line((line+'\n').encode())
+        if handoff_mode == 'frame-positive' and peer_worker is not None:
+            records,final_batch=request_frame_batch()
+            frame_drained_records.extend(records)
+            if final_batch['tx_after'] != 0:
+                raise RuntimeError('final peer frame batch left queued TX objects')
+            if os.write(peer_control_w,b'Q')!=1:
+                raise RuntimeError('could not request final peer frame census')
+            quiescent=ready('KER_SESSION_FRAME_QUIESCENT',process=peer_worker)
+            if quiescent != {'tx_count':0,'packet_pool_in_use':0}:
+                raise RuntimeError('peer did not report exact empty TX/pool state')
+            bijection=validate_frame_commit_drain_bijection(frame_committed_records,
+                frame_drained_records,b'KER-A09-HANDOFF-UDP seq=2\n')
+            metrics['handoff_frame'].update(committed_records=list(frame_committed_records),
+                drained_records=list(frame_drained_records),final_batch=final_batch,
+                quiescent=quiescent,bijection=bijection)
+            close(peer_control_w);peer_control_w=-1;publish()
         peer_packet_stats = None
         peer_code = None
         if peer_worker is not None:

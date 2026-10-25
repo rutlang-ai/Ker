@@ -99,6 +99,15 @@ static int packet_lease_core_test(struct ker_generation_rings *rings,
         struct rte_mbuf *packet=NULL;
         if(ker_generation_tx_dequeue_peer(rings,consumer,0,1,&packet)!=1||packet!=packets[i]||
             packet->pkt_len!=14||packet->data_len!=14)return -1;
+        uint32_t observed_index=UINT32_MAX;uint64_t observed_lease=0;
+        if(ker_generation_test_packet_lease_identity(rings,consumer,packet,&observed_index,&observed_lease)||
+            observed_index!=indices[i]||observed_lease!=leases[i])return -1;
+        if(i==0){
+            struct ker_generation_identity wrong_consumer=*consumer;
+            wrong_consumer.generation^=1;
+            if(ker_generation_test_packet_lease_identity(rings,&wrong_consumer,packet,
+                &observed_index,&observed_lease)!=-ESTALE)return -1;
+        }
         const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
         for(uint32_t k=0;k<14;k++)if(bytes[k]!=(uint8_t)(0x80U+i+k))return -1;
         uint32_t pool_before=ker_generation_packet_pool_in_use(rings);

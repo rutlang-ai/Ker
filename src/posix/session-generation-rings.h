@@ -135,6 +135,9 @@ int ker_generation_packet_release(struct ker_generation_rings *rings,
 uint32_t ker_generation_packet_pool_in_use(struct ker_generation_rings *rings);
 int ker_generation_test_packet_object_index(struct ker_generation_rings *rings,
     const struct rte_mbuf *packet,uint32_t *object_index);
+int ker_generation_test_packet_lease_identity(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *consumer,const struct rte_mbuf *packet,
+    uint32_t *object_index,uint64_t *lease_id);
 int ker_generation_test_tx_snapshot(struct ker_generation_rings *rings,uint16_t port,
     uint16_t queue,uint32_t generation,uint32_t *count,uint32_t *packet_pool_in_use);
 int ker_generation_test_counters_snapshot(struct ker_generation_rings *rings,uint16_t port,
