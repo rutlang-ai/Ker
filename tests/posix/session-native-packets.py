@@ -541,7 +541,35 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
 
 
 def _is_fatal_handoff_profile(mode):
-    return mode not in ('positive', 'frame-positive')
+    if mode in FATAL_HANDOFF_PROFILES:
+        return True
+    if mode in NONFATAL_HANDOFF_PROFILES:
+        return False
+    raise ValueError(f'unknown handoff profile classification: {mode!r}')
+
+
+FATAL_HANDOFF_PROFILES = frozenset((
+    'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    'bad-prepare-error', 'bad-prepare-error-token', 'bad-prepare-error-capability',
+    'bad-prepare-error-tx-lease', 'bad-prepare-error-rx-lease',
+    'bad-prepare-error-sequence', 'bad-prepare-success'))
+NONFATAL_HANDOFF_PROFILES = frozenset((
+    'positive', 'frame-positive', 'frame-full', 'frame-death-prepared',
+    'frame-death-queued', 'frame-death-producer-active-consumer',
+    'frame-death-consumer-prepared', 'frame-death-consumer-writing',
+    'frame-death-both-prepared', 'frame-lost-prepare-reply',
+    'handoff-control-hup', 'prepare-enoent', 'prepare-ebusy', 'prepare-eperm'))
+
+
+def _stop_timed_out_runner(process, timeout_error, wait_timeout=5):
+    """Stop only the runner process, retain captured bytes, and close our pipe."""
+    output = timeout_error.output or b''
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=wait_timeout)
+    if process.stdout is not None:
+        process.stdout.close()
+    return output
 
 
 def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
@@ -1017,7 +1045,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 try:
                     runner_output, _ = runner.communicate(timeout=20)
                 except subprocess.TimeoutExpired as error:
-                    runner.kill(); runner_output, _ = runner.communicate()
+                    runner_output = _stop_timed_out_runner(runner, error)
                     raise RuntimeError('fatal handoff fixture did not terminate: ' +
                         (runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else '')) from error
                 runner_text = runner_stderr_path.read_text(errors='replace') if runner_stderr_path.exists() else ''

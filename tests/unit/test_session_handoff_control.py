@@ -14,6 +14,7 @@ from pathlib import Path
 import select
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import types
@@ -23,6 +24,10 @@ import unittest
 
 SOURCE = Path(__file__).resolve().parents[2] / 'tools' / 'ker_session_run.py'
 PROFILE_SOURCE = Path(__file__).resolve().parents[1] / 'posix' / 'session-native-packets.py'
+sys.path.insert(0, str(PROFILE_SOURCE.parent))
+PROFILE_SPEC = importlib.util.spec_from_file_location('session_native_packets_capture_test', PROFILE_SOURCE)
+PROFILE = importlib.util.module_from_spec(PROFILE_SPEC)
+PROFILE_SPEC.loader.exec_module(PROFILE)
 
 
 def nested_code(code, name):
@@ -445,10 +450,14 @@ class HandoffControlPathTests(unittest.TestCase):
 
     def test_frame_positive_uses_success_classification_not_fatal_branch(self):
         tree = ast.parse(PROFILE_SOURCE.read_text())
-        helper = next(node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == '_is_fatal_handoff_profile')
+        wanted = {'_is_fatal_handoff_profile', 'FATAL_HANDOFF_PROFILES',
+            'NONFATAL_HANDOFF_PROFILES'}
+        definitions = [node for node in tree.body if
+            (isinstance(node, ast.FunctionDef) and node.name in wanted) or
+            (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id in wanted for target in node.targets))]
         namespace = {}
-        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(PROFILE_SOURCE), 'exec'), namespace)
+        exec(compile(ast.Module(body=definitions, type_ignores=[]), str(PROFILE_SOURCE), 'exec'), namespace)
         profile = next(node for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
         fatal_branch = next(node for node in ast.walk(profile)
@@ -457,13 +466,62 @@ class HandoffControlPathTests(unittest.TestCase):
         self.assertEqual([ast.dump(arg) for arg in fatal_branch.test.args],
             [ast.dump(ast.Name(id='mode', ctx=ast.Load()))])
         classify = namespace['_is_fatal_handoff_profile']
-        for mode in ('positive', 'frame-positive'):
-            with self.subTest(mode=mode):
-                self.assertFalse(classify(mode))
-        for mode in ('bad-capability', 'bad-tx-lease', 'timeout', 'peer-death',
-                     'bad-prepare-error-generation', 'bad-prepare-success'):
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'main')
+        inventory = set()
+        for node in ast.walk(main):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and \
+                    node.func.id == 'run_live_handoff_profile':
+                keyword = next((item for item in node.keywords if item.arg == 'mode'), None)
+                inventory.add(ast.literal_eval(keyword.value) if keyword is not None else 'positive')
+            if isinstance(node, ast.For) and isinstance(node.target, ast.Name) and node.target.id == 'mode' and \
+                    isinstance(node.iter, (ast.Tuple, ast.List)):
+                inventory.update(ast.literal_eval(item) for item in node.iter.elts)
+        fatal = namespace['FATAL_HANDOFF_PROFILES']
+        nonfatal = namespace['NONFATAL_HANDOFF_PROFILES']
+        self.assertEqual(fatal & nonfatal, set())
+        self.assertEqual(inventory, fatal | nonfatal)
+        for mode in sorted((item for item in inventory if item in fatal), key=str):
             with self.subTest(mode=mode):
                 self.assertTrue(classify(mode))
+        for mode in sorted((item for item in inventory if item in nonfatal), key=str):
+            with self.subTest(mode=mode):
+                self.assertFalse(classify(mode))
+        with self.assertRaisesRegex(ValueError, 'unknown handoff profile'):
+            classify('unexpected-mode')
+
+    def test_timed_out_runner_capture_is_bounded_and_does_not_kill_descendant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child_pid_path = os.path.join(directory, 'child.pid')
+            child_code = 'import time; time.sleep(30)'
+            parent_code = ('import subprocess,sys,time; child=subprocess.Popen([sys.executable,"-c",' +
+                repr(child_code) + ']); open(' + repr(child_pid_path) + ',"w").write(str(child.pid)); '
+                'print("ready",flush=True); time.sleep(30)')
+            runner = subprocess.Popen([sys.executable, '-c', parent_code], stdout=subprocess.PIPE)
+            descendant_pidfd = -1
+            try:
+                deadline = time.monotonic() + 5
+                while not os.path.exists(child_pid_path) and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(os.path.exists(child_pid_path))
+                descendant_pid = int(Path(child_pid_path).read_text())
+                descendant_pidfd = os.pidfd_open(descendant_pid)
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    runner.communicate(timeout=0.05)
+                output = PROFILE._stop_timed_out_runner(runner, caught.exception)
+                self.assertIn(b'ready', output)
+                self.assertIsNotNone(runner.returncode)
+                self.assertTrue(runner.stdout.closed)
+                self.assertFalse(select.select([descendant_pidfd], [], [], 0)[0],
+                    'bounded runner capture must not signal an unrelated descendant')
+            finally:
+                if runner.poll() is None:
+                    runner.kill(); runner.wait(timeout=5)
+                if descendant_pidfd >= 0:
+                    try: signal.pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    self.assertTrue(select.select([descendant_pidfd], [], [], 5)[0],
+                        'test-owned descendant did not exit after exact pidfd cleanup')
+                    os.close(descendant_pidfd)
 
     def test_frame_failure_record_accepts_redirected_optional_stderr(self):
         tree = ast.parse(PROFILE_SOURCE.read_text())
