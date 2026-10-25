@@ -1181,7 +1181,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 try: first_wire_frame=wait_wire_payload(1)
                 except RuntimeError as error: raise startup_failure(str(error)) from error
             require(os.write(handoff_write, b'H') == 1, 'could not trigger the live handoff fixture')
-            if mode not in ('frame-positive','frame-full','frame-death-prepared','frame-death-producer-active-consumer','frame-death-consumer-prepared',
+            if mode not in ('frame-positive','frame-full','frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer','frame-death-consumer-prepared',
                     'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'): os.close(handoff_write); handoff_write = -1
             if mode == 'handoff-control-hup':
                 deadline = time.monotonic() + 10
@@ -1466,6 +1466,9 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 protocol['replay_prepare']['same_response'] and
                 not select.select([app_pidfd, owner_pidfd, peer_pidfd], [], [], 0)[0],
                 'handoff changed process/endpoint identity or failed exact PREPARE/replay validation')
+            if mode == 'frame-death-queued':
+                require(os.write(handoff_write, b'A') == 1,
+                    'could not acknowledge live app/producer/consumer identities before queued producer death')
             if mode=='frame-death-prepared':
                 require(os.write(handoff_write,b'U')==1,'could not queue original LKL PREPARED-death datagram')
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
@@ -1756,6 +1759,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 fill=proof.get('fill',{});drain=proof.get('drain',{})
                 require(proof.get('stage')=='queued' and proof.get('pidfd_dead') is True and
                     proof.get('producer_status')==-signal.SIGKILL and
+                    after.get('handoff_frame_death_barrier') ==
+                        dict(stage='fixture-validated-live-actors', acknowledged=True) and
                     proof.get('census',{}).get('process')==1 and proof.get('census',{}).get('slot')==1 and
                     proof.get('owner_after_reap',{}).get('generation')==1 and
                     fill.get('count')==64 and fill.get('pool_after')==64 and

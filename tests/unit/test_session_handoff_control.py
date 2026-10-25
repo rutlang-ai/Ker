@@ -258,6 +258,106 @@ class HandoffControlPathTests(unittest.TestCase):
         self.assertNotIn('expected_key', trigger.co_freevars)
         self.assertNotIn('expected_key', trigger.co_names)
 
+    def test_queued_death_waits_for_fixture_live_actor_ack(self):
+        source = ast.parse(SOURCE.read_text())
+        handoff = next(node for node in ast.walk(source)
+            if isinstance(node, ast.FunctionDef) and node.name == 'perform_test_handoff')
+        ack = next(node for node in ast.walk(handoff)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+            node.func.id == 'wait_for_frame_death_fixture_ack')
+        fill = next(node for node in ast.walk(handoff)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+            node.func.attr == 'write' and ast.unparse(node).replace(' ', '').startswith("os.write(control_w,b'F')"))
+        kill = next(node for node in ast.walk(handoff)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+            node.func.attr == 'pidfd_send_signal' and any(isinstance(arg, ast.Attribute) and
+            arg.attr == 'SIGKILL' for arg in node.args))
+        self.assertLess(ack.lineno, fill.lineno)
+        self.assertLess(fill.lineno, kill.lineno)
+        runner_impl = next(node for node in ast.walk(source)
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_session_impl')
+        handoff_dispatch = next(node for node in ast.walk(runner_impl)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'action' and
+            isinstance(node.test.comparators[0], ast.Constant) and
+            node.test.comparators[0].value == 'handoff')
+        close_gate = next(node for node in ast.walk(handoff_dispatch)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp) and
+            any(isinstance(value, ast.Compare) and isinstance(value.left, ast.Name) and
+                value.left.id == 'handoff_mode' and
+                any(isinstance(item, ast.Constant) and item.value == 'frame-death-queued'
+                    for item in value.comparators) for value in node.test.values))
+        self.assertTrue(any(isinstance(value, ast.Compare) and isinstance(value.left, ast.Name) and
+            value.left.id == 'handoff_mode' and
+            any(isinstance(item, ast.Constant) and item.value == 'frame-death-queued'
+                for item in value.comparators) for value in close_gate.test.values),
+            'queued-death mode must retain the trigger read end while perform_test_handoff waits for A')
+
+        profile_source = ast.parse(PROFILE_SOURCE.read_text())
+        profile = next(node for node in ast.walk(profile_source)
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
+        close_after_h = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+            isinstance(node.test.left, ast.Name) and node.test.left.id == 'mode' and
+            isinstance(node.test.ops[0], ast.NotIn) and
+            any(isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and
+                call.func.attr == 'close' and ast.unparse(call).startswith('os.close(handoff_write)')
+                for statement in node.body for call in ast.walk(statement)))
+        kept_open_modes = {item.value for item in close_after_h.test.comparators[0].elts
+            if isinstance(item, ast.Constant)}
+        self.assertIn('frame-death-queued', kept_open_modes,
+            'fixture must retain the acknowledgement pipe until queued producer recovery completes')
+
+        read_fd, write_fd = os.pipe()
+        fixture_checked = threading.Event()
+        killed = threading.Event()
+        failures = []
+
+        def runner_first():
+            fixture_checked.set()
+            try:
+                self.launcher.wait_for_frame_death_fixture_ack(read_fd, timeout=1)
+                killed.set()
+            except BaseException as error:
+                failures.append(error)
+
+        runner = threading.Thread(target=runner_first)
+        runner.start()
+        self.assertTrue(fixture_checked.wait(1))
+        self.assertFalse(killed.is_set(), 'producer death ran before the fixture checked live pidfds')
+        self.assertEqual(os.write(write_fd, b'A'), 1)
+        runner.join(2)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(failures, [])
+        self.assertTrue(killed.is_set(), 'the runner did not proceed after the fixture acknowledgement')
+        os.close(read_fd)
+        os.close(write_fd)
+
+        trigger_read, trigger_write = os.pipe()
+        self.assertTrue(self.launcher.handoff_trigger_complete('frame-death-queued', True, 0))
+        self.assertIsNone(self.launcher.close_completed_handoff_trigger(
+            'frame-death-queued', True, 0, trigger_read, os.close))
+        with self.assertRaises(OSError):
+            os.fstat(trigger_read)
+        os.close(trigger_write)
+
+    def test_queued_death_ack_timeout_and_eof_do_not_reach_kill(self):
+        for close_writer, timeout in ((False, 0.01), (True, 1)):
+            with self.subTest(close_writer=close_writer):
+                read_fd, write_fd = os.pipe()
+                killed = []
+                if close_writer:
+                    os.close(write_fd)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'fixture did not acknowledge|fixture closed'):
+                        self.launcher.wait_for_frame_death_fixture_ack(read_fd, timeout=timeout)
+                        killed.append(True)
+                    self.assertEqual(killed, [], 'producer death ran without an acknowledgement')
+                finally:
+                    os.close(read_fd)
+                    if not close_writer:
+                        os.close(write_fd)
+
     def test_actual_wire_wait_has_no_runner_startup_scope_dependency(self):
         compiled = compile(PROFILE_SOURCE.read_text(), str(PROFILE_SOURCE), 'exec')
         code = nested_code(compiled, 'wait_wire_payload')

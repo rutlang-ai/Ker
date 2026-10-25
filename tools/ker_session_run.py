@@ -394,6 +394,24 @@ def reject_handoff_trigger_eof(mode, handoff_seen, udp_sequence):
         raise RuntimeError('handoff trigger pipe reached EOF before the trigger sequence completed')
     raise RuntimeError('handoff trigger pipe reached unexpected EOF')
 
+
+def wait_for_frame_death_fixture_ack(fd, timeout=10):
+    """Wait boundedly for the fixture's live-actor validation before queued death."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('fixture did not acknowledge live actors before queued producer death')
+        readable, _, exceptional = select.select([fd], [], [fd], remaining)
+        if exceptional:
+            raise RuntimeError('fixture acknowledgement pipe failed before queued producer death')
+        if not readable:
+            raise RuntimeError('fixture did not acknowledge live actors before queued producer death')
+        command = os.read(fd, 1)
+        if command != b'A':
+            raise RuntimeError('fixture closed or sent an invalid queued-death acknowledgement')
+        return
+
 def run_session(args, api):
     enabled = (getattr(args, 'test_live_handoff_fd', None) is not None and
         os.environ.get('KER_SESSION_TEST_HANDOFF_MODE') == 'frame-full')
@@ -924,6 +942,11 @@ def _run_session_impl(args, api):
         handoff_udp_ready = True
         publish()
         if handoff_mode in ('frame-full','frame-death-queued'):
+            if handoff_mode == 'frame-death-queued':
+                wait_for_frame_death_fixture_ack(handoff_fd)
+                metrics['handoff_frame_death_barrier'] = dict(
+                    stage='fixture-validated-live-actors', acknowledged=True)
+                publish()
             if handoff_mode == 'frame-full':
                 print('KER_SESSION_FRAME_FULL_STAGE fill-request', file=sys.stderr, flush=True)
             if os.write(control_w,b'F')!=1: raise RuntimeError('could not request actual generation TX ring fill')
@@ -1576,7 +1599,8 @@ def _run_session_impl(args, api):
                         drain_nonframe_retained_packets()
                         close(handoff_fd); handoff_fd = None
                     elif action == 'handoff':
-                        if handoff_mode not in FRAME_U2_TRIGGER_MODES:
+                        if (handoff_mode not in FRAME_U2_TRIGGER_MODES and
+                                handoff_mode != 'frame-death-queued'):
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
                         handoff_seen = True
