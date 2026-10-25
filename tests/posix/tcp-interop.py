@@ -30,7 +30,7 @@ def ready(process, port):
 
 
 @contextmanager
-def server(command, port, log, env, captured=None):
+def server(command, port, log, env, captured=None, cleanup_fault_qdiscs=False):
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
     try:
         ready(process, port)
@@ -41,6 +41,7 @@ def server(command, port, log, env, captured=None):
         if process.returncode:
             raise RuntimeError(f'server exited {process.returncode}: {output}')
     finally:
+        active_exception = sys.exc_info()[0] is not None
         if process.poll() is None:
             process.terminate()
             try:
@@ -48,6 +49,16 @@ def server(command, port, log, env, captured=None):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        if process.stdout is not None and not process.stdout.closed:
+            process.stdout.close()
+        if cleanup_fault_qdiscs:
+            try:
+                remove_tcp_fault_qdiscs(env)
+            except Exception as error:
+                if not active_exception:
+                    raise
+                print('TCP fault qdisc cleanup failed while preserving an earlier error: ' + str(error),
+                      file=sys.stderr, flush=True)
 
 
 def client(command, env):
@@ -120,6 +131,22 @@ def tcp_fault_qdisc_counters(env, baseline):
                                    f'{baseline[device]=} {item=}')
         evidence[device] = counters
     return evidence
+
+
+def remove_tcp_fault_qdiscs(env):
+    errors = []
+    for device in ('kerlink', 'kerhost'):
+        result = subprocess.run(['tc', '-j', '-s', 'qdisc', 'show', 'dev', device],
+                                check=True, env=env, capture_output=True, text=True)
+        roots = [entry for entry in json.loads(result.stdout) if entry.get('root')]
+        if not roots or (len(roots) == 1 and roots[0].get('kind') == 'noqueue'):
+            continue
+        if len(roots) != 1 or roots[0].get('kind') != 'netem' or roots[0].get('handle') != '8001:':
+            errors.append(f'{device} has an unowned root qdisc: {result.stdout}')
+            continue
+        subprocess.run(['tc', 'qdisc', 'del', 'dev', device, 'root'], check=True, env=env)
+    if errors:
+        raise RuntimeError('refusing to remove a qdisc not owned by this TCP fault fixture: ' + '; '.join(errors))
 
 
 def gated_client(command, port, env, gate_path):
@@ -1724,8 +1751,11 @@ def udp_compat(args, launcher, work, env, log):
             else:
                 connect = native + connect
             captured = []
-            with server(listen, port, log, env, captured=captured):
-                client(connect, env)
+            try:
+                with server(listen, port, log, env, captured=captured):
+                    client(connect, env)
+            except Exception as error:
+                raise RuntimeError(f'UDP {mode} {role} failed: {error}') from error
             output = ''.join(captured)
             if 'PASS:' not in output:
                 raise RuntimeError('UDP server did not confirm datagrams: ' + output)
@@ -2029,7 +2059,7 @@ def inside(args):
                         listen = native + listen
                     else:
                         connect = native + connect
-                    with server(listen, port, log, env):
+                    with server(listen, port, log, env, cleanup_fault_qdiscs=args.faults):
                         installed_fault_qdiscs = None
                         if args.faults and native_server:
                             installed_fault_qdiscs = install_tcp_fault_qdiscs(env)
