@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from hugepage_preflight import hugepage_capacity_error
+from dpdk_runtime import private_runtime_environment
 import queue
 import signal
 import select
@@ -14,6 +15,7 @@ import subprocess
 import socket
 import struct
 import sys
+import tempfile
 import threading
 import time
 
@@ -148,7 +150,7 @@ def main():
     api = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = api
     spec.loader.exec_module(api)
-    root = Path(os.environ.get('RUNTIME_DIRECTORY', '/tmp')) / ('ker-drain-peer-' + str(os.getpid()))
+    root = Path(tempfile.gettempdir()) / ('ker-drain-peer-' + str(os.getpid()))
     root.mkdir(mode=0o700, parents=True)
     path = root / 'resident.sock'
     huge_dir = args.huge_dir.resolve()
@@ -159,11 +161,8 @@ def main():
     plugin_args = dpdk_plugin_eal_options(plugin_paths)
     eal = (f'--no-pci --no-telemetry --iova-mode=va -m 64 --huge-dir={shlex.quote(str(huge_dir))} '
            f'{plugin_args} --file-prefix=drain-{os.getpid()}-{os.urandom(4).hex()}')
-    env = os.environ.copy()
-    runtime = Path(f'/run/user/{os.getuid()}')
-    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-    (runtime / 'dpdk').mkdir(mode=0o700, exist_ok=True)
-    env['XDG_RUNTIME_DIR'] = str(runtime)
+    runtime = root / 'runtime'
+    env = private_runtime_environment(runtime)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     resident = old = current = ordinary = replacement = queued_hup = None
     resident_stopped = False

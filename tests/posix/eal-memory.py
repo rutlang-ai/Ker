@@ -44,7 +44,11 @@ def main():
                 ('ini-128', '[dpdk]\nmemory=128\nno_huge=yes\n', [], '', '', 128),
                 ('cli-64', '[dpdk]\nmemory=128\nno_huge=no\n',
                     ['--memory-mb', '64', '--no-huge'], '', '', 64),
-                ('ini-32', '[dpdk]\nmemory=32\nno_huge=1\n', [], '', '', 32),
+                # Keep the 4,095-object pool within this deliberately small
+                # regular-page arena by testing the compact 1,500-byte frame
+                # ceiling. The default 9,000-byte ceiling needs a much larger
+                # mbuf data room and is covered by the normal-memory profiles.
+                ('ini-32', '[dpdk]\nmemory=32\nno_huge=1\n', ['--max-mtu', '1500'], '', '', 32),
                 ('raw-long', '', [], ' --memory-size=128 --no-huge', '', 128),
                 ('cli-before-eal-terminator', '', ['--memory-mb', '64', '--no-huge'], '',
                     ' -- -m 96 --no-huge -- --file-prefix=ignored-suffix', 64),
@@ -84,6 +88,9 @@ def main():
                     record = json.loads(stats.read_text())
                     require(record['io']['memory_bytes'] == expected * 1024 * 1024,
                             f'actual EAL memory allocation mismatch: {record["io"]}')
+                    expected_max_mtu = 1500 if name == 'ini-32' else 9000
+                    require(record['max_mtu'] == expected_max_mtu,
+                            f'actual worker max-MTU geometry mismatch: {record}')
                     require(record['io']['hugepages'] is False, 'EAL regular-page policy not applied')
                     require(record['stop_requests'] or record['control_eof'], 'control shutdown not observed')
                     require(record['outstanding'] == 0 and record['native']['passive_opens'] == 1 and

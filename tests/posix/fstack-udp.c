@@ -38,9 +38,12 @@ static void address_matches(struct sockaddr_in actual, struct sockaddr_in expect
 }
 static void ready(int ep)
 {
-    struct epoll_event event;
+    struct epoll_event event = {0};
     int result;
-    do {result = epoll_wait(ep, &event, 1, 5000);} while (result < 0 && errno == EINTR);
+    do {errno = 0; result = epoll_wait(ep, &event, 1, 5000);} while (result < 0 && errno == EINTR);
+    if (result != 1 || !(event.events & EPOLLIN) || event.data.u64 != 0x554450)
+        fprintf(stderr, "UDP_EPOLL_READY result=%d errno=%d events=0x%x tag=0x%llx expected=0x554450\n",
+            result, errno, event.events, (unsigned long long)event.data.u64);
     CHECK(result == 1 && (event.events & EPOLLIN) && event.data.u64 == 0x554450);
     CHECK(!(event.events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)));
 }

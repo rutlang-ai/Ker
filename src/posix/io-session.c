@@ -48,6 +48,18 @@ struct client {
     unsigned slot, generation, process;
     uint64_t sequence, probe_sequence, heartbeat_ms;
     bool generation_admitted, drain_mode, peer_only, detach_done, detach_armed, detach_foreign;
+    bool reap_deferred;
+    bool frame_reap_blocked;
+    uint64_t frame_reap_blocked_sequence, frame_reap_deadline_ms, frame_reap_retry_ms;
+    unsigned frame_reap_blocked_command, frame_reap_attempts, frame_reap_consumer_client;
+    struct ker_session_message frame_reap_blocked_request;
+    unsigned reap_deferred_peer_client, reap_deferred_attempts, reap_full_attempts;
+    uint64_t reap_deferred_deadline_ms;
+    pid_t reap_deferred_peer_pid;
+    int reap_deferred_peer_pidfd;
+    bool reap_deferred_peer_is_producer;
+    struct ker_generation_identity reap_deferred_peer_identity;
+    uint64_t reap_deferred_retry_ms;
     bool detach_peer_snapshot;
     unsigned detach_peer_generation, detach_peer_process;
     unsigned detach_peer_client;
@@ -186,6 +198,10 @@ static bool generation_cleanup_equal(const struct ker_generation_cleanup_config 
 static struct rte_ring *generation_test_original[8];
 static struct rte_mbuf *generation_test_original_packet[8];
 static bool generation_test_hold_started;
+static bool generation_test_hold_joined;
+static bool generation_test_nonframe_reap_completed;
+static bool generation_test_nonframe_final_snapshot_emitted;
+static _Atomic unsigned generation_test_hold_completed;
 static pthread_t generation_test_hold_thread;
 static struct {
     struct ker_generation_rings *rings;
@@ -197,6 +213,16 @@ static void *generation_test_hold_rx_dequeue(void *unused)
     struct rte_mbuf *packet=NULL;
     int result=ker_generation_rx_dequeue(generation_test_hold_context.rings,
         &generation_test_hold_context.identity,0,0,&packet);
+#ifdef KER_SESSION_TEST_HOOKS
+    if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+        if(result!=1||!packet||ker_generation_packet_release(generation_test_hold_context.rings,
+                &generation_test_hold_context.identity,packet))_Exit(125);
+        atomic_store_explicit(&generation_test_hold_completed,1,memory_order_release);
+        printf("KER_SESSION_TEST_NONFRAME_ACTIVE_RELEASED {\"generation\":0,\"status\":0}\n");
+        fflush(stdout);
+        return NULL;
+    }
+#endif
     fprintf(stderr,"ker session: held generation dequeue returned unexpectedly %d\n",result);
     return NULL;
 }
@@ -204,6 +230,9 @@ static void *generation_test_hold_rx_dequeue(void *unused)
 static struct ker_worker_exception session_exception_keeper = {.fd=-1};
 static char session_exception_iface[IFNAMSIZ], session_exception_ring[RTE_RING_NAMESIZE];
 static int dead(int fd);
+static int reclaim_control(unsigned index);
+static int reclaim_control_after_busy(unsigned index);
+static void drop_client(unsigned index);
 static uint64_t pmd_key(const struct client *client)
 {
     return 1 + ((uint64_t)client->slot * KER_SESSION_GENERATIONS + client->generation) * KER_SESSION_PROCESSES + client->process;
@@ -219,6 +248,14 @@ static bool frame_identity_equal(const struct ker_generation_identity *a,
 {
     return a->session==b->session && a->epoch==b->epoch && a->slot==b->slot &&
         a->generation==b->generation && a->process==b->process && a->pid==b->pid;
+}
+static bool frame_pidfd_live(int pidfd)
+{
+    return pidfd>=0 && !dead(pidfd);
+}
+static bool deferred_frame_consumer_matches(int consumer_pidfd,int saved_pidfd)
+{
+    return frame_pidfd_live(consumer_pidfd)&&frame_pidfd_live(saved_pidfd);
 }
 static bool frame_command(uint64_t command)
 {
@@ -365,6 +402,222 @@ static int handle_frame_request(struct client *client,const struct ker_session_m
     return result;
 }
 
+static bool deferred_frame_request_matches(unsigned producer_index,
+    const struct ker_session_message *request)
+{
+    if(producer_index>=CLIENTS)return false;
+    struct client *producer=&clients[producer_index];
+    if(!producer->frame_pending || producer->slot>=KER_SESSION_SLOTS ||
+        producer->generation>=KER_SESSION_GENERATIONS || producer->process>=KER_SESSION_PROCESSES ||
+        (request->command!=KER_SESSION_FRAME_COMMIT&&request->command!=KER_SESSION_FRAME_CANCEL) ||
+        request->magic!=KER_SESSION_MAGIC || request->version!=KER_SESSION_VERSION || request->status ||
+        request->session!=directory->session || request->epoch!=slots[producer->slot].epoch ||
+        request->slot!=producer->slot || request->generation!=producer->generation ||
+        request->process!=producer->process || request->token!=slots[producer->slot].token ||
+        request->capability!=producer->frame_capability || request->packet_pool_tag!=producer->frame_pool_tag ||
+        request->packet_object_index!=producer->frame_object_index || request->tx_lease_id!=producer->frame_lease_id ||
+        request->rx_lease_id || request->packet_port!=producer->frame_port ||
+        request->packet_queue!=producer->frame_queue)return false;
+    unsigned consumer_index=producer->frame_consumer_client;
+    if(consumer_index>=CLIENTS)return false;
+    struct client *consumer=&clients[consumer_index];
+    if(!consumer->reap_deferred)return false;
+    struct ker_generation_identity producer_identity=generation_identity(producer);
+    if(consumer->kind!=ATTACHED || !consumer->generation_admitted ||
+        consumer->slot>=KER_SESSION_SLOTS || consumer->generation>=KER_SESSION_GENERATIONS ||
+        consumer->process>=KER_SESSION_PROCESSES || consumer->pidfd<0 || !dead(consumer->pidfd) ||
+        consumer->pid!=(pid_t)producer->frame_consumer_identity.pid ||
+        consumer->slot!=producer->frame_consumer_identity.slot ||
+        consumer->generation!=producer->frame_consumer_identity.generation ||
+        consumer->process!=producer->frame_consumer_identity.process ||
+        slots[consumer->slot].epoch!=producer->frame_consumer_identity.epoch ||
+        consumer->pidfd!=producer->handoff_peer_client_pidfd ||
+        !consumer->reap_deferred_peer_is_producer ||
+        consumer->reap_deferred_peer_client!=producer_index ||
+        consumer->reap_deferred_peer_pid!=producer->pid ||
+        consumer->reap_deferred_peer_pidfd<0 ||
+        dead(consumer->reap_deferred_peer_pidfd) ||
+        !frame_identity_equal(&consumer->reap_deferred_peer_identity,&producer_identity) ||
+        !frame_identity_equal(&producer->frame_producer_identity,&producer_identity))return false;
+    return true;
+}
+
+static int retry_deferred_frame_consumer(unsigned producer_index,
+    const struct ker_session_message *request,unsigned *full_reap_attempts)
+{
+    if(full_reap_attempts)*full_reap_attempts=0;
+    if(!deferred_frame_request_matches(producer_index,request))return 0;
+    struct client *producer=&clients[producer_index];
+    unsigned consumer_index=producer->frame_consumer_client;
+    struct client *consumer=&clients[consumer_index];
+    consumer->reap_deferred_attempts++;
+    int result=reclaim_control(consumer_index);
+    if(full_reap_attempts)*full_reap_attempts=consumer->reap_full_attempts;
+    if(result)return result;
+    if(!consumer->drain_mode) {
+        slots[consumer->slot].worker_pid[consumer->generation][consumer->process]=0;
+        slots[consumer->slot].worker_heartbeat_ms[consumer->generation][consumer->process]=0;
+    }
+    drop_client(consumer_index);
+    return 1;
+}
+
+static int bind_deferred_frame_peer(unsigned target_index)
+{
+    if(target_index>=CLIENTS)return -EINVAL;
+    struct client *target=&clients[target_index];
+    if(target->slot>=KER_SESSION_SLOTS||target->generation>=KER_SESSION_GENERATIONS||
+        target->process>=KER_SESSION_PROCESSES||target->pidfd<0||!dead(target->pidfd))return 0;
+    /* A committed packet has no pending FRAME lease to bind.  The parked
+     * owner's immutable handoff tuple still identifies the exact live peer
+     * whose dequeue may have made the first dead-owner reap preflight busy. */
+    if(!target->frame_pending&&target->handoff_state==HANDOFF_PARKED&&
+        target->handoff_peer<CLIENTS) {
+        unsigned peer_index=target->handoff_peer;
+        struct client *peer=&clients[peer_index];
+        if(target->kind!=ATTACHED||!target->generation_admitted||
+            target->handoff_peer_pidfd<0||dead(target->handoff_peer_pidfd)||
+            target->handoff_peer_client_pidfd!=peer->pidfd||
+            peer->kind!=ATTACHED||peer->peer_only||!peer->generation_admitted||
+            dead(peer->pidfd)||peer->pid!=(pid_t)target->handoff_peer_pid||
+            peer->slot!=target->handoff_peer_slot||peer->generation!=target->handoff_peer_generation||
+            peer->process!=target->handoff_peer_process||slots[peer->slot].epoch!=target->handoff_peer_epoch||
+            peer->generation!=(target->generation^1U)||
+            atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)!=pmd_key(peer))return 0;
+        if(target->reap_deferred_peer_pidfd>=0) {
+            if(target->reap_deferred_peer_client!=peer_index||
+                target->reap_deferred_peer_pid!=peer->pid||target->reap_deferred_peer_is_producer||
+                dead(target->reap_deferred_peer_pidfd)||
+                !frame_identity_equal(&target->reap_deferred_peer_identity,&(struct ker_generation_identity){
+                    .session=directory->session,.epoch=slots[peer->slot].epoch,.slot=peer->slot,
+                    .generation=peer->generation,.process=peer->process,.pid=(uint32_t)peer->pid}))return -EUCLEAN;
+            return 1;
+        }
+        int duplicate=fcntl(peer->pidfd,F_DUPFD_CLOEXEC,3);
+        if(duplicate<0)return -errno;
+        if(dead(duplicate)){close(duplicate);return 0;}
+        target->reap_deferred_peer_client=peer_index;
+        target->reap_deferred_peer_pid=peer->pid;
+        target->reap_deferred_peer_pidfd=duplicate;
+        target->reap_deferred_peer_is_producer=false;
+        target->reap_deferred_peer_identity=generation_identity(peer);
+        target->reap_deferred_attempts=0;
+        return 1;
+    }
+    for(unsigned p=0;p<CLIENTS;p++) {
+        struct client *producer=&clients[p];
+        if(!producer->frame_pending || producer->frame_consumer_pidfd<0 ||
+            producer->frame_producer_pidfd<0 || producer->pidfd<0 ||
+            producer->slot>=KER_SESSION_SLOTS || producer->generation>=KER_SESSION_GENERATIONS ||
+            producer->process>=KER_SESSION_PROCESSES || target->pidfd<0 || !dead(target->pidfd) ||
+            producer->pid!=(pid_t)producer->frame_producer_identity.pid ||
+            !frame_identity_equal(&producer->frame_producer_identity,&(struct ker_generation_identity){
+                .session=directory->session,.epoch=slots[producer->slot].epoch,
+                .slot=producer->slot,.generation=producer->generation,
+                .process=producer->process,.pid=(uint32_t)producer->pid}))continue;
+        unsigned peer_index;
+        bool peer_is_producer;
+        struct ker_generation_identity target_identity,peer_identity;
+        if(p!=target_index && producer->frame_consumer_client==target_index) {
+            /* Exact live producer owns this dead consumer's pending lease. */
+            if(producer->kind!=ATTACHED||!producer->generation_admitted||
+                dead(producer->pidfd)||producer->fd<0||target->kind!=ATTACHED||
+                !target->generation_admitted||!dead(producer->frame_consumer_pidfd)||
+                producer->handoff_peer_client_pidfd!=target->pidfd||
+                target->slot>=KER_SESSION_SLOTS||target->generation>=KER_SESSION_GENERATIONS||
+                target->process>=KER_SESSION_PROCESSES||target->pid!=(pid_t)producer->frame_consumer_identity.pid||
+                !frame_identity_equal(&producer->frame_consumer_identity,&(struct ker_generation_identity){
+                    .session=directory->session,.epoch=slots[target->slot].epoch,.slot=target->slot,
+                    .generation=target->generation,.process=target->process,.pid=(uint32_t)target->pid}))continue;
+            peer_index=p;peer_is_producer=true;
+            target_identity=producer->frame_consumer_identity;
+            peer_identity=producer->frame_producer_identity;
+        } else if(p==target_index) {
+            /* Exact dead producer's live consumer may still be in an operation. */
+            unsigned consumer_index=producer->frame_consumer_client;
+            if(consumer_index>=CLIENTS||producer->kind!=ATTACHED||!producer->generation_admitted||
+                !dead(producer->pidfd)||!dead(producer->frame_producer_pidfd)||
+                !frame_identity_equal(&producer->frame_producer_identity,&(struct ker_generation_identity){
+                    .session=directory->session,.epoch=slots[producer->slot].epoch,.slot=producer->slot,
+                    .generation=producer->generation,.process=producer->process,.pid=(uint32_t)producer->pid}))continue;
+            struct client *consumer=&clients[consumer_index];
+            if(consumer->kind!=ATTACHED||!consumer->generation_admitted||
+                consumer->pidfd!=producer->handoff_peer_client_pidfd||
+                !deferred_frame_consumer_matches(consumer->pidfd,producer->frame_consumer_pidfd)||
+                consumer->slot>=KER_SESSION_SLOTS||
+                consumer->generation>=KER_SESSION_GENERATIONS||consumer->process>=KER_SESSION_PROCESSES||
+                consumer->pid!=(pid_t)producer->frame_consumer_identity.pid||
+                !frame_identity_equal(&producer->frame_consumer_identity,&(struct ker_generation_identity){
+                    .session=directory->session,.epoch=slots[consumer->slot].epoch,.slot=consumer->slot,
+                    .generation=consumer->generation,.process=consumer->process,.pid=(uint32_t)consumer->pid}))continue;
+            peer_index=consumer_index;peer_is_producer=false;
+            target_identity=producer->frame_producer_identity;
+            peer_identity=producer->frame_consumer_identity;
+        } else continue;
+        struct client *peer=&clients[peer_index];
+        if(target->reap_deferred_peer_pidfd>=0) {
+            if(target->reap_deferred_peer_client!=peer_index||target->reap_deferred_peer_pid!=peer->pid||
+                target->reap_deferred_peer_is_producer!=peer_is_producer||
+                !frame_identity_equal(&target->reap_deferred_peer_identity,&peer_identity)||
+                !frame_pidfd_live(target->reap_deferred_peer_pidfd))return -EUCLEAN;
+            return 1;
+        }
+        int duplicate=fcntl(peer->pidfd,F_DUPFD_CLOEXEC,3);
+        if(duplicate<0)return -errno;
+        target->reap_deferred_peer_client=peer_index;
+        target->reap_deferred_peer_pid=peer->pid;
+        target->reap_deferred_peer_pidfd=duplicate;
+        target->reap_deferred_peer_is_producer=peer_is_producer;
+        target->reap_deferred_peer_identity=peer_identity;
+        struct ker_generation_identity actual_target_identity=generation_identity(target);
+        if(!frame_identity_equal(&target_identity,&actual_target_identity)) {
+            close(duplicate);target->reap_deferred_peer_pidfd=-1;return -ESTALE;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static void retry_blocked_frame_requests(void)
+{
+    uint64_t now=monotonic_ms();
+    for(unsigned i=0;i<CLIENTS;i++)if(clients[i].frame_reap_blocked&&clients[i].fd>=0 &&
+        now>=clients[i].frame_reap_retry_ms) {
+        struct client *producer=&clients[i];
+        struct ker_session_message pending;
+        ssize_t n=recv(producer->fd,&pending,sizeof(pending),MSG_DONTWAIT|MSG_PEEK|MSG_TRUNC);
+        if(n<0&&errno==EINTR) { producer->frame_reap_retry_ms=now+50; continue; }
+        if(n!=(ssize_t)sizeof(pending) ||
+            pending.sequence!=producer->frame_reap_blocked_sequence ||
+            pending.command!=producer->frame_reap_blocked_command ||
+            memcmp(&pending,&producer->frame_reap_blocked_request,sizeof(pending)))_Exit(125);
+        if(now>=producer->frame_reap_deadline_ms || ++producer->frame_reap_attempts>20)_Exit(125);
+        if(producer->frame_reap_consumer_client>=CLIENTS ||
+            producer->frame_consumer_client!=producer->frame_reap_consumer_client)_Exit(125);
+        struct client *consumer=&clients[producer->frame_reap_consumer_client];
+        if(!consumer->reap_deferred || consumer->reap_deferred_peer_client!=i ||
+            !consumer->reap_deferred_peer_is_producer ||
+            consumer->reap_deferred_peer_pid!=producer->pid ||
+            consumer->reap_deferred_peer_pidfd<0)_Exit(125);
+        unsigned full_reap_attempts=0;
+        int result=retry_deferred_frame_consumer(i,&pending,&full_reap_attempts);
+        if(result!=1&&result!=-EBUSY)_Exit(125);
+        if(result==-EBUSY) {
+            producer->frame_reap_retry_ms=now+50;
+            continue;
+        }
+        if(result<0)_Exit(125);
+        producer->frame_reap_blocked=false;
+        producer->frame_reap_blocked_sequence=0;
+        producer->frame_reap_blocked_command=0;
+        producer->frame_reap_consumer_client=UINT_MAX;
+        producer->frame_reap_attempts=0;
+        producer->frame_reap_retry_ms=0;
+        producer->frame_reap_deadline_ms=0;
+        memset(&producer->frame_reap_blocked_request,0,sizeof(producer->frame_reap_blocked_request));
+    }
+}
+
 static int selected_peer_only(unsigned source_index, unsigned *peer_slot, uint64_t *peer_epoch,
     unsigned *peer_client)
 {
@@ -471,10 +724,16 @@ static bool known_object(struct rte_mbuf *packet)
     return false;
 }
 #ifdef KER_SESSION_TEST_HOOKS
+static struct rte_ring *generation_test_ring(unsigned direction,unsigned q,unsigned g);
+static int generation_test_step(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity,struct rte_mempool *pool,unsigned step,
+    bool detach_test,bool foreign,bool nonowner_detach,bool empty_cleanup,bool tx_full_test);
 struct generation_frame_drain_context {
     struct ker_generation_rings *rings;
     struct ker_generation_identity identity;
+    struct rte_mempool *message_pool;
     struct rte_mbuf *packet;
+    bool nonframe_reap;
 };
 static int generation_frame_dequeue_attempt(void *opaque)
 {
@@ -483,10 +742,117 @@ static int generation_frame_dequeue_attempt(void *opaque)
     return ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,
         &context->packet);
 }
+static int generation_test_nonframe_hold(char command,
+    const struct generation_frame_drain_context *context, bool enabled)
+{
+    if(command!='Y'||!enabled)return 0;
+    if(!context||!context->rings||context->identity.generation!=0)return -EPERM;
+    if(generation_test_hold_started)return -EALREADY;
+    generation_test_hold_context.rings=context->rings;
+    generation_test_hold_context.identity=context->identity;
+    generation_test_hold_joined=false;
+    atomic_store_explicit(&generation_test_hold_completed,0,memory_order_relaxed);
+    ker_generation_test_hold_next_dequeue();
+    int error=pthread_create(&generation_test_hold_thread,NULL,generation_test_hold_rx_dequeue,NULL);
+    if(error)return -error;
+    generation_test_hold_started=true;
+    return 1;
+}
+static int generation_test_join_nonframe_hold(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity)
+{
+    const struct ker_generation_identity *held=&generation_test_hold_context.identity;
+    if(!generation_test_hold_started||!rings||!identity||generation_test_hold_context.rings!=rings||
+        held->session!=identity->session||held->epoch!=identity->epoch||held->slot!=identity->slot||
+        held->generation!=identity->generation||held->process!=identity->process||held->pid!=identity->pid||
+        !atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire))return -EUCLEAN;
+    int error=pthread_join(generation_test_hold_thread,NULL);
+    if(error)return -error;
+    generation_test_hold_started=false;
+    generation_test_hold_joined=true;
+    return 0;
+}
+static int generation_test_nonframe_drain(struct generation_frame_drain_context *context)
+{
+    if(!context||!context->rings||!context->message_pool||!context->nonframe_reap||
+        context->identity.generation!=0||!generation_test_hold_joined||
+        !atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire)) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"context\",\"generation\":%u,\"nonframe\":%s,\"hold_started\":%s,\"hold_joined\":%s,\"hold_completed\":%u}\n",
+            context?context->identity.generation:UINT32_MAX,context&&context->nonframe_reap?"true":"false",
+            generation_test_hold_started?"true":"false",generation_test_hold_joined?"true":"false",
+            atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire));fflush(stderr);
+        return -EUCLEAN;
+    }
+    unsigned before[8]={0},after[8]={0};
+    const unsigned expected[8]={0,0,1,0,0,1,0,1};
+    for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+        struct rte_ring *ring=generation_test_ring(d,q,g);
+        if(!ring){fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"before_ring_lookup\",\"direction\":%u,\"queue\":%u,\"generation\":%u}\n",d,q,g);fflush(stderr);return -EUCLEAN;}
+        before[(d*2+q)*2+g]=rte_ring_count(ring);
+    }
+    if(memcmp(before,expected,sizeof(expected))) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"before_ring_counts\",\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u]}\n",
+            before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7]);fflush(stderr);
+        return -EUCLEAN;
+    }
+    unsigned control_before=rte_mempool_avail_count(context->message_pool);
+    int status=generation_test_step(context->rings,&context->identity,context->message_pool,5,
+        true,false,false,false,false);
+    if(status) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"step5\",\"status\":%d}\n",status);fflush(stderr);
+        return status;
+    }
+    for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+        struct rte_ring *ring=generation_test_ring(d,q,g);
+        if(!ring){fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"after_ring_lookup\",\"direction\":%u,\"queue\":%u,\"generation\":%u}\n",d,q,g);fflush(stderr);return -EUCLEAN;}
+        after[(d*2+q)*2+g]=rte_ring_count(ring);
+    }
+    unsigned control_after=rte_mempool_avail_count(context->message_pool);
+    if(memcmp(after,(unsigned[8]){0},sizeof(after))||control_after!=control_before+3) {
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"after_drain_invariants\",\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"control_before\":%u,\"control_after\":%u}\n",
+            after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],control_before,control_after);fflush(stderr);
+        return -EUCLEAN;
+    }
+    printf("KER_SESSION_TEST_NONFRAME_RETAINED_DRAINED {\"generation\":%u,\"status\":0,\"rx_drained\":%u,\"tx_drained\":%u,\"rings_before\":[%u,%u,%u,%u,%u,%u,%u,%u],\"rings_after\":[%u,%u,%u,%u,%u,%u,%u,%u],\"control_pool_available\":%u}\n",
+        context->identity.generation,before[2]-after[2],(before[5]-after[5])+(before[7]-after[7]),
+        before[0],before[1],before[2],before[3],before[4],before[5],before[6],before[7],
+        after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7],
+        rte_mempool_avail_count(context->message_pool));
+    fflush(stdout);
+    return 1;
+}
+static int generation_test_nonframe_drain_dispatch(char command,bool enabled,bool hold_started,
+    bool hold_completed,int (*join_hold)(void *),int (*drain)(void *),void *context)
+{
+    if(command!='K'||!enabled)return 0;
+    if(!hold_started||!hold_completed||!join_hold||!drain||!context)return -EUCLEAN;
+    int status=join_hold(context);
+    return status?status:drain(context);
+}
+static int generation_test_nonframe_join_context(void *opaque)
+{
+    struct generation_frame_drain_context *context=opaque;
+    if(!context)return -EINVAL;
+    int status=generation_test_join_nonframe_hold(context->rings,&context->identity);
+    if(status)return status;
+    fprintf(stderr,"KER_SESSION_TEST_NONFRAME_HOLD_JOINED {\"generation\":%u}\n",
+        context->identity.generation);fflush(stderr);
+    return 0;
+}
+static int generation_test_nonframe_drain_context(void *opaque)
+{
+    return generation_test_nonframe_drain(opaque);
+}
 static int generation_frame_drain_control(char command, void *opaque)
 {
     struct generation_frame_drain_context *context=opaque;
     if(!context||!context->rings)return -EINVAL;
+    if(command=='K')return generation_test_nonframe_drain_dispatch(command,context->nonframe_reap,
+        generation_test_hold_started,
+        atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire),
+        generation_test_nonframe_join_context,generation_test_nonframe_drain_context,context);
+    int hold=generation_test_nonframe_hold(command,context,context->nonframe_reap);
+    if(hold)return hold;
     uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
     if(command=='Q') {
         if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||tx_after||pool_after)
@@ -581,19 +947,26 @@ static void reclaim_pmd(unsigned index)
     atomic_store_explicit(&directory->pmd_tx_lease_id, 0, memory_order_release);
     atomic_store_explicit(&directory->pmd_rx_lease_id, 0, memory_order_release);
 }
-static void reclaim_control(unsigned index)
+static int reclaim_control_impl(unsigned index,bool skip_ready)
 {
-    reclaim_pmd(index);
     struct client *client = &clients[index];
     if (client->generation_admitted) {
         struct ker_generation_identity identity=generation_identity(client);
-        if (!generation_rings || ker_generation_reap_dead(generation_rings,&identity)) {
+        if (!generation_rings) {
             fprintf(stderr,"ker session: generation packet journal lacks exact-death recovery proof\n");_Exit(125);
         }
+        if(!skip_ready) {
+            int ready=ker_generation_reap_ready(generation_rings,&identity);
+            if(ready)return ready;
+        }
+        client->reap_full_attempts++;
+        int result=ker_generation_reap_dead(generation_rings,&identity);
+        if(result)return result;
         client->generation_admitted=false;
         /* A producer lease is cleared only after exact PIDFD-death recovery. */
         if (client->frame_pending) frame_pending_clear(client,FRAME_DEAD_REAPED);
     }
+    reclaim_pmd(index);
     struct rte_mbuf *owned = client->leased_packet;
     /* The private resident journal predates RESERVE's acknowledgement. Queue
      * emptiness is not evidence that an object was never borrowed. */
@@ -622,7 +995,41 @@ static void reclaim_control(unsigned index)
     rte_pktmbuf_reset(owned);
     rte_pktmbuf_free(owned);
     client->leased_packet = NULL;
+    return 0;
 }
+static int reclaim_control(unsigned index)
+{
+    return reclaim_control_impl(index,false);
+}
+static int reclaim_control_after_busy(unsigned index)
+{
+    return reclaim_control_impl(index,true);
+}
+static bool frame_recovery_targets(unsigned target_index)
+{
+    if(target_index>=CLIENTS)return true;
+    const struct client *target=&clients[target_index];
+    if(target->frame_pending||target->frame_reap_blocked||target->reap_deferred||
+        target->reap_deferred_peer_pidfd>=0||target->handoff_state!=HANDOFF_NONE||target->pmd_parked)
+        return true;
+    if(handoff_state!=HANDOFF_NONE&&
+        (handoff_client==(int)target_index||handoff_peer==(int)target_index))return true;
+    for(unsigned i=0;i<CLIENTS;i++) {
+        const struct client *other=&clients[i];
+        if(other->frame_pending&&(i==target_index||other->frame_consumer_client==target_index||
+            other->handoff_peer==target_index||
+            (target->pidfd>=0&&other->handoff_peer_client_pidfd==target->pidfd)))return true;
+        if(other->frame_reap_blocked&&
+            (i==target_index||other->frame_reap_consumer_client==target_index))return true;
+        if(other->reap_deferred&&
+            (i==target_index||other->reap_deferred_peer_client==target_index||
+                (target->pidfd>=0&&other->reap_deferred_peer_pidfd>=0&&
+                    other->reap_deferred_peer_pidfd==target->pidfd)))return true;
+    }
+    return false;
+}
+static bool nonframe_full_reap_allowed(unsigned target_index,int bind_result)
+{ return bind_result==0&&!frame_recovery_targets(target_index); }
 #ifdef KER_SESSION_TEST_HOOKS
 static int verify_tc3_probe_barrier(void)
 {
@@ -807,6 +1214,26 @@ static int generation_detach_seed(struct ker_generation_rings *rings,
     }
     return 0;
 }
+static void generation_test_nonframe_log_drain_failure(const char *phase,unsigned direction,unsigned q,
+    int expected,int api_status,const struct rte_mbuf *packet,bool release_attempted,int release_status,
+    struct ker_generation_rings *rings)
+{
+    if(!getenv("KER_SESSION_TEST_NONFRAME_REAP"))return;
+    unsigned counts[8];
+    for(unsigned d=0;d<2;d++)for(unsigned queue=0;queue<2;queue++)for(unsigned g=0;g<2;g++){
+        unsigned index=(d*2+queue)*2+g;
+        struct rte_ring *ring=generation_test_ring(d,queue,g);
+        counts[index]=ring?rte_ring_count(ring):UINT32_MAX;
+    }
+    (void)rings;
+    char release_status_json[16];
+    if(release_attempted)snprintf(release_status_json,sizeof(release_status_json),"%d",release_status);
+    else strcpy(release_status_json,"null");
+    fprintf(stderr,"KER_SESSION_TEST_NONFRAME_DRAIN_FAILURE {\"phase\":\"%s\",\"direction\":\"%s\",\"queue\":%u,\"expected\":%d,\"api_status\":%d,\"packet_null\":%s,\"release_attempted\":%s,\"release_status\":%s,\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u]}\n",
+        phase,direction?"tx":"rx",q,expected,api_status,packet?"false":"true",
+        release_attempted?"true":"false",release_status_json,
+        counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],counts[6],counts[7]);fflush(stderr);
+}
 static int generation_detach_release_retained(struct ker_generation_rings *rings,
     const struct ker_generation_identity *identity,bool foreign,bool nonowner_detach,bool empty_cleanup)
 {
@@ -814,12 +1241,28 @@ static int generation_detach_release_retained(struct ker_generation_rings *rings
         struct rte_mbuf *packet=NULL;
         int expected_rx=empty_cleanup?1:((identity->generation==0&&q==0)?0:1);
         int got=ker_generation_rx_dequeue(rings,identity,0,q,&packet);
-        if(got!=expected_rx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet))))return -EUCLEAN;
+        int release_status=0;
+        bool release_attempted=got==expected_rx&&got==1&&packet;
+        if(release_attempted)
+            release_status=ker_generation_packet_release(rings,identity,packet);
+        if(got!=expected_rx||(!got&&packet)||(got==1&&(!packet||release_status))) {
+            generation_test_nonframe_log_drain_failure("step5_dequeue",0,q,expected_rx,got,packet,
+                release_attempted,release_status,rings);
+            return -EUCLEAN;
+        }
         packet=NULL;
         int expected_tx=1;
         if(!empty_cleanup&&identity->generation==1&&q==1&&!foreign&&!nonowner_detach)expected_tx=0;
         got=ker_generation_tx_dequeue_peer(rings,identity,0,q,&packet);
-        if(got!=expected_tx||(!got&&packet)||(got==1&&(!packet||ker_generation_packet_release(rings,identity,packet))))return -EUCLEAN;
+        release_status=0;
+        release_attempted=got==expected_tx&&got==1&&packet;
+        if(release_attempted)
+            release_status=ker_generation_packet_release(rings,identity,packet);
+        if(got!=expected_tx||(!got&&packet)||(got==1&&(!packet||release_status))) {
+            generation_test_nonframe_log_drain_failure("step5_dequeue",1,q,expected_tx,got,packet,
+                release_attempted,release_status,rings);
+            return -EUCLEAN;
+        }
     }
     return 0;
 }
@@ -926,12 +1369,51 @@ static int generation_test_step(struct ker_generation_rings *rings,
     }
     return -EINVAL;
 }
+static int generation_test_probe_command(struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity, struct rte_mempool *pool,
+    unsigned *step_index, bool peer_only, bool generation_test,
+    bool generation_detach_test, bool generation_tx_full_test,
+    bool foreign, bool nonowner_detach, bool empty_cleanup)
+{
+    if (getenv("KER_SESSION_TEST_NONFRAME_REAP"))
+        fprintf(stderr, "KER_SESSION_TEST_GENERATION_PROBE_CONTEXT {\"peer_only\":%s,\"generation_rings_enabled\":%s,\"generation_rings_present\":%s,\"detach_test\":%s,\"step\":%u,\"generation\":%u}\n",
+            peer_only ? "true" : "false", generation_rings_enabled ? "true" : "false",
+            rings ? "true" : "false", generation_detach_test ? "true" : "false",
+            step_index ? *step_index : UINT_MAX, identity ? identity->generation : UINT_MAX);
+    if (!rings || !generation_rings_enabled || !identity || !pool || !step_index || peer_only ||
+        !(generation_test || generation_detach_test || generation_tx_full_test)) return -EOPNOTSUPP;
+    unsigned step = *step_index;
+    int status = generation_test_step(rings, identity, pool, step,
+        generation_detach_test, foreign, nonowner_detach, empty_cleanup, generation_tx_full_test);
+    if (status) return status;
+    printf("KER_GENERATION_PROBED {\"generation\":%u,\"step\":%u}\n", identity->generation, step);
+    fflush(stdout);
+    *step_index = step + 1;
+    return 0;
+}
+/* The paired standby normally accepts only P (PMD acquisition).  This narrow
+ * test command allows the non-frame-reap regression to run the existing G
+ * generation probe before acquisition, but only for its explicit profile. */
+static int generation_test_standby_command(char command, bool opted_in,
+    struct ker_generation_rings *rings, const struct ker_generation_identity *identity,
+    struct rte_mempool *pool, unsigned *step_index, bool peer_only,
+    bool generation_test, bool generation_detach_test, bool generation_tx_full_test,
+    bool foreign, bool nonowner_detach, bool empty_cleanup)
+{
+    if (command != 'G' || !opted_in) return -EAGAIN;
+    if (!generation_detach_test) return -EOPNOTSUPP;
+    return generation_test_probe_command(rings, identity, pool, step_index, peer_only,
+        generation_test, generation_detach_test, generation_tx_full_test,
+        foreign, nonowner_detach, empty_cleanup);
+}
 #endif
 static void drop_client(unsigned i)
 {
     if (clients[i].frame_pending) _Exit(125);
     if (clients[i].handoff_peer_pidfd>=0)
         close(clients[i].handoff_peer_pidfd);
+    if (clients[i].reap_deferred_peer_pidfd>=0)
+        close(clients[i].reap_deferred_peer_pidfd);
     for(unsigned s=1;s<KER_SESSION_SLOTS;s++)
         if(slots[s].peer_child==(int)i){
             slots[s].peer_capability=0;slots[s].peer_epoch=0;slots[s].peer_master=-1;
@@ -942,7 +1424,8 @@ static void drop_client(unsigned i)
     clients[i] = (struct client){.fd = -1, .pidfd = -1,
         .handoff_peer_pidfd = -1,
         .frame_consumer_pidfd = -1, .frame_producer_pidfd = -1,
-        .frame_consumer_client = UINT_MAX};
+        .frame_consumer_client = UINT_MAX,.frame_reap_consumer_client=UINT_MAX,
+        .reap_deferred_peer_client=UINT_MAX,.reap_deferred_peer_pidfd=-1};
 }
 /* Only registered EAL borrowers and masters need lifetime tracking after EOF. */
 static void disconnect_client(unsigned i)
@@ -983,17 +1466,103 @@ static void reap_clients(void)
     /* EOF is not proof that an EAL borrower has stopped. Retain its pidfd. */
     for (unsigned i = 0; i < CLIENTS; i++)
         if (clients[i].kind != UNUSED && dead(clients[i].pidfd)) {
+            if(clients[i].reap_deferred) {
+                unsigned peer_index=clients[i].reap_deferred_peer_client;
+                if(peer_index<CLIENTS && clients[i].reap_deferred_peer_pidfd>=0 &&
+                    !dead(clients[i].reap_deferred_peer_pidfd)) {
+                    int bound=bind_deferred_frame_peer(i);
+                    if(bound!=1)_Exit(125);
+                    if(monotonic_ms()>=clients[i].reap_deferred_deadline_ms)_Exit(125);
+                    if(clients[i].reap_deferred_peer_is_producer)continue;
+                    uint64_t now=monotonic_ms();
+                    if(now<clients[i].reap_deferred_retry_ms)continue;
+                    struct ker_generation_identity target_identity=generation_identity(&clients[i]);
+                    int ready=ker_generation_reap_ready(generation_rings,&target_identity);
+                    clients[i].reap_deferred_attempts++;
+                    if(ready==-EBUSY){clients[i].reap_deferred_retry_ms=now+100;continue;}
+                    if(ready)_Exit(125);
+                    /* Readiness is only a nonmutating preflight. The full
+                     * reaper closes its gates and validates the transaction. */
+                    clients[i].reap_deferred=false;
+                } else {
+                    if(clients[i].reap_deferred_peer_pidfd>=0)
+                        close(clients[i].reap_deferred_peer_pidfd);
+                    clients[i].reap_deferred_peer_pidfd=-1;
+                    clients[i].reap_deferred_peer_client=UINT_MAX;
+                    clients[i].reap_deferred=false;
+                }
+            }
             if ((int)i == handoff_client && handoff_state != HANDOFF_NONE) _Exit(125);
             if ((int)i == handoff_peer && handoff_state != HANDOFF_NONE) _Exit(125);
             if (clients[i].kind == MASTER) {
                 if (!release_slot(clients[i].slot)) drop_client(i);
             } else {
                 if (clients[i].kind == RESERVED || clients[i].kind == ATTACHED) {
+                    int reap=reclaim_control(i);
+                    if(reap==-EBUSY) {
+                        int bound=bind_deferred_frame_peer(i);
+                        if(nonframe_full_reap_allowed(i,bound)) {
+#ifdef KER_SESSION_TEST_HOOKS
+                            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+                                uint32_t active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+                                if(ker_generation_test_active_counts(generation_rings,active))_Exit(125);
+                                printf("KER_SESSION_TEST_NONFRAME_REAP_WAIT {\"client\":%u,\"status\":%d,\"frame_pending\":false,\"active\":[%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u,\"control_pool_in_use\":%u}\n",
+                                    i,reap,active[0],active[1],active[2],active[3],
+                                    ker_generation_packet_pool_in_use(generation_rings),
+                                    rte_mempool_avail_count(message_pool),rte_mempool_in_use_count(message_pool));
+                                fflush(stdout);
+                            }
+#endif
+                            reap=reclaim_control_after_busy(i);
+#ifdef KER_SESSION_TEST_HOOKS
+                            if(getenv("KER_SESSION_TEST_NONFRAME_REAP")) {
+                                uint32_t active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+                                unsigned rings[8]={0};
+                                if(ker_generation_test_active_counts(generation_rings,active))_Exit(125);
+                                for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+                                    struct rte_ring *ring=generation_test_ring(d,q,g);
+                                    if(!ring)_Exit(125);
+                                    rings[(d*2+q)*2+g]=rte_ring_count(ring);
+                                }
+                                printf("KER_SESSION_TEST_NONFRAME_REAP_DONE {\"client\":%u,\"status\":%d,\"full_reap_attempts\":%u,\"generation_admitted\":%s,\"active\":[%u,%u,%u,%u],\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u}\n",
+                                    i,reap,clients[i].reap_full_attempts,clients[i].generation_admitted?"true":"false",
+                                    active[0],active[1],active[2],active[3],rings[0],rings[1],rings[2],rings[3],
+                                    rings[4],rings[5],rings[6],rings[7],ker_generation_packet_pool_in_use(generation_rings),
+                                    rte_mempool_avail_count(message_pool));
+                                fflush(stdout);
+                            }
+#endif
+                            if(reap)_Exit(125);
+#ifdef KER_SESSION_TEST_HOOKS
+                            if(getenv("KER_SESSION_TEST_NONFRAME_REAP"))
+                                generation_test_nonframe_reap_completed=true;
+#endif
+                        } else {
+                            if(bound!=1)_Exit(125);
+                            clients[i].reap_deferred=true;
+                            if(!clients[i].reap_deferred_attempts)clients[i].reap_deferred_attempts=1;
+                            if(!clients[i].reap_deferred_deadline_ms)
+                                clients[i].reap_deferred_deadline_ms=monotonic_ms()+KER_SESSION_HANDOFF_TIMEOUT_MS;
+                            if(!clients[i].reap_deferred_peer_is_producer)
+                                clients[i].reap_deferred_retry_ms=monotonic_ms()+100;
+                            continue;
+                        }
+                    }
+                    if(reap)_Exit(125);
+#ifdef KER_SESSION_TEST_HOOKS
+                    if(getenv("KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER")) {
+                        uint32_t tx=UINT32_MAX,pool=UINT32_MAX;
+                        struct ker_generation_test_counters counters;
+                        if(ker_generation_test_tx_snapshot(generation_rings,0,0,0,&tx,&pool)||tx||pool||
+                            ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters))_Exit(125);
+                        printf("KER_SESSION_TEST_REAP_COMPLETED {\"client\":%u,\"status\":0,\"full_reap_attempts\":%u,\"tx_after\":%u,\"pool_after\":%u,\"pidfd_dead\":%s}\n",
+                            i,clients[i].reap_full_attempts,tx,pool,dead(clients[i].pidfd)?"true":"false");fflush(stdout);
+                    }
+#endif
                     if (clients[i].kind == ATTACHED && !clients[i].drain_mode) {
                         slots[clients[i].slot].worker_pid[clients[i].generation][clients[i].process] = 0;
                         slots[clients[i].slot].worker_heartbeat_ms[clients[i].generation][clients[i].process] = 0;
                     }
-                    reclaim_control(i);
                 }
                 drop_client(i);
             }
@@ -1104,6 +1673,27 @@ static int directory_test_corrupt_header(char field)
     }
     return 0;
 }
+static void generation_test_nonframe_primary_snapshot(uint64_t sequence)
+{
+    if(!getenv("KER_SESSION_TEST_NONFRAME_REAP")||!generation_test_nonframe_reap_completed||
+        generation_test_nonframe_final_snapshot_emitted||!generation_rings||!message_pool)return;
+    unsigned rings[8],active[4]={UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+    for(unsigned d=0;d<2;d++)for(unsigned q=0;q<2;q++)for(unsigned g=0;g<2;g++){
+        unsigned index=(d*2+q)*2+g;
+        struct rte_ring *ring=generation_test_ring(d,q,g);
+        if(!ring)return;
+        rings[index]=rte_ring_count(ring);
+    }
+    if(memcmp(rings,(unsigned[8]){0},sizeof(rings)))return;
+    int active_status=ker_generation_test_active_counts(generation_rings,active);
+    unsigned packet_pool_in_use=ker_generation_packet_pool_in_use(generation_rings);
+    printf("KER_SESSION_TEST_NONFRAME_FINAL_SNAPSHOT {\"sequence\":%llu,\"active_status\":%d,\"active\":[%u,%u,%u,%u],\"rings\":[%u,%u,%u,%u,%u,%u,%u,%u],\"packet_pool_in_use\":%u,\"control_pool_available\":%u}\n",
+        (unsigned long long)sequence,active_status,active[0],active[1],active[2],active[3],
+        rings[0],rings[1],rings[2],rings[3],rings[4],rings[5],rings[6],rings[7],
+        packet_pool_in_use,rte_mempool_avail_count(message_pool));
+    fflush(stdout);
+    generation_test_nonframe_final_snapshot_emitted=true;
+}
 #endif
 static int handle(unsigned i, const struct ker_session_message *request,
     struct ker_session_message *reply)
@@ -1188,6 +1778,9 @@ static int handle(unsigned i, const struct ker_session_message *request,
             reply->slot += !!slots[s].epoch;
             reply->process += users(s);
         }
+#ifdef KER_SESSION_TEST_HOOKS
+        generation_test_nonframe_primary_snapshot(request->sequence);
+#endif
         return 0;
     }
     if (request->command == KER_SESSION_MASTER) {
@@ -1706,6 +2299,31 @@ static void receive_request(unsigned i)
 {
     struct client *client = &clients[i];
     struct ker_session_message request, reply;
+    struct ker_session_message pending;
+    ssize_t peek=recv(client->fd,&pending,sizeof(pending),MSG_DONTWAIT|MSG_PEEK|MSG_TRUNC);
+    if(peek==(ssize_t)sizeof(pending) && client->sequence!=UINT64_MAX &&
+        pending.sequence==client->sequence+1 &&
+        (pending.command==KER_SESSION_FRAME_COMMIT||pending.command==KER_SESSION_FRAME_CANCEL)) {
+        unsigned consumer_index=client->frame_consumer_client;
+        if(consumer_index<CLIENTS && clients[consumer_index].reap_deferred &&
+            deferred_frame_request_matches(i,&pending)) {
+            struct client *consumer=&clients[consumer_index];
+            if(consumer->reap_deferred_peer_client!=i ||
+                !consumer->reap_deferred_peer_is_producer ||
+                consumer->reap_deferred_peer_pid!=client->pid ||
+                consumer->reap_deferred_peer_pidfd<0 || !client->frame_pending ||
+                pending.sequence!=client->sequence+1)_Exit(125);
+            client->frame_reap_blocked=true;
+            client->frame_reap_blocked_sequence=pending.sequence;
+            client->frame_reap_blocked_command=(unsigned)pending.command;
+            client->frame_reap_consumer_client=consumer_index;
+            client->frame_reap_blocked_request=pending;
+            client->frame_reap_attempts=0;
+            client->frame_reap_retry_ms=monotonic_ms()+50;
+            client->frame_reap_deadline_ms=monotonic_ms()+1500;
+            return;
+        }
+    }
     ssize_t n = recv(client->fd, &request, sizeof(request), MSG_DONTWAIT | MSG_TRUNC);
     if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
     if (n != sizeof(request)) {
@@ -1771,7 +2389,8 @@ static int accept_client(int listener)
         clients[i] = (struct client){.fd = fd, .pidfd = pidfd, .pid = credential.pid, .kind = UNBOUND,
             .handoff_peer_pidfd = -1,
             .frame_consumer_pidfd = -1, .frame_producer_pidfd = -1,
-            .frame_consumer_client = UINT_MAX};
+            .frame_consumer_client = UINT_MAX,.frame_reap_consumer_client=UINT_MAX,
+            .reap_deferred_peer_client=UINT_MAX,.reap_deferred_peer_pidfd=-1};
         return 0;
     }
     close(pidfd); close(fd); return 0;
@@ -1795,7 +2414,8 @@ static int primary(const char *path, int control)
     for (unsigned i = 0; i < CLIENTS; i++) clients[i] = (struct client){.fd = -1, .pidfd = -1,
         .handoff_peer_pidfd = -1,
         .frame_consumer_pidfd = -1, .frame_producer_pidfd = -1,
-        .frame_consumer_client = UINT_MAX};
+        .frame_consumer_client = UINT_MAX,.frame_reap_consumer_client=UINT_MAX,
+        .reap_deferred_peer_client=UINT_MAX,.reap_deferred_peer_pidfd=-1};
     for (unsigned i = 0; i < KER_SESSION_SLOTS; i++) slots[i].master = -1;
     zone = rte_memzone_reserve(KER_SESSION_ZONE, sizeof(*directory), SOCKET_ID_ANY, 0);
     if (!zone) goto cleanup;
@@ -1930,9 +2550,11 @@ static int primary(const char *path, int control)
         struct pollfd fds[CLIENTS + 2];
         fds[0] = (struct pollfd){.fd = control, .events = POLLIN};
         fds[1] = (struct pollfd){.fd = listener, .events = POLLIN};
-        for (unsigned i = 0; i < CLIENTS; i++) fds[i + 2] = (struct pollfd){.fd = clients[i].fd, .events = POLLIN};
+        for (unsigned i = 0; i < CLIENTS; i++) fds[i + 2] = (struct pollfd){.fd = clients[i].fd,
+            .events = clients[i].frame_reap_blocked ? 0 : POLLIN};
         int ready = poll(fds, CLIENTS + 2, 50);
         if (ready < 0) { if (errno == EINTR) continue; result = 1; break; }
+        retry_blocked_frame_requests();
         if (fds[0].revents) {
 #ifdef KER_SESSION_TEST_HOOKS
             if (fds[0].revents & POLLIN) {
@@ -2942,6 +3564,8 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
 #ifdef KER_SESSION_TEST_HOOKS
     bool detach_foreign_result=false;
     bool detach_nonowner_result=false;
+    bool nonframe_reap_requested=getenv("KER_SESSION_TEST_NONFRAME_REAP")!=NULL;
+    bool nonframe_reap_active=false;
 #endif
     struct ker_worker_exception exception_bridge = {.fd=-1};
     bool initialized = false;
@@ -3002,6 +3626,13 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
 #endif
         )) goto cleanup;
     if (generation_rings_enabled && !peer_only && ker_generation_rings_attach(d->session,1,2,pool,&generation_rings)) goto cleanup;
+#ifdef KER_SESSION_TEST_HOOKS
+    if(nonframe_reap_requested) {
+        if(ring_pmd!=2||!generation_rings_enabled||!generation_rings||peer_only||
+            !generation_detach_test||generation>1)goto cleanup;
+        nonframe_reap_active=true;
+    }
+#endif
 #ifdef KER_SESSION_TEST_HOOKS
     if (generation_rings_test_replay) {
         if (!generation_rings || peer_only || ker_generation_rings_test_replay(generation_rings)) goto cleanup;
@@ -3106,6 +3737,9 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         goto cleanup;
     }
 #endif
+#ifdef KER_SESSION_TEST_HOOKS
+    unsigned generation_test_step_index=generation_detach_test?3U:0U;
+#endif
     if (ring_pmd == 2&&!peer_only) {
         /* A paired standby owns only its coordinate control lease. Do not
          * inspect data leases or touch either device queue before admission.
@@ -3130,9 +3764,28 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             }
             if (!waiters[0].revents) continue;
             char command;
-            if (!(waiters[0].revents & POLLIN) || read(control, &command, 1) != 1 || command != 'P') {
+            if (!(waiters[0].revents & POLLIN) || read(control, &command, 1) != 1) {
                 result = 0; goto cleanup;
             }
+#ifdef KER_SESSION_TEST_HOOKS
+            int standby_probe = generation_test_standby_command(command,
+                getenv("KER_SESSION_TEST_NONFRAME_REAP") != NULL,
+                generation_rings, &(struct ker_generation_identity){.session=message.session,
+                    .epoch=message.epoch,.slot=(uint32_t)message.slot,.generation=generation,
+                    .process=process,.pid=(uint32_t)getpid()}, pool,
+                &generation_test_step_index, peer_only, generation_test, generation_detach_test,
+                generation_tx_full_test, detach_foreign_result, detach_nonowner_result,
+                generation_empty_cleanup_test);
+            if (standby_probe != -EAGAIN) {
+                if (standby_probe) {
+                    fprintf(stderr,"ker session: standby generation probe failed step=%u status=%d\n",
+                        generation_test_step_index,standby_probe);
+                    result=1; goto cleanup;
+                }
+                continue;
+            }
+#endif
+            if (command != 'P') { result = 0; goto cleanup; }
 #ifdef KER_SESSION_TEST_HOOKS
             /* Deterministically leave a real heartbeat ACK queued at the
              * PMD exchange boundary. Without the drain below, acquire_pmd()
@@ -3185,14 +3838,15 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
 #ifdef KER_SESSION_TEST_HOOKS
         struct generation_frame_drain_context frame_drain_context={.rings=generation_rings,
             .identity={.session=message.session,.epoch=message.epoch,.slot=(uint32_t)message.slot,
-                .generation=generation,.process=process,.pid=(uint32_t)getpid()}};
+                .generation=generation,.process=process,.pid=(uint32_t)getpid()},.message_pool=pool,
+            .nonframe_reap=nonframe_reap_active&&generation==0};
 #endif
         int packet_result=ker_session_packet_loop(pmd_port,packet_fd,wire_fd,mtu_fd,control,fd,peer,
             &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
             service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,
 #ifdef KER_SESSION_TEST_HOOKS
-            generation_frame_drain_test?generation_frame_drain_control:NULL,
-            generation_frame_drain_test?&frame_drain_context:NULL,
+            (generation_frame_drain_test||nonframe_reap_active)?generation_frame_drain_control:NULL,
+            (generation_frame_drain_test||nonframe_reap_active)?&frame_drain_context:NULL,
 #endif
             &packet_stats);
         if(packet_result<0){result=1;goto cleanup;}
@@ -3230,8 +3884,8 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                         &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
                         service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,
 #ifdef KER_SESSION_TEST_HOOKS
-                        generation_frame_drain_test?generation_frame_drain_control:NULL,
-                        generation_frame_drain_test?&frame_drain_context:NULL,
+                        (generation_frame_drain_test||nonframe_reap_active)?generation_frame_drain_control:NULL,
+                        (generation_frame_drain_test||nonframe_reap_active)?&frame_drain_context:NULL,
 #endif
                         &resumed_stats);
                     if(resumed<0){result=1;goto cleanup;}
@@ -3297,9 +3951,6 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     uint64_t device_sequence = 0;
     uint64_t probe_sequence = 0;
     unsigned deferred_probes = 0;
-#ifdef KER_SESSION_TEST_HOOKS
-    unsigned generation_test_step_index=generation_detach_test?3U:0U;
-#endif
     bool probe_pending = probe_only;
     /* Only a consumed P owns a response that must finish before a queued
      * control byte. Startup --probe-only work remains cancellable. */
@@ -3468,11 +4119,11 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                 struct ker_generation_identity identity = {.session=message.session,.epoch=message.epoch,
                     .slot=(uint32_t)message.slot,.generation=generation,.process=process,.pid=(uint32_t)getpid()};
                 if(peer_only||!generation_rings)goto cleanup;
-                int status = generation_test_step(generation_rings,&identity,pool,generation_test_step_index,
-                    generation_detach_test,detach_foreign_result,detach_nonowner_result,generation_empty_cleanup_test,
-                    generation_tx_full_test);
-                if (status) { fprintf(stderr,"ker session: generation adapter probe failed step=%u status=%d\n",generation_test_step_index,status); result=1; goto cleanup; }
-                printf("KER_GENERATION_PROBED {\"generation\":%u,\"step\":%u}\n",generation,generation_test_step_index++); fflush(stdout);
+                unsigned completed_step=generation_test_step_index;
+                int status=generation_test_probe_command(generation_rings,&identity,pool,&generation_test_step_index,
+                    peer_only,generation_test,generation_detach_test,generation_tx_full_test,
+                    detach_foreign_result,detach_nonowner_result,generation_empty_cleanup_test);
+                if (status) { fprintf(stderr,"ker session: generation adapter probe failed step=%u status=%d\n",completed_step,status); result=1; goto cleanup; }
                 if(generation_empty_cleanup_test&&generation_test_step_index==6) {
                     printf("KER_GENERATION_EMPTY_CLEANUP_RELEASED {\"generation\":%u}\n",generation); fflush(stdout);
                     generation_test_step_index=0;
@@ -3560,6 +4211,14 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
     }
     result = 0;
 cleanup:
+#ifdef KER_SESSION_TEST_HOOKS
+    if(nonframe_reap_active&&generation_test_hold_started) {
+        struct ker_generation_identity identity={.session=message.session,.epoch=message.epoch,
+            .slot=(uint32_t)message.slot,.generation=generation,.process=process,.pid=(uint32_t)getpid()};
+        if(generation_test_join_nonframe_hold(generation_rings,&identity))_Exit(125);
+        fprintf(stderr,"KER_SESSION_TEST_NONFRAME_HOLD_JOINED {\"generation\":%u}\n",generation);fflush(stderr);
+    }
+#endif
     if(ticket>=0)close(ticket);
     if (exception_bridge.pending && ker_worker_exception_close(&exception_bridge)) result = 1;
     if (exception_fd >= 0) close(exception_fd);

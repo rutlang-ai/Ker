@@ -13,6 +13,8 @@ for name, digest in manifest.items():
 records = json.loads((imported / 'provenance.json').read_text())
 generated = ((imported / 'linux_neighbor_output.c').read_text() +
              (imported / 'ker/linux_neighbor_output.h').read_text())
+assert '#include "compat/ethernet-abi.h"' in generated
+assert '#include <linux/if_ether.h>' not in generated
 assert len(records) == 5, records
 for record in records:
     raw = (linux / record['file']).read_bytes()

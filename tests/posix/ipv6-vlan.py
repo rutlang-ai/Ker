@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate original Linux IPv6 VLANs with independent host VLAN peers."""
 import argparse
+import atexit
 from contextlib import ExitStack
 import json
 import os
@@ -12,7 +13,10 @@ import subprocess
 import sys
 import tempfile
 
+from dpdk_runtime import private_runtime_environment
+
 PAYLOAD = b'native-ipv6\0'
+IPV4_FINAL_ACK = b'native-vlan-final-ack\0'
 DATAGRAM = bytes((i * 17 + 3) % 256 for i in range(1452))
 ADDRESSES = ((100, '2001:db8:100::2'), (100, '2001:db8:100::3'), (200, '2001:db8:200::2'))
 VLANS = ('100=198.19.100.2/24,2001:db8:100::2/64,2001:db8:100::3/128', '200=2001:db8:200::2/64')
@@ -98,6 +102,10 @@ def main():
         for name in ('launcher', 'library', 'worker', 'app'):
             command += ['--' + name, str(getattr(args, name).resolve())]
         return subprocess.run(command).returncode
+    runtime = tempfile.TemporaryDirectory(prefix='ker-ipv6-vlan-runtime-')
+    atexit.register(runtime.cleanup)
+    env = private_runtime_environment(Path(runtime.name) / 'dpdk')
+    env['KER_NATIVE_VLANS'] = '300=2001:db8:300::2/64'
     ip('link', 'set', 'lo', 'up')
     ip('link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink')
     for name in ('kerhost', 'kerlink'):
@@ -113,7 +121,6 @@ def main():
     eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink'
     base = [sys.executable, str(args.launcher), '--library', str(args.library), '--io-worker', str(args.worker),
             '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', eal, '--no-all-multicast']
-    env = dict(os.environ, KER_NATIVE_VLANS='300=2001:db8:300::2/64')
     with tempfile.TemporaryDirectory(prefix='ker-ipv6-vlan-') as directory:
         root = Path(directory)
         config = root / 'vlans.ini'
@@ -121,6 +128,10 @@ def main():
         for n, mode in enumerate(('ini-large', 'cli-scatter')):
             stats, capture = root / (mode + '.json'), root / mode
             capture.mkdir()
+            # Each profile starts a fresh TAP endpoint but reuses this host
+            # VLAN. Discard the previous endpoint's dynamic ARP entry so the
+            # host resolves the current endpoint through normal ARP.
+            ip('-4', 'neigh', 'flush', 'dev', 'kerhost.100')
             options = ['--config', str(config)]
             if mode == 'cli-scatter':
                 override = root / 'override.ini'; override.write_text('[vlan.300]\naddresses=2001:db8:300::2/64\n')
@@ -167,13 +178,19 @@ def main():
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
                         peer.settimeout(8); peer.connect(('198.19.100.2', port)); peer.send(PAYLOAD)
                         require(peer.recv(256) == PAYLOAD, 'mixed IPv4 VLAN traffic failed')
+                        peer.send(IPV4_FINAL_ACK)
                     output = process.communicate(timeout=20)[0]
                     require(process.returncode == 0 and 'PASS:' in output, 'native app failed: ' + output)
                     record = json.loads(stats.read_text())
                     require(record['outstanding'] == 0 and record['tx'] and record['rx'], 'worker traffic/reclamation missing')
                     require(record['native']['active_opens'] == 3 and record['native']['passive_opens'] == 3 and
                             record['native']['udp6_in_datagrams'] == 6 and record['native']['udp6_out_datagrams'] == 6 and
-                            record['native']['udp_in_datagrams'] == 1, 'traffic bypassed original Linux: ' + str(record))
+                            record['native']['udp_in_datagrams'] == 2, 'traffic bypassed original Linux: ' + str(record))
+                    neighbors = json.loads(subprocess.check_output(
+                        ['ip', '-j', '-4', 'neigh', 'show', 'to', '198.19.100.2', 'dev', 'kerhost.100']))
+                    require(any(entry.get('lladdr', '').lower() == record['io']['mac'].lower()
+                                for entry in neighbors),
+                            'host IPv4 ARP did not resolve the current native endpoint: ' + str(neighbors))
                     for tag, address in ADDRESSES:
                         neighbors = json.loads(subprocess.check_output(['ip', '-j', '-6', 'neigh', 'show', 'dev', f'kerhost.{tag}']))
                         require(any(p.get('dst') == address and p.get('lladdr', '').lower() == record['io']['mac'].lower()
@@ -182,6 +199,17 @@ def main():
                     print('PASS: ' + mode + ' IPv6 VLAN/VIP TCP/UDP, metadata, NDP, wire tags/checksums and mixed IPv4', flush=True)
                 except Exception:
                     log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
+                    print(f'native process return code: {process.poll()}', file=sys.stderr)
+                    print('native stats: ' + (stats.read_text() if stats.exists() else '<not written>'), file=sys.stderr)
+                    try:
+                        neighbors = subprocess.check_output(
+                            ['ip', '-j', '-4', 'neigh', 'show', 'dev', 'kerhost.100'], text=True).strip()
+                        link_stats = subprocess.check_output(
+                            ['ip', '-s', 'link', 'show', 'dev', 'kerhost.100'], text=True).strip()
+                        print('IPv4 VLAN neighbor state: ' + neighbors, file=sys.stderr)
+                        print('IPv4 VLAN link counters:\n' + link_stats, file=sys.stderr)
+                    except subprocess.SubprocessError as diagnostic_error:
+                        print('IPv4 VLAN diagnostics failed: ' + str(diagnostic_error), file=sys.stderr)
                     raise
                 finally:
                     if process.poll() is None:

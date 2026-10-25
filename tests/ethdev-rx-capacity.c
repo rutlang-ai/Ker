@@ -5,7 +5,7 @@
 #include "runtime/skb.h"
 #include <errno.h>
 #include <limits.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <rte_eth_ring.h>
 #include <rte_ethdev.h>
 #include <rte_ring.h>
@@ -46,7 +46,8 @@ static int receive_packet(struct sk_buff *skb, struct ker_protocol_handler *ph,
     /* The final byte must fit before the imported Linux shared-info area. */
     unsigned int usable = RTE_ALIGN_FLOOR(DESTINATION_ROOM, SMP_CACHE_BYTES) -
         ker_skb_shared_info_size();
-    CHECK(skb_tailroom(skb) == usable - expected_headroom - expected_length);
+    CHECK(skb_tailroom(skb) >= 0 && (unsigned int)skb_tailroom(skb) ==
+        usable - expected_headroom - expected_length);
     callbacks++;
     CHECK(ker_skb_free(skb) == 0);
     return NET_RX_SUCCESS;
@@ -63,7 +64,7 @@ static struct rte_mbuf *make_packet(unsigned int length, uint8_t marker)
         /* Split Ethernet and IP fields into genuine small source segments. */
         unsigned int count = offset ? 173 : 10;
         if (count > length - offset) count = length - offset;
-        uint8_t *bytes = rte_pktmbuf_append(segment, count);
+        uint8_t *bytes = (uint8_t *)rte_pktmbuf_append(segment, count);
         CHECK(bytes);
         for (unsigned int i = 0; i < count; ++i)
             bytes[i] = wire_byte(offset + i, marker);

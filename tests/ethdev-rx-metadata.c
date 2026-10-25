@@ -5,7 +5,7 @@
 #include "runtime/transport-receive.h"
 #include "runtime/worker.h"
 #include <errno.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <netinet/ip.h>
 #include <rte_eth_ring.h>
 #include <rte_ethdev.h>

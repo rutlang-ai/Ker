@@ -1,0 +1,381 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-core:
+    name: Linux core (${{ matrix.compiler }}, tests ${{ matrix.testing }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        testing: ['ON', 'OFF']
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y cmake ninja-build python3 ${{ matrix.compiler }}
+
+      - name: Check out the pinned Linux source
+        run: git submodule update --init --depth 1 third_party/linux
+
+      - name: Configure strict build
+        env:
+          CC: ${{ matrix.compiler }}
+        run: |
+          cmake_args=(
+            -DCMAKE_BUILD_TYPE=Debug
+            -DBUILD_TESTING=${{ matrix.testing }}
+            -DKER_BUILD_EXAMPLES=ON
+            -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+          )
+          if grep -Eq 'option\([[:space:]]*KER_WITH_DPDK([[:space:]]|$)' CMakeLists.txt; then
+            cmake_args+=(-DKER_WITH_DPDK=OFF)
+          fi
+          if grep -Eq 'option\([[:space:]]*KER_WITH_NATIVE_TCP([[:space:]]|$)' CMakeLists.txt; then
+            cmake_args+=(-DKER_WITH_NATIVE_TCP=OFF)
+          fi
+          cmake -S . -B build -G Ninja "${cmake_args[@]}"
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Run C tests
+        if: matrix.testing == 'ON'
+        run: ctest --test-dir build --no-tests=error --output-on-failure
+
+      - name: Run Python unit tests, requiring them for migration sources
+        if: matrix.testing == 'ON'
+        shell: bash
+        run: |
+          mapfile -t python_tests < <(find tests/unit -maxdepth 1 -type f -name 'test_*.py' -print 2>/dev/null | sort)
+          native_expected=false
+          if [[ -f cmake/NativeLinux.cmake || -f src/posix/io-session.c || -f tests/posix/session-native-packets.py ]] || \
+             grep -Eq 'option\([[:space:]]*KER_WITH_NATIVE_TCP([[:space:]]|$)' CMakeLists.txt; then
+            native_expected=true
+          fi
+          if (( ${#python_tests[@]} == 0 )); then
+            if [[ "$native_expected" == true ]]; then
+              echo 'Native migration sources are present but tests/unit/test_*.py is empty.' >&2
+              exit 1
+            fi
+            echo 'Python migration suite: NOT PRESENT in this source snapshot (no result claimed).' | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
+          fi
+
+      - name: Test CI native-test selection helper
+        if: matrix.testing == 'ON'
+        run: PYTHONDONTWRITEBYTECODE=1 python3 tools/ci/test_native_tests.py -v
+
+      - name: Install production configuration
+        if: matrix.testing == 'OFF'
+        run: cmake --install build --prefix "$RUNNER_TEMP/ker-install"
+
+  pinned-dpdk-build:
+    name: Pinned DPDK build; native Linux/LKL when present
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install DPDK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bison build-essential cmake curl flex libbsd-dev libelf-dev libfdt-dev libnuma-dev \
+            iproute2 kmod util-linux libbpf-dev libmnl-dev libnl-route-3-dev libpcap-dev \
+            meson ninja-build pkg-config python3 python3-pyelftools
+
+      - name: Check out the pinned Linux source for an optional Ker integration build
+        run: git submodule update --init --depth 1 third_party/linux
+
+      - name: Check out the pinned DPDK source
+        run: git submodule update --init --depth 1 third_party/dpdk
+
+      - name: Detect native Linux backend in this checkout
+        id: native
+        shell: bash
+        run: |
+          native_cmake=0
+          native_worker=0
+          native_fixture=0
+          [[ -f cmake/NativeLinux.cmake ]] && native_cmake=1
+          [[ -f src/posix/io-session.c ]] && native_worker=1
+          [[ -f tests/posix/session-native-packets.py ]] && native_fixture=1
+          option=0
+          grep -Eq 'option\([[:space:]]*KER_WITH_NATIVE_TCP([[:space:]]|$)' CMakeLists.txt && option=1
+          if (( native_cmake == 0 && native_worker == 0 && native_fixture == 0 && option == 0 )); then
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            {
+              echo '### Native Linux/LKL validation'
+              echo 'NOT AVAILABLE in this checkout: the native adapter, worker, and migration fixture are absent.'
+              echo 'This is not a native build or runtime result. A later migration source snapshot must enable this job.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif (( native_cmake == 1 && native_worker == 1 && native_fixture == 1 && option == 1 )); then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Partial native migration source detected; refusing to report a green native check.' >&2
+            exit 1
+          fi
+
+      - name: Verify the checked-out DPDK gitlink
+        shell: bash
+        run: |
+          for path in third_party/linux third_party/dpdk; do
+            expected="$(git ls-tree HEAD "$path" | awk '{print $3}')"
+            actual="$(git -C "$path" rev-parse HEAD)"
+            test -n "$expected"
+            test "$actual" = "$expected"
+            echo "$path gitlink: $actual"
+          done
+
+      - name: Enable native user and network namespaces
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [[ -e /proc/sys/user/max_user_namespaces ]]; then
+            sudo sysctl -w user.max_user_namespaces=28633
+          fi
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Configure pinned DPDK
+        env:
+          KER_DPDK_BUILD_DIR: ${{ runner.temp }}/dpdk-build
+          KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+          KER_DPDK_JOBS: '2'
+        run: |
+          set -euo pipefail
+          dpdk_source=third_party/dpdk
+          if [[ "${{ steps.native.outputs.present }}" == true ]] && \
+              [[ -f tools/prepare-dpdk-tap-retry.py && -f compat/dpdk/tap-tx-retry.patch ]]; then
+            dpdk_source="$RUNNER_TEMP/dpdk-tap-retry-source"
+            python3 tools/prepare-dpdk-tap-retry.py \
+              --source third_party/dpdk --output "$dpdk_source"
+            python3 tools/ci/native_tests.py verify-tap-retry-source \
+              "$dpdk_source" compat/dpdk/tap-tx-retry.patch
+            echo "Prepared isolated patched DPDK source: $dpdk_source"
+          elif [[ "${{ steps.native.outputs.present }}" == true ]]; then
+            echo 'Native source snapshot lacks the isolated TAP retry adapter required by the migration datapath tests.' >&2
+            exit 1
+          fi
+          meson setup "$KER_DPDK_BUILD_DIR" "$dpdk_source" \
+            --prefix "$KER_DPDK_PREFIX" --libdir lib64 \
+            -Denable_libs=eal,ring,mempool,mbuf,ethdev,gso,vhost,cryptodev,hash,pci,dmadev,kvargs \
+            -Denable_drivers=bus/vdev,bus/pci,mempool/ring,net/null,net/ring,net/tap,net/virtio,net/vhost \
+            -Ddisable_apps='*' -Dtests=false -Dplatform=generic
+          meson compile -C "$KER_DPDK_BUILD_DIR" -j 2
+          meson install -C "$KER_DPDK_BUILD_DIR" --no-rebuild
+
+      - name: Export pinned DPDK runtime libraries to test subprocesses
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_path="$(python3 tools/ci/native_tests.py dpdk-library-path "$RUNNER_TEMP/dpdk-install")"
+          if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+            runtime_path="${runtime_path}:${LD_LIBRARY_PATH}"
+          fi
+          echo "LD_LIBRARY_PATH=${runtime_path}" >> "$GITHUB_ENV"
+          echo "Pinned DPDK runtime directories: ${runtime_path}"
+
+      - name: Build pinned iproute2 with deterministic netem seed support
+        if: steps.native.outputs.present == 'true'
+        run: |
+          tools/ci/build_iproute2_tc.sh "$RUNNER_TEMP/iproute2-bin"
+          echo "$RUNNER_TEMP/iproute2-bin" >> "$GITHUB_PATH"
+
+      - name: Configure and test Ker with pinned DPDK when integration exists
+        run: |
+          if [[ -f cmake/DPDK.cmake ]] && \
+              grep -Eq 'option\([[:space:]]*KER_WITH_DPDK([[:space:]]|$)' CMakeLists.txt; then
+            pkgconfig_dir="$(find "$RUNNER_TEMP/dpdk-install" -type f -name libdpdk.pc -printf '%h\n' -quit)"
+            test -n "$pkgconfig_dir"
+            cmake_args=(
+              -DCMAKE_BUILD_TYPE=Debug
+              -DBUILD_TESTING=ON
+              -DKER_BUILD_EXAMPLES=ON
+              -DKER_WITH_DPDK=ON
+              -DKER_DPDK_PKGCONFIG_DIR="$pkgconfig_dir"
+              -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+            )
+            if grep -Eq 'option\([[:space:]]*KER_WITH_NATIVE_TCP([[:space:]]|$)' CMakeLists.txt; then
+              cmake_args+=(-DKER_WITH_NATIVE_TCP=OFF)
+            fi
+            PKG_CONFIG_PATH="$pkgconfig_dir" cmake -S . -B build-dpdk-ker -G Ninja "${cmake_args[@]}"
+            cmake --build build-dpdk-ker --parallel 2
+            ctest --test-dir build-dpdk-ker --no-tests=error --output-on-failure \
+              --output-junit "$RUNNER_TEMP/dpdk-core-ctest.xml"
+            python3 tools/ci/native_tests.py report-junit "$RUNNER_TEMP/dpdk-core-ctest.xml"
+          else
+            echo 'Ker DPDK CMake integration is absent in this source snapshot; only the pinned DPDK dependency was built.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Install native Linux build dependencies
+        if: steps.native.outputs.present == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bc bison flex libcap-dev libelf-dev liblz4-dev libncurses-dev \
+            libssl-dev libz-dev libzstd-dev
+
+      - name: Build the pinned Linux/LKL runtime
+        if: steps.native.outputs.present == 'true'
+        run: |
+          python3 tools/build-native-linux.py \
+            --build "$RUNNER_TEMP/native-linux-build" \
+            --cache "$RUNNER_TEMP/native-linux.git" --jobs 2
+
+      - name: Configure native Linux testing build
+        if: steps.native.outputs.present == 'true'
+        env:
+          KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+        run: |
+          pkgconfig_dir="$(find "$KER_DPDK_PREFIX" -type f -name libdpdk.pc -printf '%h\n' -quit)"
+          test -n "$pkgconfig_dir"
+          PKG_CONFIG_PATH="$pkgconfig_dir" cmake -S . -B build-native-on -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DKER_BUILD_EXAMPLES=ON \
+            -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON \
+            -DKER_DPDK_PKGCONFIG_DIR="$pkgconfig_dir" \
+            -DKER_NATIVE_LINUX_BUILD="$RUNNER_TEMP/native-linux-build" \
+            -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+
+      - name: Build every native Linux testing target
+        if: steps.native.outputs.present == 'true'
+        run: cmake --build build-native-on --parallel 2
+
+      - name: Configure and build every native Linux production target
+        if: steps.native.outputs.present == 'true'
+        env:
+          KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+        run: |
+          pkgconfig_dir="$(find "$KER_DPDK_PREFIX" -type f -name libdpdk.pc -printf '%h\n' -quit)"
+          test -n "$pkgconfig_dir"
+          PKG_CONFIG_PATH="$pkgconfig_dir" cmake -S . -B build-native-off -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=OFF -DKER_BUILD_EXAMPLES=ON \
+            -DKER_WITH_DPDK=ON -DKER_WITH_NATIVE_TCP=ON \
+            -DKER_DPDK_PKGCONFIG_DIR="$pkgconfig_dir" \
+            -DKER_NATIVE_LINUX_BUILD="$RUNNER_TEMP/native-linux-build" \
+            -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+          cmake --build build-native-off --parallel 2
+
+      - name: Provision required native integration capabilities
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo modprobe tun
+          sudo modprobe vhost_net
+          test -c /dev/vhost-net
+          sudo chown "$(id -u):$(id -g)" /dev/vhost-net
+          sudo chmod 0600 /dev/vhost-net
+          rmem_max="$(sysctl -n net.core.rmem_max)"
+          if (( rmem_max < 4194304 )); then
+            sudo sysctl -w net.core.rmem_max=4194304
+          fi
+          sudo sysctl -w vm.nr_hugepages=256
+          sudo mkdir -p /dev/hugepages
+          if ! mountpoint -q /dev/hugepages; then
+            sudo mount -t hugetlbfs -o pagesize=2M,mode=1777 none /dev/hugepages
+          fi
+          sudo chmod 1777 /dev/hugepages
+          if ! awk '$2 == "/dev/hugepages" && $3 == "hugetlbfs" && $4 ~ /(^|,)pagesize=2M(,|$)/ { found=1 } END { exit !found }' /proc/mounts; then
+            echo '/dev/hugepages must be a 2 MiB hugetlbfs mount.' >&2
+            exit 1
+          fi
+          free_pages="$(awk '/^HugePages_Free:/ {print $2}' /proc/meminfo)"
+          if (( free_pages < 64 )); then
+            echo "Required native integration needs at least 64 free 2 MiB hugepages; found ${free_pages}." >&2
+            exit 1
+          fi
+          python3 tools/ci/native_tests.py native-datapath-preflight "$RUNNER_TEMP/dpdk-install"
+
+      - name: Run the full native CTest graph with JUnit accounting
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          unshare --user --map-root-user --net sh -ceu '
+            ip link set lo up
+            exec python3 tools/ci/native_tests.py full-ctest "$1" "$2"
+          ' _ build-native-on "$RUNNER_TEMP/native-full-ctest.xml"
+
+      - name: Run exact native session migration matrix
+        if: steps.native.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_pages="$(awk '/^HugePages_Free:/ {print $2}' /proc/meminfo)"
+          if (( free_pages < 64 )); then
+            echo "Full CTest run left fewer than 64 free 2 MiB hugepages for the session matrix: ${free_pages}." >&2
+            exit 1
+          fi
+          worker="$(find build-native-on -type f -name ker-io-session -perm -u+x -print -quit)"
+          library="$(find build-native-on -type f -name 'libker-posix.so*' -print -quit)"
+          app="$(find build-native-on -type f -name ker-exception-services-test -perm -u+x -print -quit)"
+          plugin_dir="$(python3 tools/ci/native_tests.py dpdk-plugin-dir "$RUNNER_TEMP/dpdk-install" \
+            librte_mempool_ring.so librte_net_ring.so)"
+          test -n "$worker" && test -n "$library" && test -n "$app" && test -n "$plugin_dir"
+          test -r "$plugin_dir/librte_mempool_ring.so"
+          test -r "$plugin_dir/librte_net_ring.so"
+          set -o pipefail
+          timeout --signal=TERM --kill-after=20s 900s \
+            python3 tests/posix/session-native-packets.py \
+              --worker "$worker" --tool tools/ker-session.py --library "$library" \
+              --app "$app" --dpdk-plugin-dir "$plugin_dir" --huge-dir /dev/hugepages \
+              --handoff-negative-profiles 2>&1 | tee "$RUNNER_TEMP/session-native-packets.log"
+          python3 tools/ci/native_tests.py verify-session-profiles \
+            "$RUNNER_TEMP/session-native-packets.log" tests/posix/session-native-packets.py
+
+      - name: Run native Python migration unit tests
+        if: steps.native.outputs.present == 'true'
+        run: |
+          mapfile -t python_tests < <(find tests/unit -maxdepth 1 -type f -name 'test_*.py' -print | sort)
+          (( ${#python_tests[@]} > 0 )) || { echo 'Native source requires Python unit tests, but none are present.' >&2; exit 1; }
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
+
+      - name: Report guest qualification boundary
+        if: steps.native.outputs.present == 'true'
+        run: |
+          {
+          echo '### Runtime qualification boundary'
+          echo 'The complete 27-profile session matrix ran on the hosted Linux runner with pinned DPDK/LKL, TUN, and hugetlbfs.'
+          echo 'KVM guest qualification is separate and is not claimed by this host run.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload native test reports
+        if: always() && steps.native.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-lkl-test-reports
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/native-full-ctest.xml
+            ${{ runner.temp }}/session-native-packets.log
