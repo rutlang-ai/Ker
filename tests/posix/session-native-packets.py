@@ -319,6 +319,14 @@ def line(process, timeout=25, stderr_path=None):
     return value.decode().strip()
 
 
+def record_handoff_marker(process, prefix, stderr_path, failure_diagnostics):
+    """Read a runner marker and retain diagnostics if its redirected stderr exits first."""
+    try:
+        return record(process, prefix, stderr_path=stderr_path)
+    except RuntimeError as error:
+        raise failure_diagnostics(f'runner failed before {prefix}: {error}') from error
+
+
 def resolve_dpdk_plugin_dir(plugin_dir, environ=None):
     environment = os.environ if environ is None else environ
     configured = plugin_dir if plugin_dir is not None else environment.get('KER_DPDK_PLUGIN_DIR')
@@ -363,8 +371,8 @@ def namespace_reexec_command(args, plugin_dir, script=None):
     return command
 
 
-def record(process, prefix):
-    value = line(process)
+def record(process, prefix, stderr_path=None):
+    value = line(process, stderr_path=stderr_path)
     if not value.startswith(prefix + ' '):
         diagnostic = ''
         if process.poll() is None:
@@ -615,7 +623,8 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
             if mode == 'nonframe-active-reap':
                 require(os.write(handoff_write, b'N') == 1,
                     'could not start the non-FRAME active-reap regression')
-                killed = record(runner, 'KER_SESSION_TEST_NONFRAME_PEER_KILLED')
+                killed = record_handoff_marker(runner, 'KER_SESSION_TEST_NONFRAME_PEER_KILLED',
+                    runner_stderr_path, fatal_profile_diagnostics)
                 require(killed == dict(owner_pid=before['attached']['pid'],
                     peer_pid=before['handoff_peer_attached']['pid'], owner_stopped=True,
                     peer_pidfd_dead=True, seeded_generation=1),
