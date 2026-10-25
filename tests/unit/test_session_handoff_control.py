@@ -384,6 +384,28 @@ class HandoffControlPathTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.launcher.read_frame_commit_sequence(object(), ready, True)
 
+    def test_frame_positive_uses_success_classification_not_fatal_branch(self):
+        tree = ast.parse(PROFILE_SOURCE.read_text())
+        helper = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_is_fatal_handoff_profile')
+        namespace = {}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(PROFILE_SOURCE), 'exec'), namespace)
+        profile = next(node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == '_run_live_handoff_profile_impl')
+        fatal_branch = next(node for node in ast.walk(profile)
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Call) and
+            isinstance(node.test.func, ast.Name) and node.test.func.id == '_is_fatal_handoff_profile')
+        self.assertEqual([ast.dump(arg) for arg in fatal_branch.test.args],
+            [ast.dump(ast.Name(id='mode', ctx=ast.Load()))])
+        classify = namespace['_is_fatal_handoff_profile']
+        for mode in ('positive', 'frame-positive'):
+            with self.subTest(mode=mode):
+                self.assertFalse(classify(mode))
+        for mode in ('bad-capability', 'bad-tx-lease', 'timeout', 'peer-death',
+                     'bad-prepare-error-generation', 'bad-prepare-success'):
+            with self.subTest(mode=mode):
+                self.assertTrue(classify(mode))
+
     def test_frame_commit_release_bijection_binds_exact_lease_and_u2_bytes(self):
         payload=b'KER-A09-HANDOFF-UDP seq=2\n'
         ip=bytearray(20);ip[0]=0x45;ip[2:4]=(20+8+len(payload)).to_bytes(2,'big')

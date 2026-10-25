@@ -480,6 +480,10 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
         return _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence)
 
 
+def _is_fatal_handoff_profile(mode):
+    return mode not in ('positive', 'frame-positive')
+
+
 def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
     with tempfile.TemporaryDirectory(prefix='a9-') as directory:
         root = Path(directory); control_path = root / 'control.sock'; stats_path = root / 'stats.json'
@@ -945,7 +949,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     resident_returncode=primary.returncode), sort_keys=True), flush=True)
                 print(f'PASS: {mode} drained a pending heartbeat, preserved queued H, returned exact rejection, and resumed the packet loop')
                 return
-            if mode != 'positive':
+            if _is_fatal_handoff_profile(mode):
                 try:
                     runner_output, _ = runner.communicate(timeout=20)
                 except subprocess.TimeoutExpired as error:
