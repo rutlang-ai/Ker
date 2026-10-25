@@ -2426,6 +2426,14 @@
         "native-fstack-config-lifecycle"
       ],
       "adaptation": "The pinned case named empty_ini invokes the loader with no -c and no other arguments; it does not open an empty file. The real Ker CLI likewise rejects the exact no-options invocation and reports all missing startup settings before library/worker/application setup. Tests also cover progressively supplied CLI fields, missing application, valid CLI-only and empty-file-plus-CLI recovery. Ker allows a complete CLI-only configuration and reports argparse exit2 instead of the F-Stack internal return-1; config filename/global layout equivalence is not claimed."
+    },
+    "native-fstack-vlan-section-validation": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_vlan_cfg_handler_bad_section_returns_zero",
+      "ker_ctests": [
+        "native-fstack-config-lifecycle"
+      ],
+      "adaptation": "The source malformed [vlanXX] section must fail configuration loading. Ker adapts this through its supported [vlan.ID] syntax: [vlan.XX] and malformed/non-ASCII/out-of-range tags fail the actual reader and CLI with exit2 before library, worker or application setup. Tests place malformed sections both before and after a valid VLAN, then correct the tag and verify both independent address records and a clean subsequent no-VLAN load. Valid IDs1/4094 and decimal alias collision are also tested. This is a strict typed-loader scenario adaptation, not F-Stack section spelling, global VLAN-array ABI or callback return-value compatibility; permissive orphan/filter and out-of-array skip contracts remain unadapted."
     }
   }
 }

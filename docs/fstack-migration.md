@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 206 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 207 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 12 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 145 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 144 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为206 scenario-adapted、12 partial、145 blocked，共157项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为207 scenario-adapted、12 partial、144 blocked，共156项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共227项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：157项行为未完成
-（12 partial + 145 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共226项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：156项行为未完成
+（12 partial + 144 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -71,7 +71,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Resolve device/run lifecycle and upstream fault-injection contracts | 4 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
 | Adapt typed vdev, bond and multi-port configuration | 3 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
-| Resolve remaining typed configuration and intentional schema differences | 15 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
+| Resolve remaining typed configuration and intentional schema differences | 14 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
 | Decide F-Stack primary/secondary and thread-mode compatibility | 6 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
 | Resolve unmapped host memory, time, environment and kqueue helpers | 9 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
@@ -1522,3 +1522,20 @@ address/port/eal、缺失应用命令均在库/worker/application初始化前返
 
 本批只将上述一项源案例转为scenario-adapted。当前206项scenario-adapted、
 12项partial、145项blocked，共157项行为仍待完成。
+
+
+## 畸形 VLAN 节名拒绝
+
+`test_vlan_cfg_handler_bad_section_returns_zero` 的源断言是畸形 `[vlanXX]`
+使配置加载失败。Ker以自己的 `[vlan.ID]` 语法适配此场景：`[vlan.XX]`、
+空/带符号/非ASCII/超范围ID在真实reader和CLI中拒绝，返回2且worker/application
+没有执行。不是直接执行整个F-Stack配置fixture，也不声明C callback返回值或
+全局VLAN数组ABI等价。
+
+`native-fstack-config-lifecycle` 新增三项相关检查，覆盖畸形节在合法节之前或
+之后、修正后双VLAN的地址列表、随后无VLAN的干净加载、合法ID1/4094及01/1
+数值别名冲突。源用例中孤立VLAN/filter和越界数组项的成功跳过行为继续保留缺口。
+当前207项scenario-adapted、12项partial、144项blocked，156项行为仍待完成。
+
+本批16项配置生命周期检查、对应CTest及21项清单审计测试均通过；
+完整清单仍因144项blocked和12项partial保持未完成。
