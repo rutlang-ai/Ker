@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-core:
+    name: Linux core (${{ matrix.compiler }}, tests ${{ matrix.testing }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        testing: ['ON', 'OFF']
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y cmake ninja-build python3 ${{ matrix.compiler }}
+
+      - name: Check out the pinned Linux source
+        run: git submodule update --init --depth 1 third_party/linux
+
+      - name: Configure strict build
+        env:
+          CC: ${{ matrix.compiler }}
+        run: |
+          cmake_args=(
+            -DCMAKE_BUILD_TYPE=Debug
+            -DBUILD_TESTING=${{ matrix.testing }}
+            -DKER_BUILD_EXAMPLES=ON
+            -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+          )
+          if grep -Eq 'option\([[:space:]]*KER_WITH_DPDK([[:space:]]|$)' CMakeLists.txt; then
+            cmake_args+=(-DKER_WITH_DPDK=OFF)
+          fi
+          if grep -Eq 'option\([[:space:]]*KER_WITH_NATIVE_TCP([[:space:]]|$)' CMakeLists.txt; then
+            cmake_args+=(-DKER_WITH_NATIVE_TCP=OFF)
+          fi
+          cmake -S . -B build -G Ninja "${cmake_args[@]}"
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Run C tests
+        if: matrix.testing == 'ON'
+        run: ctest --test-dir build --no-tests=error --output-on-failure
+
+      - name: Run Python unit tests when present
+        if: matrix.testing == 'ON' && hashFiles('tests/unit/test_*.py') != ''
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
+
+      - name: Install production configuration
+        if: matrix.testing == 'OFF'
+        run: cmake --install build --prefix "$RUNNER_TEMP/ker-install"
+
+  pinned-dpdk-build:
+    name: Pinned DPDK source build (no native runtime)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install DPDK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential cmake libbsd-dev libelf-dev libfdt-dev libnuma-dev \
+            libpcap-dev meson ninja-build pkg-config python3 python3-pyelftools
+
+      - name: Check out the pinned Linux source for an optional Ker integration build
+        run: git submodule update --init --depth 1 third_party/linux
+
+      - name: Check out the pinned DPDK source
+        run: git submodule update --init --depth 1 third_party/dpdk
+
+      - name: Verify the checked-out DPDK gitlink
+        shell: bash
+        run: |
+          expected="$(git ls-tree HEAD third_party/dpdk | awk '{print $3}')"
+          actual="$(git -C third_party/dpdk rev-parse HEAD)"
+          test -n "$expected"
+          test "$actual" = "$expected"
+
+      - name: Configure pinned DPDK
+        env:
+          KER_DPDK_BUILD_DIR: ${{ runner.temp }}/dpdk-build
+          KER_DPDK_PREFIX: ${{ runner.temp }}/dpdk-install
+          KER_DPDK_JOBS: '2'
+        run: |
+          if [[ -x tools/build-dpdk.sh ]]; then
+            tools/build-dpdk.sh
+          else
+            meson setup "$KER_DPDK_BUILD_DIR" third_party/dpdk \
+              --prefix "$KER_DPDK_PREFIX" --libdir lib64 \
+              -Denable_libs=eal,ring,mempool,mbuf,ethdev \
+              -Denable_drivers=mempool/ring,net/ring \
+              -Ddisable_apps='*' -Dtests=false -Dplatform=generic
+            meson compile -C "$KER_DPDK_BUILD_DIR" -j 2
+            meson install -C "$KER_DPDK_BUILD_DIR" --no-rebuild
+          fi
+
+      - name: Configure and test Ker with pinned DPDK when integration exists
+        run: |
+          if [[ -f cmake/DPDK.cmake ]] && \
+              grep -Eq 'option\([[:space:]]*KER_WITH_DPDK([[:space:]]|$)' CMakeLists.txt; then
+            pkgconfig_dir="$(find "$RUNNER_TEMP/dpdk-install" -type f -name libdpdk.pc -printf '%h\n' -quit)"
+            test -n "$pkgconfig_dir"
+            cmake_args=(
+              -DCMAKE_BUILD_TYPE=Debug
+              -DBUILD_TESTING=ON
+              -DKER_BUILD_EXAMPLES=ON
+              -DKER_WITH_DPDK=ON
+              -DKER_DPDK_PKGCONFIG_DIR="$pkgconfig_dir"
+              -DCMAKE_C_FLAGS='-Wall -Wextra -Werror'
+            )
+            if grep -Eq 'option\([[:space:]]*KER_WITH_NATIVE_TCP([[:space:]]|$)' CMakeLists.txt; then
+              cmake_args+=(-DKER_WITH_NATIVE_TCP=OFF)
+            fi
+            PKG_CONFIG_PATH="$pkgconfig_dir" cmake -S . -B build-dpdk-ker -G Ninja "${cmake_args[@]}"
+            cmake --build build-dpdk-ker --parallel 2
+            ctest --test-dir build-dpdk-ker --no-tests=error --output-on-failure
+          else
+            echo 'Ker DPDK CMake integration is absent in this source snapshot; the pinned DPDK dependency build above is the available check.'
+          fi
