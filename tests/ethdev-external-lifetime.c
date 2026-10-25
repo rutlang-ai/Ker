@@ -80,7 +80,7 @@ static struct rte_mbuf *make_segment(unsigned int id, unsigned int index,
             EXT_LEN, &slot->info);
         segment->data_off = 0;
     }
-    uint8_t *bytes = rte_pktmbuf_append(segment, length);
+    uint8_t *bytes = (uint8_t *)rte_pktmbuf_append(segment, length);
     CHECK(bytes);
     memcpy(bytes, frames[id] + offset, length);
     return segment;
