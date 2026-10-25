@@ -80,6 +80,7 @@ int main(void) {
  int ok=generation_test_nonframe_drain_dispatch('K',true,true,true,join_hold,drain,&context);
  if(ok!=1 || strcmp(tracebuf,"JD")) return 1;
  tracepos=0; tracebuf[0]=0;
+ if(generation_test_nonframe_drain_dispatch('K',true,false,true,join_hold,drain,&context)!=-EUCLEAN || tracepos) return 7;
  if(generation_test_nonframe_drain_dispatch('K',true,true,false,join_hold,drain,&context)!=-EUCLEAN || tracepos) return 2;
  if(generation_test_nonframe_drain_dispatch('H',true,true,true,join_hold,drain,&context)!=0 || tracepos) return 3;
  if(generation_test_nonframe_drain_dispatch('?',true,true,true,join_hold,drain,&context)!=0 || tracepos) return 4;
