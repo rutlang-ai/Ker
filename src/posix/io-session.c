@@ -3485,6 +3485,8 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
 {
 #ifdef KER_SESSION_TEST_HOOKS
     static bool frame_negative_prefix_done;
+    static bool frame_full_cancel_done;
+    static bool frame_full_normal_phase;
 #endif
     if(!rings||!generation_rings_enabled||!identity||!capability)return -EOPNOTSUPP;
     uint8_t peek_bytes[sizeof(struct ker_packet_header)+1518];
@@ -3504,9 +3506,18 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     uint32_t tx_initial=0,pool_before=0;
     struct ker_generation_test_counters packet_counters_before;
     if(ker_generation_test_tx_snapshot(rings,0,0,0,&tx_initial,&pool_before))return -EUCLEAN;
-    if(getenv("KER_SESSION_TEST_FRAME_FULL")?!tx_initial:tx_initial!=0)return -EUCLEAN;
-    if(getenv("KER_SESSION_TEST_FRAME_FULL")) {
+    bool frame_full_test=getenv("KER_SESSION_TEST_FRAME_FULL")!=NULL;
+    if(frame_full_test&&!frame_full_cancel_done) {
+        if(!tx_initial)return -EUCLEAN;
         if(ker_generation_test_counters_snapshot(rings,0,0,0,&packet_counters_before))return -EUCLEAN;
+    } else if(frame_full_test&&!frame_full_normal_phase) {
+        if(tx_initial) {
+            /* The overflow datagram was consumed by its failed transaction.
+             * Defer later traffic until the peer drains the proven full batch. */
+            (void)poll(NULL,0,10);
+            return 0;
+        }
+        frame_full_normal_phase=true;
     }
 #endif
 #ifdef KER_SESSION_TEST_HOOKS
@@ -3644,13 +3655,14 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
 #endif
     if(result) {
 #ifdef KER_SESSION_TEST_HOOKS
-        if(result==-ENOBUFS&&getenv("KER_SESSION_TEST_FRAME_FULL")) {
+        if(result==-ENOBUFS&&getenv("KER_SESSION_TEST_FRAME_FULL")&&!frame_full_cancel_done) {
             uint32_t tx_after=0,pool_after=0;
             struct ker_generation_test_counters packet_counters_after;
             if(ker_generation_test_tx_snapshot(rings,0,0,0,&tx_after,&pool_after)||
                 tx_after!=tx_initial||pool_after!=pool_before||
                 ker_generation_test_counters_snapshot(rings,0,0,0,&packet_counters_after)||
                 !frame_test_counters_equal_after_full(&packet_counters_before,&packet_counters_after))return -EUCLEAN;
+            frame_full_cancel_done=true;
             printf("KER_SESSION_FRAME_FULL_COMMIT_CANCELLED {\"status\":%d,\"tx_after\":%u,\"tx_capacity\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu],\"pool_restored\":true}\n",
                 result,tx_after,tx_initial,pool_before,pool_after,
                 (unsigned long long)packet_counters_before.rx_full,(unsigned long long)packet_counters_before.tx_full,
