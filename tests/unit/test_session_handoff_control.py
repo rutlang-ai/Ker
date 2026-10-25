@@ -388,6 +388,9 @@ class HandoffControlPathTests(unittest.TestCase):
         payload=b'KER-A09-HANDOFF-UDP seq=2\n'
         ip=bytearray(20);ip[0]=0x45;ip[2:4]=(20+8+len(payload)).to_bytes(2,'big')
         ip[8]=64;ip[9]=17;ip[12:16]=bytes((198,18,0,2));ip[16:20]=bytes((198,18,0,1))
+        checksum_sum=sum((ip[i]<<8)|ip[i+1] for i in range(0,len(ip),2))
+        while checksum_sum>>16:checksum_sum=(checksum_sum&0xffff)+(checksum_sum>>16)
+        ip[10:12]=((~checksum_sum)&0xffff).to_bytes(2,'big')
         udp=bytes.fromhex('afc8afc9')+(8+len(payload)).to_bytes(2,'big')+b'\0\0'
         frame=bytes.fromhex('024b45520001024b455200020800')+bytes(ip)+udp+payload
         commit=dict(port=0,queue=0,generation=0,length=len(frame),object_index=7,

@@ -109,18 +109,21 @@ def validate_interrupted_cleanup(worker_code, packet_stats, *, packet_expected=T
 
 def validate_frame_committed_record(record, payload):
     """Validate the actual FRAME_COMMITTED schema; sequence is not in this reply."""
-    if (not isinstance(record, dict) or record.get('queue') != 0 or record.get('generation') != 0 or
-            not isinstance(record.get('object_index'), int) or record.get('object_index') < 0 or
-            not isinstance(record.get('pool_tag'), int) or record.get('pool_tag') <= 0 or
+    if (not isinstance(record, dict) or type(record.get('port')) is not int or record['port'] != 0 or
+            type(record.get('queue')) is not int or record['queue'] != 0 or
+            type(record.get('generation')) is not int or record['generation'] != 0 or
+            type(record.get('object_index')) is not int or record['object_index'] < 0 or
+            type(record.get('pool_tag')) is not int or record['pool_tag'] <= 0 or
             type(record.get('tx_lease_id')) is not int or record['tx_lease_id'] <= 0 or
-            not isinstance(record.get('packet_pointer'), str) or not record['packet_pointer'] or
-            not isinstance(record.get('length'), int) or record.get('length') < 14 or
+            not valid_frame_pointer(record.get('packet_pointer')) or
+            type(record.get('length')) is not int or record['length'] < 14 or
             not isinstance(record.get('frame_hex'), str) or payload.hex() not in record['frame_hex']):
         raise RuntimeError('parked original LKL endpoint did not commit the exact second UDP frame')
     try: frame=bytes.fromhex(record['frame_hex'])
     except ValueError as error: raise RuntimeError('producer committed malformed frame bytes') from error
-    if len(frame)!=record['length']:
-        raise RuntimeError('producer committed frame length does not match its bytes')
+    if (len(frame)!=record['length'] or record['frame_hex'] != frame.hex() or
+            not frame_matches_expected_u2(frame, payload)):
+        raise RuntimeError('producer committed frame bytes do not match the exact second UDP frame')
     return record
 
 
@@ -216,14 +219,20 @@ def validate_frame_record_pair(commit, release):
 
 
 def frame_matches_expected_u2(frame, expected_payload):
-    return (len(frame)==14+20+8+len(expected_payload) and
+    if not (len(frame)==14+20+8+len(expected_payload) and
         frame[:6]==bytes.fromhex('024b45520001') and frame[6:12]==bytes.fromhex('024b45520002') and
         frame[12:14]==b'\x08\x00' and frame[14]==0x45 and frame[23]==17 and
         not (int.from_bytes(frame[20:22],'big')&0x3fff) and
         frame[26:30]==bytes((198,18,0,2)) and frame[30:34]==bytes((198,18,0,1)) and
         frame[34:38]==bytes.fromhex('afc8afc9') and
         int.from_bytes(frame[16:18],'big')==20+8+len(expected_payload) and
-        int.from_bytes(frame[38:40],'big')==8+len(expected_payload) and frame[42:]==expected_payload)
+        int.from_bytes(frame[38:40],'big')==8+len(expected_payload) and frame[42:]==expected_payload):
+        return False
+    header = frame[14:34]
+    checksum_sum = sum((header[i] << 8) | header[i + 1] for i in range(0, len(header), 2))
+    while checksum_sum >> 16:
+        checksum_sum = (checksum_sum & 0xffff) + (checksum_sum >> 16)
+    return checksum_sum == 0xffff
 
 
 def validate_frame_commit_drain_bijection(committed, drained, expected_payload):
