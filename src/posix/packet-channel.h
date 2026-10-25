@@ -19,4 +19,11 @@ struct ker_packet_header {
     uint16_t header_length, gso_size, checksum_start, checksum_offset, buffers;
 };
 _Static_assert(sizeof(struct ker_packet_header) == 12, "virtio-net v1 header size");
+/* The simple Ethernet TX path does not implement these offload fields.
+ * `buffers` is RX-only mergeable-buffer accounting, not TX metadata. */
+static inline int ker_packet_tx_header_simple_supported(const struct ker_packet_header *header)
+{
+    return header && !header->flags && !header->gso_type && !header->header_length &&
+        !header->gso_size && !header->checksum_start && !header->checksum_offset;
+}
 #endif

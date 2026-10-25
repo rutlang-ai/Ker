@@ -3433,8 +3433,7 @@ static int parked_frame_datagram(int packet_fd,int fd,int resident,int control,
     if(peek<(ssize_t)(sizeof(struct ker_packet_header)+14)||
         peek>(ssize_t)sizeof(peek_bytes)||(peek_msg.msg_flags&MSG_TRUNC))return -EMSGSIZE;
     struct ker_packet_header peek_header; memcpy(&peek_header,peek_bytes,sizeof(peek_header));
-    if(peek_header.flags||peek_header.gso_type||peek_header.header_length||peek_header.gso_size||
-        peek_header.checksum_start||peek_header.checksum_offset||peek_header.buffers)return -EOPNOTSUPP;
+    if(!ker_packet_tx_header_simple_supported(&peek_header))return -EOPNOTSUPP;
     int drained=drain_worker_heartbeat_after_command(fd,heartbeat,resident,control);
     if(drained)return drained;
     uint64_t tag=ker_generation_packet_pool_tag(rings);
