@@ -158,6 +158,40 @@ def validate_handoff_peer_cleanup(metrics, peer_present, peer_code, peer_packet_
         raise RuntimeError('control-only handoff peer unexpectedly reported packet completion')
 
 
+FRAME_U2_TRIGGER_MODES = frozenset({'frame-positive'})
+
+
+def handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+    """Require the handoff command and all mode-specific UDP triggers."""
+    return bool(handoff_seen and (mode not in FRAME_U2_TRIGGER_MODES or udp_sequence == 2))
+
+
+def close_completed_handoff_trigger(mode, handoff_seen, udp_sequence, fd, close_fd):
+    if fd is not None and handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+        close_fd(fd)
+        return None
+    return fd
+
+
+def handoff_trigger_action(data):
+    if data == b'U':
+        return 'udp'
+    if data == b'H':
+        return 'handoff'
+    return 'invalid'
+
+
+def require_complete_handoff_trigger(mode, handoff_seen, udp_sequence):
+    if not handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+        raise RuntimeError('test application exited before the handoff trigger sequence completed')
+
+
+def reject_handoff_trigger_eof(mode, handoff_seen, udp_sequence):
+    if not handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+        raise RuntimeError('handoff trigger pipe reached EOF before the trigger sequence completed')
+    raise RuntimeError('handoff trigger pipe reached unexpected EOF')
+
+
 def run_session(args, api):
     address = ipaddress.ip_interface(args.address or '198.18.0.2/24')
     address6 = ipaddress.ip_interface(args.address6) if args.address6 else None
@@ -806,6 +840,7 @@ def run_session(args, api):
         packet_app.close(); mtu_app.close(); close(startup_w)
         startup = b''
         handoff_udp_sequence = 0
+        handoff_seen = False
         deadline = time.monotonic() + 20
         stopping_at = None
 
@@ -880,15 +915,22 @@ def run_session(args, api):
                 trigger = select.poll(); trigger.register(handoff_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
                 if trigger.poll(0):
                     data = os.read(handoff_fd, 1)
-                    if data == b'U':
+                    if not data:
+                        close(handoff_fd); handoff_fd = None
+                        reject_handoff_trigger_eof(handoff_mode, handoff_seen, handoff_udp_sequence)
+                    action = handoff_trigger_action(data)
+                    if action == 'udp':
                         trigger_handoff_udp()
-                    elif data == b'H':
+                        handoff_fd = close_completed_handoff_trigger(
+                            handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close)
+                    elif action == 'handoff':
                         if handoff_mode != 'frame-positive':
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
+                        handoff_seen = True
                     else:
                         close(handoff_fd); handoff_fd = None
-                        raise RuntimeError('invalid live-handoff fixture trigger')
+                        raise RuntimeError('invalid live-handoff fixture trigger or incomplete trigger EOF')
             drain_startup()
             if b'KER_NATIVE_READY\n' not in startup and time.monotonic() >= deadline:
                 raise RuntimeError('native Linux startup timed out')
@@ -905,7 +947,8 @@ def run_session(args, api):
         code = app.wait()
         drain_startup()
         if handoff_fd is not None:
-            raise RuntimeError('test application exited before the handoff trigger')
+            require_complete_handoff_trigger(handoff_mode, handoff_seen, handoff_udp_sequence)
+            close(handoff_fd); handoff_fd = None
         close(control_w)
         if handoff_mode == 'frame-positive':
             finish_frame_owner_output()

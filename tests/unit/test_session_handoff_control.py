@@ -163,6 +163,74 @@ class HandoffControlPathTests(unittest.TestCase):
     def test_control_hup_closes_writer_after_h(self):
         self.exercise('handoff-control-hup', b'H', expect_closed=True)
 
+    def test_frame_positive_trigger_fd_closes_after_second_udp_before_app_exit(self):
+        read_fd, write_fd = os.pipe()
+        handoff_seen = False
+        sequence = 0
+        try:
+            for command in (b'U', b'H', b'U'):
+                os.write(write_fd, command)
+                self.assertTrue(select.select([read_fd], [], [], 1)[0])
+                data = os.read(read_fd, 1)
+                action = self.launcher.handoff_trigger_action(data)
+                if action == 'udp':
+                    sequence += 1
+                elif action == 'handoff':
+                    handoff_seen = True
+                else:
+                    self.fail('unexpected trigger command: ' + repr(data))
+                read_fd = self.launcher.close_completed_handoff_trigger(
+                    'frame-positive', handoff_seen, sequence, read_fd, os.close)
+                if command != b'U' or sequence != 2:
+                    self.assertIsNotNone(read_fd)
+            self.assertIsNone(read_fd)
+            self.assertTrue(self.launcher.handoff_trigger_complete(
+                'frame-positive', handoff_seen, sequence))
+            self.launcher.require_complete_handoff_trigger('frame-positive', handoff_seen, sequence)
+            with self.assertRaises(BrokenPipeError):
+                os.write(write_fd, b'U')
+            os.close(write_fd)
+            write_fd = -1
+        finally:
+            if read_fd is not None:
+                os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+
+    def test_incomplete_trigger_eof_before_sigterm_is_rejected(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b'H')
+            self.assertEqual(self.launcher.handoff_trigger_action(os.read(read_fd, 1)), 'handoff')
+            os.close(write_fd)
+            write_fd = -1
+            self.assertTrue(select.select([read_fd], [], [], 1)[0])
+            self.assertEqual(os.read(read_fd, 1), b'')
+            with self.assertRaisesRegex(RuntimeError, 'EOF before'):
+                self.launcher.reject_handoff_trigger_eof('frame-positive', True, 0)
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+
+    def test_sigterm_first_rejects_incomplete_sequence_before_pipe_eof(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b'H')
+            self.assertEqual(self.launcher.handoff_trigger_action(os.read(read_fd, 1)), 'handoff')
+            with self.assertRaisesRegex(RuntimeError, 'exited before'):
+                self.launcher.require_complete_handoff_trigger('frame-positive', True, 0)
+            os.close(write_fd)
+            write_fd = -1
+            self.assertTrue(select.select([read_fd], [], [], 1)[0])
+            self.assertEqual(os.read(read_fd, 1), b'')
+            with self.assertRaisesRegex(RuntimeError, 'EOF before'):
+                self.launcher.reject_handoff_trigger_eof('frame-positive', True, 0)
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+
     def test_hup_boundary_wait_failure_still_resumes_exact_worker(self):
         read_fd, write_fd = os.pipe()
         child = subprocess.Popen([os.sys.executable, '-c', 'import time; time.sleep(30)'])
