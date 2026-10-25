@@ -949,16 +949,25 @@ def run_session(args, api):
                 if handoff_mode in ('frame-death-consumer-prepared','frame-death-both-prepared'):
                     if peer_worker_pidfd<0 or select.select([peer_worker_pidfd],[],[],0)[0]:
                         raise RuntimeError('opposite-generation consumer pidfd was not live before SIGKILL')
-                    signal.pidfd_send_signal(peer_worker_pidfd,signal.SIGKILL)
                     if handoff_mode=='frame-death-both-prepared':
-                        signal.pidfd_send_signal(worker_pidfd,signal.SIGKILL)
+                        metrics['handoff_frame_death_barrier']=dict(stage='prepared-both-live',
+                            producer_pid=worker.pid,consumer_pid=peer_worker.pid,
+                            producer_prepared=True,producer_stopped=True)
+                        publish()
+                        deadline=time.monotonic()+15
+                        while time.monotonic()<deadline:
+                            producer_dead=bool(select.select([worker_pidfd],[],[],0)[0])
+                            consumer_dead=bool(select.select([peer_worker_pidfd],[],[],0)[0])
+                            if producer_dead and consumer_dead:break
+                            select.select([worker_pidfd,peer_worker_pidfd],[],[],0.05)
+                        else:raise RuntimeError('fixture did not kill both prepared actors through their captured pidfds')
+                    else:
+                        signal.pidfd_send_signal(peer_worker_pidfd,signal.SIGKILL)
                     peer_output,peer_errors=peer_worker.communicate(timeout=10)
                     if peer_worker.returncode!=-signal.SIGKILL or not select.select([peer_worker_pidfd],[],[],0)[0]:
                         raise RuntimeError('consumer did not die on its captured pidfd')
                     if peer_control_w>=0:close(peer_control_w);peer_control_w=-1
                     if handoff_mode=='frame-death-both-prepared':
-                        # Make both exact prepared actors dead before asking the
-                        # resident to observe/reap either registration.
                         producer_output,producer_errors=worker.communicate(timeout=10)
                         if worker.returncode!=-signal.SIGKILL or not select.select([worker_pidfd],[],[],0)[0]:
                             raise RuntimeError('prepared producer did not die on its captured pidfd')

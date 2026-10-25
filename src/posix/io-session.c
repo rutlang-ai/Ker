@@ -982,14 +982,18 @@ static int reclaim_control(unsigned index)
             client->frame_pending) {
             uint32_t tx_after=UINT32_MAX,pool_after=UINT32_MAX;
             struct ker_generation_test_counters counters_after;
+            unsigned dead_mask=(client->frame_producer_pidfd>=0&&dead(client->frame_producer_pidfd)?1U:0U)|
+                (client->frame_consumer_pidfd>=0&&dead(client->frame_consumer_pidfd)?2U:0U);
+            unsigned expected_dead_mask=getenv("KER_SESSION_TEST_FRAME_REPLY_LOST")?1U:3U;
             if(ker_generation_test_tx_snapshot(generation_rings,0,0,0,&tx_after,&pool_after)||tx_after||pool_after||
-                ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters_after))_Exit(125);
+                ker_generation_test_counters_snapshot(generation_rings,0,0,0,&counters_after)||
+                dead_mask!=expected_dead_mask)_Exit(125);
             const char *marker=getenv("KER_SESSION_TEST_FRAME_REPLY_LOST")?
                 "KER_SESSION_FRAME_REPLY_LOST_REAPED":"KER_SESSION_FRAME_BOTH_DEAD_REAPED";
-            printf("%s {\"producer_pid\":%ld,\"slot\":%u,\"generation\":%u,\"process\":%u,\"sequence\":%llu,\"command\":%llu,\"object_index\":%u,\"lease_id\":%llu,\"tx_after\":%u,\"packet_pool_in_use\":%u,\"counters\":[%llu,%llu,%llu,%llu,%llu]}\n",
+            printf("%s {\"producer_pid\":%ld,\"slot\":%u,\"generation\":%u,\"process\":%u,\"sequence\":%llu,\"command\":%llu,\"object_index\":%u,\"lease_id\":%llu,\"dead_mask\":%u,\"tx_after\":%u,\"packet_pool_in_use\":%u,\"counters\":[%llu,%llu,%llu,%llu,%llu]}\n",
                 marker,(long)client->pid,client->slot,client->generation,client->process,
                 (unsigned long long)client->request.sequence,(unsigned long long)client->request.command,
-                client->frame_object_index,(unsigned long long)client->frame_lease_id,tx_after,pool_after,
+                client->frame_object_index,(unsigned long long)client->frame_lease_id,dead_mask,tx_after,pool_after,
                 (unsigned long long)counters_after.rx_full,(unsigned long long)counters_after.tx_full,
                 (unsigned long long)counters_after.tx_drop,(unsigned long long)counters_after.packet_drop,
                 (unsigned long long)counters_after.packet_full);fflush(stdout);

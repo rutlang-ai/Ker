@@ -508,7 +508,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     'frame-death-consumer-prepared','frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
                 if mode!='frame-lost-prepare-reply':
                     runner_environment['KER_SESSION_TEST_FRAME_REPLAY']='1'
-                runner_environment['KER_SESSION_TEST_FRAME_NEGATIVES']='1'
+                    runner_environment['KER_SESSION_TEST_FRAME_NEGATIVES']='1'
             if mode in ('frame-full','frame-death-queued'):
                 runner_environment['KER_SESSION_TEST_FRAME_DRAIN_FULL']='1'
             if mode=='frame-death-queued': runner_environment['KER_SESSION_TEST_FRAME_DEATH_QUEUED']='1'
@@ -1046,6 +1046,43 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                 second_ack=record(runner,'KER_SESSION_TEST_UDP_TRIGGER_ACK')
                 require(second_ack==dict(sequence=2,bytes=len(b'KER-A09-HANDOFF-UDP seq=2\n')),
                     'original app did not acknowledge both-actor-death datagram')
+                deadline=time.monotonic()+10
+                while time.monotonic()<deadline:
+                    try:barrier=json.loads(stats_path.read_text()).get('handoff_frame_death_barrier',{})
+                    except (OSError,json.JSONDecodeError):barrier={}
+                    if barrier.get('stage')=='prepared-both-live':break
+                    require(runner.poll() is None,'runner exited before the both-dead actor barrier')
+                    time.sleep(0.005)
+                require(barrier.get('producer_pid')==before['attached']['pid'] and
+                    barrier.get('consumer_pid')==before['handoff_peer_attached']['pid'] and
+                    barrier.get('producer_prepared') is True and barrier.get('producer_stopped') is True and
+                    not select.select([owner_pidfd,peer_pidfd,resident_pidfd],[],[],0)[0],
+                    'both-dead barrier did not hold both exact actors and resident live')
+                resident_stop_sent=False
+                try:
+                    signal.pidfd_send_signal(resident_pidfd,signal.SIGSTOP)
+                    resident_stop_sent=True
+                    stop_deadline=time.monotonic()+5
+                    while time.monotonic()<stop_deadline:
+                        require(not select.select([resident_pidfd],[],[],0)[0],
+                            'resident exited before the deterministic both-dead barrier')
+                        state=next(line.split()[1] for line in
+                            Path(f'/proc/{primary.pid}/status').read_text().splitlines()
+                            if line.startswith('State:'))
+                        if state in ('T','t'):break
+                        time.sleep(0.005)
+                    else:raise RuntimeError('exact resident pidfd did not reach stopped state')
+                    signal.pidfd_send_signal(owner_pidfd,signal.SIGKILL)
+                    signal.pidfd_send_signal(peer_pidfd,signal.SIGKILL)
+                    dead_deadline=time.monotonic()+5
+                    while time.monotonic()<dead_deadline:
+                        if (select.select([owner_pidfd],[],[],0)[0] and
+                                select.select([peer_pidfd],[],[],0)[0]):break
+                        time.sleep(0.005)
+                    else:raise RuntimeError('both exact actor pidfds did not become readable while resident was stopped')
+                finally:
+                    if resident_stop_sent and not select.select([resident_pidfd],[],[],0)[0]:
+                        signal.pidfd_send_signal(resident_pidfd,signal.SIGCONT)
                 deadline=time.monotonic()+15
                 while time.monotonic()<deadline:
                     try:after=json.loads(stats_path.read_text())
@@ -1067,6 +1104,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     reaped.get('producer_pid')==proof.get('producer_pid') and
                     reaped.get('object_index')==prepared.get('object_index') and
                     reaped.get('lease_id')==prepared.get('lease_id') and
+                    reaped.get('dead_mask')==3 and
                     reaped.get('tx_after')==0 and reaped.get('packet_pool_in_use')==0 and
                     reaped.get('counters')==prepared.get('counters_before') and
                     proof.get('final_census',{}).get('process')==0 and
@@ -1100,6 +1138,7 @@ def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
                     dropped.get('command')==api.FRAME_PREPARE and dropped.get('request_handled_and_cached') is True and
                     dropped.get('object_index')==reaped.get('object_index') and dropped.get('lease_id')==reaped.get('lease_id') and
                     dropped.get('sequence')==reaped.get('sequence') and dropped.get('command')==reaped.get('command') and
+                    reaped.get('dead_mask')==1 and
                     dropped.get('tx')==0 and dropped.get('packet_pool_in_use')==1 and
                     proof.get('retained',{}).get('tx')==dropped.get('tx') and
                     proof.get('retained',{}).get('packet_pool_in_use')==dropped.get('packet_pool_in_use') and
