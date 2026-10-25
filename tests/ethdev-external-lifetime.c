@@ -4,7 +4,7 @@
 #include "runtime/memory.h"
 #include "runtime/skb.h"
 #include <errno.h>
-#include <linux/if_ether.h>
+#include "compat/ethernet-abi.h"
 #include <rte_eth_ring.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>

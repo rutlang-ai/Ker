@@ -279,6 +279,8 @@ if(KER_WITH_DPDK)
     add_test(NAME ethdev-multiqueue COMMAND ker-ethdev-multiqueue-test)
     set_tests_properties(ethdev-multiqueue PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77
         ENVIRONMENT "LD_LIBRARY_PATH=${KER_ETHDEV_TEST_LIBRARY_PATH}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME ethdev-ethernet-abi-boundary COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ethernet-abi-boundary.py" "${PROJECT_SOURCE_DIR}")
     add_executable(ker-tx-ring-test tx-ring.c)
     target_include_directories(ker-tx-ring-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_compile_definitions(ker-tx-ring-test PRIVATE _GNU_SOURCE)
