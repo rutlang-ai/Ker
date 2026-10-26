@@ -1443,3 +1443,8 @@ fd xattr 操作使用原始 Linux inode：可读取/枚举 socketfs 的 system.s
 
 `mmap`/`mmap64` 对原生 fd 询问原始 Linux；当前 NOMMU 内核对 socket 返回 EINVAL，epoll 返回 ENODEV；未对齐偏移
 返回 EINVAL。宿主 MMU 内核的只读 TCP 映射是独立的成功行为；MAP_ANONYMOUS 始终忽略 fd 并使用宿主内存，普通宿主文件映射保留原有共享写回语义。
+
+sendfile/sendfile64、splice、tee 和 copy_file_range 仅在输入输出属于同一个内核时执行；
+跨宿主/原生 fd 显式返回 EOPNOTSUPP，避免把占位 fd 当作数据来源/目标，错误不推进偏移。
+vmsplice 按单个 fd 的所属内核分派。宿主文件、UNIX socket 和 pipe 的实际传输保持正常，
+两个原生 fd 的操作仍交给原始 Linux 检查类型、权限和错误。

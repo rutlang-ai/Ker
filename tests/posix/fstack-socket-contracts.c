@@ -26,6 +26,7 @@
 #include <linux/close_range.h>
 #include <linux/limits.h>
 #include <sys/time.h>
+#include <sys/sendfile.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -410,6 +411,44 @@ static void file_cache_operations(void)
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
 }
 
+static void file_transfer_boundaries(void)
+{
+    char path[] = "/tmp/ker-transfer-XXXXXX", second[] = "/tmp/ker-copy-XXXXXX";
+    int fd = mkstemp(path), output = mkstemp(second);
+    CHECK(fd >= 0 && output >= 0 && unlink(path) == 0 && unlink(second) == 0);
+    CHECK(write(fd, "transfer", 8) == 8);
+    int sockets[2]; CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+    off_t offset = 0; CHECK(sendfile64(sockets[0], fd, &offset, 8) == 8 && offset == 8);
+    char bytes[8]; CHECK(read(sockets[1], bytes, sizeof(bytes)) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    off64_t in_offset = 0, out_offset = 0;
+    CHECK(copy_file_range(fd, &in_offset, output, &out_offset, 8, 0) == 8 && in_offset == 8 && out_offset == 8);
+    CHECK(pread(output, bytes, 8, 0) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    int pipes[2], copies[2]; CHECK(pipe(pipes) == 0 && pipe(copies) == 0);
+    offset = 0; CHECK(splice(fd, &offset, pipes[1], NULL, 8, 0) == 8 && offset == 8);
+    CHECK(tee(pipes[0], copies[1], 8, 0) == 8);
+    CHECK(read(pipes[0], bytes, 8) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    CHECK(read(copies[0], bytes, 8) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    struct iovec vector = {(void *)"v", 1}; CHECK(vmsplice(pipes[1], &vector, 1, 0) == 1);
+    CHECK(read(pipes[0], bytes, 1) == 1 && bytes[0] == 'v');
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        struct pair p = connected(); offset = 0;
+        ERROR(sendfile(p.client, -1, NULL, 1), EBADF);
+        ERROR(splice(-1, NULL, p.client, NULL, 1, 0), EBADF);
+        ERROR(sendfile(p.client, fd, &offset, 1), EOPNOTSUPP); CHECK(offset == 0);
+        ERROR(sendfile64(output, p.server, &offset, 1), EOPNOTSUPP); CHECK(offset == 0);
+        ERROR(splice(p.server, NULL, pipes[1], NULL, 1, 0), EOPNOTSUPP);
+        ERROR(tee(p.server, pipes[1], 1, 0), EOPNOTSUPP);
+        ERROR(copy_file_range(fd, NULL, p.client, NULL, 1, 0), EOPNOTSUPP);
+        ERROR(sendfile(p.client, p.server, &offset, 1), ESPIPE);
+        ERROR(vmsplice(p.client, &vector, 1, 0), EBADF);
+        CHECK(write(p.client, "t", 1) == 1); ready(p.server);
+        CHECK(read(p.server, bytes, 1) == 1 && bytes[0] == 't'); finish(p);
+    }
+    CHECK(lseek(fd, 0, SEEK_CUR) == 8 && close(fd) == 0 && close(output) == 0);
+    CHECK(close(sockets[0]) == 0 && close(sockets[1]) == 0);
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0 && close(copies[0]) == 0 && close(copies[1]) == 0);
+}
+
 static void close_range_boundary(void)
 {
     struct pair p = connected();
@@ -646,6 +685,7 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"cross-kernel-file-transfer-boundaries", file_transfer_boundaries},
         {"close-range-explicit-native-boundary", close_range_boundary},
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
