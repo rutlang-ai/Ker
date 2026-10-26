@@ -315,18 +315,70 @@ static int descriptor_chownat(int fd, const char *path, uid_t owner, gid_t group
 int fchownat(int fd, const char *path, uid_t owner, gid_t group, int flags)
     __attribute__((alias("descriptor_chownat")));
 
+/* The imported kernel must receive valid local timestamps so its
+ * UTIME_OMIT shortcut can run before it looks at the pathname. Reading the
+ * caller's fixed-size array directly here would fault on PROT_NONE instead. */
+static int copy_user_times(const struct timespec *user_times, struct timespec copied[2])
+{
+    struct iovec local = {.iov_base = copied, .iov_len = sizeof(struct timespec) * 2};
+    struct iovec remote = {.iov_base = (void *)user_times, .iov_len = sizeof(struct timespec) * 2};
+    ssize_t result;
+    do {
+        result = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+    } while (result < 0 && errno == EINTR);
+    if (result == (ssize_t)(sizeof(struct timespec) * 2)) return 0;
+    if (result >= 0 || errno == EFAULT) { errno = EFAULT; return -1; }
+    /* A host that denies self process_vm_readv cannot safely emulate copy_from_user. */
+    if (errno == ENOSYS || errno == EPERM || errno == EACCES) errno = EOPNOTSUPP;
+    return -1;
+}
+
 static int descriptor_utimensat(int fd, const char *path, const struct timespec times[2], int flags)
 {
-    /* Original Linux explicitly supports NULL as the fd-only operation. */
-    if (path && path[0] == '/') return syscall(SYS_utimensat, fd, path, times, flags);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_utimensat, fd, path, times, flags);
+
+    struct timespec copied[2];
     struct __lkl__kernel_timespec native[2];
-    if (times) for (int i = 0; i < 2; ++i) {
-        native[i].tv_sec = times[i].tv_sec;
-        native[i].tv_nsec = times[i].tv_nsec;
+    if (times) {
+        if (copy_user_times(times, copied) < 0) {
+            ker_fd_put(entry);
+            return -1;
+        }
+        for (int i = 0; i < 2; ++i) {
+            native[i].tv_sec = copied[i].tv_sec;
+            native[i].tv_nsec = copied[i].tv_nsec;
+        }
+        /* Linux returns here before checking flags or touching filename. */
+        if (copied[0].tv_nsec == UTIME_OMIT && copied[1].tv_nsec == UTIME_OMIT) {
+            long result = lkl_sys_utimensat(entry->native, path, native, flags);
+            ker_fd_put(entry);
+            if (result < 0) { errno = (int)-result; return -1; }
+            return 0;
+        }
     }
-    long result = lkl_sys_utimensat(entry->native, path, times ? native : NULL, flags);
+
+    if (!path) {
+        /* Linux treats NULL as the descriptor-only form; the kernel validates flags. */
+        long result = lkl_sys_utimensat(entry->native, NULL, times ? native : NULL, flags);
+        ker_fd_put(entry);
+        if (result < 0) { errno = (int)-result; return -1; }
+        return 0;
+    }
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
+    }
+    char native_path[PATH_MAX];
+    if (copy_native_path(path, native_path) < 0) {
+        int error = errno;
+        ker_fd_put(entry);
+        errno = error; return -1;
+    }
+    if (native_path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_utimensat, fd, native_path, times ? copied : NULL, flags);
+    }
+    long result = lkl_sys_utimensat(entry->native, native_path, times ? native : NULL, flags);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
     return 0;
