@@ -2620,6 +2620,19 @@
         "native-fstack-zc-validation"
       ],
       "adaptation": "Real dynamically resolved owned-writer APIs execute through the preloaded native library with original-Linux IPv4/IPv6 loopback UDP and MSG_ERRQUEUE. Empty owners have non-NULL views with logical capacity/length0; zero appends and rejected appends deliver no datagrams/completions. Ordinary Linux zero-byte UDP remains a real datagram/completion ID0. Subsequent ab/cd cumulative appends expose length4/exact bytes, preserve state after rejected/zero append and reject raw-owner bypasses; valid sends retain the next completion ID. Only after actual completion does another append produce abcdEFGH/length8 for exact scatter-gather delivery, followed by completion and owner destruction. A residual empty owner and raw mapping are reclaimed by explicit runtime shutdown; all late owner methods reject ENETDOWN without changing view outputs. The runner requires all nine unique source markers. These are logical owner/cursor semantics, not FreeBSD mbuf fields or source zero-byte-send rejection. Null-PMD payloads stay in original Linux loopback; the full virtio/native-buffer software-datapath regression passes separately, without an end-to-end zero-copy claim."
+    },
+    "native-fstack-buffer-writer-failures": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
+        "test_ff_zc_mbuf_write_accumulates_pkthdr_len",
+        "test_ff_zc_mbuf_write_zero_len_noop"
+      ],
+      "ker_ctests": [
+        "native-fstack-buffer-writer-constructor",
+        "native-fstack-buffer-writer-retry"
+      ],
+      "adaptation": "Ker-specific owner/cursor failure extensions using actual original-Linux mappings and production writer code. Thread-local wrappers inject only descriptor malloc ENOMEM, one mmap ENOMEM or one munmap EIO; all successful allocations/syscalls are original. Failed empty-owner construction leaves an existing owner unchanged, makes no false registration and frees the temporary descriptor after mmap failure; a later empty construction succeeds. Failed destroy retains exact length/bytes/raw-bypass protection, does not affect a second owner and permits synchronized producer/consumer append handoff before a successful real destroy retry. Repeated destroy changes neither outputs nor unmap count. Final allocation/release totals and one empty-owner shutdown release are exact. These are runtime-adapter regressions, not source FreeBSD allocator ABI, unsynchronized access or network evidence."
     }
   }
 }

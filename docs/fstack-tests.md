@@ -556,3 +556,7 @@ Owned writer：`native-fstack-buffer-writer-empty/append/zero`验证最小空own
 Writer集成：`native-fstack-zc-validation`严格验证九个source marker；原版Linux
 IPv4/IPv6 loopback证明append无投递、副作用回滚、真实零字节UDP及连续completion，
 完成后才append/destroy。退出精确回收raw与writer两个残留，完整virtio回归另行通过。
+
+Writer失败：`native-fstack-buffer-writer-constructor/retry`验证定点malloc/mmap
+回滚、munmap失败保留owner、明确线程交接后的append及成功重试，另一owner与
+精确回收计数保持正确。不新增源案例完成数，不计FreeBSD分配器或无同步竞争证明。

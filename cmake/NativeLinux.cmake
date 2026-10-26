@@ -639,6 +639,21 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-buffer-writer-zero COMMAND ker-native-buffer-writer-test zero)
     set_tests_properties(native-fstack-buffer-writer-empty native-fstack-buffer-writer-append
         native-fstack-buffer-writer-zero PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-writer-failures-test tests/posix/native-buffer-writer-failures.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-writer-failures-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-writer-failures-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-writer-failures-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_link_options(ker-native-buffer-writer-failures-test PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=lkl_syscall)
+    target_compile_options(ker-native-buffer-writer-failures-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-writer-constructor COMMAND ker-native-buffer-writer-failures-test constructor)
+    add_test(NAME native-fstack-buffer-writer-retry COMMAND ker-native-buffer-writer-failures-test retry)
+    set_tests_properties(native-fstack-buffer-writer-constructor native-fstack-buffer-writer-retry
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     foreach(page_mode debug release)
         add_executable(ker-host-pages-${page_mode}-test tests/posix/fstack-host-pages.c src/posix/host-memory.c)
         target_include_directories(ker-host-pages-${page_mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
