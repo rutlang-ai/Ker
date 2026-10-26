@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -239,10 +240,37 @@ static void host_native_same_tuple(void)
     puts(native_instance ? "PASS: independent host/native UDP same tuple, mixed epoll and both close orders" :
         "PASS: host reference same-kernel UDP tuple collision and survivor traffic");
 }
+static void select_error_preserves_sets(void)
+{
+    struct pair p = connected();
+    int invalid = dup(p.server); CHECK(invalid >= 0 && invalid < FD_SETSIZE);
+    CHECK(close(invalid) == 0);
+    CHECK(write(p.client, "kept", 4) == 4);
+    for (int variant = 0; variant < 2; ++variant) {
+        fd_set reads, writes, errors;
+        FD_ZERO(&reads); FD_ZERO(&writes); FD_ZERO(&errors);
+        FD_SET(p.server, &reads); FD_SET(invalid, &reads);
+        FD_SET(p.client, &writes); FD_SET(p.server, &errors);
+        fd_set saved_reads = reads, saved_writes = writes, saved_errors = errors;
+        int maximum = invalid > p.client ? invalid : p.client;
+        if (p.server > maximum) maximum = p.server;
+        struct timeval zero = {0}; struct timespec zero_ns = {0};
+        if (variant) ERROR(pselect(maximum+1, &reads, &writes, &errors, &zero_ns, NULL), EBADF);
+        else ERROR(select(maximum+1, &reads, &writes, &errors, &zero), EBADF);
+        CHECK(!memcmp(&reads, &saved_reads, sizeof(reads)) &&
+              !memcmp(&writes, &saved_writes, sizeof(writes)) &&
+              !memcmp(&errors, &saved_errors, sizeof(errors)));
+    }
+    ready(p.server);
+    char bytes[4]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 4 && !memcmp(bytes, "kept", 4));
+    finish(p);
+}
+
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"creation-flags-and-socket-type", creation_flags},
+        {"select-ebadf-preserves-input-sets-and-data", select_error_preserves_sets},
         {"accept-flags-are-explicit-not-inherited", accepted_flags},
         {"address-length-truncation-and-peer-tuples", address_lengths},
         {"socket-options-errors-and-recovery", option_roundtrip},

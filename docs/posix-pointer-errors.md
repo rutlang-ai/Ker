@@ -7,3 +7,5 @@ The native epoll scenario suite checks both calls while original Linux TCP data 
 `fstat`, `fstat64`, `__fxstat` and `__fxstat64` reject NULL output with `EFAULT` on a valid native descriptor. Native descriptor errors retain precedence, and host descriptors continue through the host syscall. The implementation is separated from libc's nonnull declaration so optimization cannot remove the check.
 
 The same host/preload scenario exercises TCP, UDP and host-pipe descriptors through all four ABI entries, verifies invalid-descriptor `EBADF`, checks metadata after each fault and transfers TCP/pipe data afterward.
+
+The select/pselect adapter reports EBADF before clearing or populating caller fd sets when a selected descriptor is invalid. Host/native socket-contract coverage checks every set remains unchanged and queued TCP data is still delivered after the failure.
