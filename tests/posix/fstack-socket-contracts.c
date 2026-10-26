@@ -388,10 +388,12 @@ static void partial_payload_faults(void)
         CHECK(getsockname(rx, (void *)&address, &size) == 0);
         CHECK(sendto(tx, payload, length, 0, (void *)&address, size) == (ssize_t)length); ready(rx);
         struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
+        memset(memory + page - prefix, 0xa5, prefix);
         ERROR(recvmsg(rx, &message, MSG_PEEK), EFAULT);
         CHECK(!memcmp(memory + page - prefix, payload, prefix));
         CHECK(recv(rx, recovered, sizeof(recovered), MSG_PEEK) == (ssize_t)length);
         CHECK(!memcmp(recovered, payload, length));
+        memset(memory + page - prefix, 0xa5, prefix);
         ERROR(recvmsg(rx, &message, 0), EFAULT);
         CHECK(!memcmp(memory + page - prefix, payload, prefix));
         ERROR(recv(rx, recovered, sizeof(recovered), MSG_DONTWAIT), EAGAIN);
