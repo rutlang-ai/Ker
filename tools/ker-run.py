@@ -1026,8 +1026,19 @@ def main():
     except MemoryError:
         print('ker-run: configuration allocation failed', file=sys.stderr)
         return 2
-    library = args.library.resolve(strict=True)
-    worker_path = args.io_worker.resolve(strict=True)
+    try:
+        library = args.library.resolve(strict=True)
+        worker_path = args.io_worker.resolve(strict=True)
+        app_guard = (worker_path.parent / 'ker-app').resolve(strict=True)
+        for artifact in (library, worker_path, app_guard):
+            if not artifact.is_file():
+                raise ValueError(f'{artifact}: runtime artifact must be a regular file')
+        for artifact in (worker_path, app_guard):
+            if not os.access(artifact, os.X_OK):
+                raise ValueError(f'{artifact}: runtime artifact must be executable')
+    except (OSError, ValueError) as error:
+        print(f'ker-run: runtime artifact: {error}', file=sys.stderr)
+        return 125
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
     mtu_app, mtu_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     run_parent, run_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -1140,7 +1151,6 @@ def main():
             env['KER_NATIVE_TCP_ECN'] = str(TCP_ECN[args.tcp_ecn])
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
-        app_guard = worker_path.parent / 'ker-app'
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
             pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write, run_app.fileno(),
                       *(fd for extra in additional for fd in extra.app_fds())))

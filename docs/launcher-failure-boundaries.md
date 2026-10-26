@@ -1,0 +1,12 @@
+# Launcher failure boundaries
+
+Runtime artifact failures return infrastructure status125 with a diagnostic.
+The native library, selected worker and sibling application guard must resolve
+to regular files; worker and guard must be executable before IPC channels are
+created. A failed check starts no EAL worker or application. Configuration
+validation retains its separate status2 convention.
+
+`native-ker-run-boundaries` uses actual local pipes and executable coordinator
+fixtures to verify failures and recovery. These fixtures exercise launcher
+ownership and control records, not Linux/DPDK packet behavior or additional
+F-Stack scenario completion. Imported upstream sources are unchanged.
