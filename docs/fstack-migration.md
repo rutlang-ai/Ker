@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 217 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 218 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 128 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 127 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为217 scenario-adapted、18 partial、128 blocked，共146项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为218 scenario-adapted、18 partial、127 blocked，共145项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -1890,3 +1890,17 @@ issue225的最后一个行为项已有映射，因此从未完成分组移除；
 通过实际原版Linux CLOCK_REALTIME读取，不新建Ker时间缓存。旧私有epoch与
 直接kernel读数夹验排除host fallback；错误与inactive输出保留另有测试。
 源cached timestamp布局和clock-error致命断言不作为本批适配内容。
+
+## Named-interface malformed-section rejection
+
+`native-fstack-interface-section-validation` adapts only the pinned
+`test_port_cfg_handler_bad_section_returns_zero` rejection scenario through
+Ker’s actual `[interface.NAME]` grammar. Empty, punctuated, whitespace,
+non-ASCII and overlong names fail the reader and CLI before worker/application
+execution, on either side of a valid record. Correcting the section restores
+both typed interface records without leaking partial state into later loads.
+Valid names of1/32 characters and `XX` remain supported: F-Stack’s numeric
+`[portXX]` spelling is deliberately not that grammar and remains unknown.
+This is configuration evidence, not a callback/global-array ABI or traffic pass.
+The permissive over-max skip case remains blocked. Counts are218 adapted,
+18 partial,127 blocked,15 architecture-specific and55 harness-only.

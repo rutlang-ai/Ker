@@ -564,3 +564,8 @@ Writer失败：`native-fstack-buffer-writer-constructor/retry`验证定点malloc
 Owned-send：`native-fstack-zc-validation`以十个source marker和真实双栈原生
 socket验证非空written range、NULL/溢出/host fd拒绝及精确prefix/offset传输。
 仅将源零字节owned-send错误合同推进为场景适配，普通Linux空UDP语义不变。
+
+命名接口节名校验：`native-fstack-interface-section-validation` 通过实际 reader/CLI
+适配 `test_port_cfg_handler_bad_section_returns_zero` 的错误拒绝场景。无效名称在
+合法接口记录前后均失败，worker/application 不执行；修正后两条记录独立恢复。
+Ker 使用 `[interface.NAME]`，不模拟 F-Stack 数字端口 ABI，也不计网络互通通过。
