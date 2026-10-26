@@ -1505,3 +1505,8 @@ fchmodat/fchownat 的原生空路径操作修改导入 Linux sockfs inode，权�
 utimensat 对原生 fd 的空路径及 NULL fd-only 操作委托原始 Linux，显式转换到固定
 __kernel_timespec ABI；纳秒、UTIME_NOW/OMIT、双 OMIT 不查路径的语义来自原始内核。
 复制 fd 共享时间，非法纳秒及路径错误不改变 inode；宿主文件路径仍操作宿主文件。
+
+独立 raw ICMP 合同通过原始 Linux IPv4/IPv6 loopback 发送 echo 请求并接收内核生成的
+reply，验证 ICMP_FILTER/ICMP6_FILTER、IPv4 IP 头与校验和、IPv6 源地址、id/sequence/
+payload、非阻塞与复制 fd 生命周期，并保留普通 TCP 共存。宿主参考处于独立 user/net
+namespace；该合同不宣称外部 NIC 或 DPDK 线缆路径上的 raw ICMP 互通。
