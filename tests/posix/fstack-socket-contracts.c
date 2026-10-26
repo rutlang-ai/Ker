@@ -322,6 +322,18 @@ static void host_path_faults(void)
     CHECK(munmap(path, length) == 0);
     CHECK(close(host) == 0 && unlink(name) == 0);
 }
+static void host_fstatat64_fault_boundary(void)
+{
+    long page = sysconf(_SC_PAGESIZE); CHECK(page > 0);
+    void *inaccessible = mmap(NULL, (size_t)page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(inaccessible != MAP_FAILED);
+    char name[] = "/tmp/ker-stat64-fault-XXXXXX"; int host = mkstemp(name); CHECK(host >= 0);
+    struct stat64 wide;
+    ERROR(fstatat64(AT_FDCWD, inaccessible, &wide, 0), EFAULT);
+    ERROR(fstatat64(host, inaccessible, &wide, 0), EFAULT);
+    CHECK(munmap(inaccessible, (size_t)page) == 0);
+    CHECK(close(host) == 0 && unlink(name) == 0);
+}
 static void descriptor_access(void)
 {
     struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
@@ -1963,6 +1975,7 @@ int main(void)
         {"descriptor-access-permission-owner-routing", descriptor_access},
         {"descriptor-at-metadata-mutations", descriptor_at_mutations},
         {"host-at-path-fault-routing", host_path_faults},
+        {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"descriptor-at-nanosecond-timestamps", descriptor_at_timestamps},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
         {"host-fchmodat2-ENOSYS-flags-zero-fallback", fchmodat2_enosys_fallback},
