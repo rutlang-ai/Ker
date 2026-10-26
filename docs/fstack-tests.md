@@ -540,3 +540,7 @@ LACP、双栈ICMP和链路失效恢复通过。eth0/eth1显式映射到测试TAP
 和生产登记验证容量/NULL错误以及多页、重叠、零长度和完整回收。仅将源写溢出
 及NULL数据错误返回两例推进为scenario-adapted；无implicit cursor、mbuf header/
 chain或网络证明。三个测试列入无需EAL/PMD的CI必跑清单。
+
+有界写入socket集成：`native-fstack-zc-validation`严格验证六个source marker，
+并通过真实动态库、原版Linux loopback与completion ID证明非法写入无队列副作用，
+有效后继发送及scatter-gather正常；完整virtio/native-buffer回归另行通过。

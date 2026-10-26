@@ -161,3 +161,12 @@ packet header或隐式写游标；调用者仍须在写入被zerocopy引用的�
 
 三个standalone原版Linux测试分别覆盖容量拒绝、NULL数据拒绝和实际多页/重叠/
 零长度写入；不是网络、PMD、mbuf链或端到端零拷贝证据。
+
+动态库集成测试通过dlsym获取有界写入接口，先用它填充登记VMA，再用已连接的
+原版Linux loopback UDP socket验证非法写入不投递datagram、不产生zerocopy
+completion且不改变字节。有效后继发送收到精确数据，首个completion ID仍为0；
+另一个由有界写入准备的VMA参与8192字节scatter-gather传输。显式runtime退出后
+write返回ENETDOWN，所有映射、option guard和worker mbuf必须清零。
+`native-fstack-zc-validation`的六项source marker必须完整且唯一，不能用少跑或
+重复marker掩盖缺失。null PMD仅负责启动真实runtime，loopback结果不计外部wire；
+完整`native-fstack-native-buffers` virtio软件数据通路回归另行验证。

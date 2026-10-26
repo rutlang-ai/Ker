@@ -4776,11 +4776,15 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Actual ker_posix_buffer_write rejects an8-byte write into a4-byte original-Linux VMA allocation with -1/EINVAL, preserves every existing byte, and permits a subsequent exact-capacity write. Requested-size bounds also reject offset/length overflow and page-rounded slack. Tests require exact-base ownership, inactive/stale rejection and complete original-Linux VMA reclamation. This adapts the source write-capacity rejection outcome through explicit-offset native memory; it does not reproduce the FreeBSD mbuf header/cursor ABI.",
+      "reason": "Actual ker_posix_buffer_write rejects an8-byte write into a4-byte original-Linux VMA allocation with -1/EINVAL, preserves every existing byte, and permits a subsequent exact-capacity write. Requested-size bounds also reject offset/length overflow and page-rounded slack. Tests require exact-base ownership, inactive/stale rejection and complete original-Linux VMA reclamation. This adapts the source write-capacity rejection outcome through explicit-offset native memory; it does not reproduce the FreeBSD mbuf header/cursor ABI. Actual dynamically resolved shared-library calls also preserve connected original-Linux loopback queues and zerocopy completion numbering after rejected writes, with valid subsequent sends and complete runtime cleanup.",
       "ker_tests": [
         {
           "ctest": "native-fstack-buffer-write-overflow",
           "provenance_case": "native-fstack-buffer-write-overflow"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-write-socket-contracts"
         }
       ]
     },
@@ -4788,11 +4792,15 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_null_data_returns_error",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Actual ker_posix_buffer_write rejects NULL data with -1/EINVAL for a64-byte original-Linux VMA allocation, including length0, without changing bytes or registration. A later valid write succeeds at an explicit offset and preserves surrounding bytes. Tests require exact VMA/free/shutdown accounting. This adapts the source NULL-write rejection outcome, not the FreeBSD mbuf/header/implicit-cursor ABI.",
+      "reason": "Actual ker_posix_buffer_write rejects NULL data with -1/EINVAL for a64-byte original-Linux VMA allocation, including length0, without changing bytes or registration. A later valid write succeeds at an explicit offset and preserves surrounding bytes. Tests require exact VMA/free/shutdown accounting. This adapts the source NULL-write rejection outcome, not the FreeBSD mbuf/header/implicit-cursor ABI. Actual dynamically resolved shared-library calls also preserve connected original-Linux loopback queues and zerocopy completion numbering after rejected writes, with valid subsequent sends and complete runtime cleanup.",
       "ker_tests": [
         {
           "ctest": "native-fstack-buffer-write-null",
           "provenance_case": "native-fstack-buffer-write-null"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-write-socket-contracts"
         }
       ]
     },

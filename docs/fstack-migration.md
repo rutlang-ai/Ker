@@ -1795,3 +1795,16 @@ inactive/stale拒绝及最终VMA全部回收。原有resize测试继续通过。
 
 本批Debug/Release各4项write/resize CTest通过，两种共享库均导出新符号；21项迁移
 审计及22项CI选择器测试通过。三项write测试纳入无需EAL/PMD的必跑清单。
+
+## 有界写入的共享库/socket 集成
+
+将有界写入接入实际preloaded共享库调用者：在原版Linux loopback UDP与
+MSG_ERRQUEUE前验证写溢出、NULL错误不投递数据、不消耗completion ID，原字节
+不变且后继有效发送/8192字节scatter-gather正常。runner严格要求六个唯一source
+marker；退出后再次write返回ENETDOWN，映射/guard/mbuf全部归还。
+
+Debug/Release的`native-fstack-zc-validation`均通过，Debug完整
+`native-fstack-native-buffers`软件virtio数据通路回归通过。按与CI相同方式设置
+配置DPDK安装目录的LD_LIBRARY_PATH以加载原版PMD依赖；loopback结果不计外部wire。
+这是既有两项写错误映射的集成补强，210项scenario-adapted、18项partial、
+135项blocked及153项行为未完成的计数不变。

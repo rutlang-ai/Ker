@@ -2561,6 +2561,17 @@
         "native-fstack-buffer-write-null"
       ],
       "adaptation": "Actual ker_posix_buffer_write rejects NULL data with -1/EINVAL for a64-byte original-Linux VMA allocation, including length0, without changing bytes or registration. A later valid write succeeds at an explicit offset and preserves surrounding bytes. Tests require exact VMA/free/shutdown accounting. This adapts the source NULL-write rejection outcome, not the FreeBSD mbuf/header/implicit-cursor ABI. Primary-only standalone original Linux bootstrap uses the real native-buffer registry and mapping syscalls; the lifetime gate is supplied by the test bootstrap. No mbuf algorithm mirror, socket/PMD traffic or end-to-end zero-copy claim."
+    },
+    "native-fstack-buffer-write-socket-contracts": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_write_overflow_returns_error",
+        "test_ff_zc_mbuf_write_null_data_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "The application resolves ker_posix_buffer_write from the actual preloaded native shared library, fills registered Linux pages through explicit bounded writes and rejects overflow/NULL writes with no byte changes. Connected original-Linux loopback UDP sockets and MSG_ERRQUEUE prove these rejected writes deliver no datagrams and consume no zerocopy completion IDs; valid later sends deliver exact bytes and the first completion remains ID0. A second VMA prepared through bounded writes participates in exact8192-byte scatter-gather delivery. Shared-library inactive-write rejection follows explicit runtime shutdown, with all mappings, option guards and worker mbufs reclaimed. The null PMD profile starts the real EAL/runtime but its payload stays inside original Linux loopback. The full native-buffer virtio software-datapath regression also passes; no host-socket shortcut, F-Stack cursor ABI or end-to-end zero-copy claim is made."
     }
   }
 }
