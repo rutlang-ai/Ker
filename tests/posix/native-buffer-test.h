@@ -12,6 +12,8 @@ static int (*buffer_release)(void *);
 static void *(*buffer_resize)(void *, size_t);
 static int (*buffer_write)(void *, size_t, const void *, size_t);
 static struct ker_posix_buffer_writer *(*writer_create)(size_t);
+static struct ker_posix_buffer_writer *(*writer_create_segmented)(size_t, size_t);
+static const void *(*writer_segment)(struct ker_posix_buffer_writer *, size_t, size_t *, size_t *, size_t *);
 static int (*writer_append)(struct ker_posix_buffer_writer *, const void *, size_t);
 static const void *(*writer_view)(struct ker_posix_buffer_writer *, size_t *, size_t *);
 static int (*writer_destroy)(struct ker_posix_buffer_writer *);
@@ -44,6 +46,9 @@ static void buffer_init(void)
     buffer_resize = dlsym(RTLD_DEFAULT, "ker_posix_buffer_realloc");
     buffer_write = dlsym(RTLD_DEFAULT, "ker_posix_buffer_write");
     writer_create = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_create");
+    writer_create_segmented = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_create_segmented");
+    writer_segment = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_segment");
+    check(writer_create_segmented && writer_segment, "native segmented writer ABI");
     writer_append = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_append");
     writer_view = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_view");
     writer_destroy = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_destroy");
@@ -165,6 +170,63 @@ static void writer_no_delivery(int fd, int receiver)
     check(recvmsg(fd, &message, MSG_ERRQUEUE | MSG_DONTWAIT) == -1 && errno == EAGAIN,
           "writer append consumed no completion ID");
 }
+static void buffer_segment_writers(int fd, int receiver)
+{
+    unsigned char pattern[256], received[256];
+    for (size_t i = 0; i < sizeof(pattern); i++) pattern[i] = (unsigned char)(i & 0x7f);
+    struct ker_posix_buffer_writer *owner = writer_create_segmented(256, 128);
+    check(owner, "segmented socket owner");
+    check(writer_append(owner, pattern, 178) == 178, "source178-byte multi-node append");
+    struct iovec vectors[2];
+    const void *nodes[2];
+    for (size_t i = 0; i < 2; i++) {
+        size_t used = SIZE_MAX, capacity = SIZE_MAX, total = SIZE_MAX;
+        nodes[i] = writer_segment(owner, i, &used, &capacity, &total);
+        check(nodes[i] && used == (i ? 50 : 128) && capacity == 128 && total == 178,
+              "real segment length/capacity and aggregate cursor");
+        check(!memcmp(nodes[i], pattern + i*128, used), "owned per-node source bytes");
+        vectors[i] = (struct iovec){(void *)nodes[i], used};
+    }
+    check(nodes[0] != nodes[1], "separate registered segment VMAs");
+    check(writer_send(owner, fd, 0, 178, MSG_ZEROCOPY) == -1 && errno == EOPNOTSUPP,
+          "single-view send cannot truncate segmented owner");
+    check(writer_append(owner, pattern, SIZE_MAX) == -1 && errno == EINVAL,
+          "segmented append bounds before socket syscall");
+    size_t a = 41, b = 42, c = 43;
+    check(!writer_segment(owner, 2, &a, &b, &c) && errno == EINVAL && a == 41 && b == 42 && c == 43,
+          "invalid segment preserves output sentinels");
+    writer_no_delivery(fd, receiver);
+    unsigned prior = sent_ids;
+    struct msghdr message = {.msg_iov=vectors, .msg_iovlen=2};
+    check(sendmsg(fd, &message, MSG_ZEROCOPY) == 178 &&
+          recv(receiver, received, sizeof(received), 0) == 178 && !memcmp(received, pattern, 178),
+          "owned128+50-byte segments reach original Linux UDP peer");
+    buffer_sent(178, true); buffer_complete(fd);
+    check(sent_ids == prior+1 && completed_ids == sent_ids, "rejected segmented operations consume no completion IDs");
+    /* No mutation/release while the preceding send holds a zerocopy reference. */
+    check(writer_append(owner, pattern+178, 78) == 78, "append tail only after completion");
+    for (size_t i = 0; i < 2; i++) {
+        size_t used = SIZE_MAX, capacity = SIZE_MAX, total = SIZE_MAX;
+        check(writer_segment(owner, i, &used, &capacity, &total) == nodes[i] &&
+              used == 128 && capacity == 128 && total == 256 && !memcmp(nodes[i], pattern+i*128, 128),
+              "post-completion segment cursor and exact bytes");
+    }
+    vectors[0] = (struct iovec){(unsigned char *)nodes[0]+100, 28};
+    vectors[1] = (struct iovec){(void *)nodes[1], 72};
+    check(sendmsg(fd, &message, MSG_ZEROCOPY) == 100 &&
+          recv(receiver, received, sizeof(received), 0) == 100 && !memcmp(received, pattern+100, 100),
+          "cross-node offset range delivered exactly");
+    buffer_sent(100, true); buffer_complete(fd);
+    check(sent_ids == prior+2 && completed_ids == sent_ids && !writer_destroy(owner),
+          "segmented owner released after both real completions");
+    struct ker_posix_buffer_writer *replacement = writer_create_segmented(256, 128);
+    check(replacement, "replacement segmented socket owner");
+    check(!writer_segment(owner, 0, NULL, NULL, NULL) && errno == EINVAL &&
+          writer_destroy(owner) == -1 && errno == EINVAL, "stale socket owner cannot affect replacement");
+    size_t total = SIZE_MAX;
+    check(writer_segment(replacement, 0, NULL, NULL, &total) && !total && !writer_destroy(replacement),
+          "replacement socket owner remains empty and live");
+}
 static void buffer_writers(void)
 {
     for (unsigned family = 0; family < 2; ++family) {
@@ -250,8 +312,10 @@ static void buffer_writers(void)
               !memcmp(received, "abcdEFGH", 8), "owned scatter-gather bytes delivered");
         buffer_sent(8, true); buffer_complete(fd);
         check(sent_ids == 4 && completed_ids == 4 && !writer_destroy(owner), "owned release follows all completions");
+        buffer_segment_writers(fd, receiver);
         check(!close(fd) && !close(receiver), "writer sockets closed");
     }
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_multi_segment");
     puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_get_zero_len_returns_minimal_chain");
     puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_accumulates_pkthdr_len");
     puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_zero_len_noop");

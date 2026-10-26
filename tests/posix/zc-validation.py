@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 SOURCE_CASES = {
+    'test_ff_zc_mbuf_write_multi_segment',
     'test_ff_zc_mbuf_get_negative_len_returns_error',
     'test_ff_zc_mbuf_get_zero_len_returns_minimal_chain',
     'test_ff_zc_mbuf_write_accumulates_pkthdr_len',

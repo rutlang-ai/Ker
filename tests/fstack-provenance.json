@@ -2655,6 +2655,14 @@
         "native-fstack-buffer-segments-failures"
       ],
       "adaptation": "The production segmented owned-writer adapter allocates separate original-Linux VMAs and appends178 source-pattern bytes into128/50-byte nodes. Borrowed segment views prove exact per-node used/capacity, aggregate178 and exact payload bytes. Repeated appends cross three nodes; snapshotting preserves alias inputs and allocation failure atomicity. Bounds/NULL/raw bypasses preserve state. Destroy/create rejects stale handles; failure probes target one allocation/mmap/munmap while successful operations remain original Linux. Constructor rollback failure stays registered for shutdown; partial destroy prohibits views/appends and retries only remaining nodes. Exact VMA allocation/release and shutdown residual counts match. Standalone bootstrap supplies only active lifetime. This is a memory/ownership adapter, not FreeBSD struct/ABI, network delivery or end-to-end zero-copy evidence."
+    },
+    "native-fstack-buffer-segment-sockets": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_mbuf_write_multi_segment",
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Dynamic segmented-writer APIs allocate distinct registered original-Linux VMAs, append178 bytes and expose128/50 used lengths with aggregate178. Actual IPv4/IPv6 native UDP sendmsg delivers exact per-node bytes and real zerocopy completions. Single-view send/overflow append/invalid index fail without datagrams or consumed completion IDs. Only after completion, a78-byte append fills the tail and a cross-node100-byte offset range is delivered with the next completion. Destruction follows both completions, stale handles cannot affect a replacement, and runtime shutdown leaves zero mappings/option guards/worker mbufs. The strict runner requires all11 unique source markers. Null-PMD traffic is original-Linux loopback, not external wire or end-to-end payload-copy-free evidence; the full virtio software-datapath regression executes the same owner scenarios separately."
     }
   }
 }

@@ -15,8 +15,9 @@
 #include <lkl.h>
 #include <lkl_host.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s errno=%d\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
-static bool active, fail_alloc;
-static unsigned fail_map, fail_unmap;
+static bool active;
+static _Thread_local bool fail_alloc;
+static _Thread_local unsigned fail_map, fail_unmap;
 bool ker_native_ready(void) { return active; }
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size)
