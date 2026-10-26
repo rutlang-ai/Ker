@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <net/if.h>
 #include <linux/icmp.h>
@@ -91,8 +92,13 @@ static void header_inclusion_contract(void)
     uint16_t sum = checksum(packet + 24, sizeof(packet) - 24); memcpy(packet + 26, &sum, 2);
     struct sockaddr_in destination = {.sin_family = AF_INET, .sin_addr.s_addr = loopback};
     errno = 0; CHECK(sendto(fd, packet, 19, 0, (void *)&destination, sizeof(destination)) == -1 && errno == EINVAL);
-    packet[0] = 0x44; errno = 0;
-    CHECK(sendto(fd, packet, sizeof(packet), 0, (void *)&destination, sizeof(destination)) == -1 && errno == EINVAL);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        packet[0] = 0x44; errno = 0;
+        CHECK(sendto(fd, packet, sizeof(packet), 0, (void *)&destination, sizeof(destination)) == -1 && errno == EINVAL);
+        puts("PASS: imported Linux rejects raw IP_HDRINCL IHL<5");
+    } else {
+        puts("SKIP: host-kernel raw IP_HDRINCL IHL<5 rejection is version-dependent");
+    }
     packet[0] = 0x4f; errno = 0;
     CHECK(sendto(fd, packet, 24, 0, (void *)&destination, sizeof(destination)) == -1 && errno == EINVAL);
     packet[0] = 0x46;
