@@ -4,16 +4,20 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/syscall.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
+extern const char *ker_posix_kernel_release(void) __attribute__((weak));
 struct pair {int sender, receiver;};
 static int listener(struct sockaddr_in *address)
 {
@@ -213,6 +217,41 @@ static void zero_timeouts(void)
     CHECK(poll(NULL, 0, 0) == 0);
     finish(p);
 }
+static void poll_memory_faults(void)
+{
+    struct pair p = connected(); int pipes[2]; CHECK(pipe(pipes) == 0);
+    CHECK(write(p.sender, "n", 1) == 1 && write(pipes[1], "h", 1) == 1); queued(p.receiver, 1);
+    long page = sysconf(_SC_PAGESIZE); CHECK(page >= (long)(2 * sizeof(struct pollfd)));
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED && mprotect(memory + page, (size_t)page, PROT_NONE) == 0);
+    struct pollfd fds[2] = {{p.receiver, POLLIN, 0x55}, {pipes[0], POLLIN, 0x55}};
+    const struct timespec zero = {0}; void *bad = memory + page;
+    fprintf(stderr, "poll fault probe: protected poll array\n");
+    ERROR(poll(bad, 1, 0), EFAULT);
+    ERROR(ppoll(bad, 1, &zero, NULL), EFAULT);
+    if (ker_posix_kernel_release) ERROR(ppoll(fds, 2, bad, NULL), EFAULT);
+    else ERROR(syscall(SYS_ppoll, fds, 2, bad, NULL, _NSIG / 8), EFAULT);
+    CHECK(fds[0].revents == 0x55 && fds[1].revents == 0x55);
+    /* libc may copy invalid timeout pointers itself; compare the kernel
+     * contract directly on the host, and the public Ker entry when native. */
+    if (ker_posix_kernel_release) ERROR(pselect(0, NULL, NULL, NULL, bad, NULL), EFAULT);
+    else ERROR(syscall(SYS_pselect6, 0, NULL, NULL, NULL, bad, NULL), EFAULT);
+    CHECK(poll(bad, 0, 0) == 0 && ppoll(bad, 0, &zero, NULL) == 0);
+    memcpy(memory, fds, sizeof(fds)); CHECK(mprotect(memory, (size_t)page, PROT_READ) == 0);
+    ERROR(poll((void *)memory, 2, 0), EFAULT);
+    CHECK(mprotect(memory, (size_t)page * 2, PROT_READ | PROT_WRITE) == 0);
+    struct pollfd *split = (void *)(memory + page - sizeof(struct pollfd));
+    memcpy(split, fds, sizeof(fds)); CHECK(mprotect(memory + page, (size_t)page, PROT_READ) == 0);
+    ERROR(ppoll(split, 2, &zero, NULL), EFAULT);
+    CHECK(split[0].fd == p.receiver && split[0].events == POLLIN && split[0].revents == POLLIN);
+    CHECK(split[1].fd == pipes[0] && split[1].events == POLLIN && split[1].revents == 0x55);
+    CHECK(mprotect(memory + page, (size_t)page, PROT_READ | PROT_WRITE) == 0);
+    CHECK(poll(split, 2, 0) == 2 && split[0].revents == POLLIN && split[1].revents == POLLIN);
+    char byte; CHECK(read(p.receiver, &byte, 1) == 1 && byte == 'n');
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 'h');
+    CHECK(munmap(memory, (size_t)page * 2) == 0 && close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(p);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
@@ -224,6 +263,7 @@ int main(void)
         {"receive-low-watermark", receive_low_watermark},
         {"buffered-eof-is-readable", eof_readiness},
         {"zero-and-invalid-timeouts", zero_timeouts},
+        {"poll-protected-input-output-and-timeout", poll_memory_faults},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run();

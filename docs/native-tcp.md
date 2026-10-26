@@ -1528,3 +1528,9 @@ process_vm 访问；不支持 GUP 的设备映射仍是显式边界。metadata f
 安全复制增加 syscall 开销。本机单线程微基准中，64B 与 64KiB 的读取复制分别约
 0.99us 和 9.56us；该数字不是网络吞吐保证。现有注册 payload/zerocopy 路径没有被替换，
 六种 virtio/vhost 原生 buffer 配置仍通过同一门禁。
+
+poll/ppoll 将应用 pollfd 输入复制为稳定快照，再分别查询宿主及导入 Linux；完成等待后
+只回写 revents，保留 fd/events。受保护输入、只读输出和跨页回写失败返回 EFAULT，
+已回写的前缀与原始内核一致，排队的 TCP/宿主管道数据不被消费。零 count 不触碰数组。
+公共 timespec 等待入口也以安全复制获取超时；非法宿主 timeout 指针的参考测试直接使用
+syscall，避免把 libc 自身的非故障保护复制误认为内核合同。

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "lkl-overlay/arch/lkl/include/asm/ker-host-usercopy.h"
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -33,6 +34,9 @@ static int64_t deadline_ns(int64_t duration)
 static int duration_ns(const struct timespec *value, int64_t *result)
 {
     if (!value) { *result = -1; return 0; }
+    struct timespec copied;
+    if (ker_host_usercopy(&copied, value, sizeof(copied), 0)) { errno = EFAULT; return -1; }
+    value = &copied;
     if (value->tv_sec < 0 || value->tv_nsec < 0 || value->tv_nsec >= 1000000000) {
         errno = EINVAL; return -1;
     }
@@ -57,16 +61,22 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
     if (!pinned || !host_snapshot || !host || !native) {
         free(pinned); free(host_snapshot); free(host); free(native); errno = ENOMEM; return -1;
     }
+    struct pollfd *snapshot = malloc((count ? count : 1) * sizeof(*snapshot));
+    if (!snapshot || ker_host_usercopy(snapshot, fds, count * sizeof(*snapshot), 0)) {
+        int error = snapshot ? EFAULT : ENOMEM;
+        free(snapshot); free(pinned); free(host_snapshot); free(host); free(native);
+        errno = error; return -1;
+    }
     bool has_native = false;
     for (nfds_t i = 0; i < count; ++i) {
         host_snapshot[i] = -1;
-        pinned[i] = ker_fd_get(fds[i].fd);
-        host[i] = fds[i];
+        pinned[i] = ker_fd_get(snapshot[i].fd);
+        host[i] = snapshot[i];
         native[i].fd = -1;
         if (pinned[i]) {
             has_native = true;
             native[i].fd = pinned[i]->native;
-            native[i].events = fds[i].events;
+            native[i].events = snapshot[i].events;
             host[i].fd = -1;
             if (pinned[i]->kind == KER_FD_EPOLL) host_snapshot[i] = -2;
         }
@@ -101,11 +111,18 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
         }
         if (h < 0) { result = -1; saved = errno; break; }
         for (nfds_t i = 0; i < count; ++i) {
-            fds[i].revents = host[i].revents | native[i].revents;
-            result += fds[i].revents != 0;
+            snapshot[i].revents = host[i].revents | native[i].revents;
+            result += snapshot[i].revents != 0;
         }
         if (result || timeout == 0 || (timeout >= 0 && now_ns() >= deadline)) break;
     }
+    if (result >= 0) for (nfds_t i = 0; i < count; ++i) {
+        void *output = (void *)((uintptr_t)fds + i * sizeof(*fds) + offsetof(struct pollfd, revents));
+        if (ker_host_usercopy(output, &snapshot[i].revents, sizeof(snapshot[i].revents), 1)) {
+            result = -1; saved = EFAULT; break;
+        }
+    }
+    free(snapshot);
     for (nfds_t i = 0; i < count; ++i) ker_fd_put(pinned[i]);
     free(pinned); free(host_snapshot); free(host); free(native);
     if (result < 0) errno = saved;
