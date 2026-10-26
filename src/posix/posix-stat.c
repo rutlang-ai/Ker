@@ -180,17 +180,25 @@ static int descriptor_accessat(int fd, const char *path, int mode, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_faccessat2, fd, path, mode, flags);
-    if (path && path[0] == '/') {
+    /* Match do_faccessat's mode-then-flags validation before pathname access. */
+    if (mode & ~(R_OK | W_OK | X_OK)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
+    }
+    if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
+    }
+    char native_path[PATH_MAX];
+    long copied = ker_copy_user_cstring(path, native_path, sizeof(native_path));
+    if (copied < 0) {
+        int error = (int)-copied;
         ker_fd_put(entry);
-        return syscall(SYS_faccessat2, fd, path, mode, flags);
+        errno = error; return -1;
     }
-    /* In-process uaccess cannot fault-protect NULL pathnames. Keep upstream
-     * flag/mode validation ahead of the pathname copy. */
-    if (!path && !(mode & ~(R_OK | W_OK | X_OK)) &&
-        !(flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))) {
-        ker_fd_put(entry); errno = EFAULT; return -1;
+    if (native_path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_faccessat2, fd, native_path, mode, flags);
     }
-    long result = lkl_sys_faccessat2(entry->native, path ? path : "", mode, flags);
+    long result = lkl_sys_faccessat2(entry->native, native_path, mode, flags);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
     return 0;

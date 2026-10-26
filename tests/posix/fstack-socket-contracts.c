@@ -208,6 +208,25 @@ static void descriptor_access(void)
     ERROR(faccessat(alias, "", F_OK, 0x40000000), EINVAL);
     int (*access_at)(int, const char *, int, int) = dlsym(RTLD_DEFAULT, "faccessat"); CHECK(access_at);
     ERROR(access_at(alias, NULL, F_OK, AT_EMPTY_PATH), EFAULT);
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    char *protected = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(protected != MAP_FAILED);
+    ERROR(faccessat(alias, protected, F_OK, 0), EFAULT);
+    ERROR(access_at(alias, protected, F_OK, 0), EFAULT);
+    ERROR(faccessat(alias, protected, 8, 0), EINVAL);
+    ERROR(faccessat(alias, protected, F_OK, 0x40000000), EINVAL);
+    char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(pages != MAP_FAILED);
+    pages[page_size - 1] = '\0';
+    CHECK(mprotect(pages + page_size, (size_t)page_size, PROT_NONE) == 0);
+    CHECK(faccessat(alias, pages + page_size - 1, F_OK, AT_EMPTY_PATH) == 0);
+    char *cross_page = pages + page_size - 16;
+    memset(cross_page, 'x', 16);
+    ERROR(faccessat(alias, cross_page, F_OK, AT_EMPTY_PATH), EFAULT);
+    CHECK(munmap(pages, (size_t)page_size * 2) == 0 &&
+          munmap(protected, (size_t)page_size) == 0);
     char path[] = "/tmp/ker-access-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
     CHECK(faccessat(alias, path, R_OK | W_OK, AT_EACCESS) == 0);
     CHECK(faccessat(host, "", F_OK, AT_EMPTY_PATH) == 0);
