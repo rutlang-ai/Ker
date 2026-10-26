@@ -10,3 +10,8 @@ validation retains its separate status2 convention.
 fixtures to verify failures and recovery. These fixtures exercise launcher
 ownership and control records, not Linux/DPDK packet behavior or additional
 F-Stack scenario completion. Imported upstream sources are unchanged.
+
+Primary IPC allocation transfers ownership as one bundle. Descriptor exhaustion
+at any socketpair or pipe allocation closes every earlier channel before
+returning125; no worker or application starts. Fault tests enumerate all five
+allocation positions, compare actual open descriptors, then launch successfully.
