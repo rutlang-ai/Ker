@@ -918,11 +918,23 @@
       "id": "tests/integration/test_ff_gendir_mp_integration.c::test_it_a14_epoch_liveness_after_exit",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Production epoch-status queries the resident exact-pidfd census. Distinct actual master/secondary epochs remain live while borrowers survive master death, including a frozen orphan. After exact borrower death and registration release their epochs become non-live while the resident epoch0 remains live. Reusing the old slot for a newer real secondary never revives the old epoch. This qualifies the source TC-4 liveness verdict, not its F-Stack heartbeat timeout implementation, drain-peer protocol or full reload flow.",
+      "reason": "Production epoch-status queries the resident exact-pidfd census. Distinct actual master/secondary epochs remain live while borrowers survive master death, including a frozen orphan. After exact borrower death and registration release their epochs become non-live while the resident epoch0 remains live. Reusing the old slot for a newer real secondary never revives the old epoch. This qualifies the source TC-4 liveness verdict, not its F-Stack heartbeat timeout implementation, drain-peer protocol or full reload flow. Supplemental primary-only master lifecycle profiles distinguish live socket EOF and SIGSTOP from exact process death, preserve unrelated epochs, reject foreign/stale releases and verify reclaimed-slot reuse; secondary/borrower semantics continue to rely on the standby test.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-standby",
           "provenance_case": "native-fstack-session-standby"
+        },
+        {
+          "ctest": "native-fstack-session-control-master-eof",
+          "provenance_case": "native-fstack-session-master-lifetime"
+        },
+        {
+          "ctest": "native-fstack-session-control-master-death",
+          "provenance_case": "native-fstack-session-master-lifetime"
+        },
+        {
+          "ctest": "native-fstack-session-control-master-frozen",
+          "provenance_case": "native-fstack-session-master-lifetime"
         }
       ]
     },

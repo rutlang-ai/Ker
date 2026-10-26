@@ -500,3 +500,8 @@ reload ABI/subcommand与C指针合同保留缺口，源案例仅从blocked推进
 在同一真实resident上验证同PID多连接的身份与缓存隔离、三个槽位耗尽时ENOSPC及
 后继重试、显式释放后slot复用与旧epoch拒绝。每例检查实时资源计数与退出回收；
 不增加UT-NR-14完成数，不覆盖跨进程死亡、secondary EAL或F-Stack reload ABI。
+
+master进程生命周期扩展：`native-fstack-session-control-master-eof/master-death/master-frozen`
+通过独立子进程证明控制socket EOF及SIGSTOP都不是退出证明，精确pidfd死亡之后
+才回收slot/epoch，并检查其他master、resident epoch0及复用后的凭据隔离。
+本批无secondary EAL或报文流量；作为TC-4既有映射补充，完成计数不变。
