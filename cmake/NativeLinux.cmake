@@ -637,8 +637,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-buffer-writer-empty COMMAND ker-native-buffer-writer-test empty)
     add_test(NAME native-fstack-buffer-writer-append COMMAND ker-native-buffer-writer-test append)
     add_test(NAME native-fstack-buffer-writer-zero COMMAND ker-native-buffer-writer-test zero)
+    add_test(NAME native-fstack-buffer-writer-stale COMMAND ker-native-buffer-writer-test stale)
     set_tests_properties(native-fstack-buffer-writer-empty native-fstack-buffer-writer-append
-        native-fstack-buffer-writer-zero PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+        native-fstack-buffer-writer-zero native-fstack-buffer-writer-stale PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-native-buffer-writer-failures-test tests/posix/native-buffer-writer-failures.c
         src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-native-buffer-writer-failures-test PRIVATE

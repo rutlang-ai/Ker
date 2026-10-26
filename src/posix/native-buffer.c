@@ -23,6 +23,9 @@ struct mapping {
 };
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mapping *mappings;
+/* Destroyed writer records are kept off the live VMA registry until native
+ * shutdown so malloc cannot recycle a stale opaque handle during this runtime. */
+static struct mapping *retired_writers;
 static struct ker_native_buffer_counters totals;
 /* Caller holds lock and has validated the native lifetime and size. */
 static struct mapping *allocate(size_t size)
@@ -124,9 +127,7 @@ void *ker_posix_buffer_realloc(void *address, size_t size)
     pthread_mutex_unlock(&lock);
     return resized;
 }
-/* The registration itself is the opaque owner: one lifetime, one cleanup path.
- * Compare handle values before dereferencing so rejected/stale handles cannot
- * mutate another registration. Caller holds the registry lock. */
+/* Compare opaque handle values before dereferencing. Caller holds lock. */
 static struct mapping *writer_mapping(struct ker_posix_buffer_writer *writer)
 {
     for (struct mapping *item = mappings; item; item = item->next)
@@ -180,7 +181,11 @@ int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writer)
     if (!*slot) { pthread_mutex_unlock(&lock); errno = EINVAL; return -1; }
     struct mapping *item = *slot;
     long result = release(item, false);
-    if (!result) { *slot = item->next; free(item); }
+    if (!result) {
+        *slot = item->next;
+        item->next = retired_writers;
+        retired_writers = item;
+    }
     pthread_mutex_unlock(&lock);
     return (int)ker_native_result(result);
 }
@@ -282,6 +287,11 @@ int ker_native_buffers_close_all(struct ker_native_buffer_counters *counters)
         long result = release(item, true);
         if (result && !error) error = (int)result;
         mappings = item->next; free(item);
+    }
+    while (retired_writers) {
+        struct mapping *item = retired_writers;
+        retired_writers = item->next;
+        free(item);
     }
     pthread_mutex_lock(&guards_lock);
     for (struct ker_native_option_guard *guard = guards; guard; guard = guard->next) totals.option_guards_live++;
