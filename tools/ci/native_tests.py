@@ -37,6 +37,8 @@ HOSTED_SAFE = (
     "native-fstack-errno",
     "native-fstack-entropy",
     "native-fstack-realtime",
+    "native-fstack-current-time-optional",
+    "native-fstack-current-time-errors",
     "native-fstack-host-runtime",
     "native-fstack-exception-config",
     "native-fstack-buffer-resize",

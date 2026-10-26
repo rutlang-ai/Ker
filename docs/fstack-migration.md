@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 215 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 217 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 130 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 128 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为215 scenario-adapted、18 partial、130 blocked，共148项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为217 scenario-adapted、18 partial、128 blocked，共146项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -1885,3 +1885,8 @@ VMA 节点分别保存128/50字节，暴露每段已写长度与总长度178。�
 此项计为场景适配，不宣称FreeBSD mbuf字段/ABI、网络传输或全链路零拷贝等价。
 issue225的最后一个行为项已有映射，因此从未完成分组移除；issue232的两个头字段
 断言继续保留architecture-specific状态。
+
+可选current-time输出补齐源`test_ff_get_current_time_null_sec/null_nsec`两项，
+通过实际原版Linux CLOCK_REALTIME读取，不新建Ker时间缓存。旧私有epoch与
+直接kernel读数夹验排除host fallback；错误与inactive输出保留另有测试。
+源cached timestamp布局和clock-error致命断言不作为本批适配内容。

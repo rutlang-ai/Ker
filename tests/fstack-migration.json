@@ -3810,16 +3810,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported native current-time adapter reads original-Linux CLOCK_REALTIME with independently optional seconds/nanoseconds outputs. Actual kernel tests verify NULL seconds with valid nanoseconds and NULL nanoseconds with a synchronized Unix epoch; an intentionally old private Linux epoch proves no host fallback. Failure preserves supplied outputs and inactive reads fail ENETDOWN. This adapts optional-output read outcomes, not the F-Stack cached timestamp ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-current-time-optional",
+          "provenance_case": "native-fstack-current-time"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_nsec",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported native current-time adapter reads original-Linux CLOCK_REALTIME with independently optional seconds/nanoseconds outputs. Actual kernel tests verify NULL seconds with valid nanoseconds and NULL nanoseconds with a synchronized Unix epoch; an intentionally old private Linux epoch proves no host fallback. Failure preserves supplied outputs and inactive reads fail ENETDOWN. This adapts optional-output read outcomes, not the F-Stack cached timestamp ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-current-time-optional",
+          "provenance_case": "native-fstack-current-time"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_clock_gettime_assert_fail_on_clock_error",
