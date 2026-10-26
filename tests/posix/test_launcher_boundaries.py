@@ -5,6 +5,7 @@ Fixtures exercise coordination only, never stand in for Linux/DPDK networking.
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -136,6 +137,46 @@ class LauncherBoundaryTests(unittest.TestCase):
         finally:
             if process.poll() is None:
                 process.kill(); process.communicate()
+
+    def test_invalid_ready_fields_never_start_application_and_recover(self):
+        valid = {'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}
+        invalid = [[], None, {}, {**valid, 'mac': 12}, {**valid, 'mac': 'bad'},
+                   {**valid, 'tx_offload_features': True}, {**valid, 'tx_offload_features': '1'},
+                   {**valid, 'tx_offload_features': -1}, {**valid, 'tx_offload_features': 2},
+                   {**valid, 'tx_offload_features': 0x800}]
+        original = fixtures.WORKER
+        line = "print('KER_IO_READY ' + json.dumps({'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}), flush=True)"
+        self.assertIn(line, original)
+        for payload in invalid:
+            self.worker.write_text(original.replace(line,
+                "print('KER_IO_READY ' + " + repr(json.dumps(payload)) + ", flush=True)"))
+            with self.subTest(payload=payload):
+                marker = self.root/'app-started'
+                result, message = self.run_launcher(0, native_done=True,
+                    app_source='from pathlib import Path; Path('+repr(str(marker))+').touch()',
+                    capture_stderr=True)
+                self.assertEqual(result, 125)
+                self.assertIn('READY', message)
+                self.assertFalse(marker.exists())
+        self.worker.write_text(original)
+        self.assertEqual(self.run_launcher(0, native_done=True), 0)
+
+    def test_invalid_additional_ready_never_starts_application(self):
+        line = "print('KER_IO_READY ' + json.dumps({'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}), flush=True)"
+        for payload in ([], {'mac': '02:00:00:00:00:02', 'tx_offload_features': True}):
+            replacement = ("print('KER_IO_READY ' + (json.dumps({'mac':'02:00:00:00:00:01',"
+                "'tx_offload_features':0}) if port == 'fake0' else " + repr(json.dumps(payload)) + "), flush=True)")
+            self.worker.write_text(fixtures.WORKER.replace(line, replacement))
+            with self.subTest(payload=payload):
+                marker = self.root/'app-started'
+                result, message = self.run_launcher(0, native_done=True, config=self.config,
+                    app_source='from pathlib import Path; Path('+repr(str(marker))+').touch()',
+                    capture_stderr=True)
+                self.assertEqual(result, 125)
+                self.assertIn('READY', message)
+                self.assertFalse(marker.exists())
+        self.worker.write_text(fixtures.WORKER)
+        self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
 
 if __name__ == '__main__':
