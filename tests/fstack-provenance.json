@@ -2690,9 +2690,10 @@
       ],
       "ker_ctests": [
         "native-fstack-current-time-optional",
-        "native-fstack-current-time-errors"
+        "native-fstack-current-time-errors",
+        "native-fstack-current-time-parallel"
       ],
-      "adaptation": "Production exported optional-output adapter calls original-Linux CLOCK_REALTIME exactly once per active invocation, including both-NULL outputs. Actual private kernel realtime is first set to an old epoch and bracketed around the adapter read, proving no host realtime fallback, then synchronized for the two pinned source optional-output assertions. Both-NULL and all four output combinations on syscall EIO are checked; a caller-thread probe writes partial temporary timestamp data before error to verify output publication is transactional. The next real syscall recovers. Before startup and after lifetime end ENETDOWN occurs without a syscall or output mutation. No cached timestamp, fatal-assert ABI or host/libc-only substitute is claimed; protocol monotonic callbacks are unchanged."
+      "adaptation": "Production exported optional-output adapter calls original-Linux CLOCK_REALTIME exactly once per active invocation, including both-NULL outputs. Actual private kernel realtime is first set to an old epoch and bracketed around the adapter read, proving no host realtime fallback, then synchronized for the two pinned source optional-output assertions. Both-NULL and all four output combinations on syscall EIO are checked; a caller-thread probe writes partial temporary timestamp data before error to verify output publication is transactional. The next real syscall recovers. Before startup and after lifetime end ENETDOWN occurs without a syscall or output mutation. A four-reader extension also executes512 bracketed recovery samples and256 caller-thread injected errors across all optional-output combinations, with alternating failing readers, per-thread errno/call counts, an intentionally old private epoch, and join-before-clock-restore/shutdown. No additional source-case completion is claimed. No cached timestamp, fatal-assert ABI or host/libc-only substitute is claimed; protocol monotonic callbacks are unchanged."
     },
     "native-fstack-current-time-sockets": {
       "source_file": "tests/unit/test_ff_host_interface.c",

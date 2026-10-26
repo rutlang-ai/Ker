@@ -35,3 +35,13 @@ kernel release query becomes unavailable. Worker acknowledgement and zero live
 VMAs/guards/mbufs are required. The null PMD starts the runtime; payloads stay in
 native loopback and do not claim external-wire interoperability. This adds no
 new source-case completion count.
+
+`native-fstack-current-time-parallel` adds four simultaneous readers over an
+intentionally old private Linux epoch. Each reader exercises all four output
+combinations for32 rounds; alternating pairs receive caller-thread EIO while
+peers perform actual reads. Failed outputs remain unchanged, and every call is
+followed by a real full sample bracketed by direct kernel reads. Exact per-thread
+call/failure counts,512 recovery samples and256 errors detect shared injection,
+output or errno state. All readers join before epoch restoration and shutdown;
+concurrent shutdown and external clock adjustment are outside this test. This
+is additional adapter evidence, with no new source-case completion.
