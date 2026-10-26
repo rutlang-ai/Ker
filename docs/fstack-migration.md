@@ -1749,3 +1749,18 @@ issue #218：源proc7/127、FF_SYSCTL..FF_MSG_NUM、legacy/no-epoch及字面name
 
 本批Debug/Release各21项namespace/控制/孤儿reservation CTest通过，21项迁移
 审计测试及22项CI选择器测试通过；两个真实CMake图各47项session注册与CI清单一致。
+
+## dpdk_extra_keys 的精确 bond 时序值
+
+`native-fstack-typed-bond-source-timings`直接读取固定源fixture的bond
+poll/up/down=100/200/300，生产typed loader的字段测试和真实原版PMD运行
+分别验证配置保留及initial/final getter读回。两个TAP/veth成员连接独立宿主Linux
+802.3ad bond，双方达到collecting/distributing后完成原生Linux与host的IPv4/IPv6
+ICMP及完整wire校验；移除一个成员链路后仍收发成功，退出outstanding=0。
+原有100/100/200运行对照同样通过，8项bond配置测试通过。
+
+删除`test_ff_load_config_dpdk_extra_keys` remaining中“source down_delay=300
+尚无runtime读回”的具体缺口；该案例仍partial，allow/port_list、原始vdev tuple、
+完整配置ABI及base-address精确映射/secondary等边界继续留在原issue。这里没有
+精确毫秒级failover性能或物理NIC时序证明。当前208项scenario-adapted、18项partial、
+137项blocked，155项行为仍未完成，完成计数不变。

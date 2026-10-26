@@ -525,3 +525,8 @@ M5 ring命名空间子集：`native-fstack-session-namespace-names/isolation/rec
 通过生产命名helper和128个真实DPDK ring验证唯一性、同名拒绝、独立FIFO与选择性
 重建。源cross-master名字隔离案例推进为partial；高process编号、消息type家族和
 F-Stack字面/legacy名字ABI仍有缺口，组件token结果不计为secondary或网络证据。
+
+精确bond时序：`native-fstack-typed-bond-source-timings`读取源dpdk_extra_keys
+fixture的poll/up/down=100/200/300，验证真实PMD的initial/final读回、独立Linux
+LACP、双栈ICMP和成员链路移除后的流量恢复。仍是partial案例的子缺口补齐，
+不计精确failover延迟、物理NIC或完整fixture通过。
