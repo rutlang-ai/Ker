@@ -188,10 +188,7 @@ int epoll_ctl(int fd, int operation, int target, struct epoll_event *event)
         result = -1;
     } else if (entry) {
         native_call = true;
-        /* LKL shares this address space, so reject NULL before its user-copy
-         * path can dereference it. Linux does not read event for DEL. */
-        result = !event && operation != EPOLL_CTL_DEL ? -EFAULT :
-            lkl_sys_epoll_ctl(ep->native, operation, entry->native, (void *)event);
+        result = lkl_sys_epoll_ctl(ep->native, operation, entry->native, (void *)event);
     } else if (ep) {
         int host = ker_fd_host_dup(ep);
         if (host < 0) result = -1;
@@ -238,23 +235,21 @@ static int epoll_wait_ns(int fd, struct epoll_event *events, int maximum,
             bool native = pass == (native_first ? 0U : 1U);
             int host = native ? -1 : ker_fd_host_dup(entry);
             long count;
-            if (native && !events) {
-                /* LKL user copies share our address space. Probe the epoll
-                 * file without delivering events: Linux faults only when it
-                 * tries to copy a ready event, and must retain ET/ONESHOT
-                 * readiness after that fault. Empty waits still time out. */
-                struct lkl_pollfd probe = {.fd = entry->native, .events = POLLIN};
-                count = lkl_sys_poll(&probe, 1, 0);
-                if (count > 0) count = -EFAULT;
-            } else if (native) {
+            if (native) {
                 count = lkl_sys_epoll_wait(entry->native,
-                    (void *)(events + result), maximum - result, 0);
+                    events ? (void *)(events + result) : NULL, maximum - result, 0);
             } else {
                 count = host < 0 ? -1 : syscall(SYS_epoll_pwait, host,
                     events ? events + result : NULL, maximum - result, 0, NULL, 0);
             }
             if (!native && host >= 0) ker_fd_host_put(host);
-            if (count < 0) { saved = native ? (int)-count : errno; result = -1; break; }
+            if (count < 0) {
+                saved = native ? (int)-count : errno;
+                /* Earlier events have already been delivered, including
+                 * ONESHOT state changes. Preserve that successful prefix. */
+                if (!result) result = -1;
+                break;
+            }
             result += (int)count;
         }
         if (result || timeout == 0 || (timeout >= 0 && now_ns() >= deadline)) break;
