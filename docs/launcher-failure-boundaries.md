@@ -43,3 +43,5 @@ Auxiliary completion records use the same object and outstanding-count validatio
 Auxiliary workers finish concurrently during final cleanup. One cleanup exception is reported as infrastructure failure while every peer still receives its bounded reap.
 
 Optional native statistics must be a single JSON object of nonnegative integer counters. Invalid or duplicate records fail the launch without bypassing auxiliary cleanup.
+
+Explicit run-stop requests receive OK only after exactly one READY, STOPPING and DONE in that order, with no INCOMPLETE or unknown markers. Invalid sequences still stop and reap workers but receive FAIL.

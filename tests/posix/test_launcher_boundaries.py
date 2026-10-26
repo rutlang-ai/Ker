@@ -297,6 +297,26 @@ class LauncherBoundaryTests(unittest.TestCase):
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config,
             extra_env={'FAKE_NATIVE_TERMINAL': 'KER_NATIVE_STOPPING\nKER_NATIVE_STATS {"counter":0}\nKER_NATIVE_DONE\n'}), 0)
 
+    def test_run_stop_ack_requires_exact_native_marker_sequence(self):
+        cases = [
+            ('KER_NATIVE_STOPPING\nKER_NATIVE_DONE\n', True),
+            ('KER_NATIVE_DONE\n', False),
+            ('KER_NATIVE_DONE\nKER_NATIVE_STOPPING\n', False),
+            ('KER_NATIVE_STOPPING\nKER_NATIVE_STOPPING\nKER_NATIVE_DONE\n', False),
+            ('KER_NATIVE_STOPPING\nKER_NATIVE_INCOMPLETE\nKER_NATIVE_DONE\n', False),
+        ]
+        for terminal, valid in cases:
+            expected = b'OK\n' if valid else b'FAIL\n'
+            app = ('import os,socket; channel=socket.socket(fileno=int(os.environ["KER_RUN_FD"])); '
+                   'channel.settimeout(5); channel.send(b"KER_RUN_STOP\\n"); '
+                   'reply=channel.recv(64); assert reply == '+repr(expected)+', repr(reply)')
+            with self.subTest(terminal=terminal):
+                result, message = self.run_launcher(0, native_done=True, config=self.config,
+                    app_source=app, extra_env={'FAKE_NATIVE_TERMINAL':terminal}, capture_stderr=True)
+            self.assertEqual(result, 0 if valid else 125)
+            if not valid:
+                self.assertIn('invalid native run shutdown marker sequence', message)
+
 
 if __name__ == '__main__':
     unittest.main()
