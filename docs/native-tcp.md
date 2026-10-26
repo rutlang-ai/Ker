@@ -1467,3 +1467,8 @@ netlink 端口号属于导入内核；应用应以 bind(pid=0)/getsockname 取�
 `if_nameindex`/`if_freenameindex` 从原始 Linux 的 RTM_GETLINK dump 构造完整接口列表，
 包括没有 IPv4 地址的接口；名称与编号属于同一导入内核，列表可独立持有和释放。
 适配层验证消息边界、序号、内核来源和 dump 中断，错误时释放所有部分分配。
+
+`getifaddrs`/`freeifaddrs` 将原始 Linux 的 link/address dump 转为 AF_PACKET、IPv4
+与 IPv6 地址列表，保留接口标志、硬件地址、统计、前缀掩码、广播/对端和 IPv6 link-local
+scope。列表与接口名称枚举独立持有；接口在两次 dump 间变化时有界重试，错误释放部分结果，
+不会把宿主 TAP 地址当作原生接口地址。

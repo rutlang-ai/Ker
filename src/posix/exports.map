@@ -15,7 +15,7 @@
         futimens; futimes;
         fallocate; fallocate64; posix_fallocate; posix_fallocate64;
         readahead; sync_file_range; posix_fadvise; posix_fadvise64;
-        if_nametoindex; if_indextoname; if_nameindex; if_freenameindex;
+        if_nametoindex; if_indextoname; if_nameindex; if_freenameindex; getifaddrs; freeifaddrs;
         fgetxattr; fsetxattr; flistxattr; fremovexattr;
         mmap; mmap64;
         sendfile; sendfile64; splice; copy_file_range; tee; vmsplice;

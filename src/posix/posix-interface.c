@@ -1,5 +1,11 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include <net/if.h>
+#include <ifaddrs.h>
+#include <arpa/inet.h>
+#include <stddef.h>
+#include <linux/if_packet.h>
+#include <linux/if_link.h>
 #include <errno.h>
 #include <dlfcn.h>
 #include <stdint.h>
@@ -48,7 +54,13 @@ char *if_indextoname(unsigned index, char name[IF_NAMESIZE])
     return name;
 }
 
-struct interface_record { unsigned index, flags; char name[IF_NAMESIZE]; };
+struct interface_record {
+    unsigned index, flags; unsigned short hardware;
+    char name[IF_NAMESIZE];
+    unsigned char address[32], broadcast[32];
+    size_t address_length, broadcast_length; bool have_address, have_broadcast;
+    struct rtnl_link_stats statistics; bool have_statistics;
+};
 struct interface_records { struct interface_record *items; size_t count, capacity; };
 typedef int (*dump_callback)(struct nlmsghdr *, void *);
 static long route_dump(unsigned short type, dump_callback callback, void *context)
@@ -72,11 +84,11 @@ static long route_dump(unsigned short type, dump_callback callback, void *contex
         if (needed <= 0 || needed > INT_MAX) {result = needed < 0 ? needed : -EOVERFLOW; break;}
         char *buffer = malloc(needed);
         if (!buffer) {result = -ENOMEM; break;}
-        struct sockaddr_nl sender; int length = sizeof(sender);
+        struct sockaddr_nl sender = {0}; int length = sizeof(sender);
         long received;
         do received = lkl_sys_recvfrom(fd, buffer, needed, 0, (void *)&sender, &length); while (received == -EINTR);
         result = 0;
-        if (received != needed || sender.nl_family != AF_NETLINK || sender.nl_pid != 0) {
+        if (received != needed || length < (int)sizeof(sender) || sender.nl_family != AF_NETLINK || sender.nl_pid != 0) {
             result = received < 0 ? received : -EPROTO;
         } else {
             int remaining = received;
@@ -110,13 +122,26 @@ static int collect_link(struct nlmsghdr *message, void *context)
     if (message->nlmsg_type != RTM_NEWLINK || message->nlmsg_len < NLMSG_LENGTH(sizeof(struct ifinfomsg))) return -EPROTO;
     struct ifinfomsg *link = NLMSG_DATA(message);
     if (link->ifi_index <= 0) return -EPROTO;
-    struct interface_record record = {.index = link->ifi_index, .flags = link->ifi_flags};
+    struct interface_record record = {.index = link->ifi_index, .flags = link->ifi_flags, .hardware = link->ifi_type};
     int remaining = IFLA_PAYLOAD(message);
     for (struct rtattr *attribute = IFLA_RTA(link); RTA_OK(attribute, remaining); attribute = RTA_NEXT(attribute, remaining)) {
-        if (attribute->rta_type != IFLA_IFNAME) continue;
-        size_t length = strnlen(RTA_DATA(attribute), RTA_PAYLOAD(attribute));
-        if (!length || length >= IF_NAMESIZE || length == RTA_PAYLOAD(attribute)) return -EPROTO;
-        memcpy(record.name, RTA_DATA(attribute), length + 1);
+        size_t length = RTA_PAYLOAD(attribute);
+        if (attribute->rta_type == IFLA_IFNAME) {
+            size_t characters = strnlen(RTA_DATA(attribute), length);
+            if (!characters || characters >= IF_NAMESIZE || characters == length) return -EPROTO;
+            memcpy(record.name, RTA_DATA(attribute), characters + 1);
+        } else if (attribute->rta_type == IFLA_ADDRESS || attribute->rta_type == IFLA_BROADCAST) {
+            if (length > sizeof(record.address)) return -EOVERFLOW;
+            if (attribute->rta_type == IFLA_ADDRESS) {
+                memcpy(record.address, RTA_DATA(attribute), length); record.address_length = length; record.have_address = true;
+            } else {
+                memcpy(record.broadcast, RTA_DATA(attribute), length); record.broadcast_length = length; record.have_broadcast = true;
+            }
+        } else if (attribute->rta_type == IFLA_STATS) {
+            if (length < 6 * sizeof(unsigned)) return -EPROTO;
+            if (length > sizeof(record.statistics)) length = sizeof(record.statistics);
+            memcpy(&record.statistics, RTA_DATA(attribute), length); record.have_statistics = true;
+        }
     }
     if (remaining || !record.name[0] || !record.index) return -EPROTO;
     struct interface_records *records = context;
@@ -191,6 +216,135 @@ void if_freenameindex(struct if_nameindex *list)
     if (!list) return;
     if (release_interfaces(list)) {free(list); return;}
     void (*host)(struct if_nameindex *) = dlsym(RTLD_NEXT, "if_freenameindex");
+    if (!host) abort();
+    host(list);
+}
+
+struct owned_address {
+    struct ifaddrs public;
+    struct sockaddr_storage address, netmask, broadcast;
+    char name[IF_NAMESIZE]; struct rtnl_link_stats statistics;
+};
+struct address_snapshot {
+    struct interface_records links;
+    struct ifaddrs *head, **tail;
+};
+static struct owned_address *append_address(struct address_snapshot *snapshot,
+    const struct interface_record *link, const char *name)
+{
+    struct owned_address *node = calloc(1, sizeof(*node));
+    if (!node) return NULL;
+    memcpy(node->name, name, IF_NAMESIZE);
+    node->public.ifa_name = node->name; node->public.ifa_flags = link->flags;
+    *snapshot->tail = &node->public; snapshot->tail = &node->public.ifa_next;
+    return node;
+}
+static void packet_address(struct sockaddr_storage *storage, const struct interface_record *link,
+    const unsigned char *bytes, size_t length)
+{
+    _Static_assert(offsetof(struct sockaddr_ll, sll_addr) + 32 <= sizeof(*storage), "hardware address storage");
+    struct sockaddr_ll *address = (void *)storage;
+    address->sll_family = AF_PACKET; address->sll_ifindex = link->index;
+    address->sll_hatype = link->hardware; address->sll_halen = length;
+    memcpy((char *)storage + offsetof(struct sockaddr_ll, sll_addr), bytes, length);
+}
+static void ip_address(struct sockaddr_storage *storage, int family, const unsigned char *bytes, unsigned index)
+{
+    if (family == AF_INET) {
+        struct sockaddr_in *address = (void *)storage;
+        address->sin_family = AF_INET; memcpy(&address->sin_addr, bytes, 4);
+    } else {
+        struct sockaddr_in6 *address = (void *)storage;
+        address->sin6_family = AF_INET6; memcpy(&address->sin6_addr, bytes, 16);
+        if (IN6_IS_ADDR_LINKLOCAL(&address->sin6_addr) || IN6_IS_ADDR_MC_LINKLOCAL(&address->sin6_addr))
+            address->sin6_scope_id = index;
+    }
+}
+static int collect_address(struct nlmsghdr *message, void *context)
+{
+    if (message->nlmsg_type != RTM_NEWADDR || message->nlmsg_len < NLMSG_LENGTH(sizeof(struct ifaddrmsg))) return -EPROTO;
+    struct ifaddrmsg *entry = NLMSG_DATA(message);
+    if (entry->ifa_family != AF_INET && entry->ifa_family != AF_INET6) return 0;
+    unsigned width = entry->ifa_family == AF_INET ? 4 : 16;
+    if (entry->ifa_prefixlen > width * 8) return -EPROTO;
+    struct address_snapshot *snapshot = context;
+    struct interface_record *link = NULL;
+    for (size_t i = 0; i < snapshot->links.count; ++i)
+        if (snapshot->links.items[i].index == entry->ifa_index) {link = &snapshot->links.items[i]; break;}
+    if (!link) return -EAGAIN;
+    unsigned char local[16] = {0}, peer[16] = {0}, broadcast[16] = {0}, mask[16] = {0};
+    bool have_local = false, have_peer = false, have_broadcast = false;
+    char name[IF_NAMESIZE]; memcpy(name, link->name, sizeof(name));
+    int remaining = IFA_PAYLOAD(message);
+    for (struct rtattr *attribute = IFA_RTA(entry); RTA_OK(attribute, remaining); attribute = RTA_NEXT(attribute, remaining)) {
+        if (attribute->rta_type == IFA_LABEL) {
+            size_t length = strnlen(RTA_DATA(attribute), RTA_PAYLOAD(attribute));
+            if (!length || length >= sizeof(name) || length == RTA_PAYLOAD(attribute)) return -EPROTO;
+            memset(name, 0, sizeof(name)); memcpy(name, RTA_DATA(attribute), length + 1);
+        } else if (attribute->rta_type == IFA_LOCAL || attribute->rta_type == IFA_ADDRESS || attribute->rta_type == IFA_BROADCAST) {
+            if (RTA_PAYLOAD(attribute) < width) return -EPROTO;
+            if (attribute->rta_type == IFA_LOCAL) {memcpy(local, RTA_DATA(attribute), width); have_local = true;}
+            else if (attribute->rta_type == IFA_ADDRESS) {memcpy(peer, RTA_DATA(attribute), width); have_peer = true;}
+            else {memcpy(broadcast, RTA_DATA(attribute), width); have_broadcast = true;}
+        }
+    }
+    if (remaining || (!have_local && !have_peer)) return -EPROTO;
+    struct owned_address *node = append_address(snapshot, link, name);
+    if (!node) return -ENOMEM;
+    ip_address(&node->address, entry->ifa_family, have_local ? local : peer, link->index);
+    node->public.ifa_addr = (void *)&node->address;
+    for (unsigned bit = 0; bit < entry->ifa_prefixlen; ++bit) mask[bit / 8] |= 0x80 >> (bit % 8);
+    ip_address(&node->netmask, entry->ifa_family, mask, 0); node->public.ifa_netmask = (void *)&node->netmask;
+    if ((link->flags & IFF_POINTOPOINT) && have_peer) {
+        ip_address(&node->broadcast, entry->ifa_family, peer, link->index); node->public.ifa_dstaddr = (void *)&node->broadcast;
+    } else if (have_broadcast) {
+        ip_address(&node->broadcast, entry->ifa_family, broadcast, link->index); node->public.ifa_broadaddr = (void *)&node->broadcast;
+    }
+    return 0;
+}
+static void free_owned_addresses(struct ifaddrs *list)
+{
+    while (list) {struct ifaddrs *next = list->ifa_next; free(list); list = next;}
+}
+int getifaddrs(struct ifaddrs **output)
+{
+    if (!ker_native_ready()) {
+        int (*host)(struct ifaddrs **) = dlsym(RTLD_NEXT, "getifaddrs");
+        if (!host) {errno = ENOSYS; return -1;}
+        return host(output);
+    }
+    if (!output) {errno = EFAULT; return -1;}
+    *output = NULL;
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        struct address_snapshot snapshot = {0}; snapshot.tail = &snapshot.head;
+        long result = route_dump(RTM_GETLINK, collect_link, &snapshot.links);
+        if (!result) for (size_t i = 0; i < snapshot.links.count; ++i) {
+            struct interface_record *link = &snapshot.links.items[i];
+            struct owned_address *node = append_address(&snapshot, link, link->name);
+            if (!node) {result = -ENOMEM; break;}
+            if (link->have_address) {
+                packet_address(&node->address, link, link->address, link->address_length); node->public.ifa_addr = (void *)&node->address;
+            }
+            if (link->have_broadcast) {
+                packet_address(&node->broadcast, link, link->broadcast, link->broadcast_length);
+                node->public.ifa_broadaddr = (void *)&node->broadcast;
+            }
+            if (link->have_statistics) {node->statistics = link->statistics; node->public.ifa_data = &node->statistics;}
+        }
+        if (!result) result = route_dump(RTM_GETADDR, collect_address, &snapshot);
+        free(snapshot.links.items);
+        if (!result && snapshot.head) result = own_interfaces(snapshot.head);
+        if (!result) {*output = snapshot.head; return 0;}
+        free_owned_addresses(snapshot.head);
+        if (result != -EAGAIN || attempt == 2) {errno = -result; return -1;}
+    }
+    errno = EAGAIN; return -1;
+}
+void freeifaddrs(struct ifaddrs *list)
+{
+    if (!list) return;
+    if (release_interfaces(list)) {free_owned_addresses(list); return;}
+    void (*host)(struct ifaddrs *) = dlsym(RTLD_NEXT, "freeifaddrs");
     if (!host) abort();
     host(list);
 }
