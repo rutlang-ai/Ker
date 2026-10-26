@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
+#include <stddef.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
@@ -133,3 +134,29 @@ int __fxstatat(int version, int fd, const char *path, struct stat *output, int f
 { (void)version; return descriptor_statat(fd, path, output, flags); }
 int __fxstatat64(int version, int fd, const char *path, struct stat64 *output, int flags)
 { (void)version; return descriptor_statat(fd, path, (void *)output, flags); }
+
+/* statx is a fixed Linux UAPI wire layout, including its reserved extension
+ * area. Both kernels use the same host byte order and 64-bit ABI. */
+_Static_assert(sizeof(struct statx) == sizeof(struct lkl_statx), "statx UAPI size");
+#define STATX_OFFSET(field) _Static_assert(offsetof(struct statx, field) == offsetof(struct lkl_statx, field), "statx " #field)
+STATX_OFFSET(stx_mask); STATX_OFFSET(stx_ino); STATX_OFFSET(stx_atime);
+STATX_OFFSET(stx_mtime); STATX_OFFSET(stx_dev_major); STATX_OFFSET(stx_mnt_id);
+static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, struct statx *output)
+{
+    if (path && path[0] == '/') return syscall(SYS_statx, fd, path, flags, mask, output);
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_statx, fd, path, flags, mask, output);
+    int lookup = flags & ~(AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE);
+    if (!path && lookup != AT_EMPTY_PATH) {
+        ker_fd_put(entry); errno = EFAULT; return -1;
+    }
+    struct lkl_statx native;
+    long result = lkl_sys_statx(entry->native, path, flags, mask, &native);
+    ker_fd_put(entry);
+    if (result < 0) { errno = (int)-result; return -1; }
+    if (!output) { errno = EFAULT; return -1; }
+    memcpy(output, &native, sizeof(native));
+    return 0;
+}
+int statx(int fd, const char *path, int flags, unsigned mask, struct statx *output)
+    __attribute__((alias("descriptor_statx")));

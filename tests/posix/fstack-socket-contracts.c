@@ -23,7 +23,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
+#include <sys/sysmacros.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <sys/vfs.h>
@@ -185,6 +185,33 @@ static void bind_collision(void)
     int server = accept(listener, NULL, NULL);
     CHECK(server >= 0 && close(listener) == 0);
     finish((struct pair){client, server});
+}
+static void extended_descriptor_stat(void)
+{
+    struct pair p = connected(); struct stat old; CHECK(fstat(p.client, &old) == 0);
+    struct statx value; memset(&value, 0xa5, sizeof(value));
+    CHECK(statx(p.client, "", AT_EMPTY_PATH, STATX_BASIC_STATS | STATX_BTIME, &value) == 0);
+    CHECK((value.stx_mask & (STATX_TYPE | STATX_INO)) == (STATX_TYPE | STATX_INO));
+    CHECK(S_ISSOCK(value.stx_mode) && value.stx_ino == old.st_ino);
+    CHECK(value.stx_dev_major == major(old.st_dev) && value.stx_dev_minor == minor(old.st_dev));
+    CHECK(value.stx_uid == old.st_uid && value.stx_gid == old.st_gid && value.stx_nlink == old.st_nlink);
+    CHECK(value.stx_mtime.tv_sec == old.st_mtim.tv_sec && value.stx_mtime.tv_nsec == (unsigned)old.st_mtim.tv_nsec);
+    int alias = dup(p.client); CHECK(alias >= 0 && close(p.client) == 0);
+    CHECK(statx(alias, "", AT_EMPTY_PATH | AT_STATX_DONT_SYNC, STATX_INO, &value) == 0 && value.stx_ino == old.st_ino);
+    ERROR(statx(alias, "relative-child", 0x40000000, STATX_BASIC_STATS, &value), EINVAL);
+    ERROR(statx(alias, "relative-child", 0, STATX_BASIC_STATS, &value), ENOTDIR);
+    ERROR(statx(alias, "", AT_EMPTY_PATH, 0x80000000u, &value), EINVAL);
+    int (*extended)(int, const char *, int, unsigned, struct statx *) = dlsym(RTLD_DEFAULT, "statx");
+    CHECK(extended && extended(alias, NULL, AT_EMPTY_PATH, STATX_INO, &value) == 0 && value.stx_ino == old.st_ino);
+    ERROR(extended(alias, "", AT_EMPTY_PATH, STATX_INO, NULL), EFAULT);
+    char path[] = "/tmp/ker-statx-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    CHECK(write(host, "statx", 5) == 5 && fstat(host, &old) == 0);
+    CHECK(statx(alias, path, 0, STATX_BASIC_STATS, &value) == 0 && value.stx_ino == old.st_ino && value.stx_size == 5);
+    CHECK(statx(host, "", AT_EMPTY_PATH, STATX_INO, &value) == 0 && value.stx_ino == old.st_ino);
+    CHECK(close(host) == 0 && unlink(path) == 0);
+    CHECK(write(alias, "ok", 2) == 2); char bytes[2];
+    CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
 }
 static void empty_path_stat(void)
 {
@@ -1522,6 +1549,7 @@ int main(void)
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
         {"empty-path-stat-owner-routing", empty_path_stat},
         {"unreadable-host-path-statat", unreadable_path_statat},
+        {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
