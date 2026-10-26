@@ -757,13 +757,79 @@ struct generation_frame_drain_context {
     struct rte_mempool *message_pool;
     struct rte_mbuf *packet;
     bool nonframe_reap;
+    unsigned unrelated_count;
 };
+static bool generation_frame_is_expected_u2(const struct rte_mbuf *packet)
+{
+    if(!packet||packet->pkt_len!=68)return false;
+    const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
+    static const char expected[]="KER-A09-HANDOFF-UDP seq=2\n";
+    const uint8_t app_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x02};
+    const uint8_t host_mac[6]={0x02,0x4b,0x45,0x52,0x00,0x01};
+    const size_t payload_length=sizeof(expected)-1;
+    uint16_t fragment=(uint16_t)((bytes[20]<<8)|bytes[21]);
+    uint16_t ip_total=(uint16_t)((bytes[16]<<8)|bytes[17]);
+    uint16_t udp_length=(uint16_t)((bytes[38]<<8)|bytes[39]);
+    return !memcmp(bytes,host_mac,6)&&!memcmp(bytes+6,app_mac,6)&&
+        bytes[12]==0x08&&bytes[13]==0x00&&bytes[14]==0x45&&bytes[23]==17&&
+        !(fragment&0x3fff)&&bytes[26]==198&&bytes[27]==18&&bytes[28]==0&&bytes[29]==2&&
+        bytes[30]==198&&bytes[31]==18&&bytes[32]==0&&bytes[33]==1&&
+        bytes[34]==0xaf&&bytes[35]==0xc8&&bytes[36]==0xaf&&bytes[37]==0xc9&&
+        ip_total==20+8+payload_length&&udp_length==8+payload_length&&
+        !memcmp(bytes+42,expected,payload_length);
+}
+static bool generation_frame_is_ci_mld_report(const struct rte_mbuf *packet)
+{
+    if(!packet||packet->pkt_len!=110)return false;
+    const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
+    static const uint8_t destination[6]={0x33,0x33,0x00,0x00,0x00,0x16};
+    static const uint8_t ipv6_destination[16]={0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,0x16};
+    return !memcmp(bytes,destination,6)&&bytes[12]==0x86&&bytes[13]==0xdd&&
+        bytes[14]==0x60&&bytes[18]==0&&bytes[19]==0x38&&bytes[20]==0&&bytes[21]==1&&
+        bytes[22]==0xfe&&!memcmp(bytes+38,ipv6_destination,sizeof(ipv6_destination))&&
+        bytes[54]==0x3a&&bytes[55]==0&&bytes[56]==5&&bytes[57]==2&&
+        bytes[62]==143;
+}
 static int generation_frame_dequeue_attempt(void *opaque)
 {
     struct generation_frame_drain_context *context=opaque;
     context->packet=NULL;
-    return ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,
-        &context->packet);
+    bool active_death=getenv("KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER")!=NULL;
+    for(;;) {
+        int result=ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,
+            &context->packet);
+        if(result!=1||!active_death)return result;
+        if(!context->packet||context->packet->nb_segs!=1||
+            rte_mbuf_refcnt_read(context->packet)!=1||
+            (context->packet->ol_flags&RTE_MBUF_F_EXTERNAL)||
+            context->packet->pkt_len<14||context->packet->pkt_len>1518||
+            context->packet->data_len!=context->packet->pkt_len)return -EUCLEAN;
+        if(generation_frame_is_expected_u2(context->packet)) {
+            printf("KER_GENERATION_ACTIVE_DEQUEUE_HELD {}\n");fflush(stdout);
+            raise(SIGSTOP);
+            return 1;
+        }
+        struct rte_mbuf *packet=context->packet;
+        if(!generation_frame_is_ci_mld_report(packet)||context->unrelated_count>=8) {
+            if(ker_generation_packet_release(context->rings,&context->identity,packet))return -EUCLEAN;
+            context->packet=NULL;return -EPROTO;
+        }
+        uint32_t object_index=UINT32_MAX;uint64_t lease_id=0;
+        if(ker_generation_test_packet_lease_identity(context->rings,&context->identity,packet,
+                &object_index,&lease_id))return -EUCLEAN;
+        const uint8_t *bytes=rte_pktmbuf_mtod(packet,const uint8_t *);
+        char frame_hex[1518*2+1];static const char hex[]="0123456789abcdef";
+        for(unsigned i=0;i<packet->pkt_len;i++) {
+            frame_hex[i*2]=hex[bytes[i]>>4];frame_hex[i*2+1]=hex[bytes[i]&15];
+        }
+        frame_hex[packet->pkt_len*2]='\0';
+        uintptr_t pointer=(uintptr_t)packet;uint64_t tag=ker_generation_packet_pool_tag(context->rings);
+        unsigned length=packet->pkt_len;
+        if(!tag||ker_generation_packet_release(context->rings,&context->identity,packet))return -EUCLEAN;
+        printf("KER_SESSION_FRAME_UNRELATED_DRAINED {\"object_index\":%u,\"lease_id\":%llu,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"frame_hex\":\"%s\"}\n",
+            object_index,(unsigned long long)lease_id,(unsigned long long)tag,(void *)pointer,length,frame_hex);
+        fflush(stdout);context->unrelated_count++;context->packet=NULL;
+    }
 }
 static int generation_test_nonframe_hold(char command,
     const struct generation_frame_drain_context *context, bool enabled)
@@ -887,7 +953,8 @@ static int generation_frame_drain_control(char command, void *opaque)
     int hold=generation_test_nonframe_hold(command,context,context->nonframe_reap);
     if(hold)return hold;
 #ifdef KER_SESSION_TEST_HOOKS
-    if(command=='G'&&getenv("KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE"))
+    if(command=='G'&&getenv("KER_SESSION_TEST_FRAME_STOP_ACTIVE_DEQUEUE")&&
+        !getenv("KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER"))
         ker_generation_test_hold_next_dequeue();
 #endif
 #ifdef KER_SESSION_TEST_HOOKS
@@ -1024,10 +1091,22 @@ static int generation_frame_drain_control(char command, void *opaque)
         printf("%s",record);fflush(stdout);return 1;
     }
     uint32_t tx_before=0,pool_before=0,tx_after=0,pool_after=0;
-    if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||tx_before!=1)
+    bool active_death=getenv("KER_SESSION_TEST_FRAME_DEATH_PRODUCER_ACTIVE_CONSUMER")!=NULL;
+    context->unrelated_count=0;
+    if(ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_before,&pool_before)||
+        (!active_death&&tx_before!=1)||(active_death&&(tx_before==0||tx_before>9)))
         return -EUCLEAN;
     struct rte_mbuf *packet=NULL;
-    int dequeued=ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&packet);
+    int dequeued;
+    if(active_death) {
+        struct timespec deadline;
+        if(clock_gettime(CLOCK_MONOTONIC,&deadline))return -errno;
+        deadline.tv_sec+=5;
+        dequeued=ker_session_peer_dequeue_until(generation_frame_dequeue_attempt,context,&deadline);
+        packet=context->packet;
+    } else {
+        dequeued=ker_generation_tx_dequeue_peer(context->rings,&context->identity,0,0,&packet);
+    }
     if(dequeued!=1||!packet||packet->nb_segs!=1||
         rte_mbuf_refcnt_read(packet)!=1||(packet->ol_flags&RTE_MBUF_F_EXTERNAL)||
         packet->pkt_len<14||packet->pkt_len>1518||packet->data_len!=packet->pkt_len)return -EUCLEAN;
@@ -1057,10 +1136,11 @@ static int generation_frame_drain_control(char command, void *opaque)
     uint16_t length=packet->pkt_len;
     if(!tag||ker_generation_packet_release(context->rings,&context->identity,packet)||
         ker_generation_test_tx_snapshot(context->rings,0,0,0,&tx_after,&pool_after)||
-        tx_after!=0||pool_after+1!=pool_before)return -EUCLEAN;
-    printf("KER_SESSION_FRAME_DRAINED {\"sequence\":0,\"object_index\":%u,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"tx_before\":%u,\"tx_after\":%u,\"pool_in_use_before\":%u,\"pool_in_use_after\":%u,\"frame_hex\":\"%s\"}\n",
+        tx_after!=0||pool_after+context->unrelated_count+1!=pool_before||
+        (active_death&&tx_before!=context->unrelated_count+1))return -EUCLEAN;
+    printf("KER_SESSION_FRAME_DRAINED {\"sequence\":0,\"object_index\":%u,\"pool_tag\":%llu,\"packet_pointer\":\"%p\",\"length\":%u,\"tx_before\":%u,\"tx_after\":%u,\"pool_in_use_before\":%u,\"pool_in_use_after\":%u,\"unrelated_count\":%u,\"frame_hex\":\"%s\"}\n",
         object_index,(unsigned long long)tag,(void *)pointer,(unsigned)length,tx_before,tx_after,
-        pool_before,pool_after,frame_hex);fflush(stdout);
+        pool_before,pool_after,context->unrelated_count,frame_hex);fflush(stdout);
     return 1;
 }
 #endif

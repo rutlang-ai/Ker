@@ -506,6 +506,61 @@ def read_frame_commit_sequence(worker, ready, include_negatives):
     return negative_prepares, cancel_replay, committed
 
 
+CI_HANDOFF_MLD_FRAME = bytes.fromhex(
+    '333300000016024b4552000286dd6000000000380001fe8000'
+    '0000000000004b45fffe520002ff0200000000000000000000'
+    '000000163a000502000001008f0029fa0000000204000000ff'
+    '0200000000000000000001ff00000204000000ff0200000000'
+    '000000000001ff520002')
+
+
+def validate_unrelated_handoff_commit(record):
+    fields = {'port', 'queue', 'generation', 'object_index', 'pool_tag',
+        'tx_lease_id', 'packet_pointer', 'length', 'frame_hex'}
+    if (not isinstance(record, dict) or set(record) != fields or
+            type(record.get('port')) is not int or record['port'] != 0 or
+            type(record.get('queue')) is not int or record['queue'] != 0 or
+            type(record.get('generation')) is not int or record['generation'] != 0 or
+            type(record.get('object_index')) is not int or record['object_index'] < 0 or
+            type(record.get('pool_tag')) is not int or record['pool_tag'] <= 0 or
+            type(record.get('tx_lease_id')) is not int or record['tx_lease_id'] <= 0 or
+            not valid_frame_pointer(record.get('packet_pointer')) or
+            type(record.get('length')) is not int or record['length'] != len(CI_HANDOFF_MLD_FRAME) or
+            record.get('frame_hex') != CI_HANDOFF_MLD_FRAME.hex()):
+        raise RuntimeError('unrelated committed frame did not match the captured bounded MLD fixture')
+    return record
+
+
+def validate_unrelated_handoff_drain(record):
+    fields = {'object_index', 'lease_id', 'pool_tag', 'packet_pointer', 'length', 'frame_hex'}
+    if (not isinstance(record, dict) or set(record) != fields or
+            type(record.get('object_index')) is not int or record['object_index'] < 0 or
+            type(record.get('lease_id')) is not int or record['lease_id'] <= 0 or
+            type(record.get('pool_tag')) is not int or record['pool_tag'] <= 0 or
+            not valid_frame_pointer(record.get('packet_pointer')) or
+            type(record.get('length')) is not int or record['length'] != len(CI_HANDOFF_MLD_FRAME) or
+            record.get('frame_hex') != CI_HANDOFF_MLD_FRAME.hex()):
+        raise RuntimeError('consumer did not drain the exact captured unrelated MLD frame')
+    return record
+
+
+def read_expected_frame_commit(worker, ready, payload, max_unrelated=8):
+    """Read a bounded set of captured MLD commits before the exact U2 commit."""
+    unrelated = []
+    while len(unrelated) <= max_unrelated:
+        record = ready('KER_SESSION_FRAME_COMMITTED', process=worker)
+        try:
+            frame = bytes.fromhex(record.get('frame_hex', ''))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise RuntimeError('producer emitted an invalid committed frame record') from error
+        if frame_matches_expected_u2(frame, payload):
+            validate_frame_committed_record(record, payload)
+            return record, unrelated
+        validate_unrelated_handoff_commit(record)
+        unrelated.append(record)
+    raise RuntimeError('producer emitted too many unrelated frames before the exact U2 commit')
+
+
 def valid_frame_pointer(value):
     return (isinstance(value, str) and value.startswith('0x') and len(value) > 2 and
         value[2] in '123456789abcdef' and all(char in '0123456789abcdef' for char in value[2:]))
@@ -1724,8 +1779,12 @@ def _run_session_impl(args, api):
                         frame_committed_records[0].get('frame_hex') != negative_prepares.get('frame_hex') or
                         frame_committed_records[0].get('length') != negative_prepares.get('frame_length')):
                     raise RuntimeError('first committed frame differs from the frame preserved by negative PREPARE checks')
+                unrelated_commits = []
+            elif handoff_mode == 'frame-death-producer-active-consumer':
+                committed, unrelated_commits = read_expected_frame_commit(worker, ready, payload)
             else:
                 _, _, committed = read_frame_commit_sequence(worker, ready, False)
+                unrelated_commits = []
             if include_negatives and (negative_prepares['variants'] != 12 or
                     not cancel_replay['cancel_replay']):
                 raise RuntimeError('frame test-only negative controls did not complete before COMMIT')
@@ -1746,6 +1805,20 @@ def _run_session_impl(args, api):
             if handoff_mode=='frame-death-producer-active-consumer':
                 if peer_control_w<0 or os.write(peer_control_w,b'G')!=1:
                     raise RuntimeError('could not start live consumer dequeue before producer death')
+                unrelated_drained=[]
+                for expected_unrelated in unrelated_commits:
+                    marker,drained_unrelated=ready('KER_SESSION_FRAME_UNRELATED_DRAINED',
+                        'KER_GENERATION_ACTIVE_DEQUEUE_HELD',process=peer_worker)
+                    if marker!='KER_SESSION_FRAME_UNRELATED_DRAINED':
+                        raise RuntimeError('consumer did not drain the captured unrelated frame before holding U2')
+                    validate_unrelated_handoff_drain(drained_unrelated)
+                    for commit_field,drain_field in (
+                            ('object_index','object_index'),('pool_tag','pool_tag'),
+                            ('packet_pointer','packet_pointer'),('length','length'),
+                            ('tx_lease_id','lease_id'),('frame_hex','frame_hex')):
+                        if expected_unrelated.get(commit_field)!=drained_unrelated.get(drain_field):
+                            raise RuntimeError('consumer changed unrelated committed frame '+commit_field)
+                    unrelated_drained.append(drained_unrelated)
                 ready('KER_GENERATION_ACTIVE_DEQUEUE_HELD',process=peer_worker)
                 wait_pidfd_process_stopped(peer_worker_pidfd,peer_worker.pid)
                 if select.select([peer_worker_pidfd],[],[],0)[0]:
@@ -1757,6 +1830,7 @@ def _run_session_impl(args, api):
                 metrics['handoff_frame_death_waiting']=dict(stage='producer-dead-active-consumer',
                     producer_pid=worker.pid,consumer_pid=peer_worker.pid,producer_status=worker.returncode,
                     producer_pidfd_dead=True,consumer_pidfd_dead=False,committed=committed,
+                    unrelated_committed=unrelated_commits,unrelated_drained=unrelated_drained,
                     producer_output=dead_output.decode(errors='replace'))
                 publish()
                 deadline=time.monotonic()+10

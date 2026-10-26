@@ -50,6 +50,39 @@ class FrameCommittedRecordTests(unittest.TestCase):
         self.assertIn('validate_frame_committed_record(committed,payload)', runner_source)
         self.assertIn('frame_matches_expected_u2(frame, payload)', runner_source)
 
+    def test_active_consumer_selects_exact_u2_after_captured_mld_commit(self):
+        payload = b'KER-A09-HANDOFF-UDP seq=2\n'
+        unrelated = {
+            'port': 0, 'queue': 0, 'generation': 0, 'object_index': 6,
+            'pool_tag': 77, 'tx_lease_id': 88, 'packet_pointer': '0x1234',
+            'length': len(RUNNER.CI_HANDOFF_MLD_FRAME),
+            'frame_hex': RUNNER.CI_HANDOFF_MLD_FRAME.hex(),
+        }
+        expected = {
+            'port': 0, 'queue': 0, 'generation': 0, 'object_index': 17,
+            'pool_tag': 901, 'tx_lease_id': 31337, 'packet_pointer': '0x2345',
+            'length': len(CAPTURED_U2), 'frame_hex': CAPTURED_U2.hex(),
+        }
+        records = [unrelated, expected]
+
+        def ready(prefix, process=None):
+            self.assertEqual(prefix, 'KER_SESSION_FRAME_COMMITTED')
+            self.assertIsNotNone(process)
+            if not records:
+                raise RuntimeError('no committed frame remains')
+            return records.pop(0)
+
+        selected, skipped = RUNNER.read_expected_frame_commit(object(), ready, payload)
+        self.assertIs(selected, expected)
+        self.assertEqual(skipped, [unrelated])
+        self.assertEqual(records, [])
+        drain = {
+            'object_index': unrelated['object_index'], 'lease_id': unrelated['tx_lease_id'],
+            'pool_tag': unrelated['pool_tag'], 'packet_pointer': unrelated['packet_pointer'],
+            'length': unrelated['length'], 'frame_hex': unrelated['frame_hex'],
+        }
+        self.assertIs(RUNNER.validate_unrelated_handoff_drain(drain), drain)
+
     def test_wrong_outer_port_and_udp_destination_port_are_rejected(self):
         payload = b'KER-A09-HANDOFF-UDP seq=2\n'
         frame = bytearray(CAPTURED_U2)
