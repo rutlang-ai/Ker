@@ -10,6 +10,14 @@ extern "C" {
 KER_API uint64_t ker_posix_capabilities(void);
 /* Process-lifetime string, or NULL while the native instance is inactive. */
 KER_API const char *ker_posix_kernel_release(void);
+/* Read the active original-Linux CLOCK_REALTIME. Either output may be NULL;
+ * even with both NULL a real kernel read is performed. Returns0 or -1/errno,
+ * preserving supplied outputs on failure (including ENETDOWN when inactive).
+ * Seconds are Unix epoch seconds; nanoseconds are0..999999999. This samples
+ * the private Linux clock, not a separate cached timestamp or a host fallback.
+ * Native startup synchronizes its epoch; monotonic protocol timers are unchanged.
+ * Quiesce callers before native shutdown, as for the socket APIs. */
+KER_API int ker_posix_get_current_time(int64_t *seconds, long *nanoseconds);
 /* Allocate zero-initialized, page-aligned memory registered in original Linux
  * VMAs (not host malloc memory). size must be 1..INT_MAX. Returns NULL/errno.
  * Use buffer_free on the exact base, never libc free/munmap. An unknown base

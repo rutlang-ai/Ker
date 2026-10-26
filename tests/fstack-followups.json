@@ -411,8 +411,6 @@
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
         "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
-        "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
-        "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_nsec",
         "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
         "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_add_idempotent"
       ],

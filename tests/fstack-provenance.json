@@ -2681,6 +2681,18 @@
         "native-fstack-buffer-segments-destroy-matrix"
       ],
       "adaptation": "Ker ownership-failure extension over real original-Linux VMAs, without a new source-case completion. A live two-node sentinel retains exact bytes/lengths while every mapping position in a four-node50-byte owner fails, then each of three rollback-unmap positions fails after the last-node constructor error. Successful syscall deltas prove complete immediate rollback or exactly one retained node per failed rollback; shutdown must reclaim all three. Separately fail every teardown position, including root-last, repeat a failed retry, and require either intact read/write access before any release or EBUSY after partial release. A real retry unmaps only remaining nodes; stale handles cannot unmap or mutate replacements. Exact19/36 allocations/releases and5/2 shutdown releases must match, with no live storage or guards. Only specified caller-thread malloc/mmap/munmap calls are injected; successful paths remain original Linux."
+    },
+    "native-fstack-current-time": {
+      "source_file": "tests/unit/test_ff_host_interface.c",
+      "source_case": [
+        "test_ff_get_current_time_null_sec",
+        "test_ff_get_current_time_null_nsec"
+      ],
+      "ker_ctests": [
+        "native-fstack-current-time-optional",
+        "native-fstack-current-time-errors"
+      ],
+      "adaptation": "Production exported optional-output adapter calls original-Linux CLOCK_REALTIME exactly once per active invocation, including both-NULL outputs. Actual private kernel realtime is first set to an old epoch and bracketed around the adapter read, proving no host realtime fallback, then synchronized for the two pinned source optional-output assertions. Both-NULL and all four output combinations on syscall EIO are checked; a caller-thread probe writes partial temporary timestamp data before error to verify output publication is transactional. The next real syscall recovers. Before startup and after lifetime end ENETDOWN occurs without a syscall or output mutation. No cached timestamp, fatal-assert ABI or host/libc-only substitute is claimed; protocol monotonic callbacks are unchanged."
     }
   }
 }
