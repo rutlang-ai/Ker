@@ -23,6 +23,7 @@
 #include <sys/xattr.h>
 #include <linux/sockios.h>
 #include <linux/magic.h>
+#include <linux/close_range.h>
 #include <linux/limits.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -408,6 +409,33 @@ static void file_cache_operations(void)
     errno = EINPROGRESS; CHECK(posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) == EBADF && errno == EINPROGRESS);
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
 }
+
+static void close_range_boundary(void)
+{
+    struct pair p = connected();
+    int copy = dup(p.server); CHECK(copy >= 0 && !(fcntl(copy, F_GETFD) & FD_CLOEXEC));
+    CHECK(close_range(copy, copy, CLOSE_RANGE_CLOEXEC) == 0);
+    CHECK(fcntl(copy, F_GETFD) & FD_CLOEXEC);
+    ERROR(close_range(2, 1, 0), EINVAL); ERROR(close_range(copy, copy, 1), EINVAL);
+    int native = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") != NULL;
+    if (native) {
+        ERROR(close_range(copy, copy, 0), EOPNOTSUPP);
+        ERROR(close_range(copy, copy, CLOSE_RANGE_UNSHARE), EOPNOTSUPP);
+        CHECK(write(p.client, "r", 1) == 1); ready(copy);
+        char byte; CHECK(read(copy, &byte, 1) == 1 && byte == 'r');
+        CHECK(close(copy) == 0);
+    } else {
+        CHECK(close_range(copy, copy, 0) == 0); ERROR(fcntl(copy, F_GETFD), EBADF);
+    }
+    int pipefd[2]; CHECK(pipe(pipefd) == 0);
+    CHECK(close_range(pipefd[0], pipefd[0], CLOSE_RANGE_CLOEXEC) == 0);
+    CHECK(fcntl(pipefd[0], F_GETFD) & FD_CLOEXEC);
+    if (native) {
+        ERROR(close_range(pipefd[0], pipefd[0], 0), EOPNOTSUPP);
+        CHECK(close(pipefd[0]) == 0);
+    } else CHECK(close_range(pipefd[0], pipefd[0], 0) == 0);
+    CHECK(close(pipefd[1]) == 0); finish(p);
+}
 static void descriptor_xattrs(void)
 {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
@@ -590,6 +618,7 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"close-range-explicit-native-boundary", close_range_boundary},
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
