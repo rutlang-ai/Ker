@@ -47,3 +47,5 @@ Optional native statistics must be a single JSON object of nonnegative integer c
 Explicit run-stop requests receive OK only after exactly one READY, STOPPING and DONE in that order, with no INCOMPLETE or unknown markers. Invalid sequences still stop and reap workers but receive FAIL.
 
 An I/O error while draining final native status is reported as status 125; the status descriptor closes and application, primary and auxiliary children still finish cleanup.
+
+Statistics reports are serialized before writing and atomically replaced from a temporary file in the same directory. Output failures return status 125 after child cleanup, preserve the previous report and remove temporary files.

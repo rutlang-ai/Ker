@@ -342,6 +342,33 @@ class LauncherBoundaryTests(unittest.TestCase):
                 os.waitpid(process.pid, os.WNOHANG)
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
+    def test_statistics_failure_preserves_previous_report_and_recovers(self):
+        target = self.root/'statistics.json'
+        target.write_text('previous complete report\n')
+        parse = launcher.parse_arguments
+        def arguments(*args, **kwargs):
+            result = parse(*args, **kwargs)
+            result.stats = target
+            return result
+        for kind in ('replace', 'serialize'):
+            owner = launcher.os if kind == 'replace' else launcher.json
+            name = 'replace' if kind == 'replace' else 'dumps'
+            error = OSError('injected rename failure') if kind == 'replace' else ValueError('injected serialization failure')
+            with self.subTest(kind=kind), \
+                    mock.patch.object(launcher, 'parse_arguments', side_effect=arguments), \
+                    mock.patch.object(owner, name, side_effect=error):
+                result, message = self.run_launcher(0, native_done=True,
+                    config=self.config, capture_stderr=True)
+            self.assertEqual(result, 125)
+            self.assertIn('statistics output', message)
+            self.assertEqual(target.read_text(), 'previous complete report\n')
+            self.assertEqual(list(self.root.glob('.statistics.json.*')), [])
+        with mock.patch.object(launcher, 'parse_arguments', side_effect=arguments):
+            self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
+        report = json.loads(target.read_text())
+        self.assertEqual(report['outstanding'], 0)
+        self.assertEqual(len(report['interfaces']), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
