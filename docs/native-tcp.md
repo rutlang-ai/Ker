@@ -1410,3 +1410,6 @@ RSS 控制测试还注入一次成功但已改变的 key readback，要求 MTU/r
 委托给原始 Linux，而非宿主 O_PATH 占位 fd。socket 的显式偏移返回 ESPIPE；
 v2 的 offset=-1 保留 Linux 流式读写行为。socket-contracts 同时检查失败不消费 TCP 数据、
 普通宿主文件超过 8GiB 的稀疏偏移读写及文件当前位置保持。
+
+`ftruncate`/`ftruncate64`、`fsync` 和 `fdatasync` 也按 fd 所属内核分派。
+原生 socket 返回 Linux EINVAL，失败不消费待收 TCP 数据；宿主文件保留真实截断、补零和同步行为。

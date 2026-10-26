@@ -268,6 +268,24 @@ static void select_error_preserves_sets(void)
     finish(p);
 }
 
+static void file_lifecycle_operations(void)
+{
+    struct pair p = connected();
+    CHECK(write(p.client, "s", 1) == 1); ready(p.server);
+    ERROR(ftruncate(p.server, 0), EINVAL);
+    ERROR(ftruncate64(p.server, 0), EINVAL);
+    ERROR(fsync(p.server), EINVAL); ERROR(fdatasync(p.server), EINVAL);
+    char byte = '?'; CHECK(read(p.server, &byte, 1) == 1 && byte == 's');
+    finish(p);
+    char path[] = "/tmp/ker-file-lifecycle-XXXXXX";
+    int fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    CHECK(write(fd, "abc", 3) == 3 && fsync(fd) == 0 && fdatasync(fd) == 0);
+    CHECK(ftruncate64(fd, 1) == 0 && lseek(fd, 0, SEEK_CUR) == 3);
+    struct stat st; CHECK(fstat(fd, &st) == 0 && st.st_size == 1);
+    CHECK(ftruncate(fd, 5) == 0 && pread(fd, &byte, 1, 4) == 1 && byte == 0);
+    CHECK(close(fd) == 0);
+    ERROR(fsync(fd), EBADF); ERROR(fdatasync(fd), EBADF); ERROR(ftruncate(fd, 0), EBADF);
+}
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -331,6 +349,7 @@ static void positioned_stream_sigpipe(void)
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
+        {"file-lifecycle-owner-routing", file_lifecycle_operations},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},
