@@ -220,8 +220,21 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
             --profile replay)
+    add_test(NAME native-fstack-session-control-isolation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile isolation)
+    add_test(NAME native-fstack-session-control-capacity
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile capacity)
+    add_test(NAME native-fstack-session-control-recycle
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile recycle)
     set_tests_properties(native-fstack-session-control-roundtrip native-fstack-session-control-malformed
-        native-fstack-session-control-replay PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk"
+        native-fstack-session-control-replay native-fstack-session-control-isolation
+        native-fstack-session-control-capacity native-fstack-session-control-recycle PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME native-fstack-session-tc3-observer
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-tc3-observer.py"

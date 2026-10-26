@@ -1632,3 +1632,22 @@ session测试仍失败。当前208项完整适配、14项partial、141项blocked
 
 本批Debug/Release各3项控制消息CTest、21项selector测试、21项迁移审计测试
 均通过；真实CMake图29项session测试与CI必跑清单完全一致。
+
+## UT-NR-14 控制槽位边界扩展
+
+在同一真实resident控制通道组中新增三个CTest：
+`native-fstack-session-control-isolation/capacity/recycle`。isolation验证同一PID
+的独立连接具有不同slot/epoch及独立重放缓存，其他连接即使持有有效ticket也不能
+release，不正确token同样不能释放。capacity申请全部三个非resident槽位，验证
+第四个申请及其重放返回ENOSPC；释放一个槽位之后，旧序列号继续返回缓存错误，
+更高序列号成功申请。recycle验证显式release后复用槽位时epoch严格递增，旧ticket、
+混合epoch和已release连接都不能释放新持有者，旧epoch保持失效。
+
+每例通过实际STATUS/EPOCH_LIVE查询验证拒绝请求没有改变持有者、user数或511个
+可用对象，最后验证精确释放、resident正常退出和socket清理。没有模拟resident，
+没有secondary EAL或网络报文，也不将同一PID的多连接证据扩展为跨进程死亡回收。
+UT-NR-14保持partial，原始FF_RELOAD ABI、reload子命令及C指针合同仍由issue #218
+跟踪；迁移计数保持208项完整适配、14项partial、141项blocked，155项行为未完成。
+
+本批Debug/Release各6项控制CTest通过，21项迁移审计测试及22项CI选择器测试
+通过；两个真实CMake图各32项session注册均与严格CI清单一致。

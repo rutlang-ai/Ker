@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real resident control-frame checks; no secondary EAL or network traffic."""
 import argparse
-from contextlib import closing
+from contextlib import ExitStack, closing
 import errno
 import importlib.util
 import json
@@ -46,11 +46,11 @@ def exchange(api, connection, request, status=0):
     return raw, reply
 
 
-def status_snapshot(api, path, session):
+def status_snapshot(api, path, session, slots=0):
     with closing(api.Connection(path)) as connection:
         reply = connection.request(api.STATUS)
     require(reply['session'] == session and reply['generation'] == 511 and
-            reply['token'] == 0 and reply['slot'] == reply['process'] == 0,
+            reply['token'] == 0 and reply['slot'] == slots and reply['process'] == 0,
             'control request leaked objects, slots or users: ' + repr(reply))
     return reply
 
@@ -141,6 +141,92 @@ def replay(api, path, session):
     status_snapshot(api, path, session)
 
 
+def identity(ticket):
+    return {key: ticket[key] for key in ('session', 'epoch', 'token', 'slot')}
+
+
+def epoch_live(api, path, epoch, expected):
+    with closing(api.Connection(path)) as observer:
+        reply = observer.request(api.EPOCH_LIVE, epoch=epoch)
+    require(reply['epoch'] == epoch and reply['token'] == expected,
+            'unexpected epoch liveness: ' + repr(reply))
+
+
+def isolation(api, path, session):
+    with channel(path) as first, channel(path) as second, channel(path) as stranger:
+        # Sequence caches belong to connections, even with identical peer PIDs.
+        _, a = exchange(api, first, api.packet(api.MASTER, 1))
+        original, b = exchange(api, second, api.packet(api.MASTER, 1))
+        require(a['slot'] != b['slot'] and a['epoch'] != b['epoch'] and
+                a['token'] != 0 and b['token'] != 0, 'masters share slot identity')
+        status_snapshot(api, path, session, slots=2)
+        exchange(api, first, api.packet(api.RELEASE, 2, **identity(b)), -errno.EPERM)
+        exchange(api, stranger, api.packet(api.RELEASE, 1, **identity(a)), -errno.EPERM)
+        bad = identity(a)
+        bad['token'] ^= 1
+        exchange(api, first, api.packet(api.RELEASE, 3, **bad), -errno.ESTALE)
+        for ticket in (a, b):
+            epoch_live(api, path, ticket['epoch'], 1)
+        repeated, _ = exchange(api, second, api.packet(api.MASTER, 1))
+        require(repeated == original, 'another connection changed the replay cache')
+        status_snapshot(api, path, session, slots=2)
+        exchange(api, first, api.packet(api.RELEASE, 4, **identity(a)))
+        epoch_live(api, path, b['epoch'], 1)
+        exchange(api, second, api.packet(api.RELEASE, 2, **identity(b)))
+    status_snapshot(api, path, session)
+
+
+def capacity(api, path, session):
+    with ExitStack() as stack:
+        connections = [stack.enter_context(channel(path)) for _ in range(4)]
+        tickets = [exchange(api, connection, api.packet(api.MASTER, 1))[1]
+                   for connection in connections[:3]]
+        require({ticket['slot'] for ticket in tickets} == {1, 2, 3},
+                'unexpected resident slot capacity')
+        status_snapshot(api, path, session, slots=3)
+        request = api.packet(api.MASTER, 1)
+        rejected, _ = exchange(api, connections[3], request, -errno.ENOSPC)
+        repeated, _ = exchange(api, connections[3], request, -errno.ENOSPC)
+        require(repeated == rejected, 'capacity error retry changed its cached reply')
+        for ticket in tickets:
+            epoch_live(api, path, ticket['epoch'], 1)
+        status_snapshot(api, path, session, slots=3)
+        exchange(api, connections[1], api.packet(api.RELEASE, 2, **identity(tickets[1])))
+        # The failed request remains cached after capacity returns.
+        repeated, _ = exchange(api, connections[3], request, -errno.ENOSPC)
+        require(repeated == rejected, 'resource change invalidated the sequence cache')
+        _, replacement = exchange(api, connections[3], api.packet(api.MASTER, 2))
+        require(replacement['slot'] == tickets[1]['slot'] and
+                replacement['epoch'] > tickets[1]['epoch'], 'freed slot was not reusable')
+        status_snapshot(api, path, session, slots=3)
+        for index in (0, 2):
+            exchange(api, connections[index], api.packet(api.RELEASE, 2, **identity(tickets[index])))
+        exchange(api, connections[3], api.packet(api.RELEASE, 3, **identity(replacement)))
+    status_snapshot(api, path, session)
+
+
+def recycle(api, path, session):
+    with channel(path) as old, channel(path) as current:
+        _, previous = exchange(api, old, api.packet(api.MASTER, 1))
+        exchange(api, old, api.packet(api.RELEASE, 2, **identity(previous)))
+        epoch_live(api, path, previous['epoch'], 0)
+        _, replacement = exchange(api, current, api.packet(api.MASTER, 1))
+        require(replacement['slot'] == previous['slot'] and
+                replacement['epoch'] > previous['epoch'], 'recycled slot retained its epoch')
+        exchange(api, old, api.packet(api.RELEASE, 3, **identity(previous)), -errno.ESTALE)
+        mixed = identity(replacement)
+        mixed['epoch'] = previous['epoch']
+        exchange(api, current, api.packet(api.RELEASE, 2, **mixed), -errno.ESTALE)
+        # Even a current ticket cannot transfer ownership to the released client.
+        exchange(api, old, api.packet(api.RELEASE, 4, **identity(replacement)), -errno.EPERM)
+        status_snapshot(api, path, session, slots=1)
+        epoch_live(api, path, previous['epoch'], 0)
+        epoch_live(api, path, replacement['epoch'], 1)
+        exchange(api, current, api.packet(api.RELEASE, 3, **identity(replacement)))
+        epoch_live(api, path, replacement['epoch'], 0)
+    status_snapshot(api, path, session)
+
+
 def ready(process):
     captured = bytearray()
     deadline = time.monotonic() + 10
@@ -163,7 +249,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--tool', type=Path, required=True)
-    parser.add_argument('--profile', choices=('roundtrip', 'malformed', 'replay'), required=True)
+    parser.add_argument('--profile', choices=('roundtrip', 'malformed', 'replay', 'isolation', 'capacity', 'recycle'), required=True)
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('control_frame_api', args.tool)
     api = importlib.util.module_from_spec(spec)
@@ -186,7 +272,8 @@ def main():
                 require(record['stage'] == 'shared-control' and record['session'] != 0 and
                         record['ports'] == 0 and record['ring_pmd'] is False,
                         'unexpected resident configuration')
-                profiles = {'roundtrip': roundtrip, 'malformed': malformed, 'replay': replay}
+                profiles = {'roundtrip': roundtrip, 'malformed': malformed, 'replay': replay,
+                            'isolation': isolation, 'capacity': capacity, 'recycle': recycle}
                 profiles[args.profile](api, path, record['session'])
                 process.stdin.close()
                 process.wait(timeout=10)
