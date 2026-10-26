@@ -18,6 +18,7 @@ static int (*writer_append)(struct ker_posix_buffer_writer *, const void *, size
 static const void *(*writer_view)(struct ker_posix_buffer_writer *, size_t *, size_t *);
 static int (*writer_destroy)(struct ker_posix_buffer_writer *);
 static int (*writer_send)(struct ker_posix_buffer_writer *, int, size_t, size_t, int);
+static int (*writer_sendto)(struct ker_posix_buffer_writer *, int, size_t, size_t, int, const struct sockaddr *, socklen_t);
 static int (*buffer_run)(ker_posix_loop_func, void *);
 static void (*buffer_stop)(void);
 static unsigned sent_ids, completed_ids, family_copied[2], family_direct[2], current_family;
@@ -53,6 +54,8 @@ static void buffer_init(void)
     writer_view = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_view");
     writer_destroy = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_destroy");
     writer_send = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_send");
+    writer_sendto = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_sendto");
+    check(writer_sendto, "native owned datagram destination ABI");
     check(writer_create && writer_append && writer_view && writer_destroy && writer_send, "native owned writer ABI");
     buffer_run = dlsym(RTLD_DEFAULT, "ker_posix_run");
     buffer_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
@@ -231,6 +234,38 @@ static void buffer_segment_writers(int fd, int receiver)
     check(writer_segment(replacement, 0, NULL, NULL, &total) && !total && !writer_destroy(replacement),
           "replacement socket owner remains empty and live");
 }
+static void buffer_writer_destination(int family, int receiver, const struct sockaddr *address, socklen_t size)
+{
+    int fd = socket(family ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+    check(fd >= 0, "unconnected native owned datagram sender");
+    buffer_socket(fd, family, false);
+    struct ker_posix_buffer_writer *owner = writer_create_segmented(178, 128);
+    unsigned char pattern[178], received[178];
+    for (size_t i = 0; i < sizeof(pattern); i++) pattern[i] = (unsigned char)(i ^ 0x55);
+    check(owner && writer_append(owner, pattern, sizeof(pattern)) == sizeof(pattern), "datagram destination owner");
+    check(writer_send(owner, fd, 100, 70, MSG_ZEROCOPY) == -1 && errno == EDESTADDRREQ,
+          "unconnected owned send retains original destination-required error");
+    writer_no_delivery(fd, receiver);
+    check(writer_sendto(owner, fd, 100, 70, MSG_ZEROCOPY, address, size) == 70 &&
+          recv(receiver, received, sizeof(received), 0) == 70 && !memcmp(received, pattern+100, 70),
+          "explicit UDP destination receives a cross-node owned range");
+    buffer_sent(70, true); buffer_complete(fd);
+    check(writer_sendto(owner, fd, 128, 50, MSG_ZEROCOPY, address, 1) == -1 && errno == EINVAL,
+          "malformed destination length fails in original Linux");
+    writer_no_delivery(fd, receiver);
+    check(writer_sendto(owner, fd, 128, 50, MSG_ZEROCOPY, address, size) == 50 &&
+          recv(receiver, received, sizeof(received), 0) == 50 && !memcmp(received, pattern+128, 50),
+          "explicit destination recovers after native address error");
+    buffer_sent(50, true); buffer_complete(fd);
+    check(writer_send(owner, fd, 0, 1, MSG_ZEROCOPY) == -1 && errno == EDESTADDRREQ,
+          "owned sendto does not implicitly connect the socket");
+    writer_no_delivery(fd, receiver);
+    size_t total = SIZE_MAX;
+    check(writer_segment(owner, 0, NULL, NULL, &total) && total == 178 &&
+          sent_ids == 2 && completed_ids == 2 && !writer_destroy(owner) && !close(fd),
+          "destination sends preserve cursor and release after real completions");
+}
+
 static void buffer_writers(void)
 {
     for (unsigned family = 0; family < 2; ++family) {
@@ -248,6 +283,7 @@ static void buffer_writers(void)
               !connect(fd, (void *)&address, size), "owned writer real native loopback peer");
         struct timeval timeout = {.tv_sec=3};
         check(!setsockopt(receiver, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), "writer timeout");
+        buffer_writer_destination(family, receiver, (void *)&address, size);
         buffer_socket(fd, family, false);
         struct ker_posix_buffer_writer *empty = writer_create(0); check(empty, "owned empty VMA");
         size_t length = SIZE_MAX, capacity = SIZE_MAX;

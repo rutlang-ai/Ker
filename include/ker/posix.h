@@ -2,6 +2,7 @@
 #define KER_POSIX_H
 #include <ker/ker.h>
 #include <stddef.h>
+#include <sys/socket.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -102,6 +103,11 @@ KER_API const void *ker_posix_buffer_writer_segment(struct ker_posix_buffer_writ
  * retains Linux empty-datagram behavior; this explicit owned-payload API rejects 0. */
 KER_API int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
     size_t offset, size_t length, int flags);
+/* As writer_send, with the original Linux sendto destination semantics.
+ * Supports unconnected native UDP sockets and segmented written ranges;
+ * sending does not connect the socket or advance the caller-owned cursor. */
+KER_API int ker_posix_buffer_writer_sendto(struct ker_posix_buffer_writer *writer, int fd,
+    size_t offset, size_t length, int flags, const struct sockaddr *address, socklen_t address_length);
 /* Run the caller's callback on this thread until stop_run is requested.
  * NULL waits for a stop from another thread. Callback return values are ignored.
  * Exactly one run is allowed per native instance; nested/concurrent runs fail
