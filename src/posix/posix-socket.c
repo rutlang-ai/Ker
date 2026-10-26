@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <asm/sockios.h>
+#include <linux/sockios.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
