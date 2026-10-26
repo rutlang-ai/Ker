@@ -548,3 +548,7 @@ chain或网络证明。三个测试列入无需EAL/PMD的CI必跑清单。
 跨线程有界写入：`native-fstack-buffer-write-parallel/handoff`验证独立VMA的
 多页字节/errno隔离和明确同步后的resize/write/free所有权交接，精确匹配回收。
 不扩大为未同步共享访问、mbuf ABI或网络证据；迁移完成计数不变。
+
+Owned writer：`native-fstack-buffer-writer-empty/append/zero`验证最小空owner、
+多次append累计长度/字节及零写no-op；生产VMA登记负责所有权与完整回收。三项源
+行为完成场景适配，不计FreeBSD头布局、多节点链或零字节send拒绝通过。

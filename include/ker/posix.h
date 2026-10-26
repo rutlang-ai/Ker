@@ -13,7 +13,7 @@ KER_API const char *ker_posix_kernel_release(void);
 /* Allocate zero-initialized, page-aligned memory registered in original Linux
  * VMAs (not host malloc memory). size must be 1..INT_MAX. Returns NULL/errno.
  * Use buffer_free on the exact base, never libc free/munmap. An unknown base
- * fails EINVAL without affecting mappings. Both require an active native
+ * fails EINVAL without affecting mappings. Writer-owned storage fails EBUSY. Both require an active native
  * instance. Do not race access/free/shutdown. Outstanding buffers are unmapped
  * after socket drain during native shutdown, invalidating every returned pointer.
  * Suitable for original Linux MSG_ZEROCOPY page references; callers must enable
@@ -47,6 +47,26 @@ KER_API int ker_posix_buffer_write(void *address, size_t offset, const void *dat
  * Complete every outstanding send before resize, just as before free; do not
  * race access/resize/free/shutdown. This is not libc realloc memory. */
 KER_API void *ker_posix_buffer_realloc(void *address, size_t size);
+/* An owned append cursor over one registered original-Linux VMA. Capacity is
+ * 0..INT_MAX; zero capacity owns a minimal one-byte backing allocation, while
+ * its logical capacity/length stay zero. Raw buffer_alloc(0) still fails.
+ * Handles are opaque. create returns NULL/errno; append returns copied bytes
+ * or -1/errno, and advances length only on success. NULL data is invalid even
+ * for zero length; a valid zero append does not change bytes or length.
+ * view returns borrowed read-only data and optional length/capacity outputs;
+ * on failure it returns NULL/errno without changing outputs. destroy returns
+ * 0 or -1/errno; failed unmap retains the owner for retry. Unknown handles and
+ * invalid capacities/append ranges fail EINVAL; inactive operations fail
+ * ENETDOWN. Raw buffer_free/write/nonzero-realloc of writer storage fail EBUSY.
+ * Synchronize owner access/transfer; wait for all zerocopy completions before
+ * append/destroy. Send only the viewed length. Shutdown reclaims outstanding
+ * owners and invalidates every handle/view. This is one VMA, not a FreeBSD
+ * mbuf chain; it does not change ordinary Linux send semantics. */
+struct ker_posix_buffer_writer;
+KER_API struct ker_posix_buffer_writer *ker_posix_buffer_writer_create(size_t capacity);
+KER_API int ker_posix_buffer_writer_append(struct ker_posix_buffer_writer *writer, const void *data, size_t length);
+KER_API const void *ker_posix_buffer_writer_view(struct ker_posix_buffer_writer *writer, size_t *length, size_t *capacity);
+KER_API int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writer);
 /* Run the caller's callback on this thread until stop_run is requested.
  * NULL waits for a stop from another thread. Callback return values are ignored.
  * Exactly one run is allowed per native instance; nested/concurrent runs fail

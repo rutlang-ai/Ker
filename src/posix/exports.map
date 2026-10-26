@@ -3,6 +3,8 @@
         ker_posix_capabilities; ker_posix_kernel_release;
         ker_posix_run; ker_posix_stop_run;
         ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc; ker_posix_buffer_write;
+        ker_posix_buffer_writer_create; ker_posix_buffer_writer_append;
+        ker_posix_buffer_writer_view; ker_posix_buffer_writer_destroy;
         socket; bind; connect; listen; accept; accept4; shutdown;
         getsockname; getpeername; getsockopt; setsockopt; sockatmark;
         send; recv; sendto; recvfrom; sendmsg; recvmsg; sendmmsg; recvmmsg;

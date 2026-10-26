@@ -14,7 +14,13 @@
 #include <string.h>
 #include <lkl.h>
 #include <lkl/linux/mman.h>
-struct mapping { struct mapping *next; void *address; size_t size; };
+struct mapping {
+    struct mapping *next;
+    void *address;
+    size_t size;
+    bool writer_owned;
+    size_t capacity, written;
+};
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mapping *mappings;
 static struct ker_native_buffer_counters totals;
@@ -61,6 +67,7 @@ int ker_posix_buffer_free(void *address)
     while (*slot && (*slot)->address != address) slot = &(*slot)->next;
     if (!*slot) { pthread_mutex_unlock(&lock); errno = EINVAL; return -1; }
     struct mapping *item = *slot;
+    if (item->writer_owned) { pthread_mutex_unlock(&lock); errno = EBUSY; return -1; }
     long result = release(item, false);
     if (!result) { *slot = item->next; free(item); }
     pthread_mutex_unlock(&lock);
@@ -75,6 +82,7 @@ int ker_posix_buffer_write(void *address, size_t offset, const void *data, size_
     if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return -1; }
     struct mapping *item = mappings;
     while (item && item->address != address) item = item->next;
+    if (item && item->writer_owned) { pthread_mutex_unlock(&lock); errno = EBUSY; return -1; }
     if (!item || offset > item->size || length > item->size - offset) {
         pthread_mutex_unlock(&lock); errno = EINVAL; return -1;
     }
@@ -96,6 +104,7 @@ void *ker_posix_buffer_realloc(void *address, size_t size)
     struct mapping *old = mappings;
     while (old && old->address != address) old = old->next;
     if (!old) { pthread_mutex_unlock(&lock); errno = EINVAL; return NULL; }
+    if (old->writer_owned) { pthread_mutex_unlock(&lock); errno = EBUSY; return NULL; }
     if (size == old->size) { pthread_mutex_unlock(&lock); return address; }
     struct mapping *fresh = allocate(size);
     if (!fresh) { pthread_mutex_unlock(&lock); return NULL; }
@@ -114,6 +123,66 @@ void *ker_posix_buffer_realloc(void *address, size_t size)
     if (result) errno = (int)-result;
     pthread_mutex_unlock(&lock);
     return resized;
+}
+/* The registration itself is the opaque owner: one lifetime, one cleanup path.
+ * Compare handle values before dereferencing so rejected/stale handles cannot
+ * mutate another registration. Caller holds the registry lock. */
+static struct mapping *writer_mapping(struct ker_posix_buffer_writer *writer)
+{
+    for (struct mapping *item = mappings; item; item = item->next)
+        if ((void *)item == (void *)writer && item->writer_owned) return item;
+    return NULL;
+}
+struct ker_posix_buffer_writer *ker_posix_buffer_writer_create(size_t capacity)
+{
+    if (capacity > INT_MAX) { errno = EINVAL; return NULL; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
+    struct mapping *item = allocate(capacity ? capacity : 1);
+    if (item) { item->writer_owned = true; item->capacity = capacity; }
+    pthread_mutex_unlock(&lock);
+    return (struct ker_posix_buffer_writer *)item;
+}
+int ker_posix_buffer_writer_append(struct ker_posix_buffer_writer *writer, const void *data, size_t length)
+{
+    if (!writer || !data) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return -1; }
+    struct mapping *item = writer_mapping(writer);
+    if (!item || length > item->capacity - item->written) {
+        pthread_mutex_unlock(&lock); errno = EINVAL; return -1;
+    }
+    if (length) memmove((unsigned char *)item->address + item->written, data, length);
+    item->written += length;
+    pthread_mutex_unlock(&lock);
+    return (int)length;
+}
+const void *ker_posix_buffer_writer_view(struct ker_posix_buffer_writer *writer, size_t *length, size_t *capacity)
+{
+    if (!writer) { errno = EINVAL; return NULL; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
+    struct mapping *item = writer_mapping(writer);
+    if (!item) { pthread_mutex_unlock(&lock); errno = EINVAL; return NULL; }
+    if (length) *length = item->written;
+    if (capacity) *capacity = item->capacity;
+    const void *data = item->address;
+    pthread_mutex_unlock(&lock);
+    return data;
+}
+int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writer)
+{
+    if (!writer) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return -1; }
+    struct mapping **slot = &mappings;
+    while (*slot && ((void *)*slot != (void *)writer || !(*slot)->writer_owned)) slot = &(*slot)->next;
+    if (!*slot) { pthread_mutex_unlock(&lock); errno = EINVAL; return -1; }
+    struct mapping *item = *slot;
+    long result = release(item, false);
+    if (!result) { *slot = item->next; free(item); }
+    pthread_mutex_unlock(&lock);
+    return (int)ker_native_result(result);
 }
 static int zerocopy_enabled(int native)
 {
