@@ -18,6 +18,7 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
+#include <sys/xattr.h>
 #include <linux/magic.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -403,6 +404,35 @@ static void file_cache_operations(void)
     errno = EINPROGRESS; CHECK(posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) == EBADF && errno == EINPROGRESS);
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
 }
+static void descriptor_xattrs(void)
+{
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
+    int copy = dup(fd); CHECK(copy >= 0);
+    char value[128];
+    CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
+    CHECK(fgetxattr(copy, "system.sockprotoname", value, sizeof(value)) == 4 && memcmp(value, "TCP", 4) == 0);
+    ERROR(fgetxattr(fd, "system.sockprotoname", value, 1), ERANGE);
+    ssize_t length = flistxattr(fd, value, sizeof(value)); CHECK(length > 0);
+    int found = 0;
+    for (ssize_t at = 0; at < length; at += strlen(value + at) + 1)
+        if (strcmp(value + at, "system.sockprotoname") == 0) found = 1;
+    CHECK(found); ERROR(flistxattr(fd, value, 1), ERANGE);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        ERROR(fsetxattr(fd, "user.ker", "a", 1, 0), EPERM);
+        ERROR(fremovexattr(fd, "system.sockprotoname"), EOPNOTSUPP);
+    }
+    CHECK(close(fd) == 0 && fgetxattr(copy, "system.sockprotoname", value, sizeof(value)) == 4);
+    CHECK(close(copy) == 0); ERROR(flistxattr(copy, value, sizeof(value)), EBADF);
+    char path[] = "/tmp/ker-xattrs-XXXXXX";
+    fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    CHECK(fsetxattr(fd, "user.ker", "a", 1, XATTR_CREATE) == 0);
+    ERROR(fsetxattr(fd, "user.ker", "b", 1, XATTR_CREATE), EEXIST);
+    CHECK(fsetxattr(fd, "user.ker", "b", 1, XATTR_REPLACE) == 0);
+    CHECK(fgetxattr(fd, "user.ker", value, sizeof(value)) == 1 && value[0] == 'b');
+    CHECK(fremovexattr(fd, "user.ker") == 0); ERROR(fgetxattr(fd, "user.ker", value, sizeof(value)), ENODATA);
+    CHECK(close(fd) == 0);
+}
+
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -472,6 +502,7 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},

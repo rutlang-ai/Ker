@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/xattr.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/syscall.h>
@@ -178,3 +179,38 @@ int posix_fadvise(int fd, off_t offset, off_t length, int advice)
     return value < 0 ? (int)-value : (int)value;
 }
 extern __typeof(posix_fadvise64) posix_fadvise64 __attribute__((alias("posix_fadvise")));
+ssize_t fgetxattr(int fd, const char *name, void *value, size_t size)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fgetxattr, fd, name, value, size);
+    long result = lkl_sys_fgetxattr(entry->native, name, value, size);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}
+
+int fsetxattr(int fd, const char *name, const void *value, size_t size, int flags)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fsetxattr, fd, name, value, size, flags);
+    long result = lkl_sys_fsetxattr(entry->native, name, value, size, flags);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}
+
+ssize_t flistxattr(int fd, char *list, size_t size)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_flistxattr, fd, list, size);
+    long result = lkl_sys_flistxattr(entry->native, list, size);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}
+
+int fremovexattr(int fd, const char *name)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fremovexattr, fd, name);
+    long result = lkl_sys_fremovexattr(entry->native, name);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}

@@ -1429,3 +1429,7 @@ UTIME_OMIT 与纳秒/微秒输入，并保留宿主文件行为；非法时间�
 `readahead`、`sync_file_range` 和 `posix_fadvise`（含64位别名）按 fd 所属内核执行。
 原生 socket 分别遵循 Linux EINVAL、ESPIPE，以及当前固定内核关闭 CONFIG_ADVISE_SYSCALLS
 时的 ENOSYS 边界；fadvise 返回正错误码并保持 errno，宿主文件行为不变。
+
+fd xattr 操作使用原始 Linux inode：可读取/枚举 socketfs 的 system.sockprotoname，
+缓冲区不足返回 ERANGE，固定内核对 socket 的 user xattr 写入按其权限规则返回 EPERM。
+宿主文件保留 user xattr 的 CREATE/REPLACE/remove 语义。
