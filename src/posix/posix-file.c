@@ -96,12 +96,13 @@ int futimens(int fd, const struct timespec times[2])
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_utimensat, fd, NULL, times, 0);
-    struct lkl_timespec native[2];
+    struct __lkl__kernel_timespec native[2];
     if (times) for (int i = 0; i < 2; ++i) {
         native[i].tv_sec = times[i].tv_sec;
         native[i].tv_nsec = times[i].tv_nsec;
     }
-    long value = lkl_sys_utimensat(entry->native, NULL, times ? native : NULL, 0);
+    long value = lkl_sys_utimensat(entry->native, NULL,
+                                   times ? (void *)native : NULL, 0);
     ker_fd_put(entry);
     return ker_native_result(value);
 }
