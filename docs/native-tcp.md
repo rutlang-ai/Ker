@@ -1493,3 +1493,7 @@ UAPI 布局以编译期大小及关键偏移断言校验。空路径/NULL 输出
 faccessat 使用原始 faccessat2 对原生 fd 检查 sockfs 权限，保留 AT_EACCESS/
 AT_EMPTY_PATH 及非法 mode/flags 的边界。权限检查不再误查宿主占位对象；宿主绝对路径
 与普通宿主 fd 仍由宿主内核检查，错误不改变 fd 生命周期或消费排队 TCP 数据。
+
+packet 接收元数据合同同时检查 PACKET_AUXDATA 原始长度、SO_TIMESTAMPNS 时间及
+控制缓冲不足时的 MSG_CTRUNC。小接收队列故意产生捕获丢包，PACKET_STATISTICS 的
+接收/丢弃数量必须与已发送包及实际可读捕获一致，查询后统计清零；UDP 正常接收仍全部成功。
