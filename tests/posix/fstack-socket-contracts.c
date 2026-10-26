@@ -427,6 +427,71 @@ static void file_cache_operations(void)
     errno = EINPROGRESS; CHECK(posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) == EBADF && errno == EINPROGRESS);
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
 }
+enum route_send_path { ROUTE_SEND, ROUTE_SENDTO, ROUTE_WRITE, ROUTE_WRITEV, ROUTE_SENDMSG, ROUTE_SENDMMSG };
+
+static void reject_route_mtu_change(int fd, int ifindex, unsigned sequence, enum route_send_path path)
+{
+    struct {
+        struct nlmsghdr header;
+        struct ifinfomsg info;
+        struct rtattr mtu_attribute;
+        int mtu;
+    } request = {0};
+    request.header.nlmsg_len = NLMSG_ALIGN(NLMSG_LENGTH(sizeof(request.info))) +
+        RTA_LENGTH(sizeof(request.mtu));
+    request.header.nlmsg_type = RTM_NEWLINK;
+    request.header.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    request.header.nlmsg_seq = sequence;
+    request.info.ifi_family = AF_UNSPEC;
+    request.info.ifi_index = ifindex;
+    request.mtu_attribute.rta_type = IFLA_MTU;
+    request.mtu_attribute.rta_len = RTA_LENGTH(sizeof(request.mtu));
+    request.mtu = 1400;
+
+    struct sockaddr_nl kernel = {.nl_family = AF_NETLINK};
+    struct iovec vector = {&request, request.header.nlmsg_len};
+    struct msghdr message = {.msg_name = &kernel, .msg_namelen = sizeof(kernel),
+        .msg_iov = &vector, .msg_iovlen = 1};
+    ssize_t sent;
+    switch (path) {
+    case ROUTE_SEND:
+        sent = send(fd, &request, request.header.nlmsg_len, 0);
+        break;
+    case ROUTE_SENDTO:
+        sent = sendto(fd, &request, request.header.nlmsg_len, 0,
+                      (void *)&kernel, sizeof(kernel));
+        break;
+    case ROUTE_WRITE:
+        sent = write(fd, &request, request.header.nlmsg_len);
+        break;
+    case ROUTE_WRITEV:
+        sent = writev(fd, &vector, 1);
+        break;
+    case ROUTE_SENDMSG:
+        sent = sendmsg(fd, &message, 0);
+        break;
+    case ROUTE_SENDMMSG: {
+        struct mmsghdr multi = {.msg_hdr = message};
+        int count = sendmmsg(fd, &multi, 1, 0);
+        CHECK(count == 1 && multi.msg_len == request.header.nlmsg_len);
+        sent = count < 0 ? (ssize_t)count : (ssize_t)multi.msg_len;
+        break;
+    }
+    default:
+        CHECK(0); sent = -1;
+    }
+    CHECK(sent == request.header.nlmsg_len);
+    ready(fd);
+    union {struct nlmsghdr alignment; char bytes[512];} response;
+    ssize_t received = recv(fd, response.bytes, sizeof(response.bytes), 0);
+    CHECK(received >= (ssize_t)NLMSG_LENGTH(sizeof(struct nlmsgerr)));
+    int remaining = (int)received;
+    struct nlmsghdr *ack = (void *)response.bytes;
+    CHECK(NLMSG_OK(ack, remaining) && ack->nlmsg_type == NLMSG_ERROR &&
+          ack->nlmsg_seq == sequence);
+    struct nlmsgerr *error = NLMSG_DATA(ack);
+    CHECK(error->error == -EPERM);
+}
 
 static void interface_name_lookup(void)
 {
@@ -743,6 +808,7 @@ static void route_netlink(void)
 {
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     int query = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0 && query >= 0);
+    int native_instance = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") != NULL;
     struct sockaddr_nl address = {.nl_family = AF_NETLINK};
     CHECK(bind(fd, (void *)&address, sizeof(address)) == 0);
     socklen_t address_length = sizeof(address);
@@ -753,6 +819,7 @@ static void route_netlink(void)
     ERROR(ioctl(fd, FIONBIO, (void *)NULL), EFAULT);
     ERROR(ioctl(fd, FIONREAD, (void *)NULL), ENOTTY);
     unsigned links = 0, ipv4 = 0, loopback = 0;
+    int packet_index = 0, packet_mtu = 0;
     for (unsigned pass = 0; pass < 2; ++pass) {
         struct {struct nlmsghdr header; struct rtgenmsg body;} request = {
             .header = {.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtgenmsg)),
@@ -778,13 +845,18 @@ static void route_netlink(void)
                     struct ifinfomsg *link = NLMSG_DATA(message);
                     struct ifreq identity = {.ifr_ifindex = link->ifi_index};
                     CHECK(ioctl(query, SIOCGIFNAME, &identity) == 0);
-                    int bytes = IFLA_PAYLOAD(message), found = 0;
+                    int bytes = IFLA_PAYLOAD(message), found = 0, is_packet = 0, mtu = 0;
                     for (struct rtattr *attribute = IFLA_RTA(link); RTA_OK(attribute, bytes); attribute = RTA_NEXT(attribute, bytes)) {
-                        if (attribute->rta_type != IFLA_IFNAME) continue;
-                        CHECK(memchr(RTA_DATA(attribute), 0, RTA_PAYLOAD(attribute)) != NULL);
-                        CHECK(strcmp(RTA_DATA(attribute), identity.ifr_name) == 0); found = 1;
+                        if (attribute->rta_type == IFLA_IFNAME) {
+                            CHECK(memchr(RTA_DATA(attribute), 0, RTA_PAYLOAD(attribute)) != NULL);
+                            CHECK(strcmp(RTA_DATA(attribute), identity.ifr_name) == 0); found = 1;
+                            is_packet = strcmp(RTA_DATA(attribute), "eth0") == 0;
+                        } else if (attribute->rta_type == IFLA_MTU && RTA_PAYLOAD(attribute) >= sizeof(mtu)) {
+                            memcpy(&mtu, RTA_DATA(attribute), sizeof(mtu));
+                        }
                     }
                     CHECK(found); links++;
+                    if (is_packet) { packet_index = link->ifi_index; packet_mtu = mtu; }
                 } else {
                     CHECK(message->nlmsg_type == RTM_NEWADDR && message->nlmsg_len >= NLMSG_LENGTH(sizeof(struct ifaddrmsg)));
                     struct ifaddrmsg *entry = NLMSG_DATA(message);
@@ -803,6 +875,20 @@ static void route_netlink(void)
         }
     }
     CHECK(links >= 2 && ipv4 >= 2 && loopback > 0);
+    if (native_instance) {
+        CHECK(packet_index > 0 && packet_mtu > 0);
+        struct ifreq mtu = {0}; strcpy(mtu.ifr_name, "eth0");
+        CHECK(ioctl(query, SIOCGIFMTU, &mtu) == 0 && mtu.ifr_mtu == packet_mtu);
+        struct sockaddr_nl kernel = {.nl_family = AF_NETLINK};
+        CHECK(connect(fd, (void *)&kernel, sizeof(kernel)) == 0);
+        const enum route_send_path paths[] = {ROUTE_SEND, ROUTE_SENDTO, ROUTE_WRITE,
+            ROUTE_WRITEV, ROUTE_SENDMSG, ROUTE_SENDMMSG};
+        for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+            reject_route_mtu_change(fd, packet_index, 0x4b454300 + i, paths[i]);
+            memset(&mtu, 0, sizeof(mtu)); strcpy(mtu.ifr_name, "eth0");
+            CHECK(ioctl(query, SIOCGIFMTU, &mtu) == 0 && mtu.ifr_mtu == packet_mtu);
+        }
+    }
     CHECK(close(query) == 0 && close(fd) == 0);
     ERROR(socket(AF_NETLINK, SOCK_RAW, 0x7fffffff), EPROTONOSUPPORT);
 }
