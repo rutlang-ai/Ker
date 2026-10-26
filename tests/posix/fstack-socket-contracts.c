@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
@@ -266,9 +267,44 @@ static void select_error_preserves_sets(void)
     finish(p);
 }
 
+static void positioned_operations(void)
+{
+    struct pair p = connected();
+    char byte = '?'; struct iovec vector = {&byte, 1};
+    CHECK(write(p.client, "q", 1) == 1); ready(p.server);
+    ERROR(lseek(p.server, 0, SEEK_SET), ESPIPE);
+    ERROR(lseek64(p.server, 0, SEEK_CUR), ESPIPE);
+    ERROR(pread(p.server, &byte, 1, 0), ESPIPE);
+    ERROR(pread64(p.server, &byte, 1, 0), ESPIPE);
+    ERROR(pwrite(p.server, &byte, 1, 0), ESPIPE);
+    ERROR(pwrite64(p.server, &byte, 1, 0), ESPIPE);
+    ERROR(preadv(p.server, &vector, 1, 0), ESPIPE);
+    ERROR(preadv64(p.server, &vector, 1, 0), ESPIPE);
+    ERROR(pwritev(p.server, &vector, 1, 0), ESPIPE);
+    ERROR(pwritev64(p.server, &vector, 1, 0), ESPIPE);
+    ERROR(preadv2(p.server, &vector, 1, 0, 0), ESPIPE);
+    ERROR(preadv64v2(p.server, &vector, 1, 0, 0), ESPIPE);
+    ERROR(pwritev2(p.server, &vector, 1, 0, 0), ESPIPE);
+    ERROR(pwritev64v2(p.server, &vector, 1, 0, 0), ESPIPE);
+    CHECK(read(p.server, &byte, 1) == 1 && byte == 'q');
+    /* v2 offset -1 is a stream operation in Linux, rather than a seek. */
+    CHECK(pwritev2(p.client, &vector, 1, -1, 0) == 1); ready(p.server);
+    byte = '?'; CHECK(preadv2(p.server, &vector, 1, -1, 0) == 1 && byte == 'q');
+    finish(p);
+    char path[] = "/tmp/ker-positioned-XXXXXX";
+    int fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    off_t far = ((off_t)1 << 33) + 19;
+    CHECK(write(fd, "abc", 3) == 3 && lseek64(fd, 0, SEEK_CUR) == 3);
+    CHECK(pwrite64(fd, "x", 1, far) == 1 && lseek(fd, 0, SEEK_CUR) == 3);
+    CHECK(pread64(fd, &byte, 1, far) == 1 && byte == 'x');
+    byte = 'y'; CHECK(pwritev64v2(fd, &vector, 1, far + 1, 0) == 1);
+    byte = '?'; CHECK(preadv64(fd, &vector, 1, far + 1) == 1 && byte == 'y');
+    CHECK(lseek(fd, 0, SEEK_CUR) == 3 && close(fd) == 0);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
+        {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"creation-flags-and-socket-type", creation_flags},
         {"select-ebadf-preserves-input-sets-and-data", select_error_preserves_sets},
         {"accept-flags-are-explicit-not-inherited", accepted_flags},

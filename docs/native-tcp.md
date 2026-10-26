@@ -1405,3 +1405,8 @@ SO_ZEROCOPY 未启用时，Linux 原有的忽略标志/复制发送行为保持�
 宿主在成员断开前后各发起一轮（RX 6 个），不以降低计数检查规避失败。
 RSS 控制测试还注入一次成功但已改变的 key readback，要求 MTU/restart 后的
 生产适配层拒绝 key 变化，而不是覆盖初始快照后误判为保留。
+
+原生 fd 的 `lseek`、`pread`/`pwrite` 与 vectored/v2 positioned I/O（含 64 位 ABI 别名）
+委托给原始 Linux，而非宿主 O_PATH 占位 fd。socket 的显式偏移返回 ESPIPE；
+v2 的 offset=-1 保留 Linux 流式读写行为。socket-contracts 同时检查失败不消费 TCP 数据、
+普通宿主文件超过 8GiB 的稀疏偏移读写及文件当前位置保持。
