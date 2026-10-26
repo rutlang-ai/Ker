@@ -150,3 +150,14 @@ four allocation/send validation scenarios with `native-fstack-zc-validation`.
 Two FreeBSD header-field cases are architecture-specific; seven empty-chain,
 write-cursor and zero-send cases remain blocked under issue225. These source
 scenarios do not establish ff_zc ABI equivalence or copy-free transport.
+
+`ker_posix_buffer_write(base, offset, data, length)` 在已登记的原版 Linux VMA
+请求范围内写入，返回复制字节数或`-1/errno`。必须提供精确base、非NULL且可读的
+source和合法offset/length；检查使用减法，拒绝size_t加法溢出和page-rounded余量。
+支持memmove重叠语义，合法零长度调用返回0且不改变字节。拒绝返回EINVAL且不
+修改字节或登记，native未启动/已关闭时返回ENETDOWN。它不改变分配长度，不维护
+packet header或隐式写游标；调用者仍须在写入被zerocopy引用的字节之前等到全部
+完成通知，并同步直接访问、send、resize、free与shutdown。
+
+三个standalone原版Linux测试分别覆盖容量拒绝、NULL数据拒绝和实际多页/重叠/
+零长度写入；不是网络、PMD、mbuf链或端到端零拷贝证据。

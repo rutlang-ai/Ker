@@ -66,6 +66,22 @@ int ker_posix_buffer_free(void *address)
     pthread_mutex_unlock(&lock);
     return (int)ker_native_result(result);
 }
+/* Bounds refer to the requested extent, not the Linux page-rounded VMA.
+ * Keep ownership stable through the copy; no socket/protocol semantics live here. */
+int ker_posix_buffer_write(void *address, size_t offset, const void *data, size_t length)
+{
+    if (!address || !data) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return -1; }
+    struct mapping *item = mappings;
+    while (item && item->address != address) item = item->next;
+    if (!item || offset > item->size || length > item->size - offset) {
+        pthread_mutex_unlock(&lock); errno = EINVAL; return -1;
+    }
+    if (length) memmove((unsigned char *)address + offset, data, length);
+    pthread_mutex_unlock(&lock);
+    return (int)length; /* Allocations and therefore accepted lengths fit INT_MAX. */
+}
 /* Keep the old mapping until both allocation and copying have succeeded.
  * This adapts the native memory domain; libc realloc cannot resize LKL VMAs. */
 void *ker_posix_buffer_realloc(void *address, size_t size)
