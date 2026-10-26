@@ -510,3 +510,8 @@ P2释放证明的控制lease子集：`native-fstack-session-control-reservation-
 验证独立direct-child持有实际mbuf lease时RELEASE拒绝、socket EOF保留、精确死亡
 逐项回收和最后借用者退出后释放。源案例`test_p2_release_epoch_needs_proof`仅推进
 为partial；没有secondary EAL、硬件STOPPED证明或RX-owner generation转移证据。
+
+P2登记证明子集：`native-fstack-session-control-reservation-replay/reservation-collision/reservation-bounds`
+验证RESERVE相同序列号重放只保留一个lease、重复坐标与非法凭据/边界不改变登记，
+以及同一连接拒绝后的有效登记。`test_p2_hw_user_proof`仅推进为partial；
+没有硬件ACTIVE/STOPPED表、操作级user_add幂等或users_clear证明。

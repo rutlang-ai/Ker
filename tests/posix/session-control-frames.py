@@ -231,14 +231,72 @@ def recycle(api, path, session):
 # This child owns a real master or pre-EAL reservation connection.
 # It never starts a secondary EAL.
 MASTER_CHILD = r"""
-import importlib.util, json, sys
+import errno, importlib.util, json, sys
 spec = importlib.util.spec_from_file_location('api', sys.argv[1])
 api = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(api)
 connection = api.Connection(sys.argv[2])
-if len(sys.argv) == 4:
+checks = 0
+
+def rejected(client, values, expected):
+    global checks
+    try:
+        client.request(api.RESERVE, **values)
+    except OSError as error:
+        if error.errno != expected:
+            raise
+    else:
+        raise RuntimeError('invalid/duplicate reservation was accepted')
+    checks += 1
+
+
+def census(expected):
+    observer = api.Connection(sys.argv[2])
+    try:
+        state = observer.request(api.STATUS)
+        if (state['slot'], state['generation'], state['token'], state['process']) != (1, 511-expected, expected, expected):
+            raise RuntimeError('reservation changed exact census: ' + repr(state))
+    finally:
+        observer.close()
+
+
+if len(sys.argv) >= 4:
     ticket = json.loads(sys.argv[3])
+    profile = sys.argv[4] if len(sys.argv) == 5 else None
+    if profile == 'bounds':
+        for changes, expected in (({'generation': 2}, errno.EINVAL),
+                                  ({'process': 4}, errno.EINVAL),
+                                  ({'generation': 0xffffffffffffffff}, errno.EINVAL),
+                                  ({'process': 0xffffffffffffffff}, errno.EINVAL),
+                                  ({'slot': 0}, errno.ESTALE),
+                                  ({'slot': 4}, errno.ESTALE),
+                                  ({'session': ticket['session'] ^ 1}, errno.ESTALE),
+                                  ({'epoch': ticket['epoch'] ^ 1}, errno.ESTALE),
+                                  ({'token': ticket['token'] ^ 1}, errno.ESTALE)):
+            rejected(connection, dict(ticket, **changes), expected)
+            census(0)
     reply = connection.request(api.RESERVE, **ticket)
+    if profile == 'replay':
+        request = api.encode(api.packet(api.RESERVE, connection.sequence, **ticket))
+        for _ in range(3):
+            connection.socket.sendall(request)
+            if connection.socket.recv(api.WIRE.size + 1) != api.encode(reply):
+                raise RuntimeError('RESERVE replay lost its byte-identical reply')
+            checks += 1
+            census(1)
+        # A new sequence on an already reserved connection is a new command.
+        rejected(connection, ticket, errno.EINVAL)
+        census(1)
+    elif profile == 'collision':
+        duplicate = api.Connection(sys.argv[2])
+        try:
+            for _ in range(3):
+                rejected(duplicate, ticket, errno.EBUSY)
+                census(1)
+        finally:
+            duplicate.close()
+    if profile is not None:
+        reply['admission_checks'] = checks
 else:
     reply = connection.request(api.MASTER)
 print(json.dumps(reply), flush=True)
@@ -271,8 +329,11 @@ def child_line(process):
 
 
 @contextmanager
-def master_child(api, path, reservation=None):
+def master_child(api, path, reservation=None, profile=None):
     extra = [] if reservation is None else [json.dumps(reservation)]
+    if profile is not None:
+        require(reservation is not None, 'admission profile needs a reservation')
+        extra.append(profile)
     process = subprocess.Popen([sys.executable, '-c', MASTER_CHILD, api.__file__, str(path), *extra],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, bufsize=0)
@@ -301,15 +362,15 @@ def require_pidfd(pidfd, dead):
         require(bool(selector.select(0)) == dead, 'unexpected exact child pidfd liveness')
 
 
-def wait_slots(api, path, session, expected):
+def wait_slots(api, path, session, expected, users=0):
     deadline = time.monotonic() + 3
     with closing(api.Connection(path)) as observer:
         while True:
             state = observer.request(api.STATUS)
-            require(state['session'] == session and state['generation'] == 511 and
-                    state['token'] == state['process'] == 0,
+            require(state['session'] == session and state['generation'] + state['token'] == 511 and
+                    state['token'] == state['process'],
                     'master lifetime changed pool/user accounting: ' + repr(state))
-            if state['slot'] == expected:
+            if state['slot'] == expected and state['process'] == users:
                 return
             require(time.monotonic() < deadline, 'dead master slot was not reclaimed: ' + repr(state))
             time.sleep(0.01)
@@ -433,6 +494,35 @@ def reservation_proof(api, path, session, mode):
     status_snapshot(api, path, session)
 
 
+def reservation_admission(api, path, session, mode):
+    with channel(path) as master:
+        _, ticket = exchange(api, master, api.packet(api.MASTER, 1))
+        coordinate = identity(ticket)
+        request = dict(coordinate, generation=1, process=3)
+        with master_child(api, path, request, mode) as (child, pidfd, reply):
+            require(reply['admission_checks'] == {'replay': 4, 'collision': 3, 'bounds': 9}[mode],
+                    'child did not execute the admission checks')
+            require(all(reply[key] == value for key, value in request.items()),
+                    'accepted reservation lost its coordinate')
+            require_pidfd(pidfd, False)
+            status_snapshot(api, path, session, slots=1, users=1)
+            epoch_live(api, path, ticket['epoch'], 1)
+            exchange(api, master, api.packet(api.RELEASE, 2, **coordinate), -errno.EBUSY)
+            require(child.stdin.write(b'C') == 1 and child_line(child) == 'CLOSED',
+                    'borrower did not acknowledge EOF')
+            require_pidfd(pidfd, False)
+            status_snapshot(api, path, session, slots=1, users=1)
+            require(child.stdin.write(b'X') == 1, 'failed to request borrower exit')
+            require(child.wait(timeout=5) == 0, 'borrower admission checks failed')
+            require_pidfd(pidfd, True)
+            wait_slots(api, path, session, 1)
+        epoch_live(api, path, ticket['epoch'], 1)
+        epoch_live(api, path, 0, 1)
+        exchange(api, master, api.packet(api.RELEASE, 3, **coordinate))
+        epoch_live(api, path, ticket['epoch'], 0)
+    status_snapshot(api, path, session)
+
+
 def ready(process):
     captured = bytearray()
     deadline = time.monotonic() + 10
@@ -458,7 +548,8 @@ def main():
     parser.add_argument('--profile', choices=('roundtrip', 'malformed', 'replay', 'isolation', 'capacity', 'recycle',
                                                'master-eof', 'master-death', 'master-frozen',
                                                'reservation-eof', 'reservation-death',
-                                               'reservation-coordinates'), required=True)
+                                               'reservation-coordinates', 'reservation-replay',
+                                               'reservation-collision', 'reservation-bounds'), required=True)
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('control_frame_api', args.tool)
     api = importlib.util.module_from_spec(spec)
@@ -483,7 +574,9 @@ def main():
                         'unexpected resident configuration')
                 profiles = {'roundtrip': roundtrip, 'malformed': malformed, 'replay': replay,
                             'isolation': isolation, 'capacity': capacity, 'recycle': recycle}
-                if args.profile.startswith('reservation-'):
+                if args.profile in ('reservation-replay', 'reservation-collision', 'reservation-bounds'):
+                    reservation_admission(api, path, record['session'], args.profile.removeprefix('reservation-'))
+                elif args.profile.startswith('reservation-'):
                     reservation_proof(api, path, record['session'], args.profile.removeprefix('reservation-'))
                 elif args.profile.startswith('master-'):
                     master_lifetime(api, path, record['session'], args.profile.removeprefix('master-'))

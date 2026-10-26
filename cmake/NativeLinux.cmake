@@ -256,13 +256,27 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
             --profile reservation-coordinates)
+    add_test(NAME native-fstack-session-control-reservation-replay
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-replay)
+    add_test(NAME native-fstack-session-control-reservation-collision
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-collision)
+    add_test(NAME native-fstack-session-control-reservation-bounds
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-control-frames.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile reservation-bounds)
     set_tests_properties(native-fstack-session-control-roundtrip native-fstack-session-control-malformed
         native-fstack-session-control-replay native-fstack-session-control-isolation
         native-fstack-session-control-capacity native-fstack-session-control-recycle
         native-fstack-session-control-master-eof native-fstack-session-control-master-death
         native-fstack-session-control-master-frozen
         native-fstack-session-control-reservation-eof native-fstack-session-control-reservation-death
-        native-fstack-session-control-reservation-coordinates PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk"
+        native-fstack-session-control-reservation-coordinates
+        native-fstack-session-control-reservation-replay native-fstack-session-control-reservation-collision
+        native-fstack-session-control-reservation-bounds PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME native-fstack-session-tc3-observer
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-tc3-observer.py"
