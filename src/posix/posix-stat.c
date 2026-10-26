@@ -7,7 +7,9 @@
 #include <unistd.h>
 #include <lkl.h>
 
-int fstat(int fd, struct stat *output)
+/* Keep the implementation separate from libc's nonnull declaration so the
+ * explicit EFAULT boundary also survives optimized builds. */
+static int descriptor_stat(int fd, struct stat *output)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fstat, fd, output);
@@ -15,6 +17,7 @@ int fstat(int fd, struct stat *output)
     long result = lkl_sys_fstat(entry->native, &native);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
+    if (!output) { errno = EFAULT; return -1; }
     memset(output, 0, sizeof(*output));
     output->st_dev = native.st_dev;
     output->st_ino = native.st_ino;
@@ -34,6 +37,7 @@ int fstat(int fd, struct stat *output)
     output->st_ctim.tv_nsec = native.st_ctime_nsec;
     return 0;
 }
+int fstat(int fd, struct stat *output) __attribute__((alias("descriptor_stat")));
 _Static_assert(sizeof(struct stat) == sizeof(struct stat64), "x86_64 stat64 ABI");
 int fstat64(int fd, struct stat64 *output) { return fstat(fd, (void *)output); }
 int __fxstat(int version, int fd, struct stat *output) { (void)version; return fstat(fd, output); }
