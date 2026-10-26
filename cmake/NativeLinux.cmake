@@ -39,7 +39,7 @@ foreach(artifact config library)
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c
-    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
+    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -1098,6 +1098,11 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(native-posix-tcp-interop native-posix-tcp-loss-reorder native-posix-tcp-zero-window native-posix-tcp-errors
         PROPERTIES TIMEOUT 90 LABELS native-tcp)
+    add_executable(ker-posix-host-usercopy-test tests/posix/host-usercopy.c src/posix/host-usercopy.c)
+    target_compile_options(ker-posix-host-usercopy-test PRIVATE -Wall -Wextra -Werror)
+    target_include_directories(ker-posix-host-usercopy-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include")
+    add_test(NAME native-fstack-host-usercopy COMMAND ker-posix-host-usercopy-test)
+    set_tests_properties(native-fstack-host-usercopy PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-posix-raw-icmp-test tests/posix/raw-icmp-contracts.c)
     target_compile_options(ker-posix-raw-icmp-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME host-native-raw-icmp-reference COMMAND "${Python3_EXECUTABLE}"
