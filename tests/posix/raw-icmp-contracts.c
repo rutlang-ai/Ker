@@ -4,7 +4,12 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <linux/icmp.h>
+#include <linux/filter.h>
+#include <linux/if_packet.h>
+#include <net/ethernet.h>
+#include <sys/ioctl.h>
 #include <netinet/icmp6.h>
 #include <poll.h>
 #include <stdint.h>
@@ -61,6 +66,50 @@ static void echo_contract(int family)
     errno = 0; CHECK(recv(fd, bytes, sizeof(bytes), MSG_DONTWAIT) == -1 && errno == EAGAIN);
     CHECK(close(fd) == 0);
 }
+static void header_inclusion_contract(void)
+{
+    int fd = socket(AF_INET, SOCK_RAW | SOCK_NONBLOCK, IPPROTO_RAW); CHECK(fd >= 0);
+    int included = 0; socklen_t size = sizeof(included);
+    CHECK(getsockopt(fd, IPPROTO_IP, IP_HDRINCL, &included, &size) == 0 && included == 1);
+    struct ifreq request = {0}; strcpy(request.ifr_name, "lo"); CHECK(ioctl(fd, SIOCGIFINDEX, &request) == 0);
+    int capture = socket(AF_PACKET, SOCK_DGRAM | SOCK_NONBLOCK, htons(ETHERTYPE_IP)); CHECK(capture >= 0);
+    int ignore = 1; CHECK(setsockopt(capture, SOL_PACKET, PACKET_IGNORE_OUTGOING, &ignore, sizeof(ignore)) == 0);
+    struct sockaddr_ll link = {.sll_family = AF_PACKET, .sll_protocol = htons(ETHERTYPE_IP), .sll_ifindex = request.ifr_ifindex};
+    CHECK(bind(capture, (void *)&link, sizeof(link)) == 0);
+    struct sock_filter instructions[] = {
+        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 9), BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, IPPROTO_ICMP, 0, 4),
+        BPF_STMT(BPF_LDX | BPF_B | BPF_MSH, 0), BPF_STMT(BPF_LD | BPF_B | BPF_IND, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP_ECHO, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, UINT32_MAX), BPF_STMT(BPF_RET | BPF_K, 0)};
+    struct sock_fprog program = {.len = sizeof(instructions) / sizeof(instructions[0]), .filter = instructions};
+    CHECK(setsockopt(capture, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0);
+    unsigned char packet[64] = {0x46, 0x2e, 0, 1, 0x43, 0x21, 0, 0, 31, IPPROTO_ICMP, 0x11, 0x11};
+    uint32_t loopback = htonl(INADDR_LOOPBACK); memcpy(packet + 16, &loopback, 4);
+    packet[20] = 1; packet[21] = 1; /* NOP, NOP, EOL, padding. */
+    packet[24] = ICMP_ECHO; packet[28] = 0x4b; packet[29] = 0x32; packet[31] = 74;
+    memcpy(packet + 32, "original-linux-header-inclusion", 31);
+    uint16_t sum = checksum(packet + 24, sizeof(packet) - 24); memcpy(packet + 26, &sum, 2);
+    struct sockaddr_in destination = {.sin_family = AF_INET, .sin_addr.s_addr = loopback};
+    errno = 0; CHECK(sendto(fd, packet, 19, 0, (void *)&destination, sizeof(destination)) == -1 && errno == EINVAL);
+    packet[0] = 0x44; errno = 0;
+    CHECK(sendto(fd, packet, sizeof(packet), 0, (void *)&destination, sizeof(destination)) == -1 && errno == EINVAL);
+    packet[0] = 0x4f; errno = 0;
+    CHECK(sendto(fd, packet, 24, 0, (void *)&destination, sizeof(destination)) == -1 && errno == EINVAL);
+    packet[0] = 0x46;
+    unsigned char *oversize = calloc(65536, 1); CHECK(oversize); memcpy(oversize, packet, sizeof(packet)); errno = 0;
+    CHECK(sendto(fd, oversize, 65536, 0, (void *)&destination, sizeof(destination)) == -1 && errno == EMSGSIZE); free(oversize);
+    unsigned char bytes[256]; errno = 0;
+    CHECK(recv(capture, bytes, sizeof(bytes), MSG_DONTWAIT) == -1 && errno == EAGAIN);
+    CHECK(sendto(fd, packet, sizeof(packet), 0, (void *)&destination, sizeof(destination)) == sizeof(packet));
+    ready(capture); ssize_t count = recv(capture, bytes, sizeof(bytes), 0); CHECK(count == sizeof(packet));
+    CHECK(bytes[0] == 0x46 && bytes[1] == packet[1] && bytes[8] == packet[8] && bytes[9] == IPPROTO_ICMP);
+    CHECK(bytes[2] == 0 && bytes[3] == sizeof(packet) && bytes[4] == packet[4] && bytes[5] == packet[5]);
+    CHECK(memcmp(bytes + 12, &loopback, 4) == 0 && memcmp(bytes + 16, &loopback, 4) == 0);
+    CHECK(checksum(bytes, 24) == 0 && memcmp(bytes + 20, packet + 20, sizeof(packet) - 20) == 0);
+    CHECK(close(capture) == 0 && close(fd) == 0);
+    /* Failed header sends must not poison later ordinary echo operation. */
+    echo_contract(AF_INET);
+}
 static void tcp_coexistence(void)
 {
     int listener = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(listener >= 0);
@@ -74,6 +123,6 @@ static void tcp_coexistence(void)
 }
 int main(void)
 {
-    echo_contract(AF_INET); echo_contract(AF_INET6); tcp_coexistence();
+    echo_contract(AF_INET); echo_contract(AF_INET6); header_inclusion_contract(); tcp_coexistence();
     puts("PASS: original Linux raw ICMPv4/ICMPv6 echo, filtering and descriptor lifetime"); return 0;
 }

@@ -1510,3 +1510,7 @@ __kernel_timespec ABI；纳秒、UTIME_NOW/OMIT、双 OMIT 不查路径的语义
 reply，验证 ICMP_FILTER/ICMP6_FILTER、IPv4 IP 头与校验和、IPv6 源地址、id/sequence/
 payload、非阻塞与复制 fd 生命周期，并保留普通 TCP 共存。宿主参考处于独立 user/net
 namespace；该合同不宣称外部 NIC 或 DPDK 线缆路径上的 raw ICMP 互通。
+
+raw IPv4 的 IP_HDRINCL 合同以原始 AF_PACKET 捕获内核发送结果，检查源地址、total length、
+IP checksum 的内核填充及显式 id/TOS/TTL/options/payload 保持；过短头、非法 IHL 和超长
+包必须拒绝且没有捕获副本，后续有效发送和普通 ICMP echo 仍成功。
