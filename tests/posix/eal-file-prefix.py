@@ -60,6 +60,7 @@ def main():
             + 'from pathlib import Path\nPath(' + repr(str(worker_pid)) + ').write_text(str(os.getpid()))\n'
             + 'worker = ' + repr(str(args.worker.resolve())) + '\nos.execv(worker, [worker, *sys.argv[1:]])\n')
         wrapper.chmod(0o700)
+        (root / 'ker-app').symlink_to(args.worker.resolve().parent / 'ker-app')
         for process_arg in ('--proc-type=bogus_proc_type', '--proc-type bogus_proc_type'):
             config, stats = root / 'invalid.ini', root / 'invalid.json'
             marker = root / 'invalid-app-entered'
