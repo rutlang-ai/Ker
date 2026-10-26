@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 214 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 215 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 131 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 130 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为214 scenario-adapted、18 partial、131 blocked，共149项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为215 scenario-adapted、18 partial、130 blocked，共148项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -1878,3 +1878,10 @@ runner要求十个唯一source marker。
 
 本批Debug/Release zc-validation均通过，Debug完整virtio/native-buffer回归通过；
 两种共享库导出writer_send，21项迁移审计及22项CI选择器测试通过。
+
+分段 owned writer 补齐 `test_ff_zc_mbuf_write_multi_segment`：真实原版 Linux
+VMA 节点分别保存128/50字节，暴露每段已写长度与总长度178。生产适配支持跨段
+追加、别名输入快照与失败原子性；构造回滚、部分销毁重试和shutdown回收均有测试。
+此项计为场景适配，不宣称FreeBSD mbuf字段/ABI、网络传输或全链路零拷贝等价。
+issue225的最后一个行为项已有映射，因此从未完成分组移除；issue232的两个头字段
+断言继续保留architecture-specific状态。

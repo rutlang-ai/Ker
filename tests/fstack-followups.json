@@ -297,36 +297,6 @@
       "issue": "https://github.com/rutlang-ai/Ker/issues/224"
     },
     {
-      "id": "zero-copy-ownership",
-      "title": "Define a Linux-native zero-copy send and ownership contract",
-      "disposition": "contract-review",
-      "reason": "The remaining source multi-segment case asserts per-node m_len/m_next and aggregate head-length mutation across an owned chain. Ker now qualifies raw original-Linux VMA allocation/bounded-write errors, single-VMA empty ownership and append/no-op cursor outcomes, and explicit nonempty owned native-send validation with actual Linux completion/cleanup evidence. Multi-VMA sendmsg proves scatter-gather delivery, not an owned per-segment write cursor or source chain mutation. Implement and qualify that remaining memory/ownership adapter without an algorithm mirror or a FreeBSD header ABI claim; layout-only header assertions remain separately excluded under issue232. End-to-end zero-copy is not an extra prerequisite for source paths that already copy, and ordinary Linux empty UDP semantics must remain intact.",
-      "evidence": [
-        "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
-        "src/runtime/tx-export.c",
-        "src/posix/packet-device.c",
-        "src/posix/native-buffer.c",
-        "src/posix/posix-socket.c",
-        "tests/posix/native-buffer-test.h",
-        "docs/native-buffers.md",
-        "tests/posix/zc-validation.py",
-        "docs/fstack-zc-contracts.md",
-        "include/ker/posix.h",
-        "tests/posix/native-buffer-write.c",
-        "tests/posix/native-buffer-writer.c"
-      ],
-      "acceptance": [
-        "Decide whether an actual Linux-backed zero-copy socket/export API belongs in Ker and define buffer lifetime/completion/error semantics.",
-        "Use real kernel/DPDK ownership adapters and test invalid lengths, zero sends, partial sends, multisegment lifetime, reclamation and failure paths.",
-        "Do not copy a FreeBSD algorithm mirror, rename a copying path zero-copy, or return success for unsupported operations.",
-        "Separate optional end-to-end payload-copy-free transport work from socket-stage case acceptance: upstream default ff_dpdk_if_send also copies and FF_USE_PAGE_ARRAY is optional. Any stronger transport claim needs actual release acknowledgements, backpressure, retained suffix, worker-failure and teardown proof; completion code zero alone is insufficient."
-      ],
-      "cases": [
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/225"
-    },
-    {
       "id": "configuration-contracts",
       "title": "Resolve remaining typed configuration and intentional schema differences",
       "disposition": "contract-review",

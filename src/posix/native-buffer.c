@@ -18,11 +18,15 @@ struct mapping {
     struct mapping *next;
     void *address;
     size_t size;
-    bool writer_owned;
+    bool writer_owned, writer_root, segmented, retiring;
+    struct mapping *segment_next;
     size_t capacity, written;
 };
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mapping *mappings;
+/* Destroyed writer records are kept off the live VMA registry until native
+ * shutdown so malloc cannot recycle a stale opaque handle during this runtime. */
+static struct mapping *retired_writers;
 static struct ker_native_buffer_counters totals;
 /* Caller holds lock and has validated the native lifetime and size. */
 static struct mapping *allocate(size_t size)
@@ -124,13 +128,11 @@ void *ker_posix_buffer_realloc(void *address, size_t size)
     pthread_mutex_unlock(&lock);
     return resized;
 }
-/* The registration itself is the opaque owner: one lifetime, one cleanup path.
- * Compare handle values before dereferencing so rejected/stale handles cannot
- * mutate another registration. Caller holds the registry lock. */
+/* Compare opaque handle values before dereferencing. Caller holds lock. */
 static struct mapping *writer_mapping(struct ker_posix_buffer_writer *writer)
 {
     for (struct mapping *item = mappings; item; item = item->next)
-        if ((void *)item == (void *)writer && item->writer_owned) return item;
+        if ((void *)item == (void *)writer && item->writer_root) return item;
     return NULL;
 }
 struct ker_posix_buffer_writer *ker_posix_buffer_writer_create(size_t capacity)
@@ -139,9 +141,63 @@ struct ker_posix_buffer_writer *ker_posix_buffer_writer_create(size_t capacity)
     pthread_mutex_lock(&lock);
     if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
     struct mapping *item = allocate(capacity ? capacity : 1);
-    if (item) { item->writer_owned = true; item->capacity = capacity; }
+    if (item) { item->writer_owned = true; item->writer_root = true; item->capacity = capacity; }
     pthread_mutex_unlock(&lock);
     return (struct ker_posix_buffer_writer *)item;
+}
+/* Each node remains a separate registered original-Linux VMA. Failed creation
+ * leaves only an unmappable rollback failure registered for shutdown cleanup. */
+struct ker_posix_buffer_writer *ker_posix_buffer_writer_create_segmented(size_t capacity, size_t segment_capacity)
+{
+    if (!capacity || capacity > INT_MAX || !segment_capacity || segment_capacity > INT_MAX ||
+        (capacity - 1) / segment_capacity >= IOV_MAX) { errno = EINVAL; return NULL; }
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
+    struct mapping *head = NULL, *tail = NULL;
+    size_t remaining = capacity;
+    while (remaining) {
+        size_t size = remaining < segment_capacity ? remaining : segment_capacity;
+        struct mapping *node = allocate(size);
+        if (!node) {
+            int saved = errno;
+            while (head) {
+                struct mapping *next = head->segment_next;
+                if (!release(head, false)) {
+                    struct mapping **slot = &mappings;
+                    while (*slot != head) slot = &(*slot)->next;
+                    *slot = head->next; free(head);
+                }
+                head = next;
+            }
+            pthread_mutex_unlock(&lock); errno = saved; return NULL;
+        }
+        node->writer_owned = true;
+        if (tail) tail->segment_next = node;
+        else head = node;
+        tail = node; remaining -= size;
+    }
+    head->writer_root = true; head->segmented = true; head->capacity = capacity;
+    pthread_mutex_unlock(&lock);
+    return (struct ker_posix_buffer_writer *)head;
+}
+const void *ker_posix_buffer_writer_segment(struct ker_posix_buffer_writer *writer, size_t index,
+    size_t *length, size_t *capacity, size_t *total_length)
+{
+    pthread_mutex_lock(&lock);
+    if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
+    struct mapping *head = writer_mapping(writer), *node = head;
+    if (head && head->retiring) { pthread_mutex_unlock(&lock); errno = EBUSY; return NULL; }
+    size_t offset = 0;
+    while (node && index) { offset += node->size; node = node->segment_next; index--; }
+    if (!node) { pthread_mutex_unlock(&lock); errno = EINVAL; return NULL; }
+    size_t used = head->written > offset ? head->written - offset : 0;
+    if (used > node->size) used = node->size;
+    if (length) *length = used;
+    if (capacity) *capacity = head->segmented ? node->size : head->capacity;
+    if (total_length) *total_length = head->written;
+    const void *data = node->address;
+    pthread_mutex_unlock(&lock);
+    return data;
 }
 int ker_posix_buffer_writer_append(struct ker_posix_buffer_writer *writer, const void *data, size_t length)
 {
@@ -149,10 +205,26 @@ int ker_posix_buffer_writer_append(struct ker_posix_buffer_writer *writer, const
     pthread_mutex_lock(&lock);
     if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return -1; }
     struct mapping *item = writer_mapping(writer);
+    if (item && item->retiring) { pthread_mutex_unlock(&lock); errno = EBUSY; return -1; }
     if (!item || length > item->capacity - item->written) {
         pthread_mutex_unlock(&lock); errno = EINVAL; return -1;
     }
-    if (length) memmove((unsigned char *)item->address + item->written, data, length);
+    if (length && item->segmented) {
+        /* Snapshot first: source may alias any borrowed segment. Allocation
+         * failure must leave all bytes and the aggregate cursor unchanged. */
+        unsigned char *copy = malloc(length);
+        if (!copy) { pthread_mutex_unlock(&lock); return -1; }
+        memcpy(copy, data, length);
+        size_t skip = item->written, copied = 0;
+        for (struct mapping *node = item; node && copied < length; node = node->segment_next) {
+            if (skip >= node->size) { skip -= node->size; continue; }
+            size_t count = node->size - skip;
+            if (count > length - copied) count = length - copied;
+            memcpy((unsigned char *)node->address + skip, copy + copied, count);
+            copied += count; skip = 0;
+        }
+        free(copy);
+    } else if (length) memmove((unsigned char *)item->address + item->written, data, length);
     item->written += length;
     pthread_mutex_unlock(&lock);
     return (int)length;
@@ -164,6 +236,10 @@ const void *ker_posix_buffer_writer_view(struct ker_posix_buffer_writer *writer,
     if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return NULL; }
     struct mapping *item = writer_mapping(writer);
     if (!item) { pthread_mutex_unlock(&lock); errno = EINVAL; return NULL; }
+    if (item->retiring || item->segmented) {
+        int error = item->retiring ? EBUSY : EOPNOTSUPP;
+        pthread_mutex_unlock(&lock); errno = error; return NULL;
+    }
     if (length) *length = item->written;
     if (capacity) *capacity = item->capacity;
     const void *data = item->address;
@@ -175,12 +251,31 @@ int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writer)
     if (!writer) { errno = EINVAL; return -1; }
     pthread_mutex_lock(&lock);
     if (!ker_native_ready()) { pthread_mutex_unlock(&lock); errno = ENETDOWN; return -1; }
-    struct mapping **slot = &mappings;
-    while (*slot && ((void *)*slot != (void *)writer || !(*slot)->writer_owned)) slot = &(*slot)->next;
-    if (!*slot) { pthread_mutex_unlock(&lock); errno = EINVAL; return -1; }
-    struct mapping *item = *slot;
-    long result = release(item, false);
-    if (!result) { *slot = item->next; free(item); }
+    struct mapping *item = writer_mapping(writer);
+    if (!item) { pthread_mutex_unlock(&lock); errno = EINVAL; return -1; }
+    long result = 0;
+    /* Release children before the root so a failed partial teardown retains a
+     * valid retry handle. Once any child is gone, only destroy is permitted. */
+    while (item->segment_next) {
+        struct mapping *node = item->segment_next;
+        result = release(node, false);
+        if (result) break;
+        item->segment_next = node->segment_next;
+        item->retiring = true;
+        struct mapping **slot = &mappings;
+        while (*slot != node) slot = &(*slot)->next;
+        *slot = node->next;
+        node->next = retired_writers; retired_writers = node;
+    }
+    if (!result) {
+        result = release(item, false);
+        if (!result) {
+            struct mapping **slot = &mappings;
+            while (*slot != item) slot = &(*slot)->next;
+            *slot = item->next;
+            item->next = retired_writers; retired_writers = item;
+        }
+    }
     pthread_mutex_unlock(&lock);
     return (int)ker_native_result(result);
 }
@@ -282,6 +377,11 @@ int ker_native_buffers_close_all(struct ker_native_buffer_counters *counters)
         long result = release(item, true);
         if (result && !error) error = (int)result;
         mappings = item->next; free(item);
+    }
+    while (retired_writers) {
+        struct mapping *item = retired_writers;
+        retired_writers = item->next;
+        free(item);
     }
     pthread_mutex_lock(&guards_lock);
     for (struct ker_native_option_guard *guard = guards; guard; guard = guard->next) totals.option_guards_live++;

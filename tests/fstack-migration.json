@@ -850,7 +850,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker’s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker’s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
+      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker\u2019s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker\u2019s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -4881,9 +4881,14 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source asserts per-mbuf m_len, m_next and head-length mutation. Actual multi-VMA Linux sendmsg proves scatter-gather delivery/completions, not a source owned-chain write cursor. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Production owned segmented writer spans two distinct registered original-Linux VMAs. One178-byte append fills first128 and second50, with exact bytes, per-node used lengths and aggregate length178. Additional cross-boundary/alias appends, rejection atomicity, stale handles, failure rollback and retryable teardown are qualified. This adapts the owned per-segment write contract, not FreeBSD mbuf fields or end-to-end zero-copy.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-segments-layout",
+          "provenance_case": "native-fstack-buffer-segments"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",

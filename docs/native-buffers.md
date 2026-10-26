@@ -181,8 +181,10 @@ shutdown回收；没有网络或FreeBSD隐式cursor/mbuf ABI证明。
 create容量为0..INT_MAX；零容量拥有最小一字节backing，逻辑容量和已写长度仍为0，
 不改变raw buffer_alloc(0)的EINVAL。append成功后才增加逻辑长度，溢出/NULL拒绝
 保留游标和字节，合法零长度不改变状态。view返回借用的只读指针及可选长度/容量；
-失败不改变输出。owner就是登记记录，destroy成功时一起释放；unmap失败保留
-owner供重试，runtime shutdown回收未销毁owner。
+失败不改变输出。owner就是登记记录。destroy成功时立即释放VMA，但为防止分配器
+复用登记地址后让stale handle指向新owner，会把已销毁登记元数据保留到native
+shutdown；这是有意的per-runtime内存开销。unmap失败保留owner供重试，runtime
+shutdown也回收未销毁owner。
 
 writer数据的raw free/write和非零realloc返回EBUSY；view只能按已写长度发送，
 修改/销毁前必须等待全部zerocopy completion并同步owner访问/交接。它不提供
@@ -207,3 +209,19 @@ imported native socket，host fd返回EBADF、native非socket返回ENOTSOCK；�
 返回实际接受字节数或原版Linux错误，flags不改写，短发送由调用者推进offset。
 成功和失败均保留writer/cursor，调用者必须等待completion后才append/destroy。
 普通send的零字节UDP行为不变；这里是显式owned-payload入口的非空合同。
+
+`ker_posix_buffer_writer_create_segmented(capacity, segment_capacity)` 提供多VMA
+owned writer，两个参数必须为1..INT_MAX且节点数不超过IOV_MAX。append按顺序填充
+各段，单次输入先快照以保留跨段别名语义；分配失败、越界和NULL不改变字节或总游标。
+`ker_posix_buffer_writer_segment`按索引返回借用视图、每段已写长度/容量和总已写长度。
+单VMA view/send对分段owner返回EOPNOTSUPP，调用者可以用这些段构建native sendmsg。
+这些视图不能跨未同步append/destroy/shutdown或尚未完成的zerocopy引用使用。
+
+销毁先释放子段再释放owner段。首个unmap就失败时仍允许访问；部分释放后若失败，
+所有视图/append返回EBUSY，destroy重试仅处理剩余段。所有登记描述符身份保留到
+shutdown，避免旧handle冒充新owner；VMA本身成功unmap后立即释放。构造失败的
+rollback unmap若失败，登记仍保留给shutdown回收，不伪造成功。
+
+`native-fstack-buffer-segments-layout/failures`使用真实LinuxVMA验证128+50字节
+源布局、跨段追加、输入别名、错误原子性、旧handle、部分销毁及精确回收；失败探针
+只替换指定malloc/mmap/munmap。此证据不包括socket/PMD传输和全链路无复制。
