@@ -697,6 +697,56 @@ static void native_stdio_streams(void)
     CHECK(fileno(host) >= 0 && fclose(host) == 0); finish(p);
 }
 
+enum {stdio_writers = 4, stdio_rounds = 24};
+struct stdio_writer { FILE *stream; unsigned int identity; };
+static void *stdio_writer_thread(void *opaque)
+{
+    struct stdio_writer *writer = opaque;
+    for (unsigned int sequence = 0; sequence < stdio_rounds; ++sequence) {
+        flockfile(writer->stream);
+        CHECK(fputs_unlocked("thread=", writer->stream) >= 0);
+        CHECK(fprintf(writer->stream, "%u seq=%u\n", writer->identity, sequence) > 0);
+        funlockfile(writer->stream);
+    }
+    return NULL;
+}
+static void *stdio_reader_thread(void *opaque)
+{
+    FILE *stream = opaque; unsigned char seen[stdio_writers][stdio_rounds] = {{0}};
+    char line[64];
+    for (unsigned int count = 0; count < stdio_writers * stdio_rounds; ++count) {
+        CHECK(fgets(line, sizeof(line), stream));
+        unsigned int identity, sequence; char newline;
+        CHECK(sscanf(line, "thread=%u seq=%u%c", &identity, &sequence, &newline) == 3 && newline == '\n');
+        CHECK(identity < stdio_writers && sequence < stdio_rounds && !seen[identity][sequence]);
+        seen[identity][sequence] = 1;
+    }
+    CHECK(fgetc(stream) == EOF && feof(stream) && !ferror(stream));
+    for (unsigned int i = 0; i < stdio_writers; ++i)
+        for (unsigned int j = 0; j < stdio_rounds; ++j) CHECK(seen[i][j]);
+    return NULL;
+}
+static void shared_stdio_thread_handoff(void)
+{
+    struct pair p = connected(); int output_fd = dup(p.client), input_fd = dup(p.server);
+    CHECK(output_fd >= 0 && input_fd >= 0);
+    FILE *output = fdopen(output_fd, "w"), *input = fdopen(input_fd, "r"); CHECK(output && input);
+    char buffer[512]; CHECK(setvbuf(output, buffer, _IOFBF, sizeof(buffer)) == 0);
+    pthread_t writers[stdio_writers], reader; struct stdio_writer arguments[stdio_writers];
+    CHECK(pthread_create(&reader, NULL, stdio_reader_thread, input) == 0);
+    for (unsigned int i = 0; i < stdio_writers; ++i) {
+        arguments[i] = (struct stdio_writer){output, i};
+        CHECK(pthread_create(&writers[i], NULL, stdio_writer_thread, &arguments[i]) == 0);
+    }
+    for (unsigned int i = 0; i < stdio_writers; ++i) CHECK(pthread_join(writers[i], NULL) == 0);
+    CHECK(fileno(output) == output_fd && fflush(output) == 0 && fclose(output) == 0);
+    CHECK(shutdown(p.client, SHUT_WR) == 0);
+    CHECK(pthread_join(reader, NULL) == 0);
+    CHECK(fileno(input) == input_fd && fclose(input) == 0);
+    ERROR(fcntl(output_fd, F_GETFD), EBADF); ERROR(fcntl(input_fd, F_GETFD), EBADF);
+    finish(p);
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -2375,6 +2425,7 @@ int main(void)
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
         {"native-fdopen-buffering-input-fileno-and-close-ownership", native_stdio_streams},
+        {"shared-stdio-record-locking-and-thread-handoff", shared_stdio_thread_handoff},
         {"original-UDP-reuseport-classic-BPF-steering-replacement-and-compaction", reuseport_classic_bpf_steering},
         {"post-initialization-process-helper-boundaries", process_helper_boundary},
         {"legacy-stat-ABI-version-validation-and-precedence", legacy_stat_versions},
