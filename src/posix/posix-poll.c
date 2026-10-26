@@ -82,6 +82,7 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
         }
     }
     int result = 0, saved = 0;
+    bool scanned = false;
     int64_t deadline = timeout < 0 ? INT64_MAX : deadline_ns(timeout);
     for (;;) {
         long n = has_native ? lkl_sys_poll(native, count, 0) : 0;
@@ -104,19 +105,25 @@ static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigs
             break;
         }
         int h = host_poll(host, count, wait, mask);
+        int host_error = h < 0 ? errno : 0;
         for (nfds_t i = 0; i < count; ++i) {
             if (host_snapshot[i] >= 0) {
                 ker_fd_host_put(host_snapshot[i]); host_snapshot[i] = -2;
             }
         }
-        if (h < 0) { result = -1; saved = errno; break; }
+        if (h < 0 && host_error != EINTR) { result = -1; saved = host_error; break; }
+        saved = host_error;
         for (nfds_t i = 0; i < count; ++i) {
             snapshot[i].revents = host[i].revents | native[i].revents;
             result += snapshot[i].revents != 0;
         }
+        scanned = true;
+        /* Original poll gives discovered readiness precedence over a pending
+         * signal and copies revents even when interrupted without readiness. */
+        if (h < 0) { if (!result) result = -1; break; }
         if (result || timeout == 0 || (timeout >= 0 && now_ns() >= deadline)) break;
     }
-    if (result >= 0) for (nfds_t i = 0; i < count; ++i) {
+    if (result >= 0 || (scanned && saved == EINTR)) for (nfds_t i = 0; i < count; ++i) {
         void *output = (void *)((uintptr_t)fds + i * sizeof(*fds) + offsetof(struct pollfd, revents));
         if (ker_host_usercopy(output, &snapshot[i].revents, sizeof(snapshot[i].revents), 1)) {
             result = -1; saved = EFAULT; break;

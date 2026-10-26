@@ -1161,6 +1161,7 @@ if(BUILD_TESTING)
     set_tests_properties(native-fstack-fortified-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-readiness-test tests/posix/fstack-readiness.c)
     target_compile_options(ker-posix-fstack-readiness-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-posix-fstack-readiness-test PRIVATE Threads::Threads)
     add_test(NAME host-fstack-readiness-reference COMMAND ker-posix-fstack-readiness-test)
     set_tests_properties(host-fstack-readiness-reference PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-readiness COMMAND ${ker_native_test_command}
