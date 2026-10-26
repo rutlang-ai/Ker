@@ -193,6 +193,19 @@ class LauncherBoundaryTests(unittest.TestCase):
         self.worker.write_text(original)
         self.assertEqual(self.run_launcher(0, native_done=True), 0)
 
+    def test_duplicate_done_cannot_hide_outstanding_ownership(self):
+        line = "print('KER_IO_DONE {\"outstanding\": 0}', flush=True)"
+        for first, last in ((0, 0), (1, 0), (0, 1)):
+            records = ['KER_IO_DONE '+json.dumps({'outstanding': value}) for value in (first, last)]
+            replacement = '; '.join('print('+repr(record)+', flush=True)' for record in records)
+            self.worker.write_text(fixtures.WORKER.replace(line, replacement))
+            with self.subTest(first=first, last=last):
+                result, message = self.run_launcher(0, native_done=True, capture_stderr=True)
+                self.assertEqual(result, 125)
+                self.assertIn('duplicate', message)
+        self.worker.write_text(fixtures.WORKER)
+        self.assertEqual(self.run_launcher(0, native_done=True), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1040,6 +1040,7 @@ def normal_native_shutdown_markers(startup_status):
 
 def collect_worker(process, stats):
     failed = timed_out = False
+    completions = int(stats is not None)
     try:
         output, _ = process.communicate(timeout=10)
     except subprocess.TimeoutExpired:
@@ -1047,6 +1048,10 @@ def collect_worker(process, stats):
         print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
     for line in output.splitlines():
         if line.startswith('KER_IO_DONE '):
+            completions += 1
+            if completions > 1:
+                print('ker-run: duplicate DPDK worker completion record', file=sys.stderr)
+                failed = True
             try:
                 stats = worker_done_record(line)
             except (ValueError, RuntimeError) as error:
