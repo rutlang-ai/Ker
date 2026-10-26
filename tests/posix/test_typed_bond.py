@@ -1,5 +1,6 @@
 """Source-derived bond configuration and preflight rejection contracts."""
 import contextlib
+import configparser
 import importlib.util
 import io
 import os
@@ -36,6 +37,26 @@ class BondTests(unittest.TestCase):
             socket_id=0, mac='aa:bb:cc:dd:ee:ff', xmit_policy='l34', lsc_poll_period_ms=100, up_delay=100, down_delay=200),))
         self.assertEqual(args.eal_args[-1], '--vdev=net_bonding0,mode=4,member=0,member=1,primary=0,socket_id=0,mac=aa:bb:cc:dd:ee:ff,xmit_policy=l34')
         self.assertNotIn('up_delay', args.eal_args[-1])  # Applied/read back via original PMD APIs.
+
+    def test_extra_keys_fixture_timing_fields_survive_typed_configuration(self):
+        values = configparser.ConfigParser(interpolation=None)
+        fixture = ROOT / 'tests/upstream/fstack/tests/unit/fixtures/valid_dpdk_extra_keys.ini'
+        with fixture.open() as stream:
+            values.read_file(stream)
+        expected = {key: values.getint('bond0', key)
+                    for key in ('lsc_poll_period_ms', 'up_delay', 'down_delay')}
+        self.assertEqual(expected, dict(lsc_poll_period_ms=100, up_delay=200, down_delay=300))
+        fields = FIELDS
+        for key, value in expected.items():
+            current = 100 if key != 'down_delay' else 200
+            fields = fields.replace(f'{key}={current}\n', f'{key}={value}\n')
+        args = self.parse(BASE + '[bond0]\n' + fields)
+        for key, value in expected.items():
+            self.assertEqual(args.bonds[0][key], value)
+            self.assertNotIn(key, args.eal_args[-1])  # Original PMD APIs apply timing fields.
+        # A later unrelated parse retains the established single-bond fixture values.
+        ordinary = self.parse(BASE + '[bond0]\n' + FIELDS)
+        self.assertEqual((ordinary.bonds[0]['up_delay'], ordinary.bonds[0]['down_delay']), (100, 200))
 
     def test_exact_missing_count_and_bad_section_fixtures(self):
         for name in ('invalid_bond_no_nb_bond.ini', 'invalid_bond_bad_section.ini'):

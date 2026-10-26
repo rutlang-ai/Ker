@@ -1412,6 +1412,13 @@ if(BUILD_TESTING)
                 --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
                 --pmd-root "${ker_vdev_library_root}")
         set_tests_properties(native-fstack-typed-bond PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+        add_test(NAME native-fstack-typed-bond-source-timings
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker-bond>" --app "$<TARGET_FILE:ker-icmp-mtu-test>"
+                --pmd-root "${ker_vdev_library_root}" --source-timings)
+        set_tests_properties(native-fstack-typed-bond-source-timings PROPERTIES TIMEOUT 120
+            SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
         add_test(NAME native-fstack-typed-bond-large-member
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/typed-bond.py"
                 --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

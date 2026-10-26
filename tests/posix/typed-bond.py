@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Original DPDK 802.3ad bond against an independent host Linux LACP bond."""
 import argparse
+import configparser
 import importlib.util
 import json
 import os
@@ -38,6 +39,16 @@ def lacp_ready(member_count=2):
     raise RuntimeError('LACP did not reach collecting/distributing on both partners: ' + str(observed))
 
 
+def timing_values(source=False):
+    if not source:
+        return dict(lsc_poll_period_ms=100, up_delay=100, down_delay=200)
+    fixture = Path(__file__).resolve().parents[1] / 'upstream/fstack/tests/unit/fixtures/valid_dpdk_extra_keys.ini'
+    values = configparser.ConfigParser(interpolation=None)
+    with fixture.open() as stream:
+        values.read_file(stream)
+    return {key: values.getint('bond0', key) for key in ('lsc_poll_period_ms', 'up_delay', 'down_delay')}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
@@ -45,8 +56,11 @@ def main():
     parser.add_argument('--bridge', type=Path)
     parser.add_argument('--large-virtio-member', action='store_true')
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--source-timings', action='store_true',
+                        help='use the pinned dpdk_extra_keys bond timing fields')
     parser.add_argument('--queues', type=int, choices=(1, 3), default=1)
     args = parser.parse_args()
+    timings = timing_values(args.source_timings)
     modules = []
     for name in ('tap', 'bond'):
         found = list(args.pmd_root.glob('dpdk/pmds-*/librte_net_' + name + '.so'))
@@ -59,6 +73,8 @@ def main():
         argv = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside', '--queues', str(args.queues)]
         for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
             argv += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        if args.source_timings:
+            argv += ['--source-timings']
         if args.bridge:
             argv += ['--bridge', str(args.bridge.resolve())]
         if args.large_virtio_member:
@@ -128,7 +144,7 @@ def main():
             f'slave={",".join(str(index) for index in range(member_count))}\n'
             f'primary={2 if args.large_virtio_member else 0}\nsocket_id=0\nmac=AA:BB:CC:DD:EE:FF\n'
             + ('' if args.large_virtio_member else 'xmit_policy=l34\n')
-            + 'lsc_poll_period_ms=100\nup_delay=100\ndown_delay=200\n')
+            + ''.join(f'{key}={value}\n' for key, value in timings.items()))
         config.write_text(config_text)
         with (root / 'native.log').open('w+') as log:
             worker_command = [sys.executable, str(args.launcher), '--config', str(config),
@@ -174,7 +190,8 @@ def main():
                         and record['io']['mac'] == 'aa:bb:cc:dd:ee:ff' and record['io']['socket_id'] == 0, 'wrong actual bond/MAC')
                 expected = dict(mode=1 if args.large_virtio_member else 4,
                     primary=2 if args.large_virtio_member else 0,
-                    poll_ms=100, up_ms=100, down_ms=200, members=member_count)
+                    poll_ms=timings['lsc_poll_period_ms'], up_ms=timings['up_delay'],
+                    down_ms=timings['down_delay'], members=member_count)
                 if not args.large_virtio_member:
                     expected['xmit_policy'] = 2
                 require(all(record['io']['bond'][key] == value for key, value in expected.items()),

@@ -1753,7 +1753,7 @@
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Typed file-prefix and base-virtual-address configuration have real original-EAL runtime evidence: concurrent namespace/primary locks and actual mapped-address regions, with independent host TCP/UDP.",
+      "reason": "Typed file-prefix and base-virtual-address configuration have real original-EAL runtime evidence: concurrent namespace/primary locks and actual mapped-address regions, with independent host TCP/UDP. The exact source bond timing tuple poll100/up200/down300 now has original-PMD readback, independent Linux LACP, dual-stack ICMP/member-path-loss and zero-buffer runtime evidence.",
       "ker_tests": [
         {
           "ctest": "native-fstack-eal-file-prefix",
@@ -1762,9 +1762,17 @@
         {
           "ctest": "native-fstack-eal-base-virtaddr",
           "provenance_case": "native-fstack-eal-base-virtaddr"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-source-timings",
+          "provenance_case": "native-fstack-bond-source-timings"
+        },
+        {
+          "ctest": "native-fstack-typed-bond-config",
+          "provenance_case": "native-fstack-bond-source-timings"
         }
       ],
-      "remaining": "The complete source fixture is not an exact Ker runtime configuration: `[dpdk] allow` and numeric `port_list` are not represented in the typed schema, and its `iface=net_pcap0` plus Unix-socket `path=/tmp/x` tuple is rejected by the pinned DPDK virtio-user PMD. Ker already validates and forwards vdev `cq` to the original DPDK argument and applies bond poll/up/down timing through original PMD setter/getter APIs; the qualified bond runtime profile read back down_delay=200, while the source fixture sets 300 and that exact value is not separately runtime-verified. The source F-Stack global config layout is not reproduced. Ker uses the literal file prefix rather than adding container-, and the base-virtual-address option remains an original-EAL hint: exact placement, collision fallback, shared hugepage mapping and secondary use are not claimed."
+      "remaining": "The complete source fixture is not an exact Ker runtime configuration: `[dpdk] allow` and numeric `port_list` are not represented in the typed schema, and its `iface=net_pcap0` plus Unix-socket `path=/tmp/x` tuple is rejected by the pinned DPDK virtio-user PMD. Ker already validates and forwards vdev `cq` to the original DPDK argument and applies bond poll/up/down timing through original PMD setter/getter APIs; both the established poll100/up100/down200 and the exact source poll100/up200/down300 tuples are now read back in real LACP/dual-stack ICMP runs with member-path loss and complete buffer cleanup; precise millisecond failover timing and physical NIC behavior are not qualified. The source F-Stack global config layout is not reproduced. Ker uses the literal file prefix rather than adding container-, and the base-virtual-address option remains an original-EAL hint: exact placement, collision fallback, shared hugepage mapping and secondary use are not claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
