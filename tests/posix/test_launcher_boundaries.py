@@ -252,6 +252,29 @@ class LauncherBoundaryTests(unittest.TestCase):
         self.worker.write_text(fixtures.WORKER)
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
+    def test_auxiliary_cleanup_failure_does_not_skip_a_peer(self):
+        self.config.write_text(self.config.read_text() +
+            '[interface.other]\naddress=198.20.0.2/24\nport=aux1\neal=--no-pci\n')
+        finish = launcher.AdditionalWorker.finish
+        finished = []
+        def complete(extra):
+            result = finish(extra)
+            finished.append(extra.process)
+            if extra.interface['name'] == 'aux':
+                raise OSError('injected auxiliary cleanup failure')
+            return result
+        with mock.patch.object(launcher.AdditionalWorker, 'finish', complete):
+            result, message = self.run_launcher(0, native_done=True,
+                config=self.config, capture_stderr=True)
+        self.assertEqual(result, 125)
+        self.assertIn('additional worker cleanup', message)
+        self.assertEqual(len(finished), 2)
+        for process in finished:
+            self.assertIsNotNone(process.returncode)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(process.pid, os.WNOHANG)
+        self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
