@@ -747,6 +747,41 @@ static void shared_stdio_thread_handoff(void)
     finish(p);
 }
 
+static void stdio_errors_and_close(void)
+{
+    struct sigaction ignore = {.sa_handler = SIG_IGN}, original;
+    sigemptyset(&ignore.sa_mask); CHECK(sigaction(SIGPIPE, &ignore, &original) == 0);
+    struct pair p = connected(); int input_fd = dup(p.server); CHECK(input_fd >= 0);
+    CHECK(fcntl(input_fd, F_SETFL, fcntl(input_fd, F_GETFL) | O_NONBLOCK) == 0);
+    FILE *input = fdopen(input_fd, "r"); CHECK(input);
+    errno = 0; CHECK(fgetc(input) == EOF && errno == EAGAIN && ferror(input) && !feof(input));
+    CHECK(send(p.client, "n", 1, MSG_NOSIGNAL) == 1); ready(p.server);
+    clearerr(input); CHECK(!ferror(input) && !feof(input) && fgetc(input) == 'n');
+    CHECK(shutdown(p.client, SHUT_WR) == 0); ready(p.server);
+    CHECK(fgetc(input) == EOF && feof(input) && !ferror(input));
+    CHECK(ungetc('z', input) == 'z' && !feof(input) && fgetc(input) == 'z');
+    CHECK(fgetc(input) == EOF && feof(input)); clearerr(input); CHECK(!feof(input) && !ferror(input));
+    CHECK(fclose(input) == 0); finish(p);
+
+    p = connected(); int output_fd = dup(p.client); CHECK(output_fd >= 0);
+    FILE *output = fdopen(output_fd, "w"); CHECK(output);
+    char buffer[512]; CHECK(setvbuf(output, buffer, _IOFBF, sizeof(buffer)) == 0);
+    CHECK(shutdown(p.client, SHUT_WR) == 0);
+    CHECK(fputs("late", output) >= 0 && !ferror(output));
+    ERROR(fflush(output), EPIPE); CHECK(ferror(output)); clearerr(output); CHECK(!ferror(output));
+    CHECK(fclose(output) == 0); ERROR(fcntl(output_fd, F_GETFD), EBADF); finish(p);
+
+    p = connected(); output_fd = dup(p.client); CHECK(output_fd >= 0);
+    output = fdopen(output_fd, "w"); CHECK(output);
+    CHECK(setvbuf(output, buffer, _IOFBF, sizeof(buffer)) == 0);
+    CHECK(shutdown(p.client, SHUT_WR) == 0 && fputs("close-error", output) >= 0);
+    ERROR(fclose(output), EPIPE); ERROR(fcntl(output_fd, F_GETFD), EBADF);
+    CHECK(fcntl(p.client, F_GETFD) >= 0); finish(p);
+    CHECK(sigaction(SIGPIPE, &original, NULL) == 0);
+    p = connected(); CHECK(send(p.client, "recover", 7, MSG_NOSIGNAL) == 7);
+    char bytes[7]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 7 && !memcmp(bytes, "recover", 7)); finish(p);
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -2426,6 +2461,7 @@ int main(void)
         {"native-user-memory-faults-and-recovery", user_memory_faults},
         {"native-fdopen-buffering-input-fileno-and-close-ownership", native_stdio_streams},
         {"shared-stdio-record-locking-and-thread-handoff", shared_stdio_thread_handoff},
+        {"stdio-EAGAIN-clearerr-EOF-EPIPE-and-close-failure", stdio_errors_and_close},
         {"original-UDP-reuseport-classic-BPF-steering-replacement-and-compaction", reuseport_classic_bpf_steering},
         {"post-initialization-process-helper-boundaries", process_helper_boundary},
         {"legacy-stat-ABI-version-validation-and-precedence", legacy_stat_versions},
