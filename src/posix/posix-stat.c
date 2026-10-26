@@ -80,9 +80,12 @@ int fstatfs64(int fd, struct statfs64 *output) __attribute__((alias("descriptor_
  * empty-path descriptor operation must respect imported fd ownership. */
 static int descriptor_statat(int fd, const char *path, struct stat *output, int flags)
 {
-    if (path && path[0] == '/') return syscall(SYS_newfstatat, fd, path, output, flags);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_newfstatat, fd, path, output, flags);
+    if (path && path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_newfstatat, fd, path, output, flags);
+    }
     if (!path && flags != AT_EMPTY_PATH) {
         ker_fd_put(entry); errno = EFAULT; return -1;
     }

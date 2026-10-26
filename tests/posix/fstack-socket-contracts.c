@@ -15,6 +15,8 @@
 #include <stdatomic.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <linux/sockios.h>
 #include <sys/syscall.h>
 #include <stdlib.h>
 #include <string.h>
@@ -209,6 +211,22 @@ static void empty_path_stat(void)
     CHECK(result.st_ino == expected.st_ino && write(alias, "ok", 2) == 2);
     char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
+}
+static void unreadable_path_statat(void)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    void *unreadable = mmap(NULL, (size_t)page_size, PROT_NONE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(unreadable != MAP_FAILED);
+    int host = open("/dev/null", O_RDONLY | O_CLOEXEC); CHECK(host >= 0);
+    struct stat result;
+    int (*stat_at)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat");
+    CHECK(stat_at != NULL);
+    ERROR(fstatat(AT_FDCWD, unreadable, &result, 0), EFAULT);
+    ERROR(stat_at(AT_FDCWD, unreadable, &result, 0), EFAULT);
+    ERROR(fstatat(host, unreadable, &result, 0), EFAULT);
+    ERROR(stat_at(host, unreadable, &result, 0), EFAULT);
+    CHECK(close(host) == 0 && munmap(unreadable, (size_t)page_size) == 0);
 }
 static void duplicate_identity(void)
 {
@@ -1335,6 +1353,7 @@ int main(void)
         {"bind-collision-preserves-listener", bind_collision},
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
         {"empty-path-stat-owner-routing", empty_path_stat},
+        {"unreadable-host-path-statat", unreadable_path_statat},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
