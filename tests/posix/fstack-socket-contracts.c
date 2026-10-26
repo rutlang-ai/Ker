@@ -22,6 +22,7 @@
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <linux/sockios.h>
+#include <linux/filter.h>
 #include <sys/syscall.h>
 #include <stdlib.h>
 #include <string.h>
@@ -512,6 +513,46 @@ static void duplicate_file_queries(void)
     CHECK(close(ep) == 0 && close(copy) == 0);
     CHECK(send(p.client, "q", 1, MSG_NOSIGNAL) == 1);
     char byte; CHECK(recv(p.server, &byte, 1, 0) == 1 && byte == 'q'); finish(p);
+}
+
+static void host_bpf_descriptor_boundary(void)
+{
+    struct pair p = connected();
+    struct sock_filter instruction = BPF_STMT(BPF_RET | BPF_K, UINT32_MAX);
+    struct sock_fprog program = {.len = 1, .filter = &instruction};
+    CHECK(setsockopt(p.server, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0);
+    const int options[] = {SO_ATTACH_BPF, SO_ATTACH_REUSEPORT_EBPF};
+    int host[2]; CHECK(pipe(host) == 0);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        int descriptors[] = {-1, host[0], p.client};
+        for (size_t i = 0; i < sizeof(options) / sizeof(options[0]); ++i)
+        for (size_t j = 0; j < sizeof(descriptors) / sizeof(descriptors[0]); ++j)
+            ERROR(setsockopt(p.server, SOL_SOCKET, options[i], &descriptors[j], sizeof(int)), EOPNOTSUPP);
+        long page = sysconf(_SC_PAGESIZE); CHECK(page > 0);
+        void *bad = mmap(NULL, (size_t)page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(bad != MAP_FAILED);
+        ERROR(setsockopt(p.server, SOL_SOCKET, SO_ATTACH_BPF, bad, sizeof(int)), EOPNOTSUPP);
+        CHECK(munmap(bad, (size_t)page) == 0);
+        int ep = epoll_create1(EPOLL_CLOEXEC); CHECK(ep >= 0);
+        int invalid = -1;
+        ERROR(setsockopt(ep, SOL_SOCKET, SO_ATTACH_BPF, &invalid, sizeof(invalid)), ENOTSOCK);
+        CHECK(close(ep) == 0);
+    }
+    int local[2]; CHECK(socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, local) == 0);
+    for (size_t i = 0; i < sizeof(options) / sizeof(options[0]); ++i) {
+        int invalid = -1;
+        errno = 0; long original = syscall(SYS_setsockopt, local[0], SOL_SOCKET, options[i], &invalid, sizeof(invalid));
+        int error = errno; CHECK(original == -1);
+        errno = 0; CHECK(setsockopt(local[0], SOL_SOCKET, options[i], &invalid, sizeof(invalid)) == original);
+        CHECK(errno == error);
+    }
+    struct sock_filter after; socklen_t count = 1;
+    CHECK(getsockopt(p.server, SOL_SOCKET, SO_GET_FILTER, &after, &count) == 0 && count == 1);
+    CHECK(after.code == instruction.code && after.k == instruction.k && !after.jt && !after.jf);
+    CHECK(send(p.client, "bpf", 3, MSG_NOSIGNAL) == 3);
+    char bytes[3]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 3 && !memcmp(bytes, "bpf", 3));
+    CHECK(close(local[0]) == 0 && close(local[1]) == 0 && close(host[0]) == 0 && close(host[1]) == 0);
+    finish(p);
 }
 
 static void host_path_faults(void)
@@ -2191,6 +2232,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"host-eBPF-program-descriptor-boundary-and-classic-filter-preservation", host_bpf_descriptor_boundary},
         {"duplicate-file-query-owner-pair-translation", duplicate_file_queries},
         {"descriptor-owned-fstatvfs-and-64-bit-layout", filesystem_vfs_statistics},
         {"concurrent-usercopy-faults-thread-errno-and-exit-recovery", concurrent_usercopy_faults},
