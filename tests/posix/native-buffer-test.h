@@ -9,6 +9,7 @@
 static void *(*buffer_allocate)(size_t);
 static int (*buffer_release)(void *);
 static void *(*buffer_resize)(void *, size_t);
+static int (*buffer_write)(void *, size_t, const void *, size_t);
 static int (*buffer_run)(ker_posix_loop_func, void *);
 static void (*buffer_stop)(void);
 static unsigned sent_ids, completed_ids, family_copied[2], family_direct[2], current_family;
@@ -35,9 +36,10 @@ static void buffer_init(void)
     buffer_allocate = dlsym(RTLD_DEFAULT, "ker_posix_buffer_alloc");
     buffer_release = dlsym(RTLD_DEFAULT, "ker_posix_buffer_free");
     buffer_resize = dlsym(RTLD_DEFAULT, "ker_posix_buffer_realloc");
+    buffer_write = dlsym(RTLD_DEFAULT, "ker_posix_buffer_write");
     buffer_run = dlsym(RTLD_DEFAULT, "ker_posix_run");
     buffer_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
-    check(buffer_allocate && buffer_release && buffer_resize && buffer_run && buffer_stop, "native buffer API");
+    check(buffer_allocate && buffer_release && buffer_resize && buffer_write && buffer_run && buffer_stop, "native buffer API");
     int sentinel = 0xCAFE;
     check(buffer_resize(&sentinel, 0) == &sentinel && sentinel == 0xCAFE, "zero resize pointer identity");
     errno = 0; check(!buffer_allocate(0) && errno == EINVAL, "zero allocation rejected");
@@ -154,8 +156,29 @@ static void buffer_guards(void)
     unsigned char *registered = buffer_allocate(16384), received[16384], *host_bytes = malloc(host_size);
     check(host_bytes, "foreign host malloc storage with live native VMAs");
     check(registered, "live VMA during foreign-memory guard tests");
-    memset(registered, 0x41, 16384); memset(host_bytes, 0x5b, host_size);
+    unsigned char initial[16384]; memset(initial, 0x41, sizeof(initial));
+    check(buffer_write(registered, 0, initial, 8192) == 8192 &&
+          buffer_write(registered, 8192, initial+8192, 8192) == 8192,
+          "dynamic bounded writes fill registered pages");
+    memset(host_bytes, 0x5b, host_size);
     buffer_socket(fd, 0, false);
+    check(buffer_write(registered, 16380, host_bytes, 8) == -1 && errno == EINVAL,
+          "bounded write past requested extent rejected");
+    check(buffer_write(registered, SIZE_MAX, host_bytes, 1) == -1 && errno == EINVAL,
+          "bounded write offset overflow rejected");
+    check(buffer_write(registered, 0, host_bytes, SIZE_MAX) == -1 && errno == EINVAL,
+          "bounded write length overflow rejected");
+    buffer_rejected(fd, receiver, registered);
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_overflow_returns_error");
+    check(buffer_write(registered, 0, NULL, 4) == -1 && errno == EINVAL,
+          "dynamic NULL write rejected");
+    check(buffer_write(registered, 0, NULL, 0) == -1 && errno == EINVAL,
+          "dynamic zero-length NULL write rejected");
+    buffer_rejected(fd, receiver, registered);
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_null_data_returns_error");
+    check(buffer_write(registered, 16384, host_bytes, 0) == 0,
+          "dynamic zero write at exact end is a no-op");
+    buffer_rejected(fd, receiver, registered);
     check(send(fd, NULL, 16, MSG_ZEROCOPY) == -1 && errno == EFAULT, "NULL native send rejected");
     struct iovec invalid = {NULL, 16};
     struct msghdr invalid_message = {.msg_iov = &invalid, .msg_iovlen = 1};
@@ -200,7 +223,9 @@ static void buffer_guards(void)
     check(recv(receiver, received, sizeof(received), 0) == 16, "suffix delivered once");
     buffer_sent(16, true); buffer_complete(fd);
     unsigned char *second = buffer_allocate(4097); check(second, "second registered VMA");
-    memset(second, 0x42, 4097);
+    memset(initial, 0x42, 4097);
+    check(buffer_write(second, 0, initial, 4097) == 4097,
+          "bounded write prepares second registered sendmsg extent");
     struct iovec valid[] = {{registered, 4096}, {second, 4096}};
     mixed.msg_iov = valid;
     check(sendmsg(fd, &mixed, MSG_ZEROCOPY) == 8192, "native scatter-gather registered sendmsg");
@@ -238,6 +263,9 @@ static void buffer_finish(void)
     void *residual = buffer_allocate(8193); check(residual, "residual mapping");
     check(!buffer_run(buffer_end, NULL), "mapped-buffer socket drain and native shutdown");
     errno = 0; check(!buffer_allocate(1) && errno == ENETDOWN, "allocation after shutdown rejected");
+    char final_byte = 'x';
+    check(buffer_write(residual, 0, &final_byte, 1) == -1 && errno == ENETDOWN,
+          "bounded write after shutdown rejected without dereference");
     check(buffer_release(residual) == -1 && errno == ENETDOWN, "stale release after shutdown rejected without dereference");
     for (unsigned family = 0; family < 2; family++)
         printf("BUFFER_COMPLETIONS {\"family\":%u,\"copied\":%u,\"direct\":%u,\"copied_bytes\":%zu,\"direct_bytes\":%zu,\"udp_copied_bytes\":%zu,\"tcp_direct_bytes\":%zu}\n",

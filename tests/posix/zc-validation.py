@@ -14,6 +14,8 @@ import tempfile
 
 SOURCE_CASES = {
     'test_ff_zc_mbuf_get_negative_len_returns_error',
+    'test_ff_zc_mbuf_write_overflow_returns_error',
+    'test_ff_zc_mbuf_write_null_data_returns_error',
     'test_ff_zc_send_mb_null_returns_einval',
     'test_ff_zc_send_nbytes_overflow_returns_einval',
     'test_ff_zc_send_valid_args_proceeds',
