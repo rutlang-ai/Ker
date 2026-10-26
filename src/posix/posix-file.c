@@ -2,8 +2,10 @@
 #include "fd-table.h"
 #include "syscall-result.h"
 #include <stdint.h>
-#include <sys/syscall.h>
+#include <errno.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #include <lkl.h>
@@ -89,4 +91,28 @@ int fchown(int fd, uid_t owner, gid_t group)
     long value = lkl_sys_fchown(entry->native, owner, group);
     ker_fd_put(entry);
     return ker_native_result(value);
+}
+int futimens(int fd, const struct timespec times[2])
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_utimensat, fd, NULL, times, 0);
+    struct lkl_timespec native[2];
+    if (times) for (int i = 0; i < 2; ++i) {
+        native[i].tv_sec = times[i].tv_sec;
+        native[i].tv_nsec = times[i].tv_nsec;
+    }
+    long value = lkl_sys_utimensat(entry->native, NULL, times ? native : NULL, 0);
+    ker_fd_put(entry);
+    return ker_native_result(value);
+}
+int futimes(int fd, const struct timeval times[2])
+{
+    if (!times) return futimens(fd, NULL);
+    struct timespec converted[2];
+    for (int i = 0; i < 2; ++i) {
+        if (times[i].tv_usec < 0 || times[i].tv_usec >= 1000000) { errno = EINVAL; return -1; }
+        converted[i].tv_sec = times[i].tv_sec;
+        converted[i].tv_nsec = times[i].tv_usec * 1000;
+    }
+    return futimens(fd, converted);
 }
