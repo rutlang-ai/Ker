@@ -54,6 +54,14 @@ extern int __ppoll_chk(struct pollfd *, nfds_t, const struct timespec *, const s
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
 struct pair {int client, server;};
+static void *inaccessible_path(size_t *length)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    *length = (size_t)page_size;
+    void *path = mmap(NULL, *length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(path != MAP_FAILED);
+    return path;
+}
 static struct sockaddr_in local(void)
 {
     return (struct sockaddr_in){.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
@@ -204,6 +212,8 @@ static void extended_descriptor_stat(void)
     int (*extended)(int, const char *, int, unsigned, struct statx *) = dlsym(RTLD_DEFAULT, "statx");
     CHECK(extended && extended(alias, NULL, AT_EMPTY_PATH, STATX_INO, &value) == 0 && value.stx_ino == old.st_ino);
     ERROR(extended(alias, "", AT_EMPTY_PATH, STATX_INO, NULL), EFAULT);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release"))
+        ERROR(extended(alias, NULL, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW, STATX_INO, &value), EFAULT);
     char path[] = "/tmp/ker-statx-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
     CHECK(write(host, "statx", 5) == 5 && fstat(host, &old) == 0);
     CHECK(statx(alias, path, 0, STATX_BASIC_STATS, &value) == 0 && value.stx_ino == old.st_ino && value.stx_size == 5);
@@ -239,20 +249,24 @@ static void empty_path_stat(void)
     char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
 }
-static void unreadable_path_statat(void)
+static void host_path_fault_routing(void)
 {
+    size_t length; void *unreadable = inaccessible_path(&length);
     long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
-    void *unreadable = mmap(NULL, (size_t)page_size, PROT_NONE,
-                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(unreadable != MAP_FAILED);
     int host = open("/dev/null", O_RDONLY | O_CLOEXEC); CHECK(host >= 0);
     struct stat result;
+    struct statx extended;
     int (*stat_at)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat");
-    CHECK(stat_at != NULL);
+    int (*statx_at)(int, const char *, int, unsigned, struct statx *) = dlsym(RTLD_DEFAULT, "statx");
+    CHECK(stat_at != NULL && statx_at != NULL);
     ERROR(fstatat(AT_FDCWD, unreadable, &result, 0), EFAULT);
     ERROR(stat_at(AT_FDCWD, unreadable, &result, 0), EFAULT);
     ERROR(fstatat(host, unreadable, &result, 0), EFAULT);
     ERROR(stat_at(host, unreadable, &result, 0), EFAULT);
+    ERROR(statx(AT_FDCWD, unreadable, 0, STATX_BASIC_STATS, &extended), EFAULT);
+    ERROR(statx_at(AT_FDCWD, unreadable, 0, STATX_BASIC_STATS, &extended), EFAULT);
+    ERROR(statx(host, unreadable, 0, STATX_BASIC_STATS, &extended), EFAULT);
+    ERROR(statx_at(host, unreadable, 0, STATX_BASIC_STATS, &extended), EFAULT);
     if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
         struct pair p = connected();
         char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
@@ -263,12 +277,18 @@ static void unreadable_path_statat(void)
         boundary[0] = 'x';
         ERROR(fstatat(p.client, unreadable, &result, 0), EFAULT);
         ERROR(stat_at(p.client, unreadable, &result, 0), EFAULT);
+        ERROR(statx(p.client, unreadable, 0, STATX_BASIC_STATS, &extended), EFAULT);
+        ERROR(statx_at(p.client, unreadable, 0, STATX_BASIC_STATS, &extended), EFAULT);
         ERROR(fstatat(p.client, boundary, &result, 0), EFAULT);
         ERROR(stat_at(p.client, boundary, &result, 0), EFAULT);
+        ERROR(statx(p.client, boundary, 0, STATX_BASIC_STATS, &extended), EFAULT);
+        ERROR(statx_at(p.client, boundary, 0, STATX_BASIC_STATS, &extended), EFAULT);
         /* A NUL at the end of the readable page must not probe the next page. */
         boundary[0] = '\0';
         CHECK(fstatat(p.client, boundary, &result, AT_EMPTY_PATH) == 0);
         CHECK(stat_at(p.client, boundary, &result, AT_EMPTY_PATH) == 0);
+        CHECK(statx(p.client, boundary, AT_EMPTY_PATH, STATX_BASIC_STATS, &extended) == 0);
+        CHECK(statx_at(p.client, boundary, AT_EMPTY_PATH, STATX_BASIC_STATS, &extended) == 0);
         CHECK(fstat(p.client, &result) == 0);
         CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
         char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2);
@@ -276,7 +296,7 @@ static void unreadable_path_statat(void)
         finish(p);
         CHECK(munmap(pages, (size_t)page_size * 2) == 0);
     }
-    CHECK(close(host) == 0 && munmap(unreadable, (size_t)page_size) == 0);
+    CHECK(close(host) == 0 && munmap(unreadable, length) == 0);
 }
 static void duplicate_identity(void)
 {
@@ -1548,7 +1568,7 @@ int main(void)
         {"bind-collision-preserves-listener", bind_collision},
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
         {"empty-path-stat-owner-routing", empty_path_stat},
-        {"unreadable-host-path-statat", unreadable_path_statat},
+        {"host-native-fstatat-statx-protected-paths", host_path_fault_routing},
         {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };

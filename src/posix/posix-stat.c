@@ -143,9 +143,12 @@ STATX_OFFSET(stx_mask); STATX_OFFSET(stx_ino); STATX_OFFSET(stx_atime);
 STATX_OFFSET(stx_mtime); STATX_OFFSET(stx_dev_major); STATX_OFFSET(stx_mnt_id);
 static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, struct statx *output)
 {
-    if (path && path[0] == '/') return syscall(SYS_statx, fd, path, flags, mask, output);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_statx, fd, path, flags, mask, output);
+    if (path && path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_statx, fd, path, flags, mask, output);
+    }
     int lookup = flags & ~(AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE);
     if (!path && lookup != AT_EMPTY_PATH) {
         ker_fd_put(entry); errno = EFAULT; return -1;
