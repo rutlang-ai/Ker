@@ -74,6 +74,40 @@ class LauncherBoundaryTests(unittest.TestCase):
             artifact.chmod(0o700)
         self.assertEqual(self.run_launcher(0, native_done=True), 0)
 
+    def test_partial_primary_channel_setup_unwinds_and_recovers(self):
+        def descriptors():
+            result = set()
+            for value in os.listdir('/proc/self/fd'):
+                try:
+                    os.fstat(int(value))
+                except OSError:
+                    continue
+                result.add(int(value))
+            return result
+        pair = launcher.socket.socketpair
+        pipe = launcher.os.pipe2
+        for kind, position in (('pair', 1), ('pair', 2), ('pair', 3), ('pipe', 1), ('pipe', 2)):
+            calls = 0
+            original = pair if kind == 'pair' else pipe
+            def allocate(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == position:
+                    raise OSError(24, 'injected descriptor exhaustion')
+                return original(*args, **kwargs)
+            before = descriptors()
+            target = launcher.socket if kind == 'pair' else launcher.os
+            attribute = 'socketpair' if kind == 'pair' else 'pipe2'
+            with self.subTest(kind=kind, position=position), \
+                    mock.patch.object(target, attribute, side_effect=allocate), \
+                    mock.patch.object(launcher.subprocess, 'Popen') as spawn:
+                result, message = self.run_launcher(0, native_done=True, capture_stderr=True)
+                self.assertEqual(result, 125)
+                self.assertIn('IPC setup', message)
+                spawn.assert_not_called()
+                self.assertEqual(descriptors(), before)
+            self.assertEqual(self.run_launcher(0, native_done=True), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

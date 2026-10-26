@@ -2,6 +2,7 @@
 """Run a POSIX application against imported Linux, with DPDK Ethernet I/O."""
 import argparse
 import concurrent.futures
+import contextlib
 import configparser
 import ipaddress
 import json
@@ -1027,6 +1028,27 @@ def finish_concurrently(operations):
         return results
 
 
+def primary_channels():
+    """Transfer channels only after the complete IPC bundle is allocated."""
+    with contextlib.ExitStack() as cleanup:
+        pairs = []
+        for kind in (socket.SOCK_DGRAM | socket.SOCK_NONBLOCK,
+                     socket.SOCK_SEQPACKET, socket.SOCK_SEQPACKET):
+            pair = socket.socketpair(socket.AF_UNIX, kind)
+            for channel in pair:
+                cleanup.callback(channel.close)
+            pairs.extend(pair)
+        pipes = []
+        for flags in (os.O_CLOEXEC, os.O_CLOEXEC | os.O_NONBLOCK):
+            pair = os.pipe2(flags)
+            for fd in pair:
+                cleanup.callback(os.close, fd)
+            pipes.extend(pair)
+        pairs[4].setblocking(False)
+        cleanup.pop_all()
+        return (*pairs, *pipes)
+
+
 def main():
     try:
         args = parse_arguments(defer_worker_limits=True)
@@ -1054,13 +1076,13 @@ def main():
     except (OSError, ValueError) as error:
         print(f'ker-run: {error}', file=sys.stderr)
         return 2
-    channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
-    mtu_app, mtu_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    run_parent, run_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    run_parent.setblocking(False)
+    try:
+        (channel_app, channel_io, mtu_app, mtu_io, run_parent, run_app,
+         control_read, control_write, startup_read, startup_write) = primary_channels()
+    except OSError as error:
+        print(f'ker-run: IPC setup: {error}', file=sys.stderr)
+        return 125
     worker_finished = run_finished = False
-    control_read, control_write = os.pipe2(os.O_CLOEXEC)
-    startup_read, startup_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
     signal.signal(signal.SIGTERM, interrupted)
     worker = app = None
     additional = []
