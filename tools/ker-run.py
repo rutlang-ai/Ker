@@ -980,8 +980,15 @@ class AdditionalWorker:
                 output, _ = self.process.communicate(timeout=10)
             except subprocess.TimeoutExpired:
                 self.process.kill(); output, _ = self.process.communicate(); failed = timed_out = True
+            completions = int(self.stats is not None)
             for line in output.splitlines():
-                if line.startswith('KER_IO_DONE '): self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+                if line.startswith('KER_IO_DONE '):
+                    completions += 1
+                    if completions > 1:
+                        print(f'ker-run: duplicate additional DPDK worker completion record: {self.interface["name"]}',
+                              file=sys.stderr)
+                        failed = True
+                    self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
             failed |= self.process.returncode != 0 or self.stats is None or self.stats.get('outstanding', 1) != 0
         if self.stats is not None:
             self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None,
