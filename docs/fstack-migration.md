@@ -1764,3 +1764,17 @@ ICMP及完整wire校验；移除一个成员链路后仍收发成功，退出out
 完整配置ABI及base-address精确映射/secondary等边界继续留在原issue。这里没有
 精确毫秒级failover性能或物理NIC时序证明。当前208项scenario-adapted、18项partial、
 137项blocked，155项行为仍未完成，完成计数不变。
+
+## 重复 bond 字段的实际最终值
+
+`native-fstack-typed-bond-source-repeat`直接读取固定源fixture的重复bond
+字段序列，保留两次slave/primary/MAC/xmit_policy。仅将源eth0/eth1明确映射
+为独立测试的两个真实TAP ethdev ID0/1；原版mode4 PMD必须读回最终members=2、
+primary=1、MAC=cc:dd:ee:ff:00:11、l34。运行验证独立host Linux LACP、双向
+IPv4/IPv6 ICMP与完整wire校验，移除一条成员链路后继续收发，outstanding=0。
+该配置显式沿用100/100/200测试时序以隔离重复字段，不计源省略时序的默认值合同。
+
+9项bond配置测试及三组实际bond运行（既有、source timings、source repeat）通过；
+`test_ff_load_config_bond_vdev_repeat_keys_no_leak`继续partial，combined bond/vdev、
+源iface+socket tuple和C分配器ABI仍未实现。208项scenario-adapted、18项partial、
+137项blocked及155项行为未完成的计数不变。

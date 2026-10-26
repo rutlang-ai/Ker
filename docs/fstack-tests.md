@@ -530,3 +530,8 @@ F-Stack字面/legacy名字ABI仍有缺口，组件token结果不计为secondary�
 fixture的poll/up/down=100/200/300，验证真实PMD的initial/final读回、独立Linux
 LACP、双栈ICMP和成员链路移除后的流量恢复。仍是partial案例的子缺口补齐，
 不计精确failover延迟、物理NIC或完整fixture通过。
+
+重复bond字段：`native-fstack-typed-bond-source-repeat`保留源fixture的重复
+字段顺序，原版PMD读回最终primary1/MACcc:dd:ee:ff:00:11/l34及两个成员；独立
+LACP、双栈ICMP和链路失效恢复通过。eth0/eth1显式映射到测试TAP ethdev0/1，
+仍不计combined bond/vdev、C分配器ABI或源省略时序的默认合同通过。

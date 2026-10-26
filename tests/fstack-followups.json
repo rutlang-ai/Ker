@@ -264,7 +264,7 @@
       "id": "dpdk-devices",
       "title": "Adapt typed vdev, bond and multi-port configuration",
       "disposition": "adaptation-needed",
-      "reason": "Three typed interface/vdev/bond configuration allocation-failure rejection scenarios now have real loader/CLI failure and recovery evidence. Remaining source fixture/ABI, combined topology and RSS/lcore contracts stay partial; real typed device traffic does not prove those remaining assertions.",
+      "reason": "Three typed interface/vdev/bond configuration allocation-failure rejection scenarios now have real loader/CLI failure and recovery evidence. Remaining source fixture/ABI, combined topology and RSS/lcore contracts stay partial; real typed device traffic does not prove those remaining assertions. The exact repeated source bond sequence now drives original mode4 PMD readback for final members0/1, primary1,MACcc:dd:ee:ff:00:11,l34 and independent Linux LACP/dual-stack ICMP after member-path loss. Source member names are explicitly translated to the two TAP ethdev IDs; combined bond/vdev and allocator ABI remain incomplete.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",

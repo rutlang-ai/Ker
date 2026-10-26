@@ -58,6 +58,25 @@ class BondTests(unittest.TestCase):
         ordinary = self.parse(BASE + '[bond0]\n' + FIELDS)
         self.assertEqual((ordinary.bonds[0]['up_delay'], ordinary.bonds[0]['down_delay']), (100, 200))
 
+    def test_repeated_source_bond_sequence_preserves_final_values(self):
+        fixture = ROOT / 'tests/upstream/fstack/tests/unit/fixtures/valid_bond_vdev_repeat.ini'
+        fields = fixture.read_text().split('[bond0]\n', 1)[1].split('\n[', 1)[0]
+        fields = fields.replace('slave=eth0,eth1', 'slave=0,1').replace('slave=eth0', 'slave=0')
+        fields = fields.replace('primary=eth0', 'primary=0').replace('primary=eth1', 'primary=1')
+        self.assertEqual(fields.count('slave='), 2)
+        self.assertEqual(fields.count('primary='), 2)
+        self.assertEqual(fields.count('mac='), 2)
+        self.assertEqual(fields.count('xmit_policy='), 2)
+        args = self.parse(BASE + '[bond0]\n' + fields)
+        bond = args.bonds[0]
+        self.assertEqual((bond['slave'], bond['primary'], bond['mac'], bond['xmit_policy']),
+                         (['0', '1'], '1', 'cc:dd:ee:ff:00:11', 'l34'))
+        self.assertEqual(args.eal_args[-1], '--vdev=net_bonding0,mode=4,member=0,member=1,'
+                         'primary=1,socket_id=0,mac=cc:dd:ee:ff:00:11,xmit_policy=l34')
+        ordinary = self.parse(BASE + '[bond0]\n' + FIELDS)
+        self.assertEqual((ordinary.bonds[0]['primary'], ordinary.bonds[0]['mac']),
+                         ('0', 'aa:bb:cc:dd:ee:ff'))
+
     def test_exact_missing_count_and_bad_section_fixtures(self):
         for name in ('invalid_bond_no_nb_bond.ini', 'invalid_bond_bad_section.ini'):
             path = ROOT / 'tests/upstream/fstack/tests/unit/fixtures' / name
