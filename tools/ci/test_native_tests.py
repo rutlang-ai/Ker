@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
 import hashlib
 import json
@@ -10,6 +11,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -20,6 +22,39 @@ import native_tests
 
 
 class NativeTestSelectorTests(unittest.TestCase):
+    def test_udp_completion_ack_waits_for_success_and_is_not_sent_on_client_failure(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/tcp-interop.py"
+        spec = importlib.util.spec_from_file_location("ker_test_tcp_interop", source)
+        self.assertIsNotNone(spec)
+        interop = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(interop)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            child = root / "peer.py"
+            child.write_text(
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "print('READY 26444', flush=True)\n"
+                "if os.read(0, 1) == b'\\xa5': Path(sys.argv[1]).write_text('ack')\n",
+                encoding="utf-8",
+            )
+            log_path = root / "server.log"
+            success_marker = root / "success.marker"
+            with log_path.open("w", encoding="utf-8") as log:
+                with interop.server([sys.executable, str(child), str(success_marker)], 26444,
+                                    log, os.environ, completion_ack=True):
+                    pass
+            self.assertEqual(success_marker.read_text(encoding="utf-8"), "ack")
+
+            failure_marker = root / "failure.marker"
+            with log_path.open("w", encoding="utf-8") as log:
+                with self.assertRaisesRegex(RuntimeError, "client checks failed"):
+                    with interop.server([sys.executable, str(child), str(failure_marker)], 26444,
+                                        log, os.environ, completion_ack=True):
+                        raise RuntimeError("client checks failed")
+            self.assertFalse(failure_marker.exists())
+
     def fixture_source(self, recovery: bool) -> str:
         recovery_calls = "".join(
             f"    run_live_handoff_profile(args, api, plugin_paths, mode={mode!r})\n"
@@ -146,6 +181,56 @@ class NativeTestSelectorTests(unittest.TestCase):
                  mock.patch.object(native_tests.subprocess, "run", side_effect=run), \
                  mock.patch.object(native_tests, "summary"):
                 native_tests.run_full_ctest(Path("build"), junit)
+
+    def test_orphan_session_regressions_are_mandatory_session_inventory(self):
+        cmake = Path(__file__).resolve().parents[2] / "cmake/NativeLinux.cmake"
+        registrations = set(re.findall(
+            r"add_test\(NAME (native-fstack-session-orphan-[A-Za-z0-9-]+)",
+            cmake.read_text(encoding="utf-8"),
+        ))
+        self.assertTrue(registrations)
+        self.assertTrue(registrations <= set(native_tests.SESSION_CTEST))
+
+        all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
+                     set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
+                     set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT})
+        session_names = set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT}
+        inventory = [{"name": name, "properties": [
+            {"name": "LABELS", "value": ["session", "fstack"]}
+            if name in session_names else {"name": "LABELS", "value": ["fstack"]}
+        ]} for name in sorted(all_names)]
+        for skipped in sorted(registrations):
+            with self.subTest(skipped=skipped), tempfile.TemporaryDirectory() as temporary:
+                junit = Path(temporary) / "full.xml"
+
+                def run(_command, **_kwargs):
+                    cases = "".join(
+                        f'<testcase name="{name}">' + ("<skipped/>" if name == skipped else "") +
+                        "</testcase>" for name in sorted(all_names - {native_tests.SESSION_DIRECT})
+                    )
+                    junit.write_text(f"<testsuites><testsuite>{cases}</testsuite></testsuites>",
+                                     encoding="utf-8")
+                    return SimpleNamespace(returncode=0)
+
+                with mock.patch.object(native_tests, "ctest_inventory", return_value=inventory), \
+                     mock.patch.object(native_tests.subprocess, "run", side_effect=run), \
+                     self.assertRaisesRegex(RuntimeError, "required tests skipped"):
+                    native_tests.run_full_ctest(Path(temporary), junit)
+
+        # A registration omitted from the selector is rejected before execution.
+        missing_inventory = [item for item in inventory
+                             if item["name"] != sorted(registrations)[0]]
+        with mock.patch.object(native_tests, "ctest_inventory", return_value=missing_inventory), \
+             self.assertRaisesRegex(RuntimeError, "missing required tests"):
+            native_tests.run_full_ctest(Path("build"), Path("unused.xml"))
+
+        # Unknown session-labeled registrations remain fail-closed.
+        unknown_inventory = inventory + [{"name": "native-fstack-session-unreviewed", "properties": [
+            {"name": "LABELS", "value": ["session", "fstack"]}
+        ]}]
+        with mock.patch.object(native_tests, "ctest_inventory", return_value=unknown_inventory), \
+             self.assertRaisesRegex(RuntimeError, "session CTest label inventory changed"):
+            native_tests.run_full_ctest(Path("build"), Path("unused.xml"))
 
     def test_full_graph_rejects_each_software_datapath_skip(self):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |

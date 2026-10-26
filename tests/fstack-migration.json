@@ -2819,7 +2819,7 @@
       "id": "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",
       "kind": "cmocka",
       "status": "partial",
-      "reason": "Partial resident-component adaptation using the production generation-ring adapter, real original DPDK EAL/rings/pools and real child pidfds. Three profiles seed16 distinct objects across eight RX/TX rings: exact live identities and six forged identity fields cannot reclaim or alter queued bytes/counts, including forged requests after death proof; confirmed generation1 death reclaims exactly8 objects while preserving generation0 RX and generation1 TX for its live consumer. The consumer either drains exact retained pointers/bytes in FIFO order or dies, allowing the final8 objects to be reclaimed. Replay fails and the127-object pool is fully restored. All adapter calls execute in the primary; children provide lifetimes only, not secondary EALs or packet workers.",
+      "reason": "Partial resident-component adaptation using the production generation-ring adapter, real original DPDK EAL/rings/pools and real child pidfds. Three profiles seed16 distinct objects across eight RX/TX rings: exact live identities and six forged identity fields cannot reclaim or alter queued bytes/counts, including forged requests after death proof; confirmed generation1 death reclaims exactly8 objects while preserving generation0 RX and generation1 TX for its live consumer. The consumer either drains exact retained pointers/bytes in FIFO order or dies, allowing the final8 objects to be reclaimed. Replay fails and the127-object pool is fully restored. All adapter calls execute in the primary; children provide lifetimes only, not secondary EALs or packet workers. Three additional in-flight profiles now qualify active live-consumer RX/TX lease refusal, bounded reap timeout with gate rollback, partial-return refusal and complete-return recovery. This is not the source external purge-owner lock/reset API contract.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-orphan-live",
@@ -2832,6 +2832,18 @@
         {
           "ctest": "native-fstack-session-orphan-reap",
           "provenance_case": "native-fstack-session-orphan-safety"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-inflight-rx",
+          "provenance_case": "native-fstack-session-orphan-inflight"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-inflight-tx",
+          "provenance_case": "native-fstack-session-orphan-inflight"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-inflight-both",
+          "provenance_case": "native-fstack-session-orphan-inflight"
         }
       ],
       "remaining": "The source no-directory and not-yet-attached-consumer preservation, externally held purge-owner lock/reset timeout, dead-marker retirement with fresh unregistered-consumer packets, and whole-slot reset branches are not qualified. Ker enqueues require admitted target identities rather than directly populating unowned rings. This fixture does not qualify cross-process EAL visibility, full F-Stack directory/reset ABI, external packet delivery or a general reload/crash matrix."

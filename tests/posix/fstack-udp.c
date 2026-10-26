@@ -150,13 +150,24 @@ static void batch_receive(int fd, int ep, struct sockaddr_in *peer, unsigned int
         }
     }
 }
+static void batch_wait_for_peer_verification(void)
+{
+    unsigned char acknowledgment = 0;
+    ssize_t count;
+    do { count = read(STDIN_FILENO, &acknowledgment, sizeof(acknowledgment)); }
+    while (count < 0 && errno == EINTR);
+    CHECK(count == 1 && acknowledgment == 0xa5);
+}
 int main(int argc, char **argv)
 {
-    CHECK(argc == 5);
+    CHECK(argc == 5 || argc == 6);
     int server = strcmp(argv[1], "server") == 0;
     CHECK(server || strcmp(argv[1], "client") == 0);
     int message = strcmp(argv[4], "message") == 0, batch = strcmp(argv[4], "batch") == 0;
     CHECK(message || batch || strcmp(argv[4], "basic") == 0);
+    int wait_for_peer = argc == 6 && strcmp(argv[5], "--wait-for-peer") == 0;
+    CHECK(argc == (wait_for_peer ? 6 : 5));
+    CHECK(!wait_for_peer || (server && batch));
     char *end; long port = strtol(argv[3], &end, 10);
     CHECK(!*end && port > 0 && port <= 65535);
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons((unsigned short)port)};
@@ -181,6 +192,7 @@ int main(int argc, char **argv)
         if (!server) batch_send(fd, peer, 17);
         batch_receive(fd, ep, &peer, server ? 17 : 93);
         if (server) batch_send(fd, peer, 93);
+        if (wait_for_peer) batch_wait_for_peer_verification();
     } else for (unsigned int i = 0; i < RECORDS; ++i) {
         if (!server) single_send(fd, peer, i, 17, message, message);
         single_receive(fd, ep, &peer, i, server ? 17 : 93, message);
