@@ -6,6 +6,10 @@
 struct ker_native_buffer_counters { uint64_t allocations, releases, shutdown_releases, live, bytes, option_guards_live; };
 /* A token keeps this original socket's SO_ZEROCOPY option stable through a syscall. */
 struct ker_native_option_guard;
+struct ker_posix_buffer_writer;
+/* Snapshot one caller-owned written range; caller frees a non-inline vector array. */
+int ker_native_writer_range(struct ker_posix_buffer_writer *writer, size_t offset,
+    size_t length, struct iovec *single, struct iovec **vectors, size_t *count);
 int ker_native_buffer_option_begin(int native, struct ker_native_option_guard **token);
 int ker_native_buffer_send_begin(int native, const struct iovec *iov, size_t count, int flags, struct ker_native_option_guard **token);
 void ker_native_buffer_send_end(struct ker_native_option_guard *token);

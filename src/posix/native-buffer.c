@@ -246,6 +246,43 @@ const void *ker_posix_buffer_writer_view(struct ker_posix_buffer_writer *writer,
     pthread_mutex_unlock(&lock);
     return data;
 }
+/* Snapshot addresses only; callers retain the writer and wait for any original
+ * Linux zerocopy completion before mutation or destruction, as for views. */
+int ker_native_writer_range(struct ker_posix_buffer_writer *writer, size_t offset,
+    size_t length, struct iovec *single, struct iovec **vectors, size_t *count)
+{
+    if (!writer || !length || length > INT_MAX) return -EINVAL;
+    pthread_mutex_lock(&lock);
+    int error = 0;
+    struct mapping *head = writer_mapping(writer);
+    if (!ker_native_ready()) error = -ENETDOWN;
+    else if (!head) error = -EINVAL;
+    else if (head->retiring) error = -EBUSY;
+    else if (offset > head->written || length > head->written - offset) error = -EINVAL;
+    if (error) { pthread_mutex_unlock(&lock); return error; }
+    size_t needed = 0, skip = offset, remaining = length;
+    for (struct mapping *node = head; node && remaining; node = node->segment_next) {
+        if (skip >= node->size) { skip -= node->size; continue; }
+        size_t bytes = node->size - skip;
+        if (bytes > remaining) bytes = remaining;
+        needed++; remaining -= bytes; skip = 0;
+    }
+    if (remaining || needed > IOV_MAX) { pthread_mutex_unlock(&lock); return -EINVAL; }
+    struct iovec *result = needed == 1 ? single : malloc(needed * sizeof(*result));
+    if (!result) { pthread_mutex_unlock(&lock); return -ENOMEM; }
+    size_t index = 0; skip = offset; remaining = length;
+    for (struct mapping *node = head; node && remaining; node = node->segment_next) {
+        if (skip >= node->size) { skip -= node->size; continue; }
+        size_t bytes = node->size - skip;
+        if (bytes > remaining) bytes = remaining;
+        result[index++] = (struct iovec){(unsigned char *)node->address + skip, bytes};
+        remaining -= bytes; skip = 0;
+    }
+    *vectors = result; *count = needed;
+    pthread_mutex_unlock(&lock);
+    return 0;
+}
+
 int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writer)
 {
     if (!writer) { errno = EINVAL; return -1; }
