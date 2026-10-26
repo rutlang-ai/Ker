@@ -5,6 +5,7 @@ Actual payload exchange uses original-Linux IPv4/IPv6 loopback; the null PMD
 starts the real runtime and supplies no external-wire evidence.
 """
 import argparse
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,7 @@ def main():
     for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--parallel', action='store_true')
     args = parser.parse_args()
     modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_net_null.so'))
     if not modules:
@@ -36,6 +38,8 @@ def main():
     environment = dict(os.environ, LD_PRELOAD=str(modules[0]))
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
+        if args.parallel:
+            command.append('--parallel')
         for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         return subprocess.run(command, env=environment).returncode
@@ -49,7 +53,7 @@ def main():
             '--vdev=net_null0,no-rx=1\n')
         result = subprocess.run([sys.executable, str(args.launcher), '--config', str(config),
             '--library', str(args.library), '--io-worker', str(args.worker), '--stats', str(stats),
-            '--', str(args.app)], env=environment, text=True, capture_output=True, timeout=30)
+            '--', str(args.app)] + (['--parallel'] if args.parallel else []), env=environment, text=True, capture_output=True, timeout=30)
         require(result.returncode == 0, 'actual native contract run failed: ' + result.stdout + result.stderr)
         cases = [line.removeprefix('TIME_SOURCE_CASE ') for line in result.stdout.splitlines()
                  if line.startswith('TIME_SOURCE_CASE ')]
@@ -57,7 +61,14 @@ def main():
                 'missing/duplicate source acceptance markers: ' + result.stdout)
         families = [line.removeprefix('TIME_NATIVE_FAMILY ') for line in result.stdout.splitlines()
                     if line.startswith('TIME_NATIVE_FAMILY ')]
-        require(families == ['0', '1'], 'missing/duplicate dual-stack native exchange: ' + result.stdout)
+        readers = [line.removeprefix('TIME_NATIVE_READER ') for line in result.stdout.splitlines()
+                   if line.startswith('TIME_NATIVE_READER ')]
+        if args.parallel:
+            require(Counter(families) == {'0': 32, '1': 32} and sorted(readers) == ['0', '1', '2', '3'],
+                    'incomplete concurrent readers or64 exact dual-stack exchanges: ' + result.stdout)
+        else:
+            require(families == ['0', '1'] and not readers,
+                    'missing/duplicate dual-stack native exchange: ' + result.stdout)
         record = json.loads(stats.read_text())
         native = record['native']
         require(record['run_shutdown'] and record['run_shutdown_ack'] and record['outstanding'] == 0,
@@ -69,6 +80,8 @@ def main():
                 'native VMA/option-guard lifetime failure: ' + str(native))
         for case in cases:
             print('PASS: original Linux current-time ' + case)
+        if args.parallel:
+            print('PASS: four joined readers;64 exact dual-stack UDP exchanges')
         print('PASS: explicit runtime shutdown; no live mappings, option guards or mbufs')
     return 0
 

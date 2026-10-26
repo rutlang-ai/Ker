@@ -1440,13 +1440,19 @@ if(BUILD_TESTING)
     add_executable(ker-current-time-sockets-test tests/posix/current-time-sockets.c)
     target_include_directories(ker-current-time-sockets-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_compile_options(ker-current-time-sockets-test PRIVATE -Wall -Wextra -Werror)
-    target_link_libraries(ker-current-time-sockets-test PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(ker-current-time-sockets-test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
     add_test(NAME native-fstack-current-time-sockets
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/current-time-sockets.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-current-time-sockets-test>"
             --pmd-root "${ker_offload_library_root}")
-    set_tests_properties(native-fstack-current-time-sockets PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
+    add_test(NAME native-fstack-current-time-parallel-sockets
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/current-time-sockets.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-current-time-sockets-test>"
+            --pmd-root "${ker_offload_library_root}" --parallel)
+    set_tests_properties(native-fstack-current-time-sockets native-fstack-current-time-parallel-sockets
+        PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     add_test(NAME native-fstack-zc-validation
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/zc-validation.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"

@@ -45,3 +45,12 @@ call/failure counts,512 recovery samples and256 errors detect shared injection,
 output or errno state. All readers join before epoch restoration and shutdown;
 concurrent shutdown and external clock adjustment are outside this test. This
 is additional adapter evidence, with no new source-case completion.
+
+`native-fstack-current-time-parallel-sockets` repeats the actual preload path
+with four simultaneous application readers. Each owns its sockets and exchanges
+unique reader/round payloads over both IPv4 and IPv6 for eight rounds. The runner
+requires exactly64 family records and four distinct reader completions; each
+exchange brackets two full samples and checks all optional-output combinations.
+Reader errno values remain isolated, and all readers join before the existing
+explicit shutdown/error checks. This extends the same two adapted cases without
+claiming concurrent native shutdown, external-wire delivery or additional passes.

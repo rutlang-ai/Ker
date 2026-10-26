@@ -2702,9 +2702,10 @@
         "test_ff_get_current_time_null_nsec"
       ],
       "ker_ctests": [
-        "native-fstack-current-time-sockets"
+        "native-fstack-current-time-sockets",
+        "native-fstack-current-time-parallel-sockets"
       ],
-      "adaptation": "Dynamically resolve the actual optional-output API from the native preload under ker-run. Samples bracketed by host epoch observations are valid and advance; independently optional fields and both-NULL calls succeed while original-Linux IPv4/IPv6 UDP sockets exchange exact distinct payloads. Native app guard forbids host INET fallback. Two unique source markers plus exact family0/1 records are mandatory. Explicit runtime shutdown makes all output combinations fail ENETDOWN without changing supplied values; native release becomes unavailable, all EAL workers acknowledge teardown and no mappings/option guards/mbufs remain. This adds integration evidence for the same two source cases, without new count or external-wire/cached-timestamp ABI claims."
+      "adaptation": "Dynamically resolve the actual optional-output API from the native preload under ker-run. Samples bracketed by host epoch observations are valid and advance; independently optional fields and both-NULL calls succeed while original-Linux IPv4/IPv6 UDP sockets exchange exact distinct payloads. Native app guard forbids host INET fallback. Two unique source markers plus exact family0/1 records are mandatory. Explicit runtime shutdown makes all output combinations fail ENETDOWN without changing supplied values; native release becomes unavailable, all EAL workers acknowledge teardown and no mappings/option guards/mbufs remain. A parallel extension runs four joined readers through64 exact dual-stack exchanges with unique reader/round payloads,128 bracketed full samples, all optional-output modes and caller errno isolation before shutdown. This adds integration evidence for the same two source cases, without new count or external-wire/cached-timestamp ABI claims."
     }
   }
 }

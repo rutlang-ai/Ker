@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +34,7 @@ static int64_t sample(void)
     CHECK(value >= before-1000000000LL && value <= after+1000000000LL);
     return value;
 }
-static void datagram(unsigned family)
+static void datagram(unsigned family, unsigned reader, unsigned round)
 {
     int domain = family ? AF_INET6 : AF_INET;
     int sender = socket(domain, SOCK_DGRAM, 0), receiver = socket(domain, SOCK_DGRAM, 0);
@@ -52,7 +53,10 @@ static void datagram(unsigned family)
     struct timeval timeout = {.tv_sec=3};
     CHECK(!setsockopt(receiver, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)));
     int64_t before = sample();
-    const char *payload = family ? "native-time-ipv6" : "native-time-ipv4";
+    char payload[64];
+    int length = snprintf(payload, sizeof(payload), "native-time-ipv%u-reader%u-round%u",
+                          family ? 6 : 4, reader, round);
+    CHECK(length > 0 && (size_t)length < sizeof(payload));
     CHECK(send(sender, payload, strlen(payload), 0) == (ssize_t)strlen(payload));
     long ns = -1; int64_t sec = -1;
     CHECK(!current_time(NULL, &ns) && ns >= 0 && ns < 1000000000L);
@@ -66,8 +70,46 @@ static void datagram(unsigned family)
     printf("TIME_NATIVE_FAMILY %u\n", family);
 }
 static int stop(void *opaque) { (void)opaque; native_stop(); return 0; }
-int main(void)
+#define READERS 4U
+#define ROUNDS 8U
+static pthread_barrier_t reader_barrier;
+static void synchronize(void)
 {
+    int result = pthread_barrier_wait(&reader_barrier);
+    CHECK(result == 0 || result == PTHREAD_BARRIER_SERIAL_THREAD);
+}
+static void *parallel_reader(void *opaque)
+{
+    unsigned id = *(unsigned *)opaque;
+    synchronize();
+    for (unsigned round = 0; round < ROUNDS; round++) {
+        datagram(0, id, round);
+        datagram(1, id, round);
+    }
+    int expected = id & 1 ? E2BIG : ERANGE;
+    errno = expected;
+    synchronize();
+    CHECK(errno == expected);
+    printf("TIME_NATIVE_READER %u\n", id);
+    return opaque;
+}
+static void parallel(void)
+{
+    unsigned ids[READERS]; pthread_t threads[READERS];
+    CHECK(!pthread_barrier_init(&reader_barrier, NULL, READERS));
+    for (unsigned i = 0; i < READERS; i++) {
+        ids[i] = i;
+        CHECK(!pthread_create(&threads[i], NULL, parallel_reader, &ids[i]));
+    }
+    for (unsigned i = 0; i < READERS; i++) {
+        void *result;
+        CHECK(!pthread_join(threads[i], &result) && result == &ids[i]);
+    }
+    CHECK(!pthread_barrier_destroy(&reader_barrier));
+}
+int main(int argc, char **argv)
+{
+    CHECK(argc == 1 || (argc == 2 && !strcmp(argv[1], "--parallel")));
     current_time = dlsym(RTLD_DEFAULT, "ker_posix_get_current_time");
     native_run = dlsym(RTLD_DEFAULT, "ker_posix_run");
     native_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
@@ -77,7 +119,8 @@ int main(void)
     struct timespec delay = {.tv_nsec=2000000};
     while (nanosleep(&delay, &delay)) CHECK(errno == EINTR);
     CHECK(sample() > first);
-    datagram(0); datagram(1);
+    if (argc == 2) parallel();
+    else { datagram(0, 0, 0); datagram(1, 0, 0); }
     puts("TIME_SOURCE_CASE test_ff_get_current_time_null_sec");
     puts("TIME_SOURCE_CASE test_ff_get_current_time_null_nsec");
     CHECK(!native_run(stop, NULL));
