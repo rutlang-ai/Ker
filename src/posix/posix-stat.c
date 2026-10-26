@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <lkl.h>
@@ -42,3 +43,31 @@ _Static_assert(sizeof(struct stat) == sizeof(struct stat64), "x86_64 stat64 ABI"
 int fstat64(int fd, struct stat64 *output) { return fstat(fd, (void *)output); }
 int __fxstat(int version, int fd, struct stat *output) { (void)version; return fstat(fd, output); }
 int __fxstat64(int version, int fd, struct stat64 *output) { (void)version; return fstat(fd, (void *)output); }
+
+static int descriptor_statfs(int fd, struct statfs *output)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fstatfs, fd, output);
+    struct lkl_statfs native;
+    long result = lkl_sys_fstatfs(entry->native, &native);
+    ker_fd_put(entry);
+    if (result < 0) { errno = (int)-result; return -1; }
+    if (!output) { errno = EFAULT; return -1; }
+    memset(output, 0, sizeof(*output));
+    output->f_type = native.f_type;
+    output->f_bsize = native.f_bsize;
+    output->f_blocks = native.f_blocks;
+    output->f_bfree = native.f_bfree;
+    output->f_bavail = native.f_bavail;
+    output->f_files = native.f_files;
+    output->f_ffree = native.f_ffree;
+    _Static_assert(sizeof(output->f_fsid) == sizeof(native.f_fsid), "Linux fsid ABI");
+    memcpy(&output->f_fsid, &native.f_fsid, sizeof(output->f_fsid));
+    output->f_namelen = native.f_namelen;
+    output->f_frsize = native.f_frsize;
+    output->f_flags = native.f_flags;
+    return 0;
+}
+int fstatfs(int fd, struct statfs *output) __attribute__((alias("descriptor_statfs")));
+_Static_assert(sizeof(struct statfs) == sizeof(struct statfs64), "Linux statfs64 ABI");
+int fstatfs64(int fd, struct statfs64 *output) __attribute__((alias("descriptor_statfs")));

@@ -17,6 +17,8 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
+#include <linux/magic.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -286,6 +288,26 @@ static void file_lifecycle_operations(void)
     CHECK(close(fd) == 0);
     ERROR(fsync(fd), EBADF); ERROR(fdatasync(fd), EBADF); ERROR(ftruncate(fd, 0), EBADF);
 }
+
+static void filesystem_statistics(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
+    int copy = dup(fd); CHECK(copy >= 0);
+    struct statfs st; struct statfs64 wide;
+    CHECK(fstatfs(fd, &st) == 0 && st.f_type == SOCKFS_MAGIC && st.f_bsize > 0);
+    CHECK(fstatfs64(copy, &wide) == 0 && wide.f_type == st.f_type);
+    CHECK(wide.f_bsize == st.f_bsize && wide.f_namelen == st.f_namelen);
+    CHECK(memcmp(&wide.f_fsid, &st.f_fsid, sizeof(st.f_fsid)) == 0);
+    int (*query)(int, void *) = dlsym(RTLD_DEFAULT, "fstatfs"); CHECK(query);
+    ERROR(query(fd, NULL), EFAULT);
+    CHECK(close(fd) == 0 && fstatfs(copy, &st) == 0 && st.f_type == SOCKFS_MAGIC);
+    ERROR(query(fd, NULL), EBADF); CHECK(close(copy) == 0);
+    char path[] = "/tmp/ker-filesystem-XXXXXX";
+    fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    struct statfs host; CHECK(syscall(SYS_fstatfs, fd, &host) == 0);
+    CHECK(fstatfs(fd, &st) == 0 && st.f_type == host.f_type && st.f_bsize == host.f_bsize);
+    CHECK(memcmp(&st.f_fsid, &host.f_fsid, sizeof(st.f_fsid)) == 0 && close(fd) == 0);
+}
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -350,6 +372,7 @@ int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"file-lifecycle-owner-routing", file_lifecycle_operations},
+        {"filesystem-statistics-owner-routing", filesystem_statistics},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},
