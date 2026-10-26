@@ -15,12 +15,12 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 208 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 14 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 141 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 15 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 140 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、14 partial、141 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、15 partial、140 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -52,7 +52,7 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共225项记录在
 [后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：155项行为未完成
-（14 partial + 141 blocked），另有15项架构专用和55项上游工具链自测。
+（15 partial + 140 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -1670,3 +1670,22 @@ RX-owner接管、STOPPED用户确认或完整reload。208项完整适配、14项
 
 本批Debug/Release各9项控制CTest通过，21项迁移审计测试及22项CI选择器测试
 通过；两个真实CMake图各35项session注册均与严格CI清单一致。
+
+## P2 release-epoch proof 的控制 lease 子集
+
+`test_p2_release_epoch_needs_proof` 从blocked推进为partial，仍由issue #218
+跟踪。新增`native-fstack-session-control-reservation-eof/reservation-death/reservation-coordinates`
+三个CTest，由真实master的独立direct-child通过生产控制socket申请实际mbuf lease。
+只要借用进程存活，MASTER RELEASE就返回EBUSY；关闭socket也不构成退出证明。
+正常退出或SIGKILL后，以精确pidfd证明死亡，resident才回收对应lease。
+双坐标案例占用generation0/process0和generation1/process3，第一名子进程退出
+只归还一个对象，第二名仍阻止release；最后一名退出后master方可释放epoch。
+
+每阶段验证实际STATUS中的user数、占用及可用对象数和epoch存活，resident
+退出时验证511个对象全部归还、无slot/user以及socket清理。没有secondary EAL、
+硬件访问或网络报文；STOPPED确认、硬件reclaim超时和refusal计数、证明后切换
+RX-owner generation及F-Stack release API仍未实现，不计为完整源案例通过。
+当前208项scenario-adapted、15项partial、140项blocked，155项行为仍未完成。
+
+本批Debug/Release各12项控制CTest通过，21项迁移审计测试及22项CI选择器测试
+通过；两个真实CMake图各38项session注册均与严格CI清单一致。

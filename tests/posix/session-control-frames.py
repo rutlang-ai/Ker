@@ -47,11 +47,11 @@ def exchange(api, connection, request, status=0):
     return raw, reply
 
 
-def status_snapshot(api, path, session, slots=0):
+def status_snapshot(api, path, session, slots=0, users=0):
     with closing(api.Connection(path)) as connection:
         reply = connection.request(api.STATUS)
-    require(reply['session'] == session and reply['generation'] == 511 and
-            reply['token'] == 0 and reply['slot'] == slots and reply['process'] == 0,
+    require(reply['session'] == session and reply['generation'] == 511 - users and
+            reply['token'] == users and reply['slot'] == slots and reply['process'] == users,
             'control request leaked objects, slots or users: ' + repr(reply))
     return reply
 
@@ -228,14 +228,20 @@ def recycle(api, path, session):
     status_snapshot(api, path, session)
 
 
-# This child owns a real master connection. It never starts a secondary EAL.
+# This child owns a real master or pre-EAL reservation connection.
+# It never starts a secondary EAL.
 MASTER_CHILD = r"""
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location('api', sys.argv[1])
 api = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(api)
 connection = api.Connection(sys.argv[2])
-print(json.dumps(connection.request(api.MASTER)), flush=True)
+if len(sys.argv) == 4:
+    ticket = json.loads(sys.argv[3])
+    reply = connection.request(api.RESERVE, **ticket)
+else:
+    reply = connection.request(api.MASTER)
+print(json.dumps(reply), flush=True)
 command = sys.stdin.buffer.read(1)
 if command == b'C':
     connection.close()
@@ -265,8 +271,9 @@ def child_line(process):
 
 
 @contextmanager
-def master_child(api, path):
-    process = subprocess.Popen([sys.executable, '-c', MASTER_CHILD, api.__file__, str(path)],
+def master_child(api, path, reservation=None):
+    extra = [] if reservation is None else [json.dumps(reservation)]
+    process = subprocess.Popen([sys.executable, '-c', MASTER_CHILD, api.__file__, str(path), *extra],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, bufsize=0)
     pidfd = None
@@ -364,6 +371,68 @@ def master_lifetime(api, path, session, mode):
     status_snapshot(api, path, session)
 
 
+def reservation_proof(api, path, session, mode):
+    with ExitStack() as stack:
+        master = stack.enter_context(channel(path))
+        _, ticket = exchange(api, master, api.packet(api.MASTER, 1))
+        coordinate = identity(ticket)
+        children = []
+        coordinates = ((0, 0), (1, 3)) if mode == 'coordinates' else ((0, 0),)
+        for generation, process in coordinates:
+            request = dict(coordinate, generation=generation, process=process)
+            child, pidfd, reply = stack.enter_context(master_child(api, path, request))
+            require(all(reply[key] == value for key, value in request.items()),
+                    'reservation reply lost coordinate identity')
+            children.append((child, pidfd))
+        status_snapshot(api, path, session, slots=1, users=len(children))
+        sequence = 2
+        for child, pidfd in children:
+            require_pidfd(pidfd, False)
+            exchange(api, master, api.packet(api.RELEASE, sequence, **coordinate), -errno.EBUSY)
+            sequence += 1
+        if mode != 'death':
+            for child, pidfd in children:
+                require(child.stdin.write(b'C') == 1, 'failed to command borrower EOF')
+                require(child_line(child) == 'CLOSED', 'borrower did not close its socket')
+                require_pidfd(pidfd, False)
+            for _ in range(8):
+                status_snapshot(api, path, session, slots=1, users=len(children))
+                epoch_live(api, path, ticket['epoch'], 1)
+                exchange(api, master, api.packet(api.RELEASE, sequence, **coordinate), -errno.EBUSY)
+                sequence += 1
+        for index, (child, pidfd) in enumerate(children):
+            if mode == 'eof':
+                require(child.stdin.write(b'X') == 1, 'failed to request borrower exit')
+                require(child.wait(timeout=5) == 0, 'borrower did not exit normally')
+            else:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                require(child.wait(timeout=5) == -signal.SIGKILL, 'borrower did not die by SIGKILL')
+            require_pidfd(pidfd, True)
+            remaining = len(children) - index - 1
+            deadline = time.monotonic() + 3
+            with closing(api.Connection(path)) as observer:
+                while True:
+                    state = observer.request(api.STATUS)
+                    require(state['slot'] == 1 and state['session'] == session and
+                            state['generation'] + state['token'] == 511 and
+                            state['process'] == state['token'],
+                            'invalid reservation accounting during reap: ' + repr(state))
+                    if state['process'] == remaining:
+                        break
+                    require(time.monotonic() < deadline, 'reservation did not reap after exact death')
+                    time.sleep(0.01)
+            status_snapshot(api, path, session, slots=1, users=remaining)
+            epoch_live(api, path, ticket['epoch'], 1)
+            epoch_live(api, path, 0, 1)
+            if remaining:
+                require_pidfd(children[index + 1][1], False)
+                exchange(api, master, api.packet(api.RELEASE, sequence, **coordinate), -errno.EBUSY)
+                sequence += 1
+        exchange(api, master, api.packet(api.RELEASE, sequence, **coordinate))
+        epoch_live(api, path, ticket['epoch'], 0)
+    status_snapshot(api, path, session)
+
+
 def ready(process):
     captured = bytearray()
     deadline = time.monotonic() + 10
@@ -387,7 +456,9 @@ def main():
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--tool', type=Path, required=True)
     parser.add_argument('--profile', choices=('roundtrip', 'malformed', 'replay', 'isolation', 'capacity', 'recycle',
-                                               'master-eof', 'master-death', 'master-frozen'), required=True)
+                                               'master-eof', 'master-death', 'master-frozen',
+                                               'reservation-eof', 'reservation-death',
+                                               'reservation-coordinates'), required=True)
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('control_frame_api', args.tool)
     api = importlib.util.module_from_spec(spec)
@@ -412,7 +483,9 @@ def main():
                         'unexpected resident configuration')
                 profiles = {'roundtrip': roundtrip, 'malformed': malformed, 'replay': replay,
                             'isolation': isolation, 'capacity': capacity, 'recycle': recycle}
-                if args.profile.startswith('master-'):
+                if args.profile.startswith('reservation-'):
+                    reservation_proof(api, path, record['session'], args.profile.removeprefix('reservation-'))
+                elif args.profile.startswith('master-'):
                     master_lifetime(api, path, record['session'], args.profile.removeprefix('master-'))
                 else:
                     profiles[args.profile](api, path, record['session'])

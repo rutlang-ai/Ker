@@ -2220,9 +2220,23 @@
     {
       "id": "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial release-proof adaptation through real resident control leases. Independent direct-child processes reserve actual control-pool mbufs at authenticated slot/generation/process coordinates. MASTER RELEASE returns EBUSY while a borrower lives, including after its socket EOF; no epoch or lease is lost. Exact normal exit or SIGKILL permits pidfd-based reclamation. With two borrowers at generation0/process0 and generation1/process3, reaping the first returns exactly one object but the survivor still blocks release; only the final death permits release. Every stage checks exact user/object counts and epoch liveness, with511 objects and zero slots/users at shutdown.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-control-reservation-eof",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-death",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-coordinates",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        }
+      ],
+      "remaining": "These children reserve control leases only: they do not attach a secondary EAL, enter hardware, acknowledge STOPPED, transfer RX ownership to a new generation, test the bounded hardware reclaim timeout/refusal counter, or implement the F-Stack ff_reload_rx_release_epoch API. The original source owner-generation flip after proof remains unqualified; no complete source pass or network delivery is claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",

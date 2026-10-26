@@ -2487,6 +2487,16 @@
         "native-fstack-session-control-master-frozen"
       ],
       "adaptation": "Supplemental master-only control-adapter coverage for the TC-4 epoch-liveness verdict. Three profiles use independent real Python master processes and resident SO_PEERCRED/pidfd tracking: socket EOF with a live process retains the epoch; normal exit after EOF and SIGKILL with an open transport permit reclamation only after exact pidfd death; a SIGSTOP master with closed transport retains the last slot and blocks a fourth master with ENOSPC. Foreign RELEASE is refused, unrelated master epochs and the resident epoch0 stay live, and reuse requires a newer epoch while old credentials remain ESTALE. All profiles require511 available objects, zero leased objects/users and exact resident/socket cleanup. The new profiles start only the primary EAL and no EAL borrowers; existing standby evidence remains responsible for secondary/borrower lifetime coverage. They do not implement F-Stack heartbeat aging, RX-owner takeover, stopped-user acknowledgements, network traffic or full reload."
+    },
+    "native-fstack-session-reservation-proof": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_p2_release_epoch_needs_proof",
+      "ker_ctests": [
+        "native-fstack-session-control-reservation-eof",
+        "native-fstack-session-control-reservation-death",
+        "native-fstack-session-control-reservation-coordinates"
+      ],
+      "adaptation": "Partial release-proof adaptation through real resident control leases. Independent direct-child processes reserve actual control-pool mbufs at authenticated slot/generation/process coordinates. MASTER RELEASE returns EBUSY while a borrower lives, including after its socket EOF; no epoch or lease is lost. Exact normal exit or SIGKILL permits pidfd-based reclamation. With two borrowers at generation0/process0 and generation1/process3, reaping the first returns exactly one object but the survivor still blocks release; only the final death permits release. Every stage checks exact user/object counts and epoch liveness, with511 objects and zero slots/users at shutdown. Remaining: These children reserve control leases only: they do not attach a secondary EAL, enter hardware, acknowledge STOPPED, transfer RX ownership to a new generation, test the bounded hardware reclaim timeout/refusal counter, or implement the F-Stack ff_reload_rx_release_epoch API. The original source owner-generation flip after proof remains unqualified; no complete source pass or network delivery is claimed."
     }
   }
 }
