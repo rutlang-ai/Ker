@@ -539,7 +539,8 @@ if(BUILD_TESTING)
     target_compile_options(ker-current-time-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME native-fstack-current-time-optional COMMAND ker-current-time-test optional)
     add_test(NAME native-fstack-current-time-errors COMMAND ker-current-time-test errors)
-    set_tests_properties(native-fstack-current-time-optional native-fstack-current-time-errors
+    add_test(NAME native-fstack-current-time-parallel COMMAND ker-current-time-test parallel)
+    set_tests_properties(native-fstack-current-time-optional native-fstack-current-time-errors native-fstack-current-time-parallel
         PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-realtime-test tests/posix/fstack-realtime.c src/posix/realtime-clock.c src/posix/host-memory.c src/posix/host-clock.c)
     target_include_directories(ker-realtime-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
