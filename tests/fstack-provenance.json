@@ -2536,6 +2536,15 @@
         "native-fstack-typed-bond-config"
       ],
       "adaptation": "Read the pinned valid_dpdk_extra_keys.ini bond timing fields directly (poll100/up200/down300), load them through the production typed configuration and verify initial and final original-DPDK PMD getter readbacks. A real mode4 bond connects two TAP/veth paths to an independent original host Linux802.3ad bond. Both partners must collect/distribute in one aggregator, exchange exact IPv4/IPv6 ICMP payloads with the original native Linux stack, and continue after one member path is removed; full wire capture/checksums and zero outstanding buffers remain required. The existing poll100/up100/down200 profile also passes. This qualifies source timing values and continued traffic, not precise millisecond failover latency, physical NIC timing or the complete source fixture."
+    },
+    "native-fstack-bond-source-repeat": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+      "ker_ctests": [
+        "native-fstack-typed-bond-source-repeat",
+        "native-fstack-typed-bond-config"
+      ],
+      "adaptation": "Read the exact repeated bond field sequence from pinned valid_bond_vdev_repeat.ini, preserving both slave/primary/MAC/xmit_policy occurrences. Only source eth0/eth1 names are mapped explicitly to the two original TAP ethdev IDs0/1. The production typed loader and original mode4 PMD must select the final two members, primary1,MACcc:dd:ee:ff:00:11 and l34; initial/final getter evidence, independent host Linux LACP, original native Linux/host IPv4/IPv6 ICMP with full wire checksum/payload checks, member-path loss recovery and zero outstanding buffers are required. Established100/100/200 timing settings isolate these repeated fields; this is not the absent source timing-default contract. The ordinary and exact-source-timing runtime profiles remain successful controls. This extends only the supported repeated-bond subset, not the combined source bond/vdev topology, C strdup/free/valgrind ABI or physical NIC behavior."
     }
   }
 }

@@ -49,6 +49,21 @@ def timing_values(source=False):
     return {key: values.getint('bond0', key) for key in ('lsc_poll_period_ms', 'up_delay', 'down_delay')}
 
 
+def repeated_source_bond():
+    fixture = Path(__file__).resolve().parents[1] / 'upstream/fstack/tests/unit/fixtures/valid_bond_vdev_repeat.ini'
+    text = fixture.read_text().split('[bond0]\n', 1)[1].split('\n[', 1)[0]
+    lines = []
+    for line in text.splitlines():
+        if '=' in line:
+            key, value = line.split('=', 1)
+            if key in ('slave', 'primary'):
+                # The two source member names map to our two real TAP ethdevs.
+                value = ','.join({'eth0': '0', 'eth1': '1'}[part] for part in value.split(','))
+            line = key + '=' + value
+        lines.append(line)
+    return '\n'.join(lines) + '\n'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
@@ -56,10 +71,15 @@ def main():
     parser.add_argument('--bridge', type=Path)
     parser.add_argument('--large-virtio-member', action='store_true')
     parser.add_argument('--inside', action='store_true')
-    parser.add_argument('--source-timings', action='store_true',
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--source-repeat-bond', action='store_true',
+                        help='preserve the pinned repeated bond field sequence')
+    source.add_argument('--source-timings', action='store_true',
                         help='use the pinned dpdk_extra_keys bond timing fields')
     parser.add_argument('--queues', type=int, choices=(1, 3), default=1)
     args = parser.parse_args()
+    if args.source_repeat_bond and (args.large_virtio_member or args.queues != 1):
+        parser.error('--source-repeat-bond requires the two-member single-queue LACP profile')
     timings = timing_values(args.source_timings)
     modules = []
     for name in ('tap', 'bond'):
@@ -73,6 +93,8 @@ def main():
         argv = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside', '--queues', str(args.queues)]
         for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
             argv += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
+        if args.source_repeat_bond:
+            argv += ['--source-repeat-bond']
         if args.source_timings:
             argv += ['--source-timings']
         if args.bridge:
@@ -138,13 +160,20 @@ def main():
             f'[dpdk]\nnb_bond=1\nport=net_bonding0\nqueues={args.queues}\n'
             f'eal=--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m {256 if args.large_virtio_member else 64} '
             f'{eal_vdevs}\n')
-        if not args.large_virtio_member:
-            config_text += '[bond0]\nmode=invalid\nslave=missing\nprimary=missing\nmac=invalid\nxmit_policy=invalid\n'
-        config_text += (f'[bond0]\nmode={1 if args.large_virtio_member else 4}\n'
-            f'slave={",".join(str(index) for index in range(member_count))}\n'
-            f'primary={2 if args.large_virtio_member else 0}\nsocket_id=0\nmac=AA:BB:CC:DD:EE:FF\n'
-            + ('' if args.large_virtio_member else 'xmit_policy=l34\n')
-            + ''.join(f'{key}={value}\n' for key, value in timings.items()))
+        if args.source_repeat_bond:
+            config_text += ('[bond0]\n' + repeated_source_bond()
+                            + ''.join(f'{key}={value}\n' for key, value in timings.items()))
+            expected_mac, expected_primary = 'cc:dd:ee:ff:00:11', 1
+        else:
+            if not args.large_virtio_member:
+                config_text += '[bond0]\nmode=invalid\nslave=missing\nprimary=missing\nmac=invalid\nxmit_policy=invalid\n'
+            config_text += (f'[bond0]\nmode={1 if args.large_virtio_member else 4}\n'
+                f'slave={",".join(str(index) for index in range(member_count))}\n'
+                f'primary={2 if args.large_virtio_member else 0}\nsocket_id=0\nmac=AA:BB:CC:DD:EE:FF\n'
+                + ('' if args.large_virtio_member else 'xmit_policy=l34\n')
+                + ''.join(f'{key}={value}\n' for key, value in timings.items()))
+            expected_mac = 'aa:bb:cc:dd:ee:ff'
+            expected_primary = 2 if args.large_virtio_member else 0
         config.write_text(config_text)
         with (root / 'native.log').open('w+') as log:
             worker_command = [sys.executable, str(args.launcher), '--config', str(config),
@@ -187,9 +216,9 @@ def main():
                 require(process.returncode == 0 and output.count('PASS:') == 2, 'native bond traffic failed: ' + output)
                 record = json.loads(stats.read_text()); bond = record['bond']
                 require(record['io']['driver'] == 'net_bonding' and record['io']['port_count'] == member_count + 1
-                        and record['io']['mac'] == 'aa:bb:cc:dd:ee:ff' and record['io']['socket_id'] == 0, 'wrong actual bond/MAC')
+                        and record['io']['mac'] == expected_mac and record['io']['socket_id'] == 0, 'wrong actual bond/MAC')
                 expected = dict(mode=1 if args.large_virtio_member else 4,
-                    primary=2 if args.large_virtio_member else 0,
+                    primary=expected_primary,
                     poll_ms=timings['lsc_poll_period_ms'], up_ms=timings['up_delay'],
                     down_ms=timings['down_delay'], members=member_count)
                 if not args.large_virtio_member:
