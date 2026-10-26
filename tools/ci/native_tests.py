@@ -63,6 +63,9 @@ HOSTED_SAFE = (
 
 SESSION_DIRECT = "native-fstack-session-native-packets"
 SESSION_CTEST = (
+    "native-fstack-session-control-roundtrip",
+    "native-fstack-session-control-malformed",
+    "native-fstack-session-control-replay",
     "native-packet-header",
     "native-fstack-session-peer-drain-retry",
     "native-fstack-session-lease-input",
