@@ -14,6 +14,7 @@
         fchmod; fchown;
         futimens; futimes;
         fallocate; fallocate64; posix_fallocate; posix_fallocate64;
+        readahead; sync_file_range; posix_fadvise; posix_fadvise64;
         lseek; lseek64; pread; pread64; pwrite; pwrite64;
         preadv; preadv64; pwritev; pwritev64; preadv2; preadv64v2; pwritev2; pwritev64v2;
         fstatfs; fstatfs64;
