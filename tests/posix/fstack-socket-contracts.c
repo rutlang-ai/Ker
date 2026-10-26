@@ -494,6 +494,26 @@ static void reject_route_mtu_change(int fd, int ifindex, int requested_mtu,
     CHECK(error->error == -EPERM);
 }
 
+static void interface_enumeration(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
+    struct if_nameindex *held = if_nameindex(); CHECK(held && held[0].if_name);
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        struct if_nameindex *list = if_nameindex(); CHECK(list);
+        unsigned count = 0, loopback = 0;
+        for (; list[count].if_index || list[count].if_name; ++count) {
+            CHECK(count < 1024 && list[count].if_index && list[count].if_name);
+            CHECK(if_nametoindex(list[count].if_name) == list[count].if_index);
+            struct ifreq request = {.ifr_ifindex = list[count].if_index};
+            CHECK(ioctl(fd, SIOCGIFNAME, &request) == 0 && strcmp(request.ifr_name, list[count].if_name) == 0);
+            if (strcmp(list[count].if_name, "lo") == 0) loopback++;
+            for (unsigned j = 0; j < count; ++j) CHECK(list[j].if_index != list[count].if_index);
+        }
+        CHECK(count >= 1 && loopback == 1); if_freenameindex(list);
+        CHECK(if_nametoindex(held[0].if_name) == held[0].if_index);
+    }
+    if_freenameindex(held); CHECK(close(fd) == 0);
+}
 static void interface_name_lookup(void)
 {
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
@@ -1208,6 +1228,7 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"original-kernel-interface-enumeration", interface_enumeration},
         {"interface-name-and-index-kernel-identity", interface_name_lookup},
         {"cross-kernel-file-transfer-boundaries", file_transfer_boundaries},
         {"host-transfer-cancellation-points", host_transfer_cancellation},
