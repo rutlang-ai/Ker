@@ -23,7 +23,7 @@
         lseek; lseek64; pread; pread64; pwrite; pwrite64;
         preadv; preadv64; pwritev; pwritev64; preadv2; preadv64v2; pwritev2; pwritev64v2;
         fstatfs; fstatfs64;
-        fstat; fstat64; __fxstat; __fxstat64;
+        fstatvfs; fstatvfs64; fstat; fstat64; __fxstat; __fxstat64;
         utimensat; fchmodat; fchownat; faccessat; statx; fstatat; fstatat64; __fxstatat; __fxstatat64;
     local: *;
 };
