@@ -60,8 +60,11 @@ KER_API void *ker_posix_buffer_realloc(void *address, size_t size);
  * ENETDOWN. Raw buffer_free/write/nonzero-realloc of writer storage fail EBUSY.
  * Synchronize owner access/transfer; wait for all zerocopy completions before
  * append/destroy. Send only the viewed length. Shutdown reclaims outstanding
- * owners and invalidates every handle/view. This is one VMA, not a FreeBSD
- * mbuf chain; it does not change ordinary Linux send semantics. */
+ * owners and invalidates every handle/view. Destroy releases its VMA
+ * immediately but retains registration metadata until native shutdown to
+ * prevent allocator address reuse from making a stale handle refer to a new
+ * owner; this is a deliberate per-runtime memory tradeoff. This is one VMA,
+ * not a FreeBSD mbuf chain, and does not change ordinary Linux send semantics. */
 struct ker_posix_buffer_writer;
 KER_API struct ker_posix_buffer_writer *ker_posix_buffer_writer_create(size_t capacity);
 KER_API int ker_posix_buffer_writer_append(struct ker_posix_buffer_writer *writer, const void *data, size_t length);
