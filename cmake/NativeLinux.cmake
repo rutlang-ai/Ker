@@ -1061,6 +1061,7 @@ if(BUILD_TESTING)
     set_tests_properties(native-fstack-stream-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-sendmmsg-short-test tests/posix/sendmmsg-short.c src/posix/posix-socket.c)
     target_include_directories(ker-posix-sendmmsg-short-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-posix-sendmmsg-short-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_include_directories(ker-posix-sendmmsg-short-test SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_compile_options(ker-posix-sendmmsg-short-test PRIVATE -Wall -Wextra -Werror -ffunction-sections)

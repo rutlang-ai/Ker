@@ -22,6 +22,7 @@ SOURCE_CASES = {
     'test_ff_zc_send_mb_null_returns_einval',
     'test_ff_zc_send_nbytes_overflow_returns_einval',
     'test_ff_zc_send_valid_args_proceeds',
+    'test_ff_zc_send_zero_nbytes_returns_einval',
 }
 
 

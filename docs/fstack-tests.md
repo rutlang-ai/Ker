@@ -560,3 +560,7 @@ IPv4/IPv6 loopback证明append无投递、副作用回滚、真实零字节UDP�
 Writer失败：`native-fstack-buffer-writer-constructor/retry`验证定点malloc/mmap
 回滚、munmap失败保留owner、明确线程交接后的append及成功重试，另一owner与
 精确回收计数保持正确。不新增源案例完成数，不计FreeBSD分配器或无同步竞争证明。
+
+Owned-send：`native-fstack-zc-validation`以十个source marker和真实双栈原生
+socket验证非空written range、NULL/溢出/host fd拒绝及精确prefix/offset传输。
+仅将源零字节owned-send错误合同推进为场景适配，普通Linux空UDP语义不变。

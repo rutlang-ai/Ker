@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include <ker/posix.h>
 #include "native-buffer.h"
 #include "mtu-control.h"
 #include "syscall-result.h"
@@ -100,11 +101,10 @@ IO_CALL(readv, (int fd, const struct iovec *iov, int count), (fd, iov, count),
     (entry->native, (void *)iov, count), MSG_NOSIGNAL)
 IO_CALL(writev, (int fd, const struct iovec *iov, int count), (fd, iov, count),
     (entry->native, (void *)iov, count), 0)
-ssize_t sendto(int fd, const void *bytes, size_t length, int flags,
+/* Shared by POSIX sendto and the explicit owned-payload entry point. */
+static ssize_t native_sendto(struct ker_fd *entry, const void *bytes, size_t length, int flags,
     const struct sockaddr *address, socklen_t address_length)
 {
-    struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_sendto, fd, bytes, length, flags, address, address_length);
     struct iovec vector = {(void *)bytes, length};
     struct ker_native_option_guard *guard = NULL;
     int token = ker_native_buffer_send_begin(entry->native, &vector, 1, flags, &guard);
@@ -112,6 +112,26 @@ ssize_t sendto(int fd, const void *bytes, size_t length, int flags,
         length, flags, (void *)address, address_length);
     ker_native_buffer_send_end(guard);
     return sent(entry, result, flags);
+}
+ssize_t sendto(int fd, const void *bytes, size_t length, int flags,
+    const struct sockaddr *address, socklen_t address_length)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_sendto, fd, bytes, length, flags, address, address_length);
+    return native_sendto(entry, bytes, length, flags, address, address_length);
+}
+int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
+    size_t offset, size_t length, int flags)
+{
+    if (!length || length > INT_MAX) { errno = EINVAL; return -1; }
+    size_t written;
+    const unsigned char *data = ker_posix_buffer_writer_view(writer, &written, NULL);
+    if (!data) return -1;
+    if (offset > written || length > written-offset) { errno = EINVAL; return -1; }
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) { errno = EBADF; return -1; }
+    if (entry->kind != KER_FD_SOCKET) { ker_fd_put(entry); errno = ENOTSOCK; return -1; }
+    return (int)native_sendto(entry, data+offset, length, flags, NULL, 0);
 }
 IO_CALL(recvfrom, (int fd, void *bytes, size_t length, int flags,
     struct sockaddr *address, socklen_t *address_length),

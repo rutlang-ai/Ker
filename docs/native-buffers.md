@@ -199,3 +199,11 @@ Writer故障扩展`native-fstack-buffer-writer-constructor/retry`只定点注入
 构造失败不污染已有owner，mmap失败释放临时登记；销毁失败保留owner供查询、
 同步交接及后继append，另一个owner不受影响，真实重试成功后不能重复unmap。
 精确回收全部VMA和一个残留空owner，不计FreeBSD分配器ABI或无同步访问证明。
+
+`ker_posix_buffer_writer_send(owner, fd, offset, length, flags)`发送已写payload的
+非空范围，长度0、NULL owner、INT_MAX/范围溢出在发送前返回EINVAL。只接受
+imported native socket，host fd返回EBADF、native非socket返回ENOTSOCK；数据进入
+与普通sendto共用的原版Linux/zerocopy guard/SIGPIPE适配路径，无host fallback。
+返回实际接受字节数或原版Linux错误，flags不改写，短发送由调用者推进offset。
+成功和失败均保留writer/cursor，调用者必须等待completion后才append/destroy。
+普通send的零字节UDP行为不变；这里是显式owned-payload入口的非空合同。

@@ -2633,6 +2633,19 @@
         "native-fstack-buffer-writer-retry"
       ],
       "adaptation": "Ker-specific owner/cursor failure extensions using actual original-Linux mappings and production writer code. Thread-local wrappers inject only descriptor malloc ENOMEM, one mmap ENOMEM or one munmap EIO; all successful allocations/syscalls are original. Failed empty-owner construction leaves an existing owner unchanged, makes no false registration and frees the temporary descriptor after mmap failure; a later empty construction succeeds. Failed destroy retains exact length/bytes/raw-bypass protection, does not affect a second owner and permits synchronized producer/consumer append handoff before a successful real destroy retry. Repeated destroy changes neither outputs nor unmap count. Final allocation/release totals and one empty-owner shutdown release are exact. These are runtime-adapter regressions, not source FreeBSD allocator ABI, unsynchronized access or network evidence."
+    },
+    "native-fstack-owned-writer-send": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_send_mb_null_returns_einval",
+        "test_ff_zc_send_nbytes_overflow_returns_einval",
+        "test_ff_zc_send_zero_nbytes_returns_einval",
+        "test_ff_zc_send_valid_args_proceeds"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "The explicit ker_posix_buffer_writer_send API validates a nonempty written range before dispatch to the same original-Linux sendto/zerocopy-option/SIGPIPE adapter used by ordinary sendto. NULL owner, length0, length>INT_MAX and unwritten/overflow ranges return EINVAL without delivering bytes or consuming completion IDs. It rejects unregistered host descriptors with EBADF and imported non-sockets with ENOTSOCK, never a host-network fallback. Real dynamically resolved IPv4/IPv6 loopback calls deliver exact full and offset subranges, retain the caller-owned cursor on success/error and preserve completion numbering; later append/destruction follows actual completion. Ordinary Linux send of a zero-byte UDP datagram remains successful with completion ID0. The strict runner requires ten unique source markers. This qualifies source owned-send validation outcomes, not a FreeBSD mbuf-consuming ABI, linked chain or end-to-end zero-copy."
     }
   }
 }
