@@ -182,10 +182,10 @@ class NativeTestSelectorTests(unittest.TestCase):
                  mock.patch.object(native_tests, "summary"):
                 native_tests.run_full_ctest(Path("build"), junit)
 
-    def test_control_and_orphan_session_regressions_are_mandatory_inventory(self):
+    def test_resident_component_regressions_are_mandatory_inventory(self):
         cmake = Path(__file__).resolve().parents[2] / "cmake/NativeLinux.cmake"
         registrations = set(re.findall(
-            r"add_test\(NAME (native-fstack-session-(?:control|orphan)-[A-Za-z0-9-]+)",
+            r"add_test\(NAME (native-fstack-session-(?:control|orphan|namespace)-[A-Za-z0-9-]+)",
             cmake.read_text(encoding="utf-8"),
         ))
         self.assertTrue(registrations)

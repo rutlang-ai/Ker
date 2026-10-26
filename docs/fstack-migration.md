@@ -15,12 +15,12 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 208 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 17 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 138 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 137 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、17 partial、138 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、18 partial、137 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -52,7 +52,7 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共225项记录在
 [后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：155项行为未完成
-（17 partial + 138 blocked），另有15项架构专用和55项上游工具链自测。
+（18 partial + 137 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -1728,3 +1728,24 @@ lease。staged使用两个generation/process坐标，精确pidfd死亡后只回�
 
 本批Debug/Release各18项控制/孤儿reservation CTest通过，21项迁移审计测试及
 22项CI选择器测试通过；两个真实CMake图各44项session注册均与严格CI清单一致。
+
+## M5 cross-master ring 命名空间子集
+
+`native-fstack-session-namespace-names/isolation/recreate` 使用resident共用的
+`ker_session_ring_name`和原版DPDK EAL/rte_ring，创建全部4slot×2generation×
+4process×4channel共128个真实ring。名字与对象均唯一；同名创建返回EEXIST且
+不替换原对象。名字刚好放得下时成功，截断不越过canary，越界坐标明确拒绝。
+每个ring分别装满64个caller-owned token，检查满队列拒绝、FIFO指针/字节身份及
+跨坐标隔离；只释放重建slot1/2，slot0/3中的对象与数据仍保持。所有ring排空、
+释放、lookup消失后才允许EAL cleanup成功。
+
+生产格式保持`ker_sN_gN_pN_CHANNEL`不变，命名实现从io-session.c提取为共用helper，
+同时给未支持坐标增加显式EINVAL边界。测试没有复制一套命名算法，也没有修改
+Linux/DPDK上游。它们是primary-only组件测试，没有secondary EAL、mbuf lease、
+resident登记、网络流量或epoch复用授权证明。
+`test_ut_nr_m5_cross_master_name_isolation`从blocked推进为partial，继续留在
+issue #218：源proc7/127、FF_SYSCTL..FF_MSG_NUM、legacy/no-epoch及字面name ABI
+仍未实现。208项scenario-adapted、18项partial、137项blocked，155项行为仍未完成。
+
+本批Debug/Release各21项namespace/控制/孤儿reservation CTest通过，21项迁移
+审计测试及22项CI选择器测试通过；两个真实CMake图各47项session注册与CI清单一致。

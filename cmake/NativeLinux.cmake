@@ -356,6 +356,17 @@ if(BUILD_TESTING)
             --test "$<TARGET_FILE:ker-session-generation-rings-test>")
     set_tests_properties(native-fstack-session-generation-rings PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
         LABELS "fstack;session;dpdk")
+    add_executable(ker-session-ring-namespaces-test tests/posix/session-ring-namespaces.c)
+    target_include_directories(ker-session-ring-namespaces-test PRIVATE src/posix tests)
+    target_compile_options(ker-session-ring-namespaces-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-session-ring-namespaces-test PRIVATE PkgConfig::DPDK)
+    target_link_options(ker-session-ring-namespaces-test PRIVATE -Wl,--disable-new-dtags)
+    set_target_properties(ker-session-ring-namespaces-test PROPERTIES BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+    add_test(NAME native-fstack-session-namespace-names COMMAND ker-session-ring-namespaces-test names)
+    add_test(NAME native-fstack-session-namespace-isolation COMMAND ker-session-ring-namespaces-test isolation)
+    add_test(NAME native-fstack-session-namespace-recreate COMMAND ker-session-ring-namespaces-test recreate)
+    set_tests_properties(native-fstack-session-namespace-names native-fstack-session-namespace-isolation
+        native-fstack-session-namespace-recreate PROPERTIES TIMEOUT 20 LABELS "fstack;session;dpdk")
     add_executable(ker-session-orphan-safety-test
         tests/posix/session-orphan-safety.c src/posix/session-generation-rings.c)
     target_include_directories(ker-session-orphan-safety-test PRIVATE src/posix tests)

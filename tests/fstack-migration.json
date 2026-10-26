@@ -2185,9 +2185,23 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial master namespace-isolation adaptation through the production resident name builder and original DPDK ring APIs. All128 supported slot/generation/process/channel tuples create distinct names and actual ring objects; duplicate creation fails with EEXIST without replacing an existing object. Exact buffer capacity succeeds, truncation preserves canaries and invalid coordinates are explicitly rejected. All128 rings each hold64 distinct caller-owned tokens: full enqueue fails, FIFO pointer/byte identity is preserved and no other coordinate is consumed. Draining/freeing and recreating slots1/2 preserves queued objects in slots0/3. Every ring is drained, freed and absent from lookup before original EAL cleanup.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-namespace-names",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "native-fstack-session-namespace-isolation",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "native-fstack-session-namespace-recreate",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        }
+      ],
+      "remaining": "Ker has4 slots,2 generations,4 processes and4 channels. This does not implement the source F-Stack process IDs7/127, FF_SYSCTL..FF_MSG_NUM message-type namespace, legacy/no-epoch name equivalence or literal ff_msg_ring_* ABI. These are primary-only original-DPDK ring/component tests with caller-owned tokens, not mbuf leases, resident registration, secondary-EAL visibility, packet delivery, epoch admission/recycle authorization or full reload."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
