@@ -404,6 +404,55 @@ static void partial_payload_faults(void)
     CHECK(munmap(memory, (size_t)page * 2) == 0);
 }
 
+struct fault_worker {
+    pthread_barrier_t *barrier;
+    unsigned int identity;
+};
+static void *concurrent_fault_worker(void *opaque)
+{
+    struct fault_worker *worker = opaque;
+    struct pair p = connected();
+    long page = sysconf(_SC_PAGESIZE); CHECK(page > 0);
+    void *bad = mmap(NULL, (size_t)page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(bad != MAP_FAILED);
+    for (unsigned int round = 0; round < 12; ++round) {
+        int status = pthread_barrier_wait(worker->barrier);
+        CHECK(status == 0 || status == PTHREAD_BARRIER_SERIAL_THREAD);
+        socklen_t length = sizeof(int);
+        ERROR(getsockopt(p.client, SOL_SOCKET, SO_TYPE, bad, &length), EFAULT);
+        CHECK(option(p.client, SOL_SOCKET, SO_TYPE) == SOCK_STREAM);
+        uint32_t payload[2] = {worker->identity, round}, received[2];
+        CHECK(send(p.client, payload, sizeof(payload), MSG_NOSIGNAL) == sizeof(payload));
+        ready(p.server);
+        ERROR(readv(p.server, bad, 1), EFAULT); /* iovec import must not consume TCP data. */
+        CHECK(recv(p.server, received, sizeof(received), MSG_WAITALL) == sizeof(received));
+        CHECK(!memcmp(payload, received, sizeof(payload)));
+        errno = 1000 + (int)worker->identity;
+        CHECK(sched_yield() == 0);
+        CHECK(errno == 1000 + (int)worker->identity);
+    }
+    CHECK(munmap(bad, (size_t)page) == 0);
+    finish(p);
+    return NULL;
+}
+static void concurrent_usercopy_faults(void)
+{
+    enum {workers = 6};
+    pthread_barrier_t barrier;
+    CHECK(pthread_barrier_init(&barrier, NULL, workers) == 0);
+    pthread_t threads[workers]; struct fault_worker arguments[workers];
+    for (unsigned int i = 0; i < workers; ++i) {
+        arguments[i] = (struct fault_worker){&barrier, i + 1};
+        CHECK(pthread_create(&threads[i], NULL, concurrent_fault_worker, &arguments[i]) == 0);
+    }
+    for (unsigned int i = 0; i < workers; ++i) CHECK(pthread_join(threads[i], NULL) == 0);
+    CHECK(pthread_barrier_destroy(&barrier) == 0);
+    struct pair p = connected(); /* Runtime remains usable after all workers exit. */
+    CHECK(send(p.client, "after", 5, MSG_NOSIGNAL) == 5);
+    char recovered[5]; CHECK(recv(p.server, recovered, sizeof(recovered), MSG_WAITALL) == 5);
+    CHECK(!memcmp(recovered, "after", 5)); finish(p);
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -2081,6 +2130,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"concurrent-usercopy-faults-thread-errno-and-exit-recovery", concurrent_usercopy_faults},
         {"partial-TCP-copy-retention-and-UDP-datagram-fault-consumption", partial_payload_faults},
         {"descriptor-at-nanosecond-timestamps", descriptor_at_timestamps},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
