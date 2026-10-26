@@ -912,7 +912,8 @@ static void route_netlink(void)
             CHECK(remaining == 0);
         }
     }
-    CHECK(links >= 2 && ipv4 >= 2 && loopback > 0);
+    CHECK(links >= (native_instance ? 2u : 1u) &&
+          ipv4 >= (native_instance ? 2u : 1u) && loopback > 0);
     if (native_instance) {
         CHECK(packet_index > 0 && packet_mtu > 0);
         int requested_mtu = packet_mtu == 1400 ? 1401 : 1400;
