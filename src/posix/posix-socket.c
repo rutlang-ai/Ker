@@ -316,6 +316,12 @@ int ioctl(int fd, unsigned long request, ...)
     if (request == FIOASYNC || request == FIOSETOWN || request == SIOCSPGRP) {
         ker_fd_put(entry); errno = EOPNOTSUPP; return -1;
     }
+    /* These socket operations unconditionally transfer an integer. LKL's
+     * in-process uaccess cannot recover a host NULL dereference. */
+    if (!argument && entry->kind == KER_FD_SOCKET &&
+        (request == FIONBIO || request == FIONREAD || request == SIOCOUTQ)) {
+        ker_fd_put(entry); errno = EFAULT; return -1;
+    }
     long value = ker_mtu_ioctl(entry->native, request, argument);
     ker_fd_put(entry);
     return ker_native_result(value);

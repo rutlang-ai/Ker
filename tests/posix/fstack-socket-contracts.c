@@ -497,6 +497,28 @@ static void descriptor_xattrs(void)
     CHECK(close(fd) == 0);
 }
 
+static void null_queue_ioctl(void)
+{
+    struct pair p = connected();
+    int udp = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(udp >= 0);
+    int pipefd[2]; CHECK(pipe2(pipefd, O_CLOEXEC) == 0);
+    CHECK(write(p.client, "i", 1) == 1); ready(p.server);
+    CHECK(write(pipefd[1], "h", 1) == 1);
+    int descriptors[] = {p.server, udp, pipefd[0]};
+    for (unsigned i = 0; i < 3; ++i) {
+        ERROR(ioctl(descriptors[i], FIONREAD, (void *)NULL), EFAULT);
+        ERROR(ioctl(descriptors[i], FIONBIO, (void *)NULL), EFAULT);
+        if (i < 2) ERROR(ioctl(descriptors[i], SIOCOUTQ, (void *)NULL), EFAULT);
+        int count = -1; CHECK(ioctl(descriptors[i], FIONREAD, &count) == 0);
+        CHECK(count == (i == 1 ? 0 : 1));
+        CHECK(!(fcntl(descriptors[i], F_GETFL) & O_NONBLOCK));
+    }
+    ERROR(ioctl(-1, FIONREAD, (void *)NULL), EBADF);
+    char byte; CHECK(read(p.server, &byte, 1) == 1 && byte == 'i');
+    CHECK(read(pipefd[0], &byte, 1) == 1 && byte == 'h');
+    CHECK(close(udp) == 0 && close(pipefd[0]) == 0 && close(pipefd[1]) == 0); finish(p);
+}
+
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -567,6 +589,7 @@ int main(void)
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
+        {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},

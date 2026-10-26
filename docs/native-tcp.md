@@ -1433,3 +1433,5 @@ UTIME_OMIT 与纳秒/微秒输入，并保留宿主文件行为；非法时间�
 fd xattr 操作使用原始 Linux inode：可读取/枚举 socketfs 的 system.sockprotoname，
 缓冲区不足返回 ERANGE，固定内核对 socket 的 user xattr 写入按其权限规则返回 EPERM。
 宿主文件保留 user xattr 的 CREATE/REPLACE/remove 语义。
+原生 socket 的 FIONREAD、FIONBIO、SIOCOUTQ ioctl 对 NULL 整数参数返回 EFAULT，
+避免进程内 LKL uaccess 解引用空地址；错误不消费 TCP/宿主管道数据，也不改变 nonblocking 状态。
