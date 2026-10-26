@@ -247,6 +247,30 @@ static void extended_descriptor_stat(void)
     CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
 }
+static void unreadable_host_path_at(void)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    void *unreadable = mmap(NULL, (size_t)page_size, PROT_NONE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(unreadable != MAP_FAILED);
+    int host = open("/dev/null", O_RDONLY | O_CLOEXEC); CHECK(host >= 0);
+    struct stat result; struct statx extended_result;
+    int (*stat_at)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat");
+    int (*statx_at)(int, const char *, int, unsigned, struct statx *) = dlsym(RTLD_DEFAULT, "statx");
+    int (*access_at)(int, const char *, int, int) = dlsym(RTLD_DEFAULT, "faccessat");
+    CHECK(stat_at && statx_at && access_at);
+    int descriptors[] = {AT_FDCWD, host};
+    for (size_t i = 0; i < sizeof(descriptors) / sizeof(descriptors[0]); ++i) {
+        int fd = descriptors[i];
+        ERROR(fstatat(fd, unreadable, &result, 0), EFAULT);
+        ERROR(stat_at(fd, unreadable, &result, 0), EFAULT);
+        ERROR(statx(fd, unreadable, 0, STATX_BASIC_STATS, &extended_result), EFAULT);
+        ERROR(statx_at(fd, unreadable, 0, STATX_BASIC_STATS, &extended_result), EFAULT);
+        ERROR(faccessat(fd, unreadable, F_OK, 0), EFAULT);
+        ERROR(access_at(fd, unreadable, F_OK, 0), EFAULT);
+    }
+    CHECK(close(host) == 0 && munmap(unreadable, (size_t)page_size) == 0);
+}
 static void empty_path_stat(void)
 {
     struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
@@ -1649,6 +1673,7 @@ int main(void)
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
         {"empty-path-stat-owner-routing", empty_path_stat},
         {"host-native-fstatat-statx-protected-paths", host_path_fault_routing},
+        {"unreadable-host-path-at-apis", unreadable_host_path_at},
         {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
         {"descriptor-access-permission-owner-routing", descriptor_access},
         {"host-native-identical-udp-tuple", host_native_same_tuple},

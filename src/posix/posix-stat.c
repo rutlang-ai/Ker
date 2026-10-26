@@ -178,9 +178,12 @@ int statx(int fd, const char *path, int flags, unsigned mask, struct statx *outp
  * silently discarding AT_EACCESS/AT_EMPTY_PATH as the old raw syscall would. */
 static int descriptor_accessat(int fd, const char *path, int mode, int flags)
 {
-    if (path && path[0] == '/') return syscall(SYS_faccessat2, fd, path, mode, flags);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_faccessat2, fd, path, mode, flags);
+    if (path && path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_faccessat2, fd, path, mode, flags);
+    }
     /* In-process uaccess cannot fault-protect NULL pathnames. Keep upstream
      * flag/mode validation ahead of the pathname copy. */
     if (!path && !(mode & ~(R_OK | W_OK | X_OK)) &&
