@@ -50,3 +50,11 @@ architecture-specific status. Their canonical follow-up is now
 group disposition agree. The seven blocked allocation/write-cursor/zero-send
 contracts remain under [#225](https://github.com/rutlang-ai/Ker/issues/225).
 This tracking correction changes no case status and claims no Linux mbuf ABI.
+
+## 当前分段写入补齐
+
+上表是早期审计记录；当前状态以机器清单为准。`mbuf_write_multi_segment`现由
+`native-fstack-buffer-segments-layout`适配：生产owned writer中的两个真实Linux
+VMA保存128/50字节、准确节点长度及总长度178，且故障测试验证回滚和回收。
+不复刻FreeBSD `m_next`/`m_len` ABI，也不把单纯scatter-gather发送算作写游标证据。
+issue225的行为项已全部有场景映射；两个FreeBSD头字段断言仍由issue232追踪。

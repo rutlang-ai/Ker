@@ -70,6 +70,18 @@ KER_API struct ker_posix_buffer_writer *ker_posix_buffer_writer_create(size_t ca
 KER_API int ker_posix_buffer_writer_append(struct ker_posix_buffer_writer *writer, const void *data, size_t length);
 KER_API const void *ker_posix_buffer_writer_view(struct ker_posix_buffer_writer *writer, size_t *length, size_t *capacity);
 KER_API int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writer);
+/* Segmented owned writer: capacity and segment_capacity must be 1..INT_MAX,
+ * with at most IOV_MAX VMAs. append fills nodes in order, atomically advancing
+ * the aggregate length. Segment views expose borrowed data, used bytes, local
+ * capacity and aggregate length; invalid indices preserve all outputs.
+ * Ordinary view/send reject segmented writers with EOPNOTSUPP. Use segment
+ * views with native sendmsg; synchronize access and await all completions.
+ * Partial destroy failures retain a retry handle: after any segment is freed,
+ * append/views fail EBUSY until destroy succeeds. Shutdown reclaims residuals.
+ * Handles retain their identity until shutdown, as for single-VMA writers. */
+KER_API struct ker_posix_buffer_writer *ker_posix_buffer_writer_create_segmented(size_t capacity, size_t segment_capacity);
+KER_API const void *ker_posix_buffer_writer_segment(struct ker_posix_buffer_writer *writer, size_t index,
+    size_t *length, size_t *capacity, size_t *total_length);
 /* Send a nonempty written range through an imported native socket. Bounds and
  * zero length fail EINVAL before sending; unregistered host descriptors fail
  * EBADF and native non-sockets fail ENOTSOCK. Returns accepted bytes or
