@@ -2507,6 +2507,16 @@
         "native-fstack-session-control-reservation-bounds"
       ],
       "adaptation": "Partial user-registration proof through actual resident pre-EAL control reservations and read-only STATUS queries. Independent direct children perform byte-identical RESERVE retries that retain exactly one mbuf/user, duplicate-coordinate requests on a second connection that return EBUSY without changing the original lease, and invalid generation/process bounds or slot/session/epoch/token requests that allocate nothing. A valid generation1/process3 reservation succeeds after all invalid requests on the same connection. The live accepted borrower blocks MASTER RELEASE, survives transport EOF and is reclaimed only after exact pidfd death; final release restores511 available objects and zero slots/users. Remaining: Only control-reservation registration and census are covered. These children do not attach a secondary EAL or use hardware. The source hardware-user ACTIVE/STOPPED table ABI, own user_add idempotence across distinct operations, explicit stop/release acknowledgements, users_clear/epoch_users_clear behavior and independent hardware-coordinate proofs remain unimplemented. Identical sequence replay is transport idempotence; Ker deliberately rejects a fresh RESERVE on an already reserved connection with EINVAL and a duplicate coordinate with EBUSY, so these are not equivalent to the source idempotent user_add API. No complete source pass, RX takeover or packet delivery is claimed."
+    },
+    "native-fstack-session-orphan-reservations": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_p2_orphan_workers_keep_epoch_live",
+      "ker_ctests": [
+        "native-fstack-session-orphan-reservation-eof",
+        "native-fstack-session-orphan-reservation-frozen",
+        "native-fstack-session-orphan-reservation-staged"
+      ],
+      "adaptation": "Partial orphan-epoch lifetime adaptation using real resident control reservations. A distinct master registers one or two direct-child borrowers, then dies by SIGKILL while the borrowers remain alive. EOF-disconnected and SIGSTOP-frozen borrowers retain their exact mbuf leases and epoch; two generation/process coordinates are reclaimed separately only after their exact pidfd deaths, and the final borrower death retires the epoch and frees the slot. A separate live master and resident epoch0 remain live throughout. Reuse requires a newer epoch and rejects the retired ticket. Each stage checks exact user/object counts; final resident cleanup restores511 objects and removes its socket. Remaining: These are pre-EAL control reservations, not secondary EALs or hardware users. Ker retains exact pidfd-backed registrations rather than F-Stack heartbeat timestamps. The source fresh/stale stamp takeover decisions, live-master/stale-stamp contrast, retired-slot takeover semantics, RX ownership transfer and ff_reload_gendir_rx_reclaim return/counter ABI remain unqualified. No complete source pass, hardware access or network delivery is claimed."
     }
   }
 }

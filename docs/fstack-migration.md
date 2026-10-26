@@ -15,12 +15,12 @@
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | scenario-adapted | 208 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 16 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 139 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| partial | 17 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| blocked | 138 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、16 partial、139 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为208 scenario-adapted、17 partial、138 blocked，共155项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -52,7 +52,7 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共225项记录在
 [后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：155项行为未完成
-（16 partial + 139 blocked），另有15项架构专用和55项上游工具链自测。
+（17 partial + 138 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -1709,3 +1709,22 @@ session、epoch、token均被拒绝，每次检查无user或对象分配；同�
 
 本批Debug/Release各15项控制CTest通过，21项迁移审计测试及22项CI选择器测试
 通过；两个真实CMake图各41项session注册均与严格CI清单一致。
+
+## P2 orphan epoch lifetime 的控制 lease 子集
+
+`native-fstack-session-orphan-reservation-eof/frozen/staged` 在真实resident上
+由独立master创建direct-child控制借用者，再SIGKILL master。eof借用者已关闭
+socket，frozen借用者已确认SIGSTOP；两者即使失去master仍保留epoch及实际mbuf
+lease。staged使用两个generation/process坐标，精确pidfd死亡后只回收对应对象，
+剩余活借用者继续保留epoch；最后一个退出后才释放slot，复用时要求更高epoch且
+拒绝旧ticket。另一个活master及resident epoch0全程保持live。
+
+测试进程临时作为subreaper，持有子进程pidfd并负责收养/回收孤儿，最后恢复原状态；
+独立私有进程组覆盖未完成启动时的清理。每阶段验证实际user/object计数，退出时
+要求511对象归还、无slot/user及socket清理。这里没有secondary EAL或硬件，
+精确pidfd登记不等于F-Stack fresh/stale heartbeat及RX reclaim合同。
+`test_p2_orphan_workers_keep_epoch_live`仅从blocked推进为partial，仍由issue #218
+跟踪；208项scenario-adapted、17项partial、138项blocked，155项行为仍未完成。
+
+本批Debug/Release各18项控制/孤儿reservation CTest通过，21项迁移审计测试及
+22项CI选择器测试通过；两个真实CMake图各44项session注册均与严格CI清单一致。

@@ -2255,9 +2255,23 @@
     {
       "id": "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial orphan-epoch lifetime adaptation using real resident control reservations. A distinct master registers one or two direct-child borrowers, then dies by SIGKILL while the borrowers remain alive. EOF-disconnected and SIGSTOP-frozen borrowers retain their exact mbuf leases and epoch; two generation/process coordinates are reclaimed separately only after their exact pidfd deaths, and the final borrower death retires the epoch and frees the slot. A separate live master and resident epoch0 remain live throughout. Reuse requires a newer epoch and rejects the retired ticket. Each stage checks exact user/object counts; final resident cleanup restores511 objects and removes its socket.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-orphan-reservation-eof",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-reservation-frozen",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-reservation-staged",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        }
+      ],
+      "remaining": "These are pre-EAL control reservations, not secondary EALs or hardware users. Ker retains exact pidfd-backed registrations rather than F-Stack heartbeat timestamps. The source fresh/stale stamp takeover decisions, live-master/stale-stamp contrast, retired-slot takeover semantics, RX ownership transfer and ff_reload_gendir_rx_reclaim return/counter ABI remain unqualified. No complete source pass, hardware access or network delivery is claimed."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",

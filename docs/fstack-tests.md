@@ -515,3 +515,8 @@ P2登记证明子集：`native-fstack-session-control-reservation-replay/reserva
 验证RESERVE相同序列号重放只保留一个lease、重复坐标与非法凭据/边界不改变登记，
 以及同一连接拒绝后的有效登记。`test_p2_hw_user_proof`仅推进为partial；
 没有硬件ACTIVE/STOPPED表、操作级user_add幂等或users_clear证明。
+
+孤儿控制借用者：`native-fstack-session-orphan-reservation-eof/frozen/staged`
+验证真实master死亡后，EOF/冻结的活借用者保留epoch与mbuf lease，多个坐标按
+精确pidfd死亡分别回收，最后才可复用slot。P2 orphan源案例仅推进为partial；
+没有secondary EAL、heartbeat老化接管或硬件RX-owner证明。

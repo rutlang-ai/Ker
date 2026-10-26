@@ -278,6 +278,21 @@ if(BUILD_TESTING)
         native-fstack-session-control-reservation-replay native-fstack-session-control-reservation-collision
         native-fstack-session-control-reservation-bounds PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME native-fstack-session-orphan-reservation-eof
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-orphan-reservations.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile orphan-eof)
+    add_test(NAME native-fstack-session-orphan-reservation-frozen
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-orphan-reservations.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile orphan-frozen)
+    add_test(NAME native-fstack-session-orphan-reservation-staged
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-orphan-reservations.py"
+            --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
+            --profile orphan-staged)
+    set_tests_properties(native-fstack-session-orphan-reservation-eof
+        native-fstack-session-orphan-reservation-frozen native-fstack-session-orphan-reservation-staged
+        PROPERTIES TIMEOUT 30 LABELS "fstack;session;dpdk" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME native-fstack-session-tc3-observer
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-tc3-observer.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py"
