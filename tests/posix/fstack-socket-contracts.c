@@ -355,6 +355,53 @@ static void user_memory_faults(void)
     finish(p);
 }
 
+static void partial_payload_faults(void)
+{
+    long page = sysconf(_SC_PAGESIZE); CHECK(page >= 4096);
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED && mprotect(memory + page, (size_t)page, PROT_NONE) == 0);
+    const char payload[] = "fault-prefix!";
+    const size_t length = sizeof(payload) - 1, prefix = 5;
+    struct iovec vectors[] = {{memory + page - prefix, prefix}, {memory + page, length - prefix}};
+    struct pair p = connected();
+    CHECK(send(p.client, payload, length, MSG_NOSIGNAL) == (ssize_t)length); ready(p.server);
+    ERROR(readv(p.server, vectors, 2), EFAULT);
+    CHECK(!memcmp(memory + page - prefix, payload, prefix));
+    char recovered[32];
+    CHECK(recv(p.server, recovered, length, MSG_WAITALL) == (ssize_t)length);
+    CHECK(!memcmp(recovered, payload, length));
+    finish(p);
+    for (int family = 0; family < 2; ++family) {
+        int domain = family ? AF_INET6 : AF_INET;
+        int rx = socket(domain, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        int tx = socket(domain, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        CHECK(rx >= 0 && tx >= 0);
+        struct sockaddr_storage address = {0}; socklen_t size;
+        if (family) {
+            struct sockaddr_in6 value = {.sin6_family = AF_INET6, .sin6_addr = IN6ADDR_LOOPBACK_INIT};
+            memcpy(&address, &value, sizeof(value)); size = sizeof(value);
+        } else {
+            struct sockaddr_in value = local(); memcpy(&address, &value, sizeof(value)); size = sizeof(value);
+        }
+        CHECK(bind(rx, (void *)&address, size) == 0);
+        CHECK(getsockname(rx, (void *)&address, &size) == 0);
+        CHECK(sendto(tx, payload, length, 0, (void *)&address, size) == (ssize_t)length); ready(rx);
+        struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
+        ERROR(recvmsg(rx, &message, MSG_PEEK), EFAULT);
+        CHECK(!memcmp(memory + page - prefix, payload, prefix));
+        CHECK(recv(rx, recovered, sizeof(recovered), MSG_PEEK) == (ssize_t)length);
+        CHECK(!memcmp(recovered, payload, length));
+        ERROR(recvmsg(rx, &message, 0), EFAULT);
+        CHECK(!memcmp(memory + page - prefix, payload, prefix));
+        ERROR(recv(rx, recovered, sizeof(recovered), MSG_DONTWAIT), EAGAIN);
+        CHECK(sendto(tx, "next", 4, 0, (void *)&address, size) == 4); ready(rx);
+        CHECK(recv(rx, recovered, sizeof(recovered), 0) == 4 && !memcmp(recovered, "next", 4));
+        CHECK(close(rx) == 0 && close(tx) == 0);
+    }
+    CHECK(munmap(memory, (size_t)page * 2) == 0);
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -2032,6 +2079,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"partial-TCP-copy-retention-and-UDP-datagram-fault-consumption", partial_payload_faults},
         {"descriptor-at-nanosecond-timestamps", descriptor_at_timestamps},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
         {"host-fchmodat2-ENOSYS-flags-zero-fallback", fchmodat2_enosys_fallback},

@@ -1123,10 +1123,12 @@ if(BUILD_TESTING)
     add_executable(ker-posix-fstack-socket-contracts-test tests/posix/fstack-socket-contracts.c)
     target_compile_options(ker-posix-fstack-socket-contracts-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-posix-fstack-socket-contracts-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
-    add_test(NAME host-fstack-socket-contracts-reference COMMAND ker-posix-fstack-socket-contracts-test)
+    add_test(NAME host-fstack-socket-contracts-reference COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/packet-socket-reference.py"
+        --app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>")
     set_tests_properties(host-fstack-socket-contracts-reference PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-socket-contracts COMMAND ${ker_native_test_command}
-        --fd-app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>" --fd-coexistence)
+        --fd-app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>" --fd-coexistence --fd-payload-faults)
     set_tests_properties(native-fstack-socket-contracts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fortify-poll-cancel-allocation-test
         tests/posix/fortify-poll-cancel-allocation.c src/posix/posix-fortify.c)
