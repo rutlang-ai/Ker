@@ -38,7 +38,7 @@ foreach(artifact config library)
     endif()
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
-    src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c
+    src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c
     src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
@@ -1103,6 +1103,18 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-socket-contracts COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>" --fd-coexistence)
     set_tests_properties(native-fstack-socket-contracts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fortify-bounds-test tests/posix/fortify-bounds.c src/posix/posix-fortify.c)
+    target_compile_options(ker-posix-fortify-bounds-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-fortify-bounds COMMAND ker-posix-fortify-bounds-test)
+    set_tests_properties(native-fstack-fortify-bounds PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_executable(ker-posix-fstack-fortified-test tests/posix/fstack-socket-contracts.c)
+    target_compile_options(ker-posix-fstack-fortified-test PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -Wall -Wextra -Werror)
+    target_link_libraries(ker-posix-fstack-fortified-test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME host-fstack-fortified-io-reference COMMAND ker-posix-fstack-fortified-test)
+    set_tests_properties(host-fstack-fortified-io-reference PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-fortified-io COMMAND ${ker_native_test_command}
+        --fd-app "$<TARGET_FILE:ker-posix-fstack-fortified-test>" --fd-coexistence)
+    set_tests_properties(native-fstack-fortified-io PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-readiness-test tests/posix/fstack-readiness.c)
     target_compile_options(ker-posix-fstack-readiness-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME host-fstack-readiness-reference COMMAND ker-posix-fstack-readiness-test)

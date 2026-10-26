@@ -1448,3 +1448,7 @@ sendfile/sendfile64、splice、tee 和 copy_file_range 仅在输入输出属于�
 跨宿主/原生 fd 显式返回 EOPNOTSUPP，避免把占位 fd 当作数据来源/目标，错误不推进偏移。
 vmsplice 按单个 fd 的所属内核分派。宿主文件、UNIX socket 和 pipe 的实际传输保持正常，
 两个原生 fd 的操作仍交给原始 Linux 检查类型、权限和错误。
+
+glibc `_FORTIFY_SOURCE=2` 的 checked read/pread/recv/recvfrom/poll/ppoll 入口保留真实
+缓冲区越界中止，再走同一个 fd 分派；优化后的 fortified 应用不再绕过原生 socket facade。
+独立 -O2 fortified 测试验证真实 TCP、MSG_PEEK、定位读错误、就绪状态及 SIGABRT 边界。

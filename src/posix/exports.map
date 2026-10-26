@@ -18,6 +18,7 @@
         fgetxattr; fsetxattr; flistxattr; fremovexattr;
         mmap; mmap64;
         sendfile; sendfile64; splice; copy_file_range; tee; vmsplice;
+        __read_chk; __pread_chk; __pread64_chk; __recv_chk; __recvfrom_chk; __poll_chk; __ppoll_chk;
         lseek; lseek64; pread; pread64; pwrite; pwrite64;
         preadv; preadv64; pwritev; pwritev64; preadv2; preadv64v2; pwritev2; pwritev64v2;
         fstatfs; fstatfs64;

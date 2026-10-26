@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 
 
 HOSTED_SAFE = (
+    "native-fstack-fortify-bounds",
     "native-packet-header",
     "native-fstack-session-peer-drain-retry",
     "native-fstack-session-lease-input",
@@ -167,6 +168,7 @@ NOHUGE_EAL = (
 # These socket tests use real EAL with --no-huge and net_tap. They need no
 # hugetlb allocation, but do need /dev/net/tun and unprivileged network namespaces.
 NOHUGE_TAP = (
+    "native-fstack-fortified-io",
     "native-fstack-eal-base-virtaddr",
     "native-fstack-eal-file-prefix",
     "native-fstack-eal-log-level",

@@ -756,6 +756,22 @@ static void mapping_owner_boundary(void)
     char byte; CHECK(pread(fd, &byte, 1, 0) == 1 && byte == 'y' && close(fd) == 0);
 }
 
+static void fortified_io(void)
+{
+    struct pair p = connected(); char bytes[8];
+    volatile size_t count = 1; volatile nfds_t descriptors = 1;
+    CHECK(write(p.client, "f", 1) == 1); ready(p.server);
+    struct pollfd event = {p.server, POLLIN, 0};
+    CHECK(poll(&event, descriptors, 0) == 1 && (event.revents & POLLIN));
+    struct timespec timeout = {0, 0};
+    CHECK(ppoll(&event, descriptors, &timeout, NULL) == 1 && (event.revents & POLLIN));
+    CHECK(recv(p.server, bytes, count, MSG_PEEK) == 1 && bytes[0] == 'f');
+    CHECK(recvfrom(p.server, bytes, count, MSG_PEEK, NULL, NULL) == 1 && bytes[0] == 'f');
+    ERROR(pread(p.server, bytes, count, 0), ESPIPE);
+    ERROR(pread64(p.server, bytes, count, 0), ESPIPE);
+    CHECK(read(p.server, bytes, count) == 1 && bytes[0] == 'f'); finish(p);
+
+}
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -831,6 +847,7 @@ int main(void)
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
         {"mapping-owner-and-anonymous-fd-boundaries", mapping_owner_boundary},
+        {"fortified-io-retains-owner-and-bounds", fortified_io},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},
