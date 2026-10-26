@@ -495,3 +495,8 @@ RX-15 in-flight 扩展：`native-fstack-session-orphan-inflight-rx/tx/both` 检�
 启动真实resident，以生产Python client和实际控制socket验证64-bit字段、畸形帧
 拒绝、请求重放及零资源泄漏。此证据只覆盖Ker控制适配器；UT-NR-14的F-Stack
 reload ABI/subcommand与C指针合同保留缺口，源案例仅从blocked推进到partial。
+
+控制槽位边界扩展：`native-fstack-session-control-isolation/capacity/recycle`
+在同一真实resident上验证同PID多连接的身份与缓存隔离、三个槽位耗尽时ENOSPC及
+后继重试、显式释放后slot复用与旧epoch拒绝。每例检查实时资源计数与退出回收；
+不增加UT-NR-14完成数，不覆盖跨进程死亡、secondary EAL或F-Stack reload ABI。
