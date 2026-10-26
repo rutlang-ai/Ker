@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "lkl-overlay/arch/lkl/include/asm/ker-host-usercopy.h"
 #include <ker/posix.h>
 #include "native-buffer.h"
 #include "mtu-control.h"
@@ -12,6 +13,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -235,9 +237,17 @@ ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_sendmsg, fd, message, flags);
+    if (entry->kind == KER_FD_EPOLL)
+        return sent(entry, lkl_sys_sendmsg(entry->native, (void *)message, flags), flags);
     struct ker_native_option_guard *guard = NULL;
-    int token = message ? ker_native_buffer_send_begin(entry->native,
-        message->msg_iov, message->msg_iovlen, flags, &guard) : -EFAULT;
+    struct msghdr copied;
+    int token = 0;
+    if (flags & MSG_ZEROCOPY) {
+        if (ker_host_usercopy(&copied, message, sizeof(copied), 0))
+            return sent(entry, -EFAULT, flags);
+        token = ker_native_buffer_send_begin(entry->native,
+            copied.msg_iov, copied.msg_iovlen, flags, &guard);
+    }
     struct netlink_cap_guard cap_guard;
     long result = token < 0 ? token : netlink_send_begin(entry, &cap_guard);
     if (result >= 0) result = lkl_sys_sendmsg(entry->native, (void *)message, flags);
@@ -260,6 +270,8 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_sendmmsg, fd, messages, count, flags);
+    if (entry->kind == KER_FD_EPOLL)
+        return (int)sent(entry, lkl_sys_sendmmsg(entry->native, (void *)messages, count, flags), flags);
     if (!(flags & MSG_ZEROCOPY) || !count) {
         struct netlink_cap_guard guard;
         long value = netlink_send_begin(entry, &guard);
@@ -275,14 +287,22 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
     unsigned int done = 0;
     long value = 0;
     while (done < count) {
-        struct msghdr *message = &messages[done].msg_hdr;
+        uintptr_t address = (uintptr_t)messages;
+        size_t offset = (size_t)done * sizeof(*messages);
+        if (address > UINTPTR_MAX - offset) { value = -EFAULT; break; }
+        struct mmsghdr *current = (void *)(address + offset);
+        struct msghdr message;
+        if (ker_host_usercopy(&message, current, sizeof(message), 0)) {
+            value = -EFAULT;
+            break;
+        }
         struct ker_native_option_guard *guard = NULL;
         int token = ker_native_buffer_send_begin(entry->native,
-            message->msg_iov, message->msg_iovlen, flags, &guard);
+            message.msg_iov, message.msg_iovlen, flags, &guard);
         struct netlink_cap_guard cap_guard;
         value = token < 0 ? token : netlink_send_begin(entry, &cap_guard);
         if (value >= 0) value = lkl_sys_sendmmsg(entry->native,
-            (void *)&messages[done], 1, flags | (done + 1 < count ? MSG_BATCH : 0));
+            (void *)current, 1, flags | (done + 1 < count ? MSG_BATCH : 0));
         long restored = token < 0 ? 0 : netlink_send_end(&cap_guard);
         if (value >= 0 && restored < 0) value = restored;
         ker_native_buffer_send_end(guard);
@@ -299,15 +319,25 @@ int sendmmsg(int fd, struct mmsghdr *messages, unsigned int count, int flags)
          * sendmmsg call returns. */
         size_t payload = 0;
         bool payload_overflow = false;
-        for (size_t i = 0; i < message->msg_iovlen; i++) {
-            size_t length = message->msg_iov[i].iov_len;
+        for (size_t i = 0; i < message.msg_iovlen; i++) {
+            struct iovec vector;
+            uintptr_t vectors = (uintptr_t)message.msg_iov;
+            if (i > (UINTPTR_MAX - vectors) / sizeof(vector) ||
+                ker_host_usercopy(&vector, (void *)(vectors + i * sizeof(vector)), sizeof(vector), 0)) {
+                payload_overflow = true;
+                break;
+            }
+            size_t length = vector.iov_len;
             if (length > SIZE_MAX - payload) {
                 payload_overflow = true;
                 break;
             }
             payload += length;
         }
-        if (payload_overflow || messages[done - 1].msg_len < payload) break;
+        unsigned int accepted;
+        if (payload_overflow || ker_host_usercopy(&accepted,
+                (void *)((uintptr_t)current + offsetof(struct mmsghdr, msg_len)), sizeof(accepted), 0) ||
+            accepted < payload) break;
     }
     return (int)sent(entry, done ? (long)done : value, flags);
 }

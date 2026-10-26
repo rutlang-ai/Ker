@@ -306,6 +306,19 @@ static void user_memory_faults(void)
     char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(memory != MAP_FAILED && mprotect(memory + page, (size_t)page, PROT_NONE) == 0);
     void *bad = memory + page; int value = 73; socklen_t length = sizeof(value);
+    for (int zero = 0; zero < 2; ++zero) {
+        int flags = MSG_NOSIGNAL | (zero ? MSG_ZEROCOPY : 0);
+        ERROR(sendmsg(p.client, bad, flags), EFAULT);
+        ERROR(sendmmsg(p.client, bad, 1, flags), EFAULT);
+        struct msghdr message = {.msg_iov = bad, .msg_iovlen = 1};
+        ERROR(sendmsg(p.client, &message, flags), EFAULT);
+        struct mmsghdr batch = {.msg_hdr = message, .msg_len = 777};
+        ERROR(sendmmsg(p.client, &batch, 1, flags), EFAULT);
+        CHECK(batch.msg_len == 777);
+        message.msg_iov = (void *)(memory + page - sizeof(struct iovec) / 2);
+        ERROR(sendmsg(p.client, &message, flags), EFAULT);
+    }
+
     fprintf(stderr, "usercopy probe: protected socket option output\n");
     ERROR(getsockopt(p.client, SOL_SOCKET, SO_TYPE, bad, &length), EFAULT);
     ERROR(getsockopt(p.client, SOL_SOCKET, SO_TYPE, &value, bad), EFAULT);

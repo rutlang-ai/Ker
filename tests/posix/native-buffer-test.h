@@ -4,6 +4,7 @@
 #include <linux/errqueue.h>
 #include <poll.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <stdint.h>
 #include <pthread.h>
 #include <limits.h>
@@ -384,6 +385,33 @@ static void buffer_guards(void)
           "valid mapped bytes delivered exactly");
     buffer_sent(16, true); buffer_complete(fd); /* First successful send must retain ID zero. */
     puts("BUFFER_SOURCE_CASE test_ff_zc_send_valid_args_proceeds");
+    long page = sysconf(_SC_PAGESIZE);
+    check(page >= 4096, "host page size");
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    check(memory != MAP_FAILED && mprotect(memory + page, (size_t)page, PROT_NONE) == 0,
+        "protected zerocopy metadata mapping");
+    void *bad = memory + page;
+    check(sendmsg(fd, bad, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "protected zerocopy message header");
+    check(sendmmsg(fd, bad, 1, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "protected zerocopy batch header");
+    struct msghdr protected_iov = {.msg_iov = bad, .msg_iovlen = 1};
+    check(sendmsg(fd, &protected_iov, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "protected registered-send iovec");
+    protected_iov.msg_iov = (void *)(memory + page - sizeof(struct iovec) / 2);
+    check(sendmsg(fd, &protected_iov, MSG_ZEROCOPY) == -1 && errno == EFAULT,
+        "split registered-send iovec");
+    struct mmsghdr *split_batch = (void *)(memory + page - sizeof(*split_batch));
+    struct iovec prefix_iov = {registered, 16};
+    *split_batch = (struct mmsghdr){.msg_hdr = {.msg_iov = &prefix_iov, .msg_iovlen = 1}, .msg_len = 777};
+    check(sendmmsg(fd, split_batch, 2, MSG_ZEROCOPY) == 1 && split_batch->msg_len == 16,
+        "accepted batch prefix before protected next header");
+    check(recv(receiver, received, sizeof(received), 0) == 16 && !memcmp(received, registered, 16),
+        "protected suffix retains exact accepted prefix");
+    buffer_sent(16, true); buffer_complete(fd);
+    check(munmap(memory, (size_t)page * 2) == 0, "release protected metadata mapping");
+
     check(send(fd, host_bytes, host_size, MSG_ZEROCOPY) == -1 && errno == EFAULT,
           "foreign zerocopy storage rejected before GUP with live VMAs");
     check(send(fd, registered + 16380, 16, MSG_ZEROCOPY) == -1 && errno == EFAULT, "mapping range overflow rejected");
