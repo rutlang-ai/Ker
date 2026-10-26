@@ -3816,6 +3816,10 @@
         {
           "ctest": "native-fstack-current-time-optional",
           "provenance_case": "native-fstack-current-time"
+        },
+        {
+          "ctest": "native-fstack-current-time-sockets",
+          "provenance_case": "native-fstack-current-time-sockets"
         }
       ]
     },
@@ -3828,6 +3832,10 @@
         {
           "ctest": "native-fstack-current-time-optional",
           "provenance_case": "native-fstack-current-time"
+        },
+        {
+          "ctest": "native-fstack-current-time-sockets",
+          "provenance_case": "native-fstack-current-time-sockets"
         }
       ]
     },

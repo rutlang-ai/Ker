@@ -25,3 +25,13 @@ This is scenario adaptation, not the F-Stack cached timestamp or fatal-assert
 ABI. Successful paths execute the production adapter and original Linux;
 standalone bootstrap supplies only the active-instance gate. These tests do not
 claim network delivery or wall-clock stability across external time changes.
+
+`native-fstack-current-time-sockets` resolves the actual API from the preloaded
+library under ker-run. It checks synchronized samples and independently optional
+outputs during real original-Linux IPv4/IPv6 UDP exchanges. The app guard forbids
+host INET fallback; strict family/source markers prevent partial coverage. After
+explicit runtime teardown, reads fail ENETDOWN with unchanged outputs and the
+kernel release query becomes unavailable. Worker acknowledgement and zero live
+VMAs/guards/mbufs are required. The null PMD starts the runtime; payloads stay in
+native loopback and do not claim external-wire interoperability. This adds no
+new source-case completion count.
