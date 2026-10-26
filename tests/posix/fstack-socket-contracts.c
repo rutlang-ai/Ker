@@ -549,6 +549,34 @@ static void null_queue_ioctl(void)
     CHECK(close(udp) == 0 && close(pipefd[0]) == 0 && close(pipefd[1]) == 0); finish(p);
 }
 
+static void mapping_owner_boundary(void)
+{
+    int descriptors[] = {socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0),
+        socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0), epoll_create1(EPOLL_CLOEXEC)};
+    for (unsigned i = 0; i < 3; ++i) {
+        int fd = descriptors[i]; CHECK(fd >= 0);
+        int native = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") != NULL;
+        int expected = native && i < 2 ? EINVAL : ENODEV;
+        errno = 0; void *mapping = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (!native && i == 0) CHECK(mapping != MAP_FAILED && munmap(mapping, 4096) == 0);
+        else CHECK(mapping == MAP_FAILED && errno == expected);
+        errno = 0; mapping = mmap64(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (!native && i == 0) CHECK(mapping != MAP_FAILED && munmap(mapping, 4096) == 0);
+        else CHECK(mapping == MAP_FAILED && errno == expected);
+        errno = 0; CHECK(mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 1) == MAP_FAILED && errno == EINVAL);
+        char *anonymous = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, fd, 0);
+        CHECK(anonymous != MAP_FAILED); anonymous[0] = 'm'; CHECK(anonymous[0] == 'm' && munmap(anonymous, 4096) == 0);
+        CHECK(close(fd) == 0);
+    }
+    char path[] = "/tmp/ker-file-map-XXXXXX";
+    int fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    CHECK(pwrite(fd, "x", 1, 4095) == 1);
+    char *mapped = mmap64(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    CHECK(mapped != MAP_FAILED && mapped[4095] == 'x'); mapped[0] = 'y';
+    CHECK(msync(mapped, 4096, MS_SYNC) == 0 && munmap(mapped, 4096) == 0);
+    char byte; CHECK(pread(fd, &byte, 1, 0) == 1 && byte == 'y' && close(fd) == 0);
+}
+
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -621,6 +649,7 @@ int main(void)
         {"close-range-explicit-native-boundary", close_range_boundary},
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
+        {"mapping-owner-and-anonymous-fd-boundaries", mapping_owner_boundary},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},

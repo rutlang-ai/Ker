@@ -1440,3 +1440,6 @@ fd xattr 操作使用原始 Linux inode：可读取/枚举 socketfs 的 system.s
 关闭或 UNSHARE 操作显式返回 EOPNOTSUPP（包括仅覆盖宿主 fd 的范围），避免关闭私有
 控制通道或留下可错误路由复用 fd 的原生注册。此时请逐个调用 close；运行时不活动且无注册时
 保留宿主 close_range 行为，非法范围/标志仍优先返回 EINVAL。
+
+`mmap`/`mmap64` 对原生 fd 询问原始 Linux；当前 NOMMU 内核对 socket 返回 EINVAL，epoll 返回 ENODEV；未对齐偏移
+返回 EINVAL。宿主 MMU 内核的只读 TCP 映射是独立的成功行为；MAP_ANONYMOUS 始终忽略 fd 并使用宿主内存，普通宿主文件映射保留原有共享写回语义。
