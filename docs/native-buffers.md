@@ -193,3 +193,9 @@ Writer动态集成在原版Linux IPv4/IPv6 loopback上验证空owner、累计app
 普通Linux零字节UDP仍产生真实datagram与ID0；后续4/8字节发送保留准确编号及
 scatter-gather字节。销毁发生在完成之后；runtime退出同时回收raw残留和空writer，
 因此这些app场景的buffer_shutdown_releases必须为2。九个source marker完整且唯一。
+
+Writer故障扩展`native-fstack-buffer-writer-constructor/retry`只定点注入当前线程的
+登记malloc ENOMEM、mmap ENOMEM或munmap EIO，正常路径始终调用原版实现。
+构造失败不污染已有owner，mmap失败释放临时登记；销毁失败保留owner供查询、
+同步交接及后继append，另一个owner不受影响，真实重试成功后不能重复unmap。
+精确回收全部VMA和一个残留空owner，不计FreeBSD分配器ABI或无同步访问证明。

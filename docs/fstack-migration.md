@@ -1849,3 +1849,15 @@ architecture-specific，新增逻辑游标不声称该FreeBSD布局。m_next/per
 Debug/Release的zc-validation通过，Debug完整virtio/native-buffer回归通过。
 这是三项既有writer源行为映射的集成补强，不覆盖source零字节send拒绝或mbuf
 布局/多节点链；213项scenario-adapted、18项partial、132项blocked，150项行为未完成。
+
+## Owned writer 的失败与同步交接
+
+新增`native-fstack-buffer-writer-constructor/retry`，使用thread-local定点故障
+验证构造malloc/mmap失败回滚、临时登记释放、munmap失败后的owner保留和真实
+重试。producer/consumer明确join后交接，失败owner仍可append且不影响另一owner；
+重复destroy不再触发unmap，最终3次成功分配/释放与唯一shutdown owner精确匹配。
+Debug/Release两项新CTest均通过，并列入hosted-safe必跑清单。
+
+这是已有三项owned writer映射的Ker适配器扩展，不新增FreeBSD malloc/chain ABI、
+无同步访问或网络证明；213项scenario-adapted、18项partial、132项blocked，
+150项行为未完成，计数不变。

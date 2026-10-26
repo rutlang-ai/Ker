@@ -4762,7 +4762,7 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Owned native writer creation accepts capacity0 and owns an actual registered original-Linux VMA with minimal one-byte backing. The borrowed view is non-NULL while logical capacity and written length remain0; nonempty append fails and valid zero append is a no-op. Exact owner destruction/shutdown releases the VMA. Raw buffer_alloc(0) still rejects EINVAL. This adapts the source owned-empty-allocation outcome without a FreeBSD mbuf chain/header ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation.",
+      "reason": "Owned native writer creation accepts capacity0 and owns an actual registered original-Linux VMA with minimal one-byte backing. The borrowed view is non-NULL while logical capacity and written length remain0; nonempty append fails and valid zero append is a no-op. Exact owner destruction/shutdown releases the VMA. Raw buffer_alloc(0) still rejects EINVAL. This adapts the source owned-empty-allocation outcome without a FreeBSD mbuf chain/header ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation. Failure extensions verify construction rollback, isolated owner preservation and retryable destroy across synchronized thread handoff using targeted malloc/mmap/munmap faults and real successful Linux syscalls.",
       "ker_tests": [
         {
           "ctest": "native-fstack-buffer-writer-empty",
@@ -4771,6 +4771,14 @@
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-fstack-buffer-writer-sockets"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-constructor",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-retry",
+          "provenance_case": "native-fstack-buffer-writer-failures"
         }
       ]
     },
@@ -4778,7 +4786,7 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "A real owned native writer appends ab then cd, returns2 for each operation and exposes aggregate logical length4 with exact abcd bytes. Rejected overflow/NULL appends preserve both cursor and bytes; an alias append extends the payload correctly. This adapts accumulated owned-payload length and bytes through a logical cursor on an original-Linux VMA, not the literal FreeBSD m_pkthdr field or linked-chain ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation.",
+      "reason": "A real owned native writer appends ab then cd, returns2 for each operation and exposes aggregate logical length4 with exact abcd bytes. Rejected overflow/NULL appends preserve both cursor and bytes; an alias append extends the payload correctly. This adapts accumulated owned-payload length and bytes through a logical cursor on an original-Linux VMA, not the literal FreeBSD m_pkthdr field or linked-chain ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation. Failure extensions verify construction rollback, isolated owner preservation and retryable destroy across synchronized thread handoff using targeted malloc/mmap/munmap faults and real successful Linux syscalls.",
       "ker_tests": [
         {
           "ctest": "native-fstack-buffer-writer-append",
@@ -4787,6 +4795,14 @@
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-fstack-buffer-writer-sockets"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-constructor",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-retry",
+          "provenance_case": "native-fstack-buffer-writer-failures"
         }
       ]
     },
@@ -4842,7 +4858,7 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "A valid zero-length append to a real native writer returns0 and preserves the initially empty logical length, and preserves a later nonempty prefix and length after a successful append. NULL data remains invalid even at length0. This is the source no-op-write outcome on an original-Linux VMA owner, distinct from Linux zero-byte socket sends and not a FreeBSD header ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation.",
+      "reason": "A valid zero-length append to a real native writer returns0 and preserves the initially empty logical length, and preserves a later nonempty prefix and length after a successful append. NULL data remains invalid even at length0. This is the source no-op-write outcome on an original-Linux VMA owner, distinct from Linux zero-byte socket sends and not a FreeBSD header ABI. Dynamic-library IPv4/IPv6 loopback integration also verifies no queue/completion side effects from append, exact later payload/completion numbering and destruction only after completed sends, plus shutdown reclamation. Failure extensions verify construction rollback, isolated owner preservation and retryable destroy across synchronized thread handoff using targeted malloc/mmap/munmap faults and real successful Linux syscalls.",
       "ker_tests": [
         {
           "ctest": "native-fstack-buffer-writer-zero",
@@ -4851,6 +4867,14 @@
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-fstack-buffer-writer-sockets"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-constructor",
+          "provenance_case": "native-fstack-buffer-writer-failures"
+        },
+        {
+          "ctest": "native-fstack-buffer-writer-retry",
+          "provenance_case": "native-fstack-buffer-writer-failures"
         }
       ]
     },
