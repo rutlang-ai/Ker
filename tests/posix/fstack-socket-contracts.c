@@ -29,6 +29,10 @@
 #include <linux/close_range.h>
 #include <linux/limits.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
+#include <net/if.h>
+#include <limits.h>
 #include <sys/sendfile.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -420,6 +424,25 @@ static void file_cache_operations(void)
     CHECK(lseek(fd, 0, SEEK_CUR) == 1 && close(fd) == 0);
     errno = EINPROGRESS; CHECK(posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) == EBADF && errno == EINPROGRESS);
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
+}
+
+static void interface_name_lookup(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
+    unsigned seen = 0;
+    for (int index = 1; index < 64; ++index) {
+        struct ifreq request = {.ifr_ifindex = index};
+        if (ioctl(fd, SIOCGIFNAME, &request) < 0) { CHECK(errno == ENODEV); continue; }
+        char name[IF_NAMESIZE]; memset(name, '?', sizeof(name));
+        CHECK(if_indextoname(index, name) == name && strcmp(name, request.ifr_name) == 0);
+        CHECK(if_nametoindex(name) == (unsigned)index); seen++;
+    }
+    CHECK(seen >= (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") ? 2u : 1u) && if_nametoindex("lo") != 0);
+    char name[IF_NAMESIZE]; errno = 0;
+    CHECK(if_indextoname(UINT_MAX, name) == NULL && errno == ENXIO);
+    errno = 0; CHECK(if_nametoindex("ker-no-suchif") == 0 && errno == ENODEV);
+    errno = 0; CHECK(if_nametoindex("0123456789abcdef") == 0 && errno == ENODEV);
+    CHECK(close(fd) == 0);
 }
 
 static void file_transfer_boundaries(void)
@@ -986,6 +1009,7 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"interface-name-and-index-kernel-identity", interface_name_lookup},
         {"cross-kernel-file-transfer-boundaries", file_transfer_boundaries},
         {"host-transfer-cancellation-points", host_transfer_cancellation},
         {"close-range-explicit-native-boundary", close_range_boundary},
