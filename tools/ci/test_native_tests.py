@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
 import hashlib
 import json
@@ -10,6 +11,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -20,6 +22,39 @@ import native_tests
 
 
 class NativeTestSelectorTests(unittest.TestCase):
+    def test_udp_completion_ack_waits_for_success_and_is_not_sent_on_client_failure(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/tcp-interop.py"
+        spec = importlib.util.spec_from_file_location("ker_test_tcp_interop", source)
+        self.assertIsNotNone(spec)
+        interop = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(interop)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            child = root / "peer.py"
+            child.write_text(
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "print('READY 26444', flush=True)\n"
+                "if os.read(0, 1) == b'\\xa5': Path(sys.argv[1]).write_text('ack')\n",
+                encoding="utf-8",
+            )
+            log_path = root / "server.log"
+            success_marker = root / "success.marker"
+            with log_path.open("w", encoding="utf-8") as log:
+                with interop.server([sys.executable, str(child), str(success_marker)], 26444,
+                                    log, os.environ, completion_ack=True):
+                    pass
+            self.assertEqual(success_marker.read_text(encoding="utf-8"), "ack")
+
+            failure_marker = root / "failure.marker"
+            with log_path.open("w", encoding="utf-8") as log:
+                with self.assertRaisesRegex(RuntimeError, "client checks failed"):
+                    with interop.server([sys.executable, str(child), str(failure_marker)], 26444,
+                                        log, os.environ, completion_ack=True):
+                        raise RuntimeError("client checks failed")
+            self.assertFalse(failure_marker.exists())
+
     def fixture_source(self, recovery: bool) -> str:
         recovery_calls = "".join(
             f"    run_live_handoff_profile(args, api, plugin_paths, mode={mode!r})\n"

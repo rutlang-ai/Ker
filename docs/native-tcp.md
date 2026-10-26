@@ -1284,6 +1284,8 @@ longjmp 或从回调跳过其返回路径。run 会关闭原生 fd、等待内�
 消耗当前实例，之后 capabilities 为0、kernel_release 为NULL，socket/再次 run 返回
 ENETDOWN；应用仍可继续执行普通宿主操作。进程析构不会再次停内核。
 
+当前内核发送队列等待仅检查 TCP/TCP6；应用退出时仍留在原生 Linux 中的 UDP 输出排空尚未验证。
+
 接口依赖 launcher 继承的私有 SOCK_SEQPACKET 确认通道，该 fd 在原生构造时标记
 CLOEXEC。它没有实现 F-Stack 同进程 ff_run/ff_dpdk_run 符号或多 lcore/耦合轮询 ABI；
 业务回调仍完全由调用方提供。`--stats` 的 run_shutdown、run_shutdown_workers、

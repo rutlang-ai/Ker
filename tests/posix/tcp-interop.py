@@ -30,11 +30,16 @@ def ready(process, port):
 
 
 @contextmanager
-def server(command, port, log, env, captured=None, cleanup_fault_qdiscs=False):
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
+def server(command, port, log, env, captured=None, cleanup_fault_qdiscs=False,
+           completion_ack=False):
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE if completion_ack else None, stderr=log, text=True, env=env)
     try:
         ready(process, port)
         yield process
+        if completion_ack:
+            # Release only after the peer client completed its checks successfully.
+            os.write(process.stdin.fileno(), b'\xa5')
         output, _ = process.communicate(timeout=30)
         if captured is not None:
             captured.append(output)
@@ -51,6 +56,8 @@ def server(command, port, log, env, captured=None, cleanup_fault_qdiscs=False):
                 process.wait()
         if process.stdout is not None and not process.stdout.closed:
             process.stdout.close()
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
         if cleanup_fault_qdiscs:
             try:
                 remove_tcp_fault_qdiscs(env)
@@ -1745,6 +1752,8 @@ def udp_compat(args, launcher, work, env, log):
             stats_path = work / ('udp-' + mode + '-' + role + '.json')
             listen = [str(args.udp_app), 'server', address, str(port), mode]
             connect = [str(args.udp_app), 'client', address, str(port), mode]
+            if mode == 'batch':
+                listen.append('--wait-for-peer')
             native = [*launcher, '--stats', str(stats_path), '--']
             if native_server:
                 listen = native + listen
@@ -1752,7 +1761,8 @@ def udp_compat(args, launcher, work, env, log):
                 connect = native + connect
             captured = []
             try:
-                with server(listen, port, log, env, captured=captured):
+                with server(listen, port, log, env, captured=captured,
+                             completion_ack=(mode == 'batch')):
                     client(connect, env)
             except Exception as error:
                 raise RuntimeError(f'UDP {mode} {role} failed: {error}') from error
