@@ -37,3 +37,5 @@ outstanding-object count. A startup-consumed DONE snapshot counts toward the
 same per-worker limit.
 
 Primary worker collection errors return status 125, reap the primary child and continue auxiliary teardown. A failed collection cannot abandon the remaining workers.
+
+Auxiliary completion records use the same object and outstanding-count validation as the primary worker. Malformed records fail teardown after reaping and do not escape as tracebacks.

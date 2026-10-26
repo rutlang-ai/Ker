@@ -988,7 +988,11 @@ class AdditionalWorker:
                         print(f'ker-run: duplicate additional DPDK worker completion record: {self.interface["name"]}',
                               file=sys.stderr)
                         failed = True
-                    self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+                    try:
+                        self.stats = worker_done_record(line)
+                    except (ValueError, RuntimeError) as error:
+                        print(f'ker-run: additional worker completion: {error}', file=sys.stderr)
+                        failed = True
             failed |= self.process.returncode != 0 or self.stats is None or self.stats.get('outstanding', 1) != 0
         if self.stats is not None:
             self.stats.update(name=self.interface['name'], io=self.info, pid=self.process.pid if self.process else None,
