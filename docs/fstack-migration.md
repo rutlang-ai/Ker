@@ -1651,3 +1651,22 @@ UT-NR-14保持partial，原始FF_RELOAD ABI、reload子命令及C指针合同仍
 
 本批Debug/Release各6项控制CTest通过，21项迁移审计测试及22项CI选择器测试
 通过；两个真实CMake图各32项session注册均与严格CI清单一致。
+
+## TC-4 master 控制进程生命周期扩展
+
+`native-fstack-session-control-master-eof/master-death/master-frozen` 使用独立
+Python master子进程及真实credential/pidfd校验。eof在子进程确认关闭socket后
+检查epoch仍live，正常退出后才回收；death在保持控制连接时SIGKILL；frozen关闭
+socket后以精确pidfd发送SIGSTOP，确认进程已停止，全部三个槽位保持占用且第四个
+申请返回ENOSPC，再SIGKILL并等待实际死亡回收。每例保留其他活master作隔离对照，
+验证resident epoch0存活、旧epoch失效、槽位复用时epoch递增及旧ticket被拒绝。
+STATUS验证511可用对象及零user/lease，最后验证resident和socket完整清理。
+
+这些是TC-4既有scenario-adapted映射的master控制适配器补充证据；本批只启动
+primary EAL，没有secondary EAL/borrower或网络流量。原有standby测试继续负责
+真实secondary/borrower存活证据，不将本批扩展为F-Stack heartbeat老化、硬件
+RX-owner接管、STOPPED用户确认或完整reload。208项完整适配、14项partial、
+141项blocked及155项行为未完成的计数不变。
+
+本批Debug/Release各9项控制CTest通过，21项迁移审计测试及22项CI选择器测试
+通过；两个真实CMake图各35项session注册均与严格CI清单一致。

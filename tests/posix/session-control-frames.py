@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Real resident control-frame checks; no secondary EAL or network traffic."""
 import argparse
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, contextmanager
 import errno
 import importlib.util
 import json
 import os
 from pathlib import Path
 import selectors
+import signal
 import socket
 import subprocess
 import sys
@@ -227,6 +228,142 @@ def recycle(api, path, session):
     status_snapshot(api, path, session)
 
 
+# This child owns a real master connection. It never starts a secondary EAL.
+MASTER_CHILD = r"""
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('api', sys.argv[1])
+api = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(api)
+connection = api.Connection(sys.argv[2])
+print(json.dumps(connection.request(api.MASTER)), flush=True)
+command = sys.stdin.buffer.read(1)
+if command == b'C':
+    connection.close()
+    print('CLOSED', flush=True)
+    command = sys.stdin.buffer.read(1)
+if command != b'X':
+    raise RuntimeError('unexpected master-child command')
+# Deliberately leave any open socket to process teardown, without RELEASE.
+"""
+
+
+def child_line(process):
+    data = bytearray()
+    deadline = time.monotonic() + 3
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while time.monotonic() < deadline:
+            if not selector.select(max(0, deadline - time.monotonic())):
+                break
+            byte = os.read(process.stdout.fileno(), 1)
+            if not byte:
+                break
+            data.extend(byte)
+            if byte == b'\n':
+                return data.decode().rstrip('\n')
+    raise RuntimeError('master child did not acknowledge: ' + repr(data))
+
+
+@contextmanager
+def master_child(api, path):
+    process = subprocess.Popen([sys.executable, '-c', MASTER_CHILD, api.__file__, str(path)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, bufsize=0)
+    pidfd = None
+    try:
+        pidfd = os.pidfd_open(process.pid)
+        ticket = json.loads(child_line(process))
+        yield process, pidfd, ticket
+    finally:
+        if process.poll() is None:
+            process.kill()  # Also terminates a stopped child, on failure.
+        process.wait(timeout=5)
+        process.stdin.close()
+        process.stdout.close()
+        errors = process.stderr.read()
+        process.stderr.close()
+        if pidfd is not None:
+            os.close(pidfd)
+        if errors:
+            print(errors.decode(errors='replace'), file=sys.stderr)
+
+
+def require_pidfd(pidfd, dead):
+    with selectors.DefaultSelector() as selector:
+        selector.register(pidfd, selectors.EVENT_READ)
+        require(bool(selector.select(0)) == dead, 'unexpected exact child pidfd liveness')
+
+
+def wait_slots(api, path, session, expected):
+    deadline = time.monotonic() + 3
+    with closing(api.Connection(path)) as observer:
+        while True:
+            state = observer.request(api.STATUS)
+            require(state['session'] == session and state['generation'] == 511 and
+                    state['token'] == state['process'] == 0,
+                    'master lifetime changed pool/user accounting: ' + repr(state))
+            if state['slot'] == expected:
+                return
+            require(time.monotonic() < deadline, 'dead master slot was not reclaimed: ' + repr(state))
+            time.sleep(0.01)
+
+
+def master_lifetime(api, path, session, mode):
+    with ExitStack() as stack:
+        parents = [stack.enter_context(channel(path)) for _ in range(2 if mode == 'frozen' else 1)]
+        tickets = [exchange(api, connection, api.packet(api.MASTER, 1))[1]
+                   for connection in parents]
+        child, pidfd, ticket = stack.enter_context(master_child(api, path))
+        require(ticket['session'] == session and
+                ticket['slot'] not in {entry['slot'] for entry in tickets},
+                'child did not acquire an independent slot')
+        count = len(parents) + 1
+        status_snapshot(api, path, session, slots=count)
+        require_pidfd(pidfd, False)
+        if mode != 'death':
+            require(child.stdin.write(b'C') == 1, 'failed to command child EOF')
+            require(child_line(child) == 'CLOSED', 'child did not close its socket')
+        if mode == 'frozen':
+            signal.pidfd_send_signal(pidfd, signal.SIGSTOP)
+            deadline = time.monotonic() + 3
+            while Path(f'/proc/{child.pid}/stat').read_text().rsplit(')', 1)[1].split()[0] not in ('T', 't'):
+                require(time.monotonic() < deadline, 'master child did not stop')
+                time.sleep(0.01)
+        # Positive liveness is established from the exact pidfd, not the socket.
+        for _ in range(8):
+            require_pidfd(pidfd, False)
+            status_snapshot(api, path, session, slots=count)
+            epoch_live(api, path, ticket['epoch'], 1)
+        with channel(path) as foreign:
+            exchange(api, foreign, api.packet(api.RELEASE, 1, **identity(ticket)), -errno.EPERM)
+            if mode == 'frozen':
+                exchange(api, foreign, api.packet(api.MASTER, 2), -errno.ENOSPC)
+        if mode == 'eof':
+            require(child.stdin.write(b'X') == 1, 'failed to request normal child exit')
+            require(child.wait(timeout=5) == 0, 'master child exit failed')
+        else:
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            require(child.wait(timeout=5) == -signal.SIGKILL, 'master child did not die by SIGKILL')
+        require_pidfd(pidfd, True)
+        wait_slots(api, path, session, len(parents))
+        epoch_live(api, path, 0, 1)
+        epoch_live(api, path, ticket['epoch'], 0)
+        for entry in tickets:
+            epoch_live(api, path, entry['epoch'], 1)
+        with channel(path) as successor:
+            exchange(api, successor, api.packet(api.RELEASE, 1, **identity(ticket)), -errno.ESTALE)
+            _, new = exchange(api, successor, api.packet(api.MASTER, 2))
+            require(new['slot'] == ticket['slot'] and new['epoch'] > ticket['epoch'],
+                    'exact process death did not make its slot reusable')
+            exchange(api, successor, api.packet(api.RELEASE, 3, **identity(ticket)), -errno.ESTALE)
+            epoch_live(api, path, ticket['epoch'], 0)
+            epoch_live(api, path, new['epoch'], 1)
+            exchange(api, successor, api.packet(api.RELEASE, 4, **identity(new)))
+        for connection, entry in zip(parents, tickets):
+            exchange(api, connection, api.packet(api.RELEASE, 2, **identity(entry)))
+    status_snapshot(api, path, session)
+
+
 def ready(process):
     captured = bytearray()
     deadline = time.monotonic() + 10
@@ -249,7 +386,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--tool', type=Path, required=True)
-    parser.add_argument('--profile', choices=('roundtrip', 'malformed', 'replay', 'isolation', 'capacity', 'recycle'), required=True)
+    parser.add_argument('--profile', choices=('roundtrip', 'malformed', 'replay', 'isolation', 'capacity', 'recycle',
+                                               'master-eof', 'master-death', 'master-frozen'), required=True)
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('control_frame_api', args.tool)
     api = importlib.util.module_from_spec(spec)
@@ -274,7 +412,10 @@ def main():
                         'unexpected resident configuration')
                 profiles = {'roundtrip': roundtrip, 'malformed': malformed, 'replay': replay,
                             'isolation': isolation, 'capacity': capacity, 'recycle': recycle}
-                profiles[args.profile](api, path, record['session'])
+                if args.profile.startswith('master-'):
+                    master_lifetime(api, path, record['session'], args.profile.removeprefix('master-'))
+                else:
+                    profiles[args.profile](api, path, record['session'])
                 process.stdin.close()
                 process.wait(timeout=10)
                 output += process.stdout.read()
