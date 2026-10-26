@@ -15,3 +15,8 @@ Primary IPC allocation transfers ownership as one bundle. Descriptor exhaustion
 at any socketpair or pipe allocation closes every earlier channel before
 returning125; no worker or application starts. Fault tests enumerate all five
 allocation positions, compare actual open descriptors, then launch successfully.
+
+Primary and additional worker startup use a deadline for the complete newline
+record, with a64KiB bound. A writer that emits a prefix then stalls cannot bypass
+the startup timeout. EOF with a partial record is an error. The reader consumes
+only that record, preserving later completion bytes for shutdown collection.

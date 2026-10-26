@@ -108,6 +108,35 @@ class LauncherBoundaryTests(unittest.TestCase):
                 self.assertEqual(descriptors(), before)
             self.assertEqual(self.run_launcher(0, native_done=True), 0)
 
+    def test_startup_record_deadline_covers_partial_lines_and_bounds(self):
+        cases = [
+            ('sys.stdout.write("KER_IO_READY "); sys.stdout.flush(); time.sleep(2)', 'timed out'),
+            ('time.sleep(2)', 'timed out'),
+            ('sys.stdout.write("KER_IO_READY {}")', 'complete startup record'),
+            ('pass', 'complete startup record'),
+            ('print("x"*100)', 'exceeds limit'),
+        ]
+        for body, diagnostic in cases:
+            with self.subTest(body=body):
+                process = subprocess.Popen([sys.executable, '-c', 'import sys,time; '+body],
+                                           stdout=subprocess.PIPE, text=True)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, diagnostic):
+                        launcher.read_worker_startup(process, 'test worker', timeout=0.15, maximum=64)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate()
+        process = subprocess.Popen([sys.executable, '-c',
+            'print("KER_IO_READY {}"); print("KER_IO_DONE {}")'], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(launcher.read_worker_startup(process, 'test', timeout=2), 'KER_IO_READY {}')
+            tail, _ = process.communicate(timeout=2)
+            self.assertEqual(tail, 'KER_IO_DONE {}\n')
+        finally:
+            if process.poll() is None:
+                process.kill(); process.communicate()
+
 
 if __name__ == '__main__':
     unittest.main()
