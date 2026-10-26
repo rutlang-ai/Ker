@@ -535,3 +535,8 @@ LACP、双栈ICMP和成员链路移除后的流量恢复。仍是partial案例�
 字段顺序，原版PMD读回最终primary1/MACcc:dd:ee:ff:00:11/l34及两个成员；独立
 LACP、双栈ICMP和链路失效恢复通过。eth0/eth1显式映射到测试TAP ethdev0/1，
 仍不计combined bond/vdev、C分配器ABI或源省略时序的默认合同通过。
+
+有界原生写：`native-fstack-buffer-write-overflow/null/copy`以原版Linux VMA
+和生产登记验证容量/NULL错误以及多页、重叠、零长度和完整回收。仅将源写溢出
+及NULL数据错误返回两例推进为scenario-adapted；无implicit cursor、mbuf header/
+chain或网络证明。三个测试列入无需EAL/PMD的CI必跑清单。

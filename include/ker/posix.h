@@ -27,6 +27,17 @@ KER_API const char *ker_posix_kernel_release(void);
  * in the cross-process packet channel and is not end-to-end zero-copy. */
 KER_API void *ker_posix_buffer_alloc(size_t size);
 KER_API int ker_posix_buffer_free(void *address);
+/* Copy length bytes into a registered native buffer at an explicit offset.
+ * address must be its exact allocation base, data must be non-NULL and readable
+ * for length bytes. Offset/length must fit the requested allocation size,
+ * including for length==0; a valid zero-length write returns 0 without touching
+ * bytes. Overlap has memmove semantics. Returns bytes copied (0..INT_MAX), or
+ * -1/errno: EINVAL for invalid arguments/ranges/bases, ENETDOWN while inactive.
+ * Rejection leaves every mapping and byte unchanged. This does not resize the
+ * allocation or maintain an implicit packet/write cursor. Complete outstanding
+ * zerocopy sends before modifying referenced bytes; do not race writes with
+ * sends, direct accesses, resize, free or shutdown. */
+KER_API int ker_posix_buffer_write(void *address, size_t offset, const void *data, size_t length);
 /* Resize a native buffer while preserving min(old_size, size) bytes. A new
  * extent is zero initialized; the address may change even when shrinking.
  * On failure NULL/errno leaves the original mapping valid. NULL with nonzero

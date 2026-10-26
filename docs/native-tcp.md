@@ -1392,7 +1392,8 @@ SO_ZEROCOPY 未启用时，Linux 原有的忽略标志/复制发送行为保持�
 指针失效，迟到的 alloc/free 返回 ENETDOWN。`native.buffer_*` 记录映射与控制锁
 回收，不作为物理页或 NIC 零拷贝证明。`rx_shutdown_discarded` 单列停止交付后
 回收的已读 RX 后缀，避免早期 run 停止时队列计数有包却无去向。
-13项源案例的owned-chain/write-cursor合同尚未等价映射，继续由issue225保留。
+13项源案例仍不等价于FreeBSD owned-chain/write-cursor ABI；其中容量溢出和NULL
+数据写入错误现由原生有界写入适配，剩余未完成项继续由issue225保留。
 当前Unix packet record和worker仍复制，不能计为端到端零拷贝；但上游默认DPDK
 路径也复制，移除这些复制并非全部13项socket快路径测试的额外前提。
 
