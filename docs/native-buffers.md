@@ -225,3 +225,11 @@ rollback unmap若失败，登记仍保留给shutdown回收，不伪造成功。
 `native-fstack-buffer-segments-layout/failures`使用真实LinuxVMA验证128+50字节
 源布局、跨段追加、输入别名、错误原子性、旧handle、部分销毁及精确回收；失败探针
 只替换指定malloc/mmap/munmap。此证据不包括socket/PMD传输和全链路无复制。
+
+分段socket集成通过dlsym解析实际动态库API，分别在原版LinuxIPv4/IPv6 UDP上
+验证128+50字节节点、总游标178、sendmsg精确接收及真实completion。拒绝单视图
+send、溢出append或非法节点不会投递数据或消耗完成编号；实际完成后追加78字节
+填满尾段，再发送跨节点100字节子范围。两次completion后才销毁owner，并验证
+旧handle无法操作replacement。runtime退出时所有VMA/guard/worker mbuf清零。
+zc-validation必须包含全部11个唯一source marker；null PMD下payload仍是Linux
+loopback，完整virtio软件数据通路回归另行执行相同owner场景，不宣称全链路无复制。

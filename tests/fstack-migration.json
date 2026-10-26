@@ -4887,6 +4887,10 @@
         {
           "ctest": "native-fstack-buffer-segments-layout",
           "provenance_case": "native-fstack-buffer-segments"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-buffer-segment-sockets"
         }
       ]
     },
