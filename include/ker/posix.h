@@ -67,6 +67,16 @@ KER_API struct ker_posix_buffer_writer *ker_posix_buffer_writer_create(size_t ca
 KER_API int ker_posix_buffer_writer_append(struct ker_posix_buffer_writer *writer, const void *data, size_t length);
 KER_API const void *ker_posix_buffer_writer_view(struct ker_posix_buffer_writer *writer, size_t *length, size_t *capacity);
 KER_API int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writer);
+/* Send a nonempty written range through an imported native socket. Bounds and
+ * zero length fail EINVAL before sending; unregistered host descriptors fail
+ * EBADF and native non-sockets fail ENOTSOCK. Returns accepted bytes or
+ * -1/errno from original Linux. Flags, short sends and SIGPIPE follow send().
+ * The writer/view/cursor stay caller-owned and unchanged on every outcome;
+ * callers advance offset after short sends and wait for completions before
+ * append/destroy. Do not race owner access or native shutdown. Ordinary send()
+ * retains Linux empty-datagram behavior; this explicit owned-payload API rejects 0. */
+KER_API int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
+    size_t offset, size_t length, int flags);
 /* Run the caller's callback on this thread until stop_run is requested.
  * NULL waits for a stop from another thread. Callback return values are ignored.
  * Exactly one run is allowed per native instance; nested/concurrent runs fail

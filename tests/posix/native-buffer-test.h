@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <linux/errqueue.h>
 #include <poll.h>
+#include <sys/epoll.h>
 #include <stdint.h>
 #include <pthread.h>
 #include <limits.h>
@@ -14,6 +15,7 @@ static struct ker_posix_buffer_writer *(*writer_create)(size_t);
 static int (*writer_append)(struct ker_posix_buffer_writer *, const void *, size_t);
 static const void *(*writer_view)(struct ker_posix_buffer_writer *, size_t *, size_t *);
 static int (*writer_destroy)(struct ker_posix_buffer_writer *);
+static int (*writer_send)(struct ker_posix_buffer_writer *, int, size_t, size_t, int);
 static int (*buffer_run)(ker_posix_loop_func, void *);
 static void (*buffer_stop)(void);
 static unsigned sent_ids, completed_ids, family_copied[2], family_direct[2], current_family;
@@ -45,7 +47,8 @@ static void buffer_init(void)
     writer_append = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_append");
     writer_view = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_view");
     writer_destroy = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_destroy");
-    check(writer_create && writer_append && writer_view && writer_destroy, "native owned writer ABI");
+    writer_send = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_send");
+    check(writer_create && writer_append && writer_view && writer_destroy && writer_send, "native owned writer ABI");
     buffer_run = dlsym(RTLD_DEFAULT, "ker_posix_run");
     buffer_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
     check(buffer_allocate && buffer_release && buffer_resize && buffer_write && buffer_run && buffer_stop, "native buffer API");
@@ -186,6 +189,8 @@ static void buffer_writers(void)
         check(data && !length && !capacity, "owned empty logical view");
         check(writer_append(empty, "x", 0) == 0 && writer_append(empty, "x", 1) == -1 && errno == EINVAL,
               "empty capacity rejects payload and preserves zero append");
+        check(writer_send(empty, fd, 0, 0, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+              "explicit owned send rejects zero bytes without changing ordinary UDP");
         writer_no_delivery(fd, receiver);
         unsigned char received[64];
         check(send(fd, data, 0, MSG_ZEROCOPY) == 0 && recv(receiver, received, sizeof(received), 0) == 0,
@@ -206,11 +211,37 @@ static void buffer_writers(void)
         check(buffer_release((void *)data) == -1 && errno == EBUSY &&
               buffer_write((void *)data, 0, "x", 1) == -1 && errno == EBUSY &&
               !buffer_resize((void *)data, 128) && errno == EBUSY, "writer owner cannot be bypassed");
+        check(writer_send(owner, fd, 0, 0, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, SIZE_MAX, 1, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, 3, 2, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, 0, SIZE_MAX, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+              "owned send rejects empty/overflow/unwritten ranges");
+        check(writer_send(NULL, fd, 0, 4, MSG_ZEROCOPY) == -1 && errno == EINVAL &&
+              writer_send(owner, fd, 0, (size_t)INT_MAX+1, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+              "owned send rejects NULL owner and source INT_MAX overflow");
+        check(writer_send(owner, -1, 0, 4, MSG_ZEROCOPY) == -1 && errno == EBADF, "owned send rejects invalid descriptor");
+        int epoll = epoll_create1(EPOLL_CLOEXEC); check(epoll >= 0, "native epoll for owned send rejection");
+        check(writer_send(owner, epoll, 0, 4, MSG_ZEROCOPY) == -1 && errno == ENOTSOCK,
+              "owned send rejects imported non-socket");
+        check(!close(epoll), "owned non-socket rejection cleanup");
+        int host_pair[2];
+        check(!socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, host_pair), "host pair for owned send rejection");
+        check(writer_send(owner, host_pair[0], 0, 4, MSG_ZEROCOPY) == -1 && errno == EBADF &&
+              recv(host_pair[1], received, sizeof(received), MSG_DONTWAIT) == -1 && errno == EAGAIN,
+              "owned send never routes to a host descriptor");
+        check(!close(host_pair[0]) && !close(host_pair[1]), "host rejection pair cleanup");
+        check(writer_view(owner, &length, NULL) == data && length == 4 && !memcmp(data, "abcd", 4),
+              "rejected owned sends preserve caller owner");
         writer_no_delivery(fd, receiver);
-        check(send(fd, data, length, MSG_ZEROCOPY) == 4 && recv(receiver, received, sizeof(received), 0) == 4 &&
+        check(writer_send(owner, fd, 0, length, MSG_ZEROCOPY) == 4 && recv(receiver, received, sizeof(received), 0) == 4 &&
               !memcmp(received, "abcd", 4), "owned bytes reach original Linux after rejected append");
         buffer_sent(4, true); buffer_complete(fd);
         check(sent_ids == 2 && completed_ids == 2, "owned payload retains next completion ID");
+        check(writer_send(owner, fd, 2, 2, MSG_ZEROCOPY) == 2 && recv(receiver, received, sizeof(received), 0) == 2 &&
+              !memcmp(received, "cd", 2), "owned explicit offset range delivered");
+        buffer_sent(2, true); buffer_complete(fd);
+        check(writer_view(owner, &length, NULL) == data && length == 4 && !memcmp(data, "abcd", 4),
+              "successful owned send retains cursor and ownership");
         check(writer_append(owner, "EFGH", 4) == 4 && writer_view(owner, &length, NULL) == data && length == 8 &&
               !memcmp(data, "abcdEFGH", 8), "append only after actual zerocopy completion");
         struct iovec vectors[] = {{(void *)data, 2}, {(unsigned char *)data+2, 6}};
@@ -218,12 +249,13 @@ static void buffer_writers(void)
         check(sendmsg(fd, &message, MSG_ZEROCOPY) == 8 && recv(receiver, received, sizeof(received), 0) == 8 &&
               !memcmp(received, "abcdEFGH", 8), "owned scatter-gather bytes delivered");
         buffer_sent(8, true); buffer_complete(fd);
-        check(sent_ids == 3 && completed_ids == 3 && !writer_destroy(owner), "owned release follows all completions");
+        check(sent_ids == 4 && completed_ids == 4 && !writer_destroy(owner), "owned release follows all completions");
         check(!close(fd) && !close(receiver), "writer sockets closed");
     }
     puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_get_zero_len_returns_minimal_chain");
     puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_accumulates_pkthdr_len");
     puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_zero_len_noop");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_send_zero_nbytes_returns_einval");
 }
 static void buffer_guards(void)
 {

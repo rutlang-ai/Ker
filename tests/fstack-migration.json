@@ -4889,11 +4889,15 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_mb_null_returns_einval",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Real native SO_ZEROCOPY send/sendmsg/sendmmsg reject NULL nonempty payloads with EFAULT before GUP; no receiver data, completion or caller-byte mutation. Linux EFAULT intentionally replaces the source owned-chain EINVAL; this maps the rejection scenario, not errno/API equivalence.",
+      "reason": "Real native SO_ZEROCOPY send/sendmsg/sendmmsg reject NULL nonempty payloads with EFAULT before GUP; no receiver data, completion or caller-byte mutation. Linux EFAULT intentionally replaces the source owned-chain EINVAL; this maps the rejection scenario, not errno/API equivalence. The explicit owned-writer send API now also returns EINVAL for NULL owner/INT_MAX overflow before dispatch, while valid prefix and offset ranges use actual original-Linux sends and retain caller ownership/completion semantics.",
       "ker_tests": [
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-zc-send_mb_null_returns_einval"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
         }
       ]
     },
@@ -4901,30 +4905,43 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_nbytes_overflow_returns_einval",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Real MSG_ZEROCOPY send/sendmsg reject one mapped extent of INT_MAX+1 bytes with EFAULT before GUP; no data, completion or caller-byte mutation. Native allocations are limited to INT_MAX. This maps single-extent rejection, not the ff_zc ABI or an aggregate iovec INT_MAX limit.",
+      "reason": "Real MSG_ZEROCOPY send/sendmsg reject one mapped extent of INT_MAX+1 bytes with EFAULT before GUP; no data, completion or caller-byte mutation. Native allocations are limited to INT_MAX. This maps single-extent rejection, not the ff_zc ABI or an aggregate iovec INT_MAX limit. The explicit owned-writer send API now also returns EINVAL for NULL owner/INT_MAX overflow before dispatch, while valid prefix and offset ranges use actual original-Linux sends and retain caller ownership/completion semantics.",
       "ker_tests": [
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-zc-send_nbytes_overflow_returns_einval"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
         }
       ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source owned-chain send rejects zero bytes; original Linux UDP permits an empty datagram and allocates a zerocopy completion ID. Preserve Linux semantics; no equivalent owned-chain rejection API. Contract decision remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The explicit owned-writer send adapter rejects a zero-byte requested payload with -1/EINVAL before socket dispatch, preserving the owner and queues/completion numbering. Actual original-Linux IPv4/IPv6 loopback tests also require valid full/offset sends through the same production native send helper. Ordinary POSIX/Linux empty UDP datagrams remain successful with completion ID0; no Linux protocol semantics are changed. This adapts the source owned-send rejection outcome, not its FreeBSD mbuf-consuming ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_send_valid_args_proceeds",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Source asserts only that a non-NULL 16-byte argument passes its mirror validator. Actual registered 16-byte MSG_ZEROCOPY send reaches original Linux, delivers exact peer bytes and completes through original MSG_ERRQUEUE starting at ID zero. No claim of FreeBSD owned-chain handoff or end-to-end copy elimination.",
+      "reason": "Source asserts only that a non-NULL 16-byte argument passes its mirror validator. Actual registered 16-byte MSG_ZEROCOPY send reaches original Linux, delivers exact peer bytes and completes through original MSG_ERRQUEUE starting at ID zero. No claim of FreeBSD owned-chain handoff or end-to-end copy elimination. The explicit owned-writer send API now also returns EINVAL for NULL owner/INT_MAX overflow before dispatch, while valid prefix and offset ranges use actual original-Linux sends and retain caller ownership/completion semantics.",
       "ker_tests": [
         {
           "ctest": "native-fstack-zc-validation",
           "provenance_case": "native-zc-send_valid_args_proceeds"
+        },
+        {
+          "ctest": "native-fstack-zc-validation",
+          "provenance_case": "native-fstack-owned-writer-send"
         }
       ]
     },

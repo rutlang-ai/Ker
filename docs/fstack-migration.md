@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 213 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 214 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 132 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 131 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为213 scenario-adapted、18 partial、132 blocked，共150项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为214 scenario-adapted、18 partial、131 blocked，共149项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共220项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：150项行为未完成
-（18 partial + 132 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共219项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：149项行为未完成
+（18 partial + 131 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -1861,3 +1861,20 @@ Debug/Release两项新CTest均通过，并列入hosted-safe必跑清单。
 这是已有三项owned writer映射的Ker适配器扩展，不新增FreeBSD malloc/chain ABI、
 无同步访问或网络证明；213项scenario-adapted、18项partial、132项blocked，
 150项行为未完成，计数不变。
+
+## Owned-send 的非空 payload 合同
+
+新增`ker_posix_buffer_writer_send`，非空且位于已写范围内才进入与普通sendto
+共用的原版Linux发送适配路径。NULL/零长度/INT_MAX及范围溢出返回EINVAL，
+host fd和native非socket被明确拒绝，无host fallback。IPv4/IPv6 loopback验证
+拒绝无datagram/completion、完整prefix与offset子范围精确送达、成功/失败均保留
+owner/cursor、完成后才再次append/destroy；普通Linux零字节UDP仍有datagram/ID0。
+runner要求十个唯一source marker。
+
+`test_ff_zc_send_zero_nbytes_returns_einval`从blocked推进为scenario-adapted，
+补强既有NULL/overflow/valid send映射。此合同不等于FreeBSD mbuf-consuming ABI，
+多节点m_len/m_next仍由issue225保留。当前214项scenario-adapted、18项partial、
+131项blocked，149项行为未完成。
+
+本批Debug/Release zc-validation均通过，Debug完整virtio/native-buffer回归通过；
+两种共享库导出writer_send，21项迁移审计及22项CI选择器测试通过。

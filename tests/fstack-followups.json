@@ -300,7 +300,7 @@
       "id": "zero-copy-ownership",
       "title": "Define a Linux-native zero-copy send and ownership contract",
       "disposition": "contract-review",
-      "reason": "Four source allocation/send validation scenarios qualify through actual original Linux VMAs/sockets/completions. Seven empty-chain/write-cursor/zero-send contracts remain blocked. The two already architecture-specific FreeBSD mbuf header assertions are tracked separately under issue232 with the matching exclusion disposition; they are not implementation work or Ker passes. Linux scatter-gather delivery and send guards do not implement a staged owned-chain writer. Default upstream DPDK copying makes end-to-end copy removal a distinct stronger milestone. Bounded writes into registered original-Linux VMAs now qualify the source capacity-overflow and NULL-data rejection cases; both are removed from this follow-up. Explicit offset writes do not implement owned mbuf chains, implicit cursor/pkthdr accumulation, zero-allocation minimal chains or zero-byte-send rejection. An owned original-Linux VMA writer now qualifies empty ownership, accumulated logical append length/bytes and zero-write no-op outcomes; these three cases are removed from the incomplete list. The writer is a single VMA, not a FreeBSD chain/header. Per-node m_len/m_next semantics and owned zero-byte-send rejection remain unimplemented, while ordinary Linux empty UDP sends retain their existing behavior.",
+      "reason": "The remaining source multi-segment case asserts per-node m_len/m_next and aggregate head-length mutation across an owned chain. Ker now qualifies raw original-Linux VMA allocation/bounded-write errors, single-VMA empty ownership and append/no-op cursor outcomes, and explicit nonempty owned native-send validation with actual Linux completion/cleanup evidence. Multi-VMA sendmsg proves scatter-gather delivery, not an owned per-segment write cursor or source chain mutation. Implement and qualify that remaining memory/ownership adapter without an algorithm mirror or a FreeBSD header ABI claim; layout-only header assertions remain separately excluded under issue232. End-to-end zero-copy is not an extra prerequisite for source paths that already copy, and ordinary Linux empty UDP semantics must remain intact.",
       "evidence": [
         "tests/upstream/fstack/tests/unit/test_ff_zc_send.c",
         "src/runtime/tx-export.c",
@@ -322,8 +322,7 @@
         "Separate optional end-to-end payload-copy-free transport work from socket-stage case acceptance: upstream default ff_dpdk_if_send also copies and FF_USE_PAGE_ARRAY is optional. Any stronger transport claim needs actual release acknowledgements, backpressure, retained suffix, worker-failure and teardown proof; completion code zero alone is insufficient."
       ],
       "cases": [
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",
-        "tests/unit/test_ff_zc_send.c::test_ff_zc_send_zero_nbytes_returns_einval"
+        "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/225"
     },
