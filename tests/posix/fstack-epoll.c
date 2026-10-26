@@ -351,6 +351,8 @@ static void null_poll_array_recovery(void)
     CHECK(pipe2(pipes, O_CLOEXEC | O_NONBLOCK) == 0);
     put(c, "poll-pointer");
     CHECK(write(pipes[1], "h", 1) == 1);
+    struct pollfd tcp_ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&tcp_ready, 1, 2000) == 1 && (tcp_ready.revents & POLLIN));
     for (int variant = 0; variant < 2; ++variant) {
         CHECK(null_poll_array(variant, 0) == 0);
         EXPECT_ERROR(null_poll_array(variant, 1), EFAULT);
