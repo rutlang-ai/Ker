@@ -176,3 +176,16 @@ Linux VMA验证独立buffer的写入/错误码隔离，以及生产者join后转
 旧base拒绝和后续写入释放。parallel没有共享可写buffer；handoff明确先同步，
 不作为未同步write/free/send竞争安全的承诺。两例均检查全部分配/释放及残留映射
 shutdown回收；没有网络或FreeBSD隐式cursor/mbuf ABI证明。
+
+`ker_posix_buffer_writer_create/append/view/destroy` 提供有所有者的单VMA写入游标。
+create容量为0..INT_MAX；零容量拥有最小一字节backing，逻辑容量和已写长度仍为0，
+不改变raw buffer_alloc(0)的EINVAL。append成功后才增加逻辑长度，溢出/NULL拒绝
+保留游标和字节，合法零长度不改变状态。view返回借用的只读指针及可选长度/容量；
+失败不改变输出。owner就是登记记录。destroy成功时立即释放VMA，但为防止分配器
+复用登记地址后让stale handle指向新owner，会把已销毁登记元数据保留到native
+shutdown；这是有意的per-runtime内存开销。unmap失败保留owner供重试，runtime
+shutdown也回收未销毁owner。
+
+writer数据的raw free/write和非零realloc返回EBUSY；view只能按已写长度发送，
+修改/销毁前必须等待全部zerocopy completion并同步owner访问/交接。它不提供
+FreeBSD M_PKTHDR、m_next/per-node m_len，也不改变Linux零字节UDP的行为。

@@ -2584,6 +2584,30 @@
         "native-fstack-buffer-write-handoff"
       ],
       "adaptation": "Ker-specific cross-thread extension of the two qualified bounded-write rejection scenarios. Four actual pthreads own distinct original-Linux VMAs, repeatedly copy exact multi-page patterns, reject overflow/NULL writes without changing bytes, and preserve independent errno values. A separately synchronized producer/consumer transfer joins the writer before another thread resizes the VMA, rejects the old base and invalid writes, copies exact page-spanning bytes and frees the new base. Original Linux syscalls and production native-buffer code execute directly; standalone bootstrap supplies only the active lifetime gate. Exact allocations/releases and one residual shutdown release must match. This is not concurrent unsynchronized write/free/send support, a FreeBSD implicit-cursor/mbuf ABI or network evidence."
+    },
+    "native-fstack-buffer-writer-empty": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
+      "ker_ctests": [
+        "native-fstack-buffer-writer-empty"
+      ],
+      "adaptation": "Owned native writer creation accepts capacity0 and owns an actual registered original-Linux VMA with minimal one-byte backing. The borrowed view is non-NULL while logical capacity and written length remain0; nonempty append fails and valid zero append is a no-op. Exact owner destruction/shutdown releases the VMA. Raw buffer_alloc(0) still rejects EINVAL. This adapts the source owned-empty-allocation outcome without a FreeBSD mbuf chain/header ABI. Tests execute actual production registry/cursor code and original-Linux mappings; standalone bootstrap supplies the active lifetime gate. Raw mutation/free/resize bypasses are rejected EBUSY, stale/foreign handles are checked before dereference, and all registrations are reclaimed. No algorithm mirror, socket/PMD traffic or end-to-end zero-copy claim."
+    },
+    "native-fstack-buffer-writer-append": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_mbuf_write_accumulates_pkthdr_len",
+      "ker_ctests": [
+        "native-fstack-buffer-writer-append"
+      ],
+      "adaptation": "A real owned native writer appends ab then cd, returns2 for each operation and exposes aggregate logical length4 with exact abcd bytes. Rejected overflow/NULL appends preserve both cursor and bytes; an alias append extends the payload correctly. This adapts accumulated owned-payload length and bytes through a logical cursor on an original-Linux VMA, not the literal FreeBSD m_pkthdr field or linked-chain ABI. Tests execute actual production registry/cursor code and original-Linux mappings; standalone bootstrap supplies the active lifetime gate. Raw mutation/free/resize bypasses are rejected EBUSY, stale/foreign handles are checked before dereference, and all registrations are reclaimed. No algorithm mirror, socket/PMD traffic or end-to-end zero-copy claim."
+    },
+    "native-fstack-buffer-writer-zero": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_mbuf_write_zero_len_noop",
+      "ker_ctests": [
+        "native-fstack-buffer-writer-zero"
+      ],
+      "adaptation": "A valid zero-length append to a real native writer returns0 and preserves the initially empty logical length, and preserves a later nonempty prefix and length after a successful append. NULL data remains invalid even at length0. This is the source no-op-write outcome on an original-Linux VMA owner, distinct from Linux zero-byte socket sends and not a FreeBSD header ABI. Tests execute actual production registry/cursor code and original-Linux mappings; standalone bootstrap supplies the active lifetime gate. Raw mutation/free/resize bypasses are rejected EBUSY, stale/foreign handles are checked before dereference, and all registrations are reclaimed. No algorithm mirror, socket/PMD traffic or end-to-end zero-copy claim."
     }
   }
 }

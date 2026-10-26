@@ -4743,7 +4743,7 @@
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_initial_pkthdr_len_zero",
       "kind": "cmocka",
       "status": "architecture-specific",
-      "reason": "Asserts the initial FreeBSD head m_pkthdr.len field, not zero-filled payload storage. Linux VMA buffers have no mbuf header/write cursor. Explicit incompatible source layout under issue232 (Linux buffer-ownership contracts remain under issue225), not a Ker pass.",
+      "reason": "Asserts the initial FreeBSD head m_pkthdr.len field, not zero-filled payload storage. The native writer has a Ker-owned logical written length but does not expose the FreeBSD mbuf header/layout. This layout-only source assertion remains architecture-specific under issue232; accumulated append/no-op behavior is adapted separately under issue225, without claiming the source field ABI.",
       "ker_tests": []
     },
     {
@@ -4761,16 +4761,26 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source allocates an owned minimal mbuf chain for zero capacity; native buffer_alloc(0) intentionally rejects EINVAL. No equivalent owned empty-chain API. Contract decision remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Owned native writer creation accepts capacity0 and owns an actual registered original-Linux VMA with minimal one-byte backing. The borrowed view is non-NULL while logical capacity and written length remain0; nonempty append fails and valid zero append is a no-op. Exact owner destruction/shutdown releases the VMA. Raw buffer_alloc(0) still rejects EINVAL. This adapts the source owned-empty-allocation outcome without a FreeBSD mbuf chain/header ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-writer-empty",
+          "provenance_case": "native-fstack-buffer-writer-empty"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_accumulates_pkthdr_len",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No staged write-cursor/owned-head length API. Filling a VMA or delivering a datagram does not prove repeated writes accumulate a head length. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A real owned native writer appends ab then cd, returns2 for each operation and exposes aggregate logical length4 with exact abcd bytes. Rejected overflow/NULL appends preserve both cursor and bytes; an alias append extends the payload correctly. This adapts accumulated owned-payload length and bytes through a logical cursor on an original-Linux VMA, not the literal FreeBSD m_pkthdr field or linked-chain ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-writer-append",
+          "provenance_case": "native-fstack-buffer-writer-append"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_overflow_returns_error",
@@ -4823,9 +4833,14 @@
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_zero_len_noop",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No staged write-cursor/head-length API. Linux zero-byte UDP send is a real datagram with a completion ID, not this no-op write. Remains under issue225.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A valid zero-length append to a real native writer returns0 and preserves the initially empty logical length, and preserves a later nonempty prefix and length after a successful append. NULL data remains invalid even at length0. This is the source no-op-write outcome on an original-Linux VMA owner, distinct from Linux zero-byte socket sends and not a FreeBSD header ABI.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-buffer-writer-zero",
+          "provenance_case": "native-fstack-buffer-writer-zero"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_zc_send.c::test_ff_zc_mbuf_write_multi_segment",

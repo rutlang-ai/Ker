@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 210 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 213 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 18 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 135 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 132 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为210 scenario-adapted、18 partial、135 blocked，共153项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为213 scenario-adapted、18 partial、132 blocked，共150项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共223项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：153项行为未完成
-（18 partial + 135 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共220项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：150项行为未完成
+（18 partial + 132 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -1820,3 +1820,20 @@ errno与主线程sentinel互不污染。另一个场景明确join生产者后交
 Debug/Release各两项新CTest通过；两例加入无需EAL/PMD的CI必跑清单。这是
 既有两个写入错误案例的Ker扩展，210项scenario-adapted、18项partial、
 135项blocked和153项行为未完成的计数不变。
+
+## 原生 VMA owned append cursor
+
+新增opaque native writer，owner与VMA登记共用生命周期；成功append才增加逻辑
+已写长度，失败保持长度/字节不变，view返回借用数据，raw free/write/realloc
+不能绕过owner。零容量持有最小backing，逻辑容量仍为0；raw buffer_alloc(0)继续
+EINVAL，普通Linux零字节UDP继续保持原语义。
+
+`native-fstack-buffer-writer-empty/append/zero`分别适配源owned empty allocation、
+两次ab/cd写入得到逻辑长度4及精确abcd、空/非空游标上的零长度写no-op。三例从
+blocked推进为scenario-adapted；仅有header字段断言的初始m_pkthdr.len案例继续
+architecture-specific，新增逻辑游标不声称该FreeBSD布局。m_next/per-node m_len
+多段链及owned零字节send拒绝仍由issue225保留，不用单VMA或普通UDP替代证明。
+当前213项scenario-adapted、18项partial、132项blocked，150项行为未完成。
+
+本批Debug/Release各9项buffer CTest通过，四个writer符号在两种共享库中均导出；
+21项迁移审计及22项CI选择器测试通过，三个新CTest加入hosted-safe必跑清单。
