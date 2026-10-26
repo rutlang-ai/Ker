@@ -552,3 +552,7 @@ chain或网络证明。三个测试列入无需EAL/PMD的CI必跑清单。
 Owned writer：`native-fstack-buffer-writer-empty/append/zero`验证最小空owner、
 多次append累计长度/字节及零写no-op；生产VMA登记负责所有权与完整回收。三项源
 行为完成场景适配，不计FreeBSD头布局、多节点链或零字节send拒绝通过。
+
+Writer集成：`native-fstack-zc-validation`严格验证九个source marker；原版Linux
+IPv4/IPv6 loopback证明append无投递、副作用回滚、真实零字节UDP及连续completion，
+完成后才append/destroy。退出精确回收raw与writer两个残留，完整virtio回归另行通过。

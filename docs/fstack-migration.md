@@ -1837,3 +1837,15 @@ architecture-specific，新增逻辑游标不声称该FreeBSD布局。m_next/per
 
 本批Debug/Release各9项buffer CTest通过，四个writer符号在两种共享库中均导出；
 21项迁移审计及22项CI选择器测试通过，三个新CTest加入hosted-safe必跑清单。
+
+## Owned writer 的共享库/socket 集成
+
+实际preloaded ABI在IPv4/IPv6原版Linux loopback上验证空owner、累计append、
+拒绝回滚与零append无队列副作用。普通零字节UDP仍有datagram及completion ID0，
+随后精确4字节发送和完成后的8字节scatter-gather保留编号与字节，完成后才destroy。
+退出回收raw残留和空owner，shutdown release数必须为2；迟到的view/append/destroy
+返回ENETDOWN且view输出不变。runner要求九个唯一source marker。
+
+Debug/Release的zc-validation通过，Debug完整virtio/native-buffer回归通过。
+这是三项既有writer源行为映射的集成补强，不覆盖source零字节send拒绝或mbuf
+布局/多节点链；213项scenario-adapted、18项partial、132项blocked，150项行为未完成。

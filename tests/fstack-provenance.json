@@ -2608,6 +2608,18 @@
         "native-fstack-buffer-writer-zero"
       ],
       "adaptation": "A valid zero-length append to a real native writer returns0 and preserves the initially empty logical length, and preserves a later nonempty prefix and length after a successful append. NULL data remains invalid even at length0. This is the source no-op-write outcome on an original-Linux VMA owner, distinct from Linux zero-byte socket sends and not a FreeBSD header ABI. Tests execute actual production registry/cursor code and original-Linux mappings; standalone bootstrap supplies the active lifetime gate. Raw mutation/free/resize bypasses are rejected EBUSY, stale/foreign handles are checked before dereference, and all registrations are reclaimed. No algorithm mirror, socket/PMD traffic or end-to-end zero-copy claim."
+    },
+    "native-fstack-buffer-writer-sockets": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_get_zero_len_returns_minimal_chain",
+        "test_ff_zc_mbuf_write_accumulates_pkthdr_len",
+        "test_ff_zc_mbuf_write_zero_len_noop"
+      ],
+      "ker_ctests": [
+        "native-fstack-zc-validation"
+      ],
+      "adaptation": "Real dynamically resolved owned-writer APIs execute through the preloaded native library with original-Linux IPv4/IPv6 loopback UDP and MSG_ERRQUEUE. Empty owners have non-NULL views with logical capacity/length0; zero appends and rejected appends deliver no datagrams/completions. Ordinary Linux zero-byte UDP remains a real datagram/completion ID0. Subsequent ab/cd cumulative appends expose length4/exact bytes, preserve state after rejected/zero append and reject raw-owner bypasses; valid sends retain the next completion ID. Only after actual completion does another append produce abcdEFGH/length8 for exact scatter-gather delivery, followed by completion and owner destruction. A residual empty owner and raw mapping are reclaimed by explicit runtime shutdown; all late owner methods reject ENETDOWN without changing view outputs. The runner requires all nine unique source markers. These are logical owner/cursor semantics, not FreeBSD mbuf fields or source zero-byte-send rejection. Null-PMD payloads stay in original Linux loopback; the full virtio/native-buffer software-datapath regression passes separately, without an end-to-end zero-copy claim."
     }
   }
 }
