@@ -487,3 +487,9 @@ RX-15 部分迁移：`native-fstack-session-orphan-live/identity/reap` 以primar
 RX-15 in-flight 扩展：`native-fstack-session-orphan-inflight-rx/tx/both` 检查活
 消费者持有RX/TX对象时的readiness拒绝、实际reap超时回滚、逐个归还及成功重试。
 与原有三例一起验证FIFO及完全回收；仍是primary组件证据，RX-15保持partial。
+
+
+控制消息部分迁移：`native-fstack-session-control-roundtrip/malformed/replay`
+启动真实resident，以生产Python client和实际控制socket验证64-bit字段、畸形帧
+拒绝、请求重放及零资源泄漏。此证据只覆盖Ker控制适配器；UT-NR-14的F-Stack
+reload ABI/subcommand与C指针合同保留缺口，源案例仅从blocked推进到partial。

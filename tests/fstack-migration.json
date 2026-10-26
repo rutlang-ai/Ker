@@ -2084,9 +2084,23 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "partial",
+      "reason": "Partial control-message boundary adaptation through the actual resident process, original DPDK EAL and production Python client over real credential-checked AF_UNIX SOCK_SEQPACKET connections. Three profiles verify STATUS/EPOCH_LIVE roundtrips including high-bit64-bit fields; truncated/oversized records disconnect; malformed magic/version/status, forbidden query fields and unsupported commands are rejected with signed errno replies and valid successor queries. Exact MASTER/RELEASE retransmissions return byte-identical cached replies; conflicting or older sequence numbers cannot release the epoch. Every profile verifies511 available objects, zero leases/users and exact resident/socket cleanup. No host-socket result is presented as native network-stack delivery.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-session-control-roundtrip",
+          "provenance_case": "native-fstack-session-control-frames"
+        },
+        {
+          "ctest": "native-fstack-session-control-malformed",
+          "provenance_case": "native-fstack-session-control-frames"
+        },
+        {
+          "ctest": "native-fstack-session-control-replay",
+          "provenance_case": "native-fstack-session-control-frames"
+        }
+      ],
+      "remaining": "F-Stack FF_RELOAD fill/parse ABI and positive READY/HANDOVER_REQ/HANDOVER_ACK/DRAIN_PROGRESS/DRAIN_DONE/REJECT/QUERY command semantics, generation/status/heartbeat payload meanings, NULL input and optional C output-pointer contracts are not implemented. Ker uses its own versioned same-host control ABI. These primary-only control-frame tests do not qualify secondary shared-ring messaging, Linux packet traffic, TCP continuity or full reload/handover."
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
