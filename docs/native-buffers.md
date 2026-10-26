@@ -239,3 +239,11 @@ loopback，完整virtio软件数据通路回归另行执行相同owner场景，�
 保留、replacement创建后的旧handle拒绝及errno隔离。同步交接用producer join、
 consumer join、releaser join明确转移owner；不承诺未同步共享owner访问。计数分别
 要求99/9个VMA完整释放，含3个shutdown残留回收。仅扩展已有源场景，不新增计数。
+
+`native-fstack-buffer-segments-constructor-matrix/destroy-matrix`逐一验证四节点
+owner的mmap失败位置、三种构造rollback unmap失败，以及全部销毁失败位置
+（包含最后的root）。失败只注入调用线程的指定调用，正常syscall仍为原版Linux。
+活跃sentinel的字节/节点/游标全程不变；成功syscall增量证明rollback只残留一个
+节点，shutdown回收全部三种残留。部分销毁后重复失败仍保持EBUSY，后继成功
+只unmap剩余节点；旧handle不能碰replacement。最终19/36次分配释放与5/2个
+shutdown残留精确匹配，不以全零最终计数掩盖中途多释放或遗失。

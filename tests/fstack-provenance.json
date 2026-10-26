@@ -2672,6 +2672,15 @@
         "native-fstack-buffer-segments-handoff"
       ],
       "adaptation": "Ker extension of the qualified per-node owned write scenario. Four pthreads independently create, fill and destroy8195-byte owners with4096/4096/3-byte original-Linux VMAs over eight rounds. Each checks exact node bytes, local/aggregate lengths, failure preservation, replacement-before-stale rejection and independent errno. Join-ordered producer/consumer/releaser threads transfer one actual owner after a cross-node prefix, complete the tail and release all nodes; raw-node free/resize stay blocked. Production registry/cursor and original Linux mapping syscalls run directly. Exact99 or9 allocations/releases plus3 shutdown releases are required. No shared unsynchronized owner mutation, socket traffic, FreeBSD ABI or new source-case completion is claimed."
+    },
+    "native-fstack-buffer-segment-failure-matrix": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_mbuf_write_multi_segment",
+      "ker_ctests": [
+        "native-fstack-buffer-segments-constructor-matrix",
+        "native-fstack-buffer-segments-destroy-matrix"
+      ],
+      "adaptation": "Ker ownership-failure extension over real original-Linux VMAs, without a new source-case completion. A live two-node sentinel retains exact bytes/lengths while every mapping position in a four-node50-byte owner fails, then each of three rollback-unmap positions fails after the last-node constructor error. Successful syscall deltas prove complete immediate rollback or exactly one retained node per failed rollback; shutdown must reclaim all three. Separately fail every teardown position, including root-last, repeat a failed retry, and require either intact read/write access before any release or EBUSY after partial release. A real retry unmaps only remaining nodes; stale handles cannot unmap or mutate replacements. Exact19/36 allocations/releases and5/2 shutdown releases must match, with no live storage or guards. Only specified caller-thread malloc/mmap/munmap calls are injected; successful paths remain original Linux."
     }
   }
 }

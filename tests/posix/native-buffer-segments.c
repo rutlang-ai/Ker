@@ -17,7 +17,7 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s errno=%d\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
 static bool active;
 static _Thread_local bool fail_alloc;
-static _Thread_local unsigned fail_map, fail_unmap;
+static _Thread_local unsigned fail_map, fail_unmap, successful_maps, successful_unmaps;
 bool ker_native_ready(void) { return active; }
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size)
@@ -30,7 +30,10 @@ long __wrap_lkl_syscall(long number, long *params)
 {
     if (number == __lkl__NR_mmap && fail_map && !--fail_map) return -ENOMEM;
     if (number == __lkl__NR_munmap && fail_unmap && !--fail_unmap) return -EIO;
-    return __real_lkl_syscall(number, params);
+    long result = __real_lkl_syscall(number, params);
+    if (number == __lkl__NR_mmap && (uintptr_t)result < (uintptr_t)-4095) successful_maps++;
+    if (number == __lkl__NR_munmap && !result) successful_unmaps++;
+    return result;
 }
 static const unsigned char *segment(struct ker_posix_buffer_writer *w, size_t index,
     size_t used, size_t size, size_t total)
@@ -120,6 +123,85 @@ static void failures(void)
     CHECK(ker_posix_buffer_writer_destroy(w) == -1 && errno == EIO);
     invalid(w, 0, EBUSY); CHECK(!ker_posix_buffer_writer_destroy(w));
 }
+static struct ker_posix_buffer_writer *sentinel(void)
+{
+    struct ker_posix_buffer_writer *w = ker_posix_buffer_writer_create_segmented(32, 16); CHECK(w);
+    CHECK(ker_posix_buffer_writer_append(w, "abcdefghijklmnopqrstuvwx", 24) == 24);
+    return w;
+}
+static void sentinel_unchanged(struct ker_posix_buffer_writer *w)
+{
+    CHECK(!memcmp(segment(w, 0, 16, 16, 24), "abcdefghijklmnop", 16));
+    CHECK(!memcmp(segment(w, 1, 8, 16, 24), "qrstuvwx", 8));
+}
+static void constructor_matrix(void)
+{
+    struct ker_posix_buffer_writer *live = sentinel();
+    unsigned maps = successful_maps, unmaps = successful_unmaps;
+    fail_alloc = true;
+    CHECK(!ker_posix_buffer_writer_create_segmented(50, 16) && errno == ENOMEM && !fail_alloc);
+    CHECK(successful_maps == maps && successful_unmaps == unmaps);
+    sentinel_unchanged(live);
+    /* Fail every possible mapping, including the short last node. */
+    for (unsigned position = 1; position <= 4; position++) {
+        maps = successful_maps; unmaps = successful_unmaps;
+        fail_map = position;
+        CHECK(!ker_posix_buffer_writer_create_segmented(50, 16) && errno == ENOMEM && !fail_map);
+        CHECK(successful_maps - maps == position-1 && successful_unmaps - unmaps == position-1);
+        sentinel_unchanged(live);
+    }
+    /* Fail each rollback unmap after a later constructor failure. Exactly one
+     * node per attempt must remain for real shutdown cleanup, not be forgotten. */
+    for (unsigned position = 1; position <= 3; position++) {
+        maps = successful_maps; unmaps = successful_unmaps;
+        fail_map = 4; fail_unmap = position;
+        CHECK(!ker_posix_buffer_writer_create_segmented(50, 16) && errno == ENOMEM && !fail_map && !fail_unmap);
+        CHECK(successful_maps - maps == 3 && successful_unmaps - unmaps == 2);
+        sentinel_unchanged(live);
+    }
+    CHECK(!ker_posix_buffer_writer_destroy(live));
+}
+static void destroy_matrix(void)
+{
+    struct ker_posix_buffer_writer *live = sentinel();
+    unsigned char bytes[50];
+    for (size_t i = 0; i < sizeof(bytes); i++) bytes[i] = (unsigned char)(i ^ 0x5a);
+    /* Includes first-child failure, intermediate nodes and root-last failure. */
+    for (unsigned position = 1; position <= 4; position++) {
+        struct ker_posix_buffer_writer *w = ker_posix_buffer_writer_create_segmented(50, 16); CHECK(w);
+        CHECK(ker_posix_buffer_writer_append(w, bytes, 30) == 30);
+        unsigned unmaps = successful_unmaps;
+        fail_unmap = position;
+        CHECK(ker_posix_buffer_writer_destroy(w) == -1 && errno == EIO && !fail_unmap);
+        CHECK(successful_unmaps - unmaps == position-1);
+        if (position == 1) {
+            CHECK(!memcmp(segment(w, 0, 16, 16, 30), bytes, 16));
+            CHECK(!memcmp(segment(w, 1, 14, 16, 30), bytes+16, 14));
+            segment(w, 2, 0, 16, 30); segment(w, 3, 0, 2, 30);
+            CHECK(ker_posix_buffer_writer_append(w, bytes+30, 1) == 1);
+            CHECK(!memcmp(segment(w, 1, 15, 16, 31), bytes+16, 15));
+        } else {
+            invalid(w, 0, EBUSY);
+            CHECK(ker_posix_buffer_writer_append(w, bytes, 1) == -1 && errno == EBUSY);
+        }
+        sentinel_unchanged(live);
+        fail_unmap = 1;
+        CHECK(ker_posix_buffer_writer_destroy(w) == -1 && errno == EIO && !fail_unmap);
+        CHECK(successful_unmaps - unmaps == position-1);
+        if (position > 1) invalid(w, 0, EBUSY);
+        CHECK(!ker_posix_buffer_writer_destroy(w) && successful_unmaps - unmaps == 4);
+        struct ker_posix_buffer_writer *replacement = ker_posix_buffer_writer_create_segmented(50, 16); CHECK(replacement);
+        invalid(w, 0, EINVAL);
+        CHECK(ker_posix_buffer_writer_append(w, bytes, 1) == -1 && errno == EINVAL);
+        CHECK(ker_posix_buffer_writer_destroy(w) == -1 && errno == EINVAL);
+        CHECK(successful_unmaps - unmaps == 4);
+        segment(replacement, 0, 0, 16, 0); segment(replacement, 3, 0, 2, 0);
+        CHECK(!ker_posix_buffer_writer_destroy(replacement));
+        CHECK(successful_unmaps - unmaps == 8);
+        sentinel_unchanged(live);
+    }
+    CHECK(!ker_posix_buffer_writer_destroy(live));
+}
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
@@ -128,15 +210,20 @@ int main(int argc, char **argv)
     lkl_host_ops.print = NULL; CHECK(!lkl_init(&lkl_host_ops)); CHECK(!lkl_start_kernel("%s", "mem=64M"));
     CHECK(lkl_sys_getpid() > 0); active = true;
     if (!strcmp(argv[1], "layout")) layout();
-    else { CHECK(!strcmp(argv[1], "failures")); failures(); }
+    else if (!strcmp(argv[1], "failures")) failures();
+    else if (!strcmp(argv[1], "constructor-matrix")) constructor_matrix();
+    else { CHECK(!strcmp(argv[1], "destroy-matrix")); destroy_matrix(); }
     struct ker_posix_buffer_writer *residual = ker_posix_buffer_writer_create_segmented(178, 128); CHECK(residual);
     active = false; invalid(residual, 0, ENETDOWN);
     CHECK(ker_posix_buffer_writer_append(residual, "x", 1) == -1 && errno == ENETDOWN);
     CHECK(ker_posix_buffer_writer_destroy(residual) == -1 && errno == ENETDOWN);
     struct ker_native_buffer_counters final; CHECK(!ker_native_buffers_close_all(&final));
     CHECK(final.allocations == final.releases && !final.live && !final.bytes && !final.option_guards_live);
-    CHECK(final.allocations == 9);
-    CHECK(final.shutdown_releases == (!strcmp(argv[1], "layout") ? 2 : 3));
+    unsigned expected = !strcmp(argv[1], "constructor-matrix") ? 19 :
+        !strcmp(argv[1], "destroy-matrix") ? 36 : 9;
+    unsigned residuals = !strcmp(argv[1], "constructor-matrix") ? 5 :
+        !strcmp(argv[1], "failures") ? 3 : 2;
+    CHECK(final.allocations == expected && final.shutdown_releases == residuals);
     CHECK(!lkl_sys_halt()); lkl_cleanup();
     printf("PASS: segmented owner %s, exact VMA reclamation\n", argv[1]);
     return 0;
