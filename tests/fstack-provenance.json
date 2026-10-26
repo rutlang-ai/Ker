@@ -2663,6 +2663,15 @@
         "native-fstack-zc-validation"
       ],
       "adaptation": "Dynamic segmented-writer APIs allocate distinct registered original-Linux VMAs, append178 bytes and expose128/50 used lengths with aggregate178. Actual IPv4/IPv6 native UDP sendmsg delivers exact per-node bytes and real zerocopy completions. Single-view send/overflow append/invalid index fail without datagrams or consumed completion IDs. Only after completion, a78-byte append fills the tail and a cross-node100-byte offset range is delivered with the next completion. Destruction follows both completions, stale handles cannot affect a replacement, and runtime shutdown leaves zero mappings/option guards/worker mbufs. The strict runner requires all11 unique source markers. Null-PMD traffic is original-Linux loopback, not external wire or end-to-end payload-copy-free evidence; the full virtio software-datapath regression executes the same owner scenarios separately."
+    },
+    "native-fstack-buffer-segment-threads": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": "test_ff_zc_mbuf_write_multi_segment",
+      "ker_ctests": [
+        "native-fstack-buffer-segments-parallel",
+        "native-fstack-buffer-segments-handoff"
+      ],
+      "adaptation": "Ker extension of the qualified per-node owned write scenario. Four pthreads independently create, fill and destroy8195-byte owners with4096/4096/3-byte original-Linux VMAs over eight rounds. Each checks exact node bytes, local/aggregate lengths, failure preservation, replacement-before-stale rejection and independent errno. Join-ordered producer/consumer/releaser threads transfer one actual owner after a cross-node prefix, complete the tail and release all nodes; raw-node free/resize stay blocked. Production registry/cursor and original Linux mapping syscalls run directly. Exact99 or9 allocations/releases plus3 shutdown releases are required. No shared unsynchronized owner mutation, socket traffic, FreeBSD ABI or new source-case completion is claimed."
     }
   }
 }
