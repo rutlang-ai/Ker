@@ -1808,3 +1808,15 @@ Debug/Release的`native-fstack-zc-validation`均通过，Debug完整
 配置DPDK安装目录的LD_LIBRARY_PATH以加载原版PMD依赖；loopback结果不计外部wire。
 这是既有两项写错误映射的集成补强，210项scenario-adapted、18项partial、
 135项blocked及153项行为未完成的计数不变。
+
+## 有界写入的跨线程所有权扩展
+
+新增`native-fstack-buffer-write-parallel/handoff`：四个实际pthread各自持有
+独立原版Linux VMA，重复多页写、溢出/NULL拒绝和精确字节验证，并检查各线程
+errno与主线程sentinel互不污染。另一个场景明确join生产者后交给消费者，验证
+扩容保留数据、旧base/非法写拒绝、跨页写和释放。全部alloc/release及唯一残留
+映射的shutdown回收必须精确匹配。这里不允许未同步write/free/send竞争。
+
+Debug/Release各两项新CTest通过；两例加入无需EAL/PMD的CI必跑清单。这是
+既有两个写入错误案例的Ker扩展，210项scenario-adapted、18项partial、
+135项blocked和153项行为未完成的计数不变。

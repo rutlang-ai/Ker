@@ -170,3 +170,9 @@ write返回ENETDOWN，所有映射、option guard和worker mbuf必须清零。
 `native-fstack-zc-validation`的六项source marker必须完整且唯一，不能用少跑或
 重复marker掩盖缺失。null PMD仅负责启动真实runtime，loopback结果不计外部wire；
 完整`native-fstack-native-buffers` virtio软件数据通路回归另行验证。
+
+跨线程扩展`native-fstack-buffer-write-parallel/handoff`通过真实pthread与原版
+Linux VMA验证独立buffer的写入/错误码隔离，以及生产者join后转交消费者、扩容、
+旧base拒绝和后续写入释放。parallel没有共享可写buffer；handoff明确先同步，
+不作为未同步write/free/send竞争安全的承诺。两例均检查全部分配/释放及残留映射
+shutdown回收；没有网络或FreeBSD隐式cursor/mbuf ABI证明。

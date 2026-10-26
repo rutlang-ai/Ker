@@ -544,3 +544,7 @@ chain或网络证明。三个测试列入无需EAL/PMD的CI必跑清单。
 有界写入socket集成：`native-fstack-zc-validation`严格验证六个source marker，
 并通过真实动态库、原版Linux loopback与completion ID证明非法写入无队列副作用，
 有效后继发送及scatter-gather正常；完整virtio/native-buffer回归另行通过。
+
+跨线程有界写入：`native-fstack-buffer-write-parallel/handoff`验证独立VMA的
+多页字节/errno隔离和明确同步后的resize/write/free所有权交接，精确匹配回收。
+不扩大为未同步共享访问、mbuf ABI或网络证据；迁移完成计数不变。
