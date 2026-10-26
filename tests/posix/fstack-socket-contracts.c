@@ -22,6 +22,8 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 #include <sys/vfs.h>
 #include <sys/xattr.h>
 #include <linux/sockios.h>
@@ -737,6 +739,73 @@ static void descriptor_xattrs(void)
     CHECK(close(fd) == 0);
 }
 
+static void route_netlink(void)
+{
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    int query = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0 && query >= 0);
+    struct sockaddr_nl address = {.nl_family = AF_NETLINK};
+    CHECK(bind(fd, (void *)&address, sizeof(address)) == 0);
+    socklen_t address_length = sizeof(address);
+    CHECK(getsockname(fd, (void *)&address, &address_length) == 0 && address.nl_pid != 0 && address.nl_groups == 0);
+    int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0); CHECK(copy >= 0 && close(fd) == 0); fd = copy;
+    struct sockaddr_nl duplicate; address_length = sizeof(duplicate);
+    CHECK(getsockname(fd, (void *)&duplicate, &address_length) == 0 && duplicate.nl_pid == address.nl_pid);
+    ERROR(ioctl(fd, FIONBIO, (void *)NULL), EFAULT);
+    ERROR(ioctl(fd, FIONREAD, (void *)NULL), ENOTTY);
+    unsigned links = 0, ipv4 = 0, loopback = 0;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        struct {struct nlmsghdr header; struct rtgenmsg body;} request = {
+            .header = {.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtgenmsg)),
+                .nlmsg_type = pass ? RTM_GETADDR : RTM_GETLINK,
+                .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP, .nlmsg_seq = 0x4b455200 + pass},
+            .body = {.rtgen_family = AF_UNSPEC}};
+        struct sockaddr_nl kernel = {.nl_family = AF_NETLINK};
+        CHECK(sendto(fd, &request, request.header.nlmsg_len, 0, (void *)&kernel, sizeof(kernel)) == request.header.nlmsg_len);
+        int done = 0;
+        while (!done) {
+            ready(fd);
+            union {struct nlmsghdr alignment; char bytes[8192];} buffer;
+            struct sockaddr_nl sender; socklen_t length = sizeof(sender);
+            ssize_t received = recvfrom(fd, buffer.bytes, sizeof(buffer.bytes), 0, (void *)&sender, &length);
+            CHECK(received > 0 && sender.nl_family == AF_NETLINK && sender.nl_pid == 0);
+            int remaining = received;
+            for (struct nlmsghdr *message = (void *)buffer.bytes; NLMSG_OK(message, remaining); message = NLMSG_NEXT(message, remaining)) {
+                CHECK(message->nlmsg_seq == request.header.nlmsg_seq);
+                if (message->nlmsg_type == NLMSG_DONE) {done = 1; continue;}
+                CHECK(message->nlmsg_type != NLMSG_ERROR);
+                if (!pass) {
+                    CHECK(message->nlmsg_type == RTM_NEWLINK && message->nlmsg_len >= NLMSG_LENGTH(sizeof(struct ifinfomsg)));
+                    struct ifinfomsg *link = NLMSG_DATA(message);
+                    struct ifreq identity = {.ifr_ifindex = link->ifi_index};
+                    CHECK(ioctl(query, SIOCGIFNAME, &identity) == 0);
+                    int bytes = IFLA_PAYLOAD(message), found = 0;
+                    for (struct rtattr *attribute = IFLA_RTA(link); RTA_OK(attribute, bytes); attribute = RTA_NEXT(attribute, bytes)) {
+                        if (attribute->rta_type != IFLA_IFNAME) continue;
+                        CHECK(memchr(RTA_DATA(attribute), 0, RTA_PAYLOAD(attribute)) != NULL);
+                        CHECK(strcmp(RTA_DATA(attribute), identity.ifr_name) == 0); found = 1;
+                    }
+                    CHECK(found); links++;
+                } else {
+                    CHECK(message->nlmsg_type == RTM_NEWADDR && message->nlmsg_len >= NLMSG_LENGTH(sizeof(struct ifaddrmsg)));
+                    struct ifaddrmsg *entry = NLMSG_DATA(message);
+                    CHECK(entry->ifa_prefixlen <= (entry->ifa_family == AF_INET ? 32 : 128));
+                    if (entry->ifa_family != AF_INET) continue;
+                    int bytes = IFA_PAYLOAD(message);
+                    for (struct rtattr *attribute = IFA_RTA(entry); RTA_OK(attribute, bytes); attribute = RTA_NEXT(attribute, bytes)) {
+                        if (attribute->rta_type != IFA_LOCAL) continue;
+                        CHECK(RTA_PAYLOAD(attribute) >= 4); uint32_t ip; memcpy(&ip, RTA_DATA(attribute), 4);
+                        if ((ntohl(ip) >> 24) == 127) loopback++;
+                        ipv4++;
+                    }
+                }
+            }
+            CHECK(remaining == 0);
+        }
+    }
+    CHECK(links >= 2 && ipv4 >= 2 && loopback > 0);
+    CHECK(close(query) == 0 && close(fd) == 0);
+    ERROR(socket(AF_NETLINK, SOCK_RAW, 0x7fffffff), EPROTONOSUPPORT);
+}
 static void null_queue_ioctl(void)
 {
     struct pair p = connected();
@@ -1014,6 +1083,7 @@ int main(void)
         {"host-transfer-cancellation-points", host_transfer_cancellation},
         {"close-range-explicit-native-boundary", close_range_boundary},
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
+        {"original-kernel-route-netlink-dumps", route_netlink},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
         {"mapping-owner-and-anonymous-fd-boundaries", mapping_owner_boundary},
         {"fortified-io-retains-owner-and-bounds", fortified_io},

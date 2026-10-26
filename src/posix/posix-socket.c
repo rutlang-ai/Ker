@@ -33,11 +33,11 @@ static long sent(struct ker_fd *entry, long value, int flags)
 }
 int socket(int domain, int type, int protocol)
 {
-    if (domain != AF_INET && domain != AF_INET6) return syscall(SYS_socket, domain, type, protocol);
+    if (domain != AF_INET && domain != AF_INET6 && domain != AF_NETLINK) return syscall(SYS_socket, domain, type, protocol);
     if (!ker_native_ready()) { errno = ENETDOWN; return -1; }
     long fd = lkl_sys_socket(domain, type, protocol);
     if (fd < 0) return ker_native_result(fd);
-    return ker_fd_export(fd, KER_FD_SOCKET, -1, type & SOCK_CLOEXEC, 0, -1);
+    return ker_fd_export(fd, domain == AF_NETLINK ? KER_FD_NETLINK : KER_FD_SOCKET, -1, type & SOCK_CLOEXEC, 0, -1);
 }
 int close(int fd) { return ker_fd_close(fd); }
 
@@ -318,8 +318,8 @@ int ioctl(int fd, unsigned long request, ...)
     }
     /* These socket operations unconditionally transfer an integer. LKL's
      * in-process uaccess cannot recover a host NULL dereference. */
-    if (!argument && entry->kind == KER_FD_SOCKET &&
-        (request == FIONBIO || request == FIONREAD || request == SIOCOUTQ)) {
+    if (!argument && (request == FIONBIO || (entry->kind == KER_FD_SOCKET &&
+        (request == FIONREAD || request == SIOCOUTQ)))) {
         ker_fd_put(entry); errno = EFAULT; return -1;
     }
     long value = ker_mtu_ioctl(entry->native, request, argument);
