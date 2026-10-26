@@ -4,9 +4,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <linux/sockios.h>
+#include <net/ethernet.h>
 #include <net/if.h>
 #include <net/if_arp.h>
 #include <poll.h>
@@ -21,16 +21,16 @@
 #define ERROR(call, code) do {errno = 0; CHECK((call) == -1); CHECK(errno == (code));} while (0)
 static int capture_socket(int type, int index)
 {
-    int fd = socket(AF_PACKET, type | SOCK_NONBLOCK | SOCK_CLOEXEC, htons(ETH_P_IP)); CHECK(fd >= 0);
+    int fd = socket(AF_PACKET, type | SOCK_NONBLOCK | SOCK_CLOEXEC, htons(ETHERTYPE_IP)); CHECK(fd >= 0);
     int domain = -1; socklen_t length = sizeof(domain);
     CHECK(getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &length) == 0 && domain == AF_PACKET);
     int ignore = 1; CHECK(setsockopt(fd, SOL_PACKET, PACKET_IGNORE_OUTGOING, &ignore, sizeof(ignore)) == 0);
-    struct sockaddr_ll address = {.sll_family = AF_PACKET, .sll_protocol = htons(ETH_P_IP), .sll_ifindex = index};
+    struct sockaddr_ll address = {.sll_family = AF_PACKET, .sll_protocol = htons(ETHERTYPE_IP), .sll_ifindex = index};
     CHECK(bind(fd, (void *)&address, sizeof(address)) == 0);
     address.sll_ifindex = INT_MAX; ERROR(bind(fd, (void *)&address, sizeof(address)), ENODEV);
     int copy = fcntl(fd, F_DUPFD_CLOEXEC, 0); CHECK(copy >= 0 && close(fd) == 0); fd = copy;
     length = sizeof(address); CHECK(getsockname(fd, (void *)&address, &length) == 0);
-    CHECK(address.sll_family == AF_PACKET && address.sll_ifindex == index && address.sll_protocol == htons(ETH_P_IP));
+    CHECK(address.sll_family == AF_PACKET && address.sll_ifindex == index && address.sll_protocol == htons(ETHERTYPE_IP));
     CHECK((fcntl(fd, F_GETFL) & O_NONBLOCK) && (fcntl(fd, F_GETFD) & FD_CLOEXEC));
     ERROR(ioctl(fd, FIONBIO, (void *)NULL), EFAULT);
     ERROR(ioctl(fd, FIONREAD, (void *)NULL), EFAULT);
@@ -45,9 +45,9 @@ static void capture(int fd, int raw, int index, uint16_t port, const char *paylo
     unsigned char bytes[2048]; struct sockaddr_ll sender; socklen_t length = sizeof(sender);
     ssize_t received = recvfrom(fd, bytes, sizeof(bytes), 0, (void *)&sender, &length);
     CHECK(received == required && length >= sizeof(sender));
-    CHECK(sender.sll_family == AF_PACKET && sender.sll_ifindex == index && sender.sll_protocol == htons(ETH_P_IP));
+    CHECK(sender.sll_family == AF_PACKET && sender.sll_ifindex == index && sender.sll_protocol == htons(ETHERTYPE_IP));
     CHECK(sender.sll_hatype == ARPHRD_LOOPBACK && sender.sll_pkttype == PACKET_HOST);
-    size_t offset = raw ? ETH_HLEN : 0;
+    size_t offset = raw ? sizeof(struct ether_header) : 0;
     if (raw) CHECK(bytes[12] == 8 && bytes[13] == 0);
     CHECK((size_t)received >= offset + 28 && (bytes[offset] >> 4) == 4 && bytes[offset + 9] == IPPROTO_UDP);
     size_t header = (bytes[offset] & 15) * 4;
@@ -63,8 +63,8 @@ static void capture_tcp(int fd, int raw, int index, uint16_t port, const char *p
         unsigned char bytes[2048]; struct sockaddr_ll sender; socklen_t length = sizeof(sender);
         ssize_t received = recvfrom(fd, bytes, sizeof(bytes), 0, (void *)&sender, &length);
         CHECK(received > 0 && length >= sizeof(sender) && sender.sll_family == AF_PACKET &&
-            sender.sll_ifindex == index && sender.sll_protocol == htons(ETH_P_IP) && sender.sll_pkttype == PACKET_HOST);
-        size_t offset = raw ? ETH_HLEN : 0; CHECK((size_t)received >= offset + 20);
+            sender.sll_ifindex == index && sender.sll_protocol == htons(ETHERTYPE_IP) && sender.sll_pkttype == PACKET_HOST);
+        size_t offset = raw ? sizeof(struct ether_header) : 0; CHECK((size_t)received >= offset + 20);
         if (bytes[offset + 9] != IPPROTO_TCP) continue;
         size_t header = (bytes[offset] & 15) * 4;
         size_t total = ((unsigned)bytes[offset + 2] << 8) | bytes[offset + 3];
