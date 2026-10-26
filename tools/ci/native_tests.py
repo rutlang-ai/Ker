@@ -170,6 +170,7 @@ NOHUGE_EAL = (
 # hugetlb allocation, but do need /dev/net/tun and unprivileged network namespaces.
 NOHUGE_TAP = (
     "native-fstack-fortified-io",
+    "native-fstack-packet-sockets",
     "native-fstack-eal-base-virtaddr",
     "native-fstack-eal-file-prefix",
     "native-fstack-eal-log-level",

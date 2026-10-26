@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #define KER_FD_LIMIT 65536
 
-enum ker_fd_kind { KER_FD_SOCKET, KER_FD_EPOLL, KER_FD_NETLINK };
+enum ker_fd_kind { KER_FD_SOCKET, KER_FD_EPOLL, KER_FD_NETLINK, KER_FD_PACKET };
 struct ker_fd {
     int native, host;
     enum ker_fd_kind kind;
