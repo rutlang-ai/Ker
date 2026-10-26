@@ -39,6 +39,7 @@ foreach(artifact config library)
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
+    src/posix/posix-stdio.c
     src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
@@ -1129,6 +1130,11 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-packet-sockets COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-packet-sockets-test>")
     set_tests_properties(native-fstack-packet-sockets PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-stdio-exit-test tests/posix/stdio-exit.c)
+    target_compile_options(ker-posix-stdio-exit-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-stdio-exit COMMAND ${ker_native_test_command}
+        --stdio-exit-app "$<TARGET_FILE:ker-posix-stdio-exit-test>")
+    set_tests_properties(native-fstack-stdio-exit PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-fstack-socket-contracts-test tests/posix/fstack-socket-contracts.c)
     target_compile_options(ker-posix-fstack-socket-contracts-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-posix-fstack-socket-contracts-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)

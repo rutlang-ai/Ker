@@ -663,6 +663,40 @@ static void reuseport_classic_bpf_steering(void)
     }
 }
 
+static void native_stdio_streams(void)
+{
+    struct pair p = connected(); int output_fd = dup(p.client); CHECK(output_fd >= 0);
+    FILE *output = fdopen(output_fd, "w"); CHECK(output && fileno(output) == output_fd && fileno_unlocked(output) == output_fd);
+    char buffer[512]; CHECK(setvbuf(output, buffer, _IOFBF, sizeof(buffer)) == 0);
+    CHECK(fprintf(output, "stdio %d\n", 7) == 8);
+    char bytes[32]; ERROR(recv(p.server, bytes, sizeof(bytes), MSG_DONTWAIT), EAGAIN);
+    CHECK(fflush(output) == 0);
+    CHECK(recv(p.server, bytes, sizeof(bytes), 0) == 8 && !memcmp(bytes, "stdio 7\n", 8));
+    int input_fd = dup(p.server); CHECK(input_fd >= 0);
+    FILE *input = fdopen(input_fd, "r"); CHECK(input && fileno(input) == input_fd);
+    CHECK(send(p.client, "line\n", 5, MSG_NOSIGNAL) == 5);
+    CHECK(fgets(bytes, sizeof(bytes), input) && !strcmp(bytes, "line\n"));
+    ERROR(fseek(input, 0, SEEK_SET), ESPIPE); clearerr(input);
+    CHECK(!ferror(input));
+    errno = 0; CHECK(fdopen(p.client, "invalid") == NULL && errno == EINVAL);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        errno = 0; CHECK(freopen("/dev/null", "w", output) == NULL && errno == EOPNOTSUPP);
+        CHECK(fileno(output) == output_fd && fputs("ok", output) >= 0 && fflush(output) == 0);
+        CHECK(recv(p.server, bytes, sizeof(bytes), 0) == 2 && !memcmp(bytes, "ok", 2));
+    }
+    CHECK(fclose(input) == 0 && fclose(output) == 0);
+    ERROR(fcntl(input_fd, F_GETFD), EBADF); ERROR(fcntl(output_fd, F_GETFD), EBADF);
+    int append_fd = dup(p.client); CHECK(append_fd >= 0);
+    FILE *append = fdopen(append_fd, "a"); CHECK(append && (fcntl(p.client, F_GETFL) & O_APPEND));
+    CHECK(fputs("a", append) >= 0 && fflush(append) == 0);
+    CHECK(recv(p.server, bytes, sizeof(bytes), 0) == 1 && bytes[0] == 'a');
+    CHECK(fclose(append) == 0);
+    FILE *host = tmpfile(); CHECK(host);
+    CHECK(fputs("host", host) >= 0 && fseek(host, 0, SEEK_SET) == 0);
+    CHECK(fread(bytes, 1, 4, host) == 4 && !memcmp(bytes, "host", 4));
+    CHECK(fileno(host) >= 0 && fclose(host) == 0); finish(p);
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -2340,6 +2374,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"native-fdopen-buffering-input-fileno-and-close-ownership", native_stdio_streams},
         {"original-UDP-reuseport-classic-BPF-steering-replacement-and-compaction", reuseport_classic_bpf_steering},
         {"post-initialization-process-helper-boundaries", process_helper_boundary},
         {"legacy-stat-ABI-version-validation-and-precedence", legacy_stat_versions},

@@ -8,4 +8,5 @@ int ker_native_drain(unsigned int timeout_ms);
 int ker_native_finalize(void);
 /* Process-copy boundary remains active once initialization begins. */
 bool ker_native_process_isolated(void);
+int ker_native_stdio_shutdown(void);
 #endif
