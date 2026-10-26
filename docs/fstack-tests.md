@@ -505,3 +505,8 @@ master进程生命周期扩展：`native-fstack-session-control-master-eof/maste
 通过独立子进程证明控制socket EOF及SIGSTOP都不是退出证明，精确pidfd死亡之后
 才回收slot/epoch，并检查其他master、resident epoch0及复用后的凭据隔离。
 本批无secondary EAL或报文流量；作为TC-4既有映射补充，完成计数不变。
+
+P2释放证明的控制lease子集：`native-fstack-session-control-reservation-eof/reservation-death/reservation-coordinates`
+验证独立direct-child持有实际mbuf lease时RELEASE拒绝、socket EOF保留、精确死亡
+逐项回收和最后借用者退出后释放。源案例`test_p2_release_epoch_needs_proof`仅推进
+为partial；没有secondary EAL、硬件STOPPED证明或RX-owner generation转移证据。
