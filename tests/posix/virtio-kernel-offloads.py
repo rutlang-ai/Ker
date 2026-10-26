@@ -191,7 +191,7 @@ def main():
                                 native = record['native']
                                 require(native['buffer_allocations'] >= 75 and
                                         native['buffer_allocations'] == native['buffer_releases'] and
-                                        native['buffer_shutdown_releases'] == 1 and
+                                        native['buffer_shutdown_releases'] == 2 and
                                         native['buffers_live'] == native['buffer_bytes'] == native['buffer_option_guards_live'] == 0,
                                         'native VMA lifetime/reclamation failure: ' + str(native))
                             require(info['driver'] == 'net_virtio_user' and info['mac'] == '02:11:22:33:44:55',

@@ -10,6 +10,10 @@ static void *(*buffer_allocate)(size_t);
 static int (*buffer_release)(void *);
 static void *(*buffer_resize)(void *, size_t);
 static int (*buffer_write)(void *, size_t, const void *, size_t);
+static struct ker_posix_buffer_writer *(*writer_create)(size_t);
+static int (*writer_append)(struct ker_posix_buffer_writer *, const void *, size_t);
+static const void *(*writer_view)(struct ker_posix_buffer_writer *, size_t *, size_t *);
+static int (*writer_destroy)(struct ker_posix_buffer_writer *);
 static int (*buffer_run)(ker_posix_loop_func, void *);
 static void (*buffer_stop)(void);
 static unsigned sent_ids, completed_ids, family_copied[2], family_direct[2], current_family;
@@ -37,6 +41,11 @@ static void buffer_init(void)
     buffer_release = dlsym(RTLD_DEFAULT, "ker_posix_buffer_free");
     buffer_resize = dlsym(RTLD_DEFAULT, "ker_posix_buffer_realloc");
     buffer_write = dlsym(RTLD_DEFAULT, "ker_posix_buffer_write");
+    writer_create = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_create");
+    writer_append = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_append");
+    writer_view = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_view");
+    writer_destroy = dlsym(RTLD_DEFAULT, "ker_posix_buffer_writer_destroy");
+    check(writer_create && writer_append && writer_view && writer_destroy, "native owned writer ABI");
     buffer_run = dlsym(RTLD_DEFAULT, "ker_posix_run");
     buffer_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
     check(buffer_allocate && buffer_release && buffer_resize && buffer_write && buffer_run && buffer_stop, "native buffer API");
@@ -141,6 +150,80 @@ static void *buffer_toggle(void *opaque)
         check(!setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &enabled, sizeof(enabled)), "concurrent SO_ZEROCOPY update");
     }
     return NULL;
+}
+static void writer_no_delivery(int fd, int receiver)
+{
+    unsigned char byte; char control[256];
+    struct iovec vector = {&byte, 1};
+    struct msghdr message = {.msg_iov=&vector, .msg_iovlen=1,
+        .msg_control=control, .msg_controllen=sizeof(control)};
+    check(recv(receiver, &byte, 1, MSG_DONTWAIT) == -1 && errno == EAGAIN,
+          "writer append delivered no datagram");
+    check(recvmsg(fd, &message, MSG_ERRQUEUE | MSG_DONTWAIT) == -1 && errno == EAGAIN,
+          "writer append consumed no completion ID");
+}
+static void buffer_writers(void)
+{
+    for (unsigned family = 0; family < 2; ++family) {
+        int domain = family ? AF_INET6 : AF_INET;
+        int receiver = socket(domain, SOCK_DGRAM, 0), fd = socket(domain, SOCK_DGRAM, 0);
+        check(receiver >= 0 && fd >= 0, "owned writer loopback sockets");
+        struct sockaddr_storage address = {0};
+        socklen_t size = family ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+        if (family) {
+            struct sockaddr_in6 *a = (void *)&address; a->sin6_family = AF_INET6; a->sin6_addr = in6addr_loopback;
+        } else {
+            struct sockaddr_in *a = (void *)&address; a->sin_family = AF_INET; a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        }
+        check(!bind(receiver, (void *)&address, size) && !getsockname(receiver, (void *)&address, &size) &&
+              !connect(fd, (void *)&address, size), "owned writer real native loopback peer");
+        struct timeval timeout = {.tv_sec=3};
+        check(!setsockopt(receiver, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), "writer timeout");
+        buffer_socket(fd, family, false);
+        struct ker_posix_buffer_writer *empty = writer_create(0); check(empty, "owned empty VMA");
+        size_t length = SIZE_MAX, capacity = SIZE_MAX;
+        const void *data = writer_view(empty, &length, &capacity);
+        check(data && !length && !capacity, "owned empty logical view");
+        check(writer_append(empty, "x", 0) == 0 && writer_append(empty, "x", 1) == -1 && errno == EINVAL,
+              "empty capacity rejects payload and preserves zero append");
+        writer_no_delivery(fd, receiver);
+        unsigned char received[64];
+        check(send(fd, data, 0, MSG_ZEROCOPY) == 0 && recv(receiver, received, sizeof(received), 0) == 0,
+              "ordinary Linux zero-byte UDP remains one real datagram");
+        buffer_sent(0, true); buffer_complete(fd);
+        check(sent_ids == 1 && completed_ids == 1, "empty UDP owns completion ID zero");
+        writer_no_delivery(fd, receiver);
+        check(!writer_destroy(empty), "empty owner released after actual completion");
+        struct ker_posix_buffer_writer *owner = writer_create(64); check(owner, "owned payload VMA");
+        check(writer_append(owner, "ab", 2) == 2 && writer_append(owner, "cd", 2) == 2,
+              "owned append cumulative payload");
+        data = writer_view(owner, &length, &capacity);
+        check(data && length == 4 && capacity == 64 && !memcmp(data, "abcd", 4), "owned aggregate length/bytes");
+        check(writer_append(owner, "x", SIZE_MAX) == -1 && errno == EINVAL &&
+              writer_append(owner, NULL, 0) == -1 && errno == EINVAL, "owned rejected append");
+        check(writer_append(owner, "x", 0) == 0 && writer_view(owner, &length, NULL) == data && length == 4 &&
+              !memcmp(data, "abcd", 4), "owned no-op/rejection preserves length and bytes");
+        check(buffer_release((void *)data) == -1 && errno == EBUSY &&
+              buffer_write((void *)data, 0, "x", 1) == -1 && errno == EBUSY &&
+              !buffer_resize((void *)data, 128) && errno == EBUSY, "writer owner cannot be bypassed");
+        writer_no_delivery(fd, receiver);
+        check(send(fd, data, length, MSG_ZEROCOPY) == 4 && recv(receiver, received, sizeof(received), 0) == 4 &&
+              !memcmp(received, "abcd", 4), "owned bytes reach original Linux after rejected append");
+        buffer_sent(4, true); buffer_complete(fd);
+        check(sent_ids == 2 && completed_ids == 2, "owned payload retains next completion ID");
+        check(writer_append(owner, "EFGH", 4) == 4 && writer_view(owner, &length, NULL) == data && length == 8 &&
+              !memcmp(data, "abcdEFGH", 8), "append only after actual zerocopy completion");
+        struct iovec vectors[] = {{(void *)data, 2}, {(unsigned char *)data+2, 6}};
+        struct msghdr message = {.msg_iov=vectors, .msg_iovlen=2};
+        check(sendmsg(fd, &message, MSG_ZEROCOPY) == 8 && recv(receiver, received, sizeof(received), 0) == 8 &&
+              !memcmp(received, "abcdEFGH", 8), "owned scatter-gather bytes delivered");
+        buffer_sent(8, true); buffer_complete(fd);
+        check(sent_ids == 3 && completed_ids == 3 && !writer_destroy(owner), "owned release follows all completions");
+        check(!close(fd) && !close(receiver), "writer sockets closed");
+    }
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_get_zero_len_returns_minimal_chain");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_accumulates_pkthdr_len");
+    puts("BUFFER_SOURCE_CASE test_ff_zc_mbuf_write_zero_len_noop");
 }
 static void buffer_guards(void)
 {
@@ -252,6 +335,7 @@ static void buffer_guards(void)
     check(!pthread_join(toggler, NULL) && !close(alias), "option updates and alias joined");
     check(!close(fd) && !close(receiver) && !buffer_release(registered) && !buffer_release(second), "guard mapping/socket cleanup");
     free(host_bytes);
+    buffer_writers();
     memset(family_copied, 0, sizeof(family_copied)); memset(family_direct, 0, sizeof(family_direct));
     memset(copied_bytes, 0, sizeof(copied_bytes)); memset(direct_bytes, 0, sizeof(direct_bytes));
     memset(udp_copied_bytes, 0, sizeof(udp_copied_bytes)); memset(tcp_direct_bytes, 0, sizeof(tcp_direct_bytes));
@@ -261,8 +345,14 @@ static void buffer_finish(void)
 {
     /* Deliberate residual mapping: explicit run teardown must reclaim it. */
     void *residual = buffer_allocate(8193); check(residual, "residual mapping");
+    struct ker_posix_buffer_writer *owner = writer_create(0); check(owner, "residual empty owner");
     check(!buffer_run(buffer_end, NULL), "mapped-buffer socket drain and native shutdown");
     errno = 0; check(!buffer_allocate(1) && errno == ENETDOWN, "allocation after shutdown rejected");
+    size_t length = 91, capacity = 92;
+    check(!writer_view(owner, &length, &capacity) && errno == ENETDOWN && length == 91 && capacity == 92,
+          "writer view after shutdown rejects without output mutation");
+    check(writer_append(owner, "x", 0) == -1 && errno == ENETDOWN &&
+          writer_destroy(owner) == -1 && errno == ENETDOWN, "owner lifetime ends at explicit shutdown");
     char final_byte = 'x';
     check(buffer_write(residual, 0, &final_byte, 1) == -1 && errno == ENETDOWN,
           "bounded write after shutdown rejected without dereference");

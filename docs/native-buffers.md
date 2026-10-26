@@ -187,3 +187,9 @@ owner供重试，runtime shutdown回收未销毁owner。
 writer数据的raw free/write和非零realloc返回EBUSY；view只能按已写长度发送，
 修改/销毁前必须等待全部zerocopy completion并同步owner访问/交接。它不提供
 FreeBSD M_PKTHDR、m_next/per-node m_len，也不改变Linux零字节UDP的行为。
+
+Writer动态集成在原版Linux IPv4/IPv6 loopback上验证空owner、累计append、失败
+保留、raw bypass拒绝及完成后的再次append。零append无datagram/completion，
+普通Linux零字节UDP仍产生真实datagram与ID0；后续4/8字节发送保留准确编号及
+scatter-gather字节。销毁发生在完成之后；runtime退出同时回收raw残留和空writer，
+因此这些app场景的buffer_shutdown_releases必须为2。九个source marker完整且唯一。
