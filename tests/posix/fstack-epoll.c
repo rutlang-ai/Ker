@@ -336,10 +336,47 @@ static void empty_datagram_readiness(void)
         CHECK(close(ep) == 0 && close(rx) == 0 && close(tx) == 0);
     }
 }
+/* Faulting poll arrays must not consume native or host readiness. */
+static int null_poll_array(int variant, nfds_t count)
+{
+    int (*volatile poll_fn)(struct pollfd *, nfds_t, int) = poll;
+    int (*volatile ppoll_fn)(struct pollfd *, nfds_t, const struct timespec *, const sigset_t *) = ppoll;
+    struct timespec zero = {0};
+    return variant ? ppoll_fn(NULL, count, &zero, NULL) : poll_fn(NULL, count, 0);
+}
+static void null_poll_array_recovery(void)
+{
+    struct connection c = connection();
+    int pipes[2];
+    CHECK(pipe2(pipes, O_CLOEXEC | O_NONBLOCK) == 0);
+    put(c, "poll-pointer");
+    CHECK(write(pipes[1], "h", 1) == 1);
+    for (int variant = 0; variant < 2; ++variant) {
+        CHECK(null_poll_array(variant, 0) == 0);
+        EXPECT_ERROR(null_poll_array(variant, 1), EFAULT);
+        struct pollfd ready[] = {{.fd = c.receiver, .events = POLLIN},
+                                 {.fd = pipes[0], .events = POLLIN}};
+        CHECK(poll(ready, 2, 2000) == 2);
+        CHECK((ready[0].revents & POLLIN) && (ready[1].revents & POLLIN));
+    }
+    take(c, "poll-pointer");
+    char byte;
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 'h');
+    struct pollfd empty[] = {{.fd = c.receiver, .events = POLLIN},
+                             {.fd = pipes[0], .events = POLLIN}};
+    CHECK(poll(empty, 2, 0) == 0);
+    put(c, "recovered");
+    CHECK(poll(empty, 2, 2000) == 1 && (empty[0].revents & POLLIN));
+    take(c, "recovered");
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(c);
+}
+
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"create-and-invalid-arguments", create_and_arguments},
+        {"null-poll-array-and-mixed-readiness-recovery", null_poll_array_recovery},
         {"null-event-and-registration-recovery", null_event_non_delete},
         {"null-wait-buffer-and-oneshot-recovery", null_wait_recovery},
         {"add-modify-delete-and-u64-data", add_modify_delete},
