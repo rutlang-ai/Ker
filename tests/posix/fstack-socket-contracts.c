@@ -194,6 +194,32 @@ static void bind_collision(void)
     CHECK(server >= 0 && close(listener) == 0);
     finish((struct pair){client, server});
 }
+static void descriptor_at_mutations(void)
+{
+    struct pair p = connected(); struct stat initial, changed;
+    CHECK(fstat(p.client, &initial) == 0);
+    int alias = dup(p.client); CHECK(alias >= 0);
+    CHECK(fchmodat(alias, "", 0600, AT_EMPTY_PATH) == 0);
+    CHECK(fstat(p.client, &changed) == 0 && (changed.st_mode & 0777) == 0600 && S_ISSOCK(changed.st_mode));
+    ERROR(faccessat(alias, "", X_OK, AT_EMPTY_PATH), EACCES);
+    CHECK(fchownat(alias, "", initial.st_uid, initial.st_gid, AT_EMPTY_PATH) == 0);
+    CHECK(fstat(alias, &changed) == 0 && changed.st_uid == initial.st_uid && changed.st_gid == initial.st_gid);
+    ERROR(fchmodat(alias, "child", 0777, 0), ENOTDIR);
+    ERROR(fchownat(alias, "child", -1, -1, 0), ENOTDIR);
+    ERROR(fchmodat(alias, "", 0777, 0x40000000), EINVAL);
+    ERROR(fchownat(alias, "", -1, -1, 0x40000000), EINVAL);
+    CHECK(fstat(alias, &changed) == 0 && (changed.st_mode & 0777) == 0600);
+    CHECK(close(p.client) == 0 && fchmodat(alias, "", initial.st_mode & 0777, AT_EMPTY_PATH) == 0);
+    CHECK(faccessat(alias, "", X_OK, AT_EMPTY_PATH) == 0);
+    char path[] = "/tmp/ker-inode-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    CHECK(fchmodat(alias, path, 0640, 0) == 0 && fstat(host, &changed) == 0 && (changed.st_mode & 0777) == 0640);
+    CHECK(fchownat(alias, path, changed.st_uid, changed.st_gid, 0) == 0);
+    CHECK(fchmodat(host, "", 0600, AT_EMPTY_PATH) == 0 && fstat(host, &changed) == 0 && (changed.st_mode & 0777) == 0600);
+    CHECK(close(host) == 0 && unlink(path) == 0);
+    CHECK(write(alias, "ok", 2) == 2); char bytes[2];
+    CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
 static void descriptor_access(void)
 {
     struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
@@ -1695,6 +1721,7 @@ int main(void)
         {"unreadable-host-path-at-apis", unreadable_host_path_at},
         {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
         {"descriptor-access-permission-owner-routing", descriptor_access},
+        {"descriptor-at-metadata-mutations", descriptor_at_mutations},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
