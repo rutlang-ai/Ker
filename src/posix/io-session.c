@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #define _GNU_SOURCE
 #include "io-session.h"
+#include "session-ring-names.h"
 #include "session-packet.h"
 #include "session-generation-rings.h"
 #include "session-peer-drain.h"
@@ -683,9 +684,7 @@ static unsigned ring_index(unsigned s, unsigned g, unsigned p, unsigned c)
 }
 static int ring_name(char *name, size_t size, unsigned s, unsigned g, unsigned p, unsigned c)
 {
-    static const char *const names[] = {"ctl", "rx", "tx", "reply"};
-    int result = snprintf(name, size, "ker_s%u_g%u_p%u_%s", s, g, p, names[c]);
-    return result < 0 || (size_t)result >= size ? -ENAMETOOLONG : 0;
+    return ker_session_ring_name(name, size, s, g, p, c);
 }
 /* One production boundary for every secondary's view of the resident
  * directory. Keep the ticket, EAL peer and shared header checks together so

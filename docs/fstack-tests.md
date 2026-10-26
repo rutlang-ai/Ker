@@ -520,3 +520,8 @@ P2登记证明子集：`native-fstack-session-control-reservation-replay/reserva
 验证真实master死亡后，EOF/冻结的活借用者保留epoch与mbuf lease，多个坐标按
 精确pidfd死亡分别回收，最后才可复用slot。P2 orphan源案例仅推进为partial；
 没有secondary EAL、heartbeat老化接管或硬件RX-owner证明。
+
+M5 ring命名空间子集：`native-fstack-session-namespace-names/isolation/recreate`
+通过生产命名helper和128个真实DPDK ring验证唯一性、同名拒绝、独立FIFO与选择性
+重建。源cross-master名字隔离案例推进为partial；高process编号、消息type家族和
+F-Stack字面/legacy名字ABI仍有缺口，组件token结果不计为secondary或网络证据。
