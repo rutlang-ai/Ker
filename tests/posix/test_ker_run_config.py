@@ -1135,8 +1135,13 @@ raise AssertionError('allocation failure was accepted')
             config = root / 'bond.ini'
             calls = root / 'worker-calls'
             worker = root / 'worker'
+            library = root / 'libker-posix.so'
+            guard = root / 'ker-app'
             app_marker = root / 'app-entered'
             stats = root / 'stats.json'
+            library.touch()
+            guard.write_text('#!/bin/sh\nexec "$@"\n')
+            guard.chmod(0o755)
             worker.write_text('#!/usr/bin/env python3\nimport json, pathlib, sys\n'
                 f'with pathlib.Path({str(calls)!r}).open("a") as trace:\n'
                 ' trace.write(" ".join(sys.argv[1:]) + "\\n")\n'
@@ -1146,7 +1151,7 @@ raise AssertionError('allocation failure was accepted')
                 'sys.exit(2)\n')
             worker.chmod(0o755)
             base = ['--address', '198.18.0.2/24', '--port', 'net_bonding0',
-                    '--config', str(config), '--library', str(root / 'missing-library'),
+                    '--config', str(config), '--library', str(library),
                     '--io-worker', str(worker), '--stats', str(stats), '--',
                     '/bin/touch', str(app_marker)]
 
@@ -1190,7 +1195,8 @@ raise AssertionError('allocation failure was accepted')
                 capture_output=True, text=True, timeout=5)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('secondary EAL processes are unsupported', result.stderr)
-            self.assertEqual(calls.read_text(), '--dpdk-limits\n')
+            self.assertEqual(calls.read_text().splitlines().count('--dpdk-limits'), 1)
+            self.assertEqual(calls.read_text().splitlines()[0], '--dpdk-limits')
             self.assertFalse(app_marker.exists())
             self.assertFalse(stats.exists())
 

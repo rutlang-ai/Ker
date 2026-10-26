@@ -3,12 +3,15 @@
 The executable fixtures implement only the limits protocol, not an EAL/PMD.
 """
 import importlib.util
+import contextlib
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +36,11 @@ class WorkerLimitsTests(unittest.TestCase):
         self.application = self.root/'application'
         self.executed = self.root/'application-executed'
         self.stats = self.root/'stats.json'
+        self.library = self.root/'libker-posix.so'
+        self.guard = self.root/'ker-app'
+        self.library.touch()
+        self.guard.write_text('#!/bin/sh\nexec "$@"\n')
+        self.guard.chmod(0o700)
         self.application.write_text('#!/bin/sh\ntouch "' + str(self.executed) + '"\n')
         self.application.chmod(0o700)
         self.respond()
@@ -56,7 +64,7 @@ class WorkerLimitsTests(unittest.TestCase):
     def cli(self, socket_id=0):
         self.config.write_text(self.text(socket_id))
         return subprocess.run([sys.executable, str(SOURCE), '--config', str(self.config),
-            '--io-worker', str(self.worker), '--library', '/missing-native-library',
+            '--io-worker', str(self.worker), '--library', str(self.library),
             '--stats', str(self.stats), '--', str(self.application)],
             capture_output=True, text=True, timeout=15)
 
@@ -70,6 +78,16 @@ class WorkerLimitsTests(unittest.TestCase):
     def consume_query(self):
         self.assertEqual(self.log.read_text().splitlines(), ['--dpdk-limits'])
         self.log.unlink()
+
+    def main_with_mocks(self):
+        argv = ['ker-run.py', '--config', str(self.config), '--io-worker', str(self.worker),
+                '--library', str(self.library), '--stats', str(self.stats), '--', str(self.application)]
+        stderr = io.StringIO()
+        with mock.patch.object(sys, 'argv', argv), contextlib.redirect_stderr(stderr), \
+                mock.patch.object(launcher.socket, 'socketpair') as pair, \
+                mock.patch.object(launcher.subprocess, 'Popen') as spawn:
+            status = launcher.main()
+        return status, stderr.getvalue(), pair, spawn
 
     def test_impossible_negative_socket_ids_reject_without_query(self):
         for socket_id in (-2, -65536, -10**30):
@@ -129,6 +147,43 @@ class WorkerLimitsTests(unittest.TestCase):
         self.respond()
         self.assertEqual(self.parse(-1).bonds[0]['socket_id'], -1)
         self.consume_query()
+
+    def test_invalid_runtime_artifacts_precede_bond_limits_query(self):
+        self.config.write_text(self.text(0))
+        for artifact, kind in ((self.library, 'missing'), (self.library, 'nonfile'),
+                               (self.worker, 'missing'), (self.worker, 'nonexec'),
+                               (self.guard, 'missing'), (self.guard, 'nonexec')):
+            with self.subTest(artifact=artifact.name, kind=kind):
+                saved = artifact.read_bytes()
+                if kind == 'missing':
+                    artifact.unlink()
+                elif kind == 'nonfile':
+                    artifact.unlink()
+                    artifact.mkdir()
+                elif kind == 'nonexec':
+                    artifact.chmod(0o600)
+                status, stderr, pair, spawn = self.main_with_mocks()
+                self.assertEqual(status, 125, stderr)
+                self.assertFalse(self.log.exists())
+                pair.assert_not_called()
+                spawn.assert_not_called()
+                if kind == 'missing':
+                    artifact.write_bytes(saved)
+                    if artifact != self.library:
+                        artifact.chmod(0o700)
+                elif kind == 'nonfile':
+                    artifact.rmdir()
+                    artifact.write_bytes(b'')
+                elif kind == 'nonexec':
+                    artifact.chmod(0o700)
+
+    def test_valid_bond_queries_worker_exactly_once_after_artifact_checks(self):
+        self.config.write_text(self.text(0))
+        result = self.cli()
+        lines = self.log.read_text().splitlines()
+        self.assertEqual(lines[0], '--dpdk-limits')
+        self.assertEqual(lines.count('--dpdk-limits'), 1)
+        self.assertNotEqual(result.returncode, 2, result.stderr)
 
 
 if __name__ == '__main__':
