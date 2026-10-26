@@ -53,6 +53,8 @@ HOSTED_SAFE = (
     "native-fstack-buffer-writer-stale",
     "native-fstack-buffer-segments-layout",
     "native-fstack-buffer-segments-failures",
+    "native-fstack-buffer-segments-parallel",
+    "native-fstack-buffer-segments-handoff",
     "native-fstack-host-pages-debug",
     "native-fstack-host-pages-release",
     "native-fstack-host-timer-debug",

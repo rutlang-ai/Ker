@@ -233,3 +233,9 @@ send、溢出append或非法节点不会投递数据或消耗完成编号；实�
 旧handle无法操作replacement。runtime退出时所有VMA/guard/worker mbuf清零。
 zc-validation必须包含全部11个唯一source marker；null PMD下payload仍是Linux
 loopback，完整virtio软件数据通路回归另行执行相同owner场景，不宣称全链路无复制。
+
+`native-fstack-buffer-segments-parallel/handoff`补充线程生命周期：四个pthread各自
+拥有独立8195字节owner，跨4096/4096/3字节节点追加，验证每段字节/长度、失败
+保留、replacement创建后的旧handle拒绝及errno隔离。同步交接用producer join、
+consumer join、releaser join明确转移owner；不承诺未同步共享owner访问。计数分别
+要求99/9个VMA完整释放，含3个shutdown残留回收。仅扩展已有源场景，不新增计数。
