@@ -108,6 +108,9 @@ static int descriptor_statat(int fd, const char *path, struct stat *output, int 
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_newfstatat, fd, path, output, flags);
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
+    }
     char local_path[PATH_MAX];
     if (path) {
         if (copy_native_path(path, local_path) < 0) {
