@@ -231,7 +231,7 @@ def recycle(api, path, session):
 # This child owns a real master or pre-EAL reservation connection.
 # It never starts a secondary EAL.
 MASTER_CHILD = r"""
-import errno, importlib.util, json, sys
+import errno, importlib.util, json, signal, sys
 spec = importlib.util.spec_from_file_location('api', sys.argv[1])
 api = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(api)
@@ -305,6 +305,9 @@ if command == b'C':
     connection.close()
     print('CLOSED', flush=True)
     command = sys.stdin.buffer.read(1)
+if command == b'' and len(sys.argv) == 5 and sys.argv[4] == 'orphan':
+    while True:
+        signal.pause()
 if command != b'X':
     raise RuntimeError('unexpected master-child command')
 # Deliberately leave any open socket to process teardown, without RELEASE.
@@ -541,7 +544,8 @@ def ready(process):
     raise RuntimeError('actual resident did not publish READY: ' + captured.decode(errors='replace'))
 
 
-def main():
+def main(extra_profiles=None):
+    extra_profiles = extra_profiles or {}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--tool', type=Path, required=True)
@@ -549,7 +553,7 @@ def main():
                                                'master-eof', 'master-death', 'master-frozen',
                                                'reservation-eof', 'reservation-death',
                                                'reservation-coordinates', 'reservation-replay',
-                                               'reservation-collision', 'reservation-bounds'), required=True)
+                                               'reservation-collision', 'reservation-bounds', *extra_profiles), required=True)
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('control_frame_api', args.tool)
     api = importlib.util.module_from_spec(spec)
@@ -574,7 +578,9 @@ def main():
                         'unexpected resident configuration')
                 profiles = {'roundtrip': roundtrip, 'malformed': malformed, 'replay': replay,
                             'isolation': isolation, 'capacity': capacity, 'recycle': recycle}
-                if args.profile in ('reservation-replay', 'reservation-collision', 'reservation-bounds'):
+                if args.profile in extra_profiles:
+                    extra_profiles[args.profile](api, path, record['session'])
+                elif args.profile in ('reservation-replay', 'reservation-collision', 'reservation-bounds'):
                     reservation_admission(api, path, record['session'], args.profile.removeprefix('reservation-'))
                 elif args.profile.startswith('reservation-'):
                     reservation_proof(api, path, record['session'], args.profile.removeprefix('reservation-'))
