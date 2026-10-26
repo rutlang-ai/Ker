@@ -1,8 +1,10 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
 #include "syscall-result.h"
+#include <dlfcn.h>
 #include <stdint.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/syscall.h>
@@ -117,3 +119,26 @@ int futimes(int fd, const struct timeval times[2])
     }
     return futimens(fd, converted);
 }
+
+int fallocate(int fd, int mode, off_t offset, off_t length)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fallocate, fd, mode, offset, length);
+    long value = lkl_sys_fallocate(entry->native, mode, offset, length);
+    ker_fd_put(entry);
+    return ker_native_result(value);
+}
+extern __typeof(fallocate64) fallocate64 __attribute__((alias("fallocate")));
+
+int posix_fallocate(int fd, off_t offset, off_t length)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) {
+        int (*host_posix_fallocate)(int, off_t, off_t) = dlsym(RTLD_NEXT, "posix_fallocate");
+        return host_posix_fallocate ? host_posix_fallocate(fd, offset, length) : ENOSYS;
+    }
+    long value = lkl_sys_fallocate(entry->native, 0, offset, length);
+    ker_fd_put(entry);
+    return value < 0 ? (int)-value : 0;
+}
+extern __typeof(posix_fallocate64) posix_fallocate64 __attribute__((alias("posix_fallocate")));
