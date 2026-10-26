@@ -544,6 +544,44 @@ def validate_unrelated_handoff_drain(record):
     return record
 
 
+def validate_active_consumer_frame_drain(drained, committed, unrelated_committed,
+                                         unrelated_drained, payload):
+    """Validate the exact U2 lease and bounded MLD releases across producer death."""
+    if (not isinstance(drained, dict) or not isinstance(unrelated_committed, list) or
+            not isinstance(unrelated_drained, list) or
+            len(unrelated_committed) != len(unrelated_drained) or
+            len(unrelated_committed) > 8):
+        raise RuntimeError('active consumer unrelated-frame evidence exceeded its bound or was incomplete')
+    validate_frame_committed_record(committed, payload)
+    for commit, release in zip(unrelated_committed, unrelated_drained):
+        validate_unrelated_handoff_commit(commit)
+        validate_unrelated_handoff_drain(release)
+        for commit_field, release_field in (
+                ('object_index', 'object_index'), ('pool_tag', 'pool_tag'),
+                ('packet_pointer', 'packet_pointer'), ('length', 'length'),
+                ('tx_lease_id', 'lease_id'), ('frame_hex', 'frame_hex')):
+            if commit.get(commit_field) != release.get(release_field):
+                raise RuntimeError('consumer changed unrelated committed frame ' + commit_field)
+    for field in ('object_index', 'pool_tag', 'packet_pointer', 'length', 'frame_hex'):
+        if drained.get(field) != committed.get(field):
+            raise RuntimeError('active consumer changed committed packet ' + field)
+    try:
+        frame = bytes.fromhex(drained.get('frame_hex', ''))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError('active consumer returned invalid committed packet bytes') from error
+    unrelated_count = len(unrelated_committed)
+    if (type(drained.get('sequence')) is not int or drained['sequence'] != 0 or
+            not frame_matches_expected_u2(frame, payload) or
+            type(drained.get('unrelated_count')) is not int or
+            drained['unrelated_count'] != unrelated_count or
+            drained.get('tx_before') != unrelated_count + 1 or drained.get('tx_after') != 0 or
+            type(drained.get('pool_in_use_before')) is not int or
+            type(drained.get('pool_in_use_after')) is not int or
+            drained['pool_in_use_after'] + unrelated_count + 1 != drained['pool_in_use_before']):
+        raise RuntimeError('active consumer did not release the exact U2 packet with bounded MLD accounting')
+    return drained
+
+
 def read_expected_frame_commit(worker, ready, payload, max_unrelated=8):
     """Read a bounded set of captured MLD commits before the exact U2 commit."""
     unrelated = []
@@ -1844,14 +1882,8 @@ def _run_session_impl(args, api):
                 else:raise RuntimeError('fixture did not release the active consumer after checking EBUSY')
                 signal.pidfd_send_signal(peer_worker_pidfd,signal.SIGCONT)
                 drained=ready('KER_SESSION_FRAME_DRAINED',process=peer_worker)
-                for field in ('object_index','pool_tag','packet_pointer','length','frame_hex'):
-                    if drained.get(field)!=committed.get(field):
-                        raise RuntimeError('active consumer changed committed packet '+field)
-                if (type(drained.get('sequence')) is not int or drained['sequence']!=0 or
-                    not frame_matches_expected_u2(bytes.fromhex(drained.get('frame_hex','')),payload) or
-                    drained.get('tx_before')!=1 or drained.get('tx_after')!=0 or
-                    drained.get('pool_in_use_after')+1!=drained.get('pool_in_use_before')):
-                    raise RuntimeError('active consumer did not release the exact in-flight packet')
+                validate_active_consumer_frame_drain(drained,committed,unrelated_commits,
+                    unrelated_drained,payload)
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:
                     census_connection=api.Connection(args.socket)
