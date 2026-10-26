@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
@@ -8,6 +9,26 @@
 #include <unistd.h>
 #include <lkl.h>
 
+static void translate_stat(struct stat *output, const struct lkl_stat *native)
+{
+    memset(output, 0, sizeof(*output));
+    output->st_dev = native->st_dev;
+    output->st_ino = native->st_ino;
+    output->st_mode = native->st_mode;
+    output->st_nlink = native->st_nlink;
+    output->st_uid = native->st_uid;
+    output->st_gid = native->st_gid;
+    output->st_rdev = native->st_rdev;
+    output->st_size = native->st_size;
+    output->st_blksize = native->st_blksize;
+    output->st_blocks = native->st_blocks;
+    output->st_atim.tv_sec = native->lkl_st_atime;
+    output->st_atim.tv_nsec = native->st_atime_nsec;
+    output->st_mtim.tv_sec = native->lkl_st_mtime;
+    output->st_mtim.tv_nsec = native->st_mtime_nsec;
+    output->st_ctim.tv_sec = native->lkl_st_ctime;
+    output->st_ctim.tv_nsec = native->st_ctime_nsec;
+}
 /* Keep the implementation separate from libc's nonnull declaration so the
  * explicit EFAULT boundary also survives optimized builds. */
 static int descriptor_stat(int fd, struct stat *output)
@@ -19,23 +40,7 @@ static int descriptor_stat(int fd, struct stat *output)
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
     if (!output) { errno = EFAULT; return -1; }
-    memset(output, 0, sizeof(*output));
-    output->st_dev = native.st_dev;
-    output->st_ino = native.st_ino;
-    output->st_mode = native.st_mode;
-    output->st_nlink = native.st_nlink;
-    output->st_uid = native.st_uid;
-    output->st_gid = native.st_gid;
-    output->st_rdev = native.st_rdev;
-    output->st_size = native.st_size;
-    output->st_blksize = native.st_blksize;
-    output->st_blocks = native.st_blocks;
-    output->st_atim.tv_sec = native.lkl_st_atime;
-    output->st_atim.tv_nsec = native.st_atime_nsec;
-    output->st_mtim.tv_sec = native.lkl_st_mtime;
-    output->st_mtim.tv_nsec = native.st_mtime_nsec;
-    output->st_ctim.tv_sec = native.lkl_st_ctime;
-    output->st_ctim.tv_nsec = native.st_ctime_nsec;
+    translate_stat(output, &native);
     return 0;
 }
 int fstat(int fd, struct stat *output) __attribute__((alias("descriptor_stat")));
@@ -71,3 +76,29 @@ static int descriptor_statfs(int fd, struct statfs *output)
 int fstatfs(int fd, struct statfs *output) __attribute__((alias("descriptor_statfs")));
 _Static_assert(sizeof(struct statfs) == sizeof(struct statfs64), "Linux statfs64 ABI");
 int fstatfs64(int fd, struct statfs64 *output) __attribute__((alias("descriptor_statfs")));
+/* Absolute paths still select the host filesystem; relative paths and the
+ * empty-path descriptor operation must respect imported fd ownership. */
+static int descriptor_statat(int fd, const char *path, struct stat *output, int flags)
+{
+    if (path && path[0] == '/') return syscall(SYS_newfstatat, fd, path, output, flags);
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_newfstatat, fd, path, output, flags);
+    if (!path && flags != AT_EMPTY_PATH) {
+        ker_fd_put(entry); errno = EFAULT; return -1;
+    }
+    struct lkl_stat native;
+    long result = lkl_sys_fstatat(entry->native, path, &native, flags);
+    ker_fd_put(entry);
+    if (result < 0) { errno = (int)-result; return -1; }
+    if (!output) { errno = EFAULT; return -1; }
+    translate_stat(output, &native);
+    return 0;
+}
+int fstatat(int fd, const char *path, struct stat *output, int flags)
+    __attribute__((alias("descriptor_statat")));
+int fstatat64(int fd, const char *path, struct stat64 *output, int flags)
+{ return descriptor_statat(fd, path, (void *)output, flags); }
+int __fxstatat(int version, int fd, const char *path, struct stat *output, int flags)
+{ (void)version; return descriptor_statat(fd, path, output, flags); }
+int __fxstatat64(int version, int fd, const char *path, struct stat64 *output, int flags)
+{ (void)version; return descriptor_statat(fd, path, (void *)output, flags); }

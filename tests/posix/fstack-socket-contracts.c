@@ -184,6 +184,32 @@ static void bind_collision(void)
     CHECK(server >= 0 && close(listener) == 0);
     finish((struct pair){client, server});
 }
+static void empty_path_stat(void)
+{
+    struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
+    struct stat expected, result; CHECK(fstat(p.client, &expected) == 0);
+    CHECK(fstatat(alias, "", &result, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) == 0);
+    CHECK(S_ISSOCK(result.st_mode) && result.st_ino == expected.st_ino && result.st_dev == expected.st_dev);
+    int (*stat_at)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat");
+    CHECK(stat_at && stat_at(alias, NULL, &result, AT_EMPTY_PATH) == 0);
+    CHECK(result.st_ino == expected.st_ino);
+    ERROR(stat_at(alias, "", NULL, AT_EMPTY_PATH), EFAULT);
+    struct stat64 wide; CHECK(fstatat64(alias, "", &wide, AT_EMPTY_PATH) == 0);
+    CHECK(wide.st_ino == expected.st_ino && wide.st_mode == expected.st_mode);
+    ERROR(fstatat(alias, "", &result, 0), ENOENT);
+    ERROR(fstatat(alias, "relative-child", &result, 0), ENOTDIR);
+    ERROR(fstatat(alias, "relative-child", &result, 0x40000000), EINVAL);
+    char path[] = "/tmp/ker-stat-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    CHECK(write(host, "stat-at", 7) == 7);
+    struct stat host_stat; CHECK(fstat(host, &host_stat) == 0);
+    CHECK(fstatat(alias, path, &result, 0) == 0 && result.st_ino == host_stat.st_ino && result.st_size == 7);
+    CHECK(fstatat(host, "", &result, AT_EMPTY_PATH) == 0 && result.st_ino == host_stat.st_ino);
+    CHECK(close(host) == 0 && unlink(path) == 0);
+    CHECK(close(p.client) == 0 && fstatat(alias, "", &result, AT_EMPTY_PATH) == 0);
+    CHECK(result.st_ino == expected.st_ino && write(alias, "ok", 2) == 2);
+    char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
 static void duplicate_identity(void)
 {
     struct pair p = connected();
@@ -1308,6 +1334,7 @@ int main(void)
         {"socket-options-errors-and-recovery", option_roundtrip},
         {"bind-collision-preserves-listener", bind_collision},
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
+        {"empty-path-stat-owner-routing", empty_path_stat},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {

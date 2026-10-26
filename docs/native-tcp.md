@@ -1481,3 +1481,7 @@ socket 进入导入内核而非宿主。初始合同覆盖原生 loopback UDP/TC
 packet socket 的经典 BPF 合同覆盖 SOCK_RAW 与 SOCK_DGRAM：返回零的过滤器丢弃捕获副本但
 不影响 UDP 接收，返回长度截断捕获，非法替换保留原过滤器，detach 恢复完整捕获；
 SO_LOCK_FILTER 阻止替换、解除和解锁，且锁定状态随 dup 共享。过滤执行来自原始 Linux。
+
+fstatat/fstatat64（含 __fxstatat ABI）对原生 fd 的空路径按导入 Linux inode 查询；
+复制 fd 共享 inode，非空相对路径保留原始 ENOTDIR 等错误。绝对路径继续使用宿主
+文件系统，普通宿主 fd 的 AT_EMPTY_PATH 行为保持；失败不消费 socket 数据。
