@@ -314,3 +314,22 @@ static int descriptor_chownat(int fd, const char *path, uid_t owner, gid_t group
 }
 int fchownat(int fd, const char *path, uid_t owner, gid_t group, int flags)
     __attribute__((alias("descriptor_chownat")));
+
+static int descriptor_utimensat(int fd, const char *path, const struct timespec times[2], int flags)
+{
+    /* Original Linux explicitly supports NULL as the fd-only operation. */
+    if (path && path[0] == '/') return syscall(SYS_utimensat, fd, path, times, flags);
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_utimensat, fd, path, times, flags);
+    struct __lkl__kernel_timespec native[2];
+    if (times) for (int i = 0; i < 2; ++i) {
+        native[i].tv_sec = times[i].tv_sec;
+        native[i].tv_nsec = times[i].tv_nsec;
+    }
+    long result = lkl_sys_utimensat(entry->native, path, times ? native : NULL, flags);
+    ker_fd_put(entry);
+    if (result < 0) { errno = (int)-result; return -1; }
+    return 0;
+}
+int utimensat(int fd, const char *path, const struct timespec times[2], int flags)
+    __attribute__((alias("descriptor_utimensat")));

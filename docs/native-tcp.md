@@ -1501,3 +1501,7 @@ packet 接收元数据合同同时检查 PACKET_AUXDATA 原始长度、SO_TIMEST
 fchmodat/fchownat 的原生空路径操作修改导入 Linux sockfs inode，权限和所有者通过
 复制 fd 共享，权限变化立即反映在 faccessat；非法标志或相对路径失败不修改 inode。
 宿主绝对路径及普通宿主 fd 仍修改宿主文件，不影响 socket 通信。
+
+utimensat 对原生 fd 的空路径及 NULL fd-only 操作委托原始 Linux，显式转换到固定
+__kernel_timespec ABI；纳秒、UTIME_NOW/OMIT、双 OMIT 不查路径的语义来自原始内核。
+复制 fd 共享时间，非法纳秒及路径错误不改变 inode；宿主文件路径仍操作宿主文件。
