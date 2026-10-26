@@ -369,7 +369,7 @@ def additional_interfaces(ini):
 
 
 def read_configuration(stream, directory, source='<stream>', worker_path=None,
-                       eal_override=None):
+                       eal_override=None, defer_worker_limits=False):
     # Match F-Stack's repeated-key precedence: convert only the final value.
     # A repeated section continues the same section; unknown names remain errors.
     ini = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(';',),
@@ -426,21 +426,21 @@ def read_configuration(stream, directory, source='<stream>', worker_path=None,
             if convert is Path and not value.is_absolute():
                 value = directory / value
             values[field] = value
-    if bonds:
+    if bonds and not defer_worker_limits:
         if worker_path is None:
             raise ValueError('cannot validate [bond0] socket_id without the selected DPDK worker')
-        # All typed fields and every worker EAL mode are now validated. Only
-        # then may this capability probe execute the selected worker.
+        # Standalone reader callers request selected-build bounds here. The
+        # CLI defers this query until its final semantic checks have passed.
         bonds = bond_devices(ini, query_dpdk_max_numa_nodes(worker_path))
         values['bonds'] = bonds
     return values
 
 
-def load_configuration(path, worker_path=None, eal_override=None):
+def load_configuration(path, worker_path=None, eal_override=None, defer_worker_limits=False):
     path = path.resolve()
     with path.open(encoding='utf-8') as stream:
         return read_configuration(stream, path.parent, path, worker_path,
-                                  eal_override)
+                                  eal_override, defer_worker_limits)
 
 
 def parse_arguments(argv=None):
@@ -525,7 +525,8 @@ def parse_arguments(argv=None):
     if supplied.config is not None:
         try:
             values.update(load_configuration(supplied.config, supplied.io_worker,
-                                             getattr(supplied, 'eal', None)))
+                                             getattr(supplied, 'eal', None),
+                                             defer_worker_limits=True))
         except MemoryError:
             parser.error(f'{supplied.config}: configuration allocation failed')
         except (OSError, UnicodeError, configparser.Error, ValueError) as error:
@@ -828,6 +829,19 @@ def parse_arguments(argv=None):
             if any(network.overlaps(previous) for network in interface_networks6 for previous in networks6):
                 parser.error('IPv6 networks must not overlap across interfaces')
             networks6.extend(interface_networks6)
+    # The CLI must finish all pure validation, including CLI overrides and
+    # auxiliary address/queue/MTU ownership, before executing the worker query.
+    # Standalone reader callers retain their selected-build validation above.
+    if args.bonds:
+        try:
+            max_numa_nodes = query_dpdk_max_numa_nodes(args.io_worker)
+            for bond in args.bonds:
+                if not -1 <= bond['socket_id'] < max_numa_nodes:
+                    raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
+        except MemoryError:
+            parser.error('configuration allocation failed')
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     return args
 
 
