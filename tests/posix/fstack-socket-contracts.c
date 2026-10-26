@@ -208,6 +208,22 @@ static void descriptor_at_mutations(void)
     ERROR(fchownat(alias, "child", -1, -1, 0), ENOTDIR);
     ERROR(fchmodat(alias, "", 0777, 0x40000000), EINVAL);
     ERROR(fchownat(alias, "", -1, -1, 0x40000000), EINVAL);
+    size_t inaccessible_length; void *inaccessible = inaccessible_path(&inaccessible_length);
+    ERROR(fchmodat(alias, inaccessible, 0600, 0), EFAULT);
+    ERROR(fchownat(alias, inaccessible, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    ERROR(fchmodat(alias, inaccessible, 0600, 0x40000000), EINVAL);
+    ERROR(fchownat(alias, inaccessible, (uid_t)-1, (gid_t)-1, 0x40000000), EINVAL);
+    CHECK(munmap(inaccessible, inaccessible_length) == 0);
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(pages != MAP_FAILED);
+    char *cross_page = pages + page_size - 16;
+    memset(cross_page, 'x', 16);
+    CHECK(mprotect(pages + page_size, (size_t)page_size, PROT_NONE) == 0);
+    ERROR(fchmodat(alias, cross_page, 0600, 0), EFAULT);
+    ERROR(fchownat(alias, cross_page, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    CHECK(munmap(pages, (size_t)page_size * 2) == 0);
     CHECK(fstat(alias, &changed) == 0 && (changed.st_mode & 0777) == 0600);
     CHECK(close(p.client) == 0 && fchmodat(alias, "", initial.st_mode & 0777, AT_EMPTY_PATH) == 0);
     CHECK(faccessat(alias, "", X_OK, AT_EMPTY_PATH) == 0);

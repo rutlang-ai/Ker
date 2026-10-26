@@ -208,13 +208,22 @@ int faccessat(int fd, const char *path, int mode, int flags)
 
 static int descriptor_chmodat(int fd, const char *path, mode_t mode, int flags)
 {
-    if (path && path[0] == '/') return syscall(SYS_fchmodat2, fd, path, mode, flags);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fchmodat2, fd, path, mode, flags);
-    if (!path && !(flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW))) {
-        ker_fd_put(entry); errno = EFAULT; return -1;
+    if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
     }
-    long result = lkl_sys_fchmodat2(entry->native, path ? path : "", mode, flags);
+    char native_path[PATH_MAX];
+    if (copy_native_path(path, native_path) < 0) {
+        int error = errno;
+        ker_fd_put(entry);
+        errno = error; return -1;
+    }
+    if (native_path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_fchmodat2, fd, native_path, mode, flags);
+    }
+    long result = lkl_sys_fchmodat2(entry->native, native_path, mode, flags);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
     return 0;
@@ -223,13 +232,22 @@ int fchmodat(int fd, const char *path, mode_t mode, int flags)
     __attribute__((alias("descriptor_chmodat")));
 static int descriptor_chownat(int fd, const char *path, uid_t owner, gid_t group, int flags)
 {
-    if (path && path[0] == '/') return syscall(SYS_fchownat, fd, path, owner, group, flags);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fchownat, fd, path, owner, group, flags);
-    if (!path && !(flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW))) {
-        ker_fd_put(entry); errno = EFAULT; return -1;
+    if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
     }
-    long result = lkl_sys_fchownat(entry->native, path ? path : "", owner, group, flags);
+    char native_path[PATH_MAX];
+    if (copy_native_path(path, native_path) < 0) {
+        int error = errno;
+        ker_fd_put(entry);
+        errno = error; return -1;
+    }
+    if (native_path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_fchownat, fd, native_path, owner, group, flags);
+    }
+    long result = lkl_sys_fchownat(entry->native, native_path, owner, group, flags);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
     return 0;
