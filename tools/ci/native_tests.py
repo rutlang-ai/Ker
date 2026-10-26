@@ -43,6 +43,8 @@ HOSTED_SAFE = (
     "native-fstack-buffer-write-overflow",
     "native-fstack-buffer-write-null",
     "native-fstack-buffer-write-copy",
+    "native-fstack-buffer-write-parallel",
+    "native-fstack-buffer-write-handoff",
     "native-fstack-host-pages-debug",
     "native-fstack-host-pages-release",
     "native-fstack-host-timer-debug",

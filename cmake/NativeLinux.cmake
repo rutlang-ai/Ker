@@ -612,6 +612,19 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-buffer-write-copy COMMAND ker-native-buffer-write-test copy)
     set_tests_properties(native-fstack-buffer-write-overflow native-fstack-buffer-write-null
         native-fstack-buffer-write-copy PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
+    add_executable(ker-native-buffer-write-threads-test tests/posix/native-buffer-write-threads.c
+        src/posix/native-buffer.c src/posix/host-memory.c src/posix/host-clock.c)
+    target_include_directories(ker-native-buffer-write-threads-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-native-buffer-write-threads-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_link_libraries(ker-native-buffer-write-threads-test PRIVATE "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-native-buffer-write-threads-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-write-parallel COMMAND ker-native-buffer-write-threads-test parallel)
+    add_test(NAME native-fstack-buffer-write-handoff COMMAND ker-native-buffer-write-threads-test handoff)
+    set_tests_properties(native-fstack-buffer-write-parallel native-fstack-buffer-write-handoff
+        PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     foreach(page_mode debug release)
         add_executable(ker-host-pages-${page_mode}-test tests/posix/fstack-host-pages.c src/posix/host-memory.c)
         target_include_directories(ker-host-pages-${page_mode}-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")

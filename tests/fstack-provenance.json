@@ -2572,6 +2572,18 @@
         "native-fstack-zc-validation"
       ],
       "adaptation": "The application resolves ker_posix_buffer_write from the actual preloaded native shared library, fills registered Linux pages through explicit bounded writes and rejects overflow/NULL writes with no byte changes. Connected original-Linux loopback UDP sockets and MSG_ERRQUEUE prove these rejected writes deliver no datagrams and consume no zerocopy completion IDs; valid later sends deliver exact bytes and the first completion remains ID0. A second VMA prepared through bounded writes participates in exact8192-byte scatter-gather delivery. Shared-library inactive-write rejection follows explicit runtime shutdown, with all mappings, option guards and worker mbufs reclaimed. The null PMD profile starts the real EAL/runtime but its payload stays inside original Linux loopback. The full native-buffer virtio software-datapath regression also passes; no host-socket shortcut, F-Stack cursor ABI or end-to-end zero-copy claim is made."
+    },
+    "native-fstack-buffer-write-threads": {
+      "source_file": "tests/unit/test_ff_zc_send.c",
+      "source_case": [
+        "test_ff_zc_mbuf_write_overflow_returns_error",
+        "test_ff_zc_mbuf_write_null_data_returns_error"
+      ],
+      "ker_ctests": [
+        "native-fstack-buffer-write-parallel",
+        "native-fstack-buffer-write-handoff"
+      ],
+      "adaptation": "Ker-specific cross-thread extension of the two qualified bounded-write rejection scenarios. Four actual pthreads own distinct original-Linux VMAs, repeatedly copy exact multi-page patterns, reject overflow/NULL writes without changing bytes, and preserve independent errno values. A separately synchronized producer/consumer transfer joins the writer before another thread resizes the VMA, rejects the old base and invalid writes, copies exact page-spanning bytes and frees the new base. Original Linux syscalls and production native-buffer code execute directly; standalone bootstrap supplies only the active lifetime gate. Exact allocations/releases and one residual shutdown release must match. This is not concurrent unsynchronized write/free/send support, a FreeBSD implicit-cursor/mbuf ABI or network evidence."
     }
   }
 }
