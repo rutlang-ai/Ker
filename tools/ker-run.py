@@ -277,7 +277,9 @@ def bond_devices(ini, max_numa_nodes=None):
             'xmit_policy': fields.get('xmit_policy', 'l2')}
     if bond['mode'] not in range(7):
         raise ValueError('[bond0] invalid mode')
-    if max_numa_nodes is not None and not -1 <= bond['socket_id'] < max_numa_nodes:
+    if bond['socket_id'] < -1:
+        raise ValueError('[bond0] socket_id must be -1 or nonnegative')
+    if max_numa_nodes is not None and bond['socket_id'] >= max_numa_nodes:
         raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
     if not 1 <= len(bond['slave']) <= 16 or len(set(bond['slave'])) != len(bond['slave']):
         raise ValueError('[bond0] requires 1..16 distinct members')
