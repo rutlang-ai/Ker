@@ -248,6 +248,16 @@ def query_dpdk_max_numa_nodes(worker_path):
     return limits['max_numa_nodes']
 
 
+def validate_selected_bond_limits(args):
+    """Query the selected worker once and validate configured bond sockets."""
+    if not args.bonds:
+        return
+    max_numa_nodes = query_dpdk_max_numa_nodes(args.io_worker)
+    for bond in args.bonds:
+        if not -1 <= bond['socket_id'] < max_numa_nodes:
+            raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
+
+
 def validate_bond_member_name(member):
     # Pinned DPDK RTE_DEV_NAME_MAX_LEN is 64 bytes including the final NUL.
     if (not isinstance(member, str) or len(member) > 63 or
@@ -445,7 +455,7 @@ def load_configuration(path, worker_path=None, eal_override=None, defer_worker_l
                                   eal_override, defer_worker_limits)
 
 
-def parse_arguments(argv=None):
+def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser = argparse.ArgumentParser(description=__doc__, argument_default=argparse.SUPPRESS)
     parser.add_argument('--exception-mode', choices=('ethertype', 'ports'))
     parser.add_argument('--exception-policy', choices=('accept', 'reject'))
@@ -834,12 +844,9 @@ def parse_arguments(argv=None):
     # The CLI must finish all pure validation, including CLI overrides and
     # auxiliary address/queue/MTU ownership, before executing the worker query.
     # Standalone reader callers retain their selected-build validation above.
-    if args.bonds:
+    if args.bonds and not defer_worker_limits:
         try:
-            max_numa_nodes = query_dpdk_max_numa_nodes(args.io_worker)
-            for bond in args.bonds:
-                if not -1 <= bond['socket_id'] < max_numa_nodes:
-                    raise ValueError(f'[bond0] socket_id must be -1 or in 0..{max_numa_nodes - 1}')
+            validate_selected_bond_limits(args)
         except MemoryError:
             parser.error('configuration allocation failed')
         except (OSError, ValueError) as error:
@@ -1022,12 +1029,31 @@ def finish_concurrently(operations):
 
 def main():
     try:
-        args = parse_arguments()
+        args = parse_arguments(defer_worker_limits=True)
     except MemoryError:
         print('ker-run: configuration allocation failed', file=sys.stderr)
         return 2
-    library = args.library.resolve(strict=True)
-    worker_path = args.io_worker.resolve(strict=True)
+    try:
+        library = args.library.resolve(strict=True)
+        worker_path = args.io_worker.resolve(strict=True)
+        app_guard = (worker_path.parent / 'ker-app').resolve(strict=True)
+        for artifact in (library, worker_path, app_guard):
+            if not artifact.is_file():
+                raise ValueError(f'{artifact}: runtime artifact must be a regular file')
+        for artifact in (worker_path, app_guard):
+            if not os.access(artifact, os.X_OK):
+                raise ValueError(f'{artifact}: runtime artifact must be executable')
+    except (OSError, ValueError) as error:
+        print(f'ker-run: runtime artifact: {error}', file=sys.stderr)
+        return 125
+    try:
+        validate_selected_bond_limits(args)
+    except MemoryError:
+        print('ker-run: configuration allocation failed', file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as error:
+        print(f'ker-run: {error}', file=sys.stderr)
+        return 2
     channel_app, channel_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_NONBLOCK)
     mtu_app, mtu_io = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     run_parent, run_app = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -1140,7 +1166,6 @@ def main():
             env['KER_NATIVE_TCP_ECN'] = str(TCP_ECN[args.tcp_ecn])
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
-        app_guard = worker_path.parent / 'ker-app'
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
             pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write, run_app.fileno(),
                       *(fd for extra in additional for fd in extra.app_fds())))

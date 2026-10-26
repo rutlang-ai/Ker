@@ -52,7 +52,7 @@ class BondNumaValidationTests(unittest.TestCase):
     def test_socket_id_any_remains_accepted(self):
         self.assertEqual(self.parse('-1')['bonds'][0]['socket_id'], -1)
 
-    def test_invalid_socket_id_stops_before_runtime_or_application_start(self):
+    def test_invalid_socket_id_stops_before_ipc_or_application_start(self):
         config = ('[dpdk]\nnb_bond=1\n[bond0]\nmode=4\n'
             'slave=eth0,eth1\nsocket_id=' + str(self.max_numa_nodes) + '\n')
         with tempfile.TemporaryDirectory() as directory:
@@ -60,15 +60,23 @@ class BondNumaValidationTests(unittest.TestCase):
             config_path.write_text(config)
             selected_limit = ker_run.query_dpdk_max_numa_nodes(WORKER)
             with patch.object(ker_run, 'query_dpdk_max_numa_nodes',
-                    return_value=selected_limit), \
+                    return_value=selected_limit) as query, \
                     patch.object(ker_run.sys, 'argv', [
                     str(LAUNCHER), '--config', str(config_path), '--address', '192.0.2.1/24',
                     '--port', 'net_bonding0', '--eal', '', '--io-worker', str(WORKER),
+                    '--library', str(WORKER.resolve().parent / 'libker-posix.so'),
                     '--', '/bin/true']), \
-                    patch.object(ker_run.subprocess, 'Popen') as popen:
-                with self.assertRaises(SystemExit):
-                    ker_run.main()
+                    patch.object(ker_run.subprocess, 'Popen') as popen, \
+                    patch.object(ker_run.socket, 'socketpair') as socketpair, \
+                    patch.object(ker_run.os, 'pipe2') as pipe2, \
+                    patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                self.assertEqual(ker_run.main(), 2)
+                self.assertIn(f'socket_id must be -1 or in 0..{selected_limit - 1}',
+                    stderr.getvalue())
+                query.assert_called_once_with(WORKER)
                 popen.assert_not_called()
+                socketpair.assert_not_called()
+                pipe2.assert_not_called()
 
 
 if __name__ == '__main__':
