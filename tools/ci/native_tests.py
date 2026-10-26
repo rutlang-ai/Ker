@@ -41,6 +41,7 @@ HOSTED_SAFE = (
     "native-fstack-current-time-errors",
     "native-fstack-current-time-parallel",
     "native-fstack-current-time-sockets",
+    "native-fstack-current-time-parallel-sockets",
     "native-fstack-host-runtime",
     "native-fstack-exception-config",
     "native-fstack-buffer-resize",
