@@ -292,7 +292,7 @@ int epoll_pwait2(int fd, struct epoll_event *events, int maximum, const struct t
     if (mask_enter(mask, &old)) return -1;
     return mask_leave(mask, &old, epoll_wait_ns(fd, events, maximum, duration, mask, true));
 }
-static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, int64_t duration, const sigset_t *mask)
+static int select_snapshot_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, int64_t duration, const sigset_t *mask)
 {
     if (maximum < 0 || maximum > FD_SETSIZE) {
         errno = EINVAL; return -1;
@@ -327,22 +327,48 @@ static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors,
     }
     return result;
 }
+static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, int64_t duration, const sigset_t *mask)
+{
+    if (maximum < 0 || maximum > FD_SETSIZE) { errno = EINVAL; return -1; }
+    /* Linux copies only the long-word-rounded nfds prefix, not sizeof(fd_set).
+     * In particular nfds=0 must not touch even a non-NULL inaccessible set. */
+    size_t bytes = ((size_t)maximum + sizeof(unsigned long) * 8 - 1) /
+        (sizeof(unsigned long) * 8) * sizeof(unsigned long);
+    fd_set sets[3] = {0}; fd_set *user[3] = {reads, writes, errors};
+    for (unsigned i = 0; i < 3; ++i) if (user[i] && ker_host_usercopy(&sets[i], user[i], bytes, 0)) {
+        errno = EFAULT; return -1;
+    }
+    int ready = select_snapshot_ns(maximum, reads ? &sets[0] : NULL, writes ? &sets[1] : NULL,
+        errors ? &sets[2] : NULL, duration, mask);
+    if (ready < 0) return -1;
+    for (unsigned i = 0; i < 3; ++i) if (user[i] && ker_host_usercopy(user[i], &sets[i], bytes, 1)) {
+        errno = EFAULT; return -1;
+    }
+    return ready;
+}
 int select(int maximum, fd_set *reads, fd_set *writes, fd_set *errors, struct timeval *timeout)
 {
-    if (timeout && (timeout->tv_sec < 0 || timeout->tv_usec < 0 || timeout->tv_usec >= 1000000)) {
+    struct timeval requested;
+    if (timeout && ker_host_usercopy(&requested, timeout, sizeof(requested), 0)) { errno = EFAULT; return -1; }
+    if (timeout && (requested.tv_sec < 0 || requested.tv_usec < 0 || requested.tv_usec >= 1000000)) {
         errno = EINVAL; return -1;
     }
-    struct timespec value = {timeout ? timeout->tv_sec : 0, timeout ? timeout->tv_usec * 1000 : 0};
+    struct timespec value = {timeout ? requested.tv_sec : 0, timeout ? requested.tv_usec * 1000 : 0};
     int64_t duration;
     if (duration_ns(timeout ? &value : NULL, &duration)) return -1;
     int64_t start = now_ns();
     int result = select_ns(maximum, reads, writes, errors, duration, NULL);
-    if (timeout) {
+    int saved = errno;
+    if (timeout && duration > 0) {
         int64_t left = duration - (now_ns() - start);
         if (left < 0) left = 0;
-        timeout->tv_sec = left / INT64_C(1000000000);
-        timeout->tv_usec = left % INT64_C(1000000000) / 1000;
+        struct timeval remaining = {.tv_sec = left / INT64_C(1000000000),
+            .tv_usec = left % INT64_C(1000000000) / 1000};
+        /* Linux's optional remaining-time update never overrides the result,
+         * even if the otherwise readable timeval is in read-only storage. */
+        (void)ker_host_usercopy(timeout, &remaining, sizeof(remaining), 1);
     }
+    errno = saved;
     return result;
 }
 int pselect(int maximum, fd_set *reads, fd_set *writes, fd_set *errors,
