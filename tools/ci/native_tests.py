@@ -69,6 +69,7 @@ HOSTED_SAFE = (
     "native-fstack-launcher-config",
     "native-fstack-config-lifecycle",
     "native-fstack-interface-section-validation",
+    "native-fstack-bond-worker-limits",
     "native-ker-run-exit-status",
     "native-linux-fingerprint-stale-inputs",
     "native-bond-numa-preflight",

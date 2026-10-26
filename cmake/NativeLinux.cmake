@@ -786,6 +786,9 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-interface-section-validation
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_interface_sections.py")
     set_tests_properties(native-fstack-interface-section-validation PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-fstack-bond-worker-limits
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_bond_worker_limits.py")
+    set_tests_properties(native-fstack-bond-worker-limits PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
     add_test(NAME native-linux-fingerprint-stale-inputs
