@@ -308,6 +308,25 @@ static void filesystem_statistics(void)
     CHECK(fstatfs(fd, &st) == 0 && st.f_type == host.f_type && st.f_bsize == host.f_bsize);
     CHECK(memcmp(&st.f_fsid, &host.f_fsid, sizeof(st.f_fsid)) == 0 && close(fd) == 0);
 }
+static void descriptor_permissions(void)
+{
+    struct pair p = connected();
+    int copy = dup(p.server); CHECK(copy >= 0);
+    struct stat before, after; CHECK(fstat(p.server, &before) == 0);
+    CHECK(fchmod(copy, 0600) == 0 && fchown(copy, (uid_t)-1, (gid_t)-1) == 0);
+    CHECK(fstat(p.server, &after) == 0 && (after.st_mode & 0777) == 0600);
+    CHECK(after.st_ino == before.st_ino && after.st_uid == before.st_uid && after.st_gid == before.st_gid);
+    CHECK(fchmod(p.server, 0640) == 0 && fstat(copy, &after) == 0 && (after.st_mode & 0777) == 0640);
+    CHECK(write(p.client, "p", 1) == 1); ready(p.server);
+    char byte; CHECK(read(copy, &byte, 1) == 1 && byte == 'p');
+    CHECK(close(copy) == 0); finish(p);
+    char path[] = "/tmp/ker-permissions-XXXXXX";
+    int fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    CHECK(fstat(fd, &before) == 0 && fchmod(fd, 0640) == 0);
+    CHECK(fchown(fd, (uid_t)-1, (gid_t)-1) == 0 && fstat(fd, &after) == 0);
+    CHECK((after.st_mode & 0777) == 0640 && after.st_uid == before.st_uid && after.st_gid == before.st_gid);
+    CHECK(close(fd) == 0); ERROR(fchmod(fd, 0600), EBADF); ERROR(fchown(fd, (uid_t)-1, (gid_t)-1), EBADF);
+}
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -373,6 +392,7 @@ int main(void)
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"file-lifecycle-owner-routing", file_lifecycle_operations},
         {"filesystem-statistics-owner-routing", filesystem_statistics},
+        {"descriptor-permissions-owner-routing", descriptor_permissions},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},

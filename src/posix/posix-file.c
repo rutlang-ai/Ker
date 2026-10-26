@@ -3,6 +3,7 @@
 #include "syscall-result.h"
 #include <stdint.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #include <lkl.h>
@@ -73,3 +74,19 @@ int name(int fd) \
 }
 SYNC(fsync)
 SYNC(fdatasync)
+int fchmod(int fd, mode_t mode)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fchmod, fd, mode);
+    long value = lkl_sys_fchmod(entry->native, mode);
+    ker_fd_put(entry);
+    return ker_native_result(value);
+}
+int fchown(int fd, uid_t owner, gid_t group)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fchown, fd, owner, group);
+    long value = lkl_sys_fchown(entry->native, owner, group);
+    ker_fd_put(entry);
+    return ker_native_result(value);
+}

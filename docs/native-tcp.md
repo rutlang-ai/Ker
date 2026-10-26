@@ -1416,3 +1416,6 @@ v2 的 offset=-1 保留 Linux 流式读写行为。socket-contracts 同时检查
 
 `fstatfs`/`fstatfs64` 返回原始 Linux socketfs 信息，而不是宿主占位 fd 的文件系统。
 字段在 Ker 层显式转换；重复 fd 的 fsid 一致，关闭一个副本不影响另一个，NULL 输出返回 EFAULT。
+
+`fchmod` 与 `fchown` 对原生 fd 修改原始 Linux inode；重复 fd 共享该元数据。
+该行为由导入内核实施，现有 TCP 连接的数据传输不因 socket inode 权限变化而被适配层改写。
