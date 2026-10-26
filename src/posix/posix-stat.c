@@ -55,8 +55,15 @@ static int descriptor_stat(int fd, struct stat *output)
 int fstat(int fd, struct stat *output) __attribute__((alias("descriptor_stat")));
 _Static_assert(sizeof(struct stat) == sizeof(struct stat64), "x86_64 stat64 ABI");
 int fstat64(int fd, struct stat64 *output) { return fstat(fd, (void *)output); }
-int __fxstat(int version, int fd, struct stat *output) { (void)version; return fstat(fd, output); }
-int __fxstat64(int version, int fd, struct stat64 *output) { (void)version; return fstat(fd, (void *)output); }
+/* glibc x86_64 supports the kernel (0) and Linux (1) stat layouts. */
+static int stat_abi_version(int version)
+{
+    if (version == 0 || version == 1) return 0;
+    errno = EINVAL;
+    return -1;
+}
+int __fxstat(int version, int fd, struct stat *output) { if (stat_abi_version(version)) return -1; return fstat(fd, output); }
+int __fxstat64(int version, int fd, struct stat64 *output) { if (stat_abi_version(version)) return -1; return fstat(fd, (void *)output); }
 
 static int descriptor_statfs(int fd, struct statfs *output)
 {
@@ -143,9 +150,9 @@ int fstatat(int fd, const char *path, struct stat *output, int flags)
 int fstatat64(int fd, const char *path, struct stat64 *output, int flags)
 { return descriptor_statat(fd, path, (void *)output, flags); }
 int __fxstatat(int version, int fd, const char *path, struct stat *output, int flags)
-{ (void)version; return descriptor_statat(fd, path, output, flags); }
+{ if (stat_abi_version(version)) return -1; return descriptor_statat(fd, path, output, flags); }
 int __fxstatat64(int version, int fd, const char *path, struct stat64 *output, int flags)
-{ (void)version; return descriptor_statat(fd, path, (void *)output, flags); }
+{ if (stat_abi_version(version)) return -1; return descriptor_statat(fd, path, (void *)output, flags); }
 
 /* statx is a fixed Linux UAPI wire layout, including its reserved extension
  * area. Both kernels use the same host byte order and 64-bit ABI. */
