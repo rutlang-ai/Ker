@@ -25,3 +25,8 @@ READY records must be objects with a MAC string and integer TX features accepted
 by the native virtio consumer. Invalid records stop startup before application
 execution; unrelated telemetry fields remain available. The same validation is
 used for primary and additional workers.
+
+A primary DONE payload must be a JSON object with a nonnegative integer
+outstanding count. Malformed records, including boolean/string/floating counts,
+are infrastructure failures after the worker is reaped; they cannot escape as
+tracebacks or turn failed ownership evidence into successful shutdown.

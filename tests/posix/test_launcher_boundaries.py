@@ -178,6 +178,21 @@ class LauncherBoundaryTests(unittest.TestCase):
         self.worker.write_text(fixtures.WORKER)
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
+    def test_invalid_primary_completion_is_failure_without_traceback(self):
+        original = fixtures.WORKER
+        line = "print('KER_IO_DONE {\"outstanding\": 0}', flush=True)"
+        self.assertIn(line, original)
+        for payload in ('not-json', '[]', 'null', '{}', '{"outstanding":true}',
+                        '{"outstanding":0.0}', '{"outstanding":"0"}', '{"outstanding":-1}'):
+            replacement = "print('KER_IO_DONE ' + " + repr(payload) + ", flush=True)"
+            self.worker.write_text(original.replace(line, replacement))
+            with self.subTest(payload=payload):
+                result, message = self.run_launcher(0, native_done=True, capture_stderr=True)
+                self.assertEqual(result, 125)
+                self.assertIn('completion', message)
+        self.worker.write_text(original)
+        self.assertEqual(self.run_launcher(0, native_done=True), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
