@@ -194,6 +194,30 @@ static void bind_collision(void)
     CHECK(server >= 0 && close(listener) == 0);
     finish((struct pair){client, server});
 }
+static void descriptor_access(void)
+{
+    struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
+    /* Linux sockfs creates sockets with all permission bits. The host fd
+     * reservation is not the object whose access is being queried. */
+    struct stat info; CHECK(fstat(p.client, &info) == 0 && (info.st_mode & 0777) == 0777);
+    CHECK(faccessat(alias, "", F_OK, AT_EMPTY_PATH) == 0);
+    CHECK(faccessat(alias, "", R_OK | W_OK | X_OK, AT_EMPTY_PATH | AT_EACCESS) == 0);
+    ERROR(faccessat(alias, "", 0, 0), ENOENT);
+    ERROR(faccessat(alias, "child", R_OK, 0), ENOTDIR);
+    ERROR(faccessat(alias, "", 8, AT_EMPTY_PATH), EINVAL);
+    ERROR(faccessat(alias, "", F_OK, 0x40000000), EINVAL);
+    int (*access_at)(int, const char *, int, int) = dlsym(RTLD_DEFAULT, "faccessat"); CHECK(access_at);
+    ERROR(access_at(alias, NULL, F_OK, AT_EMPTY_PATH), EFAULT);
+    char path[] = "/tmp/ker-access-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    CHECK(faccessat(alias, path, R_OK | W_OK, AT_EACCESS) == 0);
+    CHECK(faccessat(host, "", F_OK, AT_EMPTY_PATH) == 0);
+    ERROR(faccessat(host, "", X_OK, AT_EMPTY_PATH), EACCES);
+    CHECK(close(host) == 0 && unlink(path) == 0 && close(p.client) == 0);
+    CHECK(faccessat(alias, "", X_OK, AT_EMPTY_PATH) == 0);
+    CHECK(write(alias, "ok", 2) == 2); char bytes[2];
+    CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
 static void extended_descriptor_stat(void)
 {
     struct pair p = connected(); struct stat old; CHECK(fstat(p.client, &old) == 0);
@@ -1626,6 +1650,7 @@ int main(void)
         {"empty-path-stat-owner-routing", empty_path_stat},
         {"host-native-fstatat-statx-protected-paths", host_path_fault_routing},
         {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
+        {"descriptor-access-permission-owner-routing", descriptor_access},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
