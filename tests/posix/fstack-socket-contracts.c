@@ -220,6 +220,25 @@ static void descriptor_at_mutations(void)
     CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
 }
+static void host_path_faults(void)
+{
+    char name[] = "/tmp/ker-at-fault-XXXXXX";
+    int host = mkstemp(name); CHECK(host >= 0);
+    size_t length; void *path = inaccessible_path(&length);
+    struct stat info; struct statx extended;
+    ERROR(fstatat(AT_FDCWD, path, &info, 0), EFAULT);
+    ERROR(fstatat(host, path, &info, 0), EFAULT);
+    ERROR(statx(AT_FDCWD, path, 0, STATX_BASIC_STATS, &extended), EFAULT);
+    ERROR(statx(host, path, 0, STATX_BASIC_STATS, &extended), EFAULT);
+    ERROR(faccessat(AT_FDCWD, path, F_OK, 0), EFAULT);
+    ERROR(faccessat(host, path, F_OK, 0), EFAULT);
+    ERROR(fchmodat(AT_FDCWD, path, 0600, 0), EFAULT);
+    ERROR(fchmodat(host, path, 0600, 0), EFAULT);
+    ERROR(fchownat(AT_FDCWD, path, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    ERROR(fchownat(host, path, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    CHECK(munmap(path, length) == 0);
+    CHECK(close(host) == 0 && unlink(name) == 0);
+}
 static void descriptor_access(void)
 {
     struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
@@ -1722,6 +1741,7 @@ int main(void)
         {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
         {"descriptor-access-permission-owner-routing", descriptor_access},
         {"descriptor-at-metadata-mutations", descriptor_at_mutations},
+        {"host-at-path-fault-routing", host_path_faults},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
