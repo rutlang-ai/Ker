@@ -41,3 +41,5 @@ Primary worker collection errors return status 125, reap the primary child and c
 Auxiliary completion records use the same object and outstanding-count validation as the primary worker. Malformed records fail teardown after reaping and do not escape as tracebacks.
 
 Auxiliary workers finish concurrently during final cleanup. One cleanup exception is reported as infrastructure failure while every peer still receives its bounded reap.
+
+Optional native statistics must be a single JSON object of nonnegative integer counters. Invalid or duplicate records fail the launch without bypassing auxiliary cleanup.

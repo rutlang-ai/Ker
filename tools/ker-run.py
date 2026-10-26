@@ -1049,6 +1049,20 @@ def normal_native_shutdown_markers(startup_status):
     return True
 
 
+
+def native_statistics(startup_status):
+    records = [line.removeprefix(b'KER_NATIVE_STATS ') for line in startup_status.splitlines()
+               if line.startswith(b'KER_NATIVE_STATS ')]
+    if not records:
+        return None
+    if len(records) != 1:
+        raise ValueError('duplicate native statistics records')
+    result = json.loads(records[0])
+    if not isinstance(result, dict) or any(type(value) is not int or value < 0
+                                           for value in result.values()):
+        raise ValueError('native statistics must contain nonnegative integer counters')
+    return result
+
 def collect_worker(process, stats):
     failed = timed_out = False
     completions = int(stats is not None)
@@ -1412,9 +1426,13 @@ def main():
             infrastructure_failure |= stats is None or stats.get('outstanding', 1) != 0
             if stats is not None:
                 stats['io'] = info
-                for line in startup_status.splitlines():
-                    if line.startswith(b'KER_NATIVE_STATS '):
-                        stats['native'] = json.loads(line.removeprefix(b'KER_NATIVE_STATS '))
+            try:
+                native = native_statistics(startup_status)
+                if native is not None and stats is not None:
+                    stats['native'] = native
+            except (ValueError, UnicodeError) as error:
+                print(f'ker-run: native statistics: {error}', file=sys.stderr)
+                infrastructure_failure = True
             results = finish_concurrently([extra.finish for extra in additional]) if additional else []
             for result in results:
                 if isinstance(result, Exception):
