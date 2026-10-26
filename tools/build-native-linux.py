@@ -70,6 +70,20 @@ def fetch(repo, url, revision):
             git(repo, 'fetch', '--depth=1', '--no-tags', url, revision)
 
 
+@contextmanager
+def artifact_lock(build):
+    """Serialize source preparation, compilation and proof publication per output."""
+    build = Path(build).resolve()
+    build.mkdir(parents=True, exist_ok=True)
+    # Keep this inode stable across invocations; never unlink an advisory lock.
+    with (build / '.ker-native-build.lock').open('a+') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache', type=Path,
@@ -88,6 +102,11 @@ def main():
         parser.error('the native POSIX backend currently supports x86_64 Linux')
     if args.jobs < 1:
         parser.error('--jobs must be positive')
+    with artifact_lock(args.build):
+        build_artifacts(args)
+
+
+def build_artifacts(args):
     manifest_path = ROOT / 'config/native-linux.json'
     manifest = json.loads(manifest_path.read_text())
     overlay = ROOT / 'src/posix/lkl-overlay'

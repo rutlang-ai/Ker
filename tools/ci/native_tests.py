@@ -77,6 +77,7 @@ HOSTED_SAFE = (
     "native-ker-run-boundaries",
     "native-ker-run-exit-status",
     "native-linux-fingerprint-stale-inputs",
+    "native-linux-artifact-lock",
     "native-bond-numa-preflight",
     "udp-validation-report-guards",
     "host-udp-signal-reference",
