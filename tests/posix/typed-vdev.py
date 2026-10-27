@@ -21,6 +21,7 @@ require, ready, stop = mtu.require, mtu.ready, mtu.stop
 
 def rx_queue_accounting_matches(record):
     return sum(record['rx_by_queue']) == record['rx'] + record['rx_dropped'] + \
+        record.get('exception_selected', 0) - record.get('exception_shared_selected', 0) + \
         record.get('rx_shutdown_discarded', 0) - record.get('rx_startup_discarded', 0)
 
 

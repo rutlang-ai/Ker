@@ -23,7 +23,7 @@ FIELDS = 'path=/var/run/usvhost\niface=eth0\nqueues=2\nqueue_size=512\nmac=00:11
 
 
 class VdevTests(unittest.TestCase):
-    def test_queue_accounting_includes_shutdown_and_startup_discards(self):
+    def test_queue_accounting_includes_all_discard_counters(self):
         shutdown_record = {
             'rx_by_queue': [0, 21], 'rx': 20, 'rx_dropped': 0,
             'rx_shutdown_discarded': 1, 'rx_startup_discarded': 0,
@@ -39,6 +39,22 @@ class VdevTests(unittest.TestCase):
         self.assertTrue(typed_vdev.rx_queue_accounting_matches(startup_record))
         startup_record['rx_startup_discarded'] = 0
         self.assertFalse(typed_vdev.rx_queue_accounting_matches(startup_record))
+
+        exception_selected_record = {
+            'rx_by_queue': [0, 25], 'rx': 20, 'rx_dropped': 0,
+            'exception_selected': 5, 'exception_shared_selected': 0,
+        }
+        self.assertTrue(typed_vdev.rx_queue_accounting_matches(exception_selected_record))
+        exception_selected_record['exception_selected'] = 4
+        self.assertFalse(typed_vdev.rx_queue_accounting_matches(exception_selected_record))
+
+        exception_shared_record = {
+            'rx_by_queue': [0, 25], 'rx': 25, 'rx_dropped': 0,
+            'exception_selected': 5, 'exception_shared_selected': 5,
+        }
+        self.assertTrue(typed_vdev.rx_queue_accounting_matches(exception_shared_record))
+        exception_shared_record['exception_shared_selected'] = 4
+        self.assertFalse(typed_vdev.rx_queue_accounting_matches(exception_shared_record))
 
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'))

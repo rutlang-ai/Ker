@@ -1460,3 +1460,6 @@ AF_NETLINK socket 也由原始 Linux 提供，可查询原生 RTM_GETLINK/RTM_GE
 同一导入内核验证；仅通用 FIONBIO 接受整数指针，未实现的 netlink FIONREAD 保留 ENOTTY。
 netlink 端口号属于导入内核；应用应以 bind(pid=0)/getsockname 取得端口，不能把宿主 PID
 当作原生 netlink 身份。复制 fd 并关闭原 fd 后仍可完成 dump。
+原生 Linux 构建器以 bare cache 的规范路径锁住存在性检查及 shallow fetch，
+防止并发 CI 在计算 shallow 更新时互相覆盖；缓存初始化也使用同一锁。不同构建的
+编译阶段仍可并行，已存在的 commit 不重复 fetch，异常后锁自动释放。

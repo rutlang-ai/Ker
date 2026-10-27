@@ -795,6 +795,9 @@ if(BUILD_TESTING)
     set_tests_properties(native-ker-run-boundaries PROPERTIES TIMEOUT 60 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
+    add_test(NAME native-linux-fetch-lock
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fetch.py")
+    set_tests_properties(native-linux-fetch-lock PROPERTIES TIMEOUT 40 LABELS fstack)
     add_test(NAME native-linux-fingerprint-stale-inputs
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fingerprint.py"
             --builder "${PROJECT_SOURCE_DIR}/tools/build-native-linux.py"

@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 
 HOSTED_SAFE = (
     "native-fstack-fortify-bounds",
+    "native-linux-fetch-lock",
     "native-packet-header",
     "native-fstack-session-peer-drain-retry",
     "native-fstack-session-lease-input",

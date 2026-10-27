@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Build pinned Linux TCP/socket code with the LKL architecture in a generated tree."""
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -42,16 +44,30 @@ def output(repo, *args):
     return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
 
 
+@contextmanager
+def repository_lock(repo):
+    # A shallow fetch computes its update before Git takes shallow.lock.
+    # Serialize the complete presence-check/fetch across builder processes,
+    # including callers reaching one bare cache through different symlinks.
+    cache = Path(repo).resolve()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    with (cache.parent / (cache.name + '.fetch.lock')).open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def fetch(repo, url, revision):
-    # Newer Git versions run detached maintenance after shallow fetches by
-    # default. That process can rewrite the shallow boundary while the next
-    # pinned fetch is reading the same cache.
-    git(repo, 'config', 'gc.auto', '0')
-    git(repo, 'config', 'maintenance.auto', 'false')
-    present = subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', revision + '^{commit}'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if present.returncode:
-        git(repo, 'fetch', '--depth=1', '--no-tags', url, revision)
+    with repository_lock(repo):
+        # Disable detached maintenance before inspecting or fetching this cache.
+        git(repo, 'config', 'gc.auto', '0')
+        git(repo, 'config', 'maintenance.auto', 'false')
+        present = subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', revision + '^{commit}'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if present.returncode:
+            git(repo, 'fetch', '--depth=1', '--no-tags', url, revision)
 
 
 def main():
@@ -79,9 +95,9 @@ def main():
     cache = args.cache.resolve()
     build = args.build.resolve()
     build.mkdir(parents=True, exist_ok=True)
-    if not cache.exists():
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        run(['git', 'init', '--bare', cache])
+    with repository_lock(cache):
+        if not cache.exists():
+            run(['git', 'init', '--bare', cache])
     linux = manifest['linux']
     lkl = manifest['lkl']
     fetch(cache, linux['repository'], linux['revision'])
