@@ -1425,3 +1425,7 @@ UTIME_OMIT 与纳秒/微秒输入，并保留宿主文件行为；非法时间�
 `fallocate`/`fallocate64` 与 `posix_fallocate`/`posix_fallocate64` 按 fd 所属内核执行：
 原生 socket 由 Linux 返回 ENODEV，宿主文件保留预分配、KEEP_SIZE 和打洞语义，
 失败不影响原生 TCP 待收数据。
+
+`readahead`、`sync_file_range` 和 `posix_fadvise`（含64位别名）按 fd 所属内核执行。
+原生 socket 分别遵循 Linux EINVAL、ESPIPE，以及当前固定内核关闭 CONFIG_ADVISE_SYSCALLS
+时的 ENOSYS 边界；fadvise 返回正错误码并保持 errno，宿主文件行为不变。

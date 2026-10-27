@@ -142,3 +142,39 @@ int posix_fallocate(int fd, off_t offset, off_t length)
     return value < 0 ? (int)-value : 0;
 }
 extern __typeof(posix_fallocate64) posix_fallocate64 __attribute__((alias("posix_fallocate")));
+ssize_t readahead(int fd, off64_t offset, size_t count)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_readahead, fd, offset, count);
+    long value = lkl_sys_readahead(entry->native, offset, count);
+    ker_fd_put(entry);
+    return ker_native_result(value);
+}
+int sync_file_range(int fd, off64_t offset, off64_t count, unsigned flags)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_sync_file_range, fd, offset, count, flags);
+    long value = lkl_sys_sync_file_range(entry->native, offset, count, flags);
+    ker_fd_put(entry);
+    return ker_native_result(value);
+}
+int posix_fadvise(int fd, off_t offset, off_t length, int advice)
+{
+    int saved = errno;
+    struct ker_fd *entry = ker_fd_get(fd);
+    long value;
+    if (!entry) {
+        value = syscall(SYS_fadvise64, fd, offset, length, advice);
+        if (value < 0) value = -errno;
+    } else {
+        /* The pinned build omits CONFIG_ADVISE_SYSCALLS and its generated
+         * wrapper. Ask the real syscall table, preserving its ENOSYS boundary. */
+        _Static_assert(sizeof(long) == sizeof(off_t), "Linux 64-bit syscall arguments");
+        long arguments[6] = {entry->native, offset, length, advice, 0, 0};
+        value = lkl_syscall(__lkl__NR_fadvise64, arguments);
+        ker_fd_put(entry);
+    }
+    errno = saved;
+    return value < 0 ? (int)-value : (int)value;
+}
+extern __typeof(posix_fadvise64) posix_fadvise64 __attribute__((alias("posix_fadvise")));
