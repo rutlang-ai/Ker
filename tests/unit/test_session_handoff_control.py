@@ -85,7 +85,8 @@ class HandoffControlPathTests(unittest.TestCase):
             snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                 identity_check=lambda: checks.append(True))
             self.assertEqual(snapshot, (frozenset({3, 4}), frozenset({'ker_oldtap'})))
-            self.assertEqual(len(checks), 2)
+            self.assertEqual(len(checks), 3)
+            self.assertEqual(self.launcher.handoff_fdinfo_interfaces(snapshot), ['ker_oldtap'])
             self.launcher.validate_handoff_fdinfo((frozenset({3}), frozenset()), 4, 'ker_oldtap')
 
     def test_fdinfo_handoff_rejects_original_or_reused_exception_slot(self):
@@ -136,6 +137,51 @@ class HandoffControlPathTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'captured worker exited'):
                 self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root, identity_check=exits_midscan)
             self.assertEqual(len(checks), 2)
+
+    def test_fdinfo_handoff_census_rejects_a_new_descriptor_between_scans(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            checks = []
+            def add_reused_old_slot():
+                checks.append(True)
+                if len(checks) == 2:
+                    (root / '17').write_text('pos:\t0\n')
+            with self.assertRaisesRegex(RuntimeError, 'fdinfo census changed'):
+                self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                    identity_check=add_reused_old_slot)
+            self.assertEqual(len(checks), 3)
+
+    def test_fdinfo_handoff_census_rejects_a_new_tap_alias_between_scans(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            checks = []
+            def add_tap_alias():
+                checks.append(True)
+                if len(checks) == 2:
+                    (root / '17').write_text('iff:\tker_oldtap\n')
+            with self.assertRaisesRegex(RuntimeError, 'fdinfo census changed'):
+                self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                    identity_check=add_tap_alias)
+            self.assertEqual(len(checks), 3)
+
+    def test_committed_handoff_metrics_use_validated_fdinfo_interfaces(self):
+        tree = ast.parse(SOURCE.read_text())
+        handoff = next(node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == 'perform_test_handoff')
+        metrics = next(node for node in ast.walk(handoff)
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Subscript) and
+                isinstance(target.value, ast.Name) and target.value.id == 'metrics' and
+                isinstance(target.slice, ast.Constant) and
+                target.slice.value == 'handoff' for target in node.targets))
+        metric_call = next(keyword.value for keyword in metrics.value.keywords
+            if keyword.arg == 'old_tun_interfaces_after')
+        self.assertIsInstance(metric_call, ast.Call)
+        self.assertIsInstance(metric_call.func, ast.Name)
+        self.assertEqual(metric_call.func.id, 'handoff_fdinfo_interfaces')
+        self.assertEqual(self.launcher.handoff_fdinfo_interfaces(
+            (frozenset({3}), frozenset({'ker_z', 'ker_a'}))), ['ker_a', 'ker_z'])
 
     def test_fdinfo_handoff_pidfd_identity_must_remain_live_and_match_pid(self):
         with mock.patch.object(self.launcher.select, 'select', return_value=([44], [], [])):
