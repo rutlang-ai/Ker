@@ -176,6 +176,58 @@ def old_endpoint_fd_path_exists(pid, fd, *, expected_interface, expected_ifindex
             pass
         raise
     return True
+def process_fdinfo_snapshot(pid, *, fdinfo_dir=None, identity_check=None):
+    """Read one complete fdinfo census, failing closed on any incomplete read."""
+    directory = Path(f'/proc/{pid}/fdinfo') if fdinfo_dir is None else Path(fdinfo_dir)
+    if identity_check is not None:
+        identity_check()
+    descriptors = set()
+    interfaces = set()
+    try:
+        paths = sorted(directory.iterdir(), key=lambda path: path.name)
+        for path in paths:
+            if not path.name.isdecimal():
+                raise RuntimeError('fdinfo census contained a nonnumeric descriptor entry')
+            descriptor = int(path.name)
+            try:
+                information = path.read_text()
+            except OSError as error:
+                raise RuntimeError(f'could not complete fdinfo census for pid {pid}, fd {descriptor}') from error
+            descriptors.add(descriptor)
+            interfaces.update(line.split(':', 1)[1].strip() for line in information.splitlines()
+                if line.startswith('iff:'))
+    except OSError as error:
+        raise RuntimeError(f'could not enumerate fdinfo for pid {pid}') from error
+    if identity_check is not None:
+        identity_check()
+    return frozenset(descriptors), frozenset(interfaces)
+
+
+def require_live_process_identity(pid, pidfd):
+    """Require the captured process identity to remain live during fdinfo inspection."""
+    if pidfd < 0 or select.select([pidfd], [], [], 0)[0]:
+        raise RuntimeError('captured worker exited during fdinfo inspection')
+    try:
+        lines = Path(f'/proc/{pid}/status').read_text().splitlines()
+    except OSError as error:
+        raise RuntimeError('could not verify captured worker identity during fdinfo inspection') from error
+    try:
+        observed_pid = next((int(line.split()[1]) for line in lines if line.startswith('Pid:')), None)
+    except (IndexError, ValueError) as error:
+        raise RuntimeError('could not parse captured worker identity during fdinfo inspection') from error
+    if observed_pid != pid or select.select([pidfd], [], [], 0)[0]:
+        raise RuntimeError('captured worker identity changed during fdinfo inspection')
+
+
+def validate_handoff_fdinfo(snapshot, exception_fd, exception_interface):
+    """Require the exception fd slot and every alias to its TAP to be absent."""
+    descriptors, interfaces = snapshot
+    if type(exception_fd) is not int or exception_fd < 0:
+        raise RuntimeError('handoff exception descriptor number is invalid')
+    if exception_fd in descriptors:
+        raise RuntimeError('parked owner still has the exception descriptor slot open')
+    if exception_interface in interfaces:
+        raise RuntimeError('parked owner still has an alias to its exception TAP')
 
 
 def capture_exited_process_stdout(process, *, max_bytes=262144, budget=0.05):
@@ -1014,17 +1066,11 @@ def _run_session_impl(args, api):
         owner_cleared = ready('KER_SESSION_PMD_PARKED', process=worker)
         validate_parked_owner_cleared(owner_cleared, worker.pid)
         old_exception_fd = metrics['geometry'].get('exception_endpoint_fd_number')
-        old_tun_interfaces = tap_interfaces_for_process(worker.pid)
-        if not isinstance(old_exception_fd, int):
-            raise RuntimeError('parked owner still holds the session exception endpoint or another alias to its TAP')
-        old_exception_fd_present = old_endpoint_fd_path_exists(worker.pid, old_exception_fd,
-            expected_interface=metrics['exception_endpoint_name'],
-            expected_ifindex=metrics['geometry'].get('exception_endpoint_ifindex'),
-            owner_key=metrics['grant'].get('exception_endpoint_owner_key'),
-            old_tun_interfaces=old_tun_interfaces, pidfd=worker_pidfd)
-        if (old_exception_fd_present or metrics['geometry'].get('exception_endpoint_ifindex') <= 0 or
-                metrics['exception_endpoint_name'] in old_tun_interfaces):
-            raise RuntimeError('parked owner still holds the session exception endpoint or another alias to its TAP')
+        if metrics['geometry'].get('exception_endpoint_ifindex') <= 0:
+            raise RuntimeError('parked owner reported an invalid exception endpoint interface index')
+        fdinfo = process_fdinfo_snapshot(worker.pid,
+            identity_check=lambda: require_live_process_identity(worker.pid, worker_pidfd))
+        validate_handoff_fdinfo(fdinfo, old_exception_fd, metrics['exception_endpoint_name'])
         if os.write(peer_control_w, b'P') != 1:
             raise RuntimeError('could not admit the exact reserved successor')
         successor = ready('KER_SESSION_PMD_GRANTED', process=peer_worker)

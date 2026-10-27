@@ -76,6 +76,76 @@ class HandoffControlPathTests(unittest.TestCase):
         cls.launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.launcher)
 
+    def test_fdinfo_handoff_census_requires_complete_identity_stable_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            (root / '4').write_text('iff:\tker_oldtap\n')
+            checks = []
+            snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                identity_check=lambda: checks.append(True))
+            self.assertEqual(snapshot, (frozenset({3, 4}), frozenset({'ker_oldtap'})))
+            self.assertEqual(len(checks), 2)
+            self.launcher.validate_handoff_fdinfo((frozenset({3}), frozenset()), 4, 'ker_oldtap')
+
+    def test_fdinfo_handoff_rejects_original_or_reused_exception_slot(self):
+        for descriptor_kind, contents in (
+                ('original', 'iff:\tker_oldtap\n'), ('reused', 'pos:\t0\n')):
+            with self.subTest(descriptor_kind=descriptor_kind), tempfile.TemporaryDirectory(
+                    prefix='handoff-fdinfo-') as directory:
+                (Path(directory) / '17').write_text(contents)
+                snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=directory)
+                with self.assertRaisesRegex(RuntimeError, 'descriptor slot open'):
+                    self.launcher.validate_handoff_fdinfo(snapshot, 17, 'ker_oldtap')
+
+    def test_fdinfo_handoff_rejects_tap_alias_even_when_exception_slot_is_absent(self):
+        with self.assertRaisesRegex(RuntimeError, 'alias to its exception TAP'):
+            self.launcher.validate_handoff_fdinfo(
+                (frozenset({3, 9}), frozenset({'ker_oldtap'})), 17, 'ker_oldtap')
+
+    def test_fdinfo_handoff_permission_and_midscan_errors_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            with mock.patch.object(Path, 'iterdir', side_effect=PermissionError(errno.EACCES, 'denied')):
+                with self.assertRaisesRegex(RuntimeError, 'could not enumerate fdinfo'):
+                    self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root)
+
+            original_read_text = Path.read_text
+            def denied_file(path, *args, **kwargs):
+                if path.parent == root:
+                    raise PermissionError(errno.EPERM, 'denied')
+                return original_read_text(path, *args, **kwargs)
+            with mock.patch.object(Path, 'read_text', denied_file):
+                with self.assertRaisesRegex(RuntimeError, 'could not complete fdinfo census'):
+                    self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root)
+
+            def disappeared_file(path, *args, **kwargs):
+                if path.parent == root:
+                    raise FileNotFoundError(errno.ENOENT, 'descriptor disappeared')
+                return original_read_text(path, *args, **kwargs)
+            with mock.patch.object(Path, 'read_text', disappeared_file):
+                with self.assertRaisesRegex(RuntimeError, 'could not complete fdinfo census'):
+                    self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root)
+
+            checks = []
+            def exits_midscan():
+                checks.append(True)
+                if len(checks) == 2:
+                    raise RuntimeError('captured worker exited during fdinfo inspection')
+            with self.assertRaisesRegex(RuntimeError, 'captured worker exited'):
+                self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root, identity_check=exits_midscan)
+            self.assertEqual(len(checks), 2)
+
+    def test_fdinfo_handoff_pidfd_identity_must_remain_live_and_match_pid(self):
+        with mock.patch.object(self.launcher.select, 'select', return_value=([44], [], [])):
+            with self.assertRaisesRegex(RuntimeError, 'captured worker exited'):
+                self.launcher.require_live_process_identity(12345, 44)
+        with (mock.patch.object(self.launcher.select, 'select', return_value=([], [], [])),
+                mock.patch.object(Path, 'read_text', return_value='Name:\tworker\nPid:\t12346\n')):
+            with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+                self.launcher.require_live_process_identity(12345, 44)
+
     def test_frame_profiles_prewarm_original_udp_before_handoff_exhaustively(self):
         tree = ast.parse(PROFILE_SOURCE.read_text())
         test_body = next(node for node in tree.body
