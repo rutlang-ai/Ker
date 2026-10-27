@@ -1435,3 +1435,8 @@ fd xattr 操作使用原始 Linux inode：可读取/枚举 socketfs 的 system.s
 宿主文件保留 user xattr 的 CREATE/REPLACE/remove 语义。
 原生 socket 的 FIONREAD、FIONBIO、SIOCOUTQ ioctl 对 NULL 整数参数返回 EFAULT，
 避免进程内 LKL uaccess 解引用空地址；错误不消费 TCP/宿主管道数据，也不改变 nonblocking 状态。
+
+原生运行时活动期间，`close_range(..., CLOSE_RANGE_CLOEXEC)` 更新宿主 fd 的 exec 标记；
+关闭或 UNSHARE 操作显式返回 EOPNOTSUPP（包括仅覆盖宿主 fd 的范围），避免关闭私有
+控制通道或留下可错误路由复用 fd 的原生注册。此时请逐个调用 close；运行时不活动且无注册时
+保留宿主 close_range 行为，非法范围/标志仍优先返回 EINVAL。

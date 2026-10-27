@@ -3,6 +3,7 @@
 #include "syscall-result.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/close_range.h>
 #include <sys/epoll.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -213,4 +214,25 @@ void ker_fd_close_all(void)
         struct ker_fd *entry = ker_fd_get(fd);
         if (entry) { ker_fd_close(fd); ker_fd_put(entry); }
     }
+}
+
+int close_range(unsigned first, unsigned last, int flags)
+{
+    if (first > last || (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))) {
+        errno = EINVAL; return -1;
+    }
+    /* CLOEXEC belongs to the application's host reservations. Closing or
+     * unsharing the host table would strand native entries and can also close
+     * runtime-private channels; expose that unsupported boundary explicitly. */
+    pthread_mutex_lock(&mutex);
+    bool native = ker_native_ready() || private_hosts || snapshots;
+    if (!native) for (int fd = 0; fd < KER_FD_LIMIT; ++fd)
+        if (entries[fd]) { native = true; break; }
+    long value;
+    if (native && flags != CLOSE_RANGE_CLOEXEC) { errno = EOPNOTSUPP; value = -1; }
+    else value = syscall(SYS_close_range, first, last, flags);
+    int saved = errno;
+    pthread_mutex_unlock(&mutex);
+    if (value < 0) errno = saved;
+    return value;
 }
