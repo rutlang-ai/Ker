@@ -206,10 +206,20 @@ static int descriptor_accessat(int fd, const char *path, int mode, int flags)
 int faccessat(int fd, const char *path, int mode, int flags)
     __attribute__((alias("descriptor_accessat")));
 
+/* Linux added fchmodat2 for flag support. On hosts that predate it, retain
+ * the old fchmodat syscall only when no flags need to be represented. */
+static int host_fchmodat(int fd, const char *path, mode_t mode, int flags)
+{
+    int result = (int)syscall(SYS_fchmodat2, fd, path, mode, flags);
+    if (result < 0 && errno == ENOSYS && flags == 0)
+        return (int)syscall(SYS_fchmodat, fd, path, mode);
+    return result;
+}
+
 static int descriptor_chmodat(int fd, const char *path, mode_t mode, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_fchmodat2, fd, path, mode, flags);
+    if (!entry) return host_fchmodat(fd, path, mode, flags);
     if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)) {
         ker_fd_put(entry); errno = EINVAL; return -1;
     }
@@ -221,7 +231,7 @@ static int descriptor_chmodat(int fd, const char *path, mode_t mode, int flags)
     }
     if (native_path[0] == '/') {
         ker_fd_put(entry);
-        return syscall(SYS_fchmodat2, fd, native_path, mode, flags);
+        return host_fchmodat(fd, native_path, mode, flags);
     }
     long result = lkl_sys_fchmodat2(entry->native, native_path, mode, flags);
     ker_fd_put(entry);

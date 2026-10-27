@@ -4,7 +4,11 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <dlfcn.h>
+#include <stddef.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <signal.h>
@@ -16,6 +20,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <linux/sockios.h>
 #include <sys/syscall.h>
 #include <stdlib.h>
@@ -1720,6 +1725,61 @@ static void positioned_stream_sigpipe(void)
     finish(p);
     CHECK(sigaction(SIGPIPE, &original, NULL) == 0);
 }
+static void fchmodat2_enosys_fallback(void)
+{
+    char directory[] = "/tmp/ker-fchmodat2-XXXXXX";
+    CHECK(mkdtemp(directory) != NULL);
+    char path[PATH_MAX];
+    CHECK(snprintf(path, sizeof(path), "%s/file", directory) > 0);
+    int file = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+    CHECK(file >= 0);
+    int dirfd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(dirfd >= 0);
+    struct pair p = connected();
+
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fchmodat2, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {.len = sizeof(filter) / sizeof(filter[0]), .filter = filter};
+    CHECK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
+    CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0);
+
+    /* Older hosts can still perform flags-zero operations through fchmodat. */
+    CHECK(fchmodat(AT_FDCWD, path, 0640, 0) == 0);
+    struct stat info;
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+    CHECK(fchmodat(dirfd, "file", 0604, 0) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0604);
+
+    /* An owned descriptor's absolute host path must unpin before host fallback. */
+    CHECK(fchmodat(p.client, path, 0644, 0) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+
+    /* With Ker interposed, native relative and empty paths never use the host syscall. */
+    if (dlsym(RTLD_DEFAULT, "ker_posix_capabilities")) {
+        ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW), ENOSYS);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+        ERROR(fchmodat(p.client, "child", 0600, 0), ENOTDIR);
+        ERROR(fchmodat(p.client, path, 0777, AT_SYMLINK_NOFOLLOW), ENOSYS);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+        CHECK(fchmodat(p.client, "", 0600, AT_EMPTY_PATH) == 0);
+        CHECK(fstat(p.client, &info) == 0 && (info.st_mode & 0777) == 0600);
+        size_t inaccessible_length;
+        void *inaccessible = inaccessible_path(&inaccessible_length);
+        ERROR(fchmodat(p.client, inaccessible, 0640, 0), EFAULT);
+        ERROR(fchmodat(p.client, inaccessible, 0640, 0x40000000), EINVAL);
+        CHECK(munmap(inaccessible, inaccessible_length) == 0);
+    }
+
+    CHECK(write(p.client, "r", 1) == 1); ready(p.server);
+    char byte = 0; CHECK(recv(p.server, &byte, 1, MSG_WAITALL) == 1 && byte == 'r');
+    finish(p);
+    CHECK(close(dirfd) == 0 && close(file) == 0);
+    CHECK(unlink(path) == 0 && rmdir(directory) == 0);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
@@ -1759,6 +1819,7 @@ int main(void)
         {"descriptor-at-metadata-mutations", descriptor_at_mutations},
         {"host-at-path-fault-routing", host_path_faults},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
+        {"host-fchmodat2-ENOSYS-flags-zero-fallback", fchmodat2_enosys_fallback},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run(); printf("PASS: fstack socket contract %s\n", cases[i].name); fflush(stdout);
