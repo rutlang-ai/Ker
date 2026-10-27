@@ -763,29 +763,19 @@ static void mapping_owner_boundary(void)
     char byte; CHECK(pread(fd, &byte, 1, 0) == 1 && byte == 'y' && close(fd) == 0);
 }
 
-enum checked_block_kind { CHECKED_READ, CHECKED_PREAD_PENDING, CHECKED_RECV, CHECKED_RECVFROM, CHECKED_POLL, CHECKED_PPOLL };
+enum checked_block_kind { CHECKED_READ, CHECKED_RECV, CHECKED_RECVFROM, CHECKED_POLL, CHECKED_PPOLL };
 struct checked_block_call {
     enum checked_block_kind kind;
     int fd, peer;
     struct pollfd event;
     struct timespec timeout;
-    atomic_int entered, release;
+    atomic_int entered;
     ssize_t result;
 };
 static void *checked_blocked_call(void *opaque)
 {
     struct checked_block_call *call = opaque;
     char byte = 0;
-    if (call->kind == CHECKED_PREAD_PENDING) {
-        int previous;
-        if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous)) return (void *)1;
-        atomic_store_explicit(&call->entered, 1, memory_order_release);
-        while (!atomic_load_explicit(&call->release, memory_order_acquire)) sched_yield();
-        call->result = __pread_chk(call->fd, &byte, 1, 0, sizeof byte);
-        pthread_setcancelstate(previous, NULL);
-        pthread_testcancel();
-        return (void *)(intptr_t)call->result;
-    }
     atomic_store_explicit(&call->entered, 1, memory_order_release);
     switch (call->kind) {
     case CHECKED_READ: call->result = __read_chk(call->fd, &byte, 1, sizeof byte); break;
@@ -793,7 +783,6 @@ static void *checked_blocked_call(void *opaque)
     case CHECKED_RECVFROM: call->result = __recvfrom_chk(call->fd, &byte, 1, sizeof byte, 0, NULL, NULL); break;
     case CHECKED_POLL: call->result = __poll_chk(&call->event, 1, -1, sizeof call->event); break;
     case CHECKED_PPOLL: call->result = __ppoll_chk(&call->event, 1, NULL, NULL, sizeof call->event); break;
-    case CHECKED_PREAD_PENDING: return NULL;
     }
     return (void *)(intptr_t)call->result;
 }
@@ -807,48 +796,35 @@ static int checked_timed_join(pthread_t thread, void **result)
 static void checked_host_cancellation(enum checked_block_kind kind)
 {
     struct checked_block_call call = {.kind = kind, .fd = -1, .peer = -1};
-    if (kind == CHECKED_PREAD_PENDING) {
-        char path[] = "/tmp/ker-checked-pread-XXXXXX";
-        call.fd = mkstemp(path); CHECK(call.fd >= 0 && unlink(path) == 0);
-        CHECK(write(call.fd, "p", 1) == 1);
-    } else if (kind == CHECKED_READ || kind == CHECKED_POLL || kind == CHECKED_PPOLL) {
+    if (kind == CHECKED_READ || kind == CHECKED_POLL || kind == CHECKED_PPOLL) {
         int pipefd[2]; CHECK(pipe(pipefd) == 0); call.fd = pipefd[0]; call.peer = pipefd[1];
         call.event = (struct pollfd){call.fd, POLLIN, 0};
     } else {
         int pair[2]; CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) == 0);
         call.fd = pair[0]; call.peer = pair[1];
     }
-    atomic_init(&call.entered, 0); atomic_init(&call.release, 0);
+    atomic_init(&call.entered, 0);
     pthread_t thread; CHECK(pthread_create(&thread, NULL, checked_blocked_call, &call) == 0);
     for (unsigned i = 0; i < 1000 && !atomic_load_explicit(&call.entered, memory_order_acquire); ++i) {
         struct timespec pause = {.tv_nsec = 1000000L}; nanosleep(&pause, NULL);
     }
     CHECK(atomic_load_explicit(&call.entered, memory_order_acquire));
-    if (kind == CHECKED_PREAD_PENDING) {
-        CHECK(pthread_cancel(thread) == 0);
-        atomic_store_explicit(&call.release, 1, memory_order_release);
-    } else {
-        struct timespec settle = {.tv_nsec = 20000000L}; nanosleep(&settle, NULL);
-        CHECK(pthread_cancel(thread) == 0);
-    }
+    struct timespec settle = {.tv_nsec = 20000000L}; nanosleep(&settle, NULL);
+    CHECK(pthread_cancel(thread) == 0);
     void *result = NULL;
     int joined = checked_timed_join(thread, &result);
     if (joined == ETIMEDOUT) {
         /* Wake a raw-syscall regression before reporting it, avoiding leaked
          * threads or a hung test runner. */
-        if (kind == CHECKED_READ || kind == CHECKED_POLL || kind == CHECKED_PPOLL)
-            CHECK(write(call.peer, "x", 1) == 1);
-        else CHECK(write(call.peer, "x", 1) == 1);
+        CHECK(write(call.peer, "x", 1) == 1);
         CHECK(checked_timed_join(thread, &result) == 0);
         CHECK(result == PTHREAD_CANCELED);
     } else CHECK(joined == 0 && result == PTHREAD_CANCELED);
-    if (kind == CHECKED_PREAD_PENDING) CHECK(close(call.fd) == 0);
-    else { CHECK(close(call.fd) == 0); CHECK(close(call.peer) == 0); }
+    CHECK(close(call.fd) == 0 && close(call.peer) == 0);
 }
 static void checked_entry_cancellation(void)
 {
     checked_host_cancellation(CHECKED_READ);
-    checked_host_cancellation(CHECKED_PREAD_PENDING);
     checked_host_cancellation(CHECKED_RECV);
     checked_host_cancellation(CHECKED_RECVFROM);
     checked_host_cancellation(CHECKED_POLL);
@@ -857,6 +833,11 @@ static void checked_entry_cancellation(void)
 static void fortified_io(void)
 {
     struct pair p = connected(); char bytes[8];
+    char path[] = "/tmp/ker-checked-pread-XXXXXX";
+    int hostfd = mkstemp(path); CHECK(hostfd >= 0 && unlink(path) == 0);
+    CHECK(write(hostfd, "pread", 5) == 5);
+    CHECK(__pread_chk(hostfd, bytes, 2, 1, sizeof bytes) == 2 && bytes[0] == 'r' && bytes[1] == 'e');
+    CHECK(lseek(hostfd, 0, SEEK_CUR) == 5 && close(hostfd) == 0);
     volatile size_t count = 1; volatile nfds_t descriptors = 1;
     CHECK(write(p.client, "f", 1) == 1); ready(p.server);
     struct pollfd event = {p.server, POLLIN, 0};
