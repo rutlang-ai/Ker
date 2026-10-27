@@ -1335,7 +1335,9 @@ def main():
                         stats, failed = reaped[0]
                     for result in reaped[1:]:
                         failed |= result if isinstance(result, bool) else True
-                    failed |= b'KER_NATIVE_DONE\n' not in startup_status
+                    if not normal_native_shutdown_markers(startup_status):
+                        print('ker-run: invalid native run shutdown marker sequence', file=sys.stderr)
+                        failed = True
                     failed |= stats is None or stats.get('outstanding', 1) != 0
                     if stats is not None:
                         stats['run_shutdown'] = True
