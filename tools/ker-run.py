@@ -15,6 +15,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -1100,6 +1101,23 @@ def finish_concurrently(operations):
         return results
 
 
+
+def write_statistics(path, stats):
+    """Replace a complete report; never truncate an earlier successful report."""
+    payload = json.dumps(stats, indent=2) + '\n'
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                dir=path.parent, prefix='.' + path.name + '.', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
 def primary_channels():
     """Transfer channels only after the complete IPC bundle is allocated."""
     with contextlib.ExitStack() as cleanup:
@@ -1450,7 +1468,11 @@ def main():
                 stats['interfaces'] = [extra.stats for extra in additional]
                 stats['worker_pid'] = worker.pid
             if args.stats and stats:
-                args.stats.write_text(json.dumps(stats, indent=2) + '\n')
+                try:
+                    write_statistics(args.stats, stats)
+                except (OSError, ValueError, TypeError) as error:
+                    print(f'ker-run: statistics output: {error}', file=sys.stderr)
+                    infrastructure_failure = True
     return resolve_exit_code(exit_code, app.returncode if app else None,
         infrastructure_failure, preserve_signal)
 
