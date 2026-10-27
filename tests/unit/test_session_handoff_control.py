@@ -1235,19 +1235,20 @@ class HandoffControlPathTests(unittest.TestCase):
                 'Uid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n'
                 'TracerPid:\t0\nEnv:\tDO_NOT_LOG\n')
             original = PermissionError(errno.EACCES, 'Permission denied', str(fd_path))
-            real_stat = Path.stat
+            real_stat = os.stat
 
             def denied_fd_stat(path, *args, **kwargs):
-                if path == fd_path:
+                if Path(path) == fd_path:
                     raise original
                 return real_stat(path, *args, **kwargs)
 
             stderr = io.StringIO()
-            # Python 3.14 Path.exists suppresses this same EACCES; production
-            # must use Path.stat so the failure remains visible.
-            with mock.patch.object(Path, 'exists', return_value=False), \
-                    mock.patch.object(Path, 'stat', denied_fd_stat), \
+            with mock.patch('os.stat', denied_fd_stat), \
                     contextlib.redirect_stderr(stderr):
+                # Exercise the real 3.14 predicate: it suppresses this mocked
+                # stat EACCES and returns False, so production must call stat.
+                if sys.version_info >= (3, 14):
+                    self.assertFalse(fd_path.exists())
                 with self.assertRaises(PermissionError) as caught:
                     self.launcher.old_endpoint_fd_path_exists(12345, 17,
                         expected_interface='kex12345678', expected_ifindex=9, owner_key=9,
@@ -1277,11 +1278,11 @@ class HandoffControlPathTests(unittest.TestCase):
             fdinfo_path.write_text('iff:\tkex12345678\n')
             (process / 'status').write_text('State:\tS (sleeping)\nUid:\t1000\t1000\t1000\t1000\n')
             original = PermissionError(errno.EACCES, 'Permission denied', str(fd_path))
-            real_stat = Path.stat
+            real_stat = os.stat
             real_open = Path.open
 
             def denied_fd_stat(path, *args, **kwargs):
-                if path == fd_path:
+                if Path(path) == fd_path:
                     raise original
                 return real_stat(path, *args, **kwargs)
 
@@ -1291,7 +1292,7 @@ class HandoffControlPathTests(unittest.TestCase):
                 return real_open(path, *args, **kwargs)
 
             stderr = io.StringIO()
-            with mock.patch.object(Path, 'stat', denied_fd_stat), \
+            with mock.patch('os.stat', denied_fd_stat), \
                     mock.patch.object(Path, 'open', failed_fdinfo_open), \
                     contextlib.redirect_stderr(stderr):
                 with self.assertRaises(PermissionError) as caught:
@@ -1306,35 +1307,39 @@ class HandoffControlPathTests(unittest.TestCase):
             self.assertEqual(record['fdinfo']['error']['errno'], errno.EIO)
             self.assertEqual(record['failure']['errno'], errno.EACCES)
 
-    def test_proc_fd_non_enoent_stat_error_is_not_treated_as_closed(self):
+    def test_proc_fd_non_enoent_stat_errors_are_not_treated_as_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             process = root / '12345'
             fd_path = process / 'fd' / '17'
             fd_path.parent.mkdir(parents=True)
             fd_path.symlink_to('/dev/null')
-            original = OSError(errno.EIO, 'proc fd stat unavailable', str(fd_path))
-            real_stat = Path.stat
+            real_stat = os.stat
+            failures = (errno.EACCES, errno.EBADF, errno.ENOTDIR, errno.EIO, errno.EPERM)
+            for error_number in failures:
+                with self.subTest(errno=error_number):
+                    original = OSError(error_number, 'injected proc fd stat error', str(fd_path))
 
-            def failed_fd_stat(path, *args, **kwargs):
-                if path == fd_path:
-                    raise original
-                return real_stat(path, *args, **kwargs)
+                    def failed_fd_stat(path, *args, **kwargs):
+                        if Path(path) == fd_path:
+                            raise original
+                        return real_stat(path, *args, **kwargs)
 
-            stderr = io.StringIO()
-            with mock.patch.object(Path, 'exists', return_value=False), \
-                    mock.patch.object(Path, 'stat', failed_fd_stat), \
-                    contextlib.redirect_stderr(stderr):
-                with self.assertRaises(OSError) as caught:
-                    self.launcher.old_endpoint_fd_path_exists(12345, 17,
-                        expected_interface='kex12345678', expected_ifindex=9, owner_key=9,
-                        old_tun_interfaces=[], pidfd=None, proc_root=root)
-            self.assertIs(caught.exception, original)
-            self.assertEqual(caught.exception.errno, errno.EIO)
-            line = next(line for line in stderr.getvalue().splitlines()
-                if line.startswith('KER_SESSION_OLD_ENDPOINT_FD_STAT_FAILURE '))
-            record = json.loads(line.split(' ', 1)[1])
-            self.assertEqual(record['failure']['errno'], errno.EIO)
+                    stderr = io.StringIO()
+                    with mock.patch('os.stat', failed_fd_stat), \
+                            contextlib.redirect_stderr(stderr):
+                        if error_number == errno.EACCES and sys.version_info >= (3, 14):
+                            self.assertFalse(fd_path.exists())
+                        with self.assertRaises(OSError) as caught:
+                            self.launcher.old_endpoint_fd_path_exists(12345, 17,
+                                expected_interface='kex12345678', expected_ifindex=9, owner_key=9,
+                                old_tun_interfaces=[], pidfd=None, proc_root=root)
+                    self.assertIs(caught.exception, original)
+                    self.assertEqual(caught.exception.errno, error_number)
+                    line = next(line for line in stderr.getvalue().splitlines()
+                        if line.startswith('KER_SESSION_OLD_ENDPOINT_FD_STAT_FAILURE '))
+                    record = json.loads(line.split(' ', 1)[1])
+                    self.assertEqual(record['failure']['errno'], error_number)
 
     def test_proc_fd_missing_slot_still_reports_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
