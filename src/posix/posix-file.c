@@ -52,3 +52,24 @@ extern __typeof(preadv64) preadv64 __attribute__((alias("preadv")));
 extern __typeof(pwritev64) pwritev64 __attribute__((alias("pwritev")));
 extern __typeof(preadv64v2) preadv64v2 __attribute__((alias("preadv2")));
 extern __typeof(pwritev64v2) pwritev64v2 __attribute__((alias("pwritev2")));
+
+int ftruncate(int fd, off_t length)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_ftruncate, fd, length);
+    long value = lkl_sys_ftruncate(entry->native, length);
+    ker_fd_put(entry);
+    return ker_native_result(value);
+}
+extern __typeof(ftruncate64) ftruncate64 __attribute__((alias("ftruncate")));
+#define SYNC(name) \
+int name(int fd) \
+{ \
+    struct ker_fd *entry = ker_fd_get(fd); \
+    if (!entry) return syscall(SYS_##name, fd); \
+    long value = lkl_sys_##name(entry->native); \
+    ker_fd_put(entry); \
+    return ker_native_result(value); \
+}
+SYNC(fsync)
+SYNC(fdatasync)
