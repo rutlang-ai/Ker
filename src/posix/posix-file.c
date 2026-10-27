@@ -181,12 +181,37 @@ int posix_fadvise(int fd, off_t offset, off_t length, int advice)
     return value < 0 ? (int)-value : (int)value;
 }
 extern __typeof(posix_fadvise64) posix_fadvise64 __attribute__((alias("posix_fadvise")));
+/* Copy names into host memory before an LKL syscall. Its strncpy_from_user
+ * routines must not dereference a caller address in the host address space. */
+static long ker_copy_xattr_name(const char *name, char local_name[XATTR_NAME_MAX + 1])
+{
+    if (!name) return -EFAULT;
+    uintptr_t name_address = (uintptr_t)name;
+    for (size_t length = 0; length <= XATTR_NAME_MAX; ++length) {
+        if (name_address > UINTPTR_MAX - length) return -EFAULT;
+        char byte;
+        struct iovec local = {.iov_base = &byte, .iov_len = 1};
+        struct iovec remote = {.iov_base = (void *)(name_address + length), .iov_len = 1};
+        long copied;
+        do {
+            copied = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
+        } while (copied < 0 && errno == EINTR);
+        if (copied != 1) return -EFAULT;
+        local_name[length] = byte;
+        if (!byte) return length ? (long)length : -ERANGE;
+    }
+    return -ERANGE;
+}
+
 ssize_t fgetxattr(int fd, const char *name, void *value, size_t size)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fgetxattr, fd, name, value, size);
+    char local_name[XATTR_NAME_MAX + 1];
+    long name_error = ker_copy_xattr_name(name, local_name);
+    if (name_error < 0) { ker_fd_put(entry); return ker_native_result(name_error); }
     if (!value && size) { ker_fd_put(entry); errno = EFAULT; return -1; }
-    long result = lkl_sys_fgetxattr(entry->native, name, value, size);
+    long result = lkl_sys_fgetxattr(entry->native, local_name, value, size);
     ker_fd_put(entry);
     return ker_native_result(result);
 }
@@ -195,7 +220,16 @@ int fsetxattr(int fd, const char *name, const void *value, size_t size, int flag
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fsetxattr, fd, name, value, size, flags);
-    long result = lkl_sys_fsetxattr(entry->native, name, value, size, flags);
+    if (flags & ~(XATTR_CREATE | XATTR_REPLACE)) {
+        ker_fd_put(entry);
+        return ker_native_result(-EINVAL);
+    }
+    char local_name[XATTR_NAME_MAX + 1];
+    long name_error = ker_copy_xattr_name(name, local_name);
+    if (name_error < 0) { ker_fd_put(entry); return ker_native_result(name_error); }
+    if (size > XATTR_SIZE_MAX) { ker_fd_put(entry); return ker_native_result(-E2BIG); }
+    if (!value && size) { ker_fd_put(entry); return ker_native_result(-EFAULT); }
+    long result = lkl_sys_fsetxattr(entry->native, local_name, value, size, flags);
     ker_fd_put(entry);
     return ker_native_result(result);
 }
@@ -214,7 +248,10 @@ int fremovexattr(int fd, const char *name)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fremovexattr, fd, name);
-    long result = lkl_sys_fremovexattr(entry->native, name);
+    char local_name[XATTR_NAME_MAX + 1];
+    long name_error = ker_copy_xattr_name(name, local_name);
+    if (name_error < 0) { ker_fd_put(entry); return ker_native_result(name_error); }
+    long result = lkl_sys_fremovexattr(entry->native, local_name);
     ker_fd_put(entry);
     return ker_native_result(result);
 }

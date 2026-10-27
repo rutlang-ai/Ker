@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/vfs.h>
 #include <sys/xattr.h>
 #include <linux/magic.h>
@@ -420,9 +421,32 @@ static void descriptor_xattrs(void)
     CHECK(found); ERROR(flistxattr(fd, value, 1), ERANGE);
     ssize_t (*get_attribute)(int, const char *, void *, size_t) = fgetxattr;
     ssize_t (*list_attributes)(int, char *, size_t) = flistxattr;
-    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+    int (*set_attribute)(int, const char *, const void *, size_t, int) = fsetxattr;
+    int native = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") != NULL;
+    if (native) {
+        ERROR(get_attribute(fd, NULL, value, sizeof(value)), EFAULT);
+        ERROR(fremovexattr(fd, NULL), EFAULT);
+        ERROR(set_attribute(fd, NULL, "a", 1, 0), EFAULT);
+        long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+        char *inaccessible_name = mmap(NULL, (size_t)page_size, PROT_NONE,
+                                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(inaccessible_name != MAP_FAILED);
+        ERROR(get_attribute(fd, inaccessible_name, value, sizeof(value)), EFAULT);
+        ERROR(fremovexattr(fd, inaccessible_name), EFAULT);
+        ERROR(set_attribute(fd, inaccessible_name, "a", 1, 0), EFAULT);
+        ERROR(set_attribute(fd, inaccessible_name, "a", 1, ~0), EINVAL);
+        CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
+        CHECK(munmap(inaccessible_name, (size_t)page_size) == 0);
         ERROR(get_attribute(fd, "system.sockprotoname", NULL, 4), EFAULT);
         ERROR(list_attributes(fd, NULL, 128), EFAULT);
+        ERROR(set_attribute(fd, "user.ker", NULL, 1, 0), EFAULT);
+        ERROR(set_attribute(fd, "user.ker", NULL, 0, 0), EPERM);
+        ERROR(set_attribute(fd, "user.ker", NULL, 1, ~0), EINVAL);
+        ERROR(set_attribute(fd, "", NULL, 1, 0), ERANGE);
+        const char *near_max_name = (const char *)(UINTPTR_MAX - 1u);
+        ERROR(set_attribute(fd, near_max_name, NULL, 1, 0), EFAULT);
+        ERROR(set_attribute(fd, near_max_name, NULL, 1, ~0), EINVAL);
+        ERROR(set_attribute(fd, "user.ker", NULL, XATTR_SIZE_MAX + 1u, 0), E2BIG);
         CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
         CHECK(flistxattr(fd, NULL, 0) == length);
         ERROR(fsetxattr(fd, "user.ker", "a", 1, 0), EPERM);
@@ -432,8 +456,16 @@ static void descriptor_xattrs(void)
     CHECK(close(copy) == 0); ERROR(flistxattr(copy, value, sizeof(value)), EBADF);
     ERROR(get_attribute(copy, "system.sockprotoname", NULL, 4), EBADF);
     ERROR(list_attributes(copy, NULL, 128), EBADF);
+    ERROR(set_attribute(copy, "user.ker", "a", 1, 0), EBADF);
     char path[] = "/tmp/ker-xattrs-XXXXXX";
     fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    ERROR(get_attribute(fd, NULL, value, sizeof(value)), EFAULT);
+    ERROR(set_attribute(fd, NULL, "a", 1, 0), EFAULT);
+    ERROR(fremovexattr(fd, NULL), EFAULT);
+    ERROR(set_attribute(fd, "user.ker", NULL, 1, 0), EFAULT);
+    CHECK(fsetxattr(fd, "user.empty", NULL, 0, XATTR_CREATE) == 0);
+    CHECK(get_attribute(fd, "user.empty", NULL, 0) == 0);
+    CHECK(fremovexattr(fd, "user.empty") == 0);
     CHECK(fsetxattr(fd, "user.ker", "a", 1, XATTR_CREATE) == 0);
     ERROR(get_attribute(fd, "user.ker", NULL, 1), EFAULT);
     ERROR(list_attributes(fd, NULL, 128), EFAULT);
