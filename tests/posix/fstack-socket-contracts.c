@@ -384,6 +384,139 @@ static void file_lifecycle_operations(void)
     ERROR(fsync(fd), EBADF); ERROR(fdatasync(fd), EBADF); ERROR(ftruncate(fd, 0), EBADF);
 }
 
+typedef int (*fd_output_call)(int, void *);
+typedef int (*at_output_call)(int, const char *, void *, int);
+static int output_fstat(int fd, void *output) { return fstat(fd, output); }
+static int output_fstat64(int fd, void *output) { return fstat64(fd, output); }
+static int output_fxstat(int fd, void *output)
+{
+    int (*call)(int, int, void *) = dlsym(RTLD_DEFAULT, "__fxstat"); CHECK(call);
+    return call(0, fd, output);
+}
+static int output_fxstat64(int fd, void *output)
+{
+    int (*call)(int, int, void *) = dlsym(RTLD_DEFAULT, "__fxstat64"); CHECK(call);
+    return call(0, fd, output);
+}
+static int output_fstatat(int fd, const char *path, void *output, int flags)
+{ return fstatat(fd, path, output, flags); }
+static int output_fstatat64(int fd, const char *path, void *output, int flags)
+{ return fstatat64(fd, path, output, flags); }
+static int output_fxstatat(int fd, const char *path, void *output, int flags)
+{
+    int (*call)(int, int, const char *, void *, int) = dlsym(RTLD_DEFAULT, "__fxstatat"); CHECK(call);
+    return call(0, fd, path, output, flags);
+}
+static int output_fxstatat64(int fd, const char *path, void *output, int flags)
+{
+    int (*call)(int, int, const char *, void *, int) = dlsym(RTLD_DEFAULT, "__fxstatat64"); CHECK(call);
+    return call(0, fd, path, output, flags);
+}
+static int output_fstatfs(int fd, void *output) { return fstatfs(fd, output); }
+static int output_fstatfs64(int fd, void *output) { return fstatfs64(fd, output); }
+static int output_statat_empty(at_output_call call, int fd, void *output)
+{ return call(fd, "", output, AT_EMPTY_PATH); }
+static void expect_output_efault(fd_output_call call, int fd, size_t size)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0 && size < (size_t)page_size);
+    void *protected = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(protected != MAP_FAILED);
+    ERROR(call(fd, protected), EFAULT);
+    CHECK(munmap(protected, (size_t)page_size) == 0);
+
+    unsigned char *readonly = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(readonly != MAP_FAILED);
+    memset(readonly, 0xa5, (size_t)page_size);
+    CHECK(mprotect(readonly, (size_t)page_size, PROT_READ) == 0);
+    ERROR(call(fd, readonly), EFAULT);
+    CHECK(munmap(readonly, (size_t)page_size) == 0);
+
+    unsigned char *cross_page = mmap(NULL, (size_t)page_size * 2,
+                                     PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(cross_page != MAP_FAILED);
+    memset(cross_page, 0xa5, (size_t)page_size * 2);
+    CHECK(mprotect(cross_page + page_size, (size_t)page_size, PROT_READ) == 0);
+    void *partial = cross_page + page_size - size / 2;
+    ERROR(call(fd, partial), EFAULT);
+    CHECK(munmap(cross_page, (size_t)page_size * 2) == 0);
+}
+static void expect_at_output_efault(at_output_call call, int fd, size_t size)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0 && size < (size_t)page_size);
+    void *protected = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(protected != MAP_FAILED);
+    ERROR(output_statat_empty(call, fd, protected), EFAULT);
+    CHECK(munmap(protected, (size_t)page_size) == 0);
+
+    unsigned char *readonly = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(readonly != MAP_FAILED);
+    memset(readonly, 0xa5, (size_t)page_size);
+    CHECK(mprotect(readonly, (size_t)page_size, PROT_READ) == 0);
+    ERROR(output_statat_empty(call, fd, readonly), EFAULT);
+    CHECK(munmap(readonly, (size_t)page_size) == 0);
+
+    unsigned char *cross_page = mmap(NULL, (size_t)page_size * 2,
+                                     PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(cross_page != MAP_FAILED);
+    memset(cross_page, 0xa5, (size_t)page_size * 2);
+    CHECK(mprotect(cross_page + page_size, (size_t)page_size, PROT_READ) == 0);
+    void *partial = cross_page + page_size - size / 2;
+    ERROR(output_statat_empty(call, fd, partial), EFAULT);
+    CHECK(munmap(cross_page, (size_t)page_size * 2) == 0);
+}
+static void descriptor_stat_output_faults(void)
+{
+    struct pair p = connected();
+    struct stat expected, result;
+    CHECK(fstat(p.client, &expected) == 0);
+    const struct {const char *name; fd_output_call call;} stat_calls[] = {
+        {"fstat", output_fstat}, {"fstat64", output_fstat64},
+        {"__fxstat", output_fxstat}, {"__fxstat64", output_fxstat64},
+    };
+    for (size_t i = 0; i < sizeof(stat_calls) / sizeof(stat_calls[0]); ++i) {
+        struct stat actual;
+        CHECK(stat_calls[i].call(p.client, &actual) == 0);
+        CHECK(actual.st_ino == expected.st_ino && actual.st_dev == expected.st_dev);
+        expect_output_efault(stat_calls[i].call, p.client, sizeof(actual));
+        ERROR(stat_calls[i].call(p.client, NULL), EFAULT);
+    }
+    const struct {const char *name; at_output_call call;} at_calls[] = {
+        {"fstatat", output_fstatat}, {"fstatat64", output_fstatat64},
+        {"__fxstatat", output_fxstatat}, {"__fxstatat64", output_fxstatat64},
+    };
+    for (size_t i = 0; i < sizeof(at_calls) / sizeof(at_calls[0]); ++i) {
+        struct stat actual;
+        CHECK(output_statat_empty(at_calls[i].call, p.client, &actual) == 0);
+        CHECK(actual.st_ino == expected.st_ino && actual.st_dev == expected.st_dev);
+        expect_at_output_efault(at_calls[i].call, p.client, sizeof(actual));
+        ERROR(output_statat_empty(at_calls[i].call, p.client, NULL), EFAULT);
+        /* The imported syscall's ENOTDIR wins before any output copyout. */
+        ERROR(at_calls[i].call(p.client, "relative-child", (void *)1, 0), ENOTDIR);
+    }
+
+    const struct {const char *name; fd_output_call call;} statfs_calls[] = {
+        {"fstatfs", output_fstatfs}, {"fstatfs64", output_fstatfs64},
+    };
+    for (size_t i = 0; i < sizeof(statfs_calls) / sizeof(statfs_calls[0]); ++i) {
+        struct statfs actual;
+        CHECK(statfs_calls[i].call(p.client, &actual) == 0);
+        CHECK(actual.f_type == SOCKFS_MAGIC && actual.f_bsize > 0);
+        expect_output_efault(statfs_calls[i].call, p.client, sizeof(actual));
+        ERROR(statfs_calls[i].call(p.client, NULL), EFAULT);
+    }
+    CHECK(fstat(p.client, &result) == 0 && result.st_ino == expected.st_ino);
+    CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
+    char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2);
+    CHECK(!memcmp(bytes, "ok", sizeof(bytes)));
+    finish(p);
+}
+
 static void filesystem_statistics(void)
 {
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
@@ -1351,6 +1484,7 @@ int main(void)
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"file-lifecycle-owner-routing", file_lifecycle_operations},
         {"filesystem-statistics-owner-routing", filesystem_statistics},
+        {"descriptor-stat-output-faults-and-recovery", descriptor_stat_output_faults},
         {"descriptor-permissions-owner-routing", descriptor_permissions},
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},

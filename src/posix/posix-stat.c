@@ -43,8 +43,10 @@ static int descriptor_stat(int fd, struct stat *output)
     long result = lkl_sys_fstat(entry->native, &native);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
-    if (!output) { errno = EFAULT; return -1; }
-    translate_stat(output, &native);
+    struct stat translated;
+    translate_stat(&translated, &native);
+    long copied = ker_copy_to_user(output, &translated, sizeof(translated));
+    if (copied < 0) { errno = (int)-copied; return -1; }
     return 0;
 }
 int fstat(int fd, struct stat *output) __attribute__((alias("descriptor_stat")));
@@ -61,20 +63,22 @@ static int descriptor_statfs(int fd, struct statfs *output)
     long result = lkl_sys_fstatfs(entry->native, &native);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
-    if (!output) { errno = EFAULT; return -1; }
-    memset(output, 0, sizeof(*output));
-    output->f_type = native.f_type;
-    output->f_bsize = native.f_bsize;
-    output->f_blocks = native.f_blocks;
-    output->f_bfree = native.f_bfree;
-    output->f_bavail = native.f_bavail;
-    output->f_files = native.f_files;
-    output->f_ffree = native.f_ffree;
-    _Static_assert(sizeof(output->f_fsid) == sizeof(native.f_fsid), "Linux fsid ABI");
-    memcpy(&output->f_fsid, &native.f_fsid, sizeof(output->f_fsid));
-    output->f_namelen = native.f_namelen;
-    output->f_frsize = native.f_frsize;
-    output->f_flags = native.f_flags;
+    struct statfs translated;
+    memset(&translated, 0, sizeof(translated));
+    translated.f_type = native.f_type;
+    translated.f_bsize = native.f_bsize;
+    translated.f_blocks = native.f_blocks;
+    translated.f_bfree = native.f_bfree;
+    translated.f_bavail = native.f_bavail;
+    translated.f_files = native.f_files;
+    translated.f_ffree = native.f_ffree;
+    _Static_assert(sizeof(translated.f_fsid) == sizeof(native.f_fsid), "Linux fsid ABI");
+    memcpy(&translated.f_fsid, &native.f_fsid, sizeof(translated.f_fsid));
+    translated.f_namelen = native.f_namelen;
+    translated.f_frsize = native.f_frsize;
+    translated.f_flags = native.f_flags;
+    long copied = ker_copy_to_user(output, &translated, sizeof(translated));
+    if (copied < 0) { errno = (int)-copied; return -1; }
     return 0;
 }
 int fstatfs(int fd, struct statfs *output) __attribute__((alias("descriptor_statfs")));
@@ -115,8 +119,10 @@ static int descriptor_statat(int fd, const char *path, struct stat *output, int 
     long result = lkl_sys_fstatat(entry->native, path, &native, flags);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
-    if (!output) { errno = EFAULT; return -1; }
-    translate_stat(output, &native);
+    struct stat translated;
+    translate_stat(&translated, &native);
+    long copied = ker_copy_to_user(output, &translated, sizeof(translated));
+    if (copied < 0) { errno = (int)-copied; return -1; }
     return 0;
 }
 int fstatat(int fd, const char *path, struct stat *output, int flags)
