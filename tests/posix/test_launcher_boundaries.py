@@ -235,6 +235,23 @@ class LauncherBoundaryTests(unittest.TestCase):
                     os.waitpid(process.pid, os.WNOHANG)
             self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
+    def test_malformed_auxiliary_completion_is_failure_and_recovers(self):
+        line = "print('KER_IO_DONE {\"outstanding\": 0}', flush=True)"
+        # Replace only the final record; startup must succeed for both workers.
+        head, separator, tail = fixtures.WORKER.rpartition(line)
+        self.assertTrue(separator)
+        for payload in ('not-json', '[]', 'null', '{}', '{"outstanding":true}',
+                        '{"outstanding":0.0}', '{"outstanding":"0"}', '{"outstanding":-1}'):
+            record = "('KER_IO_DONE {\"outstanding\":0}' if port == 'fake0' else " + repr('KER_IO_DONE '+payload) + ")"
+            self.worker.write_text(head + 'print('+record+', flush=True)' + tail)
+            with self.subTest(payload=payload):
+                result, message = self.run_launcher(0, native_done=True,
+                    config=self.config, capture_stderr=True)
+            self.assertEqual(result, 125)
+            self.assertIn('additional worker completion', message)
+        self.worker.write_text(fixtures.WORKER)
+        self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
