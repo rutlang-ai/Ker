@@ -27,7 +27,7 @@ class NativeFetchTests(unittest.TestCase):
         self.origin.mkdir()
         git(self.origin, 'init', '--initial-branch=main')
         self.revisions = []
-        for value in ['first', 'second']:
+        for value in ['first', 'second', 'third']:
             (self.origin / 'payload').write_text(value)
             git(self.origin, 'add', 'payload')
             git(self.origin, '-c', 'user.name=Ker Test', '-c', 'user.email=ker@example.invalid',
@@ -74,7 +74,7 @@ builder.fetch(pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4])
             for process in processes:
                 if process.poll() is None: process.kill(); process.communicate()
         self.assertFalse(marker.exists())
-        for revision in self.revisions: git(self.cache, 'cat-file', '-e', revision + '^{commit}')
+        for revision in self.revisions[:2]: git(self.cache, 'cat-file', '-e', revision + '^{commit}')
 
     def test_failed_fetch_releases_lock_and_present_commit_skips_fetch(self):
         original = builder.git
@@ -91,6 +91,18 @@ builder.fetch(pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4])
             commands = [call.args[1] for call in run_git.call_args_list]
             self.assertNotIn('fetch', commands)
             self.assertEqual(commands, ['config', 'config'])
+
+    def test_fetch_disables_background_maintenance_for_shallow_cache(self):
+        # Git 2.54+ uses maintenance.auto instead of gc.auto for post-fetch
+        # background maintenance. Such a process can rewrite .git/shallow
+        # while the next of the builder's pinned fetches is reading it.
+        builder.fetch(self.cache, self.origin.as_uri(), self.revisions[0])
+        self.assertEqual(git(self.cache, 'config', '--bool', 'maintenance.auto'), 'false')
+        self.assertEqual(git(self.cache, 'config', '--get', 'gc.auto'), '0')
+        for revision in self.revisions[1:]:
+            builder.fetch(self.cache, self.origin.as_uri(), revision)
+        for revision in self.revisions:
+            git(self.cache, 'cat-file', '-e', revision + '^{commit}')
 
 
 if __name__ == '__main__': unittest.main()
