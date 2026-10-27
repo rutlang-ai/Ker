@@ -1135,6 +1135,24 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-stdio-exit COMMAND ${ker_native_test_command}
         --stdio-exit-app "$<TARGET_FILE:ker-posix-stdio-exit-test>")
     set_tests_properties(native-fstack-stdio-exit PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-stdio-short-write-test
+        tests/posix/stdio-short-write.c src/posix/posix-stdio.c)
+    target_include_directories(ker-posix-stdio-short-write-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_include_directories(ker-posix-stdio-short-write-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_features(ker-posix-stdio-short-write-test PRIVATE c_std_11)
+    target_compile_options(ker-posix-stdio-short-write-test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(ker-posix-stdio-short-write-test PRIVATE -Wl,--wrap=write -Wl,--wrap=close)
+    target_link_libraries(ker-posix-stdio-short-write-test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME stdio-cookie-short-write-retries COMMAND ker-posix-stdio-short-write-test retry-complete)
+    add_test(NAME stdio-cookie-short-write-reports-error COMMAND ker-posix-stdio-short-write-test partial-error)
+    add_test(NAME stdio-cookie-closed-error-does-not-poison-shutdown
+        COMMAND ker-posix-stdio-short-write-test handled-closed-error)
+    add_test(NAME stdio-host-flush-error-does-not-poison-native-shutdown
+        COMMAND ker-posix-stdio-short-write-test host-flush-error)
+    set_tests_properties(stdio-cookie-short-write-retries stdio-cookie-short-write-reports-error
+        stdio-cookie-closed-error-does-not-poison-shutdown stdio-host-flush-error-does-not-poison-native-shutdown
+        PROPERTIES TIMEOUT 30 LABELS fstack)
     add_executable(ker-posix-fstack-socket-contracts-test tests/posix/fstack-socket-contracts.c)
     target_compile_options(ker-posix-fstack-socket-contracts-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-posix-fstack-socket-contracts-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)

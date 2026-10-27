@@ -20,6 +20,12 @@ static pthread_mutex_t streams_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct native_stream *streams;
 static atomic_bool flushing;
 static atomic_int flush_error;
+static void remember_flush_error(int error)
+{
+    int expected = 0;
+    atomic_compare_exchange_strong_explicit(&flush_error, &expected, error,
+        memory_order_relaxed, memory_order_relaxed);
+}
 
 static ssize_t stream_read(void *opaque, char *bytes, size_t length)
 {
@@ -32,20 +38,27 @@ static ssize_t stream_write(void *opaque, const char *bytes, size_t length)
 {
     struct native_stream *cookie = opaque;
     int fd = atomic_load_explicit(&cookie->fd, memory_order_acquire);
-    ssize_t result;
-    if (fd < 0) { errno = EBADF; result = -1; }
-    else result = write(fd, bytes, length);
-    if (result < 0 || (!result && length)) {
-        int error = result < 0 ? errno : EIO;
-        if (atomic_load_explicit(&flushing, memory_order_relaxed)) {
-            int expected = 0;
-            atomic_compare_exchange_strong_explicit(&flush_error, &expected, error,
-                memory_order_relaxed, memory_order_relaxed);
-        }
-        errno = error;
+    if (fd < 0) {
+        errno = EBADF;
+        if (atomic_load_explicit(&flushing, memory_order_relaxed)) remember_flush_error(EBADF);
         return 0; /* GNU cookie write callbacks report an error with zero. */
     }
-    return result;
+    size_t written = 0;
+    while (written < length) {
+        ssize_t result = write(fd, bytes + written, length - written);
+        if (result > 0) {
+            written += (size_t)result;
+            continue;
+        }
+        if (result < 0 && errno == EINTR) continue;
+        int error = result < 0 ? errno : EIO;
+        if (atomic_load_explicit(&flushing, memory_order_relaxed)) remember_flush_error(error);
+        errno = error;
+        /* Returning a short count lets libc set the stream error indicator;
+         * the unaccepted suffix cannot be retried by its cookie machinery. */
+        return written ? (ssize_t)written : 0;
+    }
+    return (ssize_t)written;
 }
 static int stream_seek(void *opaque, off64_t *offset, int whence)
 {
