@@ -1113,7 +1113,7 @@ if(BUILD_TESTING)
     target_compile_definitions(ker-posix-fortify-poll-cancel-allocation-test PRIVATE KER_FORTIFY_POLL_TEST)
     target_link_libraries(ker-posix-fortify-poll-cancel-allocation-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
     target_link_options(ker-posix-fortify-poll-cancel-allocation-test PRIVATE
-        -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=free)
+        -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=free -Wl,--wrap=syscall)
     add_test(NAME host-fortify-poll-cancel-allocation-balance
         COMMAND ker-posix-fortify-poll-cancel-allocation-test)
     set_tests_properties(host-fortify-poll-cancel-allocation-balance PROPERTIES TIMEOUT 30 LABELS fstack)

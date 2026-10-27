@@ -56,6 +56,11 @@ static int ensure_libc_checked(void)
     if (error) { errno = error; return -1; }
     return 0;
 }
+#ifdef KER_FORTIFY_POLL_TEST
+extern void ker_test_host_poll_call(void);
+extern void ker_test_host_ppoll_call(void);
+extern void ker_test_native_poll_call(void);
+#endif
 #ifndef KER_FORTIFY_POLL_TEST
 static ssize_t host_read_chk(int fd, void *bytes, size_t count, size_t capacity)
 {
@@ -81,12 +86,18 @@ static ssize_t host_recvfrom_chk(int fd, void *bytes, size_t count, size_t capac
 #endif
 static int host_poll_chk(struct pollfd *fds, nfds_t count, int timeout, size_t capacity)
 {
+#ifdef KER_FORTIFY_POLL_TEST
+    ker_test_host_poll_call();
+#endif
     if (ensure_libc_checked()) return -1;
     return libc_poll_chk(fds, count, timeout, capacity);
 }
 static int host_ppoll_chk(struct pollfd *fds, nfds_t count, const struct timespec *timeout,
     const sigset_t *mask, size_t capacity)
 {
+#ifdef KER_FORTIFY_POLL_TEST
+    ker_test_host_ppoll_call();
+#endif
     if (ensure_libc_checked()) return -1;
     return libc_ppoll_chk(fds, count, timeout, mask, capacity);
 }
@@ -158,10 +169,14 @@ static int copy_pollfds(struct pollfd *destination, const struct pollfd *source,
     if (!length) return 0;
     struct iovec local = {destination, length};
     struct iovec remote = {(void *)source, length};
-    ssize_t copied = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
-    if (copied == (ssize_t)length) return 0;
-    errno = EFAULT;
-    return -1;
+    for (;;) {
+        ssize_t copied = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
+        if (copied == (ssize_t)length) return 0;
+        if (copied < 0 && errno == EINTR) continue;
+        if (copied < 0) return -1;
+        errno = EFAULT;
+        return -1;
+    }
 }
 static int checked_poll_dispatch(struct pollfd *fds, nfds_t count, int timeout,
     const struct timespec *timespec, const sigset_t *mask, size_t capacity, int is_ppoll)
@@ -178,11 +193,12 @@ static int checked_poll_dispatch(struct pollfd *fds, nfds_t count, int timeout,
     }
     size_t bytes = (size_t)count * sizeof(*snapshot);
     if (copy_pollfds(snapshot, fds, bytes)) {
+        int error = errno;
         free(snapshot); free(pins);
-        /* An inaccessible pollfd array cannot identify a native descriptor;
-         * let libc provide the checked host EFAULT behavior. */
-        return is_ppoll ? host_ppoll_chk(fds, count, timespec, mask, capacity) :
-            host_poll_chk(fds, count, timeout, capacity);
+        /* Without a complete snapshot, descriptor ownership is unknown. Do
+         * not send native placeholders to host libc or inspect a partial copy. */
+        errno = error;
+        return -1;
     }
     bool native = false;
     for (nfds_t i = 0; i < count; ++i) {
@@ -198,6 +214,9 @@ static int checked_poll_dispatch(struct pollfd *fds, nfds_t count, int timeout,
         return is_ppoll ? host_ppoll_chk(fds, count, timespec, mask, capacity) :
             host_poll_chk(fds, count, timeout, capacity);
     }
+#ifdef KER_FORTIFY_POLL_TEST
+    ker_test_native_poll_call();
+#endif
     int result = is_ppoll ? ppoll(fds, count, timespec, mask) : poll(fds, count, timeout);
     for (nfds_t i = 0; i < count; ++i) ker_fd_put(pins[i]);
     free(snapshot); free(pins);
