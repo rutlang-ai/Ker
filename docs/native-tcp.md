@@ -1452,3 +1452,6 @@ vmsplice 按单个 fd 的所属内核分派。宿主文件、UNIX socket 和 pip
 glibc `_FORTIFY_SOURCE=2` 的 checked read/pread/recv/recvfrom/poll/ppoll 入口保留真实
 缓冲区越界中止，再走同一个 fd 分派；优化后的 fortified 应用不再绕过原生 socket facade。
 独立 -O2 fortified 测试验证真实 TCP、MSG_PEEK、定位读错误、就绪状态及 SIGABRT 边界。
+原生运行时活动时，`if_nametoindex`/`if_indextoname` 查询原始 Linux 的接口表，
+不会把宿主 TAP 名称与原生 eth 接口混淆；未启动原生运行时时继续查询宿主。
+测试把全部可见接口的名称/编号与同一内核的 SIOCGIFNAME 结果交叉验证。

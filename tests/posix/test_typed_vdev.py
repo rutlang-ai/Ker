@@ -11,6 +11,10 @@ import unittest
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tests/posix'))
+typed_spec = importlib.util.spec_from_file_location('ker_typed_vdev', ROOT / 'tests/posix/typed-vdev.py')
+typed_vdev = importlib.util.module_from_spec(typed_spec)
+typed_spec.loader.exec_module(typed_vdev)
 spec = importlib.util.spec_from_file_location('ker_vdev_config', ROOT / 'tools/ker-run.py')
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
@@ -19,6 +23,23 @@ FIELDS = 'path=/var/run/usvhost\niface=eth0\nqueues=2\nqueue_size=512\nmac=00:11
 
 
 class VdevTests(unittest.TestCase):
+    def test_queue_accounting_includes_shutdown_and_startup_discards(self):
+        shutdown_record = {
+            'rx_by_queue': [0, 21], 'rx': 20, 'rx_dropped': 0,
+            'rx_shutdown_discarded': 1, 'rx_startup_discarded': 0,
+        }
+        self.assertTrue(typed_vdev.rx_queue_accounting_matches(shutdown_record))
+        shutdown_record['rx_shutdown_discarded'] = 0
+        self.assertFalse(typed_vdev.rx_queue_accounting_matches(shutdown_record))
+
+        startup_record = {
+            'rx_by_queue': [0, 10], 'rx': 10, 'rx_dropped': 1800,
+            'rx_shutdown_discarded': 0, 'rx_startup_discarded': 1800,
+        }
+        self.assertTrue(typed_vdev.rx_queue_accounting_matches(startup_record))
+        startup_record['rx_startup_discarded'] = 0
+        self.assertFalse(typed_vdev.rx_queue_accounting_matches(startup_record))
+
     def read(self, text):
         return launcher.read_configuration(io.StringIO(text), Path('/configuration'))
 

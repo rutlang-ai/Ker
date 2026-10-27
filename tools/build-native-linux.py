@@ -43,6 +43,11 @@ def output(repo, *args):
 
 
 def fetch(repo, url, revision):
+    # Newer Git versions run detached maintenance after shallow fetches by
+    # default. That process can rewrite the shallow boundary while the next
+    # pinned fetch is reading the same cache.
+    git(repo, 'config', 'gc.auto', '0')
+    git(repo, 'config', 'maintenance.auto', 'false')
     present = subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', revision + '^{commit}'],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if present.returncode:

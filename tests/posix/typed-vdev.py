@@ -19,6 +19,11 @@ spec.loader.exec_module(mtu)
 require, ready, stop = mtu.require, mtu.ready, mtu.stop
 
 
+def rx_queue_accounting_matches(record):
+    return sum(record['rx_by_queue']) == record['rx'] + record['rx_dropped'] + \
+        record.get('rx_shutdown_discarded', 0) - record.get('rx_startup_discarded', 0)
+
+
 def main():
     if sys.argv[1:] == ['--socket-server']:
         def receive_exact(stream, length):
@@ -181,7 +186,7 @@ def main():
                                 require(info['queues'] == 2 and info['data_tx_queue'] == 0,
                                         'active queue count or application TX queue differs: ' + str(info))
                                 counts = record['rx_by_queue']
-                                require(len(counts) == 2 and sum(counts) == record['rx'] + record['rx_dropped'] and
+                                require(len(counts) == 2 and rx_queue_accounting_matches(record) and
                                         counts[0] == 0 and counts[1] > 0 and info['rss'] is None,
                                         'frames were not received on queue 1 with RSS disabled: ' + str(record))
                             require(record['tx'] > 0 and record['rx'] > 0 and record['outstanding'] == 0,
@@ -189,7 +194,7 @@ def main():
                             require(info['queues'] == (2 if args.queue_one else 1) and info['data_tx_queue'] == 0,
                                     'active pairs or application TX queue differ from request')
                             counts = record['rx_by_queue']
-                            require(len(counts) == info['queues'] and sum(counts) == record['rx'] + record['rx_dropped'] + record.get('rx_shutdown_discarded', 0) - record.get('rx_startup_discarded', 0),
+                            require(len(counts) == info['queues'] and rx_queue_accounting_matches(record),
                                     'queue accounting differs from received frames')
                             if args.queue_one:
                                 require(counts[0] == 0 and counts[1] > 0,
