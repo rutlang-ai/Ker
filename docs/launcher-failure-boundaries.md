@@ -20,3 +20,8 @@ Primary and additional worker startup use a deadline for the complete newline
 record, with a64KiB bound. A writer that emits a prefix then stalls cannot bypass
 the startup timeout. EOF with a partial record is an error. The reader consumes
 only that record, preserving later completion bytes for shutdown collection.
+
+READY records must be objects with a MAC string and integer TX features accepted
+by the native virtio consumer. Invalid records stop startup before application
+execution; unrelated telemetry fields remain available. The same validation is
+used for primary and additional workers.

@@ -855,6 +855,20 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     return args
 
 
+def worker_ready_record(line):
+    value = json.loads(line.removeprefix('KER_IO_READY '))
+    if not isinstance(value, dict):
+        raise RuntimeError('invalid DPDK READY object')
+    mac, features = value.get('mac'), value.get('tx_offload_features')
+    if not isinstance(mac, str) or not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', mac):
+        raise RuntimeError('invalid DPDK READY MAC')
+    # Match the actual native virtio consumer, including checksum dependency.
+    if (type(features) is not int or features < 0 or features & ~0x1801 or
+            features & 0x1800 and not features & 1):
+        raise RuntimeError('invalid DPDK READY TX features')
+    return value
+
+
 def read_worker_startup(process, label, timeout=20, maximum=65536):
     """Bound the complete record, including a writer that stalls mid-line."""
     deadline = time.monotonic() + timeout
@@ -925,7 +939,7 @@ class AdditionalWorker:
             self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
         if not line.startswith('KER_IO_READY '):
             raise RuntimeError('additional DPDK worker failed before READY: ' + item['name'])
-        self.info = json.loads(line.removeprefix('KER_IO_READY '))
+        self.info = worker_ready_record(line)
 
     def app_fds(self):
         return self.app_packet.fileno(), self.app_mtu.fileno()
@@ -1154,7 +1168,7 @@ def main():
             if ready.startswith('KER_IO_DONE '):
                 stats = json.loads(ready.removeprefix('KER_IO_DONE '))
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
-        info = json.loads(ready.removeprefix('KER_IO_READY '))
+        info = worker_ready_record(ready)
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
