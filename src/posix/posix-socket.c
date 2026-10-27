@@ -121,8 +121,8 @@ ssize_t sendto(int fd, const void *bytes, size_t length, int flags,
     if (!entry) return syscall(SYS_sendto, fd, bytes, length, flags, address, address_length);
     return native_sendto(entry, bytes, length, flags, address, address_length);
 }
-int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
-    size_t offset, size_t length, int flags)
+static int native_writer_send(struct ker_posix_buffer_writer *writer, int fd,
+    size_t offset, size_t length, int flags, const struct sockaddr *address, socklen_t address_length)
 {
     struct iovec single, *vectors;
     size_t count;
@@ -135,11 +135,23 @@ int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
     }
     struct ker_native_option_guard *guard = NULL;
     int token = ker_native_buffer_send_begin(entry->native, vectors, count, flags, &guard);
-    struct msghdr message = {.msg_iov = vectors, .msg_iovlen = count};
+    struct msghdr message = {.msg_name = (void *)address, .msg_namelen = address_length,
+        .msg_iov = vectors, .msg_iovlen = count};
     long result = token < 0 ? token : lkl_sys_sendmsg(entry->native, (void *)&message, flags);
     ker_native_buffer_send_end(guard);
     if (vectors != &single) free(vectors);
     return (int)sent(entry, result, flags);
+}
+
+int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
+    size_t offset, size_t length, int flags)
+{
+    return native_writer_send(writer, fd, offset, length, flags, NULL, 0);
+}
+int ker_posix_buffer_writer_sendto(struct ker_posix_buffer_writer *writer, int fd,
+    size_t offset, size_t length, int flags, const struct sockaddr *address, socklen_t address_length)
+{
+    return native_writer_send(writer, fd, offset, length, flags, address, address_length);
 }
 IO_CALL(recvfrom, (int fd, void *bytes, size_t length, int flags,
     struct sockaddr *address, socklen_t *address_length),

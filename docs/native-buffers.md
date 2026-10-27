@@ -249,3 +249,5 @@ owner的mmap失败位置、三种构造rollback unmap失败，以及全部销毁
 shutdown残留精确匹配，不以全零最终计数掩盖中途多释放或遗失。
 
 Segmented writers can send any nonempty written range directly with `ker_posix_buffer_writer_send`, including ranges crossing VMA boundaries. The adapter snapshots registered iovecs and submits original Linux sendmsg; it never flattens payloads or changes the writer cursor. Callers retain ownership and await zerocopy completion before mutation or destruction.
+
+`ker_posix_buffer_writer_sendto` supplies an explicit original-Linux destination for an owned range on an unconnected UDP socket. It shares the range and zerocopy ownership checks, preserves the socket association and writer cursor, and requires completion before reuse just like connected sends.
