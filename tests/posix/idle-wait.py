@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 
+from dpdk_runtime import private_runtime_environment
+
 PAYLOAD = b'native-mac-only\0'
 
 
@@ -46,6 +48,7 @@ def main():
                 ('cli-max', 0, ['--idle-sleep-us', '100000'], 100000))
     with tempfile.TemporaryDirectory(prefix='ker-idle-wait-') as directory:
         root = Path(directory)
+        environment = private_runtime_environment(root / 'dpdk')
         for index, (name, ini, options, expected) in enumerate(profiles):
             config, stats = root / (name + '.ini'), root / (name + '.json')
             config.write_text('' if ini is None else '[dpdk]\nidle_sleep=' + str(ini) + '\n')
@@ -55,7 +58,8 @@ def main():
                 '--eal', eal, '--config', str(config), *options, '--stats', str(stats),
                 '--', str(args.app), str(port), '350']
             with (root / (name + '.log')).open('w+') as log:
-                app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True)
+                app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True,
+                    env=environment)
                 try:
                     with selectors.DefaultSelector() as selector:
                         selector.register(app.stdout, selectors.EVENT_READ)
