@@ -253,9 +253,12 @@ static int host_fchmodat_nofollow(int fd, const char *path, mode_t mode)
  * flags-zero behavior and glibc's race-free regular-file no-follow fallback. */
 static int host_fchmodat(int fd, const char *path, mode_t mode, int flags)
 {
+    /* glibc keeps the flags-zero ABI on the legacy syscall, so seccomp rules
+     * on fchmodat2 cannot break a host operation that needs no flag support. */
+    if (flags == 0) return (int)syscall(SYS_fchmodat, fd, path, mode);
+
     int result = (int)syscall(SYS_fchmodat2, fd, path, mode, flags);
     if (result < 0 && errno == ENOSYS) {
-        if (flags == 0) return (int)syscall(SYS_fchmodat, fd, path, mode);
         if (flags == AT_SYMLINK_NOFOLLOW) return host_fchmodat_nofollow(fd, path, mode);
         errno = EINVAL;
         return -1;
