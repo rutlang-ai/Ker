@@ -317,6 +317,31 @@ class LauncherBoundaryTests(unittest.TestCase):
             if not valid:
                 self.assertIn('invalid native run shutdown marker sequence', message)
 
+    def test_startup_status_read_error_does_not_bypass_child_reaping(self):
+        read = launcher.os.read
+        spawn = launcher.subprocess.Popen
+        children = []
+        def capture(*args, **kwargs):
+            process = spawn(*args, **kwargs)
+            children.append(process)
+            return process
+        def fail(fd, size):
+            if size == 1024:
+                raise OSError(5, 'injected status drain failure')
+            return read(fd, size)
+        with mock.patch.object(launcher.os, 'read', side_effect=fail), \
+                mock.patch.object(launcher.subprocess, 'Popen', side_effect=capture):
+            result, message = self.run_launcher(0, native_done=True,
+                config=self.config, capture_stderr=True)
+        self.assertEqual(result, 125)
+        self.assertIn('startup status drain', message)
+        self.assertEqual(len(children), 3)
+        for process in children:
+            self.assertIsNotNone(process.returncode)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(process.pid, os.WNOHANG)
+        self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

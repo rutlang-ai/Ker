@@ -1397,6 +1397,10 @@ def main():
                 startup_status += extra
             except BlockingIOError:
                 break
+            except OSError as error:
+                print(f'ker-run: startup status drain: {error}', file=sys.stderr)
+                infrastructure_failure = True
+                break
         os.close(startup_read)
         if app and b'KER_NATIVE_READY\n' in startup_status and b'KER_NATIVE_DONE\n' not in startup_status:
             print('ker-run: native Linux shutdown did not complete', file=sys.stderr)

@@ -45,3 +45,5 @@ Auxiliary workers finish concurrently during final cleanup. One cleanup exceptio
 Optional native statistics must be a single JSON object of nonnegative integer counters. Invalid or duplicate records fail the launch without bypassing auxiliary cleanup.
 
 Explicit run-stop requests receive OK only after exactly one READY, STOPPING and DONE in that order, with no INCOMPLETE or unknown markers. Invalid sequences still stop and reap workers but receive FAIL.
+
+An I/O error while draining final native status is reported as status 125; the status descriptor closes and application, primary and auxiliary children still finish cleanup.
