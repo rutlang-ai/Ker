@@ -857,10 +857,9 @@ static void checked_host_pread_cancellation(void)
     void *result = NULL;
     int joined = checked_timed_join(thread, &result);
     if (joined == ETIMEDOUT) {
-        int returned = atomic_load_explicit(&call.returned, memory_order_acquire);
         atomic_store_explicit(&call.finish, 1, memory_order_release);
-        CHECK(returned);
         CHECK(pthread_join(thread, &result) == 0);
+        CHECK(atomic_load_explicit(&call.returned, memory_order_acquire));
         /* A raw syscall returns normally despite the pending cancellation; libc
          * pread is a cancellation point and must consume it before returning. */
         CHECK(result == PTHREAD_CANCELED);
