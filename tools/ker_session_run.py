@@ -153,7 +153,9 @@ def old_endpoint_fd_path_exists(pid, fd, *, expected_interface, expected_ifindex
     """Following-stat one old fd slot, logging bounded context but preserving errors."""
     path = Path(proc_root) / str(pid) / 'fd' / str(fd)
     try:
-        return path.exists()
+        path.stat()
+    except FileNotFoundError:
+        return False
     except OSError as original_error:
         try:
             diagnostic = _old_endpoint_fd_diagnostics(pid, fd,
@@ -173,6 +175,7 @@ def old_endpoint_fd_path_exists(pid, fd, *, expected_interface, expected_ifindex
         except Exception:
             pass
         raise
+    return True
 
 
 def capture_exited_process_stdout(process, *, max_bytes=262144, budget=0.05):
