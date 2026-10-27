@@ -9,10 +9,19 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 
 from dpdk_runtime import private_runtime_environment
 
 PAYLOAD = b'native-mac-only\0'
+MAX_IDLE_SLEEP_US = 100_000
+QUIET_WINDOW_MIN_SECONDS = 0.35
+QUIET_WINDOW_PERIODS = 3
+QUIET_WINDOW_MARGIN_SECONDS = 0.05
+IDLE_PROFILES = (('default', None, [], 1000), ('ini-20us', 20, [], 20),
+    ('cli-busy', 100000, ['--idle-sleep-us', '0'], 0),
+    ('ini-max', 100000, [], 100000),
+    ('cli-max', 0, ['--idle-sleep-us', '100000'], 100000))
 
 
 def require(value, message):
@@ -22,6 +31,13 @@ def require(value, message):
 
 def ip(*args):
     subprocess.run(['ip', *args], check=True)
+
+
+def idle_quiet_window_seconds(max_idle_sleep_us):
+    if type(max_idle_sleep_us) is not int or not 0 <= max_idle_sleep_us <= MAX_IDLE_SLEEP_US:
+        raise ValueError('maximum idle sleep must be in 0..100000 microseconds')
+    return max(QUIET_WINDOW_MIN_SECONDS,
+        QUIET_WINDOW_PERIODS * max_idle_sleep_us / 1_000_000 + QUIET_WINDOW_MARGIN_SECONDS)
 
 
 def main():
@@ -42,10 +58,8 @@ def main():
         ip('link', 'set', name, 'up')
     cpu = min(os.sched_getaffinity(0))
     eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink'
-    profiles = (('default', None, [], 1000), ('ini-20us', 20, [], 20),
-                ('cli-busy', 100000, ['--idle-sleep-us', '0'], 0),
-                ('ini-max', 100000, [], 100000),
-                ('cli-max', 0, ['--idle-sleep-us', '100000'], 100000))
+    profiles = IDLE_PROFILES
+    quiet_seconds = idle_quiet_window_seconds(max(profile[3] for profile in profiles))
     with tempfile.TemporaryDirectory(prefix='ker-idle-wait-') as directory:
         root = Path(directory)
         environment = private_runtime_environment(root / 'dpdk')
@@ -56,7 +70,7 @@ def main():
             command = [sys.executable, str(args.launcher), '--library', str(args.library),
                 '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0',
                 '--eal', eal, '--config', str(config), *options, '--stats', str(stats),
-                '--', str(args.app), str(port), '350']
+                '--', str(args.app), str(port)]
             with (root / (name + '.log')).open('w+') as log:
                 app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True,
                     env=environment)
@@ -65,6 +79,9 @@ def main():
                         selector.register(app.stdout, selectors.EVENT_READ)
                         require(selector.select(20), 'idle worker startup timeout')
                     require(app.stdout.readline().startswith('READY '), 'idle application not ready')
+                    # Let the native app block in recvfrom while the worker has
+                    # a bounded quiet interval after readiness and before traffic.
+                    time.sleep(quiet_seconds)
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
                         udp.settimeout(8); udp.connect(('198.18.0.2', port)); udp.send(PAYLOAD)
                         require(udp.recv(256) == PAYLOAD, 'idle worker did not receive/echo UDP')
