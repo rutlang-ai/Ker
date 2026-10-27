@@ -1103,6 +1103,20 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-socket-contracts COMMAND ${ker_native_test_command}
         --fd-app "$<TARGET_FILE:ker-posix-fstack-socket-contracts-test>" --fd-coexistence)
     set_tests_properties(native-fstack-socket-contracts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
+    add_executable(ker-posix-fortify-poll-cancel-allocation-test
+        tests/posix/fortify-poll-cancel-allocation.c src/posix/posix-fortify.c)
+    target_include_directories(ker-posix-fortify-poll-cancel-allocation-test PRIVATE src/posix)
+    target_include_directories(ker-posix-fortify-poll-cancel-allocation-test SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_options(ker-posix-fortify-poll-cancel-allocation-test PRIVATE
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+    target_compile_definitions(ker-posix-fortify-poll-cancel-allocation-test PRIVATE KER_FORTIFY_POLL_TEST)
+    target_link_libraries(ker-posix-fortify-poll-cancel-allocation-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    target_link_options(ker-posix-fortify-poll-cancel-allocation-test PRIVATE
+        -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=free)
+    add_test(NAME host-fortify-poll-cancel-allocation-balance
+        COMMAND ker-posix-fortify-poll-cancel-allocation-test)
+    set_tests_properties(host-fortify-poll-cancel-allocation-balance PROPERTIES TIMEOUT 30 LABELS fstack)
     add_executable(ker-posix-fortify-bounds-test tests/posix/fortify-bounds.c src/posix/posix-fortify.c)
     target_compile_options(ker-posix-fortify-bounds-test PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -DKER_FORTIFY_BOUNDS_STANDALONE -Wall -Wextra -Werror)
     target_link_libraries(ker-posix-fortify-bounds-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)

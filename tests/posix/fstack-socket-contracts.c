@@ -871,8 +871,10 @@ static void checked_entry_cancellation(void)
     checked_host_cancellation(CHECKED_READ);
     checked_host_cancellation(CHECKED_RECV);
     checked_host_cancellation(CHECKED_RECVFROM);
-    checked_host_cancellation(CHECKED_POLL);
-    checked_host_cancellation(CHECKED_PPOLL);
+    for (unsigned i = 0; i < 8; ++i) {
+        checked_host_cancellation(CHECKED_POLL);
+        checked_host_cancellation(CHECKED_PPOLL);
+    }
     checked_host_pread_cancellation();
 }
 static void fortified_io(void)
@@ -885,9 +887,18 @@ static void fortified_io(void)
     CHECK(lseek(hostfd, 0, SEEK_CUR) == 5 && close(hostfd) == 0);
     volatile size_t count = 1; volatile nfds_t descriptors = 1;
     CHECK(write(p.client, "f", 1) == 1); ready(p.server);
+    int hostready[2]; CHECK(pipe(hostready) == 0);
+    CHECK(write(hostready[1], "h", 1) == 1);
+    struct timespec timeout = {0, 0};
+    struct pollfd host_event = {hostready[0], POLLIN, 0};
+    CHECK(__poll_chk(&host_event, 1, 0, sizeof host_event) == 1 && (host_event.revents & POLLIN));
+    host_event.revents = 0;
+    CHECK(__ppoll_chk(&host_event, 1, &timeout, NULL, sizeof host_event) == 1 && (host_event.revents & POLLIN));
+    char host_byte; CHECK(read(hostready[0], &host_byte, 1) == 1 && host_byte == 'h');
+    CHECK(close(hostready[0]) == 0 && close(hostready[1]) == 0);
+
     struct pollfd event = {p.server, POLLIN, 0};
     CHECK(__poll_chk(&event, descriptors, 0, sizeof event) == 1 && (event.revents & POLLIN));
-    struct timespec timeout = {0, 0};
     CHECK(__ppoll_chk(&event, descriptors, &timeout, NULL, sizeof event) == 1 && (event.revents & POLLIN));
     CHECK(__recv_chk(p.server, bytes, count, sizeof bytes, MSG_PEEK) == 1 && bytes[0] == 'f');
     CHECK(__recvfrom_chk(p.server, bytes, count, sizeof bytes, MSG_PEEK, NULL, NULL) == 1 && bytes[0] == 'f');
