@@ -1413,3 +1413,6 @@ v2 的 offset=-1 保留 Linux 流式读写行为。socket-contracts 同时检查
 
 `ftruncate`/`ftruncate64`、`fsync` 和 `fdatasync` 也按 fd 所属内核分派。
 原生 socket 返回 Linux EINVAL，失败不消费待收 TCP 数据；宿主文件保留真实截断、补零和同步行为。
+
+`fstatfs`/`fstatfs64` 返回原始 Linux socketfs 信息，而不是宿主占位 fd 的文件系统。
+字段在 Ker 层显式转换；重复 fd 的 fsid 一致，关闭一个副本不影响另一个，NULL 输出返回 EFAULT。
