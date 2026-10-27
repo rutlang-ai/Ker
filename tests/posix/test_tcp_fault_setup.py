@@ -56,7 +56,7 @@ class TcpFaultSetupTests(unittest.TestCase):
                              command[4] == 'kerhost' for command in calls))
         self.assertEqual(sum(command[:3] == ['tc', 'qdisc', 'add'] for command in calls), 2)
 
-    def test_install_rejects_stale_or_nonzero_new_qdisc_counters(self):
+    def test_install_rejects_stale_qdiscs_and_records_nonzero_baseline(self):
         stale = completed(json.dumps([{'kind': 'fq_codel', 'root': True}]))
         with mock.patch.object(tcp_interop.subprocess, 'run', return_value=stale):
             with self.assertRaisesRegex(RuntimeError, 'unexpected root qdisc'):
@@ -76,8 +76,9 @@ class TcpFaultSetupTests(unittest.TestCase):
             return completed()
 
         with mock.patch.object(tcp_interop.subprocess, 'run', side_effect=nonzero):
-            with self.assertRaisesRegex(RuntimeError, 'clean counters'):
-                tcp_interop.install_tcp_fault_qdiscs({})
+            baseline = tcp_interop.install_tcp_fault_qdiscs({})
+        self.assertEqual(baseline['kerlink']['packets'], 1)
+        self.assertEqual(baseline['kerhost']['drops'], 1)
 
     def test_post_run_requires_new_packets_and_drops_on_both_devices(self):
         responses = [completed(json.dumps([netem(packets=8, drops=2)])),
@@ -159,6 +160,7 @@ class TcpFaultSetupTests(unittest.TestCase):
             os.mkfifo(fifo)
             code = (
                 'import os,sys; '
+                'assert os.path.exists(sys.argv[2]); '
                 'print("READY 25001",flush=True); '
                 'fd=os.open(sys.argv[1],os.O_RDONLY); token=os.read(fd,1); os.close(fd); '
                 'assert token==b"\\xa5" and os.path.exists(sys.argv[2]); '
@@ -170,19 +172,23 @@ class TcpFaultSetupTests(unittest.TestCase):
                 marker.write_text('installed')
                 return {'kerlink': netem(), 'kerhost': netem()}
 
-            with mock.patch.object(tcp_interop, 'install_tcp_fault_qdiscs', side_effect=install):
+            pre_release = {'kerlink': netem(packets=1), 'kerhost': netem(packets=2)}
+            with mock.patch.object(tcp_interop, 'install_tcp_fault_qdiscs', side_effect=install), \
+                    mock.patch.object(tcp_interop, 'tcp_fault_qdisc_snapshot', return_value=pre_release):
                 output, installed = tcp_interop.gated_client(
                     [sys.executable, '-c', code, str(fifo), str(marker)], 25001, {}, fifo)
             self.assertIn('PASS: gated fake client', output)
             self.assertTrue(marker.exists())
             self.assertIn('kerlink', installed)
+            self.assertEqual(installed, pre_release)
 
     def test_gated_client_fails_boundedly_if_child_exits_before_fifo_open(self):
         with tempfile.TemporaryDirectory(prefix='tcp-fault-gate-exit-') as directory:
             fifo = Path(directory) / 'release.fifo'
             os.mkfifo(fifo)
             started = time.monotonic()
-            with mock.patch.object(tcp_interop, 'install_tcp_fault_qdiscs', return_value={}):
+            with mock.patch.object(tcp_interop, 'install_tcp_fault_qdiscs', return_value={}), \
+                    mock.patch.object(tcp_interop, 'tcp_fault_qdisc_snapshot', return_value={}):
                 with self.assertRaisesRegex(RuntimeError, 'stopped before fault release'):
                     tcp_interop.gated_client(
                         [sys.executable, '-c', 'print("READY 25001",flush=True)'],

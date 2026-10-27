@@ -113,9 +113,27 @@ def install_tcp_fault_qdiscs(env):
         item = matching[0]
         nested = item.get('stats', {})
         baseline = {key: item.get(key, nested.get(key)) for key in ('packets', 'bytes', 'drops', 'overlimits')}
-        if any(not isinstance(value, int) or value != 0 for value in baseline.values()):
-            raise RuntimeError(f'{device} netem did not start with clean counters: {item}')
+        if any(not isinstance(value, int) or value < 0 for value in baseline.values()):
+            raise RuntimeError(f'{device} netem has invalid initial counters: {item}')
         evidence[device] = baseline
+    return evidence
+
+
+def tcp_fault_qdisc_snapshot(env):
+    evidence = {}
+    for device in ('kerlink', 'kerhost'):
+        result = subprocess.run(['tc', '-j', '-s', 'qdisc', 'show', 'dev', device],
+                                check=True, env=env, capture_output=True, text=True)
+        entries = json.loads(result.stdout)
+        matching = [entry for entry in entries if entry.get('kind') == 'netem' and entry.get('root')]
+        if len(matching) != 1 or matching[0].get('handle') != '8001:':
+            raise RuntimeError(f'{device} root netem disappeared before TCP fault release: {result.stdout}')
+        item = matching[0]
+        nested = item.get('stats', {})
+        counters = {key: item.get(key, nested.get(key)) for key in ('packets', 'bytes', 'drops', 'overlimits')}
+        if any(not isinstance(value, int) or value < 0 for value in counters.values()):
+            raise RuntimeError(f'{device} netem has invalid pre-release counters: {item}')
+        evidence[device] = counters
     return evidence
 
 
@@ -157,10 +175,14 @@ def remove_tcp_fault_qdiscs(env):
 
 
 def gated_client(command, port, env, gate_path):
+    # Install qdiscs before TAP initialization. Then snapshot after READY,
+    # while the client is still blocked before connect(), so only post-release
+    # TCP traffic must advance the packet/drop counters.
+    installed = install_tcp_fault_qdiscs(env)
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         ready(process, port)
-        installed = install_tcp_fault_qdiscs(env)
+        installed = tcp_fault_qdisc_snapshot(env)
         deadline = time.monotonic() + 10
         while True:
             try:
