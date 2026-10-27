@@ -257,6 +257,8 @@ static int host_fchmodat(int fd, const char *path, mode_t mode, int flags)
     if (result < 0 && errno == ENOSYS) {
         if (flags == 0) return (int)syscall(SYS_fchmodat, fd, path, mode);
         if (flags == AT_SYMLINK_NOFOLLOW) return host_fchmodat_nofollow(fd, path, mode);
+        errno = EINVAL;
+        return -1;
     }
     return result;
 }

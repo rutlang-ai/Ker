@@ -1766,12 +1766,15 @@ static void fchmodat2_enosys_fallback(void)
     CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
     ERROR(fchmodat(AT_FDCWD, symlink_path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
     CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+    ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH), EINVAL);
+    ERROR(fchmodat(AT_FDCWD, path, 0777, 0x40000000), EINVAL);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
 
     /* With Ker interposed, native relative and empty paths never use the host syscall. */
     if (dlsym(RTLD_DEFAULT, "ker_posix_capabilities")) {
-        ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH), ENOSYS);
-        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
         ERROR(fchmodat(p.client, "child", 0600, 0), ENOTDIR);
+        ERROR(fchmodat(p.client, path, 0777, 0x40000000), EINVAL);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
         CHECK(fchmodat(p.client, path, 0600, AT_SYMLINK_NOFOLLOW) == 0);
         CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0600);
         ERROR(fchmodat(p.client, symlink_path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
