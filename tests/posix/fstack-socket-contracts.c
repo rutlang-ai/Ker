@@ -226,6 +226,29 @@ static void unreadable_path_statat(void)
     ERROR(stat_at(AT_FDCWD, unreadable, &result, 0), EFAULT);
     ERROR(fstatat(host, unreadable, &result, 0), EFAULT);
     ERROR(stat_at(host, unreadable, &result, 0), EFAULT);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        struct pair p = connected();
+        char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(pages != MAP_FAILED);
+        CHECK(mprotect(pages + page_size, (size_t)page_size, PROT_NONE) == 0);
+        char *boundary = pages + page_size - 1;
+        boundary[0] = 'x';
+        ERROR(fstatat(p.client, unreadable, &result, 0), EFAULT);
+        ERROR(stat_at(p.client, unreadable, &result, 0), EFAULT);
+        ERROR(fstatat(p.client, boundary, &result, 0), EFAULT);
+        ERROR(stat_at(p.client, boundary, &result, 0), EFAULT);
+        /* A NUL at the end of the readable page must not probe the next page. */
+        boundary[0] = '\0';
+        CHECK(fstatat(p.client, boundary, &result, AT_EMPTY_PATH) == 0);
+        CHECK(stat_at(p.client, boundary, &result, AT_EMPTY_PATH) == 0);
+        CHECK(fstat(p.client, &result) == 0);
+        CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
+        char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2);
+        CHECK(memcmp(bytes, "ok", sizeof(bytes)) == 0);
+        finish(p);
+        CHECK(munmap(pages, (size_t)page_size * 2) == 0);
+    }
     CHECK(close(host) == 0 && munmap(unreadable, (size_t)page_size) == 0);
 }
 static void duplicate_identity(void)

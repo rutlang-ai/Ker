@@ -2,8 +2,11 @@
 #include "fd-table.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <sys/vfs.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -76,15 +79,57 @@ static int descriptor_statfs(int fd, struct statfs *output)
 int fstatfs(int fd, struct statfs *output) __attribute__((alias("descriptor_statfs")));
 _Static_assert(sizeof(struct statfs) == sizeof(struct statfs64), "Linux statfs64 ABI");
 int fstatfs64(int fd, struct statfs64 *output) __attribute__((alias("descriptor_statfs")));
+/* Copy a native-owned path without asking LKL to dereference a host pointer.
+ * Read in bounded chunks, stopping at NUL even when the next page is invalid. */
+static int copy_native_path(const char *path, char local_path[PATH_MAX])
+{
+    uintptr_t base = (uintptr_t)path;
+    if (!path) { errno = EFAULT; return -1; }
+    size_t copied = 0;
+    while (copied < PATH_MAX) {
+        size_t amount = PATH_MAX - copied;
+        if (amount > 128) amount = 128;
+        if (base > UINTPTR_MAX - copied) { errno = EFAULT; return -1; }
+        uintptr_t remote_address = base + copied;
+        if (remote_address > UINTPTR_MAX - (amount - 1)) {
+            size_t available = (size_t)(UINTPTR_MAX - remote_address + 1);
+            if (available < amount) amount = available;
+        }
+        if (!amount) { errno = EFAULT; return -1; }
+        struct iovec local = {.iov_base = local_path + copied, .iov_len = amount};
+        struct iovec remote = {.iov_base = (void *)remote_address, .iov_len = amount};
+        ssize_t length;
+        do {
+            length = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
+        } while (length < 0 && errno == EINTR);
+        if (length <= 0) { errno = EFAULT; return -1; }
+        if (memchr(local_path + copied, '\0', (size_t)length)) return 0;
+        copied += (size_t)length;
+        if ((size_t)length != amount) { errno = EFAULT; return -1; }
+    }
+    errno = ENAMETOOLONG;
+    return -1;
+}
+
 /* Absolute paths still select the host filesystem; relative paths and the
  * empty-path descriptor operation must respect imported fd ownership. */
 static int descriptor_statat(int fd, const char *path, struct stat *output, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_newfstatat, fd, path, output, flags);
-    if (path && path[0] == '/') {
-        ker_fd_put(entry);
-        return syscall(SYS_newfstatat, fd, path, output, flags);
+    char local_path[PATH_MAX];
+    if (path) {
+        if (copy_native_path(path, local_path) < 0) {
+            int error = errno;
+            ker_fd_put(entry);
+            errno = error;
+            return -1;
+        }
+        path = local_path;
+        if (path[0] == '/') {
+            ker_fd_put(entry);
+            return syscall(SYS_newfstatat, fd, path, output, flags);
+        }
     }
     if (!path && flags != AT_EMPTY_PATH) {
         ker_fd_put(entry); errno = EFAULT; return -1;
