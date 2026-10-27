@@ -855,6 +855,14 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     return args
 
 
+def worker_done_record(line):
+    value = json.loads(line.removeprefix('KER_IO_DONE '))
+    if (not isinstance(value, dict) or type(value.get('outstanding')) is not int or
+            value['outstanding'] < 0):
+        raise RuntimeError('invalid DPDK DONE outstanding-object count')
+    return value
+
+
 def worker_ready_record(line):
     value = json.loads(line.removeprefix('KER_IO_READY '))
     if not isinstance(value, dict):
@@ -936,7 +944,7 @@ class AdditionalWorker:
         self.io_packet.close(); self.io_mtu.close(); os.close(self.stop_read); self.stop_read = -1
         line = read_worker_startup(self.process, 'additional DPDK worker ' + item['name'])
         if line.startswith('KER_IO_DONE '):
-            self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
+            self.stats = worker_done_record(line)
         if not line.startswith('KER_IO_READY '):
             raise RuntimeError('additional DPDK worker failed before READY: ' + item['name'])
         self.info = worker_ready_record(line)
@@ -1039,7 +1047,11 @@ def collect_worker(process, stats):
         print('ker-run: DPDK worker shutdown timed out', file=sys.stderr)
     for line in output.splitlines():
         if line.startswith('KER_IO_DONE '):
-            stats = json.loads(line.removeprefix('KER_IO_DONE '))
+            try:
+                stats = worker_done_record(line)
+            except (ValueError, RuntimeError) as error:
+                print(f'ker-run: DPDK worker completion: {error}', file=sys.stderr)
+                failed = True
     if stats is not None:
         stats.update(shutdown_timed_out=timed_out, worker_exit_code=process.returncode)
     return stats, failed or process.returncode != 0 or stats is None
@@ -1166,7 +1178,7 @@ def main():
             # snapshot as the first line. Preserve it for --stats: communicate()
             # below cannot read this already-consumed line again.
             if ready.startswith('KER_IO_DONE '):
-                stats = json.loads(ready.removeprefix('KER_IO_DONE '))
+                stats = worker_done_record(ready)
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
         info = worker_ready_record(ready)
         for interface in args.interfaces:
