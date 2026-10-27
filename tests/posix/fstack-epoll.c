@@ -12,6 +12,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define EXPECT_ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
@@ -374,10 +375,53 @@ static void null_poll_array_recovery(void)
     finish(c);
 }
 
+extern int __fxstat(int, int, struct stat *);
+extern int __fxstat64(int, int, struct stat64 *);
+static int null_stat_output(int fd, int variant)
+{
+    int (*volatile stat_fn)(int, struct stat *) = fstat;
+    int (*volatile stat64_fn)(int, struct stat64 *) = fstat64;
+    int (*volatile fxstat_fn)(int, int, struct stat *) = __fxstat;
+    int (*volatile fxstat64_fn)(int, int, struct stat64 *) = __fxstat64;
+    if (variant == 0) return stat_fn(fd, NULL);
+    if (variant == 1) return stat64_fn(fd, NULL);
+    if (variant == 2) return fxstat_fn(1, fd, NULL);
+    return fxstat64_fn(1, fd, NULL);
+}
+static void null_stat_recovery(void)
+{
+    struct connection c = connection();
+    int datagram = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    int pipes[2];
+    CHECK(datagram >= 0 && pipe2(pipes, O_CLOEXEC) == 0);
+    int descriptors[] = {c.receiver, datagram, pipes[0]};
+    for (size_t i = 0; i < sizeof(descriptors) / sizeof(descriptors[0]); ++i) {
+        struct stat before, after;
+        CHECK(fstat(descriptors[i], &before) == 0);
+        CHECK(i == 2 ? S_ISFIFO(before.st_mode) : S_ISSOCK(before.st_mode));
+        for (int variant = 0; variant < 4; ++variant) {
+            EXPECT_ERROR(null_stat_output(-1, variant), EBADF);
+            EXPECT_ERROR(null_stat_output(descriptors[i], variant), EFAULT);
+            CHECK(fstat(descriptors[i], &after) == 0);
+            CHECK(after.st_mode == before.st_mode && after.st_ino == before.st_ino);
+        }
+    }
+    put(c, "stat-recovery");
+    struct pollfd ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&ready, 1, 2000) == 1);
+    take(c, "stat-recovery");
+    CHECK(write(pipes[1], "s", 1) == 1);
+    char byte;
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 's');
+    CHECK(close(datagram) == 0 && close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(c);
+}
+
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"create-and-invalid-arguments", create_and_arguments},
+        {"null-stat-output-and-descriptor-recovery", null_stat_recovery},
         {"null-poll-array-and-mixed-readiness-recovery", null_poll_array_recovery},
         {"null-event-and-registration-recovery", null_event_non_delete},
         {"null-wait-buffer-and-oneshot-recovery", null_wait_recovery},
