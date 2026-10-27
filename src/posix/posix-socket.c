@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <asm/sockios.h>
+#include <linux/sockios.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -315,6 +315,12 @@ int ioctl(int fd, unsigned long request, ...)
     if (!entry) return syscall(SYS_ioctl, fd, request, argument);
     if (request == FIOASYNC || request == FIOSETOWN || request == SIOCSPGRP) {
         ker_fd_put(entry); errno = EOPNOTSUPP; return -1;
+    }
+    /* These socket operations unconditionally transfer an integer. LKL's
+     * in-process uaccess cannot recover a host NULL dereference. */
+    if (!argument && entry->kind == KER_FD_SOCKET &&
+        (request == FIONBIO || request == FIONREAD || request == SIOCOUTQ)) {
+        ker_fd_put(entry); errno = EFAULT; return -1;
     }
     long value = ker_mtu_ioctl(entry->native, request, argument);
     ker_fd_put(entry);
