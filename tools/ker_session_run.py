@@ -154,9 +154,9 @@ def old_endpoint_fd_path_exists(pid, fd, *, expected_interface, expected_ifindex
     path = Path(proc_root) / str(pid) / 'fd' / str(fd)
     try:
         path.stat()
-    except FileNotFoundError:
-        return False
     except OSError as original_error:
+        if original_error.errno == errno.ENOENT:
+            return False
         try:
             diagnostic = _old_endpoint_fd_diagnostics(pid, fd,
                 expected_interface=expected_interface, expected_ifindex=expected_ifindex,
