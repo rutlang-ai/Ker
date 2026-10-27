@@ -1455,3 +1455,8 @@ glibc `_FORTIFY_SOURCE=2` 的 checked read/pread/recv/recvfrom/poll/ppoll 入口
 原生运行时活动时，`if_nametoindex`/`if_indextoname` 查询原始 Linux 的接口表，
 不会把宿主 TAP 名称与原生 eth 接口混淆；未启动原生运行时时继续查询宿主。
 测试把全部可见接口的名称/编号与同一内核的 SIOCGIFNAME 结果交叉验证。
+AF_NETLINK socket 也由原始 Linux 提供，可查询原生 RTM_GETLINK/RTM_GETADDR 多段
+路由消息；不会回退到宿主 netlink。NLMSG 序号、内核发送者、接口身份和 IPv4 地址均按
+同一导入内核验证；仅通用 FIONBIO 接受整数指针，未实现的 netlink FIONREAD 保留 ENOTTY。
+netlink 端口号属于导入内核；应用应以 bind(pid=0)/getsockname 取得端口，不能把宿主 PID
+当作原生 netlink 身份。复制 fd 并关闭原 fd 后仍可完成 dump。
