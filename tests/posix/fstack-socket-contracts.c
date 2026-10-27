@@ -441,6 +441,56 @@ static void file_transfer_boundaries(void)
         ERROR(copy_file_range(fd, NULL, p.client, NULL, 1, 0), EOPNOTSUPP);
         ERROR(sendfile(p.client, p.server, &offset, 1), ESPIPE);
         ERROR(vmsplice(p.client, &vector, 1, 0), EBADF);
+
+        size_t page = (size_t)sysconf(_SC_PAGESIZE); CHECK(page >= 4096);
+        char *user = mmap(NULL, page * 2, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(user != MAP_FAILED);
+        loff_t value = 19, observed;
+        loff_t *cross_offset = (loff_t *)(user + page - sizeof(value) / 2);
+        memcpy(cross_offset, &value, sizeof(value));
+        ERROR(sendfile(p.client, p.server, (off_t *)cross_offset, 1), ESPIPE);
+        memcpy(&observed, cross_offset, sizeof(observed)); CHECK(observed == value);
+        ERROR(sendfile(p.client, p.server, NULL, 1), EINVAL);
+        ERROR(splice(p.server, cross_offset, p.client, NULL, 1, 0), EINVAL);
+        ERROR(copy_file_range(p.server, (off64_t *)cross_offset, p.client, NULL, 1, 0), EINVAL);
+        memcpy(&observed, cross_offset, sizeof(observed)); CHECK(observed == value);
+
+        loff_t *readonly_offset = (loff_t *)(user + 32);
+        memcpy(readonly_offset, &value, sizeof(value));
+        CHECK(mprotect(user, page, PROT_READ) == 0);
+        /* Linux sends the unchanged position back even when sendfile fails. */
+        ERROR(sendfile(p.client, p.server, (off_t *)readonly_offset, 1), EFAULT);
+        CHECK(mprotect(user, page, PROT_READ | PROT_WRITE) == 0);
+
+        struct iovec *cross_vectors = (struct iovec *)(user + page - sizeof(struct iovec) / 2);
+        struct iovec data_vector = {user + page + 64, 1};
+        memcpy(cross_vectors, &data_vector, sizeof(data_vector));
+        ERROR(vmsplice(p.client, cross_vectors, 1, 0), EBADF);
+        CHECK(mprotect(user + page, page, PROT_NONE) == 0);
+
+        CHECK(splice(p.server, (loff_t *)(user + page), p.client,
+            (loff_t *)(user + page), 0, 0) == 0);
+        ERROR(splice(p.server, (loff_t *)(user + page), p.client,
+            (loff_t *)(user + page), 1, 0x80000000u), EINVAL);
+        ERROR(sendfile(p.client, p.server, (off_t *)(user + page), 1), EFAULT);
+        ERROR(sendfile(p.client, p.server, (off_t *)cross_offset, 1), EFAULT);
+        ERROR(splice(p.server, (loff_t *)(user + page), p.client, NULL, 1, 0), EFAULT);
+        ERROR(splice(p.server, NULL, p.client, (loff_t *)(user + page), 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, (off64_t *)(user + page), p.client, NULL, 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, NULL, p.client, (off64_t *)(user + page), 1, 0), EFAULT);
+        ERROR(copy_file_range(-1, (off64_t *)(user + page), p.client, NULL, 1, 0), EBADF);
+        ERROR(vmsplice(p.client, (struct iovec *)(user + page), 1, 0), EFAULT);
+        ERROR(vmsplice(p.client, cross_vectors, 1, 0), EFAULT);
+        ERROR(vmsplice(p.client, (struct iovec *)(user + page), 1, 0x80000000u), EINVAL);
+        /* The native socket is not a pipe, so upstream rejects it before
+         * touching the user payload address; do not stage/free vmsplice data. */
+        struct iovec protected_data = {user + page, 1};
+        ERROR(vmsplice(p.client, &protected_data, 1, 0), EBADF);
+        CHECK(munmap(user, page * 2) == 0);
+
+        ERROR(splice(p.server, NULL, p.client, NULL, 1, 0), EINVAL);
+        ERROR(copy_file_range(p.server, NULL, p.client, NULL, 1, 0), EINVAL);
         CHECK(write(p.client, "t", 1) == 1); ready(p.server);
         CHECK(read(p.server, bytes, 1) == 1 && bytes[0] == 't'); finish(p);
     }
