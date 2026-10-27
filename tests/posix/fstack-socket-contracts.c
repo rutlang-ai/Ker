@@ -20,6 +20,7 @@
 #include <sys/vfs.h>
 #include <sys/xattr.h>
 #include <linux/magic.h>
+#include <linux/limits.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <unistd.h>

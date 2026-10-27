@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/limits.h>
+#include <linux/xattr.h>
 #include <sys/xattr.h>
 #include <sys/stat.h>
 #include <sys/time.h>
