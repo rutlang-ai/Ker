@@ -183,6 +183,7 @@ ssize_t fgetxattr(int fd, const char *name, void *value, size_t size)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fgetxattr, fd, name, value, size);
+    if (!value && size) { ker_fd_put(entry); errno = EFAULT; return -1; }
     long result = lkl_sys_fgetxattr(entry->native, name, value, size);
     ker_fd_put(entry);
     return ker_native_result(result);
@@ -201,6 +202,7 @@ ssize_t flistxattr(int fd, char *list, size_t size)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_flistxattr, fd, list, size);
+    if (!list && size) { ker_fd_put(entry); errno = EFAULT; return -1; }
     long result = lkl_sys_flistxattr(entry->native, list, size);
     ker_fd_put(entry);
     return ker_native_result(result);

@@ -417,15 +417,27 @@ static void descriptor_xattrs(void)
     for (ssize_t at = 0; at < length; at += strlen(value + at) + 1)
         if (strcmp(value + at, "system.sockprotoname") == 0) found = 1;
     CHECK(found); ERROR(flistxattr(fd, value, 1), ERANGE);
+    ssize_t (*get_attribute)(int, const char *, void *, size_t) = fgetxattr;
+    ssize_t (*list_attributes)(int, char *, size_t) = flistxattr;
     if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        ERROR(get_attribute(fd, "system.sockprotoname", NULL, 4), EFAULT);
+        ERROR(list_attributes(fd, NULL, 128), EFAULT);
+        CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
+        CHECK(flistxattr(fd, NULL, 0) == length);
         ERROR(fsetxattr(fd, "user.ker", "a", 1, 0), EPERM);
         ERROR(fremovexattr(fd, "system.sockprotoname"), EOPNOTSUPP);
     }
     CHECK(close(fd) == 0 && fgetxattr(copy, "system.sockprotoname", value, sizeof(value)) == 4);
     CHECK(close(copy) == 0); ERROR(flistxattr(copy, value, sizeof(value)), EBADF);
+    ERROR(get_attribute(copy, "system.sockprotoname", NULL, 4), EBADF);
+    ERROR(list_attributes(copy, NULL, 128), EBADF);
     char path[] = "/tmp/ker-xattrs-XXXXXX";
     fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
     CHECK(fsetxattr(fd, "user.ker", "a", 1, XATTR_CREATE) == 0);
+    ERROR(get_attribute(fd, "user.ker", NULL, 1), EFAULT);
+    ERROR(list_attributes(fd, NULL, 128), EFAULT);
+    CHECK(get_attribute(fd, "user.ker", NULL, 0) == 1);
+    CHECK(list_attributes(fd, NULL, 0) > 0);
     ERROR(fsetxattr(fd, "user.ker", "b", 1, XATTR_CREATE), EEXIST);
     CHECK(fsetxattr(fd, "user.ker", "b", 1, XATTR_REPLACE) == 0);
     CHECK(fgetxattr(fd, "user.ker", value, sizeof(value)) == 1 && value[0] == 'b');
