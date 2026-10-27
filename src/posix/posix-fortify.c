@@ -56,6 +56,7 @@ static int ensure_libc_checked(void)
     if (error) { errno = error; return -1; }
     return 0;
 }
+#ifndef KER_FORTIFY_POLL_TEST
 static ssize_t host_read_chk(int fd, void *bytes, size_t count, size_t capacity)
 {
     if (ensure_libc_checked()) return -1;
@@ -77,6 +78,7 @@ static ssize_t host_recvfrom_chk(int fd, void *bytes, size_t count, size_t capac
     if (ensure_libc_checked()) return -1;
     return libc_recvfrom_chk(fd, bytes, count, capacity, flags, address, length);
 }
+#endif
 static int host_poll_chk(struct pollfd *fds, nfds_t count, int timeout, size_t capacity)
 {
     if (ensure_libc_checked()) return -1;
@@ -91,6 +93,7 @@ static int host_ppoll_chk(struct pollfd *fds, nfds_t count, const struct timespe
 
 /* Host descriptors must reach libc's cancellation-point implementation. Native
  * entries stay in LKL while pinned, matching the ordinary POSIX wrappers. */
+#ifndef KER_FORTIFY_POLL_TEST
 ssize_t __read_chk(int fd, void *bytes, size_t count, size_t capacity)
 {
     if (count > capacity) __chk_fail();
@@ -147,6 +150,7 @@ ssize_t __recvfrom_chk(int fd, void *bytes, size_t count, size_t capacity, int f
     return ker_native_result(value);
 #endif
 }
+#endif
 
 #ifndef KER_FORTIFY_BOUNDS_STANDALONE
 static int copy_pollfds(struct pollfd *destination, const struct pollfd *source, size_t length)
@@ -185,10 +189,16 @@ static int checked_poll_dispatch(struct pollfd *fds, nfds_t count, int timeout,
         pins[i] = ker_fd_get(snapshot[i].fd);
         native |= pins[i] != NULL;
     }
-    int result;
-    if (native) result = is_ppoll ? ppoll(fds, count, timespec, mask) : poll(fds, count, timeout);
-    else result = is_ppoll ? host_ppoll_chk(fds, count, timespec, mask, capacity) :
-        host_poll_chk(fds, count, timeout, capacity);
+    if (!native) {
+        /* libc poll/ppoll are cancellation points. Release every temporary
+         * allocation before entering them, since cancellation skips this
+         * function's ordinary cleanup path. */
+        for (nfds_t i = 0; i < count; ++i) ker_fd_put(pins[i]);
+        free(snapshot); free(pins);
+        return is_ppoll ? host_ppoll_chk(fds, count, timespec, mask, capacity) :
+            host_poll_chk(fds, count, timeout, capacity);
+    }
+    int result = is_ppoll ? ppoll(fds, count, timespec, mask) : poll(fds, count, timeout);
     for (nfds_t i = 0; i < count; ++i) ker_fd_put(pins[i]);
     free(snapshot); free(pins);
     return result;
