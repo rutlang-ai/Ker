@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/epoll.h>
@@ -301,10 +302,37 @@ static void positioned_operations(void)
     byte = '?'; CHECK(preadv64(fd, &vector, 1, far + 1) == 1 && byte == 'y');
     CHECK(lseek(fd, 0, SEEK_CUR) == 3 && close(fd) == 0);
 }
+static volatile sig_atomic_t positioned_sigpipe_count;
+static void positioned_sigpipe_handler(int signo)
+{
+    if (signo == SIGPIPE) ++positioned_sigpipe_count;
+}
+static void positioned_stream_sigpipe(void)
+{
+    struct sigaction action = {.sa_handler = positioned_sigpipe_handler}, original;
+    sigemptyset(&action.sa_mask);
+    CHECK(sigaction(SIGPIPE, &action, &original) == 0);
+    positioned_sigpipe_count = 0;
+    struct pair p = connected(); char byte = 'p'; struct iovec vector = {&byte, 1};
+    CHECK(pwritev2(p.client, &vector, 1, -1, 0) == 1); ready(p.server);
+    CHECK(recv(p.server, &byte, 1, 0) == 1 && byte == 'p' && positioned_sigpipe_count == 0);
+    ERROR(pwritev2(p.client, &vector, 1, -1, 0x40000000), EOPNOTSUPP);
+    CHECK(positioned_sigpipe_count == 0);
+    CHECK(shutdown(p.client, SHUT_WR) == 0);
+    ERROR(pwritev2(p.client, &vector, 1, -1, 0), EPIPE);
+    CHECK(positioned_sigpipe_count == 1);
+    ERROR(pwritev64v2(p.client, &vector, 1, -1, 0), EPIPE);
+    CHECK(positioned_sigpipe_count == 2);
+    ERROR(pwritev2(p.client, &vector, 1, 0, 0), ESPIPE);
+    CHECK(positioned_sigpipe_count == 2);
+    finish(p);
+    CHECK(sigaction(SIGPIPE, &original, NULL) == 0);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"positioned-io-and-seek-owner-routing", positioned_operations},
+        {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},
         {"select-ebadf-preserves-input-sets-and-data", select_error_preserves_sets},
         {"accept-flags-are-explicit-not-inherited", accepted_flags},

@@ -28,7 +28,7 @@ ssize_t name(int fd, qualifier void *bytes, size_t length, off_t offset) \
 }
 POSITIONED(pread, pread64, )
 POSITIONED(pwrite, pwrite64, const)
-#define VECTOR(name, flags_decl, flags_arg) \
+#define VECTOR(name, flags_decl, flags_arg, stream_signal) \
 ssize_t name(int fd, const struct iovec *vectors, int count, off_t offset flags_decl) \
 { \
     struct ker_fd *entry = ker_fd_get(fd); \
@@ -36,13 +36,14 @@ ssize_t name(int fd, const struct iovec *vectors, int count, off_t offset flags_
     if (!entry) return syscall(SYS_##name, fd, vectors, count, low, high flags_arg); \
     long value = lkl_sys_##name(entry->native, (const struct lkl_iovec *)vectors, count, low, high flags_arg); \
     ker_fd_put(entry); \
+    if (stream_signal && offset == -1) return ker_native_write_result(value, 0); \
     return ker_native_result(value); \
 }
 #define COMMA ,
-VECTOR(preadv, , )
-VECTOR(pwritev, , )
-VECTOR(preadv2, COMMA int flags, COMMA flags)
-VECTOR(pwritev2, COMMA int flags, COMMA flags)
+VECTOR(preadv, , , 0)
+VECTOR(pwritev, , , 0)
+VECTOR(preadv2, COMMA int flags, COMMA flags, 0)
+VECTOR(pwritev2, COMMA int flags, COMMA flags, 1)
 _Static_assert(sizeof(off_t) == sizeof(off64_t), "Linux host offset ABI");
 extern __typeof(lseek64) lseek64 __attribute__((alias("lseek")));
 extern __typeof(pread64) pread64 __attribute__((alias("pread")));
