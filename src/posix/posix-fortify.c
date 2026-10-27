@@ -1,4 +1,8 @@
 #define _GNU_SOURCE
+/* These checked entry points must call the unfortified public wrappers. */
+#ifdef _FORTIFY_SOURCE
+#undef _FORTIFY_SOURCE
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
