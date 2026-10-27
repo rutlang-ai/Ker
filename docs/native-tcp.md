@@ -1477,3 +1477,7 @@ scope。列表与接口名称枚举独立持有；接口在两次 dump 间变化
 socket 进入导入内核而非宿主。初始合同覆盖原生 loopback UDP/TCP 的双布局捕获与普通 TCP 收发共存、sockaddr_ll
 元数据、MSG_PEEK/TRUNC、忽略 outgoing、失败 bind 后恢复、fd 复制和回收；宿主参考在
 独立 user/net namespace 中运行。此项不宣称 PACKET_MMAP 或 packet socket 的外部 NIC 路径。
+
+packet socket 的经典 BPF 合同覆盖 SOCK_RAW 与 SOCK_DGRAM：返回零的过滤器丢弃捕获副本但
+不影响 UDP 接收，返回长度截断捕获，非法替换保留原过滤器，detach 恢复完整捕获；
+SO_LOCK_FILTER 阻止替换、解除和解锁，且锁定状态随 dup 共享。过滤执行来自原始 Linux。

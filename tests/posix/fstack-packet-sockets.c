@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/filter.h>
 #include <linux/if_packet.h>
 #include <linux/sockios.h>
 #include <net/ethernet.h>
@@ -55,6 +56,51 @@ static void capture(int fd, int raw, int index, uint16_t port, const char *paylo
     uint16_t destination; memcpy(&destination, bytes + offset + header + 2, 2); CHECK(destination == port);
     CHECK(memcmp(bytes + offset + header + 8, payload, payload_length) == 0);
     ERROR(recv(fd, bytes, sizeof(bytes), MSG_DONTWAIT), EAGAIN);
+}
+static void filtered_datagram(int udp, const struct sockaddr_in *address)
+{
+    static const char payload[] = "packet-filter-contract";
+    CHECK(sendto(udp, payload, sizeof(payload), 0, (const void *)address, sizeof(*address)) == sizeof(payload));
+    char bytes[sizeof(payload)]; CHECK(recv(udp, bytes, sizeof(bytes), 0) == sizeof(bytes));
+    CHECK(memcmp(bytes, payload, sizeof(bytes)) == 0);
+}
+static void filter_contracts(int udp, int index, const struct sockaddr_in *address)
+{
+    for (int raw = 0; raw <= 1; ++raw) {
+        int fd = capture_socket(raw ? SOCK_RAW : SOCK_DGRAM, index);
+        struct sock_filter instruction = BPF_STMT(BPF_RET | BPF_K, 0);
+        struct sock_fprog program = {.len = 1, .filter = &instruction};
+        CHECK(setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0);
+        filtered_datagram(udp, address);
+        struct pollfd event = {fd, POLLIN, 0}; CHECK(poll(&event, 1, 0) == 0);
+        /* A rejected program must leave the installed drop filter intact. */
+        instruction.code = BPF_JMP | BPF_JA; instruction.k = 8;
+        ERROR(setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)), EINVAL);
+        filtered_datagram(udp, address); CHECK(poll(&event, 1, 0) == 0);
+        instruction.code = BPF_RET | BPF_K; instruction.k = 8;
+        CHECK(setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0);
+        filtered_datagram(udp, address);
+        CHECK(poll(&event, 1, 2000) == 1 && (event.revents & POLLIN));
+        unsigned char bytes[128]; CHECK(recv(fd, bytes, sizeof(bytes), MSG_TRUNC) == 8);
+        ERROR(recv(fd, bytes, sizeof(bytes), MSG_DONTWAIT), EAGAIN);
+        int unused = 0;
+        CHECK(setsockopt(fd, SOL_SOCKET, SO_DETACH_FILTER, &unused, sizeof(unused)) == 0);
+        filtered_datagram(udp, address);
+        CHECK(poll(&event, 1, 2000) == 1 && (event.revents & POLLIN));
+        CHECK(recv(fd, bytes, sizeof(bytes), 0) > 8);
+        instruction.k = 0;
+        CHECK(setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) == 0);
+        int locked = 1;
+        CHECK(setsockopt(fd, SOL_SOCKET, SO_LOCK_FILTER, &locked, sizeof(locked)) == 0);
+        ERROR(setsockopt(fd, SOL_SOCKET, SO_DETACH_FILTER, &unused, sizeof(unused)), EPERM);
+        instruction.k = UINT32_MAX;
+        ERROR(setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)), EPERM);
+        locked = 0;
+        ERROR(setsockopt(fd, SOL_SOCKET, SO_LOCK_FILTER, &locked, sizeof(locked)), EPERM);
+        int copy = dup(fd); CHECK(copy >= 0 && close(fd) == 0);
+        filtered_datagram(udp, address); event.fd = copy;
+        CHECK(poll(&event, 1, 0) == 0 && close(copy) == 0);
+    }
 }
 static void capture_tcp(int fd, int raw, int index, uint16_t port, const char *payload, size_t payload_length)
 {
@@ -109,6 +155,9 @@ int main(void)
     CHECK(memcmp(received, payload, sizeof(payload)) == 0);
     capture(datagram, 0, index, address.sin_port, payload, sizeof(payload));
     capture(raw, 1, index, address.sin_port, payload, sizeof(payload));
+    CHECK(close(raw) == 0 && close(datagram) == 0);
+    filter_contracts(udp, index, &address);
+    datagram = capture_socket(SOCK_DGRAM, index); raw = capture_socket(SOCK_RAW, index);
     tcp_coexistence(datagram, raw, index);
     CHECK(close(raw) == 0 && close(datagram) == 0 && close(udp) == 0);
     puts(dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") ?
