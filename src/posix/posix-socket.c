@@ -21,11 +21,15 @@
 #include <unistd.h>
 #include <lkl.h>
 
+long ker_native_write_result(long value, int flags)
+{
+    if (value == -EPIPE && !(flags & MSG_NOSIGNAL)) pthread_kill(pthread_self(), SIGPIPE);
+    return ker_native_result(value);
+}
 static long sent(struct ker_fd *entry, long value, int flags)
 {
     ker_fd_put(entry);
-    if (value == -EPIPE && !(flags & MSG_NOSIGNAL)) pthread_kill(pthread_self(), SIGPIPE);
-    return ker_native_result(value);
+    return ker_native_write_result(value, flags);
 }
 int socket(int domain, int type, int protocol)
 {

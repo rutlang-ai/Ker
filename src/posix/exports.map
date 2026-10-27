@@ -10,6 +10,8 @@
         send; recv; sendto; recvfrom; sendmsg; recvmsg; sendmmsg; recvmmsg;
         read; write; readv; writev; close; dup; dup2; dup3; fcntl; fcntl64; ioctl;
         poll; __poll; ppoll; select; pselect; epoll_create; epoll_create1; epoll_ctl; epoll_wait; epoll_pwait; epoll_pwait2;
+        lseek; lseek64; pread; pread64; pwrite; pwrite64;
+        preadv; preadv64; pwritev; pwritev64; preadv2; preadv64v2; pwritev2; pwritev64v2;
         fstat; fstat64; __fxstat; __fxstat64;
     local: *;
 };
