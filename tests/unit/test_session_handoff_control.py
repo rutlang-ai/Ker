@@ -84,19 +84,19 @@ class HandoffControlPathTests(unittest.TestCase):
             checks = []
             snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                 identity_check=lambda: checks.append(True))
-            self.assertEqual(snapshot, (frozenset({3, 4}), frozenset({'ker_oldtap'})))
+            self.assertEqual(snapshot, (frozenset({3, 4}), frozenset({'ker_oldtap'}), {4: ('ker_oldtap',)}))
             self.assertEqual(len(checks), 3)
             self.assertEqual(self.launcher.handoff_fdinfo_interfaces(snapshot), ['ker_oldtap'])
-            self.launcher.validate_handoff_fdinfo((frozenset({3}), frozenset()), 4, 'ker_oldtap')
+            self.launcher.validate_handoff_fdinfo((frozenset({3}), frozenset(), {}), 4, 'ker_oldtap')
 
     def test_fdinfo_handoff_rejects_original_or_reused_exception_slot(self):
         for descriptor_kind, contents in (
-                ('original', 'iff:\tker_oldtap\n'), ('reused', 'pos:\t0\n')):
+                ('original', 'iff:\tker_oldtap\n'), ('reused-by-tun', 'iff:\tker_other\n')):
             with self.subTest(descriptor_kind=descriptor_kind), tempfile.TemporaryDirectory(
                     prefix='handoff-fdinfo-') as directory:
                 (Path(directory) / '17').write_text(contents)
                 snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=directory)
-                with self.assertRaisesRegex(RuntimeError, 'descriptor slot open'):
+                with self.assertRaisesRegex(RuntimeError, 'TUN fd|alias'):
                     self.launcher.validate_handoff_fdinfo(snapshot, 17, 'ker_oldtap')
 
     def test_fdinfo_handoff_rejects_tap_alias_even_when_exception_slot_is_absent(self):
@@ -159,7 +159,7 @@ class HandoffControlPathTests(unittest.TestCase):
             with mock.patch.object(Path, 'read_text', disappear_once):
                 snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                     identity_check=lambda: checks.append(True))
-            self.assertEqual(snapshot, (frozenset({3}), frozenset()))
+            self.assertEqual(snapshot, (frozenset({3}), frozenset(), {}))
             self.assertEqual(len(reads), 3)
             self.assertEqual(len(checks), 5)
 
@@ -179,12 +179,12 @@ class HandoffControlPathTests(unittest.TestCase):
 
             snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                 identity_check=change_mapping_between_scans)
-            self.assertEqual(snapshot, (frozenset({3, 4, 5}), frozenset({'ker_other'})))
+            self.assertEqual(snapshot, (frozenset({3, 4, 5}), frozenset({'ker_other'}), {3: ('ker_other',)}))
             self.assertEqual(len(checks), 6)
 
     def test_fdinfo_handoff_forbidden_slot_or_alias_in_either_scan_is_immediate(self):
         for descriptor, contents, expected in (
-                (17, 'pos:\t0\n', 'descriptor slot open'),
+                (17, 'iff:\tker_other\n', 'TUN fd'),
                 (9, 'iff:\tker_oldtap\n', 'alias to its exception TAP')):
             with self.subTest(contents=contents), tempfile.TemporaryDirectory(
                     prefix='handoff-fdinfo-') as directory:
@@ -213,8 +213,8 @@ class HandoffControlPathTests(unittest.TestCase):
             def add_reused_old_slot():
                 checks.append(True)
                 if len(checks) == 2:
-                    (root / '17').write_text('pos:\t0\n')
-            with self.assertRaisesRegex(RuntimeError, 'descriptor slot open'):
+                    (root / '17').write_text('iff:\tker_other\n')
+            with self.assertRaisesRegex(RuntimeError, 'TUN fd|alias'):
                 self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                     identity_check=add_reused_old_slot,
                     census_check=lambda snapshot: self.launcher.validate_handoff_fdinfo(
@@ -269,7 +269,7 @@ class HandoffControlPathTests(unittest.TestCase):
         self.assertIsInstance(metric_call.func, ast.Name)
         self.assertEqual(metric_call.func.id, 'handoff_fdinfo_interfaces')
         self.assertEqual(self.launcher.handoff_fdinfo_interfaces(
-            (frozenset({3}), frozenset({'ker_z', 'ker_a'}))), ['ker_a', 'ker_z'])
+            (frozenset({3}), frozenset({'ker_z', 'ker_a'}), {5: ('ker_z',), 8: ('ker_a',)})), ['ker_a', 'ker_z'])
 
     def test_fdinfo_handoff_pidfd_identity_must_remain_live_and_match_pid(self):
         with mock.patch.object(self.launcher.select, 'select', return_value=([44], [], [])):

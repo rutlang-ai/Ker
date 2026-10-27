@@ -63,18 +63,47 @@ def resume_pidfd_if_live(pidfd):
     return True
 
 
-def tap_interfaces_for_process(pid, *, fdinfo_dir=None):
-    """Return TUN interface names attached to a process from its fdinfo."""
+def tap_interface_fds_for_process(pid, *, fdinfo_dir=None):
+    """Map process descriptor numbers to TUN interface names from fdinfo."""
     directory = Path(f'/proc/{pid}/fdinfo') if fdinfo_dir is None else Path(fdinfo_dir)
-    names = []
+    interfaces_by_fd = {}
     for path in directory.iterdir():
         try:
             information = path.read_text()
         except FileNotFoundError:
             continue
-        names.extend(line.split(':', 1)[1].strip() for line in information.splitlines()
+        try:
+            fd = int(path.name)
+        except ValueError as error:
+            raise RuntimeError(f'non-numeric entry in process fdinfo directory: {path}') from error
+        names = tuple(line.split(':', 1)[1].strip() for line in information.splitlines()
             if line.startswith('iff:'))
-    return names
+        if names:
+            interfaces_by_fd[fd] = names
+    return interfaces_by_fd
+
+
+def tap_interfaces_for_process(pid, *, fdinfo_dir=None):
+    """Return TUN interface names attached to a process from its fdinfo."""
+    interfaces_by_fd = tap_interface_fds_for_process(pid, fdinfo_dir=fdinfo_dir)
+    return [name for names in interfaces_by_fd.values() for name in names]
+
+
+def validate_exception_endpoint_closed(endpoint_name, exception_fd, before, after, fds_closed, mode):
+    """Require the exact endpoint gone; stable old-slot reuse is allowed only without TUN fdinfo."""
+    if (not isinstance(endpoint_name, str) or not endpoint_name or type(exception_fd) is not int or
+            exception_fd < 0 or not isinstance(before, dict) or not isinstance(after, dict)):
+        raise RuntimeError('exception endpoint closure evidence is malformed')
+    if endpoint_name not in before.get(exception_fd, ()):
+        raise RuntimeError('recorded exception descriptor did not name the original TAP before handoff')
+    if mode is not None and (not isinstance(fds_closed, dict) or fds_closed.get('mode') != mode):
+        raise RuntimeError('worker did not confirm successful exception endpoint close for this handoff mode')
+    aliases = sorted(fd for fd, names in after.items() if endpoint_name in names)
+    if aliases:
+        raise RuntimeError(f'parked worker still has old exception TAP fdinfo aliases: {aliases}')
+    if exception_fd in after:
+        raise RuntimeError('old exception descriptor slot was reused by a TUN fd')
+    return True
 
 
 def _read_proc_fields(path, allowed, maximum):
@@ -185,6 +214,7 @@ class _IncompleteFdinfoCensus(Exception):
 def _read_process_fdinfo_census(pid, directory, attempt):
     descriptors = set()
     interfaces = set()
+    interfaces_by_fd = {}
     try:
         paths = sorted(directory.iterdir(), key=lambda path: path.name)
         for path in paths:
@@ -202,8 +232,11 @@ def _read_process_fdinfo_census(pid, directory, attempt):
                     f'could not complete fdinfo census for pid {pid}, fd {descriptor}, '
                     f'attempt {attempt}: errno={error.errno} {error.strerror}') from error
             descriptors.add(descriptor)
-            interfaces.update(line.split(':', 1)[1].strip() for line in information.splitlines()
+            tun_interfaces = tuple(line.split(':', 1)[1].strip() for line in information.splitlines()
                 if line.startswith('iff:'))
+            if tun_interfaces:
+                interfaces_by_fd[descriptor] = tun_interfaces
+                interfaces.update(tun_interfaces)
     except FileNotFoundError as error:
         raise _IncompleteFdinfoCensus(
             f'fdinfo directory disappeared for pid {pid} on attempt {attempt}') from error
@@ -211,7 +244,7 @@ def _read_process_fdinfo_census(pid, directory, attempt):
         raise RuntimeError(
             f'could not enumerate fdinfo for pid {pid} on attempt {attempt}: '
             f'errno={error.errno} {error.strerror}') from error
-    return frozenset(descriptors), frozenset(interfaces)
+    return frozenset(descriptors), frozenset(interfaces), interfaces_by_fd
 
 
 FDINFO_CENSUS_MAX_ATTEMPTS = 3
@@ -296,14 +329,18 @@ def require_live_process_identity(pid, pidfd):
 
 
 def validate_handoff_fdinfo(snapshot, exception_fd, exception_interface):
-    """Require the exception fd slot and every alias to its TAP to be absent."""
-    descriptors, interfaces = snapshot
+    """Require the old TAP identity absent; stable reuse is allowed only without TUN fdinfo."""
+    if len(snapshot) == 2:
+        descriptors, interfaces = snapshot
+        interfaces_by_fd = {exception_fd: ('<legacy-unmapped-tun>',)} if exception_fd in descriptors else {}
+    else:
+        descriptors, interfaces, interfaces_by_fd = snapshot
     if type(exception_fd) is not int or exception_fd < 0:
         raise RuntimeError('handoff exception descriptor number is invalid')
-    if exception_fd in descriptors:
-        raise RuntimeError('parked owner still has the exception descriptor slot open')
     if exception_interface in interfaces:
         raise RuntimeError('parked owner still has an alias to its exception TAP')
+    if exception_fd in interfaces_by_fd:
+        raise RuntimeError('parked owner reused the exception descriptor slot for a TUN fd')
 
 
 def handoff_fdinfo_interfaces(snapshot):
@@ -1057,9 +1094,14 @@ def _run_session_impl(args, api):
         payload = b'KER-A09-HANDOFF-UDP seq=2\n'
         if peer_worker is None or app is None or app.poll() is not None or worker.poll() is not None:
             raise RuntimeError('live handoff fixture lost its original app/owner before transition')
-        old_tun_interfaces_before = tap_interfaces_for_process(worker.pid)
-        if metrics.get('exception_endpoint_name') not in old_tun_interfaces_before:
-            raise RuntimeError('original owner did not hold the resident-selected TAP endpoint before handoff')
+        old_exception_fd = metrics['geometry'].get('exception_endpoint_fd_number')
+        before_fdinfo = process_fdinfo_snapshot(worker.pid,
+            identity_check=lambda: require_live_process_identity(worker.pid, worker_pidfd))
+        old_tun_fds_before = before_fdinfo[2]
+        old_tun_interfaces_before = sorted(before_fdinfo[1])
+        if (metrics.get('exception_endpoint_name') not in old_tun_interfaces_before or
+                metrics.get('exception_endpoint_name') not in old_tun_fds_before.get(old_exception_fd, ())):
+            raise RuntimeError('original owner did not hold the resident-selected TAP on its reported descriptor before handoff')
         if handoff_mode == 'handoff-control-hup':
             try:
                 if os.write(control_w, b'H') != 1:
@@ -1247,6 +1289,8 @@ def _run_session_impl(args, api):
             census_check=lambda snapshot: validate_handoff_fdinfo(
                 snapshot, old_exception_fd, metrics['exception_endpoint_name']))
         old_tun_interfaces = handoff_fdinfo_interfaces(fdinfo)
+        validate_exception_endpoint_closed(metrics['exception_endpoint_name'], old_exception_fd,
+            old_tun_fds_before, fdinfo[2], fds_closed, handoff_mode)
         if os.write(peer_control_w, b'P') != 1:
             raise RuntimeError('could not admit the exact reserved successor')
         successor = ready('KER_SESSION_PMD_GRANTED', process=peer_worker)
