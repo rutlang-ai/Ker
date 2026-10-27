@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/vfs.h>
 #include <sys/xattr.h>
+#include <linux/sockios.h>
 #include <linux/magic.h>
 #include <linux/limits.h>
 #include <sys/time.h>
