@@ -96,12 +96,15 @@ static long netlink_send_end(struct netlink_cap_guard *guard)
 
 int socket(int domain, int type, int protocol)
 {
-    if (domain != AF_INET && domain != AF_INET6 && domain != AF_NETLINK) return syscall(SYS_socket, domain, type, protocol);
+    if (domain != AF_INET && domain != AF_INET6 && domain != AF_NETLINK && domain != AF_PACKET) return syscall(SYS_socket, domain, type, protocol);
     if (!ker_native_ready()) { errno = ENETDOWN; return -1; }
     long fd = domain == AF_NETLINK ? netlink_socket_without_admin(type, protocol) :
         lkl_sys_socket(domain, type, protocol);
     if (fd < 0) return ker_native_result(fd);
-    return ker_fd_export(fd, domain == AF_NETLINK ? KER_FD_NETLINK : KER_FD_SOCKET, -1, type & SOCK_CLOEXEC, 0, -1);
+    enum ker_fd_kind kind = KER_FD_SOCKET;
+    if (domain == AF_NETLINK) kind = KER_FD_NETLINK;
+    else if (domain == AF_PACKET) kind = KER_FD_PACKET;
+    return ker_fd_export(fd, kind, -1, type & SOCK_CLOEXEC, 0, -1);
 }
 int close(int fd) { return ker_fd_close(fd); }
 
@@ -409,7 +412,7 @@ int ioctl(int fd, unsigned long request, ...)
     }
     /* These socket operations unconditionally transfer an integer. LKL's
      * in-process uaccess cannot recover a host NULL dereference. */
-    if (!argument && (request == FIONBIO || (entry->kind == KER_FD_SOCKET &&
+    if (!argument && (request == FIONBIO || ((entry->kind == KER_FD_SOCKET || entry->kind == KER_FD_PACKET) &&
         (request == FIONREAD || request == SIOCOUTQ)))) {
         ker_fd_put(entry); errno = EFAULT; return -1;
     }

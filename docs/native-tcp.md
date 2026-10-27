@@ -1472,3 +1472,8 @@ netlink 端口号属于导入内核；应用应以 bind(pid=0)/getsockname 取�
 与 IPv6 地址列表，保留接口标志、硬件地址、统计、前缀掩码、广播/对端和 IPv6 link-local
 scope。列表与接口名称枚举独立持有；接口在两次 dump 间变化时有界重试，错误释放部分结果，
 不会把宿主 TAP 地址当作原生接口地址。
+
+固定原生内核启用未修改的 Linux CONFIG_PACKET，AF_PACKET 的 SOCK_DGRAM/SOCK_RAW
+socket 进入导入内核而非宿主。初始合同覆盖原生 loopback UDP/TCP 的双布局捕获与普通 TCP 收发共存、sockaddr_ll
+元数据、MSG_PEEK/TRUNC、忽略 outgoing、失败 bind 后恢复、fd 复制和回收；宿主参考在
+独立 user/net namespace 中运行。此项不宣称 PACKET_MMAP 或 packet socket 的外部 NIC 路径。
