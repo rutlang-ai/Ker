@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <asm/sockios.h>
@@ -123,15 +124,22 @@ ssize_t sendto(int fd, const void *bytes, size_t length, int flags,
 int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer, int fd,
     size_t offset, size_t length, int flags)
 {
-    if (!length || length > INT_MAX) { errno = EINVAL; return -1; }
-    size_t written;
-    const unsigned char *data = ker_posix_buffer_writer_view(writer, &written, NULL);
-    if (!data) return -1;
-    if (offset > written || length > written-offset) { errno = EINVAL; return -1; }
+    struct iovec single, *vectors;
+    size_t count;
+    int error = ker_native_writer_range(writer, offset, length, &single, &vectors, &count);
+    if (error) { errno = -error; return -1; }
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) { errno = EBADF; return -1; }
-    if (entry->kind != KER_FD_SOCKET) { ker_fd_put(entry); errno = ENOTSOCK; return -1; }
-    return (int)native_sendto(entry, data+offset, length, flags, NULL, 0);
+    if (!entry) { if (vectors != &single) free(vectors); errno = EBADF; return -1; }
+    if (entry->kind != KER_FD_SOCKET) {
+        ker_fd_put(entry); if (vectors != &single) free(vectors); errno = ENOTSOCK; return -1;
+    }
+    struct ker_native_option_guard *guard = NULL;
+    int token = ker_native_buffer_send_begin(entry->native, vectors, count, flags, &guard);
+    struct msghdr message = {.msg_iov = vectors, .msg_iovlen = count};
+    long result = token < 0 ? token : lkl_sys_sendmsg(entry->native, (void *)&message, flags);
+    ker_native_buffer_send_end(guard);
+    if (vectors != &single) free(vectors);
+    return (int)sent(entry, result, flags);
 }
 IO_CALL(recvfrom, (int fd, void *bytes, size_t length, int flags,
     struct sockaddr *address, socklen_t *address_length),

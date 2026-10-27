@@ -188,8 +188,8 @@ static void buffer_segment_writers(int fd, int receiver)
         vectors[i] = (struct iovec){(void *)nodes[i], used};
     }
     check(nodes[0] != nodes[1], "separate registered segment VMAs");
-    check(writer_send(owner, fd, 0, 178, MSG_ZEROCOPY) == -1 && errno == EOPNOTSUPP,
-          "single-view send cannot truncate segmented owner");
+    check(writer_send(owner, fd, 0, 179, MSG_ZEROCOPY) == -1 && errno == EINVAL,
+          "segmented owned send rejects unwritten suffix");
     check(writer_append(owner, pattern, SIZE_MAX) == -1 && errno == EINVAL,
           "segmented append bounds before socket syscall");
     size_t a = 41, b = 42, c = 43;
@@ -198,7 +198,7 @@ static void buffer_segment_writers(int fd, int receiver)
     writer_no_delivery(fd, receiver);
     unsigned prior = sent_ids;
     struct msghdr message = {.msg_iov=vectors, .msg_iovlen=2};
-    check(sendmsg(fd, &message, MSG_ZEROCOPY) == 178 &&
+    check(writer_send(owner, fd, 0, 178, MSG_ZEROCOPY) == 178 &&
           recv(receiver, received, sizeof(received), 0) == 178 && !memcmp(received, pattern, 178),
           "owned128+50-byte segments reach original Linux UDP peer");
     buffer_sent(178, true); buffer_complete(fd);
@@ -217,7 +217,11 @@ static void buffer_segment_writers(int fd, int receiver)
           recv(receiver, received, sizeof(received), 0) == 100 && !memcmp(received, pattern+100, 100),
           "cross-node offset range delivered exactly");
     buffer_sent(100, true); buffer_complete(fd);
-    check(sent_ids == prior+2 && completed_ids == sent_ids && !writer_destroy(owner),
+    check(writer_send(owner, fd, 100, 100, MSG_ZEROCOPY) == 100 &&
+          recv(receiver, received, sizeof(received), 0) == 100 && !memcmp(received, pattern+100, 100),
+          "explicit owned send spans two original Linux VMAs");
+    buffer_sent(100, true); buffer_complete(fd);
+    check(sent_ids == prior+3 && completed_ids == sent_ids && !writer_destroy(owner),
           "segmented owner released after both real completions");
     struct ker_posix_buffer_writer *replacement = writer_create_segmented(256, 128);
     check(replacement, "replacement segmented socket owner");

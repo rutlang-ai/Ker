@@ -680,11 +680,12 @@ if(BUILD_TESTING)
         Threads::Threads ${CMAKE_DL_LIBS} rt)
     target_link_options(ker-native-buffer-segments-test PRIVATE -Wl,--wrap=malloc -Wl,--wrap=lkl_syscall)
     target_compile_options(ker-native-buffer-segments-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-buffer-segments-ranges COMMAND ker-native-buffer-segments-test ranges)
     add_test(NAME native-fstack-buffer-segments-layout COMMAND ker-native-buffer-segments-test layout)
     add_test(NAME native-fstack-buffer-segments-failures COMMAND ker-native-buffer-segments-test failures)
     add_test(NAME native-fstack-buffer-segments-constructor-matrix COMMAND ker-native-buffer-segments-test constructor-matrix)
     add_test(NAME native-fstack-buffer-segments-destroy-matrix COMMAND ker-native-buffer-segments-test destroy-matrix)
-    set_tests_properties(native-fstack-buffer-segments-layout native-fstack-buffer-segments-failures
+    set_tests_properties(native-fstack-buffer-segments-ranges native-fstack-buffer-segments-layout native-fstack-buffer-segments-failures
         native-fstack-buffer-segments-constructor-matrix native-fstack-buffer-segments-destroy-matrix
         PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     add_executable(ker-native-buffer-segment-threads-test tests/posix/native-buffer-segment-threads.c

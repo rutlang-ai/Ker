@@ -202,6 +202,37 @@ static void destroy_matrix(void)
     }
     CHECK(!ker_posix_buffer_writer_destroy(live));
 }
+static void ranges(void)
+{
+    struct ker_posix_buffer_writer *live = sentinel();
+    struct ker_posix_buffer_writer *w = ker_posix_buffer_writer_create_segmented(178, 128); CHECK(w);
+    unsigned char bytes[178];
+    for (size_t i = 0; i < sizeof(bytes); i++) bytes[i] = (unsigned char)(i ^ 0x6b);
+    CHECK(ker_posix_buffer_writer_append(w, bytes, sizeof(bytes)) == 178);
+    const unsigned char *first = segment(w, 0, 128, 128, 178);
+    const unsigned char *second = segment(w, 1, 50, 50, 178);
+    struct iovec single, *vectors = (void *)(uintptr_t)1;
+    size_t count = 99;
+    fail_alloc = true;
+    CHECK(ker_native_writer_range(w, 100, 70, &single, &vectors, &count) == -ENOMEM);
+    CHECK(!fail_alloc && vectors == (void *)(uintptr_t)1 && count == 99);
+    CHECK(segment(w, 0, 128, 128, 178) == first && !memcmp(first, bytes, 128));
+    CHECK(segment(w, 1, 50, 50, 178) == second && !memcmp(second, bytes+128, 50));
+    sentinel_unchanged(live);
+    CHECK(ker_native_writer_range(w, 100, 70, &single, &vectors, &count) == 0 && count == 2);
+    CHECK(vectors != &single && vectors[0].iov_base == first+100 && vectors[0].iov_len == 28 &&
+          vectors[1].iov_base == second && vectors[1].iov_len == 42);
+    free(vectors);
+    fail_alloc = true;
+    CHECK(!ker_native_writer_range(w, 128, 50, &single, &vectors, &count));
+    CHECK(fail_alloc && vectors == &single && count == 1 && single.iov_base == second && single.iov_len == 50);
+    fail_alloc = false;
+    vectors = (void *)(uintptr_t)1; count = 99;
+    CHECK(ker_native_writer_range(w, 170, 9, &single, &vectors, &count) == -EINVAL);
+    CHECK(vectors == (void *)(uintptr_t)1 && count == 99);
+    CHECK(!ker_posix_buffer_writer_destroy(w) && !ker_posix_buffer_writer_destroy(live));
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
@@ -212,6 +243,7 @@ int main(int argc, char **argv)
     if (!strcmp(argv[1], "layout")) layout();
     else if (!strcmp(argv[1], "failures")) failures();
     else if (!strcmp(argv[1], "constructor-matrix")) constructor_matrix();
+    else if (!strcmp(argv[1], "ranges")) ranges();
     else { CHECK(!strcmp(argv[1], "destroy-matrix")); destroy_matrix(); }
     struct ker_posix_buffer_writer *residual = ker_posix_buffer_writer_create_segmented(178, 128); CHECK(residual);
     active = false; invalid(residual, 0, ENETDOWN);
@@ -219,7 +251,8 @@ int main(int argc, char **argv)
     CHECK(ker_posix_buffer_writer_destroy(residual) == -1 && errno == ENETDOWN);
     struct ker_native_buffer_counters final; CHECK(!ker_native_buffers_close_all(&final));
     CHECK(final.allocations == final.releases && !final.live && !final.bytes && !final.option_guards_live);
-    unsigned expected = !strcmp(argv[1], "constructor-matrix") ? 19 :
+    unsigned expected = !strcmp(argv[1], "ranges") ? 6 :
+        !strcmp(argv[1], "constructor-matrix") ? 19 :
         !strcmp(argv[1], "destroy-matrix") ? 36 : 9;
     unsigned residuals = !strcmp(argv[1], "constructor-matrix") ? 5 :
         !strcmp(argv[1], "failures") ? 3 : 2;

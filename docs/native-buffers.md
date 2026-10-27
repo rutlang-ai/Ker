@@ -247,3 +247,5 @@ owner的mmap失败位置、三种构造rollback unmap失败，以及全部销毁
 节点，shutdown回收全部三种残留。部分销毁后重复失败仍保持EBUSY，后继成功
 只unmap剩余节点；旧handle不能碰replacement。最终19/36次分配释放与5/2个
 shutdown残留精确匹配，不以全零最终计数掩盖中途多释放或遗失。
+
+Segmented writers can send any nonempty written range directly with `ker_posix_buffer_writer_send`, including ranges crossing VMA boundaries. The adapter snapshots registered iovecs and submits original Linux sendmsg; it never flattens payloads or changes the writer cursor. Callers retain ownership and await zerocopy completion before mutation or destruction.

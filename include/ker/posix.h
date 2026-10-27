@@ -82,15 +82,17 @@ KER_API int ker_posix_buffer_writer_destroy(struct ker_posix_buffer_writer *writ
  * with at most IOV_MAX VMAs. append fills nodes in order, atomically advancing
  * the aggregate length. Segment views expose borrowed data, used bytes, local
  * capacity and aggregate length; invalid indices preserve all outputs.
- * Ordinary view/send reject segmented writers with EOPNOTSUPP. Use segment
- * views with native sendmsg; synchronize access and await all completions.
+ * Ordinary view rejects segmented writers with EOPNOTSUPP. Owned-range send
+ * spans segment boundaries; segment views also work with native sendmsg.
+ * Synchronize access and await all completions.
  * Partial destroy failures retain a retry handle: after any segment is freed,
  * append/views fail EBUSY until destroy succeeds. Shutdown reclaims residuals.
  * Handles retain their identity until shutdown, as for single-VMA writers. */
 KER_API struct ker_posix_buffer_writer *ker_posix_buffer_writer_create_segmented(size_t capacity, size_t segment_capacity);
 KER_API const void *ker_posix_buffer_writer_segment(struct ker_posix_buffer_writer *writer, size_t index,
     size_t *length, size_t *capacity, size_t *total_length);
-/* Send a nonempty written range through an imported native socket. Bounds and
+/* Send a nonempty written range, including across segmented writer VMAs,
+ * through an imported native socket. Bounds and
  * zero length fail EINVAL before sending; unregistered host descriptors fail
  * EBADF and native non-sockets fail ENOTSOCK. Returns accepted bytes or
  * -1/errno from original Linux. Flags, short sends and SIGPIPE follow send().

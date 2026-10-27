@@ -56,6 +56,7 @@ HOSTED_SAFE = (
     "native-fstack-buffer-writer-constructor",
     "native-fstack-buffer-writer-retry",
     "native-fstack-buffer-writer-stale",
+    "native-fstack-buffer-segments-ranges",
     "native-fstack-buffer-segments-layout",
     "native-fstack-buffer-segments-failures",
     "native-fstack-buffer-segments-constructor-matrix",
