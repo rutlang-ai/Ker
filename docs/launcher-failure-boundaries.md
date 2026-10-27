@@ -35,3 +35,5 @@ Each worker emits one completion snapshot. Duplicate DONE records are failures,
 including two zero-count snapshots; a later zero must not hide an earlier
 outstanding-object count. A startup-consumed DONE snapshot counts toward the
 same per-worker limit.
+
+Primary worker collection errors return status 125, reap the primary child and continue auxiliary teardown. A failed collection cannot abandon the remaining workers.

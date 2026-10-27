@@ -206,6 +206,35 @@ class LauncherBoundaryTests(unittest.TestCase):
         self.worker.write_text(fixtures.WORKER)
         self.assertEqual(self.run_launcher(0, native_done=True), 0)
 
+    def test_primary_collection_failure_still_reaps_all_children(self):
+        collect = launcher.collect_worker
+        finish = launcher.AdditionalWorker.finish
+        for after_collection in (False, True):
+            children = []
+            finished = []
+            def fail(process, stats):
+                children.append(process)
+                if after_collection:
+                    collect(process, stats)
+                raise OSError('injected primary collection failure')
+            def complete(extra):
+                result = finish(extra)
+                finished.append(extra.process)
+                return result
+            with self.subTest(after_collection=after_collection), \
+                    mock.patch.object(launcher, 'collect_worker', side_effect=fail), \
+                    mock.patch.object(launcher.AdditionalWorker, 'finish', complete):
+                result, message = self.run_launcher(0, native_done=True,
+                    config=self.config, capture_stderr=True)
+            self.assertEqual(result, 125)
+            self.assertIn('primary worker collection', message)
+            self.assertEqual(len(finished), 1)
+            for process in children + finished:
+                self.assertIsNotNone(process.returncode)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(process.pid, os.WNOHANG)
+            self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

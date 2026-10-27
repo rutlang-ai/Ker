@@ -1387,8 +1387,24 @@ def main():
             extra.stop_channels()
         if worker:
             if not worker_finished:
-                stats, failed = collect_worker(worker, stats)
-                infrastructure_failure |= failed
+                try:
+                    stats, failed = collect_worker(worker, stats)
+                    infrastructure_failure |= failed
+                except (OSError, ValueError, RuntimeError) as error:
+                    print(f'ker-run: primary worker collection: {error}', file=sys.stderr)
+                    infrastructure_failure = True
+                    stats = None
+                    # A failed read must not leave a live child or prevent the
+                    # auxiliary workers from reaching their own teardown.
+                    try:
+                        if worker.poll() is None:
+                            worker.kill()
+                        worker.wait(timeout=10)
+                    except (OSError, subprocess.TimeoutExpired) as reap_error:
+                        print(f'ker-run: primary worker reap: {reap_error}', file=sys.stderr)
+                    finally:
+                        if worker.stdout is not None:
+                            worker.stdout.close()
             infrastructure_failure |= stats is None or stats.get('outstanding', 1) != 0
             if stats is not None:
                 stats['io'] = info
