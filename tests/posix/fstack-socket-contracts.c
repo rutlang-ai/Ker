@@ -10,6 +10,8 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
@@ -26,7 +28,9 @@
 #include <linux/close_range.h>
 #include <linux/limits.h>
 #include <sys/time.h>
+#include <sys/sendfile.h>
 #include <sys/uio.h>
+#include <time.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
@@ -410,6 +414,181 @@ static void file_cache_operations(void)
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
 }
 
+static void file_transfer_boundaries(void)
+{
+    char path[] = "/tmp/ker-transfer-XXXXXX", second[] = "/tmp/ker-copy-XXXXXX";
+    int fd = mkstemp(path), output = mkstemp(second);
+    CHECK(fd >= 0 && output >= 0 && unlink(path) == 0 && unlink(second) == 0);
+    CHECK(write(fd, "transfer", 8) == 8);
+    int sockets[2]; CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+    off_t offset = 0; CHECK(sendfile64(sockets[0], fd, &offset, 8) == 8 && offset == 8);
+    char bytes[8]; CHECK(read(sockets[1], bytes, sizeof(bytes)) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    off64_t in_offset = 0, out_offset = 0;
+    CHECK(copy_file_range(fd, &in_offset, output, &out_offset, 8, 0) == 8 && in_offset == 8 && out_offset == 8);
+    CHECK(pread(output, bytes, 8, 0) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    int pipes[2], copies[2]; CHECK(pipe(pipes) == 0 && pipe(copies) == 0);
+    offset = 0; CHECK(splice(fd, &offset, pipes[1], NULL, 8, 0) == 8 && offset == 8);
+    CHECK(tee(pipes[0], copies[1], 8, 0) == 8);
+    CHECK(read(pipes[0], bytes, 8) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    CHECK(read(copies[0], bytes, 8) == 8 && memcmp(bytes, "transfer", 8) == 0);
+    struct iovec vector = {(void *)"v", 1}; CHECK(vmsplice(pipes[1], &vector, 1, 0) == 1);
+    CHECK(read(pipes[0], bytes, 1) == 1 && bytes[0] == 'v');
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        struct pair p = connected(); offset = 0;
+        ERROR(sendfile(p.client, -1, NULL, 1), EBADF);
+        ERROR(splice(-1, NULL, p.client, NULL, 1, 0), EBADF);
+        ERROR(sendfile(p.client, fd, &offset, 1), EOPNOTSUPP); CHECK(offset == 0);
+        ERROR(sendfile64(output, p.server, &offset, 1), EOPNOTSUPP); CHECK(offset == 0);
+        ERROR(splice(p.server, NULL, pipes[1], NULL, 1, 0), EOPNOTSUPP);
+        ERROR(tee(p.server, pipes[1], 1, 0), EOPNOTSUPP);
+        ERROR(copy_file_range(fd, NULL, p.client, NULL, 1, 0), EOPNOTSUPP);
+        ERROR(sendfile(p.client, p.server, &offset, 1), ESPIPE);
+        ERROR(vmsplice(p.client, &vector, 1, 0), EBADF);
+
+        size_t page = (size_t)sysconf(_SC_PAGESIZE); CHECK(page >= 4096);
+        char *user = mmap(NULL, page * 2, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(user != MAP_FAILED);
+        loff_t value = 19, observed;
+        loff_t *cross_offset = (loff_t *)(user + page - sizeof(value) / 2);
+        memcpy(cross_offset, &value, sizeof(value));
+        ERROR(sendfile(p.client, p.server, (off_t *)cross_offset, 1), ESPIPE);
+        memcpy(&observed, cross_offset, sizeof(observed)); CHECK(observed == value);
+        ERROR(sendfile(p.client, p.server, NULL, 1), EINVAL);
+        ERROR(splice(p.server, cross_offset, p.client, NULL, 1, 0), EINVAL);
+        ERROR(copy_file_range(p.server, (off64_t *)cross_offset, p.client, NULL, 1, 0), EINVAL);
+        memcpy(&observed, cross_offset, sizeof(observed)); CHECK(observed == value);
+
+        loff_t *readonly_offset = (loff_t *)(user + 32);
+        memcpy(readonly_offset, &value, sizeof(value));
+        CHECK(mprotect(user, page, PROT_READ) == 0);
+        /* Linux sends the unchanged position back even when sendfile fails. */
+        ERROR(sendfile(p.client, p.server, (off_t *)readonly_offset, 1), EFAULT);
+        CHECK(mprotect(user, page, PROT_READ | PROT_WRITE) == 0);
+
+        struct iovec *cross_vectors = (struct iovec *)(user + page - sizeof(struct iovec) / 2);
+        struct iovec data_vector = {user + page + 64, 1};
+        memcpy(cross_vectors, &data_vector, sizeof(data_vector));
+        ERROR(vmsplice(p.client, cross_vectors, 1, 0), EBADF);
+        CHECK(mprotect(user + page, page, PROT_NONE) == 0);
+
+        CHECK(splice(p.server, (loff_t *)(user + page), p.client,
+            (loff_t *)(user + page), 0, 0) == 0);
+        ERROR(splice(p.server, (loff_t *)(user + page), p.client,
+            (loff_t *)(user + page), 1, 0x80000000u), EINVAL);
+        ERROR(sendfile(p.client, p.server, (off_t *)(user + page), 1), EFAULT);
+        ERROR(sendfile(p.client, p.server, (off_t *)cross_offset, 1), EFAULT);
+        ERROR(splice(p.server, (loff_t *)(user + page), p.client, NULL, 1, 0), EFAULT);
+        ERROR(splice(p.server, NULL, p.client, (loff_t *)(user + page), 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, (off64_t *)(user + page), p.client, NULL, 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, NULL, p.client, (off64_t *)(user + page), 1, 0), EFAULT);
+        ERROR(copy_file_range(-1, (off64_t *)(user + page), p.client, NULL, 1, 0), EBADF);
+        ERROR(vmsplice(p.client, (struct iovec *)(user + page), 1, 0), EFAULT);
+        ERROR(vmsplice(p.client, cross_vectors, 1, 0), EFAULT);
+        ERROR(vmsplice(p.client, (struct iovec *)(user + page), 1, 0x80000000u), EINVAL);
+        void *near_max = (void *)(uintptr_t)(UINTPTR_MAX - sizeof(loff_t) / 2);
+        ERROR(sendfile(p.client, p.server, (off_t *)near_max, 1), EFAULT);
+        ERROR(splice(p.server, (loff_t *)near_max, p.client, NULL, 1, 0), EFAULT);
+        ERROR(splice(p.server, NULL, p.client, (loff_t *)near_max, 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, (off64_t *)near_max, p.client, NULL, 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, NULL, p.client, (off64_t *)near_max, 1, 0), EFAULT);
+        ERROR(vmsplice(p.client, (struct iovec *)near_max, 1, 0), EFAULT);
+        /* The native socket is not a pipe, so upstream rejects it before
+         * touching the user payload address; do not stage/free vmsplice data. */
+        struct iovec protected_data = {user + page, 1};
+        ERROR(vmsplice(p.client, &protected_data, 1, 0), EBADF);
+        CHECK(munmap(user, page * 2) == 0);
+
+        ERROR(splice(p.server, NULL, p.client, NULL, 1, 0), EINVAL);
+        ERROR(copy_file_range(p.server, NULL, p.client, NULL, 1, 0), EINVAL);
+        CHECK(write(p.client, "t", 1) == 1); ready(p.server);
+        CHECK(read(p.server, bytes, 1) == 1 && bytes[0] == 't'); finish(p);
+    }
+    CHECK(lseek(fd, 0, SEEK_CUR) == 8 && close(fd) == 0 && close(output) == 0);
+    CHECK(close(sockets[0]) == 0 && close(sockets[1]) == 0);
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0 && close(copies[0]) == 0 && close(copies[1]) == 0);
+}
+
+enum blocked_transfer_kind { BLOCKED_SPLICE, BLOCKED_TEE, BLOCKED_VMSPLICE };
+struct blocked_transfer {
+    enum blocked_transfer_kind kind;
+    int input[2];
+    int output[2];
+    atomic_int entered;
+    ssize_t result;
+    char byte;
+};
+
+static void *blocked_transfer_call(void *opaque)
+{
+    struct blocked_transfer *call = opaque;
+    atomic_store_explicit(&call->entered, 1, memory_order_release);
+    if (call->kind == BLOCKED_SPLICE)
+        call->result = splice(call->input[0], NULL, call->output[1], NULL, 1, 0);
+    else if (call->kind == BLOCKED_TEE)
+        call->result = tee(call->input[0], call->output[1], 1, 0);
+    else {
+        struct iovec vector = {&call->byte, 1};
+        call->result = vmsplice(call->output[1], &vector, 1, 0);
+    }
+    return NULL;
+}
+
+static int timed_join(pthread_t thread, void **result, long milliseconds)
+{
+    struct timespec deadline;
+    CHECK(clock_gettime(CLOCK_REALTIME, &deadline) == 0);
+    deadline.tv_sec += milliseconds / 1000;
+    deadline.tv_nsec += (milliseconds % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000L; }
+    return pthread_timedjoin_np(thread, result, &deadline);
+}
+
+static void blocked_host_transfer_is_cancellable(enum blocked_transfer_kind kind)
+{
+    struct blocked_transfer call = {.kind = kind, .byte = 'c'};
+    CHECK(pipe(call.input) == 0 && pipe(call.output) == 0);
+    if (kind == BLOCKED_VMSPLICE) {
+        int capacity = fcntl(call.output[1], F_GETPIPE_SZ); CHECK(capacity > 0);
+        char *fill = calloc((size_t)capacity, 1); CHECK(fill);
+        size_t written = 0;
+        while (written < (size_t)capacity) {
+            ssize_t result = write(call.output[1], fill + written, (size_t)capacity - written);
+            CHECK(result > 0); written += (size_t)result;
+        }
+        free(fill);
+    }
+
+    atomic_init(&call.entered, 0);
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocked_transfer_call, &call) == 0);
+    for (unsigned i = 0; i < 1000 && !atomic_load_explicit(&call.entered, memory_order_acquire); ++i) {
+        struct timespec pause = {.tv_nsec = 1000000L}; nanosleep(&pause, NULL);
+    }
+    CHECK(atomic_load_explicit(&call.entered, memory_order_acquire));
+    struct timespec settle = {.tv_nsec = 20000000L}; nanosleep(&settle, NULL);
+    CHECK(pthread_cancel(thread) == 0);
+    void *result = NULL;
+    int joined = timed_join(thread, &result, 2000);
+    if (joined == ETIMEDOUT) {
+        /* Release a raw-syscall regression before failing, so the test never
+         * strands a worker or hangs the test runner. */
+        if (kind == BLOCKED_VMSPLICE) {
+            char byte; CHECK(read(call.output[0], &byte, 1) == 1);
+        } else CHECK(write(call.input[1], "x", 1) == 1);
+        CHECK(timed_join(thread, &result, 2000) == 0);
+        CHECK(result == PTHREAD_CANCELED);
+    } else CHECK(joined == 0 && result == PTHREAD_CANCELED);
+    CHECK(close(call.input[0]) == 0 && close(call.input[1]) == 0);
+    CHECK(close(call.output[0]) == 0 && close(call.output[1]) == 0);
+}
+
+static void host_transfer_cancellation(void)
+{
+    blocked_host_transfer_is_cancellable(BLOCKED_SPLICE);
+    blocked_host_transfer_is_cancellable(BLOCKED_TEE);
+    blocked_host_transfer_is_cancellable(BLOCKED_VMSPLICE);
+}
+
 static void close_range_boundary(void)
 {
     struct pair p = connected();
@@ -646,6 +825,8 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"cross-kernel-file-transfer-boundaries", file_transfer_boundaries},
+        {"host-transfer-cancellation-points", host_transfer_cancellation},
         {"close-range-explicit-native-boundary", close_range_boundary},
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
