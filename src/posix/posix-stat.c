@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
@@ -206,13 +207,57 @@ static int descriptor_accessat(int fd, const char *path, int mode, int flags)
 int faccessat(int fd, const char *path, int mode, int flags)
     __attribute__((alias("descriptor_accessat")));
 
+static void host_close_preserve_errno(int fd)
+{
+    int error = errno;
+    (void)syscall(SYS_close, fd);
+    errno = error;
+}
+
+/* glibc preserves AT_SYMLINK_NOFOLLOW on kernels without fchmodat2 by
+ * pinning the pathname with O_PATH and applying chmod through procfs. This
+ * avoids resolving the caller's pathname a second time after the check. */
+static int host_fchmodat_nofollow(int fd, const char *path, mode_t mode)
+{
+    int pinned = (int)syscall(SYS_openat, fd, path, O_PATH | O_NOFOLLOW | O_CLOEXEC, 0);
+    if (pinned < 0) return -1;
+
+    struct stat info;
+    if (syscall(SYS_newfstatat, pinned, "", &info, AT_EMPTY_PATH) < 0) {
+        int error = errno;
+        host_close_preserve_errno(pinned);
+        errno = error;
+        return -1;
+    }
+    if (S_ISLNK(info.st_mode)) {
+        host_close_preserve_errno(pinned);
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+
+    char proc_path[sizeof("/proc/self/fd/") + 3 * sizeof(pinned)];
+    int length = snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", pinned);
+    if (length < 0 || (size_t)length >= sizeof(proc_path)) {
+        host_close_preserve_errno(pinned);
+        errno = EOVERFLOW;
+        return -1;
+    }
+    int result = (int)syscall(SYS_fchmodat, AT_FDCWD, proc_path, mode);
+    int error = errno;
+    host_close_preserve_errno(pinned);
+    errno = error == ENOENT ? EOPNOTSUPP : error;
+    return result;
+}
+
 /* Linux added fchmodat2 for flag support. On hosts that predate it, retain
- * the old fchmodat syscall only when no flags need to be represented. */
+ * flags-zero behavior and glibc's race-free regular-file no-follow fallback. */
 static int host_fchmodat(int fd, const char *path, mode_t mode, int flags)
 {
     int result = (int)syscall(SYS_fchmodat2, fd, path, mode, flags);
-    if (result < 0 && errno == ENOSYS && flags == 0)
-        return (int)syscall(SYS_fchmodat, fd, path, mode);
+    if (result < 0 && errno == ENOSYS) {
+        if (flags == 0) return (int)syscall(SYS_fchmodat, fd, path, mode);
+        if (flags == AT_SYMLINK_NOFOLLOW) return host_fchmodat_nofollow(fd, path, mode);
+    }
     return result;
 }
 

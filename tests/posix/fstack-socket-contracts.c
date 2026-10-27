@@ -1731,8 +1731,11 @@ static void fchmodat2_enosys_fallback(void)
     CHECK(mkdtemp(directory) != NULL);
     char path[PATH_MAX];
     CHECK(snprintf(path, sizeof(path), "%s/file", directory) > 0);
+    char symlink_path[PATH_MAX];
+    CHECK(snprintf(symlink_path, sizeof(symlink_path), "%s/link", directory) > 0);
     int file = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0666);
     CHECK(file >= 0);
+    CHECK(symlink(path, symlink_path) == 0);
     int dirfd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     CHECK(dirfd >= 0);
     struct pair p = connected();
@@ -1758,13 +1761,21 @@ static void fchmodat2_enosys_fallback(void)
     CHECK(fchmodat(p.client, path, 0644, 0) == 0);
     CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
 
+    /* Match glibc's no-follow behavior when fchmodat2 is unavailable. */
+    CHECK(fchmodat(AT_FDCWD, path, 0640, AT_SYMLINK_NOFOLLOW) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+    ERROR(fchmodat(AT_FDCWD, symlink_path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+
     /* With Ker interposed, native relative and empty paths never use the host syscall. */
     if (dlsym(RTLD_DEFAULT, "ker_posix_capabilities")) {
-        ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW), ENOSYS);
-        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+        ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH), ENOSYS);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
         ERROR(fchmodat(p.client, "child", 0600, 0), ENOTDIR);
-        ERROR(fchmodat(p.client, path, 0777, AT_SYMLINK_NOFOLLOW), ENOSYS);
-        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+        CHECK(fchmodat(p.client, path, 0600, AT_SYMLINK_NOFOLLOW) == 0);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0600);
+        ERROR(fchmodat(p.client, symlink_path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0600);
         CHECK(fchmodat(p.client, "", 0600, AT_EMPTY_PATH) == 0);
         CHECK(fstat(p.client, &info) == 0 && (info.st_mode & 0777) == 0600);
         size_t inaccessible_length;
@@ -1772,13 +1783,28 @@ static void fchmodat2_enosys_fallback(void)
         ERROR(fchmodat(p.client, inaccessible, 0640, 0), EFAULT);
         ERROR(fchmodat(p.client, inaccessible, 0640, 0x40000000), EINVAL);
         CHECK(munmap(inaccessible, inaccessible_length) == 0);
+
+        /* Preserve a failure from chmod through the pinned proc-fd path. */
+        struct sock_filter chmod_filter[] = {
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fchmodat, 0, 1),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOENT),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        };
+        struct sock_fprog chmod_program = {
+            .len = sizeof(chmod_filter) / sizeof(chmod_filter[0]),
+            .filter = chmod_filter,
+        };
+        CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &chmod_program) == 0);
+        ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0600);
     }
 
     CHECK(write(p.client, "r", 1) == 1); ready(p.server);
     char byte = 0; CHECK(recv(p.server, &byte, 1, MSG_WAITALL) == 1 && byte == 'r');
     finish(p);
     CHECK(close(dirfd) == 0 && close(file) == 0);
-    CHECK(unlink(path) == 0 && rmdir(directory) == 0);
+    CHECK(unlink(symlink_path) == 0 && unlink(path) == 0 && rmdir(directory) == 0);
 }
 int main(void)
 {
