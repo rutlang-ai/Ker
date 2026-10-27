@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
@@ -32,6 +33,13 @@
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
+extern ssize_t __read_chk(int, void *, size_t, size_t);
+extern ssize_t __pread_chk(int, void *, size_t, off_t, size_t);
+extern ssize_t __pread64_chk(int, void *, size_t, off64_t, size_t);
+extern ssize_t __recv_chk(int, void *, size_t, size_t, int);
+extern ssize_t __recvfrom_chk(int, void *, size_t, size_t, int, struct sockaddr *, socklen_t *);
+extern int __poll_chk(struct pollfd *, nfds_t, int, size_t);
+extern int __ppoll_chk(struct pollfd *, nfds_t, const struct timespec *, const sigset_t *, size_t);
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
 struct pair {int client, server;};
@@ -756,6 +764,170 @@ static void mapping_owner_boundary(void)
     char byte; CHECK(pread(fd, &byte, 1, 0) == 1 && byte == 'y' && close(fd) == 0);
 }
 
+enum checked_block_kind { CHECKED_READ, CHECKED_RECV, CHECKED_RECVFROM, CHECKED_POLL, CHECKED_PPOLL };
+struct checked_block_call {
+    enum checked_block_kind kind;
+    int fd, peer;
+    struct pollfd event;
+    struct timespec timeout;
+    atomic_int entered;
+    ssize_t result;
+};
+static void *checked_blocked_call(void *opaque)
+{
+    struct checked_block_call *call = opaque;
+    char byte = 0;
+    atomic_store_explicit(&call->entered, 1, memory_order_release);
+    switch (call->kind) {
+    case CHECKED_READ: call->result = __read_chk(call->fd, &byte, 1, sizeof byte); break;
+    case CHECKED_RECV: call->result = __recv_chk(call->fd, &byte, 1, sizeof byte, 0); break;
+    case CHECKED_RECVFROM: call->result = __recvfrom_chk(call->fd, &byte, 1, sizeof byte, 0, NULL, NULL); break;
+    case CHECKED_POLL: call->result = __poll_chk(&call->event, 1, -1, sizeof call->event); break;
+    case CHECKED_PPOLL: call->result = __ppoll_chk(&call->event, 1, NULL, NULL, sizeof call->event); break;
+    }
+    return (void *)(intptr_t)call->result;
+}
+static int checked_timed_join(pthread_t thread, void **result)
+{
+    struct timespec deadline;
+    CHECK(clock_gettime(CLOCK_REALTIME, &deadline) == 0);
+    deadline.tv_sec += 2;
+    return pthread_timedjoin_np(thread, result, &deadline);
+}
+static void checked_host_cancellation(enum checked_block_kind kind)
+{
+    struct checked_block_call call = {.kind = kind, .fd = -1, .peer = -1};
+    if (kind == CHECKED_READ || kind == CHECKED_POLL || kind == CHECKED_PPOLL) {
+        int pipefd[2]; CHECK(pipe(pipefd) == 0); call.fd = pipefd[0]; call.peer = pipefd[1];
+        call.event = (struct pollfd){call.fd, POLLIN, 0};
+    } else {
+        int pair[2]; CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) == 0);
+        call.fd = pair[0]; call.peer = pair[1];
+    }
+    atomic_init(&call.entered, 0);
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, checked_blocked_call, &call) == 0);
+    for (unsigned i = 0; i < 1000 && !atomic_load_explicit(&call.entered, memory_order_acquire); ++i) {
+        struct timespec pause = {.tv_nsec = 1000000L}; nanosleep(&pause, NULL);
+    }
+    CHECK(atomic_load_explicit(&call.entered, memory_order_acquire));
+    struct timespec settle = {.tv_nsec = 20000000L}; nanosleep(&settle, NULL);
+    CHECK(pthread_cancel(thread) == 0);
+    void *result = NULL;
+    int joined = checked_timed_join(thread, &result);
+    if (joined == ETIMEDOUT) {
+        /* Wake a raw-syscall regression before reporting it, avoiding leaked
+         * threads or a hung test runner. */
+        CHECK(write(call.peer, "x", 1) == 1);
+        CHECK(checked_timed_join(thread, &result) == 0);
+        CHECK(result == PTHREAD_CANCELED);
+    } else CHECK(joined == 0 && result == PTHREAD_CANCELED);
+    CHECK(close(call.fd) == 0 && close(call.peer) == 0);
+}
+struct checked_pread_call {
+    int fd;
+    atomic_int entered, start, returned, finish;
+    ssize_t result;
+};
+static void *checked_pending_pread(void *opaque)
+{
+    struct checked_pread_call *call = opaque;
+    char byte;
+    atomic_store_explicit(&call->entered, 1, memory_order_release);
+    while (!atomic_load_explicit(&call->start, memory_order_acquire)) sched_yield();
+    call->result = __pread_chk(call->fd, &byte, 1, 0, sizeof byte);
+    atomic_store_explicit(&call->returned, 1, memory_order_release);
+    while (!atomic_load_explicit(&call->finish, memory_order_acquire)) sched_yield();
+    return (void *)(intptr_t)call->result;
+}
+static void checked_host_pread_cancellation(void)
+{
+    char path[] = "/tmp/ker-checked-pread-cancel-XXXXXX";
+    int fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    CHECK(write(fd, "p", 1) == 1);
+    struct checked_pread_call call = {.fd = fd};
+    atomic_init(&call.entered, 0); atomic_init(&call.start, 0);
+    atomic_init(&call.returned, 0); atomic_init(&call.finish, 0);
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, checked_pending_pread, &call) == 0);
+    for (unsigned i = 0; i < 1000 && !atomic_load_explicit(&call.entered, memory_order_acquire); ++i) {
+        struct timespec pause = {.tv_nsec = 1000000L}; nanosleep(&pause, NULL);
+    }
+    CHECK(atomic_load_explicit(&call.entered, memory_order_acquire));
+    CHECK(pthread_cancel(thread) == 0);
+    atomic_store_explicit(&call.start, 1, memory_order_release);
+    void *result = NULL;
+    int joined = checked_timed_join(thread, &result);
+    if (joined == ETIMEDOUT) {
+        atomic_store_explicit(&call.finish, 1, memory_order_release);
+        CHECK(pthread_join(thread, &result) == 0);
+        CHECK(atomic_load_explicit(&call.returned, memory_order_acquire));
+        /* A raw syscall returns normally despite the pending cancellation; libc
+         * pread is a cancellation point and must consume it before returning. */
+        CHECK(result == PTHREAD_CANCELED);
+    } else CHECK(joined == 0 && result == PTHREAD_CANCELED);
+    CHECK(close(fd) == 0);
+}
+static void checked_entry_cancellation(void)
+{
+    checked_host_cancellation(CHECKED_READ);
+    checked_host_cancellation(CHECKED_RECV);
+    checked_host_cancellation(CHECKED_RECVFROM);
+    for (unsigned i = 0; i < 8; ++i) {
+        checked_host_cancellation(CHECKED_POLL);
+        checked_host_cancellation(CHECKED_PPOLL);
+    }
+    checked_host_pread_cancellation();
+}
+static void fortified_io(void)
+{
+    struct pair p = connected(); char bytes[8];
+    char path[] = "/tmp/ker-checked-pread-XXXXXX";
+    int hostfd = mkstemp(path); CHECK(hostfd >= 0 && unlink(path) == 0);
+    CHECK(write(hostfd, "pread", 5) == 5);
+    CHECK(__pread_chk(hostfd, bytes, 2, 1, sizeof bytes) == 2 && bytes[0] == 'r' && bytes[1] == 'e');
+    CHECK(lseek(hostfd, 0, SEEK_CUR) == 5 && close(hostfd) == 0);
+    volatile size_t count = 1; volatile nfds_t descriptors = 1;
+    CHECK(write(p.client, "f", 1) == 1); ready(p.server);
+    int hostready[2]; CHECK(pipe(hostready) == 0);
+    CHECK(write(hostready[1], "h", 1) == 1);
+    struct timespec timeout = {0, 0};
+    struct pollfd host_event = {hostready[0], POLLIN, 0};
+    CHECK(__poll_chk(&host_event, 1, 0, sizeof host_event) == 1 && (host_event.revents & POLLIN));
+    host_event.revents = 0;
+    CHECK(__ppoll_chk(&host_event, 1, &timeout, NULL, sizeof host_event) == 1 && (host_event.revents & POLLIN));
+    char host_byte; CHECK(read(hostready[0], &host_byte, 1) == 1 && host_byte == 'h');
+    CHECK(close(hostready[0]) == 0 && close(hostready[1]) == 0);
+
+    struct pollfd event = {p.server, POLLIN, 0};
+    CHECK(__poll_chk(&event, descriptors, 0, sizeof event) == 1 && (event.revents & POLLIN));
+    CHECK(__ppoll_chk(&event, descriptors, &timeout, NULL, sizeof event) == 1 && (event.revents & POLLIN));
+    CHECK(__recv_chk(p.server, bytes, count, sizeof bytes, MSG_PEEK) == 1 && bytes[0] == 'f');
+    CHECK(__recvfrom_chk(p.server, bytes, count, sizeof bytes, MSG_PEEK, NULL, NULL) == 1 && bytes[0] == 'f');
+    ERROR(__pread_chk(p.server, bytes, count, 0, sizeof bytes), ESPIPE);
+    ERROR(__pread64_chk(p.server, bytes, count, 0, sizeof bytes), ESPIPE);
+    CHECK(__read_chk(p.server, bytes, count, sizeof bytes) == 1 && bytes[0] == 'f');
+
+    int hostpipe[2]; CHECK(pipe(hostpipe) == 0);
+    CHECK(write(p.client, "m", 1) == 1 && write(hostpipe[1], "h", 1) == 1); ready(p.server);
+    struct pollfd mixed[2] = {{p.server, POLLIN, 0}, {hostpipe[0], POLLIN, 0}};
+    CHECK(__poll_chk(mixed, 2, 0, sizeof mixed) == 2);
+    CHECK((mixed[0].revents & POLLIN) && (mixed[1].revents & POLLIN));
+    CHECK(__read_chk(p.server, bytes, 1, sizeof bytes) == 1 && bytes[0] == 'm');
+    CHECK(read(hostpipe[0], bytes, 1) == 1 && bytes[0] == 'h');
+    CHECK(write(p.client, "n", 1) == 1 && write(hostpipe[1], "g", 1) == 1); ready(p.server);
+    mixed[0].revents = mixed[1].revents = 0;
+    CHECK(__ppoll_chk(mixed, 2, &timeout, NULL, sizeof mixed) == 2);
+    CHECK((mixed[0].revents & POLLIN) && (mixed[1].revents & POLLIN));
+    CHECK(__read_chk(p.server, bytes, 1, sizeof bytes) == 1 && bytes[0] == 'n');
+    CHECK(read(hostpipe[0], bytes, 1) == 1 && bytes[0] == 'g');
+    CHECK(close(hostpipe[0]) == 0 && close(hostpipe[1]) == 0);
+    void *bad = mmap(NULL, (size_t)sysconf(_SC_PAGESIZE), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(bad != MAP_FAILED);
+    ERROR(__poll_chk(bad, 1, 0, sizeof event), EFAULT);
+    ERROR(__ppoll_chk(bad, 1, &timeout, NULL, sizeof event), EFAULT);
+    CHECK(munmap(bad, (size_t)sysconf(_SC_PAGESIZE)) == 0);
+    finish(p);
+    checked_entry_cancellation();
+}
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -831,6 +1003,7 @@ int main(void)
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},
         {"mapping-owner-and-anonymous-fd-boundaries", mapping_owner_boundary},
+        {"fortified-io-retains-owner-and-bounds", fortified_io},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},
