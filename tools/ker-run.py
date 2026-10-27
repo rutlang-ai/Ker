@@ -1415,8 +1415,13 @@ def main():
                 for line in startup_status.splitlines():
                     if line.startswith(b'KER_NATIVE_STATS '):
                         stats['native'] = json.loads(line.removeprefix(b'KER_NATIVE_STATS '))
-            for extra in additional:
-                infrastructure_failure |= extra.finish()
+            results = finish_concurrently([extra.finish for extra in additional]) if additional else []
+            for result in results:
+                if isinstance(result, Exception):
+                    print(f'ker-run: additional worker cleanup: {result}', file=sys.stderr)
+                    infrastructure_failure = True
+                else:
+                    infrastructure_failure |= result
             if stats is not None and additional:
                 stats['interfaces'] = [extra.stats for extra in additional]
                 stats['worker_pid'] = worker.pid
