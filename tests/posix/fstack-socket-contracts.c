@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <linux/magic.h>
+#include <sys/time.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -327,6 +328,33 @@ static void descriptor_permissions(void)
     CHECK((after.st_mode & 0777) == 0640 && after.st_uid == before.st_uid && after.st_gid == before.st_gid);
     CHECK(close(fd) == 0); ERROR(fchmod(fd, 0600), EBADF); ERROR(fchown(fd, (uid_t)-1, (gid_t)-1), EBADF);
 }
+
+static void descriptor_timestamps(void)
+{
+    int socket_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(socket_fd >= 0);
+    char path[] = "/tmp/ker-timestamps-XXXXXX";
+    int file_fd = mkstemp(path); CHECK(file_fd >= 0 && unlink(path) == 0);
+    int descriptors[] = {socket_fd, file_fd};
+    for (unsigned i = 0; i < 2; ++i) {
+        int fd = descriptors[i];
+        struct timespec times[2] = {{1234567890, 123456789}, {1234567891, 987654321}};
+        CHECK(futimens(fd, times) == 0);
+        struct stat st; CHECK(fstat(fd, &st) == 0);
+        CHECK(st.st_atim.tv_sec == times[0].tv_sec && st.st_atim.tv_nsec == times[0].tv_nsec);
+        CHECK(st.st_mtim.tv_sec == times[1].tv_sec && st.st_mtim.tv_nsec == times[1].tv_nsec);
+        times[0].tv_nsec = UTIME_OMIT; times[1].tv_nsec = 1000000000;
+        ERROR(futimens(fd, times), EINVAL);
+        times[1].tv_nsec = UTIME_OMIT; CHECK(futimens(fd, times) == 0);
+        CHECK(fstat(fd, &st) == 0 && st.st_mtim.tv_nsec == 987654321);
+        struct timeval micros[2] = {{1234567892, 123456}, {1234567893, 654321}};
+        CHECK(futimes(fd, micros) == 0 && fstat(fd, &st) == 0);
+        CHECK(st.st_atim.tv_sec == micros[0].tv_sec && st.st_atim.tv_nsec == 123456000);
+        CHECK(st.st_mtim.tv_sec == micros[1].tv_sec && st.st_mtim.tv_nsec == 654321000);
+        micros[1].tv_usec = 1000000; ERROR(futimes(fd, micros), EINVAL);
+        CHECK(futimens(fd, NULL) == 0 && fstat(fd, &st) == 0 && st.st_mtim.tv_sec > 1234567893);
+        CHECK(close(fd) == 0); ERROR(futimens(fd, NULL), EBADF);
+    }
+}
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -393,6 +421,7 @@ int main(void)
         {"file-lifecycle-owner-routing", file_lifecycle_operations},
         {"filesystem-statistics-owner-routing", filesystem_statistics},
         {"descriptor-permissions-owner-routing", descriptor_permissions},
+        {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},

@@ -1419,3 +1419,5 @@ v2 的 offset=-1 保留 Linux 流式读写行为。socket-contracts 同时检查
 
 `fchmod` 与 `fchown` 对原生 fd 修改原始 Linux inode；重复 fd 共享该元数据。
 该行为由导入内核实施，现有 TCP 连接的数据传输不因 socket inode 权限变化而被适配层改写。
+`futimens`/`futimes` 将原生 socket 的 inode 时间戳交由原始 Linux 更新，支持 NULL、
+UTIME_OMIT 与纳秒/微秒输入，并保留宿主文件行为；非法时间值返回 EINVAL。
