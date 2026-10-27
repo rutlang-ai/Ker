@@ -17,8 +17,11 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/vfs.h>
+#include <sys/xattr.h>
 #include <linux/magic.h>
+#include <linux/limits.h>
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -403,6 +406,97 @@ static void file_cache_operations(void)
     errno = EINPROGRESS; CHECK(posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) == EBADF && errno == EINPROGRESS);
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
 }
+static void descriptor_xattrs(void)
+{
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
+    int copy = dup(fd); CHECK(copy >= 0);
+    char value[128];
+    CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
+    CHECK(fgetxattr(copy, "system.sockprotoname", value, sizeof(value)) == 4 && memcmp(value, "TCP", 4) == 0);
+    ERROR(fgetxattr(fd, "system.sockprotoname", value, 1), ERANGE);
+    ssize_t length = flistxattr(fd, value, sizeof(value)); CHECK(length > 0);
+    int found = 0;
+    for (ssize_t at = 0; at < length; at += strlen(value + at) + 1)
+        if (strcmp(value + at, "system.sockprotoname") == 0) found = 1;
+    CHECK(found); ERROR(flistxattr(fd, value, 1), ERANGE);
+    ssize_t (*get_attribute)(int, const char *, void *, size_t) = fgetxattr;
+    ssize_t (*list_attributes)(int, char *, size_t) = flistxattr;
+    int (*set_attribute)(int, const char *, const void *, size_t, int) = fsetxattr;
+    int native = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") != NULL;
+    if (native) {
+        ERROR(get_attribute(fd, NULL, value, sizeof(value)), EFAULT);
+        ERROR(fremovexattr(fd, NULL), EFAULT);
+        ERROR(set_attribute(fd, NULL, "a", 1, 0), EFAULT);
+        long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+        char *inaccessible_name = mmap(NULL, (size_t)page_size, PROT_NONE,
+                                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(inaccessible_name != MAP_FAILED);
+        ERROR(get_attribute(fd, inaccessible_name, value, sizeof(value)), EFAULT);
+        ERROR(fremovexattr(fd, inaccessible_name), EFAULT);
+        ERROR(set_attribute(fd, inaccessible_name, "a", 1, 0), EFAULT);
+        ERROR(set_attribute(fd, inaccessible_name, "a", 1, ~0), EINVAL);
+        ERROR(get_attribute(fd, "system.sockprotoname", inaccessible_name, 4), EFAULT);
+        ERROR(list_attributes(fd, inaccessible_name, (size_t)page_size), EFAULT);
+        char *readonly_output = mmap(NULL, (size_t)page_size, PROT_READ,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(readonly_output != MAP_FAILED);
+        ERROR(get_attribute(fd, "system.sockprotoname", readonly_output, 4), EFAULT);
+        ERROR(list_attributes(fd, readonly_output, (size_t)page_size), EFAULT);
+        CHECK(munmap(readonly_output, (size_t)page_size) == 0);
+        char *partial_input = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(partial_input != MAP_FAILED);
+        CHECK(mprotect(partial_input + page_size, (size_t)page_size, PROT_NONE) == 0);
+        partial_input[page_size - 1] = 'x';
+        ERROR(set_attribute(fd, "user.partial", inaccessible_name, 1, 0), EFAULT);
+        ERROR(set_attribute(fd, "user.partial", partial_input + page_size - 1, 2, 0), EFAULT);
+        CHECK(munmap(partial_input, (size_t)page_size * 2) == 0);
+        CHECK(get_attribute(fd, "system.sockprotoname", value, sizeof(value)) == 4 &&
+              memcmp(value, "TCP", 4) == 0);
+        CHECK(list_attributes(fd, value, sizeof(value)) == length);
+        CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
+        CHECK(munmap(inaccessible_name, (size_t)page_size) == 0);
+        ERROR(get_attribute(fd, "system.sockprotoname", NULL, 4), EFAULT);
+        ERROR(list_attributes(fd, NULL, 128), EFAULT);
+        ERROR(set_attribute(fd, "user.ker", NULL, 1, 0), EFAULT);
+        ERROR(set_attribute(fd, "user.ker", NULL, 0, 0), EPERM);
+        ERROR(set_attribute(fd, "user.ker", NULL, 1, ~0), EINVAL);
+        ERROR(set_attribute(fd, "", NULL, 1, 0), ERANGE);
+        const char *near_max_name = (const char *)(UINTPTR_MAX - 1u);
+        ERROR(set_attribute(fd, near_max_name, NULL, 1, 0), EFAULT);
+        ERROR(set_attribute(fd, near_max_name, NULL, 1, ~0), EINVAL);
+        ERROR(set_attribute(fd, "user.ker", NULL, XATTR_SIZE_MAX + 1u, 0), E2BIG);
+        CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
+        CHECK(flistxattr(fd, NULL, 0) == length);
+        ERROR(fsetxattr(fd, "user.ker", "a", 1, 0), EPERM);
+        ERROR(fremovexattr(fd, "system.sockprotoname"), EOPNOTSUPP);
+    }
+    CHECK(close(fd) == 0 && fgetxattr(copy, "system.sockprotoname", value, sizeof(value)) == 4);
+    CHECK(close(copy) == 0); ERROR(flistxattr(copy, value, sizeof(value)), EBADF);
+    ERROR(get_attribute(copy, "system.sockprotoname", NULL, 4), EBADF);
+    ERROR(list_attributes(copy, NULL, 128), EBADF);
+    ERROR(set_attribute(copy, "user.ker", "a", 1, 0), EBADF);
+    char path[] = "/tmp/ker-xattrs-XXXXXX";
+    fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    ERROR(get_attribute(fd, NULL, value, sizeof(value)), EFAULT);
+    ERROR(set_attribute(fd, NULL, "a", 1, 0), EFAULT);
+    ERROR(fremovexattr(fd, NULL), EFAULT);
+    ERROR(set_attribute(fd, "user.ker", NULL, 1, 0), EFAULT);
+    CHECK(fsetxattr(fd, "user.empty", NULL, 0, XATTR_CREATE) == 0);
+    CHECK(get_attribute(fd, "user.empty", NULL, 0) == 0);
+    CHECK(fremovexattr(fd, "user.empty") == 0);
+    CHECK(fsetxattr(fd, "user.ker", "a", 1, XATTR_CREATE) == 0);
+    ERROR(get_attribute(fd, "user.ker", NULL, 1), EFAULT);
+    ERROR(list_attributes(fd, NULL, 128), EFAULT);
+    CHECK(get_attribute(fd, "user.ker", NULL, 0) == 1);
+    CHECK(list_attributes(fd, NULL, 0) > 0);
+    ERROR(fsetxattr(fd, "user.ker", "b", 1, XATTR_CREATE), EEXIST);
+    CHECK(fsetxattr(fd, "user.ker", "b", 1, XATTR_REPLACE) == 0);
+    CHECK(fgetxattr(fd, "user.ker", value, sizeof(value)) == 1 && value[0] == 'b');
+    CHECK(fremovexattr(fd, "user.ker") == 0); ERROR(fgetxattr(fd, "user.ker", value, sizeof(value)), ENODATA);
+    CHECK(close(fd) == 0);
+}
+
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -472,6 +566,7 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},

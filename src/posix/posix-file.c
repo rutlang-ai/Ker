@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/limits.h>
+#include <linux/xattr.h>
+#include <stdlib.h>
+#include <sys/xattr.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/syscall.h>
@@ -178,3 +182,125 @@ int posix_fadvise(int fd, off_t offset, off_t length, int advice)
     return value < 0 ? (int)-value : (int)value;
 }
 extern __typeof(posix_fadvise64) posix_fadvise64 __attribute__((alias("posix_fadvise")));
+/* Copy names into host memory before an LKL syscall. Its strncpy_from_user
+ * routines must not dereference a caller address in the host address space. */
+static long ker_copy_xattr_name(const char *name, char local_name[XATTR_NAME_MAX + 1])
+{
+    if (!name) return -EFAULT;
+    uintptr_t name_address = (uintptr_t)name;
+    for (size_t length = 0; length <= XATTR_NAME_MAX; ++length) {
+        if (name_address > UINTPTR_MAX - length) return -EFAULT;
+        char byte;
+        struct iovec local = {.iov_base = &byte, .iov_len = 1};
+        struct iovec remote = {.iov_base = (void *)(name_address + length), .iov_len = 1};
+        long copied;
+        do {
+            copied = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
+        } while (copied < 0 && errno == EINTR);
+        if (copied != 1) return -EFAULT;
+        local_name[length] = byte;
+        if (!byte) return length ? (long)length : -ERANGE;
+    }
+    return -ERANGE;
+}
+
+/* Never pass a caller-owned value/list buffer into LKL: its usercopy helpers
+ * interpret pointers in the imported kernel's address space. Stage through
+ * host memory and preserve partial-copy EFAULT behavior without invoking the
+ * native operation after an incomplete input copy. */
+static long ker_copy_xattr_buffer(void *local_buffer, void *user_buffer,
+                                  size_t length, int to_user)
+{
+    if (!length) return 0;
+    if (!local_buffer || !user_buffer ||
+        (uintptr_t)user_buffer > UINTPTR_MAX - (length - 1))
+        return -EFAULT;
+    struct iovec local = {.iov_base = local_buffer, .iov_len = length};
+    struct iovec remote = {.iov_base = user_buffer, .iov_len = length};
+    long copied;
+    do {
+        copied = syscall(to_user ? SYS_process_vm_writev : SYS_process_vm_readv,
+                         getpid(), &local, 1, &remote, 1, 0);
+    } while (copied < 0 && errno == EINTR);
+    return copied == (long)length ? 0 : -EFAULT;
+}
+
+ssize_t fgetxattr(int fd, const char *name, void *value, size_t size)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fgetxattr, fd, name, value, size);
+    char local_name[XATTR_NAME_MAX + 1];
+    long name_error = ker_copy_xattr_name(name, local_name);
+    if (name_error < 0) { ker_fd_put(entry); return ker_native_result(name_error); }
+    if (!value && size) { ker_fd_put(entry); errno = EFAULT; return -1; }
+    size_t capacity = size < XATTR_SIZE_MAX ? size : XATTR_SIZE_MAX;
+    void *local_value = capacity ? malloc(capacity) : NULL;
+    if (capacity && !local_value) { ker_fd_put(entry); errno = ENOMEM; return -1; }
+    long result = lkl_sys_fgetxattr(entry->native, local_name, local_value, capacity);
+    if (result > 0 && capacity && (size_t)result > capacity) result = -EIO;
+    if (result > 0 && capacity) {
+        long copy_error = ker_copy_xattr_buffer(local_value, value, (size_t)result, 1);
+        if (copy_error < 0) result = copy_error;
+    }
+    free(local_value);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}
+
+int fsetxattr(int fd, const char *name, const void *value, size_t size, int flags)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fsetxattr, fd, name, value, size, flags);
+    if (flags & ~(XATTR_CREATE | XATTR_REPLACE)) {
+        ker_fd_put(entry);
+        return ker_native_result(-EINVAL);
+    }
+    char local_name[XATTR_NAME_MAX + 1];
+    long name_error = ker_copy_xattr_name(name, local_name);
+    if (name_error < 0) { ker_fd_put(entry); return ker_native_result(name_error); }
+    if (size > XATTR_SIZE_MAX) { ker_fd_put(entry); return ker_native_result(-E2BIG); }
+    if (!value && size) { ker_fd_put(entry); return ker_native_result(-EFAULT); }
+    void *local_value = size ? malloc(size) : NULL;
+    if (size && !local_value) { ker_fd_put(entry); errno = ENOMEM; return -1; }
+    long copy_error = ker_copy_xattr_buffer(local_value, (void *)value, size, 0);
+    if (copy_error < 0) {
+        free(local_value);
+        ker_fd_put(entry);
+        return ker_native_result(copy_error);
+    }
+    long result = lkl_sys_fsetxattr(entry->native, local_name, local_value, size, flags);
+    free(local_value);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}
+
+ssize_t flistxattr(int fd, char *list, size_t size)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_flistxattr, fd, list, size);
+    if (!list && size) { ker_fd_put(entry); errno = EFAULT; return -1; }
+    size_t capacity = size < XATTR_LIST_MAX ? size : XATTR_LIST_MAX;
+    char *local_list = capacity ? malloc(capacity) : NULL;
+    if (capacity && !local_list) { ker_fd_put(entry); errno = ENOMEM; return -1; }
+    long result = lkl_sys_flistxattr(entry->native, local_list, capacity);
+    if (result > 0 && capacity && (size_t)result > capacity) result = -EIO;
+    if (result > 0 && capacity) {
+        long copy_error = ker_copy_xattr_buffer(local_list, list, (size_t)result, 1);
+        if (copy_error < 0) result = copy_error;
+    }
+    free(local_list);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}
+
+int fremovexattr(int fd, const char *name)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fremovexattr, fd, name);
+    char local_name[XATTR_NAME_MAX + 1];
+    long name_error = ker_copy_xattr_name(name, local_name);
+    if (name_error < 0) { ker_fd_put(entry); return ker_native_result(name_error); }
+    long result = lkl_sys_fremovexattr(entry->native, local_name);
+    ker_fd_put(entry);
+    return ker_native_result(result);
+}
