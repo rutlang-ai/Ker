@@ -30,3 +30,8 @@ A primary DONE payload must be a JSON object with a nonnegative integer
 outstanding count. Malformed records, including boolean/string/floating counts,
 are infrastructure failures after the worker is reaped; they cannot escape as
 tracebacks or turn failed ownership evidence into successful shutdown.
+
+Each worker emits one completion snapshot. Duplicate DONE records are failures,
+including two zero-count snapshots; a later zero must not hide an earlier
+outstanding-object count. A startup-consumed DONE snapshot counts toward the
+same per-worker limit.
