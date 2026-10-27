@@ -72,7 +72,7 @@ def main():
                 '--', '/usr/bin/touch', str(marker)],
                 env=dict(os.environ, RUNTIME_DIRECTORY=str(root)), capture_output=True, text=True, timeout=20)
             require(result.returncode == 125 and 'invalid process type: bogus_proc_type' in result.stderr
-                    and 'ker EAL:' in result.stderr and 'DPDK worker failed before packet I/O became ready' in result.stderr,
+                    and 'ker EAL:' in result.stderr and 'DPDK worker exited before a complete startup record' in result.stderr,
                     'invalid process type did not fail in original EAL: ' + result.stdout + result.stderr)
             require(not marker.exists() and not stats.exists() and 'KER_IO_READY' not in result.stdout,
                     'invalid EAL process reached application entry or worker readiness')

@@ -855,6 +855,26 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     return args
 
 
+def read_worker_startup(process, label, timeout=20, maximum=65536):
+    """Bound the complete record, including a writer that stalls mid-line."""
+    deadline = time.monotonic() + timeout
+    data = bytearray()
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise RuntimeError(label + ' startup timed out')
+            byte = os.read(process.stdout.fileno(), 1)
+            if not byte:
+                raise RuntimeError(label + ' exited before a complete startup record')
+            data.extend(byte)
+            if len(data) > maximum:
+                raise RuntimeError(label + ' startup record exceeds limit')
+            if byte == b'\n':
+                return data.decode('utf-8').strip()
+
+
 class AdditionalWorker:
     """Own one additional Ethernet/MTU channel and its separate EAL process."""
 
@@ -900,11 +920,7 @@ class AdditionalWorker:
             pass_fds=(self.io_packet.fileno(), self.io_mtu.fileno(), self.stop_read),
             stdout=subprocess.PIPE, text=True)
         self.io_packet.close(); self.io_mtu.close(); os.close(self.stop_read); self.stop_read = -1
-        with selectors.DefaultSelector() as selector:
-            selector.register(self.process.stdout, selectors.EVENT_READ)
-            if not selector.select(20):
-                raise RuntimeError('additional DPDK worker startup timed out: ' + item['name'])
-            line = self.process.stdout.readline().strip()
+        line = read_worker_startup(self.process, 'additional DPDK worker ' + item['name'])
         if line.startswith('KER_IO_DONE '):
             self.stats = json.loads(line.removeprefix('KER_IO_DONE '))
         if not line.startswith('KER_IO_READY '):
@@ -1130,11 +1146,7 @@ def main():
         mtu_io.close()
         os.close(control_read)
         control_read = -1
-        with selectors.DefaultSelector() as selector:
-            selector.register(worker.stdout, selectors.EVENT_READ)
-            if not selector.select(20):
-                raise RuntimeError('DPDK worker startup timed out')
-            ready = worker.stdout.readline().strip()
+        ready = read_worker_startup(worker, 'DPDK worker')
         if not ready.startswith('KER_IO_READY '):
             # A worker that fails after EAL initialization can emit its cleanup
             # snapshot as the first line. Preserve it for --stats: communicate()
