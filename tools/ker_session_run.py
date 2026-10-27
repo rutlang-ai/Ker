@@ -178,7 +178,11 @@ def old_endpoint_fd_path_exists(pid, fd, *, expected_interface, expected_ifindex
     return True
 
 
-def _read_process_fdinfo_census(pid, directory):
+class _IncompleteFdinfoCensus(Exception):
+    """A descriptor disappeared while one fdinfo census was being read."""
+
+
+def _read_process_fdinfo_census(pid, directory, attempt):
     descriptors = set()
     interfaces = set()
     try:
@@ -189,30 +193,90 @@ def _read_process_fdinfo_census(pid, directory):
             descriptor = int(path.name)
             try:
                 information = path.read_text()
+            except FileNotFoundError as error:
+                raise _IncompleteFdinfoCensus(
+                    f'fdinfo entry disappeared for pid {pid}, fd {descriptor}, '
+                    f'attempt {attempt}') from error
             except OSError as error:
-                raise RuntimeError(f'could not complete fdinfo census for pid {pid}, fd {descriptor}') from error
+                raise RuntimeError(
+                    f'could not complete fdinfo census for pid {pid}, fd {descriptor}, '
+                    f'attempt {attempt}: errno={error.errno} {error.strerror}') from error
             descriptors.add(descriptor)
             interfaces.update(line.split(':', 1)[1].strip() for line in information.splitlines()
                 if line.startswith('iff:'))
+    except FileNotFoundError as error:
+        raise _IncompleteFdinfoCensus(
+            f'fdinfo directory disappeared for pid {pid} on attempt {attempt}') from error
     except OSError as error:
-        raise RuntimeError(f'could not enumerate fdinfo for pid {pid}') from error
+        raise RuntimeError(
+            f'could not enumerate fdinfo for pid {pid} on attempt {attempt}: '
+            f'errno={error.errno} {error.strerror}') from error
     return frozenset(descriptors), frozenset(interfaces)
 
 
-def process_fdinfo_snapshot(pid, *, fdinfo_dir=None, identity_check=None):
-    """Require two matching complete fdinfo censuses for one live process."""
+FDINFO_CENSUS_MAX_ATTEMPTS = 3
+
+
+def process_fdinfo_snapshot(pid, *, fdinfo_dir=None, identity_check=None, census_check=None):
+    """Require two matching complete fdinfo censuses for one live process.
+
+    Bounded retries tolerate unrelated descriptors closing or changing during
+    a scan. Callers may validate each complete census before it can be retried.
+    Permission, identity, and contract failures are always immediate.
+    """
     directory = Path(f'/proc/{pid}/fdinfo') if fdinfo_dir is None else Path(fdinfo_dir)
-    if identity_check is not None:
-        identity_check()
-    first = _read_process_fdinfo_census(pid, directory)
-    if identity_check is not None:
-        identity_check()
-    second = _read_process_fdinfo_census(pid, directory)
-    if identity_check is not None:
-        identity_check()
-    if first != second:
-        raise RuntimeError(f'fdinfo census changed while inspecting parked pid {pid}')
-    return second
+    max_attempts = FDINFO_CENSUS_MAX_ATTEMPTS
+
+    def check_identity():
+        if identity_check is not None:
+            identity_check()
+
+    def read_census(attempt):
+        try:
+            snapshot = _read_process_fdinfo_census(pid, directory, attempt)
+        except _IncompleteFdinfoCensus:
+            raise
+        except RuntimeError:
+            raise
+        except OSError as error:
+            raise RuntimeError(
+                f'could not complete fdinfo census for pid {pid} on attempt {attempt}: '
+                f'errno={error.errno} {error.strerror}') from error
+        if census_check is not None:
+            census_check(snapshot)
+        return snapshot
+
+    for attempt in range(1, max_attempts + 1):
+        check_identity()
+        try:
+            first = read_census(attempt)
+        except _IncompleteFdinfoCensus as error:
+            check_identity()
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f'fdinfo census remained incomplete for pid {pid} after '
+                    f'{max_attempts} attempts: {error}') from error
+            continue
+
+        check_identity()
+        try:
+            second = read_census(attempt)
+        except _IncompleteFdinfoCensus as error:
+            check_identity()
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f'fdinfo census remained incomplete for pid {pid} after '
+                    f'{max_attempts} attempts: {error}') from error
+            continue
+
+        check_identity()
+        if first == second:
+            return second
+        if attempt == max_attempts:
+            raise RuntimeError(
+                f'fdinfo census remained unstable while inspecting parked pid {pid} '
+                f'after {max_attempts} attempts')
+    raise AssertionError('unreachable fdinfo census retry state')
 
 
 def require_live_process_identity(pid, pidfd):
@@ -1086,8 +1150,9 @@ def _run_session_impl(args, api):
         if metrics['geometry'].get('exception_endpoint_ifindex') <= 0:
             raise RuntimeError('parked owner reported an invalid exception endpoint interface index')
         fdinfo = process_fdinfo_snapshot(worker.pid,
-            identity_check=lambda: require_live_process_identity(worker.pid, worker_pidfd))
-        validate_handoff_fdinfo(fdinfo, old_exception_fd, metrics['exception_endpoint_name'])
+            identity_check=lambda: require_live_process_identity(worker.pid, worker_pidfd),
+            census_check=lambda snapshot: validate_handoff_fdinfo(
+                snapshot, old_exception_fd, metrics['exception_endpoint_name']))
         old_tun_interfaces = handoff_fdinfo_interfaces(fdinfo)
         if os.write(peer_control_w, b'P') != 1:
             raise RuntimeError('could not admit the exact reserved successor')
