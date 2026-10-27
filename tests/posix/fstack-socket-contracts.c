@@ -34,6 +34,9 @@
 #include <sys/ioctl.h>
 #include <linux/sockios.h>
 #include <net/if.h>
+#include <ifaddrs.h>
+#include <linux/if_packet.h>
+#include <linux/if_link.h>
 #include <limits.h>
 #include <sys/sendfile.h>
 #include <sys/uio.h>
@@ -426,6 +429,8 @@ static void file_cache_operations(void)
     CHECK(lseek(fd, 0, SEEK_CUR) == 1 && close(fd) == 0);
     errno = EINPROGRESS; CHECK(posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) == EBADF && errno == EINPROGRESS);
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
+}
+
 static void interface_addresses(void)
 {
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
