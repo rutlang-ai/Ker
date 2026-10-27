@@ -34,6 +34,9 @@
 #include <sys/ioctl.h>
 #include <linux/sockios.h>
 #include <net/if.h>
+#include <ifaddrs.h>
+#include <linux/if_packet.h>
+#include <linux/if_link.h>
 #include <limits.h>
 #include <sys/sendfile.h>
 #include <sys/uio.h>
@@ -426,6 +429,63 @@ static void file_cache_operations(void)
     CHECK(lseek(fd, 0, SEEK_CUR) == 1 && close(fd) == 0);
     errno = EINPROGRESS; CHECK(posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) == EBADF && errno == EINPROGRESS);
     ERROR(readahead(fd, 0, 4096), EBADF); ERROR(sync_file_range(fd, 0, 4096, 0), EBADF);
+}
+
+static void interface_addresses(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0); CHECK(fd >= 0);
+    struct ifaddrs *held; CHECK(getifaddrs(&held) == 0 && held && held->ifa_name);
+    void *libc = dlopen("libc.so.6", RTLD_NOW | RTLD_LOCAL); CHECK(libc);
+    int (*host_addresses)(struct ifaddrs **) = dlsym(libc, "getifaddrs");
+    struct if_nameindex *(*host_names)(void) = dlsym(libc, "if_nameindex");
+    CHECK(host_addresses && host_names);
+    struct ifaddrs *foreign; CHECK(host_addresses(&foreign) == 0); freeifaddrs(foreign);
+    struct if_nameindex *foreign_names = host_names(); CHECK(foreign_names); if_freenameindex(foreign_names);
+    CHECK(dlclose(libc) == 0);
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        struct ifaddrs *list; CHECK(getifaddrs(&list) == 0 && list);
+        struct if_nameindex *names = if_nameindex(); CHECK(names);
+        unsigned count = 0, packets = 0, loopback = 0, statistics = 0;
+        for (struct ifaddrs *entry = list; entry; entry = entry->ifa_next) {
+            CHECK(++count < 1024 && entry->ifa_name);
+            unsigned index = if_nametoindex(entry->ifa_name); CHECK(index);
+            struct ifreq request = {0}; CHECK(strlen(entry->ifa_name) < IFNAMSIZ);
+            strcpy(request.ifr_name, entry->ifa_name);
+            CHECK(ioctl(fd, SIOCGIFFLAGS, &request) == 0);
+            CHECK((entry->ifa_flags & 0xffff) == (unsigned short)request.ifr_flags);
+            if (!entry->ifa_addr) continue;
+            if (entry->ifa_addr->sa_family == AF_PACKET) {
+                struct sockaddr_ll *address = (void *)entry->ifa_addr;
+                CHECK(address->sll_ifindex == (int)index && address->sll_halen <= 32);
+                CHECK(ioctl(fd, SIOCGIFHWADDR, &request) == 0 && address->sll_hatype == request.ifr_hwaddr.sa_family);
+                size_t bytes = address->sll_halen;
+                if (bytes > sizeof(request.ifr_hwaddr.sa_data)) bytes = sizeof(request.ifr_hwaddr.sa_data);
+                CHECK(memcmp(address->sll_addr, request.ifr_hwaddr.sa_data, bytes) == 0);
+                if (entry->ifa_data) statistics++;
+                packets++;
+            } else if (entry->ifa_addr->sa_family == AF_INET) {
+                struct sockaddr_in *address = (void *)entry->ifa_addr;
+                CHECK(entry->ifa_netmask && entry->ifa_netmask->sa_family == AF_INET);
+                CHECK(ioctl(fd, SIOCGIFADDR, &request) == 0);
+                if (((struct sockaddr_in *)&request.ifr_addr)->sin_addr.s_addr == address->sin_addr.s_addr) {
+                    CHECK(ioctl(fd, SIOCGIFNETMASK, &request) == 0);
+                    CHECK(((struct sockaddr_in *)entry->ifa_netmask)->sin_addr.s_addr ==
+                        ((struct sockaddr_in *)&request.ifr_netmask)->sin_addr.s_addr);
+                }
+                if ((ntohl(address->sin_addr.s_addr) >> 24) == 127) loopback++;
+                if (entry->ifa_broadaddr) CHECK(entry->ifa_broadaddr->sa_family == AF_INET);
+            } else if (entry->ifa_addr->sa_family == AF_INET6) {
+                struct sockaddr_in6 *address = (void *)entry->ifa_addr;
+                CHECK(entry->ifa_netmask && entry->ifa_netmask->sa_family == AF_INET6);
+                if (IN6_IS_ADDR_LINKLOCAL(&address->sin6_addr)) CHECK(address->sin6_scope_id == index);
+            }
+        }
+        CHECK(packets >= 1 && loopback >= 1);
+        if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) CHECK(statistics >= 1);
+        if_freenameindex(names); freeifaddrs(list);
+        CHECK(if_nametoindex(held->ifa_name) != 0);
+    }
+    freeifaddrs(held); CHECK(close(fd) == 0);
 }
 enum route_send_path { ROUTE_SEND, ROUTE_SENDTO, ROUTE_WRITE, ROUTE_WRITEV, ROUTE_SENDMSG, ROUTE_SENDMMSG };
 
@@ -1228,6 +1288,7 @@ int main(void)
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
+        {"original-kernel-interface-addresses", interface_addresses},
         {"original-kernel-interface-enumeration", interface_enumeration},
         {"interface-name-and-index-kernel-identity", interface_name_lookup},
         {"cross-kernel-file-transfer-boundaries", file_transfer_boundaries},
