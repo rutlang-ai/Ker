@@ -25,12 +25,24 @@ _Static_assert(offsetof(struct iovec, iov_len) == offsetof(struct lkl_iovec, iov
 
 /* LKL's NOMMU uaccess path uses memcpy and can fault the host process. Keep
  * user pointers at this boundary and use the host kernel for fault-safe copies. */
+static int user_address_at(const void *base, size_t offset, void **address)
+{
+    uintptr_t value = (uintptr_t)base;
+    if (value > UINTPTR_MAX - offset) { errno = EFAULT; return -1; }
+    *address = (void *)(value + offset);
+    return 0;
+}
+
 static int copy_from_user(void *destination, const void *source, size_t length)
 {
+    uintptr_t base = (uintptr_t)source;
+    if (length && base > UINTPTR_MAX - (length - 1)) { errno = EFAULT; return -1; }
     size_t copied = 0;
     while (copied < length) {
+        void *remote_address;
+        if (user_address_at(source, copied, &remote_address) < 0) return -1;
         struct iovec local = {(char *)destination + copied, length - copied};
-        struct iovec remote = {(void *)((uintptr_t)source + copied), length - copied};
+        struct iovec remote = {remote_address, length - copied};
         ssize_t result = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
         if (result < 0 && errno == EINTR) continue;
         if (result <= 0) { errno = EFAULT; return -1; }
@@ -41,10 +53,14 @@ static int copy_from_user(void *destination, const void *source, size_t length)
 
 static int copy_to_user(void *destination, const void *source, size_t length)
 {
+    uintptr_t base = (uintptr_t)destination;
+    if (length && base > UINTPTR_MAX - (length - 1)) { errno = EFAULT; return -1; }
     size_t copied = 0;
     while (copied < length) {
+        void *remote_address;
+        if (user_address_at(destination, copied, &remote_address) < 0) return -1;
         struct iovec local = {(char *)source + copied, length - copied};
-        struct iovec remote = {(void *)((uintptr_t)destination + copied), length - copied};
+        struct iovec remote = {remote_address, length - copied};
         ssize_t result = syscall(SYS_process_vm_writev, getpid(), &local, 1, &remote, 1, 0);
         if (result < 0 && errno == EINTR) continue;
         if (result <= 0) { errno = EFAULT; return -1; }

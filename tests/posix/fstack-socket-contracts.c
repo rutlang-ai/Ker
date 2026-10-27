@@ -483,6 +483,13 @@ static void file_transfer_boundaries(void)
         ERROR(vmsplice(p.client, (struct iovec *)(user + page), 1, 0), EFAULT);
         ERROR(vmsplice(p.client, cross_vectors, 1, 0), EFAULT);
         ERROR(vmsplice(p.client, (struct iovec *)(user + page), 1, 0x80000000u), EINVAL);
+        void *near_max = (void *)(uintptr_t)(UINTPTR_MAX - sizeof(loff_t) / 2);
+        ERROR(sendfile(p.client, p.server, (off_t *)near_max, 1), EFAULT);
+        ERROR(splice(p.server, (loff_t *)near_max, p.client, NULL, 1, 0), EFAULT);
+        ERROR(splice(p.server, NULL, p.client, (loff_t *)near_max, 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, (off64_t *)near_max, p.client, NULL, 1, 0), EFAULT);
+        ERROR(copy_file_range(p.server, NULL, p.client, (off64_t *)near_max, 1, 0), EFAULT);
+        ERROR(vmsplice(p.client, (struct iovec *)near_max, 1, 0), EFAULT);
         /* The native socket is not a pipe, so upstream rejects it before
          * touching the user payload address; do not stage/free vmsplice data. */
         struct iovec protected_data = {user + page, 1};
