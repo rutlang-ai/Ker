@@ -290,12 +290,14 @@ static int select_ns(int maximum, fd_set *reads, fd_set *writes, fd_set *errors,
     }
     int ready = poll_ns(fds, count, duration, mask);
     if (ready < 0) return -1;
+    /* Linux copies result sets only after a successful descriptor scan. */
+    for (nfds_t i = 0; i < count; ++i)
+        if (fds[i].revents & POLLNVAL) { errno = EBADF; return -1; }
     if (reads) FD_ZERO(reads);
     if (writes) FD_ZERO(writes);
     if (errors) FD_ZERO(errors);
     int result = 0;
     for (nfds_t i = 0; i < count; ++i) {
-        if (fds[i].revents & POLLNVAL) { errno = EBADF; return -1; }
         if (reads && (fds[i].events & POLLIN) && (fds[i].revents & (POLLIN | POLLHUP | POLLERR))) {
             FD_SET(fds[i].fd, reads); result++;
         }
