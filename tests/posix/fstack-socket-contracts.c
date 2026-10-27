@@ -355,6 +355,33 @@ static void descriptor_timestamps(void)
         CHECK(close(fd) == 0); ERROR(futimens(fd, NULL), EBADF);
     }
 }
+
+static void file_allocation(void)
+{
+    struct pair p = connected();
+    CHECK(write(p.client, "a", 1) == 1); ready(p.server);
+    ERROR(fallocate(p.server, 0, 0, 4096), ENODEV);
+    ERROR(fallocate64(p.server, 0, 0, 4096), ENODEV);
+    CHECK(posix_fallocate(p.server, 0, 4096) == ENODEV);
+    CHECK(posix_fallocate64(p.server, 0, 4096) == ENODEV);
+    char byte; CHECK(read(p.server, &byte, 1) == 1 && byte == 'a'); finish(p);
+    char path[] = "/tmp/ker-allocation-XXXXXX";
+    int fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    struct stat st;
+    CHECK(fallocate64(fd, FALLOC_FL_KEEP_SIZE, 0, 4096) == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 0);
+    CHECK(fallocate(fd, 0, 0, 4096) == 0 && fstat(fd, &st) == 0 && st.st_size == 4096);
+    CHECK(pwrite(fd, "b", 1, 0) == 1);
+    CHECK(fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, 0, 4096) == 0);
+    CHECK(pread(fd, &byte, 1, 0) == 1 && byte == 0);
+    CHECK(posix_fallocate(fd, 4096, 4096) == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 8192);
+    CHECK(pread(fd, &byte, 1, 4096) == 1 && byte == 0);
+    CHECK(posix_fallocate64(fd, 8192, 4096) == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 12288);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 12288 && close(fd) == 0);
+    ERROR(fallocate(fd, 0, 0, 4096), EBADF);
+}
 static void positioned_operations(void)
 {
     struct pair p = connected();
@@ -422,6 +449,7 @@ int main(void)
         {"filesystem-statistics-owner-routing", filesystem_statistics},
         {"descriptor-permissions-owner-routing", descriptor_permissions},
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
+        {"file-allocation-owner-routing", file_allocation},
         {"positioned-io-and-seek-owner-routing", positioned_operations},
         {"positioned-stream-write-SIGPIPE-and-error-boundaries", positioned_stream_sigpipe},
         {"creation-flags-and-socket-type", creation_flags},

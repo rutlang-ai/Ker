@@ -1421,3 +1421,7 @@ v2 的 offset=-1 保留 Linux 流式读写行为。socket-contracts 同时检查
 该行为由导入内核实施，现有 TCP 连接的数据传输不因 socket inode 权限变化而被适配层改写。
 `futimens`/`futimes` 将原生 socket 的 inode 时间戳交由原始 Linux 更新，支持 NULL、
 UTIME_OMIT 与纳秒/微秒输入，并保留宿主文件行为；非法时间值返回 EINVAL。
+
+`fallocate`/`fallocate64` 与 `posix_fallocate`/`posix_fallocate64` 按 fd 所属内核执行：
+原生 socket 由 Linux 返回 ENODEV，宿主文件保留预分配、KEEP_SIZE 和打洞语义，
+失败不影响原生 TCP 待收数据。
