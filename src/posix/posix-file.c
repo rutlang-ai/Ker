@@ -9,6 +9,7 @@
 #include <linux/xattr.h>
 #include <stdlib.h>
 #include <sys/xattr.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/syscall.h>
@@ -304,3 +305,21 @@ int fremovexattr(int fd, const char *name)
     ker_fd_put(entry);
     return ker_native_result(result);
 }
+
+void *mmap(void *address, size_t length, int protection, int flags, int fd, off_t offset)
+{
+    /* Anonymous mappings ignore fd, including a native reservation value. */
+    if (flags & MAP_ANONYMOUS) return (void *)syscall(SYS_mmap, address, length, protection, flags, fd, offset);
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return (void *)syscall(SYS_mmap, address, length, protection, flags, fd, offset);
+    if ((uint64_t)offset & 4095) {
+        ker_fd_put(entry); errno = EINVAL; return MAP_FAILED;
+    }
+    void *value = lkl_sys_mmap(address, length, protection, flags, entry->native, offset);
+    ker_fd_put(entry);
+    if ((uintptr_t)value >= (uintptr_t)-4095) {
+        errno = -(long)value; return MAP_FAILED;
+    }
+    return value;
+}
+extern __typeof(mmap64) mmap64 __attribute__((alias("mmap")));
