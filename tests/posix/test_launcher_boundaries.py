@@ -275,6 +275,28 @@ class LauncherBoundaryTests(unittest.TestCase):
                 os.waitpid(process.pid, os.WNOHANG)
         self.assertEqual(self.run_launcher(0, native_done=True, config=self.config), 0)
 
+    def test_invalid_native_statistics_cannot_abandon_auxiliary_cleanup(self):
+        finish = launcher.AdditionalWorker.finish
+        for payload in ('bad-json', '[]', 'null', '{"counter":true}',
+                        '{"counter":-1}', '{"counter":"0"}',
+                        '{}\nKER_NATIVE_STATS {}'):
+            finished = []
+            def complete(extra):
+                result = finish(extra)
+                finished.append(extra.process)
+                return result
+            terminal = 'KER_NATIVE_STOPPING\nKER_NATIVE_STATS '+payload+'\nKER_NATIVE_DONE\n'
+            with self.subTest(payload=payload), \
+                    mock.patch.object(launcher.AdditionalWorker, 'finish', complete):
+                result, message = self.run_launcher(0, native_done=True, config=self.config,
+                    extra_env={'FAKE_NATIVE_TERMINAL':terminal}, capture_stderr=True)
+            self.assertEqual(result, 125)
+            self.assertIn('native statistics', message)
+            self.assertEqual(len(finished), 1)
+            self.assertIsNotNone(finished[0].returncode)
+        self.assertEqual(self.run_launcher(0, native_done=True, config=self.config,
+            extra_env={'FAKE_NATIVE_TERMINAL': 'KER_NATIVE_STOPPING\nKER_NATIVE_STATS {"counter":0}\nKER_NATIVE_DONE\n'}), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
