@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
@@ -822,6 +823,50 @@ static void checked_host_cancellation(enum checked_block_kind kind)
     } else CHECK(joined == 0 && result == PTHREAD_CANCELED);
     CHECK(close(call.fd) == 0 && close(call.peer) == 0);
 }
+struct checked_pread_call {
+    int fd;
+    atomic_int entered, start, returned, finish;
+    ssize_t result;
+};
+static void *checked_pending_pread(void *opaque)
+{
+    struct checked_pread_call *call = opaque;
+    char byte;
+    atomic_store_explicit(&call->entered, 1, memory_order_release);
+    while (!atomic_load_explicit(&call->start, memory_order_acquire)) sched_yield();
+    call->result = __pread_chk(call->fd, &byte, 1, 0, sizeof byte);
+    atomic_store_explicit(&call->returned, 1, memory_order_release);
+    while (!atomic_load_explicit(&call->finish, memory_order_acquire)) sched_yield();
+    return (void *)(intptr_t)call->result;
+}
+static void checked_host_pread_cancellation(void)
+{
+    char path[] = "/tmp/ker-checked-pread-cancel-XXXXXX";
+    int fd = mkstemp(path); CHECK(fd >= 0 && unlink(path) == 0);
+    CHECK(write(fd, "p", 1) == 1);
+    struct checked_pread_call call = {.fd = fd};
+    atomic_init(&call.entered, 0); atomic_init(&call.start, 0);
+    atomic_init(&call.returned, 0); atomic_init(&call.finish, 0);
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, checked_pending_pread, &call) == 0);
+    for (unsigned i = 0; i < 1000 && !atomic_load_explicit(&call.entered, memory_order_acquire); ++i) {
+        struct timespec pause = {.tv_nsec = 1000000L}; nanosleep(&pause, NULL);
+    }
+    CHECK(atomic_load_explicit(&call.entered, memory_order_acquire));
+    CHECK(pthread_cancel(thread) == 0);
+    atomic_store_explicit(&call.start, 1, memory_order_release);
+    void *result = NULL;
+    int joined = checked_timed_join(thread, &result);
+    if (joined == ETIMEDOUT) {
+        int returned = atomic_load_explicit(&call.returned, memory_order_acquire);
+        atomic_store_explicit(&call.finish, 1, memory_order_release);
+        CHECK(returned);
+        CHECK(pthread_join(thread, &result) == 0);
+        /* A raw syscall returns normally despite the pending cancellation; libc
+         * pread is a cancellation point and must consume it before returning. */
+        CHECK(result == PTHREAD_CANCELED);
+    } else CHECK(joined == 0 && result == PTHREAD_CANCELED);
+    CHECK(close(fd) == 0);
+}
 static void checked_entry_cancellation(void)
 {
     checked_host_cancellation(CHECKED_READ);
@@ -829,6 +874,7 @@ static void checked_entry_cancellation(void)
     checked_host_cancellation(CHECKED_RECVFROM);
     checked_host_cancellation(CHECKED_POLL);
     checked_host_cancellation(CHECKED_PPOLL);
+    checked_host_pread_cancellation();
 }
 static void fortified_io(void)
 {
