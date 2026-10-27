@@ -435,6 +435,25 @@ static void descriptor_xattrs(void)
         ERROR(fremovexattr(fd, inaccessible_name), EFAULT);
         ERROR(set_attribute(fd, inaccessible_name, "a", 1, 0), EFAULT);
         ERROR(set_attribute(fd, inaccessible_name, "a", 1, ~0), EINVAL);
+        ERROR(get_attribute(fd, "system.sockprotoname", inaccessible_name, 4), EFAULT);
+        ERROR(list_attributes(fd, inaccessible_name, (size_t)page_size), EFAULT);
+        char *readonly_output = mmap(NULL, (size_t)page_size, PROT_READ,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(readonly_output != MAP_FAILED);
+        ERROR(get_attribute(fd, "system.sockprotoname", readonly_output, 4), EFAULT);
+        ERROR(list_attributes(fd, readonly_output, (size_t)page_size), EFAULT);
+        CHECK(munmap(readonly_output, (size_t)page_size) == 0);
+        char *partial_input = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(partial_input != MAP_FAILED);
+        CHECK(mprotect(partial_input + page_size, (size_t)page_size, PROT_NONE) == 0);
+        partial_input[page_size - 1] = 'x';
+        ERROR(set_attribute(fd, "user.partial", inaccessible_name, 1, 0), EFAULT);
+        ERROR(set_attribute(fd, "user.partial", partial_input + page_size - 1, 2, 0), EFAULT);
+        CHECK(munmap(partial_input, (size_t)page_size * 2) == 0);
+        CHECK(get_attribute(fd, "system.sockprotoname", value, sizeof(value)) == 4 &&
+              memcmp(value, "TCP", 4) == 0);
+        CHECK(list_attributes(fd, value, sizeof(value)) == length);
         CHECK(fgetxattr(fd, "system.sockprotoname", NULL, 0) == 4);
         CHECK(munmap(inaccessible_name, (size_t)page_size) == 0);
         ERROR(get_attribute(fd, "system.sockprotoname", NULL, 4), EFAULT);
