@@ -49,6 +49,7 @@ static int host_poll(struct pollfd *fds, nfds_t count, int64_t timeout, const si
 static int poll_ns(struct pollfd *fds, nfds_t count, int64_t timeout, const sigset_t *mask)
 {
     if (count > KER_FD_LIMIT) { errno = EINVAL; return -1; }
+    if (count && !fds) { errno = EFAULT; return -1; }
     struct ker_fd **pinned = calloc(count ? count : 1, sizeof(*pinned));
     int *host_snapshot = malloc((count ? count : 1) * sizeof(*host_snapshot));
     struct pollfd *host = calloc(count ? count : 1, sizeof(*host));
