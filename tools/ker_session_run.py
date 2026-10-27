@@ -330,11 +330,7 @@ def require_live_process_identity(pid, pidfd):
 
 def validate_handoff_fdinfo(snapshot, exception_fd, exception_interface):
     """Require the old TAP identity absent; stable reuse is allowed only without TUN fdinfo."""
-    if len(snapshot) == 2:
-        descriptors, interfaces = snapshot
-        interfaces_by_fd = {exception_fd: ('<legacy-unmapped-tun>',)} if exception_fd in descriptors else {}
-    else:
-        descriptors, interfaces, interfaces_by_fd = snapshot
+    descriptors, interfaces, interfaces_by_fd = snapshot
     if type(exception_fd) is not int or exception_fd < 0:
         raise RuntimeError('handoff exception descriptor number is invalid')
     if exception_interface in interfaces:

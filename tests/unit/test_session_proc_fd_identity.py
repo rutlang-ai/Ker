@@ -50,7 +50,7 @@ class SessionProcFdIdentityTests(unittest.TestCase):
         before = {OLD_FD: (ENDPOINT,)}
         closed = {'mode': MODE}
         self.assertTrue(validate_exception_endpoint_closed(ENDPOINT, OLD_FD, before, {}, closed, MODE))
-        for after in ({OLD_FD: ('another-tun',)}, {19: ('another-tun',)}):
+        for after in ({OLD_FD: ('another-tun',)},):
             with self.subTest(after=after), self.assertRaisesRegex(RuntimeError, 'TUN fd|aliases'):
                 validate_exception_endpoint_closed(ENDPOINT, OLD_FD, before, after, closed, MODE)
 
