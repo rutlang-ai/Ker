@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
+#include "posix-usercopy.h"
 #include "syscall-result.h"
 #include <dlfcn.h>
 #include <stdint.h>
@@ -187,22 +188,10 @@ extern __typeof(posix_fadvise64) posix_fadvise64 __attribute__((alias("posix_fad
  * routines must not dereference a caller address in the host address space. */
 static long ker_copy_xattr_name(const char *name, char local_name[XATTR_NAME_MAX + 1])
 {
-    if (!name) return -EFAULT;
-    uintptr_t name_address = (uintptr_t)name;
-    for (size_t length = 0; length <= XATTR_NAME_MAX; ++length) {
-        if (name_address > UINTPTR_MAX - length) return -EFAULT;
-        char byte;
-        struct iovec local = {.iov_base = &byte, .iov_len = 1};
-        struct iovec remote = {.iov_base = (void *)(name_address + length), .iov_len = 1};
-        long copied;
-        do {
-            copied = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
-        } while (copied < 0 && errno == EINTR);
-        if (copied != 1) return -EFAULT;
-        local_name[length] = byte;
-        if (!byte) return length ? (long)length : -ERANGE;
-    }
-    return -ERANGE;
+    long length = ker_copy_user_cstring(name, local_name, XATTR_NAME_MAX + 1);
+    if (length == -ENAMETOOLONG) return -ERANGE;
+    if (length <= 0) return length ? length : -ERANGE;
+    return length;
 }
 
 /* Never pass a caller-owned value/list buffer into LKL: its usercopy helpers
