@@ -10,6 +10,8 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
@@ -28,6 +30,7 @@
 #include <sys/time.h>
 #include <sys/sendfile.h>
 #include <sys/uio.h>
+#include <time.h>
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #define ERROR(call, code) do { errno = 0; CHECK((call) == -1); CHECK(errno == (code)); } while (0)
@@ -506,6 +509,86 @@ static void file_transfer_boundaries(void)
     CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0 && close(copies[0]) == 0 && close(copies[1]) == 0);
 }
 
+enum blocked_transfer_kind { BLOCKED_SPLICE, BLOCKED_TEE, BLOCKED_VMSPLICE };
+struct blocked_transfer {
+    enum blocked_transfer_kind kind;
+    int input[2];
+    int output[2];
+    atomic_int entered;
+    ssize_t result;
+    char byte;
+};
+
+static void *blocked_transfer_call(void *opaque)
+{
+    struct blocked_transfer *call = opaque;
+    atomic_store_explicit(&call->entered, 1, memory_order_release);
+    if (call->kind == BLOCKED_SPLICE)
+        call->result = splice(call->input[0], NULL, call->output[1], NULL, 1, 0);
+    else if (call->kind == BLOCKED_TEE)
+        call->result = tee(call->input[0], call->output[1], 1, 0);
+    else {
+        struct iovec vector = {&call->byte, 1};
+        call->result = vmsplice(call->output[1], &vector, 1, 0);
+    }
+    return NULL;
+}
+
+static int timed_join(pthread_t thread, void **result, long milliseconds)
+{
+    struct timespec deadline;
+    CHECK(clock_gettime(CLOCK_REALTIME, &deadline) == 0);
+    deadline.tv_sec += milliseconds / 1000;
+    deadline.tv_nsec += (milliseconds % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000L; }
+    return pthread_timedjoin_np(thread, result, &deadline);
+}
+
+static void blocked_host_transfer_is_cancellable(enum blocked_transfer_kind kind)
+{
+    struct blocked_transfer call = {.kind = kind, .byte = 'c'};
+    CHECK(pipe(call.input) == 0 && pipe(call.output) == 0);
+    if (kind == BLOCKED_VMSPLICE) {
+        int capacity = fcntl(call.output[1], F_GETPIPE_SZ); CHECK(capacity > 0);
+        char *fill = calloc((size_t)capacity, 1); CHECK(fill);
+        size_t written = 0;
+        while (written < (size_t)capacity) {
+            ssize_t result = write(call.output[1], fill + written, (size_t)capacity - written);
+            CHECK(result > 0); written += (size_t)result;
+        }
+        free(fill);
+    }
+
+    atomic_init(&call.entered, 0);
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocked_transfer_call, &call) == 0);
+    for (unsigned i = 0; i < 1000 && !atomic_load_explicit(&call.entered, memory_order_acquire); ++i) {
+        struct timespec pause = {.tv_nsec = 1000000L}; nanosleep(&pause, NULL);
+    }
+    CHECK(atomic_load_explicit(&call.entered, memory_order_acquire));
+    struct timespec settle = {.tv_nsec = 20000000L}; nanosleep(&settle, NULL);
+    CHECK(pthread_cancel(thread) == 0);
+    void *result = NULL;
+    int joined = timed_join(thread, &result, 2000);
+    if (joined == ETIMEDOUT) {
+        /* Release a raw-syscall regression before failing, so the test never
+         * strands a worker or hangs the test runner. */
+        if (kind == BLOCKED_VMSPLICE) {
+            char byte; CHECK(read(call.output[0], &byte, 1) == 1);
+        } else CHECK(write(call.input[1], "x", 1) == 1);
+        CHECK(timed_join(thread, &result, 2000) == 0);
+        CHECK(result == PTHREAD_CANCELED);
+    } else CHECK(joined == 0 && result == PTHREAD_CANCELED);
+    CHECK(close(call.input[0]) == 0 && close(call.input[1]) == 0);
+    CHECK(close(call.output[0]) == 0 && close(call.output[1]) == 0);
+}
+
+static void host_transfer_cancellation(void)
+{
+    blocked_host_transfer_is_cancellable(BLOCKED_SPLICE);
+    blocked_host_transfer_is_cancellable(BLOCKED_TEE);
+    blocked_host_transfer_is_cancellable(BLOCKED_VMSPLICE);
+}
+
 static void close_range_boundary(void)
 {
     struct pair p = connected();
@@ -743,6 +826,7 @@ int main(void)
         {"file-allocation-owner-routing", file_allocation},
         {"file-cache-owner-routing", file_cache_operations},
         {"cross-kernel-file-transfer-boundaries", file_transfer_boundaries},
+        {"host-transfer-cancellation-points", host_transfer_cancellation},
         {"close-range-explicit-native-boundary", close_range_boundary},
         {"descriptor-xattr-owner-routing", descriptor_xattrs},
         {"null-queue-ioctl-errors-preserve-state", null_queue_ioctl},

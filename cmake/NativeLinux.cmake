@@ -1097,7 +1097,7 @@ if(BUILD_TESTING)
         PROPERTIES TIMEOUT 90 LABELS native-tcp)
     add_executable(ker-posix-fstack-socket-contracts-test tests/posix/fstack-socket-contracts.c)
     target_compile_options(ker-posix-fstack-socket-contracts-test PRIVATE -Wall -Wextra -Werror)
-    target_link_libraries(ker-posix-fstack-socket-contracts-test PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(ker-posix-fstack-socket-contracts-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
     add_test(NAME host-fstack-socket-contracts-reference COMMAND ker-posix-fstack-socket-contracts-test)
     set_tests_properties(host-fstack-socket-contracts-reference PROPERTIES TIMEOUT 30 LABELS fstack)
     add_test(NAME native-fstack-socket-contracts COMMAND ${ker_native_test_command}

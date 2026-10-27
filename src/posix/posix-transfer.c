@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "fd-table.h"
 #include "syscall-result.h"
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -22,6 +23,34 @@ _Static_assert(sizeof(struct iovec) == sizeof(struct lkl_iovec), "host/LKL iovec
 _Static_assert(sizeof(((struct iovec *)0)->iov_len) == sizeof(((struct lkl_iovec *)0)->iov_len), "host/LKL iovec length type");
 _Static_assert(offsetof(struct iovec, iov_base) == offsetof(struct lkl_iovec, iov_base), "host/LKL iovec base ABI");
 _Static_assert(offsetof(struct iovec, iov_len) == offsetof(struct lkl_iovec, iov_len), "host/LKL iovec length ABI");
+
+/* Keep host descriptor calls on libc's cancellation-aware path.  The raw
+ * syscalls below are appropriate only after a descriptor has been routed to
+ * the imported kernel. */
+typedef ssize_t (*host_splice_fn)(int, loff_t *, int, loff_t *, size_t, unsigned);
+typedef ssize_t (*host_tee_fn)(int, int, size_t, unsigned);
+typedef ssize_t (*host_vmsplice_fn)(int, const struct iovec *, size_t, unsigned);
+static pthread_once_t host_transfer_symbols_once = PTHREAD_ONCE_INIT;
+static host_splice_fn host_splice;
+static host_tee_fn host_tee;
+static host_vmsplice_fn host_vmsplice;
+
+static void resolve_host_transfer_symbols(void)
+{
+    host_splice = (host_splice_fn)dlsym(RTLD_NEXT, "splice");
+    host_tee = (host_tee_fn)dlsym(RTLD_NEXT, "tee");
+    host_vmsplice = (host_vmsplice_fn)dlsym(RTLD_NEXT, "vmsplice");
+}
+
+static int ensure_host_transfer_symbols(void)
+{
+    int result = pthread_once(&host_transfer_symbols_once, resolve_host_transfer_symbols);
+    if (result) {
+        errno = result;
+        return -1;
+    }
+    return 0;
+}
 
 /* LKL's NOMMU uaccess path uses memcpy and can fault the host process. Keep
  * user pointers at this boundary and use the host kernel for fault-safe copies. */
@@ -118,7 +147,11 @@ ssize_t splice(int in, loff_t *in_offset, int out, loff_t *out_offset, size_t co
     struct ker_fd *input, *output;
     int owner = transfer_owner(in, out, &input, &output);
     if (owner < 0) return -1;
-    if (!owner) return syscall(SYS_splice, in, in_offset, out, out_offset, count, flags);
+    if (!owner) {
+        if (ensure_host_transfer_symbols() < 0) return -1;
+        if (!host_splice) { errno = ENOSYS; return -1; }
+        return host_splice(in, in_offset, out, out_offset, count, flags);
+    }
     lkl_loff_t input_position, output_position;
     if (out_offset && copy_from_user(&output_position, out_offset, sizeof(output_position)) < 0)
         return finish_transfer(input, output, -EFAULT);
@@ -160,13 +193,21 @@ ssize_t tee(int in, int out, size_t count, unsigned flags)
     struct ker_fd *input, *output;
     int owner = transfer_owner(in, out, &input, &output);
     if (owner < 0) return -1;
-    if (!owner) return syscall(SYS_tee, in, out, count, flags);
+    if (!owner) {
+        if (ensure_host_transfer_symbols() < 0) return -1;
+        if (!host_tee) { errno = ENOSYS; return -1; }
+        return host_tee(in, out, count, flags);
+    }
     return finish_transfer(input, output, lkl_sys_tee(input->native, output->native, count, flags));
 }
 ssize_t vmsplice(int fd, const struct iovec *vectors, size_t count, unsigned flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
-    if (!entry) return syscall(SYS_vmsplice, fd, vectors, count, flags);
+    if (!entry) {
+        if (ensure_host_transfer_symbols() < 0) return -1;
+        if (!host_vmsplice) { errno = ENOSYS; return -1; }
+        return host_vmsplice(fd, vectors, count, flags);
+    }
     if (flags & ~KER_SPLICE_FLAGS) return finish_transfer(entry, NULL, -EINVAL);
     if (count > KER_TRANSFER_IOV_MAX) return finish_transfer(entry, NULL, -EINVAL);
     if (!count) return finish_transfer(entry, NULL, lkl_sys_vmsplice(entry->native, NULL, 0, flags));
