@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
+#include <pthread.h>
 #include <sys/syscall.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -293,10 +294,60 @@ static void select_memory_faults(void)
     char byte; CHECK(read(p.receiver, &byte, 1) == 1 && byte == 's');
     CHECK(munmap(memory, (size_t)page * 4) == 0); finish(p);
 }
+static volatile sig_atomic_t poll_signals;
+static void poll_signal_handler(int number) { (void)number; ++poll_signals; }
+/* A copy-out error can leave the temporarily unblocked signal pending on
+ * host Linux. Consume it while blocked before starting the next scenario. */
+static void clear_pending_poll_signal(const sigset_t *blocked)
+{
+    sigset_t pending; CHECK(sigpending(&pending) == 0);
+    if (sigismember(&pending, SIGUSR1)) {
+        struct timespec zero = {0};
+        CHECK(sigtimedwait(blocked, NULL, &zero) == SIGUSR1);
+    }
+}
+static void interrupted_poll_output(void)
+{
+    struct pair p = connected(); int pipes[2]; CHECK(pipe(pipes) == 0);
+    struct sigaction action = {.sa_handler = poll_signal_handler}, old_action;
+    sigemptyset(&action.sa_mask);
+    CHECK(sigaction(SIGUSR1, &action, &old_action) == 0);
+    sigset_t blocked, original, waiting;
+    sigemptyset(&blocked); sigaddset(&blocked, SIGUSR1);
+    CHECK(pthread_sigmask(SIG_BLOCK, &blocked, &original) == 0);
+    waiting = original; sigdelset(&waiting, SIGUSR1);
+    struct timespec timeout = {.tv_sec = 1};
+    struct pollfd descriptors[] = {{p.receiver, POLLIN, 777}, {pipes[0], POLLIN, 777}};
+    poll_signals = 0;
+    CHECK(pthread_kill(pthread_self(), SIGUSR1) == 0);
+    ERROR(ppoll(descriptors, 2, &timeout, &waiting), EINTR);
+    CHECK(poll_signals == 1 && descriptors[0].revents == 0 && descriptors[1].revents == 0);
+    long page = sysconf(_SC_PAGESIZE); CHECK(page > 0);
+    struct pollfd *readonly = mmap(NULL, (size_t)page, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(readonly != MAP_FAILED);
+    memcpy(readonly, descriptors, sizeof(descriptors)); readonly[0].revents = 777;
+    CHECK(mprotect(readonly, (size_t)page, PROT_READ) == 0);
+    CHECK(pthread_kill(pthread_self(), SIGUSR1) == 0);
+    ERROR(ppoll(readonly, 2, &timeout, &waiting), EFAULT);
+    CHECK(readonly[0].revents == 777);
+    clear_pending_poll_signal(&blocked);
+    CHECK(write(p.sender, "r", 1) == 1); queued(p.receiver, 1);
+    CHECK(pthread_kill(pthread_self(), SIGUSR1) == 0);
+    CHECK(ppoll(descriptors, 2, &timeout, &waiting) == 1);
+    CHECK(descriptors[0].revents == POLLIN && descriptors[1].revents == 0);
+    clear_pending_poll_signal(&blocked);
+    char byte; CHECK(read(p.receiver, &byte, 1) == 1 && byte == 'r');
+    CHECK(pthread_sigmask(SIG_SETMASK, &original, NULL) == 0);
+    CHECK(sigaction(SIGUSR1, &old_action, NULL) == 0);
+    CHECK(munmap(readonly, (size_t)page) == 0);
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0); finish(p);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"listener-readiness-and-accept", accept_readiness},
+        {"interrupted-poll-output-copy-and-readiness-precedence", interrupted_poll_output},
         {"read-write-duplicate-entry-and-bit-counts", read_write_and_counts},
         {"mixed-host-native-and-pselect-timeout", mixed_host_native},
         {"invalid-and-negative-descriptors", invalid_and_ignored},
