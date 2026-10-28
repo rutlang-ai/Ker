@@ -516,6 +516,17 @@
       ],
       "adaptation": "After exact real secondary death, original receiver reclaims its orphan message without dereferencing the dead process private buffer. Actual shared-pool census and a new secondary prove reusable capacity. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior. The host multiprocess CTest explicitly skips77 without shared hugepages; that skip is not completion evidence. Actual guest result manifest fstack-unfinished-ipc-guest1/actual-result-attempt1.json SHA256 9c82301736dc6f197adacd8403b41a59f49503dc959d645dce50ac52a4aa940f binds candidate source/binary hashes, image and serial log; original EAL primary and20 distinct secondary PIDs, all12 source markers, example exit0 and normal power-down passed. Debug/static and Release/shared unit cases passed; installed CMake consumer linked only ker::ipc and completed actual EAL/pool/ring lifecycle."
     },
+    "fstack-reload-directory-orphans": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_p2_orphan_workers_keep_epoch_live"
+      ],
+      "ker_ctests": [
+        "fstack-reload-directory-orphans",
+        "fstack-reload-directory-multiprocess"
+      ],
+      "adaptation": "Exact original fresh/stale orphan stamp, live-master/stale-stamp contrast and retired-slot takeover assertions. An actual master is SIGKILLed/reaped, its two EAL workers are adopted by a subreaper with working transferred pipe FDs, and four original polling passes refresh liveness. Real inactivity expires the stamp but ACTIVE users still block; stopped/dead proof allows takeover. A separate live master remains protected after an actual2300ms no-poll interval. Tests compile the actual Ker runtime TU for private source preconditions; the complete original P2/RX-15 test excerpt is byte-checked against the pinned upstream snapshot, with CHECK replacing only the assertion host. Actual repository and independently installed public-API consumers pass in guest10 at candidate fff309ac0118683cc848e7d086aa5bca132e97ab, each with two real master parents, four actual secondary EAL lifetimes, master SIGKILL/reap and exact adopted-worker pidfd death, PMD RX/TX4/4, callbacks[6,1,2,0], received[1,1,2,0], six drain-record mbufs reclaimed and pool63/63. Three production5s release refusals and two stale-user reclaim refusals yield counter5 without changing it on success or live-master refusal. All old five runtime profiles/examples also pass. Actual result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest10/actual-result-attempt1.json SHA256 ebeb8e2e05f69e30934434572f1c1d0118f631b13183d1af9d710187bbdf4d5a binds source, binary, installed CMake/source/link inputs, image and serial hashes, all child exits and normal guest power-down/QEMU0. Debug/static and Release/shared source CTests pass. Host shared-hugepage skip77 is not completion evidence. See docs/fstack-reload-directory.md; this is original software PMD and cooperative runtime ownership, not physical hardware, TCP or full reload."
+    },
     "ipv4-field-profiles": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": [
@@ -646,6 +657,17 @@
         "native-fstack-exception-filter"
       ],
       "adaptation": "Actual original-DPDK IPv4 geometry plus bounded mbuf reads rejects an IHL60-byte header in a24-byte payload as unknown. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "fstack-reload-directory-ring-census": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_rx15_ring_user_census_and_purge_lock"
+      ],
+      "ker_ctests": [
+        "fstack-reload-directory-ring-census",
+        "fstack-reload-directory-multiprocess"
+      ],
+      "adaptation": "The unchanged complete RX-15 source test covers no-directory behavior, idempotent registration/detach, per-slot/generation live/dead census, marker preservation and idle clearing, 128 existing entries with capacity for the next master, exclusive/idempotent purge locking, live-holder timeout/attach rollback, nonowner unlock and dead-holder takeover. Actual two-master EAL users reproduce the lock/registration/death/census paths. Six original mbufs traverse a live-preserved FIFO, idle purge and same-ring re-admission with exact object identity/nonce/sequence/payload validation and complete original-pool reclamation. Tests compile the actual Ker runtime TU for private source preconditions; the complete original P2/RX-15 test excerpt is byte-checked against the pinned upstream snapshot, with CHECK replacing only the assertion host. Actual repository and independently installed public-API consumers pass in guest10 at candidate fff309ac0118683cc848e7d086aa5bca132e97ab, each with two real master parents, four actual secondary EAL lifetimes, master SIGKILL/reap and exact adopted-worker pidfd death, PMD RX/TX4/4, callbacks[6,1,2,0], received[1,1,2,0], six drain-record mbufs reclaimed and pool63/63. Three production5s release refusals and two stale-user reclaim refusals yield counter5 without changing it on success or live-master refusal. All old five runtime profiles/examples also pass. Actual result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest10/actual-result-attempt1.json SHA256 ebeb8e2e05f69e30934434572f1c1d0118f631b13183d1af9d710187bbdf4d5a binds source, binary, installed CMake/source/link inputs, image and serial hashes, all child exits and normal guest power-down/QEMU0. Debug/static and Release/shared source CTests pass. Host shared-hugepage skip77 is not completion evidence. See docs/fstack-reload-directory.md; this is original software PMD and cooperative runtime ownership, not physical hardware, TCP or full reload."
     },
     "fstack-ipc-generation": {
       "source_file": "tests/unit/test_ff_ipc.c",
@@ -1928,6 +1950,17 @@
       ],
       "adaptation": "Eighteen pinned F-Stack INI scenarios adapted to the actual Ker launcher configuration reader: known sections/options, multiple sections, comments and whitespace, empty text/value, missing final newline, colon delimiter, valid UTF-8 BOM, malformed syntax, missing bracket, bare lines, real open-file/filename input, missing file and malformed BOM byte rejection. Python configparser exceptions and UTF-8 decode errors replace F-Stack integer return codes and callback records; typed Ker configuration, not direct F-Stack config-file/API compatibility. One multiline scenario remains partial because Ker joins lines into an EAL string instead of invoking a handler per line. No sectionless globals, arbitrary handler rejection/userdata, NULL FILE C ABI or section-name truncation claim; supported long sysctl-key retention is qualified separately. Ker extensions test strict unknown/default rejection and final-value duplicate-key precedence, interpolation disabled, CLI and negative-boolean overrides, config-relative paths, app argument isolation and pre-launch configuration rejection. Separate native-fstack-launcher-config-interop starts real DPDK/native Linux TCP workers in both roles using file-provided network/EAL/log/capture settings; validates kernel opens, TX/RX, zero outstanding, capture/log files and explicit CLI port/stats overrides. Its INI also repeats [sysctl] sections in A-B-A order for ip_unprivileged_port_start and ip_local_port_range; both native TCP roles prove the final surviving range-then-boundary order is accepted by original Linux."
     },
+    "fstack-reload-directory-release": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_p2_release_epoch_needs_proof"
+      ],
+      "ker_ctests": [
+        "fstack-reload-directory-release",
+        "fstack-reload-directory-multiprocess"
+      ],
+      "adaptation": "Exact original bounded release refusal, unchanged owner and counter, then proven owner-generation flip assertions. Actual EAL release waits the unchanged production5s budget and refuses both a held original PMD callback and a returned-but-unacknowledged lease. STOPPED allows epoch/generation release, claim and reversal; a live reverse peer also refuses, all local parked markers roll back on failure, and counters are asserted. Tests compile the actual Ker runtime TU for private source preconditions; the complete original P2/RX-15 test excerpt is byte-checked against the pinned upstream snapshot, with CHECK replacing only the assertion host. Actual repository and independently installed public-API consumers pass in guest10 at candidate fff309ac0118683cc848e7d086aa5bca132e97ab, each with two real master parents, four actual secondary EAL lifetimes, master SIGKILL/reap and exact adopted-worker pidfd death, PMD RX/TX4/4, callbacks[6,1,2,0], received[1,1,2,0], six drain-record mbufs reclaimed and pool63/63. Three production5s release refusals and two stale-user reclaim refusals yield counter5 without changing it on success or live-master refusal. All old five runtime profiles/examples also pass. Actual result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest10/actual-result-attempt1.json SHA256 ebeb8e2e05f69e30934434572f1c1d0118f631b13183d1af9d710187bbdf4d5a binds source, binary, installed CMake/source/link inputs, image and serial hashes, all child exits and normal guest power-down/QEMU0. Debug/static and Release/shared source CTests pass. Host shared-hugepage skip77 is not completion evidence. See docs/fstack-reload-directory.md; this is original software PMD and cooperative runtime ownership, not physical hardware, TCP or full reload."
+    },
     "native-fstack-session-orphan-safety": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_rx15_primary_purges_orphaned_rings",
@@ -1981,14 +2014,6 @@
         "native-fstack-tcp-fd-modes"
       ]
     },
-    "fstack-config-oversized-jumbo": {
-      "source_file": "tests/unit/test_ff_config.c",
-      "source_case": "test_mtu_large_65535_fails",
-      "ker_ctests": [
-        "fstack-config-oversized-jumbo"
-      ],
-      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config oversized jumbo. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_oversized_jumbo. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
-    },
     "fstack-reload-fsm-recovery": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
@@ -1999,6 +2024,14 @@
         "fstack-reload-controller"
       ],
       "adaptation": "All five original failure-entry transitions, RESET-only recovery, forbidden exits and a fresh successful chain after each failure. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch. Debug/static and Release/shared source CTests and the caller-policy import/separation guard pass. The example also builds with BUILD_TESTING=OFF. Guest7 candidate5f606d513c90fcf4113b7b9f7ab9db28416fb6ca reran all18priorruntime source phases plus these4 in repository/installed controller programs, both old examples and normal power-down/QEMU0. Each controller profile used four distinct actual secondaries, two completed commits active1then0, a refused early old-exit while pidfds stayed live, READY-timeout rollback/reset and final callbacks[3,0,1,0]. Result fstack-unfinished-ipc-guest7/actual-result-attempt1.json SHA256ff9ce3cbf8a88140ab7fdd98d27b25b5e8b096a030fd8a8805e4a4486583d80e binds candidate/source/executables/installed-source/package/serial and event traces. Host skip77 and duplicate installed profiles add no source IDs. Pure tests cover all five failure table entries; the live controller demonstrates the shared rollback path with actual READY-timeout, not every operational crash/fault permutation."
+    },
+    "fstack-config-oversized-jumbo": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_mtu_large_65535_fails",
+      "ker_ctests": [
+        "fstack-config-oversized-jumbo"
+      ],
+      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config oversized jumbo. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_oversized_jumbo. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
     "tcp-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -3050,6 +3083,17 @@
       ],
       "adaptation": "ARP payload is not classified as an IP service. ARP control fanout is a distinct worker routing operation, not a fabricated service verdict. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
     },
+    "fstack-reload-directory-hw-users": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_p2_hw_user_proof"
+      ],
+      "ker_ctests": [
+        "fstack-reload-directory-hw-users",
+        "fstack-reload-directory-multiprocess"
+      ],
+      "adaptation": "Exact original hardware-user registration, idempotent add, ACTIVE/STOPPED versus disappearance, live/dead PID, coordinate and epoch-wide clearance assertions. Actual two-master/four-secondary EAL consumers exercise automatic registration, callback gating, repeated polls, STOPPED detach refusal, real user death and coordinate isolation. Tests compile the actual Ker runtime TU for private source preconditions; the complete original P2/RX-15 test excerpt is byte-checked against the pinned upstream snapshot, with CHECK replacing only the assertion host. Actual repository and independently installed public-API consumers pass in guest10 at candidate fff309ac0118683cc848e7d086aa5bca132e97ab, each with two real master parents, four actual secondary EAL lifetimes, master SIGKILL/reap and exact adopted-worker pidfd death, PMD RX/TX4/4, callbacks[6,1,2,0], received[1,1,2,0], six drain-record mbufs reclaimed and pool63/63. Three production5s release refusals and two stale-user reclaim refusals yield counter5 without changing it on success or live-master refusal. All old five runtime profiles/examples also pass. Actual result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest10/actual-result-attempt1.json SHA256 ebeb8e2e05f69e30934434572f1c1d0118f631b13183d1af9d710187bbdf4d5a binds source, binary, installed CMake/source/link inputs, image and serial hashes, all child exits and normal guest power-down/QEMU0. Debug/static and Release/shared source CTests pass. Host shared-hugepage skip77 is not completion evidence. See docs/fstack-reload-directory.md; this is original software PMD and cooperative runtime ownership, not physical hardware, TCP or full reload."
+    },
     "native-fstack-host-failure": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
@@ -3312,6 +3356,17 @@
         "fstack-config-ini-file"
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: ini file. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_ini_file. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
+    },
+    "fstack-reload-directory-reclaim": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_p2_reclaim_needs_user_proof"
+      ],
+      "ker_ctests": [
+        "fstack-reload-directory-reclaim",
+        "fstack-reload-directory-multiprocess"
+      ],
+      "adaptation": "Exact original dead/stale master with live ACTIVE worker refusal, counter and owner preservation, then STOPPED-proven reclaim assertions. In actual EAL, a killed master leaves two adopted workers; stale timestamps and normal poll cannot bypass their ACTIVE leases. Reaping one real crashed user still leaves the survivor blocking; only its STOPPED proof permits takeover and subsequent original PMD traffic. Tests compile the actual Ker runtime TU for private source preconditions; the complete original P2/RX-15 test excerpt is byte-checked against the pinned upstream snapshot, with CHECK replacing only the assertion host. Actual repository and independently installed public-API consumers pass in guest10 at candidate fff309ac0118683cc848e7d086aa5bca132e97ab, each with two real master parents, four actual secondary EAL lifetimes, master SIGKILL/reap and exact adopted-worker pidfd death, PMD RX/TX4/4, callbacks[6,1,2,0], received[1,1,2,0], six drain-record mbufs reclaimed and pool63/63. Three production5s release refusals and two stale-user reclaim refusals yield counter5 without changing it on success or live-master refusal. All old five runtime profiles/examples also pass. Actual result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest10/actual-result-attempt1.json SHA256 ebeb8e2e05f69e30934434572f1c1d0118f631b13183d1af9d710187bbdf4d5a binds source, binary, installed CMake/source/link inputs, image and serial hashes, all child exits and normal guest power-down/QEMU0. Debug/static and Release/shared source CTests pass. Host shared-hugepage skip77 is not completion evidence. See docs/fstack-reload-directory.md; this is original software PMD and cooperative runtime ownership, not physical hardware, TCP or full reload."
     },
     "tcp-options-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",

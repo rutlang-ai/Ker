@@ -705,6 +705,14 @@ READY/park/drain/pidfd 门禁和真实 PMD/EAL 回收在仓库/安装程序中�
 见 [合同及散列](fstack-reload-controller.md)。策略不进入 Ker 核心库。
 当前本轮 **31/50**，累计249 adapted，尚需19个基线未完成案例。
 
-跨 master 的[目录适配正在实现](fstack-reload-directory.md)。已引入未修改的
-原版目录后端并补充用户证明、primary EAL 生命周期断言；尚未取得真实跨
-master PMD 与安装消费者的完整证明，因此不增加完成计数，也不提升目录案例状态。
+### 第九批：跨 master 目录与使用者证明（5 项）
+
+`fstack-reload-directory-hw-users`、`-reclaim`、`-release`、`-orphans`、
+`-ring-census` 对应五项完整原始 P2/RX-15 源断言。实际仓库和安装消费者在
+两 master、四个真实 EAL secondary 下验证5秒有界拒绝/回滚、持有回调、
+STOPPED/死亡证明、孤儿刷新与过期、ring FIFO 保留/清理/重新准入和63/63回收。
+原版 net_ring RX/TX 均为4/4，拒绝计数精确为5；七个运行 profile 和两个旧示例
+全部通过并正常关机。参见[目录合同及散列](fstack-reload-directory.md)。
+当前本轮 **36/50**，累计254 adapted，尚需14个基线未完成案例。
+基线差分的完整源 ID、原状态与 CTest 链接见
+[已完成清单](../tests/fstack-unfinished-completed.json)。

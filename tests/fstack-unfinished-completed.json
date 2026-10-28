@@ -1,0 +1,549 @@
+{
+  "baseline_commit": "7f46febcade4166c5820f79b204d5a2b9413408f",
+  "target": 50,
+  "newly_completed": 36,
+  "remaining": 14,
+  "status": "in-progress",
+  "cases": [
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-fsm-transitions",
+          "provenance_case": "fstack-reload-fsm-transitions"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-transitions"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_all_legal_transitions",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-fsm-legal",
+          "provenance_case": "fstack-reload-fsm-legal"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-legal"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_illegal_combinations_exhaustive",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-fsm-illegal",
+          "provenance_case": "fstack-reload-fsm-illegal"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-illegal"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_10_error_recovery_and_abort",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-fsm-recovery",
+          "provenance_case": "fstack-reload-fsm-recovery"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-recovery"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
+      "baseline": "partial",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-message-serdes",
+          "provenance_case": "fstack-reload-message-serdes"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-reload-message-serdes"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_22_heartbeat_and_rx_return",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-heartbeat",
+          "provenance_case": "fstack-reload-heartbeat"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-heartbeat"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-markers",
+          "provenance_case": "fstack-reload-markers"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-markers"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_11_handover_barrier",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-barrier",
+          "provenance_case": "fstack-reload-barrier"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-barrier"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-epoch-names",
+          "provenance_case": "fstack-ipc-epoch-names"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-epoch-names"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-legacy-names",
+          "provenance_case": "fstack-ipc-legacy-names"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-legacy-names"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_hw_user_proof",
+      "baseline": "partial",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "native-fstack-session-control-reservation-replay",
+          "provenance_case": "native-fstack-session-reservation-admission"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-collision",
+          "provenance_case": "native-fstack-session-reservation-admission"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-bounds",
+          "provenance_case": "native-fstack-session-reservation-admission"
+        },
+        {
+          "ctest": "fstack-reload-directory-hw-users",
+          "provenance_case": "fstack-reload-directory-hw-users"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-hw-users"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_reclaim_needs_user_proof",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-directory-reclaim",
+          "provenance_case": "fstack-reload-directory-reclaim"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-reclaim"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
+      "baseline": "partial",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "native-fstack-session-control-reservation-eof",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-death",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "native-fstack-session-control-reservation-coordinates",
+          "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "fstack-reload-directory-release",
+          "provenance_case": "fstack-reload-directory-release"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-release"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
+      "baseline": "partial",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "native-fstack-session-orphan-reservation-eof",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-reservation-frozen",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "native-fstack-session-orphan-reservation-staged",
+          "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "fstack-reload-directory-orphans",
+          "provenance_case": "fstack-reload-directory-orphans"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-orphans"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-directory-ring-census",
+          "provenance_case": "fstack-reload-directory-ring-census"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-ring-census"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "native-fstack-host-mmap-shared",
+          "provenance_case": "native-fstack-host-mmap-shared"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "native-fstack-host-mmap-file",
+          "provenance_case": "native-fstack-host-mmap-file"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "native-fstack-realtime-startup-fatal",
+          "provenance_case": "native-fstack-realtime-startup-fatal"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ini-callback-no-section",
+          "provenance_case": "fstack-ini-callback-no-section"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ini-callback-handler-rejection",
+          "provenance_case": "fstack-ini-callback-handler-rejection"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ini-callback-null-file",
+          "provenance_case": "fstack-ini-callback-null-file"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ini-callback-long-section",
+          "provenance_case": "fstack-ini-callback-long-section"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ini-callback-user-data",
+          "provenance_case": "fstack-ini-callback-user-data"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation",
+      "baseline": "partial",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ini-callback-multiline",
+          "provenance_case": "fstack-ini-callback-multiline"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-process",
+          "provenance_case": "fstack-ipc-process"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-process"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-generation",
+          "provenance_case": "fstack-ipc-generation"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen_epoch",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-generation-epoch",
+          "provenance_case": "fstack-ipc-generation-epoch"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-epoch"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_full_coordinate",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-coordinate",
+          "provenance_case": "fstack-ipc-coordinate"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-coordinate"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_epoch",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-generation-option-epoch",
+          "provenance_case": "fstack-ipc-generation-option-epoch"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-option-epoch"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_plain",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-generation-option",
+          "provenance_case": "fstack-ipc-generation-option"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-option"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_rejects_malformed",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-malformed",
+          "provenance_case": "fstack-ipc-malformed"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-malformed"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_own_reply",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-own-reply",
+          "provenance_case": "fstack-ipc-own-reply"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-own-reply"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_live_owner",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-foreign-live",
+          "provenance_case": "fstack-ipc-foreign-live"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-foreign-live"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_without_send",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-foreign-no-send",
+          "provenance_case": "fstack-ipc-foreign-no-send"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-foreign-no-send"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_recv_orphan_dead_owner",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-orphan",
+          "provenance_case": "fstack-ipc-orphan"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-orphan"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_ipc.c::test_p4_probe_is_non_destructive",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-ipc-probe",
+          "provenance_case": "fstack-ipc-probe"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-probe"
+        }
+      ]
+    }
+  ]
+}

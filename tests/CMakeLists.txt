@@ -1123,11 +1123,13 @@ if(KER_WITH_DPDK)
 endif()
 
 if(KER_WITH_DPDK)
-    foreach(directory_case hw-users reclaim release orphans ring-census)
-        add_test(NAME fstack-reload-directory-${directory_case}
-            COMMAND ker-fstack-reload-directory-test ${directory_case})
-        set_tests_properties(fstack-reload-directory-${directory_case} PROPERTIES TIMEOUT 30
-            LABELS "fstack;fstack-reload;directory-foundation"
-            ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
-    endforeach()
+    add_test(NAME fstack-reload-directory-hw-users COMMAND ker-fstack-reload-directory-test hw-users)
+    add_test(NAME fstack-reload-directory-reclaim COMMAND ker-fstack-reload-directory-test reclaim)
+    add_test(NAME fstack-reload-directory-release COMMAND ker-fstack-reload-directory-test release)
+    add_test(NAME fstack-reload-directory-orphans COMMAND ker-fstack-reload-directory-test orphans)
+    add_test(NAME fstack-reload-directory-ring-census COMMAND ker-fstack-reload-directory-test ring-census)
+    set_tests_properties(fstack-reload-directory-hw-users fstack-reload-directory-reclaim
+        fstack-reload-directory-release fstack-reload-directory-orphans fstack-reload-directory-ring-census
+        PROPERTIES TIMEOUT 30 LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()

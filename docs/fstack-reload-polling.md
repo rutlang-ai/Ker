@@ -4,8 +4,8 @@ The optional `ker::reload` component now provides a synchronous polling adapter
 around the unchanged original F-Stack runtime's generation gate and park
 markers. It supports cooperating processes that borrow the same original shared
 state block under one master. This entry point does not install a cross-master
-directory. An [explicit directory adapter](fstack-reload-directory.md) is under
-development and has not yet qualified additional source cases. Original Linux
+directory. An [explicit directory adapter](fstack-reload-directory.md) separately qualifies
+five directory/user-proof source cases. Original Linux
 networking and DPDK code remain unchanged.
 
 The caller owns state storage, EAL, devices, queues, packet work and process
