@@ -973,7 +973,13 @@ if(KER_WITH_DPDK)
     add_executable(ker-fstack-ipc-test fstack-ipc.c)
     target_link_libraries(ker-fstack-ipc-test PRIVATE ker::ipc Threads::Threads)
     target_compile_options(ker-fstack-ipc-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-fstack-ipc-stash-test fstack-ipc-stash-origin.c)
+    target_link_libraries(ker-fstack-ipc-stash-test PRIVATE ker-ipc-test-adapter)
+    target_compile_options(ker-fstack-ipc-stash-test PRIVATE -Wall -Wextra -Werror)
     string(JOIN ":" ker_ipc_test_libraries ${DPDK_LIBRARY_DIRS})
+    add_test(NAME fstack-ipc-stash-origin COMMAND ker-fstack-ipc-stash-test)
+    set_tests_properties(fstack-ipc-stash-origin PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-process COMMAND ker-fstack-ipc-test process)
     set_tests_properties(fstack-ipc-process PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")

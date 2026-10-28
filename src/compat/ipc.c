@@ -1,12 +1,109 @@
 /* Ker-owned lifetime/symbol adapter around the unchanged upstream client.
- * Include its translation unit to adapt private EAL lifetime state without
- * patching the imported source or duplicating the reply-ownership algorithm. */
+ * Include its translation unit to adapt private EAL lifetime state and track
+ * the origin ring for upstream-stashed replies without patching imported code. */
 #define _GNU_SOURCE
 #include <ker/ipc.h>
 #include <errno.h>
 #include <limits.h>
 #include <rte_errno.h>
+#include <rte_ring.h>
+static int ker_ipc_ring_enqueue_tracked(struct rte_ring *ring, void *object);
+/* Interpose only this imported translation unit; the wrapper calls real DPDK. */
+#define rte_ring_enqueue ker_ipc_ring_enqueue_tracked
 #include "ff_ipc.c"
+#undef rte_ring_enqueue
+
+#define KER_IPC_STASH_ORIGINS (FF_IPC_STASH_MAX + 1)
+static struct {
+    struct ff_msg *message;
+    struct rte_ring *ring;
+} ker_ipc_stash_origins[KER_IPC_STASH_ORIGINS];
+
+#ifdef KER_IPC_TESTING
+static void (*ker_ipc_test_enqueue_hook)(struct rte_ring *, void *);
+
+void ker_ipc_test_set_enqueue_hook(void (*hook)(struct rte_ring *, void *))
+{
+    ker_ipc_test_enqueue_hook = hook;
+}
+#endif
+
+static int ker_ipc_stash_index(const void *object)
+{
+    for (int i = 0; i < ff_ipc_stash_n; ++i)
+        if (ff_ipc_stash[i] == object) return i;
+    return -1;
+}
+
+static int ker_ipc_stash_origin_index(const struct ff_msg *message)
+{
+    for (int i = 0; i < KER_IPC_STASH_ORIGINS; ++i)
+        if (ker_ipc_stash_origins[i].message == message) return i;
+    return -1;
+}
+
+static void ker_ipc_stash_origin_forget(const struct ff_msg *message)
+{
+    int i = ker_ipc_stash_origin_index(message);
+    if (i >= 0) {
+        ker_ipc_stash_origins[i].message = NULL;
+        ker_ipc_stash_origins[i].ring = NULL;
+    }
+}
+
+static void ker_ipc_stash_origins_prune(void)
+{
+    for (int i = 0; i < KER_IPC_STASH_ORIGINS; ++i) {
+        struct ff_msg *message = ker_ipc_stash_origins[i].message;
+        if (message && ker_ipc_stash_index(message) < 0) {
+            ker_ipc_stash_origins[i].message = NULL;
+            ker_ipc_stash_origins[i].ring = NULL;
+        }
+    }
+}
+
+static int ker_ipc_stash_origin_remember(struct ff_msg *message, struct rte_ring *ring)
+{
+    int i = ker_ipc_stash_origin_index(message);
+    if (i < 0) {
+        for (i = 0; i < KER_IPC_STASH_ORIGINS; ++i)
+            if (!ker_ipc_stash_origins[i].message) break;
+        if (i == KER_IPC_STASH_ORIGINS) return -ENOBUFS;
+    }
+    ker_ipc_stash_origins[i].message = message;
+    ker_ipc_stash_origins[i].ring = ring;
+    return 0;
+}
+
+/* Preserve exact origin-ring ownership for the upstream bounded reply stash. */
+static int ker_ipc_ring_enqueue_tracked(struct rte_ring *ring, void *object)
+{
+    ker_ipc_stash_origins_prune();
+    struct ff_msg *message = object;
+    int stashed = ker_ipc_stash_index(message) >= 0;
+    int origin = ker_ipc_stash_origin_index(message);
+    struct rte_ring *destination = ring;
+
+    if (stashed) {
+        /* Missing provenance must never route a reply to an unrelated ring. */
+        if (origin < 0 || !ker_ipc_stash_origins[origin].ring) return -ENOBUFS;
+        destination = ker_ipc_stash_origins[origin].ring;
+    }
+
+#ifdef KER_IPC_TESTING
+    if (ker_ipc_test_enqueue_hook)
+        ker_ipc_test_enqueue_hook(destination, object);
+#endif
+    int result = rte_ring_enqueue(destination, object);
+    if (result == 0) {
+        if (stashed) ker_ipc_stash_origin_forget(message);
+    } else if (!stashed) {
+        /* Tentative until the next enqueue confirms stash membership. This
+         * also safely discards ordinary failed send/probe enqueues. */
+        (void)ker_ipc_stash_origin_remember(message, ring);
+    }
+    return result;
+}
 
 static int eal_ready(void)
 {
@@ -66,14 +163,14 @@ int ker_ipc_format_ring(char *buffer, size_t size, const struct ker_ipc_address 
     if (generation_aware && (address->generation < 0 || address->generation >= FF_RELOAD_GEN_MAX))
         return -EINVAL;
     return ff_msg_ring_name(buffer, (unsigned)size, output ? FF_MSG_RING_OUT : FF_MSG_RING_IN,
-        address->process, output ? type : -1, address->generation, address->epoch, generation_aware);
+        address->process, output ? (int)type : -1, address->generation, address->epoch, generation_aware);
 }
 int ker_ipc_ring_name(char *buffer, size_t size, int output, enum FF_MSG_TYPE type)
 {
     if (!buffer || !size || size > UINT_MAX || (output != 0 && output != 1) ||
         (output && (type < FF_UNKNOWN || type >= FF_MSG_NUM))) return -EINVAL;
     const char *base = output ? FF_MSG_RING_OUT : FF_MSG_RING_IN;
-    int message_type = output ? type : -1;
+    int message_type = output ? (int)type : -1;
     if (inited) return ff_ipc_ring_name(buffer, (unsigned)size, base, message_type);
     if (ff_gen_arg == FF_IPC_GEN_AUTO) return -EAGAIN;
     struct ker_ipc_address address = {ff_proc_id, ff_gen_arg, ff_epoch_arg};
@@ -109,6 +206,7 @@ int ker_ipc_attach(struct rte_mempool *pool)
     ff_pending_msg = NULL;
     ff_ipc_stash_n = 0;
     memset(ff_ipc_stash, 0, sizeof(ff_ipc_stash));
+    memset(ker_ipc_stash_origins, 0, sizeof(ker_ipc_stash_origins));
     memset(ff_ipc_foreign, 0, sizeof(ff_ipc_foreign));
     ff_ipc_foreign_requeued = ff_ipc_orphan_dropped = ff_ipc_reply_lost = 0;
     inited = 1;
@@ -120,6 +218,7 @@ int ker_ipc_detach(void)
     if (ff_pending_msg || ff_ipc_stash_n || rte_mempool_in_use_count(message_pool)) return -EBUSY;
     inited = 0;
     message_pool = NULL;
+    memset(ker_ipc_stash_origins, 0, sizeof(ker_ipc_stash_origins));
     ff_ring_gen = FF_IPC_GEN_AUTO;
     ff_ring_epoch = 0;
     return 0;
@@ -127,7 +226,9 @@ int ker_ipc_detach(void)
 ker_ipc_message *ker_ipc_alloc(void)
 {
     if (!inited) { errno = ENOTCONN; return NULL; }
-    return ff_ipc_msg_alloc();
+    ker_ipc_message *message = ff_ipc_msg_alloc();
+    if (message) ker_ipc_stash_origin_forget(message);
+    return message;
 }
 int ker_ipc_free(ker_ipc_message *message)
 {
@@ -135,6 +236,7 @@ int ker_ipc_free(ker_ipc_message *message)
     if (!message || message->ipc_owner_pid != (uint32_t)getpid() ||
         !message->ipc_cookie || rte_mempool_from_obj(message) != message_pool) return -EINVAL;
     if (message == ff_pending_msg) return -EBUSY;
+    ker_ipc_stash_origin_forget(message);
     return ff_ipc_msg_free(message);
 }
 int ker_ipc_send(const ker_ipc_message *message)
