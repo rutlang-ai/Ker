@@ -1,2 +1,7 @@
 # Preserve the pinned upstream test snapshot byte-for-byte.
 tests/upstream/fstack/** -text -filter -ident
+# Original memory sources/excerpts retain CRLF and upstream whitespace.
+# pool-import.py checks complete blobs and literal compiled fragments.
+third_party/fstack-pools/ff_dpdk_if.c -text -filter -ident -whitespace
+third_party/fstack-pools/ff_memory.h -text -filter -ident -whitespace
+third_party/fstack-pools/pool-runtime.inc -text -filter -ident -whitespace

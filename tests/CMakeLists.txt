@@ -1093,6 +1093,36 @@ add_test(NAME fstack-reload-controller-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-controller-import.py")
 set_tests_properties(fstack-reload-controller-import PROPERTIES TIMEOUT 15 LABELS provenance)
 
+add_test(NAME fstack-pool-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pool-import.py")
+set_tests_properties(fstack-pool-import PROPERTIES TIMEOUT 15 LABELS provenance)
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-pool-test fstack-pools.c)
+    get_target_property(ker_pool_private_definitions ker-pools COMPILE_DEFINITIONS)
+    get_target_property(ker_pool_private_includes ker-pools INCLUDE_DIRECTORIES)
+    target_compile_definitions(ker-fstack-pool-test PRIVATE ${ker_pool_private_definitions})
+    target_include_directories(ker-fstack-pool-test PRIVATE ${ker_pool_private_includes})
+    target_link_libraries(ker-fstack-pool-test PRIVATE PkgConfig::DPDK)
+    add_executable(ker-fstack-pool-multiprocess-test fstack-pool-multiprocess.c)
+    target_link_libraries(ker-fstack-pool-multiprocess-test PRIVATE ker::pools ker::ipc "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-pool-multiprocess-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-pool-generation COMMAND ker-fstack-pool-test generation)
+    add_test(NAME fstack-pool-cache COMMAND ker-fstack-pool-test cache)
+    set_tests_properties(fstack-pool-generation fstack-pool-cache PROPERTIES TIMEOUT 30
+        LABELS "fstack;pool-foundation"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-pool-legacy-consumer
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-pools.py"
+            --app "$<TARGET_FILE:ker-fstack-pool-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-pool-test>" --pmd-root "${ker_ipc_pmd_root}" --legacy-only)
+    set_tests_properties(fstack-pool-legacy-consumer PROPERTIES TIMEOUT 60 LABELS "fstack;pool-foundation")
+    add_test(NAME fstack-pool-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-pools.py"
+            --app "$<TARGET_FILE:ker-fstack-pool-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-pool-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-pool-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
+        LABELS "fstack;multiprocess")
+endif()
+
 if(KER_WITH_DPDK)
     # Compile the actual production TU with private fixture access. This target
     # deliberately does not link ker::reload or install fixture entry points.
