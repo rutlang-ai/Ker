@@ -11,6 +11,7 @@ include(cmake/LinuxPort.cmake)
 option(KER_WITH_DPDK "Build the DPDK memory and packet adapter" ON)
 if(KER_WITH_DPDK)
     include(cmake/DPDK.cmake)
+    include(cmake/IPC.cmake)
     include(cmake/SKB.cmake)
     include(cmake/Ethernet.cmake)
     include(cmake/NAPI.cmake)
@@ -179,6 +180,10 @@ if(KER_WITH_NATIVE_TCP)
 endif()
 
 if(KER_BUILD_EXAMPLES)
+    if(KER_WITH_DPDK)
+        add_executable(ker-ipc-channel examples/ipc-channel.c)
+        target_link_libraries(ker-ipc-channel PRIVATE ker::ipc)
+    endif()
     add_executable(ker-ini-events examples/ini-events.c)
     target_link_libraries(ker-ini-events PRIVATE ker::ini)
     add_executable(ker-info examples/info.c)
@@ -195,7 +200,7 @@ install(TARGETS ker EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/ker DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/ker DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} PATTERN "ipc.h" EXCLUDE)
 install(EXPORT kerTargets NAMESPACE ker:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ker)
 configure_package_config_file(cmake/kerConfig.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/kerConfig.cmake
