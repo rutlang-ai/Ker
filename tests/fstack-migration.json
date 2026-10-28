@@ -850,7 +850,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker\u2019s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker\u2019s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
+      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker’s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker’s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -1226,6 +1226,10 @@
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-config-lifecycle"
+        },
+        {
+          "ctest": "fstack-config-no-dpdk",
+          "provenance_case": "fstack-config-no-dpdk"
         }
       ]
     },
@@ -1242,6 +1246,10 @@
         {
           "ctest": "native-fstack-lcore-mask",
           "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "fstack-config-bad-lcore",
+          "provenance_case": "fstack-config-bad-lcore"
         }
       ]
     },
@@ -1254,6 +1262,10 @@
         {
           "ctest": "native-fstack-vlan",
           "provenance_case": "native-fstack-vlan"
+        },
+        {
+          "ctest": "fstack-config-dual-vlan",
+          "provenance_case": "fstack-config-dual-vlan"
         }
       ]
     },
@@ -1266,6 +1278,10 @@
         {
           "ctest": "native-fstack-vip-addresses",
           "provenance_case": "native-fstack-vip-addresses"
+        },
+        {
+          "ctest": "fstack-config-vip",
+          "provenance_case": "fstack-config-vip"
         }
       ]
     },
@@ -1278,6 +1294,10 @@
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-config-lifecycle"
+        },
+        {
+          "ctest": "fstack-config-cli-override",
+          "provenance_case": "fstack-config-cli-override"
         }
       ]
     },
@@ -1303,6 +1323,10 @@
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-missing-launch-config"
+        },
+        {
+          "ctest": "fstack-config-empty",
+          "provenance_case": "fstack-config-empty"
         }
       ]
     },
@@ -1315,6 +1339,10 @@
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-config-lifecycle"
+        },
+        {
+          "ctest": "fstack-config-missing-path",
+          "provenance_case": "fstack-config-missing-path"
         }
       ]
     },
@@ -1339,6 +1367,10 @@
         {
           "ctest": "native-fstack-vip-addresses",
           "provenance_case": "native-fstack-vip-addresses"
+        },
+        {
+          "ctest": "fstack-config-address",
+          "provenance_case": "fstack-config-address"
         }
       ]
     },
@@ -1409,6 +1441,10 @@
         {
           "ctest": "native-fstack-lcore-mask",
           "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "fstack-config-zero-lcore",
+          "provenance_case": "fstack-config-zero-lcore"
         }
       ]
     },
@@ -1428,6 +1464,10 @@
         {
           "ctest": "native-fstack-typed-bond-config",
           "provenance_case": "native-fstack-typed-bond-config"
+        },
+        {
+          "ctest": "fstack-config-bond-without-count",
+          "provenance_case": "fstack-config-bond-without-count"
         }
       ]
     },
@@ -1440,6 +1480,10 @@
         {
           "ctest": "native-fstack-typed-bond-config",
           "provenance_case": "native-fstack-typed-bond-config"
+        },
+        {
+          "ctest": "fstack-config-bond-bad-index",
+          "provenance_case": "fstack-config-bond-bad-index"
         }
       ]
     },
@@ -1484,6 +1528,10 @@
         {
           "ctest": "native-fstack-lcore-mask",
           "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "fstack-config-uppercase-lcore",
+          "provenance_case": "fstack-config-uppercase-lcore"
         }
       ]
     },
@@ -1503,6 +1551,10 @@
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-vlan-section-validation"
+        },
+        {
+          "ctest": "fstack-config-vlan-bad-index",
+          "provenance_case": "fstack-config-vlan-bad-index"
         }
       ]
     },
@@ -1515,6 +1567,10 @@
         {
           "ctest": "native-fstack-typed-vdev-config",
           "provenance_case": "native-fstack-typed-vdev-config"
+        },
+        {
+          "ctest": "fstack-config-vdev-without-count",
+          "provenance_case": "fstack-config-vdev-without-count"
         }
       ]
     },
@@ -1568,6 +1624,10 @@
         {
           "ctest": "native-fstack-interface-section-validation",
           "provenance_case": "native-fstack-interface-section-validation"
+        },
+        {
+          "ctest": "fstack-config-interface-bad-name",
+          "provenance_case": "fstack-config-interface-bad-name"
         }
       ]
     },
@@ -1591,6 +1651,10 @@
         {
           "ctest": "native-fstack-launcher-config-interop",
           "provenance_case": "native-fstack-config-repeat-keys"
+        },
+        {
+          "ctest": "fstack-config-repeat-keys",
+          "provenance_case": "fstack-config-repeat-keys"
         }
       ]
     },
@@ -1638,6 +1702,10 @@
         {
           "ctest": "native-fstack-lcore-mask",
           "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "fstack-config-multibit-lcore",
+          "provenance_case": "fstack-config-multibit-lcore"
         }
       ]
     },
@@ -1654,6 +1722,10 @@
         {
           "ctest": "native-fstack-lcore-mask",
           "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "fstack-config-blank-lcore",
+          "provenance_case": "fstack-config-blank-lcore"
         }
       ]
     },
@@ -1670,6 +1742,10 @@
         {
           "ctest": "native-fstack-lcore-mask",
           "provenance_case": "native-fstack-lcore-mask"
+        },
+        {
+          "ctest": "fstack-config-mid-nonhex-lcore",
+          "provenance_case": "fstack-config-mid-nonhex-lcore"
         }
       ]
     },
@@ -1682,6 +1758,10 @@
         {
           "ctest": "native-fstack-vlan",
           "provenance_case": "native-fstack-vlan"
+        },
+        {
+          "ctest": "fstack-config-vlan-vips",
+          "provenance_case": "fstack-config-vlan-vips"
         }
       ]
     },
@@ -1715,6 +1795,10 @@
         {
           "ctest": "native-fstack-exception-filter",
           "provenance_case": "exception-filter-test_ff_check_config_kni_method_reject_ok"
+        },
+        {
+          "ctest": "fstack-config-exception-reject",
+          "provenance_case": "fstack-config-exception-reject"
         }
       ]
     },
@@ -1727,6 +1811,10 @@
         {
           "ctest": "native-fstack-exception-filter",
           "provenance_case": "exception-filter-test_ff_check_config_kni_method_invalid_fails"
+        },
+        {
+          "ctest": "fstack-config-exception-invalid",
+          "provenance_case": "fstack-config-exception-invalid"
         }
       ]
     },
@@ -1884,6 +1972,10 @@
         {
           "ctest": "native-fstack-startup-lifecycle",
           "provenance_case": "native-fstack-mtu-default"
+        },
+        {
+          "ctest": "fstack-config-mtu-defaults",
+          "provenance_case": "fstack-config-mtu-defaults"
         }
       ]
     },
@@ -1900,6 +1992,10 @@
         {
           "ctest": "native-fstack-jumbo-mtu",
           "provenance_case": "native-fstack-jumbo-mtu"
+        },
+        {
+          "ctest": "fstack-config-jumbo",
+          "provenance_case": "fstack-config-jumbo"
         }
       ]
     },
@@ -1912,6 +2008,10 @@
         {
           "ctest": "native-fstack-mbuf-scatter",
           "provenance_case": "native-fstack-mbuf-mode"
+        },
+        {
+          "ctest": "fstack-config-scatter",
+          "provenance_case": "fstack-config-scatter"
         }
       ]
     },
@@ -1924,6 +2024,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-mbuf-mode"
+        },
+        {
+          "ctest": "fstack-config-bad-storage-mode",
+          "provenance_case": "fstack-config-bad-storage-mode"
         }
       ]
     },
@@ -1936,6 +2040,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-mtu-config"
+        },
+        {
+          "ctest": "fstack-config-nonnumeric-ceiling",
+          "provenance_case": "fstack-config-nonnumeric-ceiling"
         }
       ]
     },
@@ -1952,6 +2060,10 @@
         {
           "ctest": "native-fstack-jumbo-mtu",
           "provenance_case": "native-fstack-mtu-config"
+        },
+        {
+          "ctest": "fstack-config-over-ceiling",
+          "provenance_case": "fstack-config-over-ceiling"
         }
       ]
     },
@@ -1968,6 +2080,10 @@
         {
           "ctest": "native-fstack-mtu-enable-live",
           "provenance_case": "native-fstack-mtu-enable"
+        },
+        {
+          "ctest": "fstack-config-disabled-jumbo",
+          "provenance_case": "fstack-config-disabled-jumbo"
         }
       ]
     },
@@ -1980,6 +2096,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-mtu-config"
+        },
+        {
+          "ctest": "fstack-config-oversized-jumbo",
+          "provenance_case": "fstack-config-oversized-jumbo"
         }
       ]
     },
@@ -4127,6 +4247,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-basic",
+          "provenance_case": "fstack-config-ini-basic"
         }
       ]
     },
@@ -4139,6 +4263,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-sections",
+          "provenance_case": "fstack-config-ini-sections"
         }
       ]
     },
@@ -4151,6 +4279,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-comments",
+          "provenance_case": "fstack-config-ini-comments"
         }
       ]
     },
@@ -4163,6 +4295,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-inline-comment",
+          "provenance_case": "fstack-config-ini-inline-comment"
         }
       ]
     },
@@ -4175,6 +4311,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-whitespace",
+          "provenance_case": "fstack-config-ini-whitespace"
         }
       ]
     },
@@ -4187,6 +4327,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-empty-value",
+          "provenance_case": "fstack-config-ini-empty-value"
         }
       ]
     },
@@ -4206,6 +4350,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-invalid-syntax",
+          "provenance_case": "fstack-config-ini-invalid-syntax"
         }
       ]
     },
@@ -4225,6 +4373,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-bom",
+          "provenance_case": "fstack-config-ini-bom"
         }
       ]
     },
@@ -4237,6 +4389,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-file",
+          "provenance_case": "fstack-config-ini-file"
         }
       ]
     },
@@ -4256,6 +4412,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-missing-file",
+          "provenance_case": "fstack-config-ini-missing-file"
         }
       ]
     },
@@ -4268,6 +4428,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-filename",
+          "provenance_case": "fstack-config-ini-filename"
         }
       ]
     },
@@ -4291,6 +4455,10 @@
         {
           "ctest": "native-fstack-network-sysctl",
           "provenance_case": "native-fstack-config-long-keys"
+        },
+        {
+          "ctest": "fstack-config-ini-long-key",
+          "provenance_case": "fstack-config-ini-long-key"
         }
       ]
     },
@@ -4310,6 +4478,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-empty-stream",
+          "provenance_case": "fstack-config-ini-empty-stream"
         }
       ]
     },
@@ -4322,6 +4494,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-unclosed-section",
+          "provenance_case": "fstack-config-ini-unclosed-section"
         }
       ]
     },
@@ -4334,6 +4510,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-no-final-newline",
+          "provenance_case": "fstack-config-ini-no-final-newline"
         }
       ]
     },
@@ -4359,6 +4539,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-colon",
+          "provenance_case": "fstack-config-ini-colon"
         }
       ]
     },
@@ -4371,6 +4555,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-bare-line",
+          "provenance_case": "fstack-config-ini-bare-line"
         }
       ]
     },
@@ -4383,6 +4571,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-partial-bom",
+          "provenance_case": "fstack-config-ini-partial-bom"
         }
       ]
     },
@@ -4395,6 +4587,10 @@
         {
           "ctest": "native-fstack-launcher-config",
           "provenance_case": "native-fstack-launcher-config"
+        },
+        {
+          "ctest": "fstack-config-ini-bom-mismatch",
+          "provenance_case": "fstack-config-ini-bom-mismatch"
         }
       ]
     },

@@ -569,3 +569,30 @@ socket验证非空written range、NULL/溢出/host fd拒绝及精确prefix/offse
 适配 `test_port_cfg_handler_bad_section_returns_zero` 的错误拒绝场景。无效名称在
 合法接口记录前后均失败，worker/application 不执行；修正后两条记录独立恢复。
 Ker 使用 `[interface.NAME]`，不模拟 F-Stack 数字端口 ABI，也不计网络互通通过。
+
+## 独立配置场景回归（50 项）
+
+`tests/posix/test_fstack_config_cases.py` 将固定快照里的 19 个 INI 场景和
+30 个配置源场景各自实现为独立 CTest；另有一个 Ker-only EAL 转发回归，检查
+INI 与 CLI 的 `--proc-type` 参数交给原始 EAL，且不计为源案例。50 项可单独
+筛选和重跑，其中49项有源 ID，均在 `fstack-migration.json` 与
+`fstack-provenance.json` 中记录来源和 Python selector。
+
+```bash
+ctest --test-dir build -L '^fstack-config-cases$' --output-on-failure
+```
+
+这些测试通过生产 `read_configuration`、`load_configuration`、
+`parse_arguments` 和实际 CLI 验证数据，不复制解析器、不 mock 解析结果。
+错误配置通过 CLI 时必须返回 2、给出相应错误、没有 traceback，且 worker/
+application 均未执行；随后合法加载验证恢复和默认状态。测试还检查重复字段的
+最终值及顺序、CLI 覆盖、配置文件相对目录、不同加载间 VLAN/VIP 记录隔离、
+完整长 key、损坏 UTF-8/BOM，以及 MTU 和 EAL lcore 配置边界。
+
+49 个源案例此前均已标记 `scenario-adapted`。本批新增的是独立回归测试，
+**没有新增完成的源案例**；上游完成数仍为 218。
+FreeBSD/F-Stack C 回调和结构布局、进程类型、默认 MTU 开关等差异继续遵循
+既有适配边界；没有增加网络协议实现，也不以配置通过作为网络互通证明。
+
+该组在 `BUILD_TESTING=ON` 时始终注册，DPDK 关闭也可运行，不需要 root、
+namespace、EAL、PMD 或完整原生内核。
