@@ -5,10 +5,22 @@ import unittest
 
 
 POSIX_TESTS = Path(__file__).resolve().parents[1] / 'posix'
-sys.path.insert(0, str(POSIX_TESTS))
-SPEC = importlib.util.spec_from_file_location('idle_wait_fixture', POSIX_TESTS / 'idle-wait.py')
-idle_wait = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(idle_wait)
+
+
+def _load_idle_wait_fixture():
+    spec = importlib.util.spec_from_file_location(
+        'idle_wait_fixture', POSIX_TESTS / 'idle-wait.py')
+    module = importlib.util.module_from_spec(spec)
+    original_sys_path = sys.path[:]
+    sys.path.insert(0, str(POSIX_TESTS))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original_sys_path
+    return module
+
+
+idle_wait = _load_idle_wait_fixture()
 
 
 class IdleWaitFixtureTests(unittest.TestCase):
