@@ -1055,7 +1055,17 @@ if(KER_WITH_DPDK)
     add_test(NAME fstack-reload-multiprocess
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-multiprocess.py"
             --app "$<TARGET_FILE:ker-fstack-reload-multiprocess-test>"
-            --unit-app "$<TARGET_FILE:ker-fstack-reload-poll-test>" --pmd-root "${ker_ipc_pmd_root}")
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-poll-test>" --heartbeat-app "$<TARGET_FILE:ker-fstack-reload-heartbeat-test>" --pmd-root "${ker_ipc_pmd_root}")
     set_tests_properties(fstack-reload-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
         LABELS "fstack;fstack-reload;multiprocess")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-heartbeat-test fstack-reload-heartbeat.c)
+    target_include_directories(ker-fstack-reload-heartbeat-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
+    target_link_libraries(ker-fstack-reload-heartbeat-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-heartbeat-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-heartbeat COMMAND ker-fstack-reload-heartbeat-test)
+    set_tests_properties(fstack-reload-heartbeat PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-reload"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()

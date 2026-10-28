@@ -41,6 +41,8 @@ int ker_reload_bind_state(void *storage, size_t size, uint32_t epoch, int genera
     borrowed = 1;
     polled = 0;
     g_reload_slot = -1;
+    g_hb_last_cnt = g_hb_last_advance = g_hb_timeout_tsc = 0;
+    g_hb_inited = 0;
     return 0;
 }
 void ker_reload_unbind_state(void)
@@ -78,6 +80,7 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
     if (!poll) return -EINVAL;
     if (g_reload_slot < 0) return -EINVAL;
     polled = 1;
+    ff_reload_heartbeat_tick();
     if (ff_no_hw_mode()) {
         ff_reload_handover_ack();
         return 0;
@@ -141,4 +144,72 @@ int ker_reload_park_ack(void)
     if (g_reload_slot < 0) return -EINVAL;
     ff_reload_handover_ack();
     return 0;
+}
+int ker_reload_state_valid(const void *storage, size_t size)
+{
+    if (!storage || (uintptr_t)storage % _Alignof(struct ff_reload_state)) return 0;
+    return ff_reload_state_valid(storage, size);
+}
+int ker_reload_runtime_view(struct ker_reload_runtime *view)
+{
+    if (!view) return -EINVAL;
+    *view = (struct ker_reload_runtime){
+        .attached = ff_reload_state_attached(), .active_generation = ff_reload_active_gen(),
+        .target_generation = ff_reload_target_gen(), .worker_generation = ff_reload_worker_gen(),
+        .reload_active = ff_reload_hw_locked(), .observation_owner_generation = ff_reload_kni_owner_gen(),
+        .rx_owner = ff_reload_rx_owner_gen(), .rx_stopped = ff_reload_rx_stopped(),
+        .round_epoch = ff_reload_shared_epoch(), .heartbeat = ff_reload_heartbeat_counter(),
+        .heartbeat_stalls = g_reload_state ? __atomic_load_n(&g_reload_state->heartbeat_stalls, __ATOMIC_SEQ_CST) : 0};
+    return 0;
+}
+int ker_reload_round_begin(uint32_t *epoch, uint32_t *target_generation)
+{
+    if (polling) return -EBUSY;
+    if (!borrowed) return -ENOTCONN;
+    if (ff_reload_hw_locked()) return -EBUSY;
+    ff_reload_master_begin(epoch, target_generation);
+    return 0;
+}
+int ker_reload_round_finish(int commit)
+{
+    if (polling) return -EBUSY;
+    if (!borrowed) return -ENOTCONN;
+    if (!ff_reload_hw_locked() || (commit != 0 && commit != 1)) return -EINVAL;
+    if (commit) ff_reload_master_complete(); else ff_reload_master_abort();
+    return 0;
+}
+int ker_reload_heartbeat_timeout(uint64_t timeout)
+{
+    if (polling) return -EBUSY;
+    if (!borrowed) return -ENOTCONN;
+    ff_reload_heartbeat_set_timeout(timeout);
+    return 0;
+}
+int ker_reload_heartbeat_tick(void)
+{
+    if (polling) return -EBUSY;
+    if (!borrowed) return -ENOTCONN;
+    ff_reload_heartbeat_tick(); return 0;
+}
+int ker_reload_heartbeat_sample(uint64_t now)
+{
+    if (polling) return -EBUSY;
+    if (!borrowed) return -ENOTCONN;
+    return ff_reload_heartbeat_sample(now);
+}
+int ker_reload_heartbeat_eval(uint64_t previous, uint64_t current, uint64_t now,
+    uint64_t *last_advance, uint64_t timeout)
+{
+    return ff_reload_heartbeat_eval(previous, current, now, last_advance, timeout);
+}
+int ker_reload_ready_publish(unsigned slot, int pid)
+{
+    if (polling) return -EBUSY;
+    if (!borrowed) return -ENOTCONN;
+    if (slot >= FF_RELOAD_MAX_PROCS || pid <= 0) return -EINVAL;
+    ff_reload_publish_ready(slot, pid); return 0;
+}
+int ker_reload_ready_matches(unsigned slot, int pid, uint32_t epoch)
+{
+    return ff_reload_ready_matches(slot, pid, epoch);
 }

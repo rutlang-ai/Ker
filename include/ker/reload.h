@@ -62,4 +62,34 @@ KER_API int ker_reload_parked(unsigned slot, uint32_t epoch);
  * and will keep it stopped until release. Normal workers use poll's denied
  * pass instead. Acknowledgement is epoch-tagged, not an authorization token. */
 KER_API int ker_reload_park_ack(void);
+/* Original shared-block validation and read-only observations. View fields are
+ * individually atomic; quiesce the controller for a coherent round snapshot. */
+KER_API int ker_reload_state_valid(const void *storage, size_t size);
+struct ker_reload_runtime {
+    int attached, active_generation, target_generation, worker_generation;
+    int reload_active, observation_owner_generation, rx_owner, rx_stopped;
+    uint32_t round_epoch;
+    uint64_t heartbeat, heartbeat_stalls;
+};
+KER_API int ker_reload_runtime_view(struct ker_reload_runtime *view);
+/* Controller primitives retain original begin/commit/abort behavior. Commit
+ * and abort can change RX ownership: first quiesce every affected callback and
+ * obtain the required park proof. They do not replace that proof or supervise
+ * processes. Re-entry into an open round is rejected. */
+KER_API int ker_reload_round_begin(uint32_t *epoch, uint32_t *target_generation);
+KER_API int ker_reload_round_finish(int commit);
+/* Heartbeats count target-generation loop passes while a round is open,
+ * including denied RX passes. Poll ticks automatically. Other event loops may
+ * tick explicitly. Timeout and sample stamps use the caller's same monotonic
+ * units (e.g. original DPDK timer cycles); timeout0 disables detection.
+ * A detected stall is observation only and never transfers RX ownership. */
+KER_API int ker_reload_heartbeat_timeout(uint64_t timeout);
+KER_API int ker_reload_heartbeat_tick(void);
+KER_API int ker_reload_heartbeat_sample(uint64_t now);
+KER_API int ker_reload_heartbeat_eval(uint64_t previous, uint64_t current,
+    uint64_t now, uint64_t *last_advance, uint64_t timeout);
+/* Trusted-caller READY bookkeeping, correlated to the current round and PID;
+ * it is not authentication or proof that native listening sockets exist. */
+KER_API int ker_reload_ready_publish(unsigned slot, int pid);
+KER_API int ker_reload_ready_matches(unsigned slot, int pid, uint32_t epoch);
 #endif
