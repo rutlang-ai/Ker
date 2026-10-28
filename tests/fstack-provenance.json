@@ -656,6 +656,18 @@
       ],
       "adaptation": "Supplemental master-only control-adapter coverage for the TC-4 epoch-liveness verdict. Three profiles use independent real Python master processes and resident SO_PEERCRED/pidfd tracking: socket EOF with a live process retains the epoch; normal exit after EOF and SIGKILL with an open transport permit reclamation only after exact pidfd death; a SIGSTOP master with closed transport retains the last slot and blocks a fourth master with ENOSPC. Foreign RELEASE is refused, unrelated master epochs and the resident epoch0 stay live, and reuse requires a newer epoch while old credentials remain ESTALE. All profiles require511 available objects, zero leased objects/users and exact resident/socket cleanup. The new profiles start only the primary EAL and no EAL borrowers; existing standby evidence remains responsible for secondary/borrower lifetime coverage. They do not implement F-Stack heartbeat aging, RX-owner takeover, stopped-user acknowledgements, network traffic or full reload."
     },
+    "fstack-packet-dispatcher-plain": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_regist_packet_dispatcher_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-packet-dispatcher-plain",
+        "fstack-packet-dispatcher-lifetime",
+        "fstack-packet-dispatcher-pmd"
+      ],
+      "adaptation": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md."
+    },
     "queue-full-ownership": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_ut_nr_19_drain_ring_sp_sc",
@@ -1143,6 +1155,18 @@
         "native-fstack-exception-tap"
       ],
       "adaptation": "An ordinary budget of1 admits unicast attempt1 and consumes/frees attempt2 with2 charged attempts and1 drop. Disabled console admission still accepts ARP without advancing console counters. Original DPDK pool counts and real TAP bytes prove ownership and isolation. This adapts the source enqueue-time classification/counter/ownership scenario through the production Ker TAP adapter and original DPDK net_ring, not F-Stack global-layout or KNI ABI equivalence. Separate native-fstack-exception-filter acceptance runs the configured budgets over original net_tap and real host/native Linux IPv4/IPv6 TCP/UDP sockets; no successful transport operation is mocked."
+    },
+    "fstack-packet-dispatcher-unregister": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_24_unregist_dispatcher"
+      ],
+      "ker_ctests": [
+        "fstack-packet-dispatcher-unregister",
+        "fstack-packet-dispatcher-lifetime",
+        "fstack-packet-dispatcher-pmd"
+      ],
+      "adaptation": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md."
     },
     "exception-filter-test_ff_kni_proto_filter_ipv4_ipip_recurse": {
       "source_file": "tests/unit/test_ff_dpdk_kni.c",
@@ -1999,14 +2023,6 @@
       ],
       "adaptation": "Eighteen pinned F-Stack INI scenarios adapted to the actual Ker launcher configuration reader: known sections/options, multiple sections, comments and whitespace, empty text/value, missing final newline, colon delimiter, valid UTF-8 BOM, malformed syntax, missing bracket, bare lines, real open-file/filename input, missing file and malformed BOM byte rejection. Python configparser exceptions and UTF-8 decode errors replace F-Stack integer return codes and callback records; typed Ker configuration, not direct F-Stack config-file/API compatibility. One multiline scenario remains partial because Ker joins lines into an EAL string instead of invoking a handler per line. No sectionless globals, arbitrary handler rejection/userdata, NULL FILE C ABI or section-name truncation claim; supported long sysctl-key retention is qualified separately. Ker extensions test strict unknown/default rejection and final-value duplicate-key precedence, interpolation disabled, CLI and negative-boolean overrides, config-relative paths, app argument isolation and pre-launch configuration rejection. Separate native-fstack-launcher-config-interop starts real DPDK/native Linux TCP workers in both roles using file-provided network/EAL/log/capture settings; validates kernel opens, TX/RX, zero outstanding, capture/log files and explicit CLI port/stats overrides. Its INI also repeats [sysctl] sections in A-B-A order for ip_unprivileged_port_start and ip_local_port_range; both native TCP roles prove the final surviving range-then-boundary order is accepted by original Linux."
     },
-    "fstack-config-nonnumeric-ceiling": {
-      "source_file": "tests/unit/test_ff_config.c",
-      "source_case": "test_mtu_max_mtu_non_numeric_fails",
-      "ker_ctests": [
-        "fstack-config-nonnumeric-ceiling"
-      ],
-      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config nonnumeric ceiling. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_nonnumeric_ceiling. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
-    },
     "fstack-address-policy-register": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": [
@@ -2018,6 +2034,14 @@
         "native-fstack-address-policy-sockets"
       ],
       "adaptation": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md."
+    },
+    "fstack-config-nonnumeric-ceiling": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_mtu_max_mtu_non_numeric_fails",
+      "ker_ctests": [
+        "fstack-config-nonnumeric-ceiling"
+      ],
+      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config nonnumeric ceiling. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_nonnumeric_ceiling. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
     "native-fstack-session-orphan-safety": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
@@ -2090,6 +2114,18 @@
         "fstack-config-oversized-jumbo"
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config oversized jumbo. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_oversized_jumbo. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
+    },
+    "fstack-packet-dispatcher-context": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_regist_packet_dispatcher_context_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-packet-dispatcher-context",
+        "fstack-packet-dispatcher-lifetime",
+        "fstack-packet-dispatcher-pmd"
+      ],
+      "adaptation": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md."
     },
     "tcp-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",

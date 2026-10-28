@@ -750,3 +750,13 @@ bind/connect；不注入隐式POSIX钩子，不移植FreeBSD协议实现。实�
 替换/注销等待、嵌套调用、重入拒绝和取消清理另有回归，不重复计数。Debug/static、
 Release/shared、独立find_package安装消费均通过，证据见
 [地址回调合同](fstack-address-policy.md)。当前 **46/50**，仍需4个原先未完成的案例。
+
+
+### 第十三批：原始 packet dispatcher 回调（3 项）
+
+`ker::packet_dispatcher` 编译原始回调ABI、context布局、注册/注销函数和调用分支，
+支持普通回调优先、VLAN metadata、返回值/长度透传及安全替换/注销。实际原始
+net_ring双RX/TX消费者处理12个报文、发出9个，调用方丢弃2个、peer队列转交1个；
+每次恢复池127/127。Debug/static、Release/shared与独立安装消费的完整源测试、
+生命周期和PMD检查均通过，不包含skip。详见[dispatcher合同及证据](fstack-packet-dispatcher.md)。
+当前 **49/50**，仍需完成P1 live-slot及其实际多进程/报文证明。

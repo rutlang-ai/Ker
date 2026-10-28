@@ -1,8 +1,8 @@
 {
   "baseline_commit": "7f46febcade4166c5820f79b204d5a2b9413408f",
   "target": 50,
-  "newly_completed": 46,
-  "remaining": 4,
+  "newly_completed": 49,
+  "remaining": 1,
   "status": "in-progress",
   "cases": [
     {
@@ -728,6 +728,63 @@
         {
           "ctest": "native-fstack-address-policy-sockets",
           "provenance_case": "fstack-address-policy-ipv6"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-plain",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-context",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-unregister",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
         }
       ]
     }

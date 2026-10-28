@@ -2673,16 +2673,42 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-plain",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-context",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_get_tsc_ns_basic",
@@ -3078,9 +3104,22 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-unregister",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",

@@ -57,3 +57,15 @@ application/hash, stdout and stderr. Qualification requires Debug/static,
 Release/shared and a separately configured `find_package(ker)` consumer linked
 to installed `ker::packet_dispatcher` and the original net_ring PMD. This proves
 callback/device adaptation, not imported-kernel delivery or physical NIC DMA.
+
+## Qualification
+
+Candidate `e40a712a077fd60ad7bbdfb2150c44eb58c1cb57` passes six Debug/static
+and six Release/shared CTests. Independently installed source, lifetime and
+real-PMD callers also pass. Evidence lives at
+`/home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1`;
+`manifest.json` SHA256 is
+`ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a`,
+binding source, executable, installed source/CMake/link/library and actual
+PMD evidence. These three baseline-blocked IDs bring the objective to49/50;
+the P1 live-slot case still requires full qualification.

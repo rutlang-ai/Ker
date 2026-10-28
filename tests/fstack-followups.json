@@ -219,33 +219,6 @@
       "issue": "https://github.com/rutlang-ai/Ker/issues/220"
     },
     {
-      "id": "packet-dispatch-hooks",
-      "title": "Define packet-dispatch and PCB callback adaptation boundaries",
-      "disposition": "contract-review",
-      "reason": "Four PCB address-callback cases completed through the original dispatch and an explicit native-Linux caller, with repository/installed payload and lifetime proof. Packet plain/context dispatcher registration and unregister still require an actual useful packet consumer and original callback forwarding/ownership/quiescence contract.",
-      "evidence": [
-        "include/ker/posix.h",
-        "src/posix/packet-device.c",
-        "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c",
-        "include/ker/address-policy.h",
-        "src/compat/address-policy.c",
-        "tests/posix/address-policy-sockets.c",
-        "tests/address-policy-lifetime.c",
-        "docs/fstack-address-policy.md"
-      ],
-      "acceptance": [
-        "For every callback, decide whether a runtime hook has a useful Ker caller and an ownership/quiescence contract, or document why the FreeBSD ABI is excluded.",
-        "If supported, exercise registration, context forwarding, replacement/unregistration and packet delivery through the actual adapter.",
-        "Do not expose an unused setter solely to pass smoke tests or bypass original Linux protocol behavior."
-      ],
-      "cases": [
-        "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
-        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/222"
-    },
-    {
       "id": "device-run-lifecycle",
       "title": "Resolve device/run lifecycle and upstream fault-injection contracts",
       "disposition": "contract-review",
