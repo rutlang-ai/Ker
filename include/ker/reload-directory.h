@@ -32,6 +32,16 @@ struct ker_reload_directory_view {
  * not one coherent global snapshot. Query never publishes ownership. */
 KER_API int ker_reload_directory_view(struct ker_reload_directory_view *view);
 KER_API int ker_reload_directory_epoch_live(uint32_t epoch);
+struct ker_reload_peer {
+    struct ker_reload_coordinate selected, published;
+    int foreign, published_foreign, observation_owner_matches;
+};
+/* Original peer selection: newest live foreign epoch outside a reload window,
+ * own opposite generation during the window or without a live foreign peer.
+ * Published is the original block mirror from the last polling pass. Fields
+ * are observations, not one global atomic snapshot. The observation-owner
+ * match is a coordinate predicate, not a FreeBSD KNI implementation. */
+KER_API int ker_reload_directory_peer(struct ker_reload_peer *peer);
 KER_API int ker_reload_directory_users(uint32_t epoch, int generation,
     unsigned *active, int *clear);
 /* Poll automatically registers ACTIVE before gating, and acknowledges STOPPED

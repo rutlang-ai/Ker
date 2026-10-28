@@ -26,17 +26,20 @@ static int directory_no_hw_mode(void)
     if (!g_dir) return ff_no_hw_mode();
     if (rte_eal_process_type() != RTE_PROC_SECONDARY) return 1;
     if (directory_retiring) return 1;
-    uint32_t epoch;
-    ff_reload_gendir_rx_owner(&epoch, NULL, NULL);
+    uint32_t epoch, stopped;
+    ff_reload_gendir_rx_owner(&epoch, NULL, &stopped);
     if (epoch == FF_RELOAD_EPOCH_NONE) {
         /* Use the original CAS operation for concurrent first claimants,
          * before the original block mirror can publish by ordinary store. */
         if (ff_reload_gendir_rx_reclaim(ff_reload_epoch(), (uint32_t)ff_reload_gen()) != FF_RELOAD_HANDOVER_OK)
             return 1;
-        ff_reload_gendir_rx_owner(&epoch, NULL, NULL);
+        ff_reload_gendir_rx_owner(&epoch, NULL, &stopped);
     }
     int saved = g_reload_dir_publish;
-    if (epoch != ff_reload_epoch()) {
+    /* A target's private block may still say unparked while the directory
+     * carries the previous owner's park order. Only explicit claim may clear
+     * that order; mirroring the target's stale block must not clear it. */
+    if (epoch != ff_reload_epoch() || (stopped && !ff_reload_rx_stopped())) {
         ff_reload_dir_sync_enable(0);
         /* The original mirror also refreshes the worker's liveness stamp and
          * peer observation. Keep those runtime observations progressing while
@@ -174,6 +177,20 @@ int ker_reload_directory_epoch_live(uint32_t epoch)
 {
     if (!g_dir) return -ENOTCONN;
     return ff_reload_gendir_epoch_live(epoch);
+}
+
+int ker_reload_directory_peer(struct ker_reload_peer *peer)
+{
+    if (!peer) return -EINVAL;
+    if (!g_dir) return -ENOTCONN;
+    int generation;
+    ff_reload_peer_coord(&peer->selected.epoch, &generation);
+    peer->selected.generation = (uint32_t)generation;
+    ff_reload_peer_block(&peer->published.epoch, &peer->published.generation);
+    peer->foreign = ff_reload_peer_draining();
+    peer->published_foreign = ff_reload_peer_mirror_draining();
+    peer->observation_owner_matches = ff_reload_kni_owner_match();
+    return 0;
 }
 
 int ker_reload_directory_users(uint32_t epoch, int generation, unsigned *active, int *clear)

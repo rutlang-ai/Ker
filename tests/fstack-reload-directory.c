@@ -96,6 +96,10 @@ static void primary_probe_fallback(void)
 #define assert_int_equal(left, right) CHECK((left) == (right))
 #define assert_true(value) CHECK(value)
 #include "fstack-reload-directory-source.inc"
+#define assert_int_not_equal(left, right) CHECK((left) != (right))
+#define assert_non_null(value) CHECK((value) != NULL)
+#define assert_string_equal(left, right) CHECK(!strcmp((left), (right)))
+#include "fstack-reload-m5-source.inc"
 
 int main(int argc, char **argv)
 {
@@ -105,6 +109,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[1], "release")) test_p2_release_epoch_needs_proof(NULL);
         else if (!strcmp(argv[1], "orphans")) test_p2_orphan_workers_keep_epoch_live(NULL);
         else if (!strcmp(argv[1], "ring-census")) test_rx15_ring_user_census_and_purge_lock(NULL);
+        else if (!strcmp(argv[1], "m5-arbitration")) test_ut_nr_m5_gendir_arbitration(NULL);
+        else if (!strcmp(argv[1], "m5-probe")) test_ut_nr_m5_probe_epoch_fallback(NULL);
+        else if (!strcmp(argv[1], "m5-names")) test_ut_nr_m5_cross_master_name_isolation(NULL);
+        else if (!strcmp(argv[1], "m5-handover")) test_ut_nr_m5_cross_master_handover_sequence(NULL);
         else CHECK(0);
     } else {
         CHECK(argc == 1);
@@ -112,6 +120,8 @@ int main(int argc, char **argv)
         test_p2_hw_user_proof(NULL); test_p2_reclaim_needs_user_proof(NULL);
         test_p2_release_epoch_needs_proof(NULL); test_p2_orphan_workers_keep_epoch_live(NULL);
         test_rx15_ring_user_census_and_purge_lock(NULL);
+        test_ut_nr_m5_gendir_arbitration(NULL); test_ut_nr_m5_probe_epoch_fallback(NULL);
+        test_ut_nr_m5_cross_master_name_isolation(NULL); test_ut_nr_m5_cross_master_handover_sequence(NULL);
     }
     puts("PASS: directory source assertions; multiprocess qualification required");
     return 0;

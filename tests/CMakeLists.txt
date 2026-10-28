@@ -1115,9 +1115,26 @@ if(KER_WITH_DPDK)
             --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}")
     set_tests_properties(fstack-reload-directory-multiprocess PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
         LABELS "fstack;fstack-reload;multiprocess")
+    add_test(NAME fstack-reload-coordinate-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-coordinates.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-coordinate-multiprocess PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
     add_test(NAME fstack-reload-directory-foundation COMMAND ker-fstack-reload-directory-test)
     add_test(NAME fstack-reload-directory-primary-eal COMMAND ker-fstack-reload-directory-eal-test)
     set_tests_properties(fstack-reload-directory-foundation fstack-reload-directory-primary-eal PROPERTIES TIMEOUT 30
+        LABELS "fstack;fstack-reload;directory-foundation"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(KER_WITH_DPDK)
+    add_test(NAME fstack-reload-m5-arbitration COMMAND ker-fstack-reload-directory-test m5-arbitration)
+    add_test(NAME fstack-reload-m5-probe COMMAND ker-fstack-reload-directory-test m5-probe)
+    add_test(NAME fstack-reload-m5-names COMMAND ker-fstack-reload-directory-test m5-names)
+    add_test(NAME fstack-reload-m5-handover COMMAND ker-fstack-reload-directory-test m5-handover)
+    set_tests_properties(fstack-reload-m5-arbitration fstack-reload-m5-probe
+        fstack-reload-m5-names fstack-reload-m5-handover PROPERTIES TIMEOUT 30
         LABELS "fstack;fstack-reload;directory-foundation"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()

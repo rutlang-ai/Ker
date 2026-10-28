@@ -161,7 +161,7 @@ def main():
             worker_env=dict(env,KER_DIRECTORY_PRIMARY_PID=str(primary.child.pid))
             def group(gen,slots,name):
                 plan={'root':str(root),'workers':[(s,[str(args.app),'worker',str(gen),str(s),'--proc-type=secondary',*common]) for s in slots]}
-                master=Master(plan,worker_env,root,name);masters.append(master);group=[]
+                master=Master(plan,dict(worker_env,KER_DIRECTORY_STATE_INDEX=str(gen)),root,name);masters.append(master);group=[]
                 require(master.record('MASTER') == {'pid':master.child.pid}, 'master identity mismatch')
                 for _ in slots:
                     metadata,fds=master.receive();actor=Actor(master,metadata,fds);actors.append(actor)

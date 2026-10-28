@@ -26,3 +26,13 @@ start = original.index('/* ---- P2 (B01-1 / B02-1): takeover proof')
 end = original.index('\nmain(void)', start)
 assert (root / 'tests/fstack-reload-directory-source.inc').read_text() == original[start:end]
 print('PASS: unchanged pinned P2/RX-15 source assertions')
+
+names = ['test_ut_nr_m5_gendir_arbitration', 'test_ut_nr_m5_probe_epoch_fallback',
+         'test_ut_nr_m5_cross_master_name_isolation', 'test_ut_nr_m5_cross_master_handover_sequence']
+parts = []
+for name in names:
+    start = original.index('static void\n' + name + '(')
+    end = original.index('\n}\n', start) + 3
+    parts.append(original[start:end])
+assert (root / 'tests/fstack-reload-m5-source.inc').read_text() == '\n'.join(parts)
+print('PASS: unchanged pinned M5 source assertions')
