@@ -804,6 +804,9 @@ if(BUILD_TESTING)
     add_test(NAME native-linux-fetch-lock
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fetch.py")
     set_tests_properties(native-linux-fetch-lock PROPERTIES TIMEOUT 40 LABELS fstack)
+    add_test(NAME native-linux-artifact-lock
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_artifact_lock.py")
+    set_tests_properties(native-linux-artifact-lock PROPERTIES TIMEOUT 30)
     add_test(NAME native-linux-fingerprint-stale-inputs
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fingerprint.py"
             --builder "${PROJECT_SOURCE_DIR}/tools/build-native-linux.py"
