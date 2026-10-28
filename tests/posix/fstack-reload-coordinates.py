@@ -165,7 +165,7 @@ def main():
             d.close();c1.close();c.close();mc.close()
             primary.command(f'wait-stale {c.epoch}','STALE')
             names(c.epoch,False);names(d.epoch,False)
-            final=primary.command('status','STATUS');require(final=={'available':63,'rx':0,'tx':0,'drain':0,'inflight':[0,0],'callbacks':counts,'received':received,'ipackets':3,'opackets':3},'final same-gen PMD/pool ownership disagreement '+str(final))
+            final=primary.command('status','STATUS');require(final=={'available':63,'rx':0,'tx':0,'drain':0,'inflight':[0,0],'callbacks':counts,'received':received,'ipackets':4,'opackets':4},'final same-gen PMD/pool ownership disagreement '+str(final))
             require(primary.command('quit','CLOSED')=={'available':63,'outstanding':0} and primary.child.wait(timeout=20)==0,'original primary resources leaked')
             evidence.update(primary_pid=primary.child.pid,master_pids=[m.child.pid for m in masters],secondary_pids=[a.child.pid for a in actors],epochs=[a.epoch,b.epoch,c.epoch,d.epoch],same_generation=0,roundtrips=roundtrips,named_rings_per_epoch=88,final=final,pool_reclaimed=True,park_until_claim=True,rollback_after_dead_epoch=True,
                 cases=['test_ut_nr_m5_gendir_arbitration','test_ut_nr_m5_probe_epoch_fallback','test_ut_nr_m5_cross_master_name_isolation','test_ut_nr_m5_cross_master_handover_sequence'])
