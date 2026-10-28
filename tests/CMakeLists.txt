@@ -691,3 +691,256 @@ add_test(NAME fstack-migration-audit-guards
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_fstack_migration.py")
 set_tests_properties(fstack-migration-inventory fstack-migration-audit-guards
     PROPERTIES TIMEOUT 30 LABELS "provenance")
+
+# Fifty independently selectable F-Stack configuration regression scenarios.
+# No native kernel, EAL, root privileges or PMD are required.
+add_test(NAME fstack-config-ini-basic
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_basic)
+set_tests_properties(fstack-config-ini-basic PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-sections
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_sections)
+set_tests_properties(fstack-config-ini-sections PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-comments
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_comments)
+set_tests_properties(fstack-config-ini-comments PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-inline-comment
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_inline_comment)
+set_tests_properties(fstack-config-ini-inline-comment PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-whitespace
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_whitespace)
+set_tests_properties(fstack-config-ini-whitespace PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-empty-value
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_empty_value)
+set_tests_properties(fstack-config-ini-empty-value PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-invalid-syntax
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_invalid_syntax)
+set_tests_properties(fstack-config-ini-invalid-syntax PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-bom
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_bom)
+set_tests_properties(fstack-config-ini-bom PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-file
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_file)
+set_tests_properties(fstack-config-ini-file PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-missing-file
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_missing_file)
+set_tests_properties(fstack-config-ini-missing-file PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-filename
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_filename)
+set_tests_properties(fstack-config-ini-filename PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-long-key
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_long_key)
+set_tests_properties(fstack-config-ini-long-key PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-empty-stream
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_empty_stream)
+set_tests_properties(fstack-config-ini-empty-stream PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-unclosed-section
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_unclosed_section)
+set_tests_properties(fstack-config-ini-unclosed-section PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-no-final-newline
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_no_final_newline)
+set_tests_properties(fstack-config-ini-no-final-newline PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-colon
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_colon)
+set_tests_properties(fstack-config-ini-colon PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-bare-line
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_bare_line)
+set_tests_properties(fstack-config-ini-bare-line PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-partial-bom
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_partial_bom)
+set_tests_properties(fstack-config-ini-partial-bom PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-ini-bom-mismatch
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_ini_bom_mismatch)
+set_tests_properties(fstack-config-ini-bom-mismatch PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-no-dpdk
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_no_dpdk)
+set_tests_properties(fstack-config-no-dpdk PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-bad-lcore
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_bad_lcore)
+set_tests_properties(fstack-config-bad-lcore PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-dual-vlan
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_dual_vlan)
+set_tests_properties(fstack-config-dual-vlan PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-vip
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_vip)
+set_tests_properties(fstack-config-vip PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-cli-override
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_cli_override)
+set_tests_properties(fstack-config-cli-override PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-empty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_empty)
+set_tests_properties(fstack-config-empty PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-missing-path
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_missing_path)
+set_tests_properties(fstack-config-missing-path PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-invalid-process-mode
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_invalid_process_mode)
+set_tests_properties(fstack-config-invalid-process-mode PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-address
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_address)
+set_tests_properties(fstack-config-address PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-zero-lcore
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_zero_lcore)
+set_tests_properties(fstack-config-zero-lcore PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-bond-without-count
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_bond_without_count)
+set_tests_properties(fstack-config-bond-without-count PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-bond-bad-index
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_bond_bad_index)
+set_tests_properties(fstack-config-bond-bad-index PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-uppercase-lcore
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_uppercase_lcore)
+set_tests_properties(fstack-config-uppercase-lcore PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-vlan-bad-index
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_vlan_bad_index)
+set_tests_properties(fstack-config-vlan-bad-index PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-vdev-without-count
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_vdev_without_count)
+set_tests_properties(fstack-config-vdev-without-count PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-interface-bad-name
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_interface_bad_name)
+set_tests_properties(fstack-config-interface-bad-name PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-repeat-keys
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_repeat_keys)
+set_tests_properties(fstack-config-repeat-keys PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-multibit-lcore
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_multibit_lcore)
+set_tests_properties(fstack-config-multibit-lcore PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-blank-lcore
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_blank_lcore)
+set_tests_properties(fstack-config-blank-lcore PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-mid-nonhex-lcore
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_mid_nonhex_lcore)
+set_tests_properties(fstack-config-mid-nonhex-lcore PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-vlan-vips
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_vlan_vips)
+set_tests_properties(fstack-config-vlan-vips PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-exception-reject
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_exception_reject)
+set_tests_properties(fstack-config-exception-reject PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-exception-invalid
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_exception_invalid)
+set_tests_properties(fstack-config-exception-invalid PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-mtu-defaults
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_mtu_defaults)
+set_tests_properties(fstack-config-mtu-defaults PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-jumbo
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_jumbo)
+set_tests_properties(fstack-config-jumbo PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-scatter
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_scatter)
+set_tests_properties(fstack-config-scatter PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-bad-storage-mode
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_bad_storage_mode)
+set_tests_properties(fstack-config-bad-storage-mode PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-nonnumeric-ceiling
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_nonnumeric_ceiling)
+set_tests_properties(fstack-config-nonnumeric-ceiling PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-over-ceiling
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_over_ceiling)
+set_tests_properties(fstack-config-over-ceiling PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-disabled-jumbo
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_disabled_jumbo)
+set_tests_properties(fstack-config-disabled-jumbo PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME fstack-config-oversized-jumbo
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
+        SourceCases.test_config_oversized_jumbo)
+set_tests_properties(fstack-config-oversized-jumbo PROPERTIES
+    TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
