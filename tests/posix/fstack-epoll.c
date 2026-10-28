@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -417,10 +418,75 @@ static void null_stat_recovery(void)
     finish(c);
 }
 
+static void protected_event_buffers(void)
+{
+    struct connection c = connection();
+    long page = sysconf(_SC_PAGESIZE);
+    CHECK(page > (long)sizeof(struct epoll_event));
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED);
+    CHECK(mprotect(memory + page, (size_t)page, PROT_NONE) == 0);
+    struct epoll_event *bad = (void *)(memory + page);
+    EXPECT_ERROR(epoll_ctl(c.ep, EPOLL_CTL_ADD, c.receiver, bad), EFAULT);
+    control(c, EPOLL_CTL_ADD, EPOLLIN | EPOLLONESHOT, 10);
+    EXPECT_ERROR(epoll_ctl(c.ep, EPOLL_CTL_MOD, c.receiver, bad), EFAULT);
+    CHECK(epoll_wait(c.ep, bad, 1, 0) == 0);
+    put(c, "f");
+    struct pollfd ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&ready, 1, 2000) == 1);
+    EXPECT_ERROR(epoll_wait(c.ep, bad, 1, 0), EFAULT);
+    event(c, EPOLLIN, 10);
+    empty(c);
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_DEL, c.receiver, bad) == 0);
+    take(c, "f");
+    CHECK(munmap(memory, (size_t)page * 2) == 0);
+    finish(c);
+}
+static void partial_mixed_event_output(void)
+{
+    struct connection c = connection();
+    int pipes[2];
+    CHECK(pipe2(pipes, O_CLOEXEC) == 0);
+    control(c, EPOLL_CTL_ADD, EPOLLIN | EPOLLONESHOT, 1);
+    struct epoll_event registration = {.events = EPOLLIN | EPOLLONESHOT, .data.u64 = 2};
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_ADD, pipes[0], &registration) == 0);
+    put(c, "t");
+    CHECK(write(pipes[1], "p", 1) == 1);
+    struct pollfd ready = {.fd = c.receiver, .events = POLLIN};
+    CHECK(poll(&ready, 1, 2000) == 1);
+    long page = sysconf(_SC_PAGESIZE);
+    CHECK(page > (long)sizeof(struct epoll_event));
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED);
+    CHECK(mprotect(memory + page, (size_t)page, PROT_READ) == 0);
+    struct epoll_event *split = (void *)(memory + page - sizeof(*split));
+    CHECK(epoll_wait(c.ep, split, 2, 0) == 1);
+    uint64_t first = split->data.u64;
+    CHECK(first == 1 || first == 2);
+    struct epoll_event other[2];
+    CHECK(epoll_wait(c.ep, other, 1, 0) == 1);
+    CHECK(other[0].data.u64 == (first == 1 ? 2 : 1));
+    empty(c);
+    control(c, EPOLL_CTL_MOD, EPOLLIN | EPOLLONESHOT, 1);
+    CHECK(epoll_ctl(c.ep, EPOLL_CTL_MOD, pipes[0], &registration) == 0);
+    CHECK(epoll_wait(c.ep, other, 2, 0) == 2);
+    CHECK(other[0].data.u64 + other[1].data.u64 == 3);
+    take(c, "t");
+    char byte;
+    CHECK(read(pipes[0], &byte, 1) == 1 && byte == 'p');
+    CHECK(munmap(memory, (size_t)page * 2) == 0);
+    CHECK(close(pipes[0]) == 0 && close(pipes[1]) == 0);
+    finish(c);
+}
+
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"create-and-invalid-arguments", create_and_arguments},
+        {"protected-event-buffer-and-registration-recovery", protected_event_buffers},
+        {"partial-mixed-event-output-and-oneshot-recovery", partial_mixed_event_output},
         {"null-stat-output-and-descriptor-recovery", null_stat_recovery},
         {"null-poll-array-and-mixed-readiness-recovery", null_poll_array_recovery},
         {"null-event-and-registration-recovery", null_event_non_delete},
