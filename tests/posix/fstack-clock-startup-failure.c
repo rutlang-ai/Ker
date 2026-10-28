@@ -27,6 +27,7 @@ int main(int argc, char **argv)
 {
     CHECK(argc == 2 && !strcmp(argv[1], "clock"));
     puts("TEST_APPLICATION_REACHED");
+    CHECK(!fflush(stdout)); /* Entry evidence must survive a later fatal exit. */
     uint64_t (*capabilities)(void) = dlsym(RTLD_DEFAULT, "ker_posix_capabilities");
     int (*current_time)(int64_t *, long *) = dlsym(RTLD_DEFAULT, "ker_posix_get_current_time");
     int (*native_run)(ker_posix_loop_func, void *) = dlsym(RTLD_DEFAULT, "ker_posix_run");
