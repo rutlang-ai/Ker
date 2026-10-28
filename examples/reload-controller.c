@@ -198,6 +198,9 @@ static void worker(unsigned gen, unsigned worker_slot)
             unsigned from; CHECK(sscanf(command,"claim %u",&from)==1);
             int result = ker_reload_rx_claim((int)from,(int)gen,20);
             printf("CLAIM {\"result\":%d,\"owner\":%d,\"stopped\":%d}\n",result,ker_reload_rx_owner(),ker_reload_rx_stopped()); flush();
+        } else if (!strcmp(command,"ready\n")) {
+            CHECK(!ker_reload_ready_publish(slot,getpid()));
+            printf("WORKER_READY {\"pid\":%u,\"slot\":%u}\n",(unsigned)getpid(),slot); flush();
         } else if (!strcmp(command,"exit\n") || !strcmp(command,"retire\n")) {
             if (!strcmp(command,"retire\n")) CHECK(atomic_load(&shared->retiring[slot]) && !ker_reload_rx_allowed());
             ker_reload_unbind_state(); CHECK(!rte_eal_cleanup());
