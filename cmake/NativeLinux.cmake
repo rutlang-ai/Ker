@@ -1098,6 +1098,14 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(native-posix-tcp-interop native-posix-tcp-loss-reorder native-posix-tcp-zero-window native-posix-tcp-errors
         PROPERTIES TIMEOUT 90 LABELS native-tcp)
+    add_executable(ker-posix-raw-icmp-test tests/posix/raw-icmp-contracts.c)
+    target_compile_options(ker-posix-raw-icmp-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME host-native-raw-icmp-reference COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/packet-socket-reference.py" --app "$<TARGET_FILE:ker-posix-raw-icmp-test>")
+    set_tests_properties(host-native-raw-icmp-reference PROPERTIES TIMEOUT 30 LABELS fstack)
+    add_test(NAME native-raw-icmp-contracts COMMAND ${ker_native_test_command}
+        --fd-app "$<TARGET_FILE:ker-posix-raw-icmp-test>")
+    set_tests_properties(native-raw-icmp-contracts PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack")
     add_executable(ker-posix-packet-sockets-test tests/posix/fstack-packet-sockets.c)
     target_compile_options(ker-posix-packet-sockets-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-posix-packet-sockets-test PRIVATE ${CMAKE_DL_LIBS})

@@ -76,6 +76,210 @@ class HandoffControlPathTests(unittest.TestCase):
         cls.launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.launcher)
 
+    def test_fdinfo_handoff_census_requires_complete_identity_stable_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            (root / '4').write_text('iff:\tker_oldtap\n')
+            checks = []
+            snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                identity_check=lambda: checks.append(True))
+            self.assertEqual(snapshot, (frozenset({3, 4}), frozenset({'ker_oldtap'})))
+            self.assertEqual(len(checks), 3)
+            self.assertEqual(self.launcher.handoff_fdinfo_interfaces(snapshot), ['ker_oldtap'])
+            self.launcher.validate_handoff_fdinfo((frozenset({3}), frozenset()), 4, 'ker_oldtap')
+
+    def test_fdinfo_handoff_rejects_original_or_reused_exception_slot(self):
+        for descriptor_kind, contents in (
+                ('original', 'iff:\tker_oldtap\n'), ('reused', 'pos:\t0\n')):
+            with self.subTest(descriptor_kind=descriptor_kind), tempfile.TemporaryDirectory(
+                    prefix='handoff-fdinfo-') as directory:
+                (Path(directory) / '17').write_text(contents)
+                snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=directory)
+                with self.assertRaisesRegex(RuntimeError, 'descriptor slot open'):
+                    self.launcher.validate_handoff_fdinfo(snapshot, 17, 'ker_oldtap')
+
+    def test_fdinfo_handoff_rejects_tap_alias_even_when_exception_slot_is_absent(self):
+        with self.assertRaisesRegex(RuntimeError, 'alias to its exception TAP'):
+            self.launcher.validate_handoff_fdinfo(
+                (frozenset({3, 9}), frozenset({'ker_oldtap'})), 17, 'ker_oldtap')
+
+    def test_fdinfo_handoff_permission_and_midscan_errors_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            with mock.patch.object(Path, 'iterdir', side_effect=PermissionError(errno.EACCES, 'denied')):
+                with self.assertRaisesRegex(RuntimeError, 'could not enumerate fdinfo'):
+                    self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root)
+
+            original_read_text = Path.read_text
+            reads = []
+            def denied_file(path, *args, **kwargs):
+                if path.parent == root:
+                    reads.append(path.name)
+                    raise PermissionError(errno.EPERM, 'denied')
+                return original_read_text(path, *args, **kwargs)
+            with mock.patch.object(Path, 'read_text', denied_file):
+                with self.assertRaisesRegex(RuntimeError, r'could not complete fdinfo census.*errno=1'):
+                    self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root)
+            self.assertEqual(reads, ['3'])
+
+            def disappeared_file(path, *args, **kwargs):
+                if path.parent == root:
+                    raise FileNotFoundError(errno.ENOENT, 'descriptor disappeared')
+                return original_read_text(path, *args, **kwargs)
+            with mock.patch.object(Path, 'read_text', disappeared_file):
+                with self.assertRaisesRegex(RuntimeError, 'remained incomplete.*3 attempts'):
+                    self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root)
+
+            checks = []
+            def exits_midscan():
+                checks.append(True)
+                if len(checks) == 2:
+                    raise RuntimeError('captured worker exited during fdinfo inspection')
+            with self.assertRaisesRegex(RuntimeError, 'captured worker exited'):
+                self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root, identity_check=exits_midscan)
+            self.assertEqual(len(checks), 2)
+
+    def test_fdinfo_handoff_retries_transient_unrelated_descriptor_disappearance(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            original_read_text = Path.read_text
+            reads = []
+
+            def disappear_once(path, *args, **kwargs):
+                if path.parent == root:
+                    reads.append(path.name)
+                    if len(reads) == 1:
+                        raise FileNotFoundError(errno.ENOENT, 'unrelated fd closed during scan')
+                return original_read_text(path, *args, **kwargs)
+
+            checks = []
+            with mock.patch.object(Path, 'read_text', disappear_once):
+                snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                    identity_check=lambda: checks.append(True))
+            self.assertEqual(snapshot, (frozenset({3}), frozenset()))
+            self.assertEqual(len(reads), 3)
+            self.assertEqual(len(checks), 5)
+
+    def test_fdinfo_handoff_retries_complete_census_change_until_stable(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            descriptor = root / '3'
+            descriptor.write_text('pos:\t0\n')
+            (root / '4').write_text('pos:\t0\n')
+            checks = []
+
+            def change_mapping_between_scans():
+                checks.append(True)
+                if len(checks) == 2:
+                    descriptor.write_text('iff:\tker_other\n')
+                    (root / '5').write_text('pos:\t0\n')
+
+            snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                identity_check=change_mapping_between_scans)
+            self.assertEqual(snapshot, (frozenset({3, 4, 5}), frozenset({'ker_other'})))
+            self.assertEqual(len(checks), 6)
+
+    def test_fdinfo_handoff_forbidden_slot_or_alias_in_either_scan_is_immediate(self):
+        for descriptor, contents, expected in (
+                (17, 'pos:\t0\n', 'descriptor slot open'),
+                (9, 'iff:\tker_oldtap\n', 'alias to its exception TAP')):
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory(
+                    prefix='handoff-fdinfo-') as directory:
+                root = Path(directory)
+                (root / str(descriptor)).write_text(contents)
+                reads = []
+                original_read_text = Path.read_text
+
+                def count_reads(path, *args, **kwargs):
+                    if path.parent == root:
+                        reads.append(path.name)
+                    return original_read_text(path, *args, **kwargs)
+
+                with mock.patch.object(Path, 'read_text', count_reads):
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                            census_check=lambda snapshot:
+                                self.launcher.validate_handoff_fdinfo(snapshot, 17, 'ker_oldtap'))
+                self.assertEqual(reads, [str(descriptor)])
+
+    def test_fdinfo_handoff_census_rejects_a_new_descriptor_between_scans(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            checks = []
+            def add_reused_old_slot():
+                checks.append(True)
+                if len(checks) == 2:
+                    (root / '17').write_text('pos:\t0\n')
+            with self.assertRaisesRegex(RuntimeError, 'descriptor slot open'):
+                self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                    identity_check=add_reused_old_slot,
+                    census_check=lambda snapshot: self.launcher.validate_handoff_fdinfo(
+                        snapshot, 17, 'ker_oldtap'))
+            self.assertEqual(len(checks), 2)
+
+    def test_fdinfo_handoff_census_rejects_a_new_tap_alias_between_scans(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            (root / '3').write_text('pos:\t0\n')
+            checks = []
+            def add_tap_alias():
+                checks.append(True)
+                if len(checks) == 2:
+                    (root / '9').write_text('iff:\tker_oldtap\n')
+            with self.assertRaisesRegex(RuntimeError, 'alias to its exception TAP'):
+                self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                    identity_check=add_tap_alias,
+                    census_check=lambda snapshot: self.launcher.validate_handoff_fdinfo(
+                        snapshot, 17, 'ker_oldtap'))
+            self.assertEqual(len(checks), 2)
+
+    def test_fdinfo_handoff_persistent_churn_exhausts_bounded_retries(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
+            root = Path(directory)
+            descriptor = root / '3'
+            descriptor.write_text('pos:\t0\n')
+            checks = []
+
+            def keep_changing_between_scans():
+                checks.append(True)
+                if len(checks) in (2, 5, 8):
+                    descriptor.write_text(f'iff:\tker_other_{len(checks)}\n')
+
+            with self.assertRaisesRegex(RuntimeError, 'remained unstable.*3 attempts'):
+                self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                    identity_check=keep_changing_between_scans)
+            self.assertEqual(len(checks), 9)
+
+    def test_committed_handoff_metrics_use_validated_fdinfo_interfaces(self):
+        tree = ast.parse(SOURCE.read_text())
+        handoff = next(node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == 'perform_test_handoff')
+        metrics = next(node for node in ast.walk(handoff)
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Subscript) and
+                isinstance(target.value, ast.Name) and target.value.id == 'metrics' and
+                isinstance(target.slice, ast.Constant) and
+                target.slice.value == 'handoff' for target in node.targets))
+        metric_call = next(keyword.value for keyword in metrics.value.keywords
+            if keyword.arg == 'old_tun_interfaces_after')
+        self.assertIsInstance(metric_call, ast.Call)
+        self.assertIsInstance(metric_call.func, ast.Name)
+        self.assertEqual(metric_call.func.id, 'handoff_fdinfo_interfaces')
+        self.assertEqual(self.launcher.handoff_fdinfo_interfaces(
+            (frozenset({3}), frozenset({'ker_z', 'ker_a'}))), ['ker_a', 'ker_z'])
+
+    def test_fdinfo_handoff_pidfd_identity_must_remain_live_and_match_pid(self):
+        with mock.patch.object(self.launcher.select, 'select', return_value=([44], [], [])):
+            with self.assertRaisesRegex(RuntimeError, 'captured worker exited'):
+                self.launcher.require_live_process_identity(12345, 44)
+        with (mock.patch.object(self.launcher.select, 'select', return_value=([], [], [])),
+                mock.patch.object(Path, 'read_text', return_value='Name:\tworker\nPid:\t12346\n')):
+            with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+                self.launcher.require_live_process_identity(12345, 44)
+
     def test_frame_profiles_prewarm_original_udp_before_handoff_exhaustively(self):
         tree = ast.parse(PROFILE_SOURCE.read_text())
         test_body = next(node for node in tree.body

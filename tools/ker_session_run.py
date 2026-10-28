@@ -178,6 +178,139 @@ def old_endpoint_fd_path_exists(pid, fd, *, expected_interface, expected_ifindex
     return True
 
 
+class _IncompleteFdinfoCensus(Exception):
+    """A descriptor disappeared while one fdinfo census was being read."""
+
+
+def _read_process_fdinfo_census(pid, directory, attempt):
+    descriptors = set()
+    interfaces = set()
+    try:
+        paths = sorted(directory.iterdir(), key=lambda path: path.name)
+        for path in paths:
+            if not path.name.isdecimal():
+                raise RuntimeError('fdinfo census contained a nonnumeric descriptor entry')
+            descriptor = int(path.name)
+            try:
+                information = path.read_text()
+            except FileNotFoundError as error:
+                raise _IncompleteFdinfoCensus(
+                    f'fdinfo entry disappeared for pid {pid}, fd {descriptor}, '
+                    f'attempt {attempt}') from error
+            except OSError as error:
+                raise RuntimeError(
+                    f'could not complete fdinfo census for pid {pid}, fd {descriptor}, '
+                    f'attempt {attempt}: errno={error.errno} {error.strerror}') from error
+            descriptors.add(descriptor)
+            interfaces.update(line.split(':', 1)[1].strip() for line in information.splitlines()
+                if line.startswith('iff:'))
+    except FileNotFoundError as error:
+        raise _IncompleteFdinfoCensus(
+            f'fdinfo directory disappeared for pid {pid} on attempt {attempt}') from error
+    except OSError as error:
+        raise RuntimeError(
+            f'could not enumerate fdinfo for pid {pid} on attempt {attempt}: '
+            f'errno={error.errno} {error.strerror}') from error
+    return frozenset(descriptors), frozenset(interfaces)
+
+
+FDINFO_CENSUS_MAX_ATTEMPTS = 3
+
+
+def process_fdinfo_snapshot(pid, *, fdinfo_dir=None, identity_check=None, census_check=None):
+    """Require two matching complete fdinfo censuses for one live process.
+
+    Bounded retries tolerate unrelated descriptors closing or changing during
+    a scan. Callers may validate each complete census before it can be retried.
+    Permission, identity, and contract failures are always immediate.
+    """
+    directory = Path(f'/proc/{pid}/fdinfo') if fdinfo_dir is None else Path(fdinfo_dir)
+    max_attempts = FDINFO_CENSUS_MAX_ATTEMPTS
+
+    def check_identity():
+        if identity_check is not None:
+            identity_check()
+
+    def read_census(attempt):
+        try:
+            snapshot = _read_process_fdinfo_census(pid, directory, attempt)
+        except _IncompleteFdinfoCensus:
+            raise
+        except RuntimeError:
+            raise
+        except OSError as error:
+            raise RuntimeError(
+                f'could not complete fdinfo census for pid {pid} on attempt {attempt}: '
+                f'errno={error.errno} {error.strerror}') from error
+        if census_check is not None:
+            census_check(snapshot)
+        return snapshot
+
+    for attempt in range(1, max_attempts + 1):
+        check_identity()
+        try:
+            first = read_census(attempt)
+        except _IncompleteFdinfoCensus as error:
+            check_identity()
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f'fdinfo census remained incomplete for pid {pid} after '
+                    f'{max_attempts} attempts: {error}') from error
+            continue
+
+        check_identity()
+        try:
+            second = read_census(attempt)
+        except _IncompleteFdinfoCensus as error:
+            check_identity()
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f'fdinfo census remained incomplete for pid {pid} after '
+                    f'{max_attempts} attempts: {error}') from error
+            continue
+
+        check_identity()
+        if first == second:
+            return second
+        if attempt == max_attempts:
+            raise RuntimeError(
+                f'fdinfo census remained unstable while inspecting parked pid {pid} '
+                f'after {max_attempts} attempts')
+    raise AssertionError('unreachable fdinfo census retry state')
+
+
+def require_live_process_identity(pid, pidfd):
+    """Require the captured process identity to remain live during fdinfo inspection."""
+    if pidfd < 0 or select.select([pidfd], [], [], 0)[0]:
+        raise RuntimeError('captured worker exited during fdinfo inspection')
+    try:
+        lines = Path(f'/proc/{pid}/status').read_text().splitlines()
+    except OSError as error:
+        raise RuntimeError('could not verify captured worker identity during fdinfo inspection') from error
+    try:
+        observed_pid = next((int(line.split()[1]) for line in lines if line.startswith('Pid:')), None)
+    except (IndexError, ValueError) as error:
+        raise RuntimeError('could not parse captured worker identity during fdinfo inspection') from error
+    if observed_pid != pid or select.select([pidfd], [], [], 0)[0]:
+        raise RuntimeError('captured worker identity changed during fdinfo inspection')
+
+
+def validate_handoff_fdinfo(snapshot, exception_fd, exception_interface):
+    """Require the exception fd slot and every alias to its TAP to be absent."""
+    descriptors, interfaces = snapshot
+    if type(exception_fd) is not int or exception_fd < 0:
+        raise RuntimeError('handoff exception descriptor number is invalid')
+    if exception_fd in descriptors:
+        raise RuntimeError('parked owner still has the exception descriptor slot open')
+    if exception_interface in interfaces:
+        raise RuntimeError('parked owner still has an alias to its exception TAP')
+
+
+def handoff_fdinfo_interfaces(snapshot):
+    """Return deterministic metrics for the aliases in the validated census."""
+    return sorted(snapshot[1])
+
+
 def capture_exited_process_stdout(process, *, max_bytes=262144, budget=0.05):
     """Read currently available stdout from an exited child without blocking."""
     if process is None or process.stdout is None or process.poll() is None:
@@ -1014,17 +1147,13 @@ def _run_session_impl(args, api):
         owner_cleared = ready('KER_SESSION_PMD_PARKED', process=worker)
         validate_parked_owner_cleared(owner_cleared, worker.pid)
         old_exception_fd = metrics['geometry'].get('exception_endpoint_fd_number')
-        old_tun_interfaces = tap_interfaces_for_process(worker.pid)
-        if not isinstance(old_exception_fd, int):
-            raise RuntimeError('parked owner still holds the session exception endpoint or another alias to its TAP')
-        old_exception_fd_present = old_endpoint_fd_path_exists(worker.pid, old_exception_fd,
-            expected_interface=metrics['exception_endpoint_name'],
-            expected_ifindex=metrics['geometry'].get('exception_endpoint_ifindex'),
-            owner_key=metrics['grant'].get('exception_endpoint_owner_key'),
-            old_tun_interfaces=old_tun_interfaces, pidfd=worker_pidfd)
-        if (old_exception_fd_present or metrics['geometry'].get('exception_endpoint_ifindex') <= 0 or
-                metrics['exception_endpoint_name'] in old_tun_interfaces):
-            raise RuntimeError('parked owner still holds the session exception endpoint or another alias to its TAP')
+        if metrics['geometry'].get('exception_endpoint_ifindex') <= 0:
+            raise RuntimeError('parked owner reported an invalid exception endpoint interface index')
+        fdinfo = process_fdinfo_snapshot(worker.pid,
+            identity_check=lambda: require_live_process_identity(worker.pid, worker_pidfd),
+            census_check=lambda snapshot: validate_handoff_fdinfo(
+                snapshot, old_exception_fd, metrics['exception_endpoint_name']))
+        old_tun_interfaces = handoff_fdinfo_interfaces(fdinfo)
         if os.write(peer_control_w, b'P') != 1:
             raise RuntimeError('could not admit the exact reserved successor')
         successor = ready('KER_SESSION_PMD_GRANTED', process=peer_worker)
@@ -1050,7 +1179,8 @@ def _run_session_impl(args, api):
             peer_worker_pid=peer_worker.pid, old_owner_key=metrics['grant']['queue_owner_key'],
             new_owner_key=expected_key, old_exception_fd=old_exception_fd,
             old_exception_fd_closed=True, old_tun_interfaces_before=old_tun_interfaces_before,
-            old_tun_interfaces_after=old_tun_interfaces, successor_tun_interfaces=successor_tun_interfaces,
+            old_tun_interfaces_after=handoff_fdinfo_interfaces(fdinfo),
+            successor_tun_interfaces=successor_tun_interfaces,
             boundary=boundary, parked=parked, owner_cleared=owner_cleared,
             successor=successor, geometry=geometry, resident=observed)
         metrics['handoff_protocol'] = dict(negative_prepare=negative_prepare, replay_prepare=replay_prepare)
