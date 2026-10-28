@@ -1014,7 +1014,8 @@ if(KER_WITH_DPDK)
     list(GET DPDK_LIBRARY_DIRS 0 ker_ipc_pmd_root)
     add_test(NAME fstack-ipc-multiprocess
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-ipc-multiprocess.py"
-            --app "$<TARGET_FILE:ker-fstack-ipc-multiprocess-test>" --pmd-root "${ker_ipc_pmd_root}")
+            --app "$<TARGET_FILE:ker-fstack-ipc-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-ipc-test>" --pmd-root "${ker_ipc_pmd_root}")
     set_tests_properties(fstack-ipc-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
         LABELS "fstack;fstack-ipc;multiprocess")
 endif()

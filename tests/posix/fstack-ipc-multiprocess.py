@@ -66,6 +66,7 @@ class Process:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
+    parser.add_argument('--unit-app', type=Path, required=True)
     parser.add_argument('--huge-dir', type=Path, default=Path('/dev/hugepages'))
     parser.add_argument('--pmd-root', type=Path, required=True)
     parser.add_argument('--evidence', type=Path)
@@ -114,6 +115,13 @@ def main():
             def pump(count):
                 require(primary.command('pump','PUMP') == {'handled': count}, 'provider did not consume expected actual requests')
 
+            malformed = subprocess.run([str(args.unit_app), 'malformed'], env=env,
+                                       text=True, capture_output=True, timeout=45)
+            require(malformed.returncode == 0 and
+                    'PASS: original IPC coordinate/ownership contract malformed' in malformed.stdout,
+                    'actual malformed argument exits failed: '+malformed.stdout+malformed.stderr)
+            status(64)
+            evidence['cases'].append('test_ff_ipc_rejects_malformed')
             # Exact address outputs, in real secondary EAL contexts; AUTO stays
             # unspecified and is never guessed into a successful transport.
             addresses = [
@@ -182,7 +190,7 @@ def main():
                 successor, _ = client(); successor.command('send 1 0','SENT'); pump(1)
                 require(successor.command('recv 1','RECV')['result'] == 0, 'valid successor failed')
                 status(64); successor.close()
-            require(len(evidence['cases']) == 11, 'missing multiprocess acceptance phase')
+            require(len(evidence['cases']) == 12, 'missing acceptance phase')
             require(all(p.child.poll() == 0 for p in processes[1:]), 'a secondary is still live or failed')
             require(primary.command('quit','CLOSED') == {'available':64,'outstanding':0}, 'primary failed full reclamation')
             require(primary.child.wait(timeout=20) == 0, 'primary EAL cleanup failed')
