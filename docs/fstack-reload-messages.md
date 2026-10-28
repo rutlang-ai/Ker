@@ -2,8 +2,9 @@
 
 The optional installed `ker::reload` component wraps unchanged pinned F-Stack
 `lib/ff_reload.c`, using its original configuration and message layouts. It
-exports six Ker entrypoints for caller storage, borrowed-state lifetime and
-message fill/parse. Other compiled upstream runtime helpers remain private;
+initially exported six Ker entrypoints for caller storage, borrowed-state
+lifetime and message fill/parse. The later [polling adapter](fstack-reload-polling.md)
+adds twelve public poll/control APIs; other compiled runtime helpers remain private;
 their presence is not qualification of their behavior. No original Linux or
 DPDK source is patched, and no protocol state machine is implemented here.
 
@@ -47,8 +48,8 @@ caller parses the actual returned object, checks its fields and payload, frees
 it, and proves a full pool census. No helper-only or skipped result substitutes
 for this acceptance.
 
-Debug/static and Release/shared CTests passed. The shared library exports only
-the six Ker APIs. A separately configured installed consumer completed actual
+Debug/static and Release/shared CTests passed. At message qualification the shared library exported only the six message/lifetime
+APIs. The current polling extension adds its documented twelve Ker APIs. A separately configured installed consumer completed actual
 EAL/queue/pool lifetime and coherent QUERY response.
 
 ## Isolated guest evidence
@@ -74,6 +75,8 @@ complete reclamation, both example exit codes and normal power-down. Inherited
 guest files do not imply rerunning unrelated historical suites.
 
 This completes exactly one baseline-partial source case. The baseline delta is
-24/50. Directory arbitration, hardware users, generation handover, external
+24/50 at message qualification. Later polling progress is recorded in
+[the polling contract](fstack-reload-polling.md). Directory arbitration, hardware
+users, cross-master generation handover, external
 packet delivery, command execution and full application reload remain separate
 unqualified contracts.

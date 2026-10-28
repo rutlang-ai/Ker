@@ -181,6 +181,17 @@
         "native-fstack-epoll"
       ]
     },
+    "fstack-reload-barrier": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_11_handover_barrier"
+      ],
+      "ker_ctests": [
+        "fstack-reload-barrier",
+        "fstack-reload-multiprocess"
+      ],
+      "adaptation": "Original monotonic park epochs, slot-specific acknowledgements, stale-epoch rejection, out-of-range slots, parked-before-owner-transfer and reversible single-generation gate judgments are all asserted. The exported ker::reload synchronous poll adapter invokes actual caller packet work only when the unchanged original runtime allows it; denied passes acknowledge after earlier callback completion. Real original EAL secondaries share the original block and net_ring PMD. An in-flight old callback blocks release, callback return alone is insufficient until its exact epoch acknowledgement, new workers cannot steal, and both transfer and reverse transfer deliver original RX/TX records. All63/63 mbufs return and a same-slot successor reuses the same queue. The installed-package consumer independently repeats the entire real PMD lifecycle. This is trusted same-master block-only polling; it does not qualify cross-master directories, hardware-driver crash recovery, imported-Linux networking or complete application reload. Debug/static and Release/shared exact CTests passed. Fresh guest4 at candidatea1a1a2ffdd63032341bd4f601a8982063ea511e5 reran all15 previous IPC/naming/message cases and both new polling cases in repository and independent installed-consumer programs. Each polling profile had four distinct actual secondary PIDs, original PMD ipackets=opackets=4, callbacks=[2,1,1,0], inflight=[0,0], RX/TX empty, pool63/63, all child/EAL exits0, followed by normal power-down and QEMU0. Result fstack-unfinished-ipc-guest4/actual-result-attempt1.json SHA2566807f34ae165833ea81b8f30958aa3d0ef48ca91eacbc3dca772e3195b4cb426 binds candidate source/executables, independent consumer source, package and serial. Shared-hugepage host skip77 and extra reentry/legacy checks are not additional completed cases."
+    },
     "ethdev-rx-metadata": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": [
@@ -1704,6 +1715,17 @@
       ],
       "adaptation": "BUILD_TESTING-only real-EAL observer fixture for the source two-masters/single-consumer scenario: two distinct live masters and secondaries use generation0/process0, independently sample stable no-hardware state and the same nonzero owner epoch on both sides of a barrier, and are denied native-device ownership unless they are the selected owner. Each publishes one valid resident-leased typed message to its own distinct ring; both are simultaneously pending before the resident drains exactly one correctly typed token and reply from each. Both chains remain alive through drain and are then reaped with the full resident pool restored. This qualifies the named scenario's ownership/barrier/message-ring assertions only; it does not prove cross-generation dispatch, broad exception routing, physical handover, flow continuity or full reload."
     },
+    "fstack-reload-markers": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_26_rx_handover_markers"
+      ],
+      "ker_ctests": [
+        "fstack-reload-markers",
+        "fstack-reload-multiprocess"
+      ],
+      "adaptation": "Original unbound/legacy gate defaults, generation ownership, invalid arguments, bounded non-stealing timeout, parked release, claim/unpark, idempotent claim, reverse ownership and enabled=0 behavior are all asserted. The exported ker::reload synchronous poll adapter invokes actual caller packet work only when the unchanged original runtime allows it; denied passes acknowledge after earlier callback completion. Real original EAL secondaries share the original block and net_ring PMD. An in-flight old callback blocks release, callback return alone is insufficient until its exact epoch acknowledgement, new workers cannot steal, and both transfer and reverse transfer deliver original RX/TX records. All63/63 mbufs return and a same-slot successor reuses the same queue. The installed-package consumer independently repeats the entire real PMD lifecycle. This is trusted same-master block-only polling; it does not qualify cross-master directories, hardware-driver crash recovery, imported-Linux networking or complete application reload. Debug/static and Release/shared exact CTests passed. Fresh guest4 at candidatea1a1a2ffdd63032341bd4f601a8982063ea511e5 reran all15 previous IPC/naming/message cases and both new polling cases in repository and independent installed-consumer programs. Each polling profile had four distinct actual secondary PIDs, original PMD ipackets=opackets=4, callbacks=[2,1,1,0], inflight=[0,0], RX/TX empty, pool63/63, all child/EAL exits0, followed by normal power-down and QEMU0. Result fstack-unfinished-ipc-guest4/actual-result-attempt1.json SHA2566807f34ae165833ea81b8f30958aa3d0ef48ca91eacbc3dca772e3195b4cb426 binds candidate source/executables, independent consumer source, package and serial. Shared-hugepage host skip77 and extra reentry/legacy checks are not additional completed cases."
+    },
     "native-fstack-realtime-refresh": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": "test_ff_get_current_time_advances",
@@ -2538,14 +2560,6 @@
       ],
       "adaptation": "Plain process1 preserves AUTO and unspecified epoch; real secondary attaches to EAL and observes the primary identity without falsely resolving AUTO. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior. The host multiprocess CTest explicitly skips77 without shared hugepages; that skip is not completion evidence. Actual guest result manifest fstack-unfinished-ipc-guest1/actual-result-attempt1.json SHA256 9c82301736dc6f197adacd8403b41a59f49503dc959d645dce50ac52a4aa940f binds candidate source/binary hashes, image and serial log; original EAL primary and20 distinct secondary PIDs, all12 source markers, example exit0 and normal power-down passed. Debug/static and Release/shared unit cases passed; installed CMake consumer linked only ker::ipc and completed actual EAL/pool/ring lifecycle."
     },
-    "fstack-config-ini-sections": {
-      "source_file": "tests/unit/test_ff_ini_parser.c",
-      "source_case": "test_ini_parse_stream_multiple_sections",
-      "ker_ctests": [
-        "fstack-config-ini-sections"
-      ],
-      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: ini sections. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_ini_sections. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
-    },
     "fstack-reload-message-serdes": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": [
@@ -2556,6 +2570,14 @@
         "fstack-ipc-multiprocess"
       ],
       "adaptation": "The optional exported ker::reload adapter uses byte-identical pinned ff_reload.c and original configuration/message layouts. Full source assertions now cover fill fields, DRAIN_DONE roundtrip, every known command including QUERY, wrong-type/out-of-range/zero rejection, NULL message rejection and independently optional outputs. An actual original-EAL primary uses the same fill/parse adapters to answer read-only QUERY from a borrowed valid original runtime state;22 distinct secondaries roundtrip all7 command payloads through real shared rings while preserving PID/cookie/payload and reclaiming64/64 objects. Other control operations return explicit EOPNOTSUPP; source acceptance is serialization, not execution of reload commands. Debug/static, Release/shared and an independently installed ker::reload consumer passed. This optional ABI component is distinct from the authenticated resident control protocol and does not qualify hardware handover or complete reload. Actual guest3 result fstack-unfinished-ipc-guest3/actual-result-attempt1.json SHA2560ce7253c97137accede048ae9332d9f2e119c2536b2e119e68ae92d0424d5bb8 binds candidate293203dacfedab1aa6d1a366372de406e51b2dd7, source and binary hashes, image and serial. All15 source phases, both exported examples exit0, normal power-down and QEMU0 passed. The host shared-hugepage skip77 is not source completion. fstack-reload-import audits original dependencies, and the shared component exports only6 public Ker symbols."
+    },
+    "fstack-config-ini-sections": {
+      "source_file": "tests/unit/test_ff_ini_parser.c",
+      "source_case": "test_ini_parse_stream_multiple_sections",
+      "ker_ctests": [
+        "fstack-config-ini-sections"
+      ],
+      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: ini sections. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_ini_sections. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
     "native-fstack-dualstack": {
       "source_file": "tests/unit/test_ff_host_interface.c",

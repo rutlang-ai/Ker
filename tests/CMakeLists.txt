@@ -1046,7 +1046,7 @@ if(KER_WITH_DPDK)
     add_test(NAME fstack-reload-markers COMMAND ker-fstack-reload-poll-test markers)
     add_test(NAME fstack-reload-barrier COMMAND ker-fstack-reload-poll-test barrier)
     set_tests_properties(fstack-reload-markers fstack-reload-barrier PROPERTIES TIMEOUT 15
-        LABELS "fstack;fstack-reload"
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     find_library(ker_reload_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
     add_executable(ker-fstack-reload-multiprocess-test fstack-reload-multiprocess.c)

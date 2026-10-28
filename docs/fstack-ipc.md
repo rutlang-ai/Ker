@@ -124,4 +124,5 @@ Artifact directory: `/home/hurricane/.local/state/ker-compat-work/fstack-unfinis
 | `serial-attempt1.log` | `902c1dc4670b013aa01aa4ea4925a2771125a7ddc7fe13634511f479fef21855` |
 
 The extension completes exactly two additional baseline-blocked source cases.
-The current baseline-to-completed total is 23/50; 27 remain.
+At naming qualification the baseline-to-completed total was 23/50. Current
+progress is tracked in [the migration summary](fstack-migration.md).

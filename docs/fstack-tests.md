@@ -675,3 +675,13 @@ Debug/static、Release/shared 以及 guest2 的真实 legacy secondary 收发
 64/64 回收和正常关机全部通过，来源及散列见
 [消息合同](fstack-reload-messages.md)。该源案例原为 partial；本轮现为
 **24/50**，总计 242 adapted，尚需完成 26 项。
+
+
+### 第六批：原版 poll gate 与停用确认（2 项）
+
+`test_ut_nr_26_rx_handover_markers`、`test_ut_nr_11_handover_barrier`
+的全部源断言在 Debug/static 与 Release/shared 通过。真实原版 net_ring
+跨进程验证及独立安装消费者均证明未完成回调阻止切换、epoch 关联、
+切换/切回、4/4 实际 RX/TX、同 slot 后继和 63/63 对象回收。
+参见 [polling 合同](fstack-reload-polling.md)。本轮累计 **26/50**，
+总数为 244 adapted，剩余目标 24 项；宿主共享 hugepages 的 skip 未计入。

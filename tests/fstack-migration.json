@@ -2274,16 +2274,34 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Original unbound/legacy gate defaults, generation ownership, invalid arguments, bounded non-stealing timeout, parked release, claim/unpark, idempotent claim, reverse ownership and enabled=0 behavior are all asserted. The exported ker::reload synchronous poll adapter invokes actual caller packet work only when the unchanged original runtime allows it; denied passes acknowledge after earlier callback completion. Real original EAL secondaries share the original block and net_ring PMD. An in-flight old callback blocks release, callback return alone is insufficient until its exact epoch acknowledgement, new workers cannot steal, and both transfer and reverse transfer deliver original RX/TX records. All63/63 mbufs return and a same-slot successor reuses the same queue. The installed-package consumer independently repeats the entire real PMD lifecycle. This is trusted same-master block-only polling; it does not qualify cross-master directories, hardware-driver crash recovery, imported-Linux networking or complete application reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-markers",
+          "provenance_case": "fstack-reload-markers"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-markers"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_11_handover_barrier",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Original monotonic park epochs, slot-specific acknowledgements, stale-epoch rejection, out-of-range slots, parked-before-owner-transfer and reversible single-generation gate judgments are all asserted. The exported ker::reload synchronous poll adapter invokes actual caller packet work only when the unchanged original runtime allows it; denied passes acknowledge after earlier callback completion. Real original EAL secondaries share the original block and net_ring PMD. An in-flight old callback blocks release, callback return alone is insufficient until its exact epoch acknowledgement, new workers cannot steal, and both transfer and reverse transfer deliver original RX/TX records. All63/63 mbufs return and a same-slot successor reuses the same queue. The installed-package consumer independently repeats the entire real PMD lifecycle. This is trusted same-master block-only polling; it does not qualify cross-master directories, hardware-driver crash recovery, imported-Linux networking or complete application reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-barrier",
+          "provenance_case": "fstack-reload-barrier"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-barrier"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
