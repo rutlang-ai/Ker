@@ -4,7 +4,11 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <dlfcn.h>
+#include <stddef.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <signal.h>
@@ -16,6 +20,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <linux/sockios.h>
 #include <sys/syscall.h>
 #include <stdlib.h>
@@ -193,6 +198,67 @@ static void bind_collision(void)
     int server = accept(listener, NULL, NULL);
     CHECK(server >= 0 && close(listener) == 0);
     finish((struct pair){client, server});
+}
+static void descriptor_at_mutations(void)
+{
+    struct pair p = connected(); struct stat initial, changed;
+    CHECK(fstat(p.client, &initial) == 0);
+    int alias = dup(p.client); CHECK(alias >= 0);
+    CHECK(fchmodat(alias, "", 0600, AT_EMPTY_PATH) == 0);
+    CHECK(fstat(p.client, &changed) == 0 && (changed.st_mode & 0777) == 0600 && S_ISSOCK(changed.st_mode));
+    ERROR(faccessat(alias, "", X_OK, AT_EMPTY_PATH), EACCES);
+    CHECK(fchownat(alias, "", initial.st_uid, initial.st_gid, AT_EMPTY_PATH) == 0);
+    CHECK(fstat(alias, &changed) == 0 && changed.st_uid == initial.st_uid && changed.st_gid == initial.st_gid);
+    ERROR(fchmodat(alias, "child", 0777, 0), ENOTDIR);
+    ERROR(fchownat(alias, "child", -1, -1, 0), ENOTDIR);
+    ERROR(fchmodat(alias, "", 0777, 0x40000000), EINVAL);
+    ERROR(fchownat(alias, "", -1, -1, 0x40000000), EINVAL);
+    size_t inaccessible_length; void *inaccessible = inaccessible_path(&inaccessible_length);
+    ERROR(fchmodat(alias, inaccessible, 0600, 0), EFAULT);
+    ERROR(fchownat(alias, inaccessible, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    ERROR(fchmodat(alias, inaccessible, 0600, 0x40000000), EINVAL);
+    ERROR(fchownat(alias, inaccessible, (uid_t)-1, (gid_t)-1, 0x40000000), EINVAL);
+    CHECK(munmap(inaccessible, inaccessible_length) == 0);
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(pages != MAP_FAILED);
+    char *cross_page = pages + page_size - 16;
+    memset(cross_page, 'x', 16);
+    CHECK(mprotect(pages + page_size, (size_t)page_size, PROT_NONE) == 0);
+    ERROR(fchmodat(alias, cross_page, 0600, 0), EFAULT);
+    ERROR(fchownat(alias, cross_page, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    CHECK(munmap(pages, (size_t)page_size * 2) == 0);
+    CHECK(fstat(alias, &changed) == 0 && (changed.st_mode & 0777) == 0600);
+    CHECK(close(p.client) == 0 && fchmodat(alias, "", initial.st_mode & 0777, AT_EMPTY_PATH) == 0);
+    CHECK(faccessat(alias, "", X_OK, AT_EMPTY_PATH) == 0);
+    char path[] = "/tmp/ker-inode-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    CHECK(fchmodat(alias, path, 0640, 0) == 0 && fstat(host, &changed) == 0 && (changed.st_mode & 0777) == 0640);
+    CHECK(fchownat(alias, path, changed.st_uid, changed.st_gid, 0) == 0);
+    CHECK(fchmodat(host, "", 0600, AT_EMPTY_PATH) == 0 && fstat(host, &changed) == 0 && (changed.st_mode & 0777) == 0600);
+    CHECK(close(host) == 0 && unlink(path) == 0);
+    CHECK(write(alias, "ok", 2) == 2); char bytes[2];
+    CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
+static void host_path_faults(void)
+{
+    char name[] = "/tmp/ker-at-fault-XXXXXX";
+    int host = mkstemp(name); CHECK(host >= 0);
+    size_t length; void *path = inaccessible_path(&length);
+    struct stat info; struct statx extended;
+    ERROR(fstatat(AT_FDCWD, path, &info, 0), EFAULT);
+    ERROR(fstatat(host, path, &info, 0), EFAULT);
+    ERROR(statx(AT_FDCWD, path, 0, STATX_BASIC_STATS, &extended), EFAULT);
+    ERROR(statx(host, path, 0, STATX_BASIC_STATS, &extended), EFAULT);
+    ERROR(faccessat(AT_FDCWD, path, F_OK, 0), EFAULT);
+    ERROR(faccessat(host, path, F_OK, 0), EFAULT);
+    ERROR(fchmodat(AT_FDCWD, path, 0600, 0), EFAULT);
+    ERROR(fchmodat(host, path, 0600, 0), EFAULT);
+    ERROR(fchownat(AT_FDCWD, path, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    ERROR(fchownat(host, path, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    CHECK(munmap(path, length) == 0);
+    CHECK(close(host) == 0 && unlink(name) == 0);
 }
 static void descriptor_access(void)
 {
@@ -1659,6 +1725,144 @@ static void positioned_stream_sigpipe(void)
     finish(p);
     CHECK(sigaction(SIGPIPE, &original, NULL) == 0);
 }
+static void fchmodat2_enosys_fallback(void)
+{
+    char directory[] = "/tmp/ker-fchmodat2-XXXXXX";
+    CHECK(mkdtemp(directory) != NULL);
+    char path[PATH_MAX];
+    CHECK(snprintf(path, sizeof(path), "%s/file", directory) > 0);
+    char symlink_path[PATH_MAX];
+    CHECK(snprintf(symlink_path, sizeof(symlink_path), "%s/link", directory) > 0);
+    int file = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+    CHECK(file >= 0);
+    CHECK(symlink(path, symlink_path) == 0);
+    int dirfd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(dirfd >= 0);
+    struct pair p = connected();
+
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fchmodat2, 0, 6),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[3])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 4, 0),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0776, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0775, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {.len = sizeof(filter) / sizeof(filter[0]), .filter = filter};
+    CHECK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
+    CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0);
+
+    /* Older hosts can still perform flags-zero operations through fchmodat. */
+    CHECK(fchmodat(AT_FDCWD, path, 0640, 0) == 0);
+    struct stat info;
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+    CHECK(fchmodat(dirfd, "file", 0604, 0) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0604);
+
+    /* An owned descriptor's absolute host path must unpin before host fallback. */
+    CHECK(fchmodat(p.client, path, 0644, 0) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+
+    /* Match glibc's no-follow behavior when fchmodat2 is unavailable. */
+    CHECK(fchmodat(AT_FDCWD, path, 0640, AT_SYMLINK_NOFOLLOW) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+    ERROR(fchmodat(AT_FDCWD, symlink_path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+    ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH), EINVAL);
+    ERROR(fchmodat(AT_FDCWD, path, 0777, 0x40000000), EINVAL);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+
+    /* With Ker interposed, native relative and empty paths never use the host syscall. */
+    if (dlsym(RTLD_DEFAULT, "ker_posix_capabilities")) {
+        ERROR(fchmodat(p.client, "child", 0600, 0), ENOTDIR);
+        ERROR(fchmodat(p.client, path, 0777, 0x40000000), EINVAL);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+        CHECK(fchmodat(p.client, path, 0600, AT_SYMLINK_NOFOLLOW) == 0);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0600);
+        ERROR(fchmodat(p.client, symlink_path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0600);
+        CHECK(fchmodat(p.client, "", 0600, AT_EMPTY_PATH) == 0);
+        CHECK(fstat(p.client, &info) == 0 && (info.st_mode & 0777) == 0600);
+        size_t inaccessible_length;
+        void *inaccessible = inaccessible_path(&inaccessible_length);
+        ERROR(fchmodat(p.client, inaccessible, 0640, 0), EFAULT);
+        ERROR(fchmodat(p.client, inaccessible, 0640, 0x40000000), EINVAL);
+        CHECK(munmap(inaccessible, inaccessible_length) == 0);
+
+        /* Preserve a failure from chmod through the pinned proc-fd path. */
+        struct sock_filter chmod_filter[] = {
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fchmodat, 0, 3),
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0777, 0, 1),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOENT),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        };
+        struct sock_fprog chmod_program = {
+            .len = sizeof(chmod_filter) / sizeof(chmod_filter[0]),
+            .filter = chmod_filter,
+        };
+        CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &chmod_program) == 0);
+        ERROR(fchmodat(AT_FDCWD, path, 0777, AT_SYMLINK_NOFOLLOW), EOPNOTSUPP);
+        CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0600);
+    }
+
+    CHECK(write(p.client, "r", 1) == 1); ready(p.server);
+    char byte = 0; CHECK(recv(p.server, &byte, 1, MSG_WAITALL) == 1 && byte == 'r');
+    finish(p);
+    CHECK(close(dirfd) == 0 && close(file) == 0);
+    CHECK(unlink(symlink_path) == 0 && unlink(path) == 0 && rmdir(directory) == 0);
+}
+static void fchmodat2_eperm_flags_zero_bypass(void)
+{
+    char directory[] = "/tmp/ker-fchmodat2-eperm-XXXXXX";
+    CHECK(mkdtemp(directory) != NULL);
+    char path[PATH_MAX];
+    CHECK(snprintf(path, sizeof(path), "%s/file", directory) > 0);
+    int file = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+    CHECK(file >= 0);
+    int dirfd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(dirfd >= 0);
+    struct pair p = connected();
+
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fchmodat2, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {.len = sizeof(filter) / sizeof(filter[0]), .filter = filter};
+    CHECK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
+    CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0);
+
+    /* glibc's flags-zero ABI uses the legacy syscall without probing fchmodat2. */
+    CHECK(fchmodat(AT_FDCWD, path, 0640, 0) == 0);
+    struct stat info;
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0640);
+    CHECK(fchmodat(dirfd, "file", 0604, 0) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0604);
+    CHECK(fchmodat(p.client, path, 0644, 0) == 0);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+
+    /* Nonzero-flag syscalls remain authoritative when they fail with EPERM. */
+    ERROR(fchmodat(AT_FDCWD, path, 0776, AT_SYMLINK_NOFOLLOW), EPERM);
+    ERROR(fchmodat(AT_FDCWD, path, 0775, AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH), EPERM);
+    CHECK(fstat(file, &info) == 0 && (info.st_mode & 0777) == 0644);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_capabilities")) {
+        ERROR(fchmodat(p.client, "child", 0600, 0), ENOTDIR);
+        CHECK(fchmodat(p.client, "", 0600, AT_EMPTY_PATH) == 0);
+        CHECK(fstat(p.client, &info) == 0 && (info.st_mode & 0777) == 0600);
+    }
+
+    CHECK(write(p.client, "e", 1) == 1); ready(p.server);
+    char byte = 0; CHECK(recv(p.server, &byte, 1, MSG_WAITALL) == 1 && byte == 'e');
+    finish(p);
+    CHECK(close(dirfd) == 0 && close(file) == 0);
+    CHECK(unlink(path) == 0 && rmdir(directory) == 0);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
@@ -1695,7 +1899,11 @@ int main(void)
         {"unreadable-host-path-at-apis", unreadable_host_path_at},
         {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
         {"descriptor-access-permission-owner-routing", descriptor_access},
+        {"descriptor-at-metadata-mutations", descriptor_at_mutations},
+        {"host-at-path-fault-routing", host_path_faults},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
+        {"host-fchmodat2-ENOSYS-flags-zero-fallback", fchmodat2_enosys_fallback},
+        {"host-fchmodat2-EPERM-flags-zero-bypass", fchmodat2_eperm_flags_zero_bypass},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run(); printf("PASS: fstack socket contract %s\n", cases[i].name); fflush(stdout);

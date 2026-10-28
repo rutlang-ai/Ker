@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/vfs.h>
@@ -205,3 +206,111 @@ static int descriptor_accessat(int fd, const char *path, int mode, int flags)
 }
 int faccessat(int fd, const char *path, int mode, int flags)
     __attribute__((alias("descriptor_accessat")));
+
+static void host_close_preserve_errno(int fd)
+{
+    int error = errno;
+    (void)syscall(SYS_close, fd);
+    errno = error;
+}
+
+/* glibc preserves AT_SYMLINK_NOFOLLOW on kernels without fchmodat2 by
+ * pinning the pathname with O_PATH and applying chmod through procfs. This
+ * avoids resolving the caller's pathname a second time after the check. */
+static int host_fchmodat_nofollow(int fd, const char *path, mode_t mode)
+{
+    int pinned = (int)syscall(SYS_openat, fd, path, O_PATH | O_NOFOLLOW | O_CLOEXEC, 0);
+    if (pinned < 0) return -1;
+
+    struct stat info;
+    if (syscall(SYS_newfstatat, pinned, "", &info, AT_EMPTY_PATH) < 0) {
+        int error = errno;
+        host_close_preserve_errno(pinned);
+        errno = error;
+        return -1;
+    }
+    if (S_ISLNK(info.st_mode)) {
+        host_close_preserve_errno(pinned);
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+
+    char proc_path[sizeof("/proc/self/fd/") + 3 * sizeof(pinned)];
+    int length = snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", pinned);
+    if (length < 0 || (size_t)length >= sizeof(proc_path)) {
+        host_close_preserve_errno(pinned);
+        errno = EOVERFLOW;
+        return -1;
+    }
+    int result = (int)syscall(SYS_fchmodat, AT_FDCWD, proc_path, mode);
+    int error = errno;
+    host_close_preserve_errno(pinned);
+    errno = error == ENOENT ? EOPNOTSUPP : error;
+    return result;
+}
+
+/* Linux added fchmodat2 for flag support. On hosts that predate it, retain
+ * flags-zero behavior and glibc's race-free regular-file no-follow fallback. */
+static int host_fchmodat(int fd, const char *path, mode_t mode, int flags)
+{
+    /* glibc keeps the flags-zero ABI on the legacy syscall, so seccomp rules
+     * on fchmodat2 cannot break a host operation that needs no flag support. */
+    if (flags == 0) return (int)syscall(SYS_fchmodat, fd, path, mode);
+
+    int result = (int)syscall(SYS_fchmodat2, fd, path, mode, flags);
+    if (result < 0 && errno == ENOSYS) {
+        if (flags == AT_SYMLINK_NOFOLLOW) return host_fchmodat_nofollow(fd, path, mode);
+        errno = EINVAL;
+        return -1;
+    }
+    return result;
+}
+
+static int descriptor_chmodat(int fd, const char *path, mode_t mode, int flags)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return host_fchmodat(fd, path, mode, flags);
+    if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
+    }
+    char native_path[PATH_MAX];
+    if (copy_native_path(path, native_path) < 0) {
+        int error = errno;
+        ker_fd_put(entry);
+        errno = error; return -1;
+    }
+    if (native_path[0] == '/') {
+        ker_fd_put(entry);
+        return host_fchmodat(fd, native_path, mode, flags);
+    }
+    long result = lkl_sys_fchmodat2(entry->native, native_path, mode, flags);
+    ker_fd_put(entry);
+    if (result < 0) { errno = (int)-result; return -1; }
+    return 0;
+}
+int fchmodat(int fd, const char *path, mode_t mode, int flags)
+    __attribute__((alias("descriptor_chmodat")));
+static int descriptor_chownat(int fd, const char *path, uid_t owner, gid_t group, int flags)
+{
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (!entry) return syscall(SYS_fchownat, fd, path, owner, group, flags);
+    if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
+    }
+    char native_path[PATH_MAX];
+    if (copy_native_path(path, native_path) < 0) {
+        int error = errno;
+        ker_fd_put(entry);
+        errno = error; return -1;
+    }
+    if (native_path[0] == '/') {
+        ker_fd_put(entry);
+        return syscall(SYS_fchownat, fd, native_path, owner, group, flags);
+    }
+    long result = lkl_sys_fchownat(entry->native, native_path, owner, group, flags);
+    ker_fd_put(entry);
+    if (result < 0) { errno = (int)-result; return -1; }
+    return 0;
+}
+int fchownat(int fd, const char *path, uid_t owner, gid_t group, int flags)
+    __attribute__((alias("descriptor_chownat")));

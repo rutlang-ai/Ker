@@ -1497,3 +1497,7 @@ AT_EMPTY_PATH 及非法 mode/flags 的边界。权限检查不再误查宿主占
 packet 接收元数据合同同时检查 PACKET_AUXDATA 原始长度、SO_TIMESTAMPNS 时间及
 控制缓冲不足时的 MSG_CTRUNC。小接收队列故意产生捕获丢包，PACKET_STATISTICS 的
 接收/丢弃数量必须与已发送包及实际可读捕获一致，查询后统计清零；UDP 正常接收仍全部成功。
+
+fchmodat/fchownat 的原生空路径操作修改导入 Linux sockfs inode，权限和所有者通过
+复制 fd 共享，权限变化立即反映在 faccessat；非法标志或相对路径失败不修改 inode。
+宿主绝对路径及普通宿主 fd 仍修改宿主文件，不影响 socket 通信。
