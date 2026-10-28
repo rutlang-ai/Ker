@@ -850,7 +850,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker’s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker’s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
+      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker\u2019s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker\u2019s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -4708,86 +4708,194 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Plain process1 preserves AUTO and unspecified epoch; real secondary attaches to EAL and observes the primary identity without falsely resolving AUTO. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-process",
+          "provenance_case": "fstack-ipc-process"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-process"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Process1:generation0 preserves the unspecified epoch and uses the original literal ring name for an actual secondary request/reply. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation",
+          "provenance_case": "fstack-ipc-generation"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen_epoch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Process1:generation0:epoch3 selects the original epoch-slot ring name and actual secondary transport. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation-epoch",
+          "provenance_case": "fstack-ipc-generation-epoch"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-epoch"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_full_coordinate",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Process2:generation1:epoch1 selects exact coordinates and the original literal ring name for real secondary transport. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-coordinate",
+          "provenance_case": "fstack-ipc-coordinate"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-coordinate"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_epoch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Separate generation1:epoch2 option overrides the default process0 coordinates; original ring naming and real secondary transport are checked. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation-option-epoch",
+          "provenance_case": "fstack-ipc-generation-option-epoch"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-option-epoch"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_plain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Separate generation0 option preserves unspecified epoch and source ring naming; independent unit assertions and secondary transport cover both option forms. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation-option",
+          "provenance_case": "fstack-ipc-generation-option"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-option"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_rejects_malformed",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Every malformed source coordinate exits1 in an exact reaped child. A valid subsequent selection and real secondary RPC prove recovery and unchanged pool census. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-malformed",
+          "provenance_case": "fstack-ipc-malformed"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-malformed"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_own_reply",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual secondary sends its PID/cookie-stamped object through shared rings; the original receiver returns the same object with payload intact and only its rightful owner frees it. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-own-reply",
+          "provenance_case": "fstack-ipc-own-reply"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-own-reply"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_live_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "One real secondary with its own pending request cannot consume another live secondary reply. The original requeue counter advances, output sentinel remains unchanged, rightful owner receives its bytes, and stale own request plus all objects are reclaimed. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-foreign-live",
+          "provenance_case": "fstack-ipc-foreign-live"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-foreign-live"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_without_send",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A real secondary without a pending send cannot steal a live peer reply; unchanged output/counters and rightful-owner retrieval prove preservation. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-foreign-no-send",
+          "provenance_case": "fstack-ipc-foreign-no-send"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-foreign-no-send"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_orphan_dead_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "After exact real secondary death, original receiver reclaims its orphan message without dereferencing the dead process private buffer. Actual shared-pool census and a new secondary prove reusable capacity. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-orphan",
+          "provenance_case": "fstack-ipc-orphan"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-orphan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_probe_is_non_destructive",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "An actual secondary QUERY probe times out with optional outputs unchanged while preserving another live secondary FF_RELOAD reply. Both real candidate QUERY objects are reclaimed only after the exact caller completion marker, then a successor proves clean reuse. The unit provider also supplies a real successful QUERY response. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-probe",
+          "provenance_case": "fstack-ipc-probe"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-probe"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_normal",

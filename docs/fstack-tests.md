@@ -643,3 +643,16 @@ CLOCK_REALTIME EIO，必须命中 `ker_native_sync_realtime` 的生产调用方�
 
 这三个源案例此前均为 blocked，实际运行后转为完成。本轮累计 **9/50**，
 总完成数 **227**，仍需完成 41 个基线中的 blocked/partial 源案例。
+
+
+### 第三批：共享 IPC 地址与跨进程消息所有权（12 项）
+
+[IPC 合同](fstack-ipc.md)列出全部 12 个源 ID、独立 CTest 及真实 EAL
+多进程验证。Debug/static 和 Release/shared 的源断言通过；安装后的
+独立 `ker::ipc` 消费者完成真实 EAL/池/队列生命周期。隔离 guest 中的
+primary 与 20 个独立 secondary 完成 12 项源验证及 64/64 对象回收。
+原始 F-Stack IPC 源码和头文件保持字节不变，由 `fstack-ipc-import` 审计。
+
+本轮累计 **21/50**，当前总完成数 **239**；还需完成 29 个基线中的
+blocked/partial 源案例。`fstack-ipc-multiprocess` 在缺少共享 hugepages
+时返回 77，不能将该 skip 或来源审计单独记为源案例通过。

@@ -964,6 +964,8 @@ add_test(NAME fstack-ini-callback-multiline COMMAND ker-fstack-ini-callback-test
 set_tests_properties(fstack-ini-callback-multiline PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
 add_test(NAME fstack-ini-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ini-import.py")
 set_tests_properties(fstack-ini-import PROPERTIES TIMEOUT 15 LABELS "provenance")
+add_test(NAME fstack-ipc-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ipc-import.py")
+set_tests_properties(fstack-ipc-import PROPERTIES TIMEOUT 15 LABELS "provenance")
 
 if(KER_WITH_DPDK)
     add_executable(ker-fstack-ipc-test fstack-ipc.c)
@@ -971,40 +973,40 @@ if(KER_WITH_DPDK)
     target_compile_options(ker-fstack-ipc-test PRIVATE -Wall -Wextra -Werror)
     string(JOIN ":" ker_ipc_test_libraries ${DPDK_LIBRARY_DIRS})
     add_test(NAME fstack-ipc-process COMMAND ker-fstack-ipc-test process)
-    set_tests_properties(fstack-ipc-process PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-process PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-generation COMMAND ker-fstack-ipc-test generation)
-    set_tests_properties(fstack-ipc-generation PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-generation PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-generation-epoch COMMAND ker-fstack-ipc-test generation-epoch)
-    set_tests_properties(fstack-ipc-generation-epoch PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-generation-epoch PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-coordinate COMMAND ker-fstack-ipc-test coordinate)
-    set_tests_properties(fstack-ipc-coordinate PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-coordinate PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-generation-option-epoch COMMAND ker-fstack-ipc-test generation-option-epoch)
-    set_tests_properties(fstack-ipc-generation-option-epoch PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-generation-option-epoch PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-generation-option COMMAND ker-fstack-ipc-test generation-option)
-    set_tests_properties(fstack-ipc-generation-option PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-generation-option PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-malformed COMMAND ker-fstack-ipc-test malformed)
-    set_tests_properties(fstack-ipc-malformed PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-malformed PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-own-reply COMMAND ker-fstack-ipc-test own-reply)
-    set_tests_properties(fstack-ipc-own-reply PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-own-reply PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-foreign-live COMMAND ker-fstack-ipc-test foreign-live)
-    set_tests_properties(fstack-ipc-foreign-live PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-foreign-live PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-foreign-no-send COMMAND ker-fstack-ipc-test foreign-no-send)
-    set_tests_properties(fstack-ipc-foreign-no-send PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-foreign-no-send PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-orphan COMMAND ker-fstack-ipc-test orphan)
-    set_tests_properties(fstack-ipc-orphan PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-orphan PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-ipc-probe COMMAND ker-fstack-ipc-test probe)
-    set_tests_properties(fstack-ipc-probe PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc"
+    set_tests_properties(fstack-ipc-probe PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
 if(KER_WITH_DPDK)
