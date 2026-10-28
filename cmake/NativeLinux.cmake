@@ -1538,6 +1538,15 @@ if(BUILD_TESTING)
     target_compile_options(ker-native-buffer-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-native-buffer-test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
     add_executable(ker-current-time-sockets-test tests/posix/current-time-sockets.c)
+    add_executable(ker-address-policy-sockets-test tests/posix/address-policy-sockets.c)
+    target_compile_options(ker-address-policy-sockets-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-address-policy-sockets-test PRIVATE ker::address_policy ${CMAKE_DL_LIBS})
+    add_test(NAME native-fstack-address-policy-sockets
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/address-policy-sockets.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-address-policy-sockets-test>"
+            --pmd-root "${ker_offload_library_root}")
+    set_tests_properties(native-fstack-address-policy-sockets PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77 LABELS "native-tcp;fstack")
     target_include_directories(ker-current-time-sockets-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_compile_options(ker-current-time-sockets-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-current-time-sockets-test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})

@@ -5,3 +5,5 @@ tests/upstream/fstack/** -text -filter -ident
 third_party/fstack-pools/ff_dpdk_if.c -text -filter -ident -whitespace
 third_party/fstack-pools/ff_memory.h -text -filter -ident -whitespace
 third_party/fstack-pools/pool-runtime.inc -text -filter -ident -whitespace
+third_party/fstack-address-policy/ff_api.h -text -filter -ident -whitespace
+third_party/fstack-address-policy/address-runtime.inc -text -filter -ident -whitespace
