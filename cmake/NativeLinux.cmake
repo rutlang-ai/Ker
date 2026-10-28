@@ -38,7 +38,7 @@ foreach(artifact config library)
     endif()
 endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
-    src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c
+    src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c
     src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
@@ -51,6 +51,12 @@ target_link_options(ker-posix PRIVATE -Wl,--no-undefined
     "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+include(CheckStructHasMember)
+check_struct_has_member("struct statvfs" f_type "sys/statvfs.h" KER_STATVFS_HAS_TYPE LANGUAGE C)
+if(KER_STATVFS_HAS_TYPE)
+    target_compile_definitions(ker-posix PRIVATE KER_STATVFS_HAS_TYPE=1)
+endif()
+
 set_target_properties(ker-posix PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0 EXPORT_NAME posix)
 add_executable(ker-app src/posix/app-guard.c)
 set(ker_io_worker_sources src/posix/worker-rx-lcores.c src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/io-worker.c src/posix/worker-offload.c src/posix/worker-receive-mode.c src/posix/worker-rss.c src/posix/worker-mbuf.c src/posix/bond-policy.c src/posix/worker-rx-drain.c src/posix/pcap.c src/posix/worker-log.c src/posix/worker-clock.c)

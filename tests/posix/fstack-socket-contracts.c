@@ -28,6 +28,8 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/statfs.h>
 #include <sys/sysmacros.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -451,6 +453,37 @@ static void concurrent_usercopy_faults(void)
     CHECK(send(p.client, "after", 5, MSG_NOSIGNAL) == 5);
     char recovered[5]; CHECK(recv(p.server, recovered, sizeof(recovered), MSG_WAITALL) == 5);
     CHECK(!memcmp(recovered, "after", 5)); finish(p);
+}
+
+static void filesystem_vfs_statistics(void)
+{
+    struct pair p = connected();
+    int copy = dup(p.client); CHECK(copy >= 0);
+    struct statvfs first, alias; struct statvfs64 wide;
+    CHECK(fstatvfs(p.client, &first) == 0 && fstatvfs(copy, &alias) == 0);
+    CHECK(fstatvfs64(p.client, &wide) == 0);
+    CHECK(first.f_bsize > 0 && first.f_frsize > 0 && first.f_namemax > 0);
+    CHECK(first.f_fsid == alias.f_fsid && first.f_flag == alias.f_flag);
+    CHECK(first.f_fsid == wide.f_fsid && first.f_bsize == wide.f_bsize && first.f_frsize == wide.f_frsize);
+    CHECK(first.f_favail == first.f_ffree && wide.f_favail == wide.f_ffree);
+    ERROR(fstatvfs(-1, &alias), EBADF);
+    int host = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC); CHECK(host >= 0);
+    struct statfs raw; CHECK(syscall(SYS_fstatfs, host, &raw) == 0);
+    CHECK(fstatvfs(host, &alias) == 0);
+    CHECK(alias.f_bsize == (unsigned long)raw.f_bsize && alias.f_namemax == (unsigned long)raw.f_namelen);
+    CHECK(alias.f_flag == ((unsigned long)raw.f_flags ^ 0x20UL));
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        CHECK(first.f_bsize == 4096 && first.f_blocks == 0); /* original sockfs, not host /dev/null */
+        long page = sysconf(_SC_PAGESIZE); CHECK(page > 0);
+        void *bad = mmap(NULL, (size_t)page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(bad != MAP_FAILED);
+        ERROR(fstatvfs(p.client, bad), EFAULT); ERROR(fstatvfs64(copy, bad), EFAULT);
+        ERROR(fstatvfs(-1, bad), EBADF); ERROR(fstatvfs(host, bad), EFAULT);
+        CHECK(munmap(bad, (size_t)page) == 0);
+    }
+    CHECK(close(host) == 0 && close(copy) == 0);
+    CHECK(send(p.client, "v", 1, MSG_NOSIGNAL) == 1);
+    char byte; CHECK(recv(p.server, &byte, 1, 0) == 1 && byte == 'v'); finish(p);
 }
 
 static void host_path_faults(void)
@@ -2130,6 +2163,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"descriptor-owned-fstatvfs-and-64-bit-layout", filesystem_vfs_statistics},
         {"concurrent-usercopy-faults-thread-errno-and-exit-recovery", concurrent_usercopy_faults},
         {"partial-TCP-copy-retention-and-UDP-datagram-fault-consumption", partial_payload_faults},
         {"descriptor-at-nanosecond-timestamps", descriptor_at_timestamps},
