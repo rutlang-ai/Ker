@@ -155,6 +155,7 @@ def main():
             def inject(seq):require(primary.command(f'inject {seq}','INJECTED')=={'sequence':seq,'available':62},'actual hardware frame allocation failed')
             def collect(seq):require(primary.command('collect','COLLECTED')=={'sequence':seq,'available':63},'same exact PMD mbuf/payload did not return')
             inject(0);poll(c1,1,True);collect(0)
+            result(c1,'stop')  # Return its completed PMD lease to STOPPED before handover.
             evidence['sibling_registration']={'barrier_synchronized':True,'epoch':c.epoch,'directory_slot':c.directory_slot,'workers':[c.child.pid,c1.child.pid],'both_served_pmd':True}
             inject(1);c.child.stdin.write(b'poll hold\n');c.child.stdin.flush()
             require(c.record('ENTERED')=={'slot':0,'generation':0},'old same-gen owner did not hold real callback');counts[0]+=1
