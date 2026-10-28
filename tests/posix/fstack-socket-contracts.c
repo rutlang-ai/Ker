@@ -241,12 +241,72 @@ static void descriptor_at_mutations(void)
     CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
 }
+static void descriptor_at_timestamps(void)
+{
+    struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
+    size_t protected_length; void *protected_memory = inaccessible_path(&protected_length);
+    struct timespec omitted[2] = {{.tv_nsec = UTIME_OMIT}, {.tv_nsec = UTIME_OMIT}};
+    CHECK(utimensat(alias, protected_memory, omitted, 0) == 0);
+    CHECK(utimensat(alias, protected_memory, omitted, 0x40000000) == 0);
+    ERROR(utimensat(alias, "", protected_memory, AT_EMPTY_PATH), EFAULT);
+    struct timespec ordinary[2] = {{.tv_nsec = UTIME_NOW}, {.tv_nsec = UTIME_NOW}};
+    ERROR(utimensat(alias, protected_memory, ordinary, 0), EFAULT);
+    ERROR(utimensat(alias, protected_memory, NULL, 0), EFAULT);
+    ERROR(utimensat(alias, protected_memory, ordinary, 0x40000000), EINVAL);
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(pages != MAP_FAILED);
+    char *cross_page = pages + page_size - 16;
+    memset(cross_page, 'x', 16);
+    CHECK(mprotect(pages + page_size, (size_t)page_size, PROT_NONE) == 0);
+    ERROR(utimensat(alias, cross_page, ordinary, 0), EFAULT);
+    CHECK(munmap(pages, (size_t)page_size * 2) == 0);
+    CHECK(munmap(protected_memory, protected_length) == 0);
+    struct timespec times[2] = {{1700000001, 123456789}, {1700000002, 987654321}};
+    CHECK(utimensat(alias, "", times, AT_EMPTY_PATH) == 0);
+    struct stat value; CHECK(fstat(p.client, &value) == 0);
+    CHECK(value.st_atim.tv_sec == times[0].tv_sec && value.st_atim.tv_nsec == times[0].tv_nsec);
+    CHECK(value.st_mtim.tv_sec == times[1].tv_sec && value.st_mtim.tv_nsec == times[1].tv_nsec);
+    times[0].tv_nsec = UTIME_OMIT; times[1] = (struct timespec){1700000003, 333333333};
+    CHECK(utimensat(alias, "", times, AT_EMPTY_PATH) == 0 && fstat(p.client, &value) == 0);
+    CHECK(value.st_atim.tv_sec == 1700000001 && value.st_atim.tv_nsec == 123456789);
+    CHECK(value.st_mtim.tv_sec == times[1].tv_sec && value.st_mtim.tv_nsec == times[1].tv_nsec);
+    times[1].tv_nsec = 1000000000;
+    ERROR(utimensat(alias, "", times, AT_EMPTY_PATH), EINVAL);
+    CHECK(fstat(alias, &value) == 0 && value.st_mtim.tv_nsec == 333333333);
+    times[1].tv_nsec = UTIME_OMIT;
+    CHECK(utimensat(alias, "missing-child", times, 0x40000000) == 0);
+    times[0].tv_nsec = UTIME_NOW; times[1].tv_nsec = UTIME_NOW;
+    ERROR(utimensat(alias, "child", times, 0), ENOTDIR);
+    ERROR(utimensat(alias, "", times, 0x40000000), EINVAL);
+    int (*stamp)(int, const char *, const struct timespec *, int) = dlsym(RTLD_DEFAULT, "utimensat"); CHECK(stamp);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        CHECK(stamp(alias, NULL, times, 0) == 0);
+        ERROR(stamp(alias, NULL, times, AT_SYMLINK_NOFOLLOW), EINVAL);
+    } else {
+        CHECK(syscall(SYS_utimensat, alias, NULL, times, 0) == 0);
+        ERROR(syscall(SYS_utimensat, alias, NULL, times, AT_SYMLINK_NOFOLLOW), EINVAL);
+    }
+    CHECK(close(p.client) == 0 && utimensat(alias, "", NULL, AT_EMPTY_PATH) == 0 && fstat(alias, &value) == 0);
+    struct timespec now; CHECK(clock_gettime(CLOCK_REALTIME, &now) == 0 && llabs((long long)value.st_mtim.tv_sec - now.tv_sec) <= 2);
+    char path[] = "/tmp/ker-utimens-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    times[0] = (struct timespec){1700000004, 444444444}; times[1] = times[0];
+    CHECK(utimensat(alias, path, times, 0) == 0 && fstat(host, &value) == 0 && value.st_mtim.tv_nsec == 444444444);
+    times[1].tv_nsec = 555555555;
+    CHECK(utimensat(host, "", times, AT_EMPTY_PATH) == 0 && fstat(host, &value) == 0 && value.st_mtim.tv_nsec == 555555555);
+    CHECK(close(host) == 0 && unlink(path) == 0);
+    CHECK(write(alias, "ok", 2) == 2); char bytes[2];
+    CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
     int host = mkstemp(name); CHECK(host >= 0);
     size_t length; void *path = inaccessible_path(&length);
     struct stat info; struct statx extended;
+    struct timespec times[2] = {{.tv_nsec = UTIME_NOW}, {.tv_nsec = UTIME_NOW}};
     ERROR(fstatat(AT_FDCWD, path, &info, 0), EFAULT);
     ERROR(fstatat(host, path, &info, 0), EFAULT);
     ERROR(statx(AT_FDCWD, path, 0, STATX_BASIC_STATS, &extended), EFAULT);
@@ -257,6 +317,8 @@ static void host_path_faults(void)
     ERROR(fchmodat(host, path, 0600, 0), EFAULT);
     ERROR(fchownat(AT_FDCWD, path, (uid_t)-1, (gid_t)-1, 0), EFAULT);
     ERROR(fchownat(host, path, (uid_t)-1, (gid_t)-1, 0), EFAULT);
+    ERROR(utimensat(AT_FDCWD, path, times, 0), EFAULT);
+    ERROR(utimensat(host, path, times, 0), EFAULT);
     CHECK(munmap(path, length) == 0);
     CHECK(close(host) == 0 && unlink(name) == 0);
 }
@@ -1901,6 +1963,7 @@ int main(void)
         {"descriptor-access-permission-owner-routing", descriptor_access},
         {"descriptor-at-metadata-mutations", descriptor_at_mutations},
         {"host-at-path-fault-routing", host_path_faults},
+        {"descriptor-at-nanosecond-timestamps", descriptor_at_timestamps},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
         {"host-fchmodat2-ENOSYS-flags-zero-fallback", fchmodat2_enosys_fallback},
         {"host-fchmodat2-EPERM-flags-zero-bypass", fchmodat2_eperm_flags_zero_bypass},
