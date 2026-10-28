@@ -87,6 +87,17 @@
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config mtu defaults. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_mtu_defaults. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
+    "fstack-reload-fsm-transitions": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_reload_fsm_transitions"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-transitions",
+        "fstack-reload-controller"
+      ],
+      "adaptation": "Exact original happy chain, re-entry/jump rejection, T1 failures/reset and all state-name assertions. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch. Debug/static and Release/shared source CTests and the caller-policy import/separation guard pass. The example also builds with BUILD_TESTING=OFF. Guest7 candidate5f606d513c90fcf4113b7b9f7ab9db28416fb6ca reran all18priorruntime source phases plus these4 in repository/installed controller programs, both old examples and normal power-down/QEMU0. Each controller profile used four distinct actual secondaries, two completed commits active1then0, a refused early old-exit while pidfds stayed live, READY-timeout rollback/reset and final callbacks[3,0,1,0]. Result fstack-unfinished-ipc-guest7/actual-result-attempt1.json SHA256ff9ce3cbf8a88140ab7fdd98d27b25b5e8b096a030fd8a8805e4a4486583d80e binds candidate/source/executables/installed-source/package/serial and event traces. Host skip77 and duplicate installed profiles add no source IDs. Pure tests cover all five failure table entries; the live controller demonstrates the shared rollback path with actual READY-timeout, not every operational crash/fault permutation."
+    },
     "native-fstack-session-orphan-inflight": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_rx15_primary_purges_orphaned_rings",
@@ -1119,6 +1130,17 @@
       ],
       "adaptation": "Actual ARP, Ethernet multicast, unicast OSPF and unicast NDP charge only the console budget; ordinary unicast charges only general. A full ring consumes/frees its rejected frame and charges exactly once without recording an admission-limit drop. A queued shutdown suffix is reclaimed. Production worker accept/reject profiles also require both charged classes and no duplicate charges under actual ARP channel EAGAIN backpressure. This adapts the source enqueue-time classification/counter/ownership scenario through the production Ker TAP adapter and original DPDK net_ring, not F-Stack global-layout or KNI ABI equivalence. Separate native-fstack-exception-filter acceptance runs the configured budgets over original net_tap and real host/native Linux IPv4/IPv6 TCP/UDP sockets; no successful transport operation is mocked."
     },
+    "fstack-reload-fsm-legal": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_all_legal_transitions"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-legal",
+        "fstack-reload-controller"
+      ],
+      "adaptation": "All12 original legal transitions and two consecutive fully reusable rounds. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch. Debug/static and Release/shared source CTests and the caller-policy import/separation guard pass. The example also builds with BUILD_TESTING=OFF. Guest7 candidate5f606d513c90fcf4113b7b9f7ab9db28416fb6ca reran all18priorruntime source phases plus these4 in repository/installed controller programs, both old examples and normal power-down/QEMU0. Each controller profile used four distinct actual secondaries, two completed commits active1then0, a refused early old-exit while pidfds stayed live, READY-timeout rollback/reset and final callbacks[3,0,1,0]. Result fstack-unfinished-ipc-guest7/actual-result-attempt1.json SHA256ff9ce3cbf8a88140ab7fdd98d27b25b5e8b096a030fd8a8805e4a4486583d80e binds candidate/source/executables/installed-source/package/serial and event traces. Host skip77 and duplicate installed profiles add no source IDs. Pure tests cover all five failure table entries; the live controller demonstrates the shared rollback path with actual READY-timeout, not every operational crash/fault permutation."
+    },
     "native-fstack-bind-address-no-port": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": [
@@ -1967,6 +1989,17 @@
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config oversized jumbo. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_oversized_jumbo. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
+    "fstack-reload-fsm-recovery": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_error_recovery_and_abort"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-recovery",
+        "fstack-reload-controller"
+      ],
+      "adaptation": "All five original failure-entry transitions, RESET-only recovery, forbidden exits and a fresh successful chain after each failure. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch. Debug/static and Release/shared source CTests and the caller-policy import/separation guard pass. The example also builds with BUILD_TESTING=OFF. Guest7 candidate5f606d513c90fcf4113b7b9f7ab9db28416fb6ca reran all18priorruntime source phases plus these4 in repository/installed controller programs, both old examples and normal power-down/QEMU0. Each controller profile used four distinct actual secondaries, two completed commits active1then0, a refused early old-exit while pidfds stayed live, READY-timeout rollback/reset and final callbacks[3,0,1,0]. Result fstack-unfinished-ipc-guest7/actual-result-attempt1.json SHA256ff9ce3cbf8a88140ab7fdd98d27b25b5e8b096a030fd8a8805e4a4486583d80e binds candidate/source/executables/installed-source/package/serial and event traces. Host skip77 and duplicate installed profiles add no source IDs. Pure tests cover all five failure table entries; the live controller demonstrates the shared rollback path with actual READY-timeout, not every operational crash/fault permutation."
+    },
     "tcp-ip-options": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": [
@@ -2618,6 +2651,17 @@
         "native-fstack-exception-filter"
       ],
       "adaptation": "Actual worker filter initialization accepts TCP80/443/8000-8002 and UDP53/5060, with direct original-DPDK mbuf parsing checking every range endpoint, match and miss. Live worker destination-port sets then select real host/native services. No private F-Stack global layout or rte_zmalloc table ABI is claimed. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
+    },
+    "fstack-reload-fsm-illegal": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_10_illegal_combinations_exhaustive"
+      ],
+      "ker_ctests": [
+        "fstack-reload-fsm-illegal",
+        "fstack-reload-controller"
+      ],
+      "adaptation": "The complete7-state/11-event matrix, every illegal pair and all three out-of-range source states. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch. Debug/static and Release/shared source CTests and the caller-policy import/separation guard pass. The example also builds with BUILD_TESTING=OFF. Guest7 candidate5f606d513c90fcf4113b7b9f7ab9db28416fb6ca reran all18priorruntime source phases plus these4 in repository/installed controller programs, both old examples and normal power-down/QEMU0. Each controller profile used four distinct actual secondaries, two completed commits active1then0, a refused early old-exit while pidfds stayed live, READY-timeout rollback/reset and final callbacks[3,0,1,0]. Result fstack-unfinished-ipc-guest7/actual-result-attempt1.json SHA256ff9ce3cbf8a88140ab7fdd98d27b25b5e8b096a030fd8a8805e4a4486583d80e binds candidate/source/executables/installed-source/package/serial and event traces. Host skip77 and duplicate installed profiles add no source IDs. Pure tests cover all five failure table entries; the live controller demonstrates the shared rollback path with actual READY-timeout, not every operational crash/fault permutation."
     },
     "native-fstack-host-mmap-file": {
       "source_file": "tests/unit/test_ff_host_interface.c",

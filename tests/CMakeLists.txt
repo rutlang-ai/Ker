@@ -1080,7 +1080,7 @@ if(KER_WITH_DPDK)
     add_test(NAME fstack-reload-fsm-recovery COMMAND ker-fstack-reload-controller-test recovery)
     set_tests_properties(fstack-reload-fsm-transitions fstack-reload-fsm-legal
         fstack-reload-fsm-illegal fstack-reload-fsm-recovery PROPERTIES TIMEOUT 15
-        LABELS "fstack;fstack-reload"
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-reload-controller
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-controller.py"

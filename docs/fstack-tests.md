@@ -694,3 +694,13 @@ Debug/static、Release/shared 以及 guest2 的真实 legacy secondary 收发
 原版计时采样、READY、完成/中止以及完整回收；证据见
 [heartbeat 合同](fstack-reload-heartbeat.md)。本轮累计 **27/50**，
 当前 245 adapted，剩余目标 23 项。
+
+
+### 第八批：调用方 reload 策略（4 项）
+
+`fstack-reload-fsm-transitions`、`fstack-reload-fsm-legal`、
+`fstack-reload-fsm-illegal`、`fstack-reload-fsm-recovery` 完成四项
+UT-NR-10 原始纯策略断言。实际 caller controller 的双轮次、abort/reset、
+READY/park/drain/pidfd 门禁和真实 PMD/EAL 回收在仓库/安装程序中通过；
+见 [合同及散列](fstack-reload-controller.md)。策略不进入 Ker 核心库。
+当前本轮 **31/50**，累计249 adapted，尚需19个基线未完成案例。

@@ -2202,30 +2202,66 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Exact original happy chain, re-entry/jump rejection, T1 failures/reset and all state-name assertions. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-transitions",
+          "provenance_case": "fstack-reload-fsm-transitions"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-transitions"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_all_legal_transitions",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All12 original legal transitions and two consecutive fully reusable rounds. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-legal",
+          "provenance_case": "fstack-reload-fsm-legal"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-legal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_illegal_combinations_exhaustive",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete7-state/11-event matrix, every illegal pair and all three out-of-range source states. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-illegal",
+          "provenance_case": "fstack-reload-fsm-illegal"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-illegal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_error_recovery_and_abort",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All five original failure-entry transitions, RESET-only recovery, forbidden exits and a fresh successful chain after each failure. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-recovery",
+          "provenance_case": "fstack-reload-fsm-recovery"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-recovery"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",

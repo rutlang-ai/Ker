@@ -77,6 +77,8 @@ Artifact directory:
 
 The result binds candidate source, executable, installed-source, package and
 serial hashes. Exactly one baseline-blocked case is newly complete, bringing the
-baseline delta to 27/50. Cross-master directories, hardware-user proof, automatic
+baseline delta to 27/50 at heartbeat qualification. Later caller-policy progress
+is recorded in [the controller contract](fstack-reload-controller.md).
+Cross-master directories, hardware-user proof, automatic
 takeover, imported-Linux networking and complete application reload remain
 separate unqualified contracts.
