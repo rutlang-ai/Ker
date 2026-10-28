@@ -98,6 +98,7 @@ static void fork_child(void)
     (void)syscall(SYS_write, STDERR_FILENO, error, sizeof(error) - 1);
     syscall(SYS_exit_group, 125);
 }
+int ker_native_host_usercopy_probe(void);
 __attribute__((constructor)) static void initialize(void)
 {
     int fd = (int)parse_number(required("KER_PACKET_FD"), INT_MAX), type = 0;
@@ -137,7 +138,9 @@ __attribute__((constructor)) static void initialize(void)
     ker_native_host_clock_init(&lkl_host_ops);
     ker_native_host_timer_init(&lkl_host_ops);
     lkl_host_ops.print = NULL;
-    int result = lkl_init(&lkl_host_ops);
+    int result = ker_native_host_usercopy_probe();
+    if (result) fail("host fault-safe usercopy is unavailable", result);
+    result = lkl_init(&lkl_host_ops);
     if (result) fail("kernel initialization", result);
     device = ker_packet_device_create(fd);
     if (!device) fail("packet device allocation", -errno);

@@ -14,6 +14,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <lkl.h>
+#include "lkl-overlay/arch/lkl/include/asm/ker-host-usercopy.h"
 
 static void translate_stat(struct stat *output, const struct lkl_stat *native)
 {
@@ -94,12 +95,22 @@ static int copy_native_path(const char *path, char local_path[PATH_MAX])
     return 0;
 }
 
+/* A failed probe is left to the original syscall, preserving its argument
+ * validation and fault ordering. Only a positively read '/' selects host paths. */
+static int absolute_host_path(const char *path)
+{
+    unsigned char first = 0;
+    return path && !ker_host_usercopy(&first, path, 1, 0) && first == '/';
+}
 /* Absolute paths still select the host filesystem; relative paths and the
  * empty-path descriptor operation must respect imported fd ownership. */
 static int descriptor_statat(int fd, const char *path, struct stat *output, int flags)
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_newfstatat, fd, path, output, flags);
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH)) {
+        ker_fd_put(entry); errno = EINVAL; return -1;
+    }
     char local_path[PATH_MAX];
     if (path) {
         if (copy_native_path(path, local_path) < 0) {
@@ -109,7 +120,7 @@ static int descriptor_statat(int fd, const char *path, struct stat *output, int 
             return -1;
         }
         path = local_path;
-        if (path[0] == '/') {
+        if (absolute_host_path(path)) {
             ker_fd_put(entry);
             return syscall(SYS_newfstatat, fd, path, output, flags);
         }
@@ -155,7 +166,7 @@ static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, 
             return -1;
         }
         path = local_path;
-        if (path[0] == '/') {
+        if (absolute_host_path(path)) {
             ker_fd_put(entry);
             return syscall(SYS_statx, fd, path, flags, mask, output);
         }

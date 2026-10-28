@@ -113,8 +113,8 @@ def install_tcp_fault_qdiscs(env):
         item = matching[0]
         nested = item.get('stats', {})
         baseline = {key: item.get(key, nested.get(key)) for key in ('packets', 'bytes', 'drops', 'overlimits')}
-        if any(not isinstance(value, int) or value != 0 for value in baseline.values()):
-            raise RuntimeError(f'{device} netem did not start with clean counters: {item}')
+        if any(not isinstance(value, int) or value < 0 for value in baseline.values()):
+            raise RuntimeError(f'{device} netem has invalid initial counters: {item}')
         evidence[device] = baseline
     return evidence
 
@@ -157,6 +157,9 @@ def remove_tcp_fault_qdiscs(env):
 
 
 def gated_client(command, port, env, gate_path):
+    # Wait for TAP/EAL initialization before installing qdiscs: TAP startup
+    # replaces the root qdisc. The client remains blocked before connect(), so
+    # the installed counters are a baseline for only post-release TCP traffic.
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         ready(process, port)

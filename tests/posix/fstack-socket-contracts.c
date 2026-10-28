@@ -300,6 +300,48 @@ static void descriptor_at_timestamps(void)
     CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
 }
+static void user_memory_faults(void)
+{
+    struct pair p = connected(); long page = sysconf(_SC_PAGESIZE); CHECK(page >= 4096);
+    char *memory = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED && mprotect(memory + page, (size_t)page, PROT_NONE) == 0);
+    void *bad = memory + page; int value = 73; socklen_t length = sizeof(value);
+    fprintf(stderr, "usercopy probe: protected socket option output\n");
+    ERROR(getsockopt(p.client, SOL_SOCKET, SO_TYPE, bad, &length), EFAULT);
+    ERROR(getsockopt(p.client, SOL_SOCKET, SO_TYPE, &value, bad), EFAULT);
+    ERROR(getsockopt(p.client, SOL_SOCKET, SO_TYPE, &value, NULL), EFAULT);
+    ERROR(getsockopt(p.client, SOL_SOCKET, SO_TYPE, &value, (void *)(memory + page - 2)), EFAULT);
+    CHECK(value == 73);
+    int before = option(p.client, SOL_SOCKET, SO_RCVBUF);
+    ERROR(setsockopt(p.client, SOL_SOCKET, SO_RCVBUF, bad, sizeof(int)), EFAULT);
+    CHECK(option(p.client, SOL_SOCKET, SO_RCVBUF) == before);
+    length = sizeof(struct sockaddr_storage);
+    ERROR(getsockname(p.client, bad, &length), EFAULT);
+    struct sockaddr_storage address;
+    ERROR(getpeername(p.client, (void *)&address, bad), EFAULT);
+    CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
+    ERROR(readv(p.server, bad, 1), EFAULT);
+    ERROR(writev(p.client, bad, 1), EFAULT);
+    ERROR(writev(p.client, (void *)(memory + page - sizeof(struct iovec) / 2), 1), EFAULT);
+    char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    struct stat metadata; ERROR(fstatat(p.client, bad, &metadata, 0), EFAULT);
+    ERROR(fstat(p.client, bad), EFAULT);
+    ERROR(fstatat(p.client, "", bad, AT_EMPTY_PATH), EFAULT);
+    ERROR(statx(p.client, "", AT_EMPTY_PATH, STATX_BASIC_STATS, bad), EFAULT);
+    int (*query)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat"); CHECK(query);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release"))
+        ERROR(query(p.client, NULL, &metadata, AT_EMPTY_PATH | 0x40000000), EINVAL);
+    memory[page - 2] = 'x'; memory[page - 1] = 0;
+    ERROR(fstatat(p.client, memory + page - 2, &metadata, 0), ENOTDIR);
+    memory[page - 1] = 'x'; ERROR(fstatat(p.client, memory + page - 1, &metadata, 0), EFAULT);
+    memset(memory, 'x', 4096); ERROR(fstatat(p.client, memory, &metadata, 0), ENAMETOOLONG);
+    struct timespec omitted[2] = {{0, UTIME_OMIT}, {0, UTIME_OMIT}};
+    CHECK(utimensat(p.client, bad, omitted, 0x40000000) == 0);
+    ERROR(utimensat(p.client, "", bad, AT_EMPTY_PATH), EFAULT);
+    CHECK(munmap(memory, (size_t)page * 2) == 0);
+    finish(p);
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -1976,6 +2018,7 @@ int main(void)
         {"descriptor-at-metadata-mutations", descriptor_at_mutations},
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
+        {"native-user-memory-faults-and-recovery", user_memory_faults},
         {"descriptor-at-nanosecond-timestamps", descriptor_at_timestamps},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
         {"host-fchmodat2-ENOSYS-flags-zero-fallback", fchmodat2_enosys_fallback},

@@ -1514,3 +1514,17 @@ namespace；该合同不宣称外部 NIC 或 DPDK 线缆路径上的 raw ICMP �
 raw IPv4 的 IP_HDRINCL 合同以原始 AF_PACKET 捕获内核发送结果，检查源地址、total length、
 IP checksum 的内核填充及显式 id/TOS/TTL/options/payload 保持；过短头、非法 IHL 和超长
 包必须拒绝且没有捕获副本，后续有效发送和普通 ICMP echo 仍成功。
+
+原生内核的 usercopy 现在由新增的 Ker LKL 架构头适配宿主 MM：同进程
+process_vm_readv/writev 处理受保护、未映射和跨页缓冲，原始 Linux 继续决定错误顺序、
+部分复制和 syscall 副作用。generic get_user 在失败时清零临时值，clear_user 按页块清零；
+原始 Linux 的字符串及 copy-user 实现保留。所有 upstream 文件不变。
+
+初始化会探测成功读写和 PROT_NONE 故障；宿主拒绝或缺少 process_vm 时明确失败，
+不会回退到不安全 memcpy。此适配限 Linux x86_64，复制的应用缓冲必须支持宿主
+process_vm 访问；不支持 GUP 的设备映射仍是显式边界。metadata facade 也使用安全
+路径探测和输出复制，NULL/flags 的校验交回原始内核，双 UTIME_OMIT 在探测路径前委托。
+
+安全复制增加 syscall 开销。本机单线程微基准中，64B 与 64KiB 的读取复制分别约
+0.99us 和 9.56us；该数字不是网络吞吐保证。现有注册 payload/zerocopy 路径没有被替换，
+六种 virtio/vhost 原生 buffer 配置仍通过同一门禁。

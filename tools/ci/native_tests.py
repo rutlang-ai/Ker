@@ -31,6 +31,7 @@ HOSTED_SAFE = (
     "native-fstack-thread-runtime",
     "native-fstack-thread-runtime-debug",
     "native-fstack-thread-runtime-release",
+    "native-fstack-host-usercopy",
     "native-fstack-host-semaphore-debug",
     "native-fstack-host-semaphore-release",
     "native-fstack-host-failure-debug",
