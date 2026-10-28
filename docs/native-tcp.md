@@ -1485,3 +1485,7 @@ SO_LOCK_FILTER 阻止替换、解除和解锁，且锁定状态随 dup 共享。
 fstatat/fstatat64（含 __fxstatat ABI）对原生 fd 的空路径按导入 Linux inode 查询；
 复制 fd 共享 inode，非空相对路径保留原始 ENOTDIR 等错误。绝对路径继续使用宿主
 文件系统，普通宿主 fd 的 AT_EMPTY_PATH 行为保持；失败不消费 socket 数据。
+
+statx 同样按 fd 归属查询原始 Linux，保留该内核的结果 mask、时间和设备号；固定 Linux
+UAPI 布局以编译期大小及关键偏移断言校验。空路径/NULL 输出、非法 mask/flags 和相对
+路径错误不消费 TCP 数据；绝对路径与普通宿主 fd 查询仍属于宿主文件系统。
