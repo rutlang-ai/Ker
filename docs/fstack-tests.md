@@ -621,6 +621,25 @@ F-Stack revision 导入未经修改的 inih 源码及头文件；Ker 只提供�
 | `test_ini_parse_stream_user_data_passed` | `user-data` |
 | `test_ini_parse_stream_multiline_value_continuation` | `multiline` |
 
-以 `7f46febca` 的 218 项完成数为本轮基线，本批新增完成 **6/50** 个不同的
-未完成源案例，累计 224 项。其余 44 项目标仍未完成。此计数没有纳入已有
+以 `7f46febca` 的 218 项完成数为本轮基线，首批新增完成 **6** 个不同的
+未完成源案例，累计 224 项；后续进度见下节。此计数没有纳入已有
 场景的补充测试，也不将导入散列检查或示例单独计为完成案例。
+
+
+### 第二批：实际 host 映射与时钟启动失败（3 项）
+
+`native-fstack-host-mmap-shared` 和 `native-fstack-host-mmap-file` 在实际
+预加载原生运行时中消费生产 `mmap` 适配器，以 `dladdr` 验证映射入口属于
+活动 Ker 库，并验证 source 的 shared-anonymous / private file-backed
+4096-byte profile。扩展检查包括初始零字节、private COW、page offset、关闭
+文件后的映射生命周期、munmap 回收及 native socket fd 的隔离。这里证明的是
+适配器的 host 映射路径，不是原生文件系统映射或网络报文传输。
+
+`native-fstack-realtime-startup-fatal` 在真实应用进程启动阶段注入 host
+CLOCK_REALTIME EIO，必须命中 `ker_native_sync_realtime` 的生产调用方，
+在 app main 之前以 125 终止。worker 回收后，新的正常进程验证原版 Linux
+实时时钟读数及显式 native/EAL 关闭。没有将可恢复 getter 错误冒充 fatal
+合同，也没有引入另一个 cached timestamp 实现。
+
+这三个源案例此前均为 blocked，实际运行后转为完成。本轮累计 **9/50**，
+总完成数 **227**，仍需完成 41 个基线中的 blocked/partial 源案例。

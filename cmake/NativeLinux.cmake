@@ -1674,3 +1674,37 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_multiport_config.py")
     set_tests_properties(native-fstack-multiport-config PROPERTIES TIMEOUT 30 LABELS fstack)
 endif()
+
+if(BUILD_TESTING)
+    add_executable(ker-fstack-host-mappings-test tests/posix/fstack-host-mappings.c)
+    target_include_directories(ker-fstack-host-mappings-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_link_libraries(ker-fstack-host-mappings-test PRIVATE ${CMAKE_DL_LIBS})
+    target_compile_options(ker-fstack-host-mappings-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-host-mmap-shared
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-host-adapter.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-fstack-host-mappings-test>"
+            --pmd-root "${ker_offload_library_root}" --profile shared)
+    add_test(NAME native-fstack-host-mmap-file
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-host-adapter.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-fstack-host-mappings-test>"
+            --pmd-root "${ker_offload_library_root}" --profile file)
+    set_tests_properties(native-fstack-host-mmap-shared native-fstack-host-mmap-file
+        PROPERTIES TIMEOUT 45 LABELS "native-tcp;fstack;fstack-newly-adapted")
+endif()
+
+if(BUILD_TESTING)
+    add_executable(ker-fstack-clock-startup-failure-test tests/posix/fstack-clock-startup-failure.c)
+    target_include_directories(ker-fstack-clock-startup-failure-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_link_libraries(ker-fstack-clock-startup-failure-test PRIVATE ${CMAKE_DL_LIBS})
+    target_link_options(ker-fstack-clock-startup-failure-test PRIVATE -Wl,--export-dynamic-symbol=clock_gettime)
+    target_compile_options(ker-fstack-clock-startup-failure-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-fstack-realtime-startup-fatal
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-host-adapter.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-fstack-clock-startup-failure-test>"
+            --pmd-root "${ker_offload_library_root}" --profile clock)
+    set_tests_properties(native-fstack-realtime-startup-fatal
+        PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack;fstack-newly-adapted")
+endif()

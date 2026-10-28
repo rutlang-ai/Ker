@@ -3921,16 +3921,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The literal 4096-byte shared-anonymous profile runs through the active exported Ker mmap owner adapter, proven by dladdr against the active native-runtime ABI. Zeroed/writable bytes, unmap reclamation, and a native-socket fd ignored by anonymous mmap are verified. The real original-Linux instance and original net_null worker halt with explicit acknowledgement and zero outstanding mbufs. Host shared-memory mapping is proved; cross-process fork sharing, native file mappings, packet traffic and NIC behavior are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-mmap-shared",
+          "provenance_case": "native-fstack-host-mmap-shared"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The literal 4096-byte MAP_PRIVATE file-backed profile runs through the active exported Ker mmap owner adapter, not a libc-only process. A real host temporary file is unlinked, sized and mapped without MAP_ANONYMOUS; zero initialization, private COW, a second page-offset mapping, post-close lifetime and unmap reclamation are verified. Native socket descriptors instead reach the original-Linux non-MMU mmap rejection path and never the host placeholder. Actual native/EAL shutdown acknowledges zero outstanding mbufs; no native regular-file mmap, protocol or wire evidence is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-mmap-file",
+          "provenance_case": "native-fstack-host-mmap-file"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
@@ -3983,9 +3993,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A test application interposes only its host CLOCK_REALTIME read during actual preloaded native startup; other reads still execute the host syscall. EIO must be observed at the real ker_native_sync_realtime caller, which terminates initialization with status125 before application entry, while the original null-PMD worker is reclaimed with zero outstanding mbufs. A fresh nonfaulted process then initializes the original-Linux clock, reads valid current time, runs and explicitly halts native/EAL backends. Ker uses fail-closed startup rather than a cached FreeBSD current_ts or a C assertion; no getter error-to-success stub, protocol timer change or network-traffic evidence is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realtime-startup-fatal",
+          "provenance_case": "native-fstack-realtime-startup-fatal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_kernel_fd_encode_roundtrip",
