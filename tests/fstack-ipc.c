@@ -30,6 +30,46 @@ static void address(const char *process, const char *generation, unsigned expect
     if (expected_name) { CHECK(!result && !strcmp(name, expected_name)); }
     else { CHECK(result == -EAGAIN && name[0] == 0x5a); }
 }
+static void epoch_names(void)
+{
+    const uint32_t epochs[] = {0, KER_IPC_EPOCH_NONE, 1, 2, 3, 4};
+    const unsigned slots[] = {0, 0, 1, 2, 3, 1};
+    for (unsigned i = 0; i < sizeof(epochs)/sizeof(epochs[0]); i++)
+        CHECK(ker_ipc_epoch_slot(epochs[i]) == slots[i]);
+    char name[64]; struct ker_ipc_address a = {1, 0, 3};
+    CHECK(!ker_ipc_format_ring(name, sizeof(name), &a, 0, FF_UNKNOWN, 0));
+    CHECK(!strcmp(name, "ff_msg_ring_in_1"));
+    a.generation = 1; a.epoch = 0;
+    CHECK(!ker_ipc_format_ring(name, sizeof(name), &a, 0, FF_UNKNOWN, 1));
+    CHECK(!strcmp(name, "ff_msg_ring_in_1_g1"));
+    a.epoch = 1;
+    CHECK(!ker_ipc_format_ring(name, sizeof(name), &a, 0, FF_UNKNOWN, 1));
+    CHECK(!strcmp(name, "ff_msg_ring_in_1_e1_g1"));
+    a.process = 999; a.epoch = 3;
+    CHECK(!ker_ipc_format_ring(name, sizeof(name), &a, 1, FF_RELOAD, 1));
+    CHECK(!strcmp(name, "ff_msg_ring_out_999_10_e3_g1"));
+    CHECK(ker_ipc_format_ring(name, 8, &a, 1, FF_RELOAD, 1) == -1);
+    CHECK(ker_ipc_format_ring(NULL, sizeof(name), &a, 0, FF_UNKNOWN, 1) < 0);
+}
+static void legacy_names(void)
+{
+    const uint32_t epochs[] = {0, 1, 2, 3, 4, KER_IPC_EPOCH_NONE};
+    const unsigned procs[] = {0, 1, 127, 999};
+    char actual[64], expected[64];
+    for (unsigned e = 0; e < sizeof(epochs)/sizeof(epochs[0]); e++)
+        for (unsigned p = 0; p < sizeof(procs)/sizeof(procs[0]); p++)
+            for (int g = 0; g < 2; g++) {
+                struct ker_ipc_address a = {procs[p], g, epochs[e]};
+                CHECK(!ker_ipc_format_ring(actual, sizeof(actual), &a, 0, FF_UNKNOWN, 0));
+                CHECK(snprintf(expected, sizeof(expected), "ff_msg_ring_in_%u", procs[p]) > 0);
+                CHECK(!strcmp(actual, expected) && !strstr(actual, "_e") && !strstr(actual, "_g"));
+                for (int t = FF_SYSCTL; t < FF_MSG_NUM; t++) {
+                    CHECK(!ker_ipc_format_ring(actual, sizeof(actual), &a, 1, (enum FF_MSG_TYPE)t, 0));
+                    CHECK(snprintf(expected, sizeof(expected), "ff_msg_ring_out_%u_%d", procs[p], t) > 0);
+                    CHECK(!strcmp(actual, expected) && !strstr(actual, "_e") && !strstr(actual, "_g"));
+                }
+            }
+}
 static void malformed(void)
 {
     const char *invalid[] = {"1:0:3:4", "1:0:", "1:0:x", "1:x", "x",
@@ -224,6 +264,8 @@ int main(int argc, char **argv)
     } else if (!strcmp(profile, "generation-option-epoch")) address(NULL, "1:2", 0, 1, 2, "ff_msg_ring_in_0_e2_g1");
     else if (!strcmp(profile, "generation-option")) address(NULL, "0", 0, 0, KER_IPC_EPOCH_NONE, "ff_msg_ring_in_0_g0");
     else if (!strcmp(profile, "malformed")) malformed();
+    else if (!strcmp(profile, "epoch-names")) epoch_names();
+    else if (!strcmp(profile, "legacy-names")) legacy_names();
     else {
         setup();
         if (!strcmp(profile, "own-reply")) own_reply();

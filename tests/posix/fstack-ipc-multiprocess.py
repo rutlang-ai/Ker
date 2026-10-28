@@ -97,8 +97,8 @@ def main():
             evidence['primary_pid'] = primary.child.pid
             client_env = dict(env, KER_IPC_MP_PRIMARY_PID=str(primary.child.pid))
 
-            def client(process='0:0', generation='-'):
-                child = Process([str(args.app), 'client', process, generation, '--proc-type=secondary', *common],
+            def client(process='0:0', generation='-', legacy=False):
+                child = Process([str(args.app), 'legacy' if legacy else 'client', process, generation, '--proc-type=secondary', *common],
                                 client_env, root, 'client-'+str(len(processes)))
                 processes.append(child)
                 attached = child.record('ATTACHED')
@@ -190,7 +190,21 @@ def main():
                 successor, _ = client(); successor.command('send 1 0','SENT'); pump(1)
                 require(successor.command('recv 1','RECV')['result'] == 0, 'valid successor failed')
                 status(64); successor.close()
-            require(len(evidence['cases']) == 12, 'missing acceptance phase')
+            for profile in ['epoch-names', 'legacy-names']:
+                checked = subprocess.run([str(args.unit_app), profile], env=env,
+                                         text=True, capture_output=True, timeout=45)
+                require(checked.returncode == 0 and
+                        'PASS: original IPC coordinate/ownership contract '+profile in checked.stdout,
+                        'source ring builder assertions failed: '+checked.stdout+checked.stderr)
+            legacy, attached = client('1', '-', legacy=True)
+            require(attached['generation'] == -1 and attached['epoch'] == 4294967295 and
+                    attached['input'] == 'ff_msg_ring_in_1', 'legacy AUTO resolution changed coordinates/name')
+            legacy.command('send 1 0','SENT'); status(63, inputs=1); pump(1)
+            require(legacy.command('recv 1','RECV')['result'] == 0, 'actual legacy shared transport failed')
+            status(64); legacy.close()
+            evidence['cases'].extend(['test_ut_nr_m5_epoch_slot_and_ring_name',
+                                      'test_ut_nr_m5_graceful_zero_epoch_invariance'])
+            require(len(evidence['cases']) == 14, 'missing acceptance phase')
             require(all(p.child.poll() == 0 for p in processes[1:]), 'a secondary is still live or failed')
             require(primary.command('quit','CLOSED') == {'available':64,'outstanding':0}, 'primary failed full reclamation')
             require(primary.child.wait(timeout=20) == 0, 'primary EAL cleanup failed')

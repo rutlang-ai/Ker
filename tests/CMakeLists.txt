@@ -1010,6 +1010,11 @@ if(KER_WITH_DPDK)
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
 if(KER_WITH_DPDK)
+    add_test(NAME fstack-ipc-epoch-names COMMAND ker-fstack-ipc-test epoch-names)
+    add_test(NAME fstack-ipc-legacy-names COMMAND ker-fstack-ipc-test legacy-names)
+    set_tests_properties(fstack-ipc-epoch-names fstack-ipc-legacy-names PROPERTIES
+        TIMEOUT 15 LABELS "fstack;fstack-ipc"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_executable(ker-fstack-ipc-multiprocess-test fstack-ipc-multiprocess.c)
     target_link_libraries(ker-fstack-ipc-multiprocess-test PRIVATE ker::ipc)
     target_compile_options(ker-fstack-ipc-multiprocess-test PRIVATE -Wall -Wextra -Werror)

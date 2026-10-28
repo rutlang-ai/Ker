@@ -16,7 +16,7 @@
 #define MAGIC UINT64_C(0x4b45524950434d50)
 struct identity { uint64_t magic, nonce; uint32_t primary; };
 struct endpoint { struct rte_ring *input, *output, *reload; };
-static struct endpoint endpoints[5];
+static struct endpoint endpoints[7];
 static struct rte_mempool *pool;
 static uint64_t nonce(void)
 {
@@ -28,7 +28,7 @@ static void ready(void) { CHECK(!fflush(stdout)); }
 static void totals(unsigned *in, unsigned *out)
 {
     *in = *out = 0;
-    for (unsigned i = 0; i < 5; i++) {
+    for (unsigned i = 0; i < 7; i++) {
         *in += rte_ring_count(endpoints[i].input);
         *out += rte_ring_count(endpoints[i].output) + rte_ring_count(endpoints[i].reload);
     }
@@ -39,15 +39,16 @@ static void provider(void)
     const struct rte_memzone *zone = rte_memzone_reserve(ZONE, sizeof(struct identity), SOCKET_ID_ANY, 0); CHECK(zone);
     *(struct identity *)zone->addr = (struct identity){MAGIC, nonce(), (uint32_t)getpid()};
     pool = ker_ipc_pool_create(POOL, 64, 64); CHECK(pool);
-    const char *coordinates[] = {"0:0", "1:0", "1:0:3", "2:1:1", "0:1:2"};
-    for (unsigned i = 0; i < 5; i++) {
+    const char *coordinates[] = {"0:0", "1:0", "1:0:3", "2:1:1", "0:1:2", "0:0", "1:0"};
+    for (unsigned i = 0; i < 7; i++) {
         CHECK(ker_ipc_select_or_exit(coordinates[i], NULL) >= 0);
         char name[RTE_RING_NAMESIZE];
-        CHECK(!ker_ipc_ring_name(name, sizeof(name), 0, FF_UNKNOWN));
+        struct ker_ipc_address address; CHECK(!ker_ipc_address(&address));
+        CHECK(!ker_ipc_format_ring(name, sizeof(name), &address, 0, FF_UNKNOWN, i < 5));
         endpoints[i].input = rte_ring_create(name, 32, SOCKET_ID_ANY, 0); CHECK(endpoints[i].input);
-        CHECK(!ker_ipc_ring_name(name, sizeof(name), 1, FF_SYSCTL));
+        CHECK(!ker_ipc_format_ring(name, sizeof(name), &address, 1, FF_SYSCTL, i < 5));
         endpoints[i].output = rte_ring_create(name, 32, SOCKET_ID_ANY, 0); CHECK(endpoints[i].output);
-        CHECK(!ker_ipc_ring_name(name, sizeof(name), 1, FF_RELOAD));
+        CHECK(!ker_ipc_format_ring(name, sizeof(name), &address, 1, FF_RELOAD, i < 5));
         endpoints[i].reload = rte_ring_create(name, 32, SOCKET_ID_ANY, 0); CHECK(endpoints[i].reload);
     }
     printf("READY {\"pid\":%u,\"nonce\":\"%" PRIx64 "\",\"available\":%u}\n",(unsigned)getpid(),nonce(),rte_mempool_avail_count(pool)); ready();
@@ -55,7 +56,7 @@ static void provider(void)
     while (fgets(command, sizeof(command), stdin)) {
         if (!strcmp(command, "pump\n")) {
             unsigned handled = 0;
-            for (unsigned i = 0; i < 5; i++) {
+            for (unsigned i = 0; i < 7; i++) {
                 void *object;
                 while (!rte_ring_dequeue(endpoints[i].input, &object)) {
                     ker_ipc_message *message = object;
@@ -71,7 +72,7 @@ static void provider(void)
             unsigned owner, cancelled = 0; CHECK(sscanf(command,"cancel %u",&owner) == 1 && owner);
             /* The controller sends this only after that exact caller reports
              * its probe has returned. No active helper retains these objects. */
-            for (unsigned i = 0; i < 5; i++) {
+            for (unsigned i = 0; i < 7; i++) {
                 void *object;
                 while (!rte_ring_dequeue(endpoints[i].input, &object)) {
                     ker_ipc_message *message = object;
@@ -88,7 +89,7 @@ static void provider(void)
         } else if (!strcmp(command, "quit\n")) {
             unsigned in, out; totals(&in, &out);
             CHECK(!in && !out && rte_mempool_avail_count(pool) == 64);
-            for (unsigned i = 0; i < 5; i++) {
+            for (unsigned i = 0; i < 7; i++) {
                 rte_ring_free(endpoints[i].input); rte_ring_free(endpoints[i].output); rte_ring_free(endpoints[i].reload);
             }
             rte_mempool_free(pool); CHECK(!rte_memzone_free(zone) && !rte_eal_cleanup());
@@ -97,7 +98,7 @@ static void provider(void)
     }
     CHECK(0); /* An unexpected controller EOF is not a successful teardown. */
 }
-static void caller(const char *process, const char *generation)
+static void caller(const char *process, const char *generation, int legacy)
 {
     CHECK(rte_eal_process_type() == RTE_PROC_SECONDARY);
     const struct rte_memzone *zone = rte_memzone_lookup(ZONE); CHECK(zone);
@@ -110,7 +111,11 @@ static void caller(const char *process, const char *generation)
     char name[RTE_RING_NAMESIZE];
     int named = ker_ipc_ring_name(name, sizeof(name), 0, FF_UNKNOWN);
     int attached = address.generation != KER_IPC_GEN_AUTO;
-    if (attached) CHECK(!named && rte_ring_lookup(name) && !ker_ipc_attach(pool));
+    if (legacy) {
+        CHECK(!attached && named == -EAGAIN && !ker_ipc_attach(pool));
+        CHECK(!ker_ipc_ring_name(name, sizeof(name), 0, FF_UNKNOWN));
+        CHECK(rte_ring_lookup(name)); attached = 1;
+    } else if (attached) CHECK(!named && rte_ring_lookup(name) && !ker_ipc_attach(pool));
     else CHECK(named == -EAGAIN);
     printf("ATTACHED {\"pid\":%u,\"primary\":%u,\"process\":%u,\"generation\":%d,\"epoch\":%u,\"input\":",
         (unsigned)getpid(),identity->primary,address.process,address.generation,address.epoch);
@@ -164,11 +169,11 @@ int main(int argc, char **argv)
 {
     CHECK(argc >= 3);
     int primary = !strcmp(argv[1],"primary");
-    CHECK(primary || (!strcmp(argv[1],"client") && argc >= 5));
+    CHECK(primary || ((!strcmp(argv[1],"client") || !strcmp(argv[1],"legacy")) && argc >= 5));
     const char *process = primary || !strcmp(argv[2],"-") ? NULL : argv[2];
     const char *generation = primary || !strcmp(argv[3],"-") ? NULL : argv[3];
     int offset = primary ? 1 : 3;
     CHECK(rte_eal_init(argc-offset,argv+offset) >= 0);
-    if (primary) provider(); else caller(process,generation);
+    if (primary) provider(); else caller(process,generation,!strcmp(argv[1],"legacy"));
     return 0;
 }

@@ -32,6 +32,12 @@ KER_API int ker_ipc_select_or_exit(const char *process, const char *generation);
 KER_API int ker_ipc_epoch_or_exit(uint32_t epoch);
 KER_API int ker_ipc_address(struct ker_ipc_address *address);
 KER_API unsigned ker_ipc_epoch_slot(uint32_t epoch);
+/* Provider-side builder for caller-created rings. generation_aware=0 preserves
+ * the legacy unsuffixed namespace regardless of generation/epoch. No EAL is
+ * needed to format a name. A too-small buffer returns the upstream -1. */
+KER_API int ker_ipc_format_ring(char *buffer, size_t size,
+    const struct ker_ipc_address *address, int output, enum FF_MSG_TYPE type,
+    int generation_aware);
 /* output=0: input ring, type ignored; output=1: type-specific reply ring.
  * Detached explicit coordinates can be formatted without EAL. AUTO cannot
  * be resolved without a live provider and returns -EAGAIN while detached. */
@@ -40,7 +46,8 @@ KER_API int ker_ipc_ring_name(char *buffer, size_t size, int output, enum FF_MSG
 /* The caller initializes original EAL and owns its lifetime. Create a typed
  * original DPDK pool (payload0..10240, cache0), then borrow it with attach.
  * Both original EAL primary and secondary roles are accepted; transport
- * currently requires explicit generation, and probe requires process0.
+ * requires explicit generation unless an actual legacy proc0 input ring exists;
+ * AUTO then uses original legacy detection. Probe requires process0.
  * Attach accepts only cache0 typed pools. No implicit root-only EAL initialization or cleanup occurs in this adapter.
  * Pool/ring destruction remains the caller's responsibility after reclamation.
  * DPDK creation failures return NULL/rte_errno; guards return negative errno. */

@@ -57,6 +57,17 @@ int ker_ipc_address(struct ker_ipc_address *address)
     return 0;
 }
 unsigned ker_ipc_epoch_slot(uint32_t epoch) { return ff_reload_epoch_slot_of(epoch); }
+int ker_ipc_format_ring(char *buffer, size_t size, const struct ker_ipc_address *address,
+    int output, enum FF_MSG_TYPE type, int generation_aware)
+{
+    if (!address || !buffer || !size || size > UINT_MAX ||
+        (output != 0 && output != 1) || (generation_aware != 0 && generation_aware != 1) ||
+        (output && (type < FF_UNKNOWN || type >= FF_MSG_NUM))) return -EINVAL;
+    if (generation_aware && (address->generation < 0 || address->generation >= FF_RELOAD_GEN_MAX))
+        return -EINVAL;
+    return ff_msg_ring_name(buffer, (unsigned)size, output ? FF_MSG_RING_OUT : FF_MSG_RING_IN,
+        address->process, output ? type : -1, address->generation, address->epoch, generation_aware);
+}
 int ker_ipc_ring_name(char *buffer, size_t size, int output, enum FF_MSG_TYPE type)
 {
     if (!buffer || !size || size > UINT_MAX || (output != 0 && output != 1) ||
@@ -65,8 +76,8 @@ int ker_ipc_ring_name(char *buffer, size_t size, int output, enum FF_MSG_TYPE ty
     int message_type = output ? type : -1;
     if (inited) return ff_ipc_ring_name(buffer, (unsigned)size, base, message_type);
     if (ff_gen_arg == FF_IPC_GEN_AUTO) return -EAGAIN;
-    return ff_msg_ring_name(buffer, (unsigned)size, base, ff_proc_id, message_type,
-        ff_gen_arg, ff_epoch_arg, 1);
+    struct ker_ipc_address address = {ff_proc_id, ff_gen_arg, ff_epoch_arg};
+    return ker_ipc_format_ring(buffer, size, &address, output, type, 1);
 }
 static void initialize_message(struct rte_mempool *pool, void *opaque, void *object, unsigned index)
 {
@@ -88,7 +99,12 @@ int ker_ipc_attach(struct rte_mempool *pool)
 {
     if (inited) return -EBUSY;
     if (!eal_ready() || !pool || pool->cache_size || pool->elt_size < sizeof(struct ff_msg)) return -EINVAL;
-    if (ff_gen_arg == FF_IPC_GEN_AUTO) return -EOPNOTSUPP;
+    if (ff_gen_arg == FF_IPC_GEN_AUTO) {
+        char legacy[RTE_RING_NAMESIZE];
+        struct ker_ipc_address primary = {0, 0, 0};
+        if (ker_ipc_format_ring(legacy, sizeof(legacy), &primary, 0, FF_UNKNOWN, 0) ||
+            !rte_ring_lookup(legacy)) return -EOPNOTSUPP;
+    }
     message_pool = pool;
     ff_pending_msg = NULL;
     ff_ipc_stash_n = 0;
