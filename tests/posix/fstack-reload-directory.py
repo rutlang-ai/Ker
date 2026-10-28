@@ -183,11 +183,17 @@ def main():
                 require(r=={'result':packet,'callbacks':counts[p.slot],'received':received[p.slot],'completed':received[p.slot]},'callback gate/data mismatch '+str(r))
             def inject(sequence):require(primary.command(f'inject {sequence}','INJECTED')=={'sequence':sequence,'available':62},'packet allocation failed')
             def collect(sequence):require(primary.command('collect','COLLECTED')=={'sequence':sequence,'available':63},'packet identity/payload/reclamation failed')
+            refusals=0
             def release(p,e,g,expected):
+                nonlocal refusals
                 r=p.command(f'release {e} {g}','RELEASE');require(r['result']==expected,'release proof bypassed: '+str(r))
-                if expected==-2:require(4500<=r['elapsed_ms']<20000 and r['local_owner']==p.slot//2 and r['local_stopped']==0,'bounded release rollback failed')
+                if expected==-2:
+                    require(4500<=r['elapsed_ms']<20000 and r['local_owner']==p.slot//2 and r['local_stopped']==0,'bounded release rollback failed')
+                    refusals+=1
+                require(primary.command('view','VIEW')['refused']==refusals,'release refusal counter changed incorrectly')
                 return r
             users(ae,0,0);users(be,1,0)
+            result(a0,'detach',-errno.EBUSY);result(a1,'detach',-errno.EBUSY)
             result(primary,'lock');result(primary,'lock');result(b0,'lock',-1);result(b0,'unlock',-errno.EPERM)
             result(b0,'ring-attach',-1)
             require(primary.command('census','CENSUS')['live'][bslot]==[0,0],'timed-out ring attach leaked an entry')
@@ -202,7 +208,7 @@ def main():
             a0.child.stdin.write(b'continue\n');a0.child.stdin.flush();received[0]+=1
             require(a0.record('POLL')=={'result':1,'callbacks':counts[0],'received':1,'completed':1},'held PMD callback failed');collect(1)
             users(ae,0,1);release(a1,be,1,-2) # callback return is not stop proof
-            result(a0,'stop');users(ae,0,0);release(a1,be,1,0)
+            result(a0,'stop');users(ae,0,0);result(a0,'detach',-errno.EBUSY);release(a1,be,1,0)
             result(b0,f'claim {ae} 0');result(b0,f'claim {ae} 0')
             inject(2);poll(a0);poll(a1);poll(b0,1,True);collect(2);users(ae,0,0);users(be,1,1)
             release(b1,ae,0,-2);result(b0,'stop');release(b1,ae,0,0);result(a0,f'claim {be} 1')
@@ -213,20 +219,28 @@ def main():
             require(a0.command('refresh','REFRESHED')=={'passes':4},'orphan refresh failed');counts[0]+=4
             require(b0.command(f'live {ae}','LIVE')=={'epoch':ae,'live':1},'refreshing orphan epoch was considered dead')
             result(b0,'reclaim',-2)
+            require(primary.command('view','VIEW')['refused']==refusals,'fresh orphan refusal incorrectly counted missing user proof')
             b0.command(f'wait-stale {ae}','STALE');users(ae,0,2)
             poll(b0) # automatic mirror must not steal from a stale master with live users
             require(b0.command('view','VIEW')['owner_epoch']==ae,'poll stole stale epoch without user proof')
             result(b0,'reclaim',-2)
+            refusals+=1;require(primary.command('view','VIEW')['refused']==refusals,'stale active-user refusal was not counted')
             # A real dead hardware/ring user and dead purge holder; peer stays live.
             result(a0,'lock');a0.command('crash','CRASHED');a0.reap();users(ae,0,1)
-            result(b0,'reclaim',-2);result(b0,'ring-attach');result(b0,'lock')
+            result(b0,'reclaim',-2);refusals+=1
+            require(primary.command('view','VIEW')['refused']==refusals,'one surviving user did not retain proof refusal')
+            result(b0,'ring-attach');result(b0,'lock')
             primary.command(f'queue {ae} 0 100 2','QUEUED')
             purged=b0.command('purge','PURGED');require(purged=={'count':0,'dead_markers':1,'available':61},'purge consumed a live peer ring or lost dead marker')
             require(primary.command('census','CENSUS')['dead'][aslot]==[1,0],'busy slot did not preserve dead user marker')
             require(a1.command('drain','DRAINED')=={'count':2,'available':63},'live-consumer FIFO/identity preservation failed')
             result(a1,'stop');users(ae,0,0);result(b0,'reclaim')
+            require(primary.command('view','VIEW')['refused']==refusals,'successful proof changed refusal counter')
             inject(4);poll(a1);poll(b0,1,True);collect(4)
+            require(b0.command('idle','IDLED')['elapsed_ms']>=2300,'live-master/stale-stamp interval was not observed')
+            require(a1.command(f'live {be}','LIVE')=={'epoch':be,'live':1},'live master was invalidated by an old stamp')
             result(a1,'reclaim',-2) # live master B remains live independent of its stamp
+            require(primary.command('view','VIEW')['refused']==refusals,'live-master refusal incorrectly counted user proof')
             primary.command(f'queue {ae} 0 200 2','QUEUED');result(a1,'ring-detach')
             require(b0.command('purge','PURGED')=={'count':2,'dead_markers':1,'available':63},'idle dead-slot object reclamation failed')
             require(b0.command('purge','PURGED')=={'count':0,'dead_markers':0,'available':63},'dead markers/double purge were not cleared')

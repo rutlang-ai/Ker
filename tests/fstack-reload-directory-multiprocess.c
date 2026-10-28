@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#define PORT "net_ring_ker_reload_directory"
+#define PORT "net_ring_ker_dir"
 #define META "ker_directory_identity"
 #define POOL "ker_directory_pool"
 #define RX "ker_directory_rx"
@@ -150,7 +150,7 @@ static void primary(void)
     CHECK(!ker_reload_bind_state(states[0]->addr,states[0]->len,0,0));CHECK(!ker_reload_worker_select(0,0));CHECK(!ker_reload_directory_attach());
     pool=rte_pktmbuf_pool_create(POOL,63,0,0,RTE_MBUF_DEFAULT_BUF_SIZE,SOCKET_ID_ANY);CHECK(pool);
     rx=rte_ring_create(RX,32,SOCKET_ID_ANY,RING_F_SP_ENQ|RING_F_SC_DEQ);tx=rte_ring_create(TX,32,SOCKET_ID_ANY,RING_F_SP_ENQ|RING_F_SC_DEQ);CHECK(rx&&tx);
-    int created=rte_eth_from_rings("ker_reload_directory",&rx,1,&tx,1,SOCKET_ID_ANY);CHECK(created>=0);port=(uint16_t)created;
+    int created=rte_eth_from_rings("ker_dir",&rx,1,&tx,1,SOCKET_ID_ANY);CHECK(created>=0);port=(uint16_t)created;
     struct rte_eth_conf config={0};CHECK(!rte_eth_dev_configure(port,1,1,&config));
     CHECK(!rte_eth_rx_queue_setup(port,0,128,SOCKET_ID_ANY,NULL,pool));CHECK(!rte_eth_tx_queue_setup(port,0,128,SOCKET_ID_ANY,NULL));CHECK(!rte_eth_dev_start(port));
     rings(1);
@@ -230,6 +230,7 @@ static void worker(unsigned gen,unsigned worker_slot)
             unsigned e,g;CHECK(sscanf(command,"claim %u %u",&e,&g)==2);printf("RESULT {\"result\":%d}\n",ker_reload_directory_claim(e,(int)g,20));flush();
         } else if(!strcmp(command,"reclaim\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_reclaim());flush();}
         else if(!strcmp(command,"stop\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_user_stop());flush();}
+        else if(!strcmp(command,"detach\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_detach());flush();}
         else if(!strcmp(command,"ring-attach\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_ring_attach(20));flush();}
         else if(!strcmp(command,"ring-detach\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_ring_detach());flush();}
         else if(!strcmp(command,"lock\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_purge_lock(5));flush();}
@@ -242,8 +243,13 @@ static void worker(unsigned gen,unsigned worker_slot)
             for(unsigned s=0;s<4;++s){markers+=dead[s][0]+dead[s][1];if(live[s][0]+live[s][1])continue;for(unsigned g=0;g<2;++g)total+=consume(s,g);}
             printf("PURGED {\"count\":%u,\"dead_markers\":%u,\"available\":%u}\n",total,markers,rte_mempool_avail_count(pool));flush();
         } else if(!strcmp(command,"refresh\n")) {
+            hold=0;
             for(unsigned i=0;i<4;++i){CHECK(ker_reload_poll(packet_poll,shared)>=0);struct timespec delay={.tv_nsec=800000000};nanosleep(&delay,NULL);}
             puts("REFRESHED {\"passes\":4}");flush();
+        } else if(!strcmp(command,"idle\n")) {
+            uint64_t start=now_ms();
+            do { struct timespec delay={.tv_nsec=50000000};nanosleep(&delay,NULL); } while(now_ms()-start<2300);
+            printf("IDLED {\"elapsed_ms\":%" PRIu64 "}\n",now_ms()-start);flush();
         } else if(!strcmp(command,"crash\n")) {puts("CRASHED {\"exit\":0}");flush();_exit(0);}
         else if(!strcmp(command,"exit\n")) {
             CHECK(!ker_reload_directory_ring_detach());CHECK(!ker_reload_directory_user_release());
