@@ -252,6 +252,47 @@ static void poll_memory_faults(void)
     CHECK(munmap(memory, (size_t)page * 2) == 0 && close(pipes[0]) == 0 && close(pipes[1]) == 0);
     finish(p);
 }
+static void select_memory_faults(void)
+{
+    struct pair p = connected(); CHECK(write(p.sender, "s", 1) == 1); queued(p.receiver, 1);
+    int maximum = (p.sender > p.receiver ? p.sender : p.receiver) + 1; CHECK(maximum <= FD_SETSIZE);
+    long page = sysconf(_SC_PAGESIZE); CHECK(page >= (long)(3 * sizeof(fd_set)));
+    char *memory = mmap(NULL, (size_t)page * 4, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(memory != MAP_FAILED && mprotect(memory + page * 3, (size_t)page, PROT_NONE) == 0);
+    void *bad = memory + page * 3; struct timeval zero = {0}; const struct timespec zero_ns = {0};
+    ERROR(select(maximum, bad, NULL, NULL, &zero), EFAULT);
+    ERROR(pselect(maximum, NULL, bad, NULL, &zero_ns, NULL), EFAULT);
+    if (ker_posix_kernel_release) ERROR(select(0, NULL, NULL, NULL, bad), EFAULT);
+    else ERROR(syscall(SYS_select, 0, NULL, NULL, NULL, bad), EFAULT);
+    CHECK(select(0, bad, (void *)((char *)bad + sizeof(fd_set)), (void *)((char *)bad + 2 * sizeof(fd_set)), &zero) == 0);
+    CHECK(pselect(0, bad, (void *)((char *)bad + sizeof(fd_set)), (void *)((char *)bad + 2 * sizeof(fd_set)), &zero_ns, NULL) == 0);
+    fd_set tail; memset(&tail, 0xa5, sizeof(tail));
+    size_t prefix = ((size_t)maximum + sizeof(unsigned long) * 8 - 1) /
+        (sizeof(unsigned long) * 8) * sizeof(unsigned long);
+    memset(&tail, 0, prefix); FD_SET(p.receiver, &tail); fd_set original = tail;
+    CHECK(pselect(maximum, &tail, NULL, NULL, &zero_ns, NULL) == 1 && FD_ISSET(p.receiver, &tail));
+    CHECK(memcmp((char *)&tail + prefix, (char *)&original + prefix, sizeof(tail) - prefix) == 0);
+    fd_set *reads = (void *)memory, *writes = (void *)(memory + page), *errors = (void *)(memory + page * 2);
+    FD_ZERO(reads); FD_ZERO(writes); FD_ZERO(errors);
+    FD_SET(p.receiver, reads); FD_SET(p.sender, reads); FD_SET(p.receiver, writes); FD_SET(p.receiver, errors);
+    CHECK(mprotect(writes, (size_t)page, PROT_READ) == 0);
+    ERROR(select(maximum, reads, writes, errors, &zero), EFAULT);
+    CHECK(FD_ISSET(p.receiver, reads) && !FD_ISSET(p.sender, reads));
+    CHECK(FD_ISSET(p.receiver, errors));
+    CHECK(mprotect(writes, (size_t)page, PROT_READ | PROT_WRITE) == 0);
+    CHECK(select(maximum, reads, writes, errors, &zero) == 2 && !FD_ISSET(p.receiver, errors));
+    struct timeval *readonly = (void *)(memory + page * 2); *readonly = (struct timeval){.tv_usec = 2000};
+    CHECK(mprotect(readonly, (size_t)page, PROT_READ) == 0); FD_ZERO(reads); FD_SET(p.receiver, reads); errno = 0;
+    if (ker_posix_kernel_release) CHECK(select(maximum, reads, NULL, NULL, readonly) == 1);
+    else CHECK(syscall(SYS_select, maximum, reads, NULL, NULL, readonly) == 1);
+    CHECK(errno == 0 && readonly->tv_usec == 2000);
+    int invalid = dup(p.receiver); CHECK(invalid >= 0 && invalid < FD_SETSIZE && close(invalid) == 0);
+    fd_set invalid_set; FD_ZERO(&invalid_set); FD_SET(invalid, &invalid_set); original = invalid_set;
+    ERROR(select(invalid + 1, &invalid_set, NULL, NULL, &zero), EBADF);
+    CHECK(memcmp(&invalid_set, &original, sizeof(original)) == 0);
+    char byte; CHECK(read(p.receiver, &byte, 1) == 1 && byte == 's');
+    CHECK(munmap(memory, (size_t)page * 4) == 0); finish(p);
+}
 int main(void)
 {
     const struct {const char *name; void (*run)(void);} cases[] = {
@@ -264,6 +305,7 @@ int main(void)
         {"buffered-eof-is-readable", eof_readiness},
         {"zero-and-invalid-timeouts", zero_timeouts},
         {"poll-protected-input-output-and-timeout", poll_memory_faults},
+        {"select-protected-sets-timeval-and-output-prefix", select_memory_faults},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         cases[i].run();
