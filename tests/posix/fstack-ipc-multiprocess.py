@@ -67,6 +67,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--unit-app', type=Path, required=True)
+    parser.add_argument('--reload-app', type=Path, required=True)
     parser.add_argument('--huge-dir', type=Path, default=Path('/dev/hugepages'))
     parser.add_argument('--pmd-root', type=Path, required=True)
     parser.add_argument('--evidence', type=Path)
@@ -204,7 +205,19 @@ def main():
             status(64); legacy.close()
             evidence['cases'].extend(['test_ut_nr_m5_epoch_slot_and_ring_name',
                                       'test_ut_nr_m5_graceful_zero_epoch_invariance'])
-            require(len(evidence['cases']) == 14, 'missing acceptance phase')
+            serdes = subprocess.run([str(args.reload_app)], env=env, text=True,
+                                    capture_output=True, timeout=45)
+            require(serdes.returncode == 0 and 'PASS: original reload message fill/parse' in serdes.stdout,
+                    'source serdes assertions failed: '+serdes.stdout+serdes.stderr)
+            control, _ = client()
+            for command in range(1, 8):
+                control.command(f'control {command}', 'SENT'); status(63, inputs=1); pump(1)
+                require(control.command('recv 10','RECV')['result'] == 0,
+                        'actual reload message roundtrip/parse failed')
+                status(64)
+            control.close()
+            evidence['cases'].append('test_ut_nr_14_reload_msg_serdes')
+            require(len(evidence['cases']) == 15, 'missing acceptance phase')
             require(all(p.child.poll() == 0 for p in processes[1:]), 'a secondary is still live or failed')
             require(primary.command('quit','CLOSED') == {'available':64,'outstanding':0}, 'primary failed full reclamation')
             require(primary.child.wait(timeout=20) == 0, 'primary EAL cleanup failed')

@@ -1,7 +1,7 @@
 /* Real original-EAL primary/provider and secondary/caller fixture. The
  * provider implements no FreeBSD operation: replies explicitly say unsupported. */
 #define _GNU_SOURCE
-#include <ker/ipc.h>
+#include <ker/reload.h>
 #include "check.h"
 #include <inttypes.h>
 #include <rte_eal.h>
@@ -39,6 +39,9 @@ static void provider(void)
     const struct rte_memzone *zone = rte_memzone_reserve(ZONE, sizeof(struct identity), SOCKET_ID_ANY, 0); CHECK(zone);
     *(struct identity *)zone->addr = (struct identity){MAGIC, nonce(), (uint32_t)getpid()};
     pool = ker_ipc_pool_create(POOL, 64, 64); CHECK(pool);
+    void *reload_state = calloc(1, ker_reload_state_size()); CHECK(reload_state);
+    CHECK(!ker_reload_state_init(reload_state, ker_reload_state_size(), 1));
+    CHECK(!ker_reload_bind_state(reload_state, ker_reload_state_size(), 2, 1));
     const char *coordinates[] = {"0:0", "1:0", "1:0:3", "2:1:1", "0:1:2", "0:0", "1:0"};
     for (unsigned i = 0; i < 7; i++) {
         CHECK(ker_ipc_select_or_exit(coordinates[i], NULL) >= 0);
@@ -63,6 +66,11 @@ static void provider(void)
                     CHECK(rte_mempool_from_obj(message) == pool && message->ipc_cookie && message->ipc_owner_pid);
                     CHECK(message->msg_type == FF_SYSCTL || message->msg_type == FF_RELOAD);
                     message->result = -EOPNOTSUPP;
+                    if (message->msg_type == FF_RELOAD && message->reload.cmd == FF_RELOAD_CMD_QUERY) {
+                        int cmd, gen, status; uint64_t hb;
+                        CHECK(!ker_reload_message_parse(message, &cmd, &gen, &status, &hb));
+                        ker_reload_message_fill(message, cmd, gen, status, hb);
+                    }
                     CHECK(!rte_ring_enqueue(message->msg_type == FF_RELOAD ? endpoints[i].reload : endpoints[i].output, message));
                     handled++;
                 }
@@ -92,6 +100,7 @@ static void provider(void)
             for (unsigned i = 0; i < 7; i++) {
                 rte_ring_free(endpoints[i].input); rte_ring_free(endpoints[i].output); rte_ring_free(endpoints[i].reload);
             }
+            ker_reload_unbind_state(); free(reload_state);
             rte_mempool_free(pool); CHECK(!rte_memzone_free(zone) && !rte_eal_cleanup());
             puts("CLOSED {\"available\":64,\"outstanding\":0}"); ready(); return;
         } else CHECK(0);
@@ -122,8 +131,10 @@ static void caller(const char *process, const char *generation, int legacy)
     if (attached) printf("\"%s\"",name); else printf("null");
     puts("}"); ready();
     char command[64], payload[64]; ker_ipc_message *sent = NULL;
+    int control = 0;
     while (fgets(command, sizeof(command), stdin)) {
         if (!strncmp(command, "send ", 5)) {
+            control = 0;
             unsigned type, private; CHECK(sscanf(command,"send %u %u",&type,&private) == 2);
             CHECK(attached && (type == FF_SYSCTL || type == FF_RELOAD));
             sent = ker_ipc_alloc(); CHECK(sent && sent->buf_addr == (char *)sent + sizeof(*sent));
@@ -138,13 +149,28 @@ static void caller(const char *process, const char *generation, int legacy)
             strcpy(sent->buf_addr,payload); sent->msg_type = (enum FF_MSG_TYPE)type;
             CHECK(!ker_ipc_send(sent));
             printf("SENT {\"pid\":%u,\"cookie\":%u,\"type\":%u}\n",(unsigned)getpid(),sent->ipc_cookie,type); ready();
+        } else if (!strncmp(command, "control ", 8)) {
+            CHECK(attached && !sent && sscanf(command, "control %d", &control) == 1);
+            sent = ker_ipc_alloc(); CHECK(sent);
+            strcpy(payload, "control caller bytes"); strcpy(sent->buf_addr, payload);
+            ker_reload_message_fill(sent, control, 1, 7, 12345);
+            CHECK(!ker_ipc_send(sent));
+            printf("SENT {\"pid\":%u,\"cookie\":%u,\"type\":10}\n", (unsigned)getpid(), sent->ipc_cookie); ready();
         } else if (!strncmp(command,"recv ",5)) {
             unsigned type; CHECK(sscanf(command,"recv %u",&type) == 1 && attached);
             ker_ipc_message *received = (void *)(uintptr_t)1;
             int result = ker_ipc_recv(&received,(enum FF_MSG_TYPE)type);
             if (!result) {
                 CHECK(received == sent && received->ipc_owner_pid == (uint32_t)getpid());
-                CHECK(received->result == -EOPNOTSUPP && !strcmp(received->buf_addr,payload));
+                CHECK(received->result == (control == FF_RELOAD_CMD_QUERY ? 0 : -EOPNOTSUPP));
+                CHECK(!strcmp(received->buf_addr,payload));
+                if (control) {
+                    int cmd, gen, status; uint64_t hb;
+                    CHECK(!ker_reload_message_parse(received, &cmd, &gen, &status, &hb));
+                    CHECK(cmd == control && gen == 1 && status == 7 && hb == 12345);
+                    if (cmd == FF_RELOAD_CMD_QUERY)
+                        CHECK(received->reload.active_gen == 1 && received->reload.epoch == 2);
+                }
                 CHECK(!ker_ipc_free(received)); sent = NULL;
             } else CHECK(received == (void *)(uintptr_t)1);
             uint64_t requeued, orphan, lost; ker_ipc_reply_stats(&requeued,&orphan,&lost);

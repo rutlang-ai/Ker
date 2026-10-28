@@ -966,6 +966,8 @@ add_test(NAME fstack-ini-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT
 set_tests_properties(fstack-ini-import PROPERTIES TIMEOUT 15 LABELS "provenance")
 add_test(NAME fstack-ipc-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ipc-import.py")
 set_tests_properties(fstack-ipc-import PROPERTIES TIMEOUT 15 LABELS "provenance")
+add_test(NAME fstack-reload-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-import.py")
+set_tests_properties(fstack-reload-import PROPERTIES TIMEOUT 15 LABELS "provenance")
 
 if(KER_WITH_DPDK)
     add_executable(ker-fstack-ipc-test fstack-ipc.c)
@@ -1016,13 +1018,23 @@ if(KER_WITH_DPDK)
         TIMEOUT 15 LABELS "fstack;fstack-ipc;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_executable(ker-fstack-ipc-multiprocess-test fstack-ipc-multiprocess.c)
-    target_link_libraries(ker-fstack-ipc-multiprocess-test PRIVATE ker::ipc)
+    target_link_libraries(ker-fstack-ipc-multiprocess-test PRIVATE ker::reload)
     target_compile_options(ker-fstack-ipc-multiprocess-test PRIVATE -Wall -Wextra -Werror)
     list(GET DPDK_LIBRARY_DIRS 0 ker_ipc_pmd_root)
     add_test(NAME fstack-ipc-multiprocess
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-ipc-multiprocess.py"
             --app "$<TARGET_FILE:ker-fstack-ipc-multiprocess-test>"
-            --unit-app "$<TARGET_FILE:ker-fstack-ipc-test>" --pmd-root "${ker_ipc_pmd_root}")
+            --unit-app "$<TARGET_FILE:ker-fstack-ipc-test>" --reload-app "$<TARGET_FILE:ker-fstack-reload-test>" --pmd-root "${ker_ipc_pmd_root}")
     set_tests_properties(fstack-ipc-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
         LABELS "fstack;fstack-ipc;multiprocess")
+endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-test fstack-reload.c)
+    target_link_libraries(ker-fstack-reload-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-message-serdes COMMAND ker-fstack-reload-test)
+    set_tests_properties(fstack-reload-message-serdes PROPERTIES TIMEOUT 15
+        LABELS "fstack;fstack-reload"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()

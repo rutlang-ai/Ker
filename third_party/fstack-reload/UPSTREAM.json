@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "mode": "unchanged reload runtime and configuration layout; public Ker adapters borrow caller state, no protocol code",
+  "files": {
+    "ff_reload.c": {
+      "source_file": "lib/ff_reload.c",
+      "sha256": "faa87c50fd3faec562747dd48cdd35650cc8bac06400ea1c900691400a8bde81",
+      "git_blob": "929d9abcb317b48f93f2c94dc62574d3e93e67d9"
+    },
+    "ff_config.h": {
+      "source_file": "lib/ff_config.h",
+      "sha256": "66f42cc8075c4cf30a983e7712079f63afa3a7f24ebd74fac763496bea95fdf3",
+      "git_blob": "f05e1b50838196507f245c30bf2a8e56b9b7037d"
+    }
+  },
+  "headers": "ff_reload.h and ff_msg.h are the unchanged shared dependencies in ../fstack-ipc/UPSTREAM.json"
+}
