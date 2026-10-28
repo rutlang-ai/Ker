@@ -1108,7 +1108,7 @@ if(KER_WITH_DPDK)
     add_test(NAME fstack-pool-generation COMMAND ker-fstack-pool-test generation)
     add_test(NAME fstack-pool-cache COMMAND ker-fstack-pool-test cache)
     set_tests_properties(fstack-pool-generation fstack-pool-cache PROPERTIES TIMEOUT 30
-        LABELS "fstack;pool-foundation"
+        LABELS "fstack;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
     add_test(NAME fstack-pool-legacy-consumer
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-pools.py"

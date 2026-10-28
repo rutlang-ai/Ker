@@ -728,3 +728,14 @@ PMD收发、claim前保持停用、活目标拒绝回退、实际目标master死
 两类池均63/63回收，guest12全部九组运行验证与两个旧示例通过并正常关机；
 见[M5合同及散列](fstack-reload-coordinates.md)。目标当前 **40/50**，尚需10项；
 [完整源ID差分](../tests/fstack-unfinished-completed.json)不计重复运行与额外回归。
+
+
+### 第十一批：generation pool 与 cache 策略（2 项）
+
+`fstack-pool-generation`、`fstack-pool-cache` 运行完整未修改的原始NR18/NR21断言。
+真实 legacy 程序使用并flush256/16/256 cache，完成4个PMD报文生命周期、三个池1023/1023。
+共享模式下primary和两个EAL secondary同用lcore0，五个池cache均为0；新secondary在
+旧代TX mbuf及message/reference尚未归还时加入，实际跨进程/跨代归还恢复全部63/63。
+仓库/安装消费者和此前九组profile在guest13全部通过，两个旧示例与正常关机也通过；
+见[pool合同及散列](fstack-pools.md)。当前目标 **42/50**，尚需8项，完整源ID见
+[基线差分清单](../tests/fstack-unfinished-completed.json)。

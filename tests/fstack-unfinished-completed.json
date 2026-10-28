@@ -1,8 +1,8 @@
 {
   "baseline_commit": "7f46febcade4166c5820f79b204d5a2b9413408f",
   "target": 50,
-  "newly_completed": 40,
-  "remaining": 10,
+  "newly_completed": 42,
+  "remaining": 8,
   "status": "in-progress",
   "cases": [
     {
@@ -335,6 +335,44 @@
         {
           "ctest": "fstack-reload-directory-multiprocess",
           "provenance_case": "fstack-reload-directory-ring-census"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-pool-generation",
+          "provenance_case": "fstack-pool-generation"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "fstack-pool-generation"
+        },
+        {
+          "ctest": "fstack-pool-multiprocess",
+          "provenance_case": "fstack-pool-generation"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-pool-cache",
+          "provenance_case": "fstack-pool-cache"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "fstack-pool-cache"
+        },
+        {
+          "ctest": "fstack-pool-multiprocess",
+          "provenance_case": "fstack-pool-cache"
         }
       ]
     },

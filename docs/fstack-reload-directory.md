@@ -3,7 +3,7 @@
 Five baseline-incomplete source cases are now qualified through unchanged
 upstream runtime, complete source assertions and real EAL/net_ring repository
 and independently installed consumers. The baseline-to-current completion
-count is **40/50**, with 10 still required. The five cases below cover user proof; four further [M5 coordinate cases](fstack-reload-coordinates.md) are now
+count is **42/50**, with 8 still required. The five cases below cover user proof; four further [M5 coordinate cases](fstack-reload-coordinates.md) are now
 qualified separately. The remaining P1 live-slot and application reload cases
 retain their prior status.
 

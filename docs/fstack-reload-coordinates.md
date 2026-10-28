@@ -1,7 +1,7 @@
 # M5 directory coordinates and same-generation handover
 
 Four baseline-incomplete cases now complete the original M5 contracts. Together
-with previous batches, the objective is **40/50**, with 10 still required.
+with previous batches, the objective is **42/50**, with 8 still required.
 Original Linux/DPDK and imported F-Stack sources remain unchanged. The optional
 `ker::reload` component now has 45 public APIs; its new peer observation API
 exposes original selected/published coordinates and the observer-owner predicate.

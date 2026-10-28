@@ -2951,16 +2951,42 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged original source assertions validate exact socket0/gen0 and socket3/gen1 names, invalid generations and truncation, gen count2, legacy shared-pool fallback, missing generation NULL, selection and invalid-setter preservation. ker::pools compiles the exact original selection globals/functions and name helper, while retaining the complete upstream sources unchanged. Actual public-API consumers create real original-named gen0/gen1 pools, prove missing-generation NULL/ENOENT despite an available shared RX pool, allocate actual TX responses from the selected bank, switch while an old object is outstanding and retain gen1 on invalid2/-1. A new actual EAL secondary joins while gen0 owns an output mbuf, then returns that old object while selecting gen1; repeated reverse selection and original-pool reclamation complete all four real PMD frames. The caller owns EAL, control policy, devices, queues, pools and object lifetimes. No original Linux/DPDK source or kernel protocol behavior changes.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-pool-generation",
+          "provenance_case": "fstack-pool-generation"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "fstack-pool-generation"
+        },
+        {
+          "ctest": "fstack-pool-multiprocess",
+          "provenance_case": "fstack-pool-generation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source assertions cover mbuf/reference legacy256, message legacy16, shared0 for all three roles and reserved FREE_RING_SIZE>0. The factory consumes the exact original policy in real DPDK creation. Actual legacy mbuf, typed ff_msg and opaque per-packet reference pools use caches256/16/256, consume4 original net_ring frame lifecycles, prove nonempty cache use and explicitly flush to1023/1023. Shared primary/two-secondary EAL users share lcore0 and operate with all caches0: fixed RX pool, two generation response pools, typed messages and real per-packet reference journals are allocated/consumed/freed across processes and generations. This qualifies memory/cache policy; the opaque reference record does not implement the FreeBSD page-array reference ABI. The caller owns EAL, control policy, devices, queues, pools and object lifetimes. No original Linux/DPDK source or kernel protocol behavior changes.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-pool-cache",
+          "provenance_case": "fstack-pool-cache"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "fstack-pool-cache"
+        },
+        {
+          "ctest": "fstack-pool-multiprocess",
+          "provenance_case": "fstack-pool-cache"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
