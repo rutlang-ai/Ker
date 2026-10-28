@@ -18,6 +18,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <time.h>
 #define CHECK(x) do { if (!(x)) {fprintf(stderr, "%s:%d: %s: %m\n", __FILE__, __LINE__, #x); exit(1);} } while (0)
 #define ERROR(call, code) do {errno = 0; CHECK((call) == -1); CHECK(errno == (code));} while (0)
 static int capture_socket(int type, int index)
@@ -102,6 +103,56 @@ static void filter_contracts(int udp, int index, const struct sockaddr_in *addre
         CHECK(poll(&event, 1, 0) == 0 && close(copy) == 0);
     }
 }
+static void packet_metadata(int udp, int index, const struct sockaddr_in *address)
+{
+    int fd = capture_socket(SOCK_DGRAM, index), enabled = 1;
+    CHECK(setsockopt(fd, SOL_PACKET, PACKET_AUXDATA, &enabled, sizeof(enabled)) == 0);
+    CHECK(setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &enabled, sizeof(enabled)) == 0);
+    filtered_datagram(udp, address);
+    unsigned char bytes[256]; union {struct cmsghdr align; unsigned char bytes[256];} control;
+    struct iovec vector = {bytes, sizeof(bytes)};
+    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
+        .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes)};
+    struct pollfd event = {fd, POLLIN, 0}; CHECK(poll(&event, 1, 2000) == 1);
+    ssize_t received = recvmsg(fd, &message, 0); CHECK(received > 28 && !(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)));
+    int auxiliary = 0, timestamp = 0;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&message); c; c = CMSG_NXTHDR(&message, c)) {
+        if (c->cmsg_level == SOL_PACKET && c->cmsg_type == PACKET_AUXDATA) {
+            CHECK(c->cmsg_len >= CMSG_LEN(sizeof(struct tpacket_auxdata)));
+            struct tpacket_auxdata data; memcpy(&data, CMSG_DATA(c), sizeof(data));
+            CHECK(data.tp_len == (unsigned)received && data.tp_snaplen == (unsigned)received);
+            CHECK(!(data.tp_status & TP_STATUS_VLAN_VALID)); ++auxiliary;
+        }
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPNS) {
+            CHECK(c->cmsg_len >= CMSG_LEN(sizeof(struct timespec)));
+            struct timespec stamp, now; memcpy(&stamp, CMSG_DATA(c), sizeof(stamp));
+            CHECK(clock_gettime(CLOCK_REALTIME, &now) == 0);
+            CHECK(stamp.tv_sec > 0 && stamp.tv_nsec >= 0 && stamp.tv_nsec < 1000000000);
+            CHECK(llabs((long long)stamp.tv_sec - now.tv_sec) <= 2); ++timestamp;
+        }
+    }
+    CHECK(auxiliary == 1 && timestamp == 1);
+    filtered_datagram(udp, address);
+    message.msg_controllen = 1; message.msg_flags = 0;
+    CHECK(poll(&event, 1, 2000) == 1 && recvmsg(fd, &message, 0) == received);
+    CHECK(message.msg_flags & MSG_CTRUNC);
+    CHECK(close(fd) == 0);
+    /* Packet statistics count admitted and dropped capture copies, then reset
+     * on retrieval; UDP delivery remains independent of capture pressure. */
+    fd = capture_socket(SOCK_DGRAM, index); int capacity = 4096;
+    CHECK(setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &capacity, sizeof(capacity)) == 0);
+    enum {sent = 128};
+    for (int i = 0; i < sent; ++i) filtered_datagram(udp, address);
+    struct tpacket_stats stats; socklen_t length = sizeof(stats);
+    CHECK(getsockopt(fd, SOL_PACKET, PACKET_STATISTICS, &stats, &length) == 0 && length == sizeof(stats));
+    CHECK(stats.tp_packets == sent && stats.tp_drops > 0 && stats.tp_drops < sent);
+    unsigned delivered = 0;
+    while (recv(fd, bytes, sizeof(bytes), MSG_DONTWAIT) >= 0) ++delivered;
+    CHECK(errno == EAGAIN && delivered + stats.tp_drops == sent);
+    length = sizeof(stats);
+    CHECK(getsockopt(fd, SOL_PACKET, PACKET_STATISTICS, &stats, &length) == 0);
+    CHECK(stats.tp_packets == 0 && stats.tp_drops == 0 && close(fd) == 0);
+}
 static void capture_tcp(int fd, int raw, int index, uint16_t port, const char *payload, size_t payload_length)
 {
     for (unsigned attempt = 0; attempt < 32; ++attempt) {
@@ -157,6 +208,7 @@ int main(void)
     capture(raw, 1, index, address.sin_port, payload, sizeof(payload));
     CHECK(close(raw) == 0 && close(datagram) == 0);
     filter_contracts(udp, index, &address);
+    packet_metadata(udp, index, &address);
     datagram = capture_socket(SOCK_DGRAM, index); raw = capture_socket(SOCK_RAW, index);
     tcp_coexistence(datagram, raw, index);
     CHECK(close(raw) == 0 && close(datagram) == 0 && close(udp) == 0);
