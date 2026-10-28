@@ -1355,10 +1355,6 @@
         {
           "ctest": "native-fstack-eal-file-prefix",
           "provenance_case": "eal-invalid-process-type"
-        },
-        {
-          "ctest": "fstack-config-invalid-process-mode",
-          "provenance_case": "fstack-config-invalid-process-mode"
         }
       ]
     },

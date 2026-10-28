@@ -1,7 +1,8 @@
 """Individually selectable source scenarios through Ker's production reader/CLI.
 
-These are configuration tests, not network or F-Stack ABI evidence. Existing
-source-case completion counts are deliberately unchanged by this regression batch.
+These are configuration tests, not network or F-Stack ABI evidence. The 50
+selectors comprise 49 source-mapped regressions and one Ker-only EAL forwarding
+regression; this batch does not change source-case completion counts.
 """
 import importlib.util
 import io
@@ -221,11 +222,30 @@ class SourceCases(unittest.TestCase):
 
     @cfg('ff_load_config_empty_ini')
     def test_config_empty(self):
+        # Upstream empty_ini calls ff_load_config with no options; it does not
+        # load an empty file populated by CLI overrides.
+        result = subprocess.run([sys.executable, str(SOURCE), '--io-worker', str(self.worker),
+            '--library', '/missing-library', '--', str(self.worker)],
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertTrue(result.stderr.splitlines()[-1].endswith(
+            'required via CLI or --config: --address, --port, --eal'), result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertFalse(self.marker.exists(), result.stderr)
+        result = subprocess.run([sys.executable, str(SOURCE)],
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertTrue(result.stderr.splitlines()[-1].endswith(
+            'required via CLI or --config: --address, --port, --eal'), result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
+        # The valid configuration still loads after the rejected invocation.
         args = self.parse('', '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal=--no-pci')
         self.assertEqual(args.mtu, 1500)
         self.assertEqual(args.bonds, ())
         self.assertEqual(args.vdevs, ())
         self.assertEqual(args.sysctls, {})
+        self.assertEqual(str(self.parse().address), '198.18.0.2/24')
 
     @cfg('vlan_cfg_handler_isolated')
     def test_config_missing_path(self):
@@ -237,9 +257,22 @@ class SourceCases(unittest.TestCase):
         self.assertFalse(self.marker.exists())
         self.assertEqual(self.parse().vlans, ())
 
-    @cfg('ipfw_pr_cfg_handler_isolated')
-    def test_config_invalid_process_mode(self):
-        self.reject(BASE, 'unrecognized arguments', '--proc-type', 'bogus_proc_type')
+    def test_eal_process_type_forwarding(self):
+        # --proc-type belongs to DPDK EAL. This Ker-only regression verifies
+        # both configuration paths preserve bogus/primary tokens for original
+        # EAL; the source-mapped eal-file-prefix integration exercises EAL's
+        # rejection diagnostic and successful primary startup.
+        bogus = BASE.replace('--no-huge --no-pci', '--no-huge --proc-type=bogus_proc_type')
+        args = self.parse(bogus)
+        self.assertEqual(args.eal_args, ['--no-huge', '--proc-type=bogus_proc_type'])
+        cli_bogus = self.parse(BASE, '--eal=--no-huge --proc-type=bogus_proc_type')
+        self.assertEqual(cli_bogus.eal_args, ['--no-huge', '--proc-type=bogus_proc_type'])
+        primary = self.parse(BASE.replace('--no-huge --no-pci',
+                                          '--no-huge --proc-type=primary'))
+        self.assertEqual(primary.eal_args, ['--no-huge', '--proc-type=primary'])
+        cli_primary = self.parse(BASE, '--eal=--no-huge --proc-type=primary')
+        self.assertEqual(cli_primary.eal_args, ['--no-huge', '--proc-type=primary'])
+        self.assertEqual(self.parse().eal_args, ['--no-huge', '--no-pci'])
 
     @cfg('port_cfg_handler_addr_parse')
     def test_config_address(self):

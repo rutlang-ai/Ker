@@ -2923,14 +2923,6 @@
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config missing path. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_missing_path. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
-    "fstack-config-invalid-process-mode": {
-      "source_file": "tests/unit/test_ff_config.c",
-      "source_case": "test_ipfw_pr_cfg_handler_isolated",
-      "ker_ctests": [
-        "fstack-config-invalid-process-mode"
-      ],
-      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config invalid process mode. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_invalid_process_mode. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
-    },
     "fstack-config-address": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": "test_port_cfg_handler_addr_parse",

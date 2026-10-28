@@ -573,9 +573,10 @@ Ker 使用 `[interface.NAME]`，不模拟 F-Stack 数字端口 ABI，也不计�
 ## 独立配置场景回归（50 项）
 
 `tests/posix/test_fstack_config_cases.py` 将固定快照里的 19 个 INI 场景和
-31 个配置场景各自实现为独立 CTest。与原来按模块运行的测试相比，现在可以
-单独筛选、重跑并定位一个源案例。每项均在 `fstack-migration.json` 和
-`fstack-provenance.json` 中记录一对一来源和 Python selector。
+30 个配置源场景各自实现为独立 CTest；另有一个 Ker-only EAL 转发回归，检查
+INI 与 CLI 的 `--proc-type` 参数交给原始 EAL，且不计为源案例。50 项可单独
+筛选和重跑，其中49项有源 ID，均在 `fstack-migration.json` 与
+`fstack-provenance.json` 中记录来源和 Python selector。
 
 ```bash
 ctest --test-dir build -L '^fstack-config-cases$' --output-on-failure
@@ -588,8 +589,8 @@ application 均未执行；随后合法加载验证恢复和默认状态。测�
 最终值及顺序、CLI 覆盖、配置文件相对目录、不同加载间 VLAN/VIP 记录隔离、
 完整长 key、损坏 UTF-8/BOM，以及 MTU 和 EAL lcore 配置边界。
 
-这 50 个源案例此前已标记 `scenario-adapted`，本批新增的是独立回归测试，
-**不是新增完成 50 个 blocked/partial 案例**，上游完成数仍为 218。
+49 个源案例此前均已标记 `scenario-adapted`。本批新增的是独立回归测试，
+**没有新增完成的源案例**；上游完成数仍为 218。
 FreeBSD/F-Stack C 回调和结构布局、进程类型、默认 MTU 开关等差异继续遵循
 既有适配边界；没有增加网络协议实现，也不以配置通过作为网络互通证明。
 

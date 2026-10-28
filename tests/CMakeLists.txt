@@ -824,10 +824,11 @@ add_test(NAME fstack-config-missing-path
         SourceCases.test_config_missing_path)
 set_tests_properties(fstack-config-missing-path PROPERTIES
     TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
-add_test(NAME fstack-config-invalid-process-mode
+# Ker-only EAL forwarding coverage; intentionally not linked to an upstream case.
+add_test(NAME fstack-config-eal-process-type-forwarding
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
-        SourceCases.test_config_invalid_process_mode)
-set_tests_properties(fstack-config-invalid-process-mode PROPERTIES
+        SourceCases.test_eal_process_type_forwarding)
+set_tests_properties(fstack-config-eal-process-type-forwarding PROPERTIES
     TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 add_test(NAME fstack-config-address
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/test_fstack_config_cases.py"
