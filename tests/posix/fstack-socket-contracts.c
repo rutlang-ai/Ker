@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <sched.h>
@@ -553,6 +554,37 @@ static void host_bpf_descriptor_boundary(void)
     char bytes[3]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 3 && !memcmp(bytes, "bpf", 3));
     CHECK(close(local[0]) == 0 && close(local[1]) == 0 && close(host[0]) == 0 && close(host[1]) == 0);
     finish(p);
+}
+
+static void legacy_stat_versions(void)
+{
+    int (*queries[2])(int, int, struct stat *) = {
+        dlsym(RTLD_DEFAULT, "__fxstat"), dlsym(RTLD_DEFAULT, "__fxstat64")};
+    int (*paths[2])(int, int, const char *, struct stat *, int) = {
+        dlsym(RTLD_DEFAULT, "__fxstatat"), dlsym(RTLD_DEFAULT, "__fxstatat64")};
+    struct pair p = connected(); int host = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC); CHECK(host >= 0);
+    int descriptors[] = {p.client, host}; int invalid[] = {-1, 2, INT_MAX};
+    long page = sysconf(_SC_PAGESIZE); CHECK(page > 0);
+    void *bad = mmap(NULL, (size_t)page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); CHECK(bad != MAP_FAILED);
+    for (size_t i = 0; i < 2; ++i) {
+        CHECK(queries[i] && paths[i]);
+        for (size_t j = 0; j < 2; ++j) {
+            struct stat reference, result; CHECK(fstat(descriptors[j], &reference) == 0);
+            for (int version = 0; version <= 1; ++version) {
+                CHECK(queries[i](version, descriptors[j], &result) == 0);
+                CHECK(result.st_ino == reference.st_ino && result.st_mode == reference.st_mode && result.st_dev == reference.st_dev);
+                CHECK(paths[i](version, descriptors[j], "", &result, AT_EMPTY_PATH) == 0);
+                CHECK(result.st_ino == reference.st_ino && result.st_mode == reference.st_mode);
+            }
+            for (size_t k = 0; k < sizeof(invalid) / sizeof(invalid[0]); ++k) {
+                ERROR(queries[i](invalid[k], descriptors[j], bad), EINVAL);
+                ERROR(queries[i](invalid[k], -1, bad), EINVAL);
+                ERROR(paths[i](invalid[k], descriptors[j], bad, bad, AT_EMPTY_PATH), EINVAL);
+                ERROR(paths[i](invalid[k], -1, bad, bad, 0x40000000), EINVAL);
+            }
+        }
+    }
+    CHECK(munmap(bad, (size_t)page) == 0 && close(host) == 0); finish(p);
 }
 
 static void host_path_faults(void)
@@ -2232,6 +2264,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"legacy-stat-ABI-version-validation-and-precedence", legacy_stat_versions},
         {"host-eBPF-program-descriptor-boundary-and-classic-filter-preservation", host_bpf_descriptor_boundary},
         {"duplicate-file-query-owner-pair-translation", duplicate_file_queries},
         {"descriptor-owned-fstatvfs-and-64-bit-layout", filesystem_vfs_statistics},
