@@ -685,3 +685,12 @@ Debug/static、Release/shared 以及 guest2 的真实 legacy secondary 收发
 切换/切回、4/4 实际 RX/TX、同 slot 后继和 63/63 对象回收。
 参见 [polling 合同](fstack-reload-polling.md)。本轮累计 **26/50**，
 总数为 244 adapted，剩余目标 24 项；宿主共享 hugepages 的 skip 未计入。
+
+
+### 第七批：原版 heartbeat/READY/轮次（1 项）
+
+`fstack-reload-heartbeat` 完成 `test_ut_nr_22_heartbeat_and_rx_return`
+全部断言，并在真实 EAL/net_ring 与独立安装消费者中验证目标进程停止/恢复、
+原版计时采样、READY、完成/中止以及完整回收；证据见
+[heartbeat 合同](fstack-reload-heartbeat.md)。本轮累计 **27/50**，
+当前 245 adapted，剩余目标 23 项。

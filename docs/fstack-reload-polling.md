@@ -32,7 +32,8 @@ it inside a callback aborts. The library owns no worker process, queue or device
 and must never release the caller's state or EAL.
 
 These twelve poll/control APIs extend the six existing message/lifetime APIs.
-The shared component exports only the eighteen documented Ker symbols; imported
+At polling qualification the shared component exported eighteen documented Ker
+symbols. The later [heartbeat adapter](fstack-reload-heartbeat.md) adds ten; imported
 runtime helpers remain hidden. A typical caller runs its actual RX/TX function
 through the gate:
 
@@ -112,4 +113,5 @@ PIDs, both examples, exact PMD/pool/callback counters, normal power-down and
 QEMU exit 0. A host lacking shared hugepages returns skip77, never completion.
 
 Exactly two baseline-blocked cases are newly complete. Repeating the installed
-profile adds no source IDs. The baseline-to-completed total is 26/50; 24 remain.
+profile adds no source IDs. At polling qualification the baseline-to-completed total was 26/50; current
+progress is tracked in [the migration summary](fstack-migration.md).

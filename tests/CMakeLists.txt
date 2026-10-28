@@ -1066,6 +1066,6 @@ if(KER_WITH_DPDK)
     target_link_libraries(ker-fstack-reload-heartbeat-test PRIVATE ker::reload)
     target_compile_options(ker-fstack-reload-heartbeat-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME fstack-reload-heartbeat COMMAND ker-fstack-reload-heartbeat-test)
-    set_tests_properties(fstack-reload-heartbeat PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-reload"
+    set_tests_properties(fstack-reload-heartbeat PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()

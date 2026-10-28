@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 244 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 245 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 16 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 103 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 102 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为244 scenario-adapted、16 partial、103 blocked，共119项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为245 scenario-adapted、16 partial、102 blocked，共118项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共189项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：119项行为未完成
-（16 partial + 103 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共188项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：118项行为未完成
+（16 partial + 102 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -63,7 +63,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 44 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Design generation-aware reload, IPC and drain ownership | 43 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
 | Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 31 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
@@ -1959,3 +1959,16 @@ guest 正常关闭。完整合同与散列见 [polling 资格证据](fstack-relo
 两个原 blocked 案例完成场景适配，本轮累计 **26/50**，当前 244 adapted、
 16 partial、103 blocked。尚需完成 24 个基线未完成案例。跨 master 目录、
 硬件用户证明、崩溃回收、Linux 网络报文及完整 reload 不在本批完成范围内。
+
+
+### 原版目标 heartbeat、READY 与轮次控制（1 项）
+
+`test_ut_nr_22_heartbeat_and_rx_return` 的全部源断言已通过；实际 poll 在目标
+generation 的每一轮（含拒绝 RX 的轮次）调用原版 heartbeat helper。真实
+secondary 被 SIGSTOP 后，由父进程 WUNTRACED 确认，原版 DPDK timer sampler
+只报告 stall/rebase，不转移 RX；SIGCONT 后推进恢复，READY 与实际 PID/epoch
+关联，完成与中止保留原始观察值。仓库和安装消费者均通过 PMD4/4、63/63
+回收及正常退出，见 [heartbeat 资格证据](fstack-reload-heartbeat.md)。
+
+本轮累计 **27/50**，总数 245 adapted、16 partial、102 blocked；剩余目标
+为 23 个基线未完成案例。未将纯 helper、宿主 skip 或重复安装验证另计为完成。

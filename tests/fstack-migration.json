@@ -2260,9 +2260,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_22_heartbeat_and_rx_return",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported original-runtime adapter now validates exact shared block headers, exposes target heartbeat/READY/round observations, and ticks the unchanged original heartbeat on actual target poll passes, including denied RX. Full source assertions cover advance/window/exact-timeout/disabled/backwards/NULL evaluation, valid/invalid block layouts, begin/target/window, target ticks, observer stall/rebase, PID/epoch READY matching, complete, closed-window tick suppression, abort and unbound defaults. In real original-EAL/net_ring profiles the exact target secondary is SIGSTOPped with parent WUNTRACED confirmation; the original DPDK timer sampler detects one bounded stall and rebases while RX ownership remains0. SIGCONT resumes heartbeat progression, actual PID READY matches its round, and complete/abort preserve source observations. Both repository and independently installed consumers retain actual PMD4/4 RX/TX and63/63 reclamation. This is liveness observation and trusted same-master runtime control, not automatic RX takeover, hardware proof, imported-Linux traffic or full reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-heartbeat",
+          "provenance_case": "fstack-reload-heartbeat"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-heartbeat"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
