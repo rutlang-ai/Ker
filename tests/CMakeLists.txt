@@ -1035,6 +1035,6 @@ if(KER_WITH_DPDK)
     target_compile_options(ker-fstack-reload-test PRIVATE -Wall -Wextra -Werror)
     add_test(NAME fstack-reload-message-serdes COMMAND ker-fstack-reload-test)
     set_tests_properties(fstack-reload-message-serdes PROPERTIES TIMEOUT 15
-        LABELS "fstack;fstack-reload"
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()

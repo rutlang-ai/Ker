@@ -665,3 +665,13 @@ blocked/partial 源案例。`fstack-ipc-multiprocess` 在缺少共享 hugepages
 `test_ut_nr_m5_graceful_zero_epoch_invariance`。逐项命名断言、安装调用方、
 Debug/static、Release/shared 以及 guest2 的真实 legacy secondary 收发
 均通过。当前本轮累计 **23/50**，剩余 27 项；总数为 241 adapted。
+
+
+### 第五批：原始 reload 消息填充/解析（1 项）
+
+`fstack-reload-message-serdes` 和真实 `fstack-ipc-multiprocess` 完成
+`test_ut_nr_14_reload_msg_serdes` 的所有源断言。Debug/static、Release/shared、
+独立安装消费者通过；guest3 中 22 个 secondary、15 项源案例、两个示例以及
+64/64 回收和正常关机全部通过，来源及散列见
+[消息合同](fstack-reload-messages.md)。该源案例原为 partial；本轮现为
+**24/50**，总计 242 adapted，尚需完成 26 项。

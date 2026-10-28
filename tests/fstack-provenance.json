@@ -2546,6 +2546,17 @@
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: ini sections. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_ini_sections. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
+    "fstack-reload-message-serdes": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_14_reload_msg_serdes"
+      ],
+      "ker_ctests": [
+        "fstack-reload-message-serdes",
+        "fstack-ipc-multiprocess"
+      ],
+      "adaptation": "The optional exported ker::reload adapter uses byte-identical pinned ff_reload.c and original configuration/message layouts. Full source assertions now cover fill fields, DRAIN_DONE roundtrip, every known command including QUERY, wrong-type/out-of-range/zero rejection, NULL message rejection and independently optional outputs. An actual original-EAL primary uses the same fill/parse adapters to answer read-only QUERY from a borrowed valid original runtime state;22 distinct secondaries roundtrip all7 command payloads through real shared rings while preserving PID/cookie/payload and reclaiming64/64 objects. Other control operations return explicit EOPNOTSUPP; source acceptance is serialization, not execution of reload commands. Debug/static, Release/shared and an independently installed ker::reload consumer passed. This optional ABI component is distinct from the authenticated resident control protocol and does not qualify hardware handover or complete reload. Actual guest3 result fstack-unfinished-ipc-guest3/actual-result-attempt1.json SHA2560ce7253c97137accede048ae9332d9f2e119c2536b2e119e68ae92d0424d5bb8 binds candidate293203dacfedab1aa6d1a366372de406e51b2dd7, source and binary hashes, image and serial. All15 source phases, both exported examples exit0, normal power-down and QEMU0 passed. The host shared-hugepage skip77 is not source completion. fstack-reload-import audits original dependencies, and the shared component exports only6 public Ker symbols."
+    },
     "native-fstack-dualstack": {
       "source_file": "tests/unit/test_ff_host_interface.c",
       "source_case": "test_ff_host_set_v6only",

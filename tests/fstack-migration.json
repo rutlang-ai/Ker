@@ -2237,35 +2237,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial control-message boundary adaptation through the actual resident process, original DPDK EAL and production Python client over real credential-checked AF_UNIX SOCK_SEQPACKET connections. Three profiles verify STATUS/EPOCH_LIVE roundtrips including high-bit64-bit fields; truncated/oversized records disconnect; malformed magic/version/status, forbidden query fields and unsupported commands are rejected with signed errno replies and valid successor queries. Exact MASTER/RELEASE retransmissions return byte-identical cached replies; conflicting or older sequence numbers cannot release the epoch. Every profile verifies511 available objects, zero leases/users and exact resident/socket cleanup. No host-socket result is presented as native network-stack delivery. Additional Ker control-adapter profiles verify independent same-PID master connections and replay caches, foreign/released connection release rejection, corrupt and stale credentials, all three nonresident slots exhausted with cached ENOSPC, successful higher-sequence retry after release, and slot reuse with a strictly newer epoch. Rejected requests preserve live epochs, zero users and all511 available objects; final exact release and resident cleanup are required. These are primary-only adapter extensions, not evidence for F-Stack reload command semantics or cross-process ownership.",
+      "status": "scenario-adapted",
+      "reason": "The optional exported ker::reload adapter uses byte-identical pinned ff_reload.c and original configuration/message layouts. Full source assertions now cover fill fields, DRAIN_DONE roundtrip, every known command including QUERY, wrong-type/out-of-range/zero rejection, NULL message rejection and independently optional outputs. An actual original-EAL primary uses the same fill/parse adapters to answer read-only QUERY from a borrowed valid original runtime state;22 distinct secondaries roundtrip all7 command payloads through real shared rings while preserving PID/cookie/payload and reclaiming64/64 objects. Other control operations return explicit EOPNOTSUPP; source acceptance is serialization, not execution of reload commands. Debug/static, Release/shared and an independently installed ker::reload consumer passed. This optional ABI component is distinct from the authenticated resident control protocol and does not qualify hardware handover or complete reload.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-session-control-roundtrip",
-          "provenance_case": "native-fstack-session-control-frames"
+          "ctest": "fstack-reload-message-serdes",
+          "provenance_case": "fstack-reload-message-serdes"
         },
         {
-          "ctest": "native-fstack-session-control-malformed",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-replay",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-isolation",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-capacity",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-recycle",
-          "provenance_case": "native-fstack-session-control-frames"
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-reload-message-serdes"
         }
-      ],
-      "remaining": "F-Stack FF_RELOAD fill/parse ABI and positive READY/HANDOVER_REQ/HANDOVER_ACK/DRAIN_PROGRESS/DRAIN_DONE/REJECT/QUERY command semantics, generation/status/heartbeat payload meanings, NULL input and optional C output-pointer contracts are not implemented. Ker uses its own versioned same-host control ABI. These primary-only control-frame tests do not qualify secondary shared-ring messaging, Linux packet traffic, TCP continuity or full reload/handover."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
