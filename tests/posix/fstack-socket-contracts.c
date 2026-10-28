@@ -194,6 +194,49 @@ static void bind_collision(void)
     CHECK(server >= 0 && close(listener) == 0);
     finish((struct pair){client, server});
 }
+static void descriptor_access(void)
+{
+    struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
+    /* Linux sockfs creates sockets with all permission bits. The host fd
+     * reservation is not the object whose access is being queried. */
+    struct stat info; CHECK(fstat(p.client, &info) == 0 && (info.st_mode & 0777) == 0777);
+    CHECK(faccessat(alias, "", F_OK, AT_EMPTY_PATH) == 0);
+    CHECK(faccessat(alias, "", R_OK | W_OK | X_OK, AT_EMPTY_PATH | AT_EACCESS) == 0);
+    ERROR(faccessat(alias, "", 0, 0), ENOENT);
+    ERROR(faccessat(alias, "child", R_OK, 0), ENOTDIR);
+    ERROR(faccessat(alias, "", 8, AT_EMPTY_PATH), EINVAL);
+    ERROR(faccessat(alias, "", F_OK, 0x40000000), EINVAL);
+    int (*access_at)(int, const char *, int, int) = dlsym(RTLD_DEFAULT, "faccessat"); CHECK(access_at);
+    ERROR(access_at(alias, NULL, F_OK, AT_EMPTY_PATH), EFAULT);
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    char *protected = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(protected != MAP_FAILED);
+    ERROR(faccessat(alias, protected, F_OK, 0), EFAULT);
+    ERROR(access_at(alias, protected, F_OK, 0), EFAULT);
+    ERROR(faccessat(alias, protected, 8, 0), EINVAL);
+    ERROR(faccessat(alias, protected, F_OK, 0x40000000), EINVAL);
+    char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(pages != MAP_FAILED);
+    pages[page_size - 1] = '\0';
+    CHECK(mprotect(pages + page_size, (size_t)page_size, PROT_NONE) == 0);
+    CHECK(faccessat(alias, pages + page_size - 1, F_OK, AT_EMPTY_PATH) == 0);
+    char *cross_page = pages + page_size - 16;
+    memset(cross_page, 'x', 16);
+    ERROR(faccessat(alias, cross_page, F_OK, AT_EMPTY_PATH), EFAULT);
+    CHECK(munmap(pages, (size_t)page_size * 2) == 0 &&
+          munmap(protected, (size_t)page_size) == 0);
+    char path[] = "/tmp/ker-access-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    CHECK(faccessat(alias, path, R_OK | W_OK, AT_EACCESS) == 0);
+    CHECK(faccessat(host, "", F_OK, AT_EMPTY_PATH) == 0);
+    ERROR(faccessat(host, "", X_OK, AT_EMPTY_PATH), EACCES);
+    CHECK(close(host) == 0 && unlink(path) == 0 && close(p.client) == 0);
+    CHECK(faccessat(alias, "", X_OK, AT_EMPTY_PATH) == 0);
+    CHECK(write(alias, "ok", 2) == 2); char bytes[2];
+    CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
 static void extended_descriptor_stat(void)
 {
     struct pair p = connected(); struct stat old; CHECK(fstat(p.client, &old) == 0);
@@ -222,6 +265,30 @@ static void extended_descriptor_stat(void)
     CHECK(write(alias, "ok", 2) == 2); char bytes[2];
     CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
     CHECK(close(alias) == 0 && close(p.server) == 0);
+}
+static void unreadable_host_path_at(void)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    void *unreadable = mmap(NULL, (size_t)page_size, PROT_NONE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(unreadable != MAP_FAILED);
+    int host = open("/dev/null", O_RDONLY | O_CLOEXEC); CHECK(host >= 0);
+    struct stat result; struct statx extended_result;
+    int (*stat_at)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat");
+    int (*statx_at)(int, const char *, int, unsigned, struct statx *) = dlsym(RTLD_DEFAULT, "statx");
+    int (*access_at)(int, const char *, int, int) = dlsym(RTLD_DEFAULT, "faccessat");
+    CHECK(stat_at && statx_at && access_at);
+    int descriptors[] = {AT_FDCWD, host};
+    for (size_t i = 0; i < sizeof(descriptors) / sizeof(descriptors[0]); ++i) {
+        int fd = descriptors[i];
+        ERROR(fstatat(fd, unreadable, &result, 0), EFAULT);
+        ERROR(stat_at(fd, unreadable, &result, 0), EFAULT);
+        ERROR(statx(fd, unreadable, 0, STATX_BASIC_STATS, &extended_result), EFAULT);
+        ERROR(statx_at(fd, unreadable, 0, STATX_BASIC_STATS, &extended_result), EFAULT);
+        ERROR(faccessat(fd, unreadable, F_OK, 0), EFAULT);
+        ERROR(access_at(fd, unreadable, F_OK, 0), EFAULT);
+    }
+    CHECK(close(host) == 0 && munmap(unreadable, (size_t)page_size) == 0);
 }
 static void empty_path_stat(void)
 {
@@ -1625,7 +1692,9 @@ int main(void)
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
         {"empty-path-stat-owner-routing", empty_path_stat},
         {"host-native-fstatat-statx-protected-paths", host_path_fault_routing},
+        {"unreadable-host-path-at-apis", unreadable_host_path_at},
         {"statx-owner-routing-and-result-mask", extended_descriptor_stat},
+        {"descriptor-access-permission-owner-routing", descriptor_access},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {

@@ -1489,3 +1489,7 @@ fstatat/fstatat64（含 __fxstatat ABI）对原生 fd 的空路径按导入 Linu
 statx 同样按 fd 归属查询原始 Linux，保留该内核的结果 mask、时间和设备号；固定 Linux
 UAPI 布局以编译期大小及关键偏移断言校验。空路径/NULL 输出、非法 mask/flags 和相对
 路径错误不消费 TCP 数据；绝对路径与普通宿主 fd 查询仍属于宿主文件系统。
+
+faccessat 使用原始 faccessat2 对原生 fd 检查 sockfs 权限，保留 AT_EACCESS/
+AT_EMPTY_PATH 及非法 mode/flags 的边界。权限检查不再误查宿主占位对象；宿主绝对路径
+与普通宿主 fd 仍由宿主内核检查，错误不改变 fd 生命周期或消费排队 TCP 数据。
