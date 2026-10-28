@@ -96,6 +96,28 @@ def stdio_exit(args, launcher, work, env, log):
             if stats['native']['active_opens'] != 1 or not stats['tx'] or not stats['rx'] or stats['outstanding']:
                 raise RuntimeError('stdio exit did not use original TCP or leaked: ' + str(stats))
 
+    for native in (False, True):
+        port = 28792 + int(native)
+        app = str(args.stdio_exit_app)
+        command = [app, 'client-error', '198.18.0.1', str(port)]
+        if native:
+            command = [*launcher, '--', *command]
+        captured = []
+        with server([app, 'server-error', '198.18.0.1', str(port)], port, log, env, captured=captured):
+            result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=40)
+            if 'PASS: application returns with buffered native FILE output' not in result.stdout:
+                raise RuntimeError('stdio failure client did not reach buffered exit: ' + result.stdout + result.stderr)
+            if native:
+                if (result.returncode == 0 or
+                        'buffered native stdio could not flush before shutdown' not in result.stderr or
+                        'native Linux shutdown did not complete' not in result.stderr):
+                    raise RuntimeError('native buffered exit failure was not reported: ' + result.stdout + result.stderr)
+            elif result.returncode != 0:
+                raise RuntimeError('host buffered-error baseline failed: ' + result.stdout + result.stderr)
+        if 'PASS: independent host saw failed buffered stream EOF without payload' not in ''.join(captured):
+            raise RuntimeError('stdio failure peer missed exact empty EOF')
+    print('PASS: native buffered exit flush failure is explicit after orderly teardown', flush=True)
+
 
 def validate_fault_evidence(client_output, native_stats, client_endpoint):
     match = re.search(r"TCP_INFO total_retrans=(\d+)", client_output)

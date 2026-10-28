@@ -84,25 +84,35 @@ class HandoffControlPathTests(unittest.TestCase):
             checks = []
             snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                 identity_check=lambda: checks.append(True))
-            self.assertEqual(snapshot, (frozenset({3, 4}), frozenset({'ker_oldtap'})))
+            self.assertEqual(snapshot, (frozenset({3, 4}), frozenset({'ker_oldtap'}), {4: ('ker_oldtap',)}))
             self.assertEqual(len(checks), 3)
             self.assertEqual(self.launcher.handoff_fdinfo_interfaces(snapshot), ['ker_oldtap'])
-            self.launcher.validate_handoff_fdinfo((frozenset({3}), frozenset()), 4, 'ker_oldtap')
+            self.launcher.validate_handoff_fdinfo((frozenset({3}), frozenset(), {}), 4, 'ker_oldtap')
 
     def test_fdinfo_handoff_rejects_original_or_reused_exception_slot(self):
         for descriptor_kind, contents in (
-                ('original', 'iff:\tker_oldtap\n'), ('reused', 'pos:\t0\n')):
+                ('original', 'iff:\tker_oldtap\n'), ('reused-by-tun', 'iff:\tker_other\n')):
             with self.subTest(descriptor_kind=descriptor_kind), tempfile.TemporaryDirectory(
                     prefix='handoff-fdinfo-') as directory:
                 (Path(directory) / '17').write_text(contents)
                 snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=directory)
-                with self.assertRaisesRegex(RuntimeError, 'descriptor slot open'):
+                with self.assertRaisesRegex(RuntimeError, 'TUN fd|alias'):
                     self.launcher.validate_handoff_fdinfo(snapshot, 17, 'ker_oldtap')
+
+    def test_fdinfo_handoff_accepts_stable_non_tun_reuse_of_old_slot(self):
+        with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-reused-') as directory:
+            root = Path(directory)
+            (root / '17').write_text('pos:\t0\n')
+            snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
+                census_check=lambda current:
+                    self.launcher.validate_handoff_fdinfo(current, 17, 'ker_oldtap'))
+            self.assertEqual(snapshot, (frozenset({17}), frozenset(), {}))
 
     def test_fdinfo_handoff_rejects_tap_alias_even_when_exception_slot_is_absent(self):
         with self.assertRaisesRegex(RuntimeError, 'alias to its exception TAP'):
             self.launcher.validate_handoff_fdinfo(
-                (frozenset({3, 9}), frozenset({'ker_oldtap'})), 17, 'ker_oldtap')
+                (frozenset({3, 9}), frozenset({'ker_oldtap'}), {9: ('ker_oldtap',)}),
+                17, 'ker_oldtap')
 
     def test_fdinfo_handoff_permission_and_midscan_errors_fail_closed(self):
         with tempfile.TemporaryDirectory(prefix='handoff-fdinfo-') as directory:
@@ -159,7 +169,7 @@ class HandoffControlPathTests(unittest.TestCase):
             with mock.patch.object(Path, 'read_text', disappear_once):
                 snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                     identity_check=lambda: checks.append(True))
-            self.assertEqual(snapshot, (frozenset({3}), frozenset()))
+            self.assertEqual(snapshot, (frozenset({3}), frozenset(), {}))
             self.assertEqual(len(reads), 3)
             self.assertEqual(len(checks), 5)
 
@@ -179,12 +189,12 @@ class HandoffControlPathTests(unittest.TestCase):
 
             snapshot = self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                 identity_check=change_mapping_between_scans)
-            self.assertEqual(snapshot, (frozenset({3, 4, 5}), frozenset({'ker_other'})))
+            self.assertEqual(snapshot, (frozenset({3, 4, 5}), frozenset({'ker_other'}), {3: ('ker_other',)}))
             self.assertEqual(len(checks), 6)
 
     def test_fdinfo_handoff_forbidden_slot_or_alias_in_either_scan_is_immediate(self):
         for descriptor, contents, expected in (
-                (17, 'pos:\t0\n', 'descriptor slot open'),
+                (17, 'iff:\tker_other\n', 'TUN fd'),
                 (9, 'iff:\tker_oldtap\n', 'alias to its exception TAP')):
             with self.subTest(contents=contents), tempfile.TemporaryDirectory(
                     prefix='handoff-fdinfo-') as directory:
@@ -213,8 +223,8 @@ class HandoffControlPathTests(unittest.TestCase):
             def add_reused_old_slot():
                 checks.append(True)
                 if len(checks) == 2:
-                    (root / '17').write_text('pos:\t0\n')
-            with self.assertRaisesRegex(RuntimeError, 'descriptor slot open'):
+                    (root / '17').write_text('iff:\tker_other\n')
+            with self.assertRaisesRegex(RuntimeError, 'TUN fd|alias'):
                 self.launcher.process_fdinfo_snapshot(12345, fdinfo_dir=root,
                     identity_check=add_reused_old_slot,
                     census_check=lambda snapshot: self.launcher.validate_handoff_fdinfo(
@@ -269,7 +279,7 @@ class HandoffControlPathTests(unittest.TestCase):
         self.assertIsInstance(metric_call.func, ast.Name)
         self.assertEqual(metric_call.func.id, 'handoff_fdinfo_interfaces')
         self.assertEqual(self.launcher.handoff_fdinfo_interfaces(
-            (frozenset({3}), frozenset({'ker_z', 'ker_a'}))), ['ker_a', 'ker_z'])
+            (frozenset({3}), frozenset({'ker_z', 'ker_a'}), {5: ('ker_z',), 8: ('ker_a',)})), ['ker_a', 'ker_z'])
 
     def test_fdinfo_handoff_pidfd_identity_must_remain_live_and_match_pid(self):
         with mock.patch.object(self.launcher.select, 'select', return_value=([44], [], [])):
@@ -279,6 +289,13 @@ class HandoffControlPathTests(unittest.TestCase):
                 mock.patch.object(Path, 'read_text', return_value='Name:\tworker\nPid:\t12346\n')):
             with self.assertRaisesRegex(RuntimeError, 'identity changed'):
                 self.launcher.require_live_process_identity(12345, 44)
+    @staticmethod
+    def tap_fd_fixture(_pid):
+        return {17: ('ker_test0',)}
+
+    @staticmethod
+    def handoff_geometry():
+        return {'exception_endpoint_fd_number': 17, 'exception_endpoint_ifindex': 1}
 
     def test_frame_profiles_prewarm_original_udp_before_handoff_exhaustively(self):
         tree = ast.parse(PROFILE_SOURCE.read_text())
@@ -348,7 +365,7 @@ class HandoffControlPathTests(unittest.TestCase):
 
     def exercise(self, mode, expected, expect_closed):
         read_fd, write_fd = os.pipe()
-        metrics = {'exception_endpoint_name': 'ker_test0'}
+        metrics = {'exception_endpoint_name': 'ker_test0', 'geometry': self.handoff_geometry()}
         closed = []
 
         def close(fd):
@@ -381,7 +398,9 @@ class HandoffControlPathTests(unittest.TestCase):
         }
         function = types.FunctionType(self.function_code,
             {'os': os, 'RuntimeError': RuntimeError,
-             'tap_interfaces_for_process': lambda _pid: {'ker_test0'}},
+             'tap_interfaces_for_process': lambda _pid: {'ker_test0'},
+             'process_fdinfo_snapshot': lambda *_a, **_kw: (frozenset({17}), frozenset({'ker_test0'}), {17: ('ker_test0',)}),
+             'require_live_process_identity': lambda *_a: None},
             'perform_test_handoff', closure=tuple(cell(values[name]) for name in self.function_code.co_freevars))
         try:
             with self.assertRaises(StopAtWorkerMarker):
@@ -399,6 +418,7 @@ class HandoffControlPathTests(unittest.TestCase):
                 os.close(write_fd)
 
     def marker_function(self, mode, markers, metrics):
+        metrics.setdefault('geometry', self.handoff_geometry())
         read_fd, write_fd = os.pipe()
         calls = []
 
@@ -442,7 +462,9 @@ class HandoffControlPathTests(unittest.TestCase):
              'pidfd_process_stopped': self.launcher.pidfd_process_stopped,
              'resume_pidfd_if_live': self.launcher.resume_pidfd_if_live,
              'wait_pidfd_process_stopped': self.launcher.wait_pidfd_process_stopped,
-             'tap_interfaces_for_process': values['tap_interfaces_for_process']},
+             'tap_interfaces_for_process': values['tap_interfaces_for_process'],
+             'process_fdinfo_snapshot': lambda *_a, **_kw: (frozenset({17}), frozenset({'ker_test0'}), {17: ('ker_test0',)}),
+             'require_live_process_identity': lambda *_a: None},
             'perform_test_handoff', closure=tuple(cell(values[name]) for name in self.function_code.co_freevars))
         return function, calls, read_fd, write_fd
 
@@ -749,7 +771,7 @@ class HandoffControlPathTests(unittest.TestCase):
         read_fd, write_fd = os.pipe()
         child = subprocess.Popen([os.sys.executable, '-c', 'import time; time.sleep(30)'])
         pidfd = os.pidfd_open(child.pid)
-        metrics = {'exception_endpoint_name': 'ker_test0'}
+        metrics = {'exception_endpoint_name': 'ker_test0', 'geometry': self.handoff_geometry()}
         closed = []
 
         def close(fd):
@@ -777,6 +799,8 @@ class HandoffControlPathTests(unittest.TestCase):
             {'os': os, 'RuntimeError': RuntimeError, 'select': select,
              'signal': signal, 'sys': __import__('sys'),
              'tap_interfaces_for_process': lambda _pid: {'ker_test0'},
+             'process_fdinfo_snapshot': lambda *_a, **_kw: (frozenset({17}), frozenset({'ker_test0'}), {17: ('ker_test0',)}),
+             'require_live_process_identity': lambda *_a: None,
              'signal_pidfd': self.launcher.signal_pidfd,
              'pidfd_process_stopped': self.launcher.pidfd_process_stopped,
              'resume_pidfd_if_live': self.launcher.resume_pidfd_if_live,
