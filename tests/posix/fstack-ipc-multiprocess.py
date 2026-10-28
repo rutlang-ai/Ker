@@ -78,7 +78,7 @@ def main():
         return 77
     modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_mempool_ring.so'))
     require(len(modules) == 1, 'exactly one selected original mempool_ring module is required')
-    nonce = os.urandom(7).hex()
+    nonce = format(int.from_bytes(os.urandom(7), 'big') or 1, 'x')
     evidence = {'profile': 'actual original EAL primary/secondaries, shared hugepages',
                 'nonce': nonce, 'secondary_pids': [], 'cases': [], 'pool_reclaimed': False}
     with tempfile.TemporaryDirectory(prefix='ker-ipc-mp-') as temporary:

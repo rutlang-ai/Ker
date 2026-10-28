@@ -25,7 +25,7 @@ def main():
     for name in ['mempool_ring','net_ring']:
         paths=list(args.pmd_root.glob('dpdk/pmds-*/librte_'+name+'.so'))
         require(len(paths)==1,'one selected original '+name+' module required'); modules.extend(['-d',str(paths[0])])
-    nonce=os.urandom(7).hex()
+    nonce=format(int.from_bytes(os.urandom(7), 'big') or 1, 'x')
     evidence={'profile':'caller original nginx FSM, Ker runtime, original EAL/net_ring','nonce':nonce,
               'secondary_pids':[],'cases':[],'events':[],'pool_reclaimed':False}
     with tempfile.TemporaryDirectory(prefix='ker-controller-') as temporary:

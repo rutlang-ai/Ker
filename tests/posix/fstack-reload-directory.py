@@ -147,7 +147,7 @@ def main():
         found=list(args.pmd_root.glob('dpdk/pmds-*/librte_'+name+'.so'));require(len(found)==1,'one original '+name+' module required');modules+=['-d',str(found[0])]
     libc=ctypes.CDLL(None,use_errno=True);prior=ctypes.c_int()
     require(libc.prctl(37,ctypes.byref(prior),0,0,0)==0 and libc.prctl(36,1,0,0,0)==0,'subreaper setup failed')
-    nonce=os.urandom(7).hex();evidence={'profile':'actual distinct-master original EAL/net_ring, pidfd orphan proof and original user tables','nonce':nonce,'cases':[],'pool_reclaimed':False}
+    nonce=format(int.from_bytes(os.urandom(7), 'big') or 1, 'x');evidence={'profile':'actual distinct-master original EAL/net_ring, pidfd orphan proof and original user tables','nonce':nonce,'cases':[],'pool_reclaimed':False}
     with tempfile.TemporaryDirectory(prefix='ker-directory-') as temporary:
         root=Path(temporary);huge=args.huge_dir/('ker-directory-'+nonce);huge.mkdir(mode=0o700)
         masters=[];actors=[];primary=None

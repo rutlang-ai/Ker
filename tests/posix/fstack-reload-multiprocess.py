@@ -34,7 +34,7 @@ def main():
         found = list(args.pmd_root.glob('dpdk/pmds-*/librte_'+name+'.so'))
         require(len(found) == 1, 'exactly one selected original '+name+' module is required')
         modules.extend(['-d', str(found[0])])
-    nonce = os.urandom(7).hex()
+    nonce = format(int.from_bytes(os.urandom(7), 'big') or 1, 'x')
     evidence = {'profile': 'original EAL primary/secondaries, original net_ring RX/TX, same-master shared block',
                 'nonce': nonce, 'secondary_pids': [], 'cases': [], 'pool_reclaimed': False}
     with tempfile.TemporaryDirectory(prefix='ker-reload-poll-') as temporary:
