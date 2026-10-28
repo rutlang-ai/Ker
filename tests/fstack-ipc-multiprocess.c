@@ -67,6 +67,21 @@ static void provider(void)
                 }
             }
             printf("PUMP {\"handled\":%u}\n", handled); ready();
+        } else if (!strncmp(command, "cancel ", 7)) {
+            unsigned owner, cancelled = 0; CHECK(sscanf(command,"cancel %u",&owner) == 1 && owner);
+            /* The controller sends this only after that exact caller reports
+             * its probe has returned. No active helper retains these objects. */
+            for (unsigned i = 0; i < 5; i++) {
+                void *object;
+                while (!rte_ring_dequeue(endpoints[i].input, &object)) {
+                    ker_ipc_message *message = object;
+                    CHECK(message->ipc_owner_pid == owner && message->ipc_cookie);
+                    CHECK(message->msg_type == FF_RELOAD && message->reload.cmd == FF_RELOAD_CMD_QUERY);
+                    CHECK(!message->original_buf);
+                    rte_mempool_put(pool,message); cancelled++;
+                }
+            }
+            printf("CANCEL {\"cancelled\":%u}\n",cancelled); ready();
         } else if (!strcmp(command, "status\n")) {
             unsigned in, out; totals(&in, &out);
             printf("STATUS {\"available\":%u,\"input\":%u,\"output\":%u}\n",rte_mempool_avail_count(pool),in,out); ready();

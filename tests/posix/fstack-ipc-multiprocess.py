@@ -162,11 +162,16 @@ def main():
                         require(result['orphan'] == 0 and result['requeued'] > 0, 'live reply not preserved')
                         if mode == 'probe':
                             require(result['epoch'] == 77 and result['generation'] == 77, 'failed probe published outputs')
-                        status(62 if mode in ('live','probe') else 63,
-                               inputs=int(mode in ('live','probe')), outputs=1)
+                        # Two proc0 reload endpoints exist (slot0/gen0 and
+                        # slot2/gen1); the original probe must query both.
+                        pending = 2 if mode == 'probe' else int(mode == 'live')
+                        status(63-pending, inputs=pending, outputs=1)
                         reader.command('busy', 'BUSY')
                         require(owner.command(f'recv {kind}', 'RECV')['result'] == 0, 'rightful owner lost exact reply/payload')
-                        if mode in ('live','probe'):
+                        if mode == 'probe':
+                            cancelled = primary.command(f'cancel {reader.child.pid}','CANCEL')
+                            require(cancelled == {'cancelled':2}, 'actual abandoned QUERY objects not reclaimed')
+                        elif mode == 'live':
                             pump(1)
                             late = reader.command(f'recv {kind}', 'RECV')
                             require(late['result'] < 0 and late['orphan'] == 0 and late['lost'] == 0,
