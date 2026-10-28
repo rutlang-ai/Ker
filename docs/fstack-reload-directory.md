@@ -3,8 +3,8 @@
 Five baseline-incomplete source cases are now qualified through unchanged
 upstream runtime, complete source assertions and real EAL/net_ring repository
 and independently installed consumers. The baseline-to-current completion
-count is **36/50**, with 14 still required. Only the five cases below are newly
-complete; remaining directory naming/arbitration and application reload cases
+count is **40/50**, with 10 still required. The five cases below cover user proof; four further [M5 coordinate cases](fstack-reload-coordinates.md) are now
+qualified separately. The remaining P1 live-slot and application reload cases
 retain their prior status.
 
 `ker::reload` now builds the pinned original `lib/ff_reload_gendir.c`, alongside
@@ -53,7 +53,7 @@ foreign masters and users. The caller must first prove that **all** other EAL
 participants have exited, including unregistered observers. After detaching,
 destroy frees the original memzone; a failed free reports an error and leaves
 the local attachment detached. EAL cleanup and all other resources stay caller
-owned. The component exposes 44 public APIs including the previous 28; original
+owned. The component exposes 45 public APIs including the previous 28; original
 helpers remain hidden.
 
 The private fixture compiles the actual production translation unit for raw
@@ -72,10 +72,10 @@ has its own executable selector and CTest:
 | `test_p2_orphan_workers_keep_epoch_live` | `fstack-reload-directory-orphans` |
 | `test_rx15_ring_user_census_and_purge_lock` | `fstack-reload-directory-ring-census` |
 
-The extra primary-probe assertions do not qualify
-`test_ut_nr_m5_probe_epoch_fallback`; its actual routed IPC consumer is still
-required. The primary-EAL create/destroy test and lifecycle guards are extra
-regressions, not additional source cases.
+The extra primary-probe assertions now accompany the separately qualified
+[M5 routed IPC consumer](fstack-reload-coordinates.md). The primary-EAL
+create/destroy test and lifecycle guards are extra regressions, not additional
+source cases.
 
 ## Actual distinct-master consumer
 
@@ -148,6 +148,7 @@ Artifacts are retained outside worktrees at
 
 This proves the named cooperative runtime contracts with the original software
 PMD. It does not qualify physical NIC DMA, imported-Linux traffic through this
-component, TCP continuity, the full cross-master name/handover sweep, recycled
-resource orchestration or complete application reload. The caller still owns
+component, TCP continuity, recycled resource orchestration or complete application reload. The four
+[M5 naming/arbitration/handover source cases](fstack-reload-coordinates.md)
+are separately qualified. The caller still owns
 queue assignment, all packet work, purge policy and process supervision.

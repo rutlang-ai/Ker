@@ -716,3 +716,15 @@ STOPPED/死亡证明、孤儿刷新与过期、ring FIFO 保留/清理/重新准
 当前本轮 **36/50**，累计254 adapted，尚需14个基线未完成案例。
 基线差分的完整源 ID、原状态与 CTest 链接见
 [已完成清单](../tests/fstack-unfinished-completed.json)。
+
+
+### 第十批：M5 目录定位与同代 master 交接（4 项）
+
+`fstack-reload-m5-arbitration`、`-probe`、`-names`、`-handover` 分别运行四项
+未修改的完整原始函数。真实主进程 QUERY 选择实际消费的 FF IPC 队列；每个仓库/
+安装 profile 完成166次原版消息往返，其中160项覆盖两个master × 两代 ×
+四个process ID × 十种消息类型。同代 master 通过独立状态块与目录完成3/3原版
+PMD收发、claim前保持停用、活目标拒绝回退、实际目标master死亡后恢复旧服务。
+两类池均63/63回收，guest12全部九组运行验证与两个旧示例通过并正常关机；
+见[M5合同及散列](fstack-reload-coordinates.md)。目标当前 **40/50**，尚需10项；
+[完整源ID差分](../tests/fstack-unfinished-completed.json)不计重复运行与额外回归。

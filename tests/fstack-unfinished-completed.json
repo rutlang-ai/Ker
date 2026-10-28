@@ -1,8 +1,8 @@
 {
   "baseline_commit": "7f46febcade4166c5820f79b204d5a2b9413408f",
   "target": 50,
-  "newly_completed": 36,
-  "remaining": 14,
+  "newly_completed": 40,
+  "remaining": 10,
   "status": "in-progress",
   "cases": [
     {
@@ -141,6 +141,63 @@
       ]
     },
     {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_gendir_arbitration",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-m5-arbitration",
+          "provenance_case": "fstack-reload-m5-arbitration"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-arbitration"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_probe_epoch_fallback",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-m5-probe",
+          "provenance_case": "fstack-reload-m5-probe"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-probe"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
+      "baseline": "partial",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "native-fstack-session-namespace-names",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "native-fstack-session-namespace-isolation",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "native-fstack-session-namespace-recreate",
+          "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "fstack-reload-m5-names",
+          "provenance_case": "fstack-reload-m5-names"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-names"
+        }
+      ]
+    },
+    {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
       "baseline": "blocked",
       "now": "scenario-adapted",
@@ -152,6 +209,21 @@
         {
           "ctest": "fstack-ipc-multiprocess",
           "provenance_case": "fstack-ipc-legacy-names"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_handover_sequence",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-m5-handover",
+          "provenance_case": "fstack-reload-m5-handover"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-handover"
         }
       ]
     },

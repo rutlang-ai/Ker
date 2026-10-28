@@ -1135,7 +1135,7 @@ if(KER_WITH_DPDK)
     add_test(NAME fstack-reload-m5-handover COMMAND ker-fstack-reload-directory-test m5-handover)
     set_tests_properties(fstack-reload-m5-arbitration fstack-reload-m5-probe
         fstack-reload-m5-names fstack-reload-m5-handover PROPERTIES TIMEOUT 30
-        LABELS "fstack;fstack-reload;directory-foundation"
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
 

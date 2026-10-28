@@ -280,6 +280,17 @@
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: ini whitespace. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_ini_whitespace. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
+    "fstack-reload-m5-names": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_cross_master_name_isolation"
+      ],
+      "ker_ctests": [
+        "fstack-reload-m5-names",
+        "fstack-reload-coordinate-multiprocess"
+      ],
+      "adaptation": "All unchanged original process0/1/7/127, gen0/1, input and FF_SYSCTL..FF_RELOAD output-family, e1/e2 isolation, legacy epoch0/NONE alias and name-length assertions. Real directory epochs4/5 use slots1/2: each master has88 original FF-named rings. The full160-coordinate matrix traverses actual original ker::ipc send/receive, typed DPDK pool and secondary provider, validating exact mbuf-independent message identity, PID/cookie, nonce and payload. All352 ring lifetimes across four epochs are created/destroyed with no alias or outstanding request. Non-QUERY command execution returns EOPNOTSUPP; transport and naming, not FreeBSD command handlers, are qualified. tests/fstack-reload-m5-source.inc contains the four complete unchanged original functions and is byte-checked against the pinned snapshot; only the assertion host is adapted. Independent source selectors pass Debug/static and Release/shared. Actual repository and installed public-API consumers pass guest12 at candidate 3f2901371678d0923835ebdc0612d8c4fc372796, each with4masterparents/5secondaryEALlifetimes,166typedIPCroundtrips including the full160-coordinate sweep,88rings per epoch and352create/destroy lifetimes, same-generation0ownership, PMDRX/TX3/3, callbacks/received[2,0,1,0], both original pools63/63, held callback and real-master-death rollback. All prior7runtime profiles and2examples rerun and pass. Result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest12/actual-result-attempt1.json SHA256 34827d1f16daa4117b398599f7096b8e7da121638af1a86976758bfa46cbf4fa binds source/binary/installedCMake/link/image/serial hashes and normal power-down/QEMU0. Host MP skip77 is not completion evidence. See docs/fstack-reload-coordinates.md. Names/typed transport do not imply execution of FreeBSD control commands or full reload."
+    },
     "multiseg-copy": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
       "source_case": "test_ff_dpdk_if_send_multiseg",
@@ -1044,6 +1055,17 @@
         "native-fstack-session-drain-peer"
       ],
       "adaptation": "This maps only test_it_a14_usr2_drain_peer_semantics. The pinned TC-7 source starts a drain-hold worker and a peer-sampling worker, reaps the old worker’s master while the worker stays alive, requires peer1=1 while its heartbeat stamp is fresh, then releases that worker and requires peer1=0 after the source freshness interval. Ker runs two real EAL secondaries under the authenticated resident with distinct epochs/slots but the same source generation0/process0. Only the exact ATTACHED worker can enter drain mode; its own monotonic heartbeat remains valid after master death, and PEER_STATUS selects its fresh epoch/generation. Exact worker death stops heartbeat updates; after the 2-second freshness window PEER_STATUS returns caller-epoch/opposite-generation fallback and clears only the advisory draining bit. The same production adapter test also checks reload-active suppression, coherent true-to-true peer replacement, ordinary worker exit on master death, exact pidfd cleanup and a 511-object resource baseline. The F-M5-1 helper/mirror proof supports the fallback-coordinate oracle but is not a second catalog mapping. The combined CMake-built guest5 evidence record is usr2-drain-peer-guest5-final/run-evidence-attemptusr2final5.json (SHA256 8bccb9243a48f257f0c2b4ce5d946a9af17b6f272f0e70149818cf5227bf133e); all five bound guest suites exited zero and the guest powered down. This TC-7 mapping does not cover P1 detach retention, nonowner/foreign TX, flow-map, external packet TX, established TCP continuity or full reload; P1 queue-ownership and peer-TX retention are recorded separately. No F-Stack protocol implementation or upstream source is modified."
+    },
+    "fstack-reload-m5-arbitration": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_gendir_arbitration"
+      ],
+      "ker_ctests": [
+        "fstack-reload-m5-arbitration",
+        "fstack-reload-coordinate-multiprocess"
+      ],
+      "adaptation": "All unchanged original directory install/layout, initial claim, RX/active/observation ownership, same-master other-gen and same-gen foreign-master gates, nonowner/third-coordinate refusal, peer selection and fresh/stale orphan/window/block-mirror assertions. A public peer observation adapter drives actual caller release-peer selection. Real same-gen masters borrow distinct state blocks; only the directory disambiguates their hardware and observer ownership. Target private-block mirroring cannot clear a transferred park order before explicit claim. tests/fstack-reload-m5-source.inc contains the four complete unchanged original functions and is byte-checked against the pinned snapshot; only the assertion host is adapted. Independent source selectors pass Debug/static and Release/shared. Actual repository and installed public-API consumers pass guest12 at candidate 3f2901371678d0923835ebdc0612d8c4fc372796, each with4masterparents/5secondaryEALlifetimes,166typedIPCroundtrips including the full160-coordinate sweep,88rings per epoch and352create/destroy lifetimes, same-generation0ownership, PMDRX/TX3/3, callbacks/received[2,0,1,0], both original pools63/63, held callback and real-master-death rollback. All prior7runtime profiles and2examples rerun and pass. Result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest12/actual-result-attempt1.json SHA256 34827d1f16daa4117b398599f7096b8e7da121638af1a86976758bfa46cbf4fa binds source/binary/installedCMake/link/image/serial hashes and normal power-down/QEMU0. Host MP skip77 is not completion evidence. See docs/fstack-reload-coordinates.md. Names/typed transport do not imply execution of FreeBSD control commands or full reload."
     },
     "flow-owner-receive": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -1914,13 +1936,16 @@
       ],
       "adaptation": "A complete source-shaped IPv4/TCP destination80 matches the actual port set across real mbuf segments. Production-worker accept/reject runs also require exact TCP replies from the correct host/native original Linux sockets. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
     },
-    "fstack-config-nonnumeric-ceiling": {
+    "fstack-reload-directory-release": {
       "source_file": "tests/unit/test_ff_config.c",
-      "source_case": "test_mtu_max_mtu_non_numeric_fails",
-      "ker_ctests": [
-        "fstack-config-nonnumeric-ceiling"
+      "source_case": [
+        "test_p2_release_epoch_needs_proof"
       ],
-      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config nonnumeric ceiling. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_nonnumeric_ceiling. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
+      "ker_ctests": [
+        "fstack-reload-directory-release",
+        "fstack-reload-directory-multiprocess"
+      ],
+      "adaptation": "Exact original bounded release refusal, unchanged owner and counter, then proven owner-generation flip assertions. Actual EAL release waits the unchanged production5s budget and refuses both a held original PMD callback and a returned-but-unacknowledged lease. STOPPED allows epoch/generation release, claim and reversal; a live reverse peer also refuses, all local parked markers roll back on failure, and counters are asserted. Tests compile the actual Ker runtime TU for private source preconditions; the complete original P2/RX-15 test excerpt is byte-checked against the pinned upstream snapshot, with CHECK replacing only the assertion host. Actual repository and independently installed public-API consumers pass in guest10 at candidate fff309ac0118683cc848e7d086aa5bca132e97ab, each with two real master parents, four actual secondary EAL lifetimes, master SIGKILL/reap and exact adopted-worker pidfd death, PMD RX/TX4/4, callbacks[6,1,2,0], received[1,1,2,0], six drain-record mbufs reclaimed and pool63/63. Three production5s release refusals and two stale-user reclaim refusals yield counter5 without changing it on success or live-master refusal. All old five runtime profiles/examples also pass. Actual result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest10/actual-result-attempt1.json SHA256 ebeb8e2e05f69e30934434572f1c1d0118f631b13183d1af9d710187bbdf4d5a binds source, binary, installed CMake/source/link inputs, image and serial hashes, all child exits and normal guest power-down/QEMU0. Debug/static and Release/shared source CTests pass. Host shared-hugepage skip77 is not completion evidence. See docs/fstack-reload-directory.md; this is original software PMD and cooperative runtime ownership, not physical hardware, TCP or full reload."
     },
     "native-fstack-launcher-config": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
@@ -1950,16 +1975,13 @@
       ],
       "adaptation": "Eighteen pinned F-Stack INI scenarios adapted to the actual Ker launcher configuration reader: known sections/options, multiple sections, comments and whitespace, empty text/value, missing final newline, colon delimiter, valid UTF-8 BOM, malformed syntax, missing bracket, bare lines, real open-file/filename input, missing file and malformed BOM byte rejection. Python configparser exceptions and UTF-8 decode errors replace F-Stack integer return codes and callback records; typed Ker configuration, not direct F-Stack config-file/API compatibility. One multiline scenario remains partial because Ker joins lines into an EAL string instead of invoking a handler per line. No sectionless globals, arbitrary handler rejection/userdata, NULL FILE C ABI or section-name truncation claim; supported long sysctl-key retention is qualified separately. Ker extensions test strict unknown/default rejection and final-value duplicate-key precedence, interpolation disabled, CLI and negative-boolean overrides, config-relative paths, app argument isolation and pre-launch configuration rejection. Separate native-fstack-launcher-config-interop starts real DPDK/native Linux TCP workers in both roles using file-provided network/EAL/log/capture settings; validates kernel opens, TX/RX, zero outstanding, capture/log files and explicit CLI port/stats overrides. Its INI also repeats [sysctl] sections in A-B-A order for ip_unprivileged_port_start and ip_local_port_range; both native TCP roles prove the final surviving range-then-boundary order is accepted by original Linux."
     },
-    "fstack-reload-directory-release": {
+    "fstack-config-nonnumeric-ceiling": {
       "source_file": "tests/unit/test_ff_config.c",
-      "source_case": [
-        "test_p2_release_epoch_needs_proof"
-      ],
+      "source_case": "test_mtu_max_mtu_non_numeric_fails",
       "ker_ctests": [
-        "fstack-reload-directory-release",
-        "fstack-reload-directory-multiprocess"
+        "fstack-config-nonnumeric-ceiling"
       ],
-      "adaptation": "Exact original bounded release refusal, unchanged owner and counter, then proven owner-generation flip assertions. Actual EAL release waits the unchanged production5s budget and refuses both a held original PMD callback and a returned-but-unacknowledged lease. STOPPED allows epoch/generation release, claim and reversal; a live reverse peer also refuses, all local parked markers roll back on failure, and counters are asserted. Tests compile the actual Ker runtime TU for private source preconditions; the complete original P2/RX-15 test excerpt is byte-checked against the pinned upstream snapshot, with CHECK replacing only the assertion host. Actual repository and independently installed public-API consumers pass in guest10 at candidate fff309ac0118683cc848e7d086aa5bca132e97ab, each with two real master parents, four actual secondary EAL lifetimes, master SIGKILL/reap and exact adopted-worker pidfd death, PMD RX/TX4/4, callbacks[6,1,2,0], received[1,1,2,0], six drain-record mbufs reclaimed and pool63/63. Three production5s release refusals and two stale-user reclaim refusals yield counter5 without changing it on success or live-master refusal. All old five runtime profiles/examples also pass. Actual result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest10/actual-result-attempt1.json SHA256 ebeb8e2e05f69e30934434572f1c1d0118f631b13183d1af9d710187bbdf4d5a binds source, binary, installed CMake/source/link inputs, image and serial hashes, all child exits and normal guest power-down/QEMU0. Debug/static and Release/shared source CTests pass. Host shared-hugepage skip77 is not completion evidence. See docs/fstack-reload-directory.md; this is original software PMD and cooperative runtime ownership, not physical hardware, TCP or full reload."
+      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config nonnumeric ceiling. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_nonnumeric_ceiling. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
     "native-fstack-session-orphan-safety": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
@@ -2063,6 +2085,17 @@
     "native-fstack-udp-reuseport": {
       "source_example": "adapter/syscall/main_stack_udp.c",
       "adaptation": "Ker-specific UDP reuseport extension of the pinned UDP/epoll example, not an upstream F-Stack test or equivalence claim. Host-reference and native client/server modes use independent Linux peers over DPDK net_tap/veth. Two server sockets enable/query SO_REUSEPORT before binding the same explicit local endpoint while SO_REUSEADDR remains disabled; an ordinary third socket must fail bind with EADDRINUSE. Two clients bind distinct nonzero source ports A/B. The first server member connects to A with checked peer tuple, the second remains unconnected. A request must arrive only on the connected member and receive its default-destination reply; B must arrive only on the unconnected member. After receiving B, the server closes the connected member and verifies no residual epoll event before replying to B, which acts as a positive retirement barrier without fixed sleeps. Subsequent A/B requests must both arrive on the surviving unconnected member. Tokens, source tuples, poll/epoll readiness and full 64-bit member tags are checked; queues drain to EAGAIN and surviving/client sockets remain unconnected. No assertion requires balanced hashing. Native instances require UDP InDatagrams/OutDatagrams at least four each, zero UDP input/no-port errors, DPDK TX/RX and zero outstanding buffers. No protocol/runtime changes, cross-UID policy, BPF selection, cross-process workers, queued-packet migration or broadcast/multicast group distribution coverage is introduced."
+    },
+    "fstack-reload-m5-handover": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_cross_master_handover_sequence"
+      ],
+      "ker_ctests": [
+        "fstack-reload-m5-handover",
+        "fstack-reload-coordinate-multiprocess"
+      ],
+      "adaptation": "All unchanged original two-private-block same-generation source assertions: peer publication, park-before-transfer, new claim/unpark, old-owner denial, live-new-master rollback refusal, dead-epoch reclaim, old target/block reset and no steal by surviving target workers. Actual two same-gen masters use independent shared blocks and original net_ring queues. A held callback prevents bounded release; the caller selects its foreign peer through the public original peer adapter. Polling before explicit claim preserves park. Real target-master death leaves its worker adopted and alive; stopped/stale proof permits rollback, the old owner resumes original PMD RX/TX and the surviving target remains denied. tests/fstack-reload-m5-source.inc contains the four complete unchanged original functions and is byte-checked against the pinned snapshot; only the assertion host is adapted. Independent source selectors pass Debug/static and Release/shared. Actual repository and installed public-API consumers pass guest12 at candidate 3f2901371678d0923835ebdc0612d8c4fc372796, each with4masterparents/5secondaryEALlifetimes,166typedIPCroundtrips including the full160-coordinate sweep,88rings per epoch and352create/destroy lifetimes, same-generation0ownership, PMDRX/TX3/3, callbacks/received[2,0,1,0], both original pools63/63, held callback and real-master-death rollback. All prior7runtime profiles and2examples rerun and pass. Result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest12/actual-result-attempt1.json SHA256 34827d1f16daa4117b398599f7096b8e7da121638af1a86976758bfa46cbf4fa binds source/binary/installedCMake/link/image/serial hashes and normal power-down/QEMU0. Host MP skip77 is not completion evidence. See docs/fstack-reload-coordinates.md. Names/typed transport do not imply execution of FreeBSD control commands or full reload."
     },
     "arp-concurrent-ring": {
       "source_file": "tests/arp-concurrent-ring.c",
@@ -2206,6 +2239,17 @@
         "native-fstack-epoll"
       ],
       "adaptation": "The zero-data/no-EOF read-readiness scenario is exercised with actual zero-length UDP datagrams instead of synthetic FreeBSD kqueue events. Eighteen combinations cover IPv4/IPv6 loopback, LT/ET/ONESHOT and epoll_wait/epoll_pwait/epoll_pwait2. Require EPOLLIN with the full 64-bit event tag and no HUP/RDHUP/ERR while FIONREAD reports zero; MSG_PEEK preserves the empty datagram; LT repeats readiness, ET/ONESHOT do not repeat, and ONESHOT explicitly rearms the unread datagram. Normal recv consumes it, the next recv yields EAGAIN, and a later one-byte datagram delivers readiness and data. The same program runs on independent host Linux and through libker-posix/original Linux; output must match. Native IPv4 UDP counters require at least 18 sent/received datagrams and zero outstanding worker mbufs; IPv6 coverage is native loopback, not external IPv6 deployment. Separate existing native-fstack-udp-interop now explicitly rejects UDP HUP/RDHUP/ERR across independent IPv4 host peers including empty payloads; this extension is not an additional upstream case. No upstream source edits or protocol implementation."
+    },
+    "fstack-reload-m5-probe": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_probe_epoch_fallback"
+      ],
+      "ker_ctests": [
+        "fstack-reload-m5-probe",
+        "fstack-reload-coordinate-multiprocess"
+      ],
+      "adaptation": "All unchanged original primary QUERY fallback assertions: newest live epoch/generation, next newest after retirement, epoch0 with no live master, explicit active word outranking newer peers. Actual primary QUERY selects the exact original FF IPC address; process127 sends a typed QUERY to the chosen EAL secondary and receives its original PID/cookie/payload-preserving reply. Real master/worker lifetimes end between fallback stages, and a serving older master wins over the newer live master. tests/fstack-reload-m5-source.inc contains the four complete unchanged original functions and is byte-checked against the pinned snapshot; only the assertion host is adapted. Independent source selectors pass Debug/static and Release/shared. Actual repository and installed public-API consumers pass guest12 at candidate 3f2901371678d0923835ebdc0612d8c4fc372796, each with4masterparents/5secondaryEALlifetimes,166typedIPCroundtrips including the full160-coordinate sweep,88rings per epoch and352create/destroy lifetimes, same-generation0ownership, PMDRX/TX3/3, callbacks/received[2,0,1,0], both original pools63/63, held callback and real-master-death rollback. All prior7runtime profiles and2examples rerun and pass. Result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest12/actual-result-attempt1.json SHA256 34827d1f16daa4117b398599f7096b8e7da121638af1a86976758bfa46cbf4fa binds source/binary/installedCMake/link/image/serial hashes and normal power-down/QEMU0. Host MP skip77 is not completion evidence. See docs/fstack-reload-coordinates.md. Names/typed transport do not imply execution of FreeBSD control commands or full reload."
     },
     "native-fstack-tcp-user-timeout": {
       "source_file": "tests/unit/test_ff_host_interface.c",
