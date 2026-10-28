@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include <ker/posix.h>
 #include "native-buffer.h"
+#include "lkl-overlay/arch/lkl/include/asm/ker-host-usercopy.h"
 #include "fd-table.h"
 #include "syscall-result.h"
 #include <errno.h>
@@ -389,13 +390,20 @@ int ker_native_buffer_send_begin(int native, const struct iovec *iov, size_t cou
     if (!error) {
         pthread_mutex_lock(&lock);
         for (size_t i = 0; i < count; i++) {
-            if (!iov[i].iov_len) continue;
-            uintptr_t start = (uintptr_t)iov[i].iov_base;
+            struct iovec vector;
+            uintptr_t vectors = (uintptr_t)iov;
+            if (i > (UINTPTR_MAX - vectors) / sizeof(vector) ||
+                ker_host_usercopy(&vector, (void *)(vectors + i * sizeof(vector)), sizeof(vector), 0)) {
+                error = -EFAULT;
+                break;
+            }
+            if (!vector.iov_len) continue;
+            uintptr_t start = (uintptr_t)vector.iov_base;
             bool found = false;
             for (struct mapping *item = mappings; item; item = item->next) {
                 uintptr_t base = (uintptr_t)item->address;
                 if (start >= base && start - base < item->size &&
-                    iov[i].iov_len <= item->size - (start - base)) { found = true; break; }
+                    vector.iov_len <= item->size - (start - base)) { found = true; break; }
             }
             if (!found) { error = -EFAULT; break; }
         }
