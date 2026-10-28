@@ -4337,9 +4337,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker requires known named sections; F-Stack sectionless key callbacks are not implemented.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-no-section",
+          "provenance_case": "fstack-ini-callback-no-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_invalid_syntax",
@@ -4360,9 +4365,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker validates its typed settings directly; arbitrary caller handlers and handler-return-zero semantics are not exposed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-handler-rejection",
+          "provenance_case": "fstack-ini-callback-handler-rejection"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bom_utf8",
@@ -4399,9 +4409,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker opens configuration paths and reads valid text streams; no F-Stack C NULL FILE-pointer entrypoint is provided.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-null-file",
+          "provenance_case": "fstack-ini-callback-null-file"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_filename_not_exist",
@@ -4438,9 +4453,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker rejects unknown section names instead of silently truncating names to the F-Stack fixed buffer size.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-long-section",
+          "provenance_case": "fstack-ini-callback-long-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_key_name",
@@ -4465,9 +4485,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The Ker configuration schema has no opaque caller handler/userdata callback interface.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-user-data",
+          "provenance_case": "fstack-ini-callback-user-data"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_zero_byte_input",
@@ -4520,15 +4545,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-launcher-config",
-          "provenance_case": "native-fstack-launcher-config"
+          "ctest": "fstack-ini-callback-multiline",
+          "provenance_case": "fstack-ini-callback-multiline"
         }
-      ],
-      "remaining": "Ker combines continuation lines into one EAL string. F-Stack invokes the handler separately for the initial value and every continuation line; that callback sequence is not implemented."
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_colon_separator",

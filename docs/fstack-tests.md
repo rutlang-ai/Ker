@@ -596,3 +596,31 @@ FreeBSD/F-Stack C 回调和结构布局、进程类型、默认 MTU 开关等差
 
 该组在 `BUILD_TESTING=ON` 时始终注册，DPDK 关闭也可运行，不需要 root、
 namespace、EAL、PMD 或完整原生内核。
+
+## 未完成案例迁移：原始 INI 回调接口
+
+新增独立 `ker::ini` CMake 组件和 `<ker/ini.h>`。组件从测试所用的固定
+F-Stack revision 导入未经修改的 inih 源码及头文件；Ker 只提供导出符号和
+参数保护。导入散列与许可证位于 `third_party/inih/`，`fstack-ini-import`
+逐字节核对。上游解析行为没有通过自写解析器或成功 stub 替代。
+
+`ker_ini_parse_stream`、`ker_ini_parse_file`、`ker_ini_parse` 分别接收
+调用方 reader/FILE 和文件路径，保持同步 borrowed 字符串、原始 user 指针、
+逐行 continuation 回调、handler 拒绝时首个错误行号和调用方流所有权。
+`ker-ini-events` 示例展示调用方消费回调；安装包导出 `ker::ini` 和公共头文件。
+它是低层读取 API；`ker-run` 原有的严格网络配置 schema 不因此接受任意字段。
+
+以下原先的五个 blocked 和一个 partial 案例现由各自的真实 CTest 完成：
+
+| 上游 `test_ff_ini_parser.c` 案例 | CTest 后缀（前缀 `fstack-ini-callback-`） |
+|---|---|
+| `test_ini_parse_stream_no_section` | `no-section` |
+| `test_ini_parse_stream_handler_returns_zero` | `handler-rejection` |
+| `test_ini_parse_file_null` | `null-file` |
+| `test_ini_parse_stream_long_section_name` | `long-section` |
+| `test_ini_parse_stream_user_data_passed` | `user-data` |
+| `test_ini_parse_stream_multiline_value_continuation` | `multiline` |
+
+以 `7f46febca` 的 218 项完成数为本轮基线，本批新增完成 **6/50** 个不同的
+未完成源案例，累计 224 项。其余 44 项目标仍未完成。此计数没有纳入已有
+场景的补充测试，也不将导入散列检查或示例单独计为完成案例。

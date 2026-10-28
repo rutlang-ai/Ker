@@ -416,30 +416,6 @@
       "issue": "https://github.com/rutlang-ai/Ker/issues/229"
     },
     {
-      "id": "ini-callback-contract",
-      "title": "Resolve INI callback, userdata and section semantics",
-      "disposition": "contract-review",
-      "reason": "Ker validates a typed Python configuration stream. F-Stack arbitrary C handler/userdata invocation, NULL FILE pointer behavior, truncation and continuation callback sequences are not that API.",
-      "evidence": [
-        "tools/ker-run.py",
-        "tests/upstream/fstack/tests/unit/test_ff_ini_parser.c"
-      ],
-      "acceptance": [
-        "Decide each source callback/NULL/truncation assertion explicitly rather than treating parse-result similarity as API equivalence.",
-        "Keep useful typed continuation/validation behavior and actual launcher tests; add a public callback interface only if a real Ker consumer requires it.",
-        "Document incompatible cases with exact source IDs and maintain the existing strict boundary."
-      ],
-      "cases": [
-        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
-        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
-        "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
-        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
-        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
-        "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/230"
-    },
-    {
       "id": "thread-context-abi",
       "title": "Resolve FreeBSD thread context and join-result assertions",
       "disposition": "architecture-specific",

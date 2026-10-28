@@ -945,3 +945,22 @@ add_test(NAME fstack-config-oversized-jumbo
         SourceCases.test_config_oversized_jumbo)
 set_tests_properties(fstack-config-oversized-jumbo PROPERTIES
     TIMEOUT 15 LABELS "fstack;fstack-config-cases" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+# Exact callback behavior missing from the strict launcher INI schema.
+add_executable(ker-fstack-ini-callback-test fstack-ini-callback.c)
+target_link_libraries(ker-fstack-ini-callback-test PRIVATE ker::ini)
+target_compile_options(ker-fstack-ini-callback-test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME fstack-ini-callback-no-section COMMAND ker-fstack-ini-callback-test no-section)
+set_tests_properties(fstack-ini-callback-no-section PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-handler-rejection COMMAND ker-fstack-ini-callback-test handler-rejection)
+set_tests_properties(fstack-ini-callback-handler-rejection PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-null-file COMMAND ker-fstack-ini-callback-test null-file)
+set_tests_properties(fstack-ini-callback-null-file PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-long-section COMMAND ker-fstack-ini-callback-test long-section)
+set_tests_properties(fstack-ini-callback-long-section PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-user-data COMMAND ker-fstack-ini-callback-test user-data)
+set_tests_properties(fstack-ini-callback-user-data PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-callback-multiline COMMAND ker-fstack-ini-callback-test multiline)
+set_tests_properties(fstack-ini-callback-multiline PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-newly-adapted")
+add_test(NAME fstack-ini-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ini-import.py")
+set_tests_properties(fstack-ini-import PROPERTIES TIMEOUT 15 LABELS "provenance")
