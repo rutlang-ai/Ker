@@ -215,7 +215,11 @@ int ker_ipc_attach(struct rte_mempool *pool)
 int ker_ipc_detach(void)
 {
     if (!inited) return 0;
-    if (ff_pending_msg || ff_ipc_stash_n || rte_mempool_in_use_count(message_pool)) return -EBUSY;
+    if (ff_pending_msg) return -EBUSY;
+    /* Best effort only: a retained foreign reply still belongs to its live
+     * owner, and remains in-use until that owner reclaims it. */
+    (void)ff_ipc_stash_flush(NULL);
+    if (ff_ipc_stash_n || rte_mempool_in_use_count(message_pool)) return -EBUSY;
     inited = 0;
     message_pool = NULL;
     memset(ker_ipc_stash_origins, 0, sizeof(ker_ipc_stash_origins));
@@ -257,8 +261,15 @@ int ker_ipc_probe(uint32_t *epoch, int *generation)
 {
     if (!inited) return -ENOTCONN;
     if (ff_proc_id) return -EOPNOTSUPP;
-    if (ff_pending_msg || ff_ipc_stash_n) return -EBUSY;
-    return ff_ipc_probe_coord(epoch, generation);
+    if (ff_pending_msg) return -EBUSY;
+    /* Probe uses its own dequeue loop, so service replies retained by an
+     * earlier probe/receive before treating the bounded stash as busy. */
+    (void)ff_ipc_stash_flush(NULL);
+    if (ff_ipc_stash_n) return -EBUSY;
+    int result = ff_ipc_probe_coord(epoch, generation);
+    /* Probe itself can encounter foreign replies on several candidate rings. */
+    (void)ff_ipc_stash_flush(NULL);
+    return result;
 }
 void ker_ipc_reply_stats(uint64_t *requeued, uint64_t *orphan, uint64_t *lost)
 {
