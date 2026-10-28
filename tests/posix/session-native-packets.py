@@ -1735,6 +1735,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     time.sleep(0.005)
                 else:raise RuntimeError('runner did not expose dead-producer/held-consumer barrier')
                 committed=after['handoff_frame_death_waiting'].get('committed',{})
+                unrelated_committed=after['handoff_frame_death_waiting'].get('unrelated_committed',[])
+                unrelated_drained=after['handoff_frame_death_waiting'].get('unrelated_drained',[])
                 deferred=record(primary,'KER_SESSION_TEST_REAP_DEFERRED')
                 require(committed.get('generation')==0 and committed.get('queue')==0 and
                     isinstance(committed.get('object_index'),int) and deferred.get('generation')==0 and
@@ -1773,6 +1775,17 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     drain.get('object_index')==committed.get('object_index') and
                     drain.get('packet_pointer')==committed.get('packet_pointer') and
                     drain.get('frame_hex')==committed.get('frame_hex') and drain.get('tx_after')==0 and
+                    len(unrelated_committed)==len(unrelated_drained)<=8 and
+                    all(commit.get('frame_hex')==drained.get('frame_hex') and
+                        commit.get('object_index')==drained.get('object_index') and
+                        commit.get('pool_tag')==drained.get('pool_tag') and
+                        commit.get('packet_pointer')==drained.get('packet_pointer') and
+                        commit.get('length')==drained.get('length') and
+                        commit.get('tx_lease_id')==drained.get('lease_id')
+                        for commit,drained in zip(unrelated_committed,unrelated_drained)) and
+                    drain.get('unrelated_count')==len(unrelated_committed) and
+                    drain.get('tx_before')==len(unrelated_committed)+1 and
+                    drain.get('pool_in_use_after',-1)+len(unrelated_committed)+1==drain.get('pool_in_use_before') and
                     proof.get('final_census',{}).get('process')==1 and
                     active_consumer_kept_handoff_owner(proof,after['handoff']),
                     'active live consumer did not retain and release the exact committed packet: '+repr(proof))
