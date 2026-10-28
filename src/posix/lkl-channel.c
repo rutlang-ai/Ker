@@ -320,6 +320,7 @@ __attribute__((constructor)) static void initialize(void)
 int ker_native_finalize(void)
 {
     if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return 0;
+    int stdio_error = ker_native_stdio_shutdown();
     ker_fd_close_all();
     int drained = ker_native_drain(drain_timeout);
     if (drained) {
@@ -366,6 +367,11 @@ int ker_native_finalize(void)
     long halted = lkl_sys_halt();
     lkl_cleanup();
     if (!drained && halted) drained = halted < 0 ? (int)halted : -EIO;
+    if (!drained && stdio_error) {
+        static const char message[] = "ker: buffered native stdio could not flush before shutdown\n";
+        (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
+        drained = stdio_error;
+    }
     const char *status = drained ? "KER_NATIVE_INCOMPLETE\n" : "KER_NATIVE_DONE\n";
     (void)syscall(SYS_write, startup_fd, status, strlen(status));
     syscall(SYS_close, startup_fd);

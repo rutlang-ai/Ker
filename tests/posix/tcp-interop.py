@@ -76,6 +76,27 @@ def client(command, env):
     return result.stdout
 
 
+def stdio_exit(args, launcher, work, env, log):
+    if not args.stdio_exit_app:
+        return
+    for native in (False, True):
+        port = 28790 + int(native)
+        app = str(args.stdio_exit_app)
+        stats_path = work / 'stdio-exit.json'
+        command = [app, 'client', '198.18.0.1', str(port)]
+        if native:
+            command = [*launcher, '--stats', str(stats_path), '--', *command]
+        captured = []
+        with server([app, 'server', '198.18.0.1', str(port)], port, log, env, captured=captured):
+            client(command, env)
+        if 'PASS: independent host received exact buffered exit payload and EOF' not in ''.join(captured):
+            raise RuntimeError('stdio exit peer did not validate payload/EOF')
+        if native:
+            stats = json.loads(stats_path.read_text())
+            if stats['native']['active_opens'] != 1 or not stats['tx'] or not stats['rx'] or stats['outstanding']:
+                raise RuntimeError('stdio exit did not use original TCP or leaked: ' + str(stats))
+
+
 def validate_fault_evidence(client_output, native_stats, client_endpoint):
     match = re.search(r"TCP_INFO total_retrans=(\d+)", client_output)
     if not match or int(match[1]) == 0:
@@ -2248,6 +2269,7 @@ def inside(args):
                 stream_compat(args, launcher, work, env, log)
                 application_compat(args, launcher, work, env)
                 udp_cork(args, launcher, work, env, log)
+                stdio_exit(args, launcher, work, env, log)
                 if args.fd_app:
                     stats_path = work / 'fd-app.json'
                     fd_output = client([*launcher, '--stats', str(stats_path), '--', str(args.fd_app)], env)
@@ -2309,6 +2331,7 @@ def main():
     parser.add_argument('--udp-cork-app', type=Path)
     parser.add_argument('--fd-app', type=Path)
     parser.add_argument('--fd-coexistence', action='store_true')
+    parser.add_argument('--stdio-exit-app', type=Path)
     parser.add_argument('--fd-payload-faults', action='store_true')
     parser.add_argument('--fd-reuseport-filter', action='store_true')
     parser.add_argument('--dualstack-app', type=Path)

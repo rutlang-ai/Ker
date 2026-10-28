@@ -5,6 +5,7 @@
         ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc; ker_posix_buffer_write;
         ker_posix_buffer_writer_create; ker_posix_buffer_writer_create_segmented; ker_posix_buffer_writer_segment; ker_posix_buffer_writer_append;
         ker_posix_buffer_writer_view; ker_posix_buffer_writer_destroy; ker_posix_buffer_writer_send;
+        fdopen; _IO_fdopen; fileno; fileno_unlocked; freopen; freopen64;
         posix_spawn; posix_spawnp; system; __libc_system; popen; _IO_popen;
         socket; bind; connect; listen; accept; accept4; shutdown;
         getsockname; getpeername; getsockopt; setsockopt; sockatmark;
