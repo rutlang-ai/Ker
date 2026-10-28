@@ -62,12 +62,15 @@ def main():
                 for _ in slots:
                     metadata,fds=master.receive();actor=Actor(master,metadata,fds);actors.append(actor);group.append(actor)
                 held_lock=None
+                contention={}
                 if synchronized:
                     # Hold the same production lock while both real secondary
                     # EALs reach the attach call boundary. Without adapter
                     # serialization they would attach and notify the broker.
                     runtime_dir=root/'dpdk'/('coordinates-'+nonce)
-                    held_lock=(runtime_dir/'ker-reload-gendir-register.lock').open('a+b')
+                    lock_path=runtime_dir/'ker-reload-gendir-register.lock'
+                    held_lock=lock_path.open('a+b')
+                    lock_stat=os.fstat(held_lock.fileno())
                     try:
                         fcntl.flock(held_lock.fileno(),fcntl.LOCK_EX)
                         deadline=time.monotonic()+10
@@ -75,11 +78,18 @@ def main():
                             require(time.monotonic()<deadline,'siblings did not reach attach barrier')
                             time.sleep(.001)
                         (barrier/'go').touch()
+                        go_released_at=time.monotonic()
                         while not all((barrier/f'attempt-{s}').exists() for s in slots):
                             require(time.monotonic()<deadline,'siblings did not reach attach call boundary')
                             time.sleep(.001)
                         readable,_,_=select.select([a.child.stdout for a in group],[],[],.1)
                         require(not readable,'worker attached while registration lock was held')
+                        contention={'lock_path':str(lock_path),'lock_device':lock_stat.st_dev,
+                            'lock_inode':lock_stat.st_ino,'go_released':True,
+                            'attempt_slots':sorted(int(p.name.split('-')[1]) for p in barrier.glob('attempt-*')),
+                            'no_attached_while_held':True,
+                            'held_observation_ms':round((time.monotonic()-go_released_at)*1000,1),
+                            'planned_cpus':cpus[:len(slots)]}
                     finally:
                         fcntl.flock(held_lock.fileno(),fcntl.LOCK_UN)
                         held_lock.close();held_lock=None
@@ -90,7 +100,14 @@ def main():
                     for marker in barrier.iterdir():marker.unlink()
                     barrier.rmdir()
                 require(len({a.epoch for a in group})==1,'one master split into different epochs')
-                if synchronized:require(len({a.directory_slot for a in group})==1,'sibling attach split one parent across directory slots')
+                if synchronized:
+                    require(len({a.directory_slot for a in group})==1,'sibling attach split one parent across directory slots')
+                    affinities=[{'pid':a.child.pid,'cpus':sorted(os.sched_getaffinity(a.child.pid))} for a in group]
+                    for position,observed in enumerate(affinities):
+                        require(observed['cpus']==[cpus[position]],
+                            'sibling EAL worker did not run on its assigned CPU: '+str(observed))
+                    contention['worker_affinities']=affinities
+                    evidence['registration_contention']=contention
                 return master,group
             def locate_after_retirement(epoch,gen):
                 before=sum(line.startswith('LOCATOR_RETRY ') for line in primary.log)
