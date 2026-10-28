@@ -461,6 +461,35 @@ static int output_fxstatat64(int fd, const char *path, void *output, int flags)
 }
 static int output_fstatfs(int fd, void *output) { return fstatfs(fd, output); }
 static int output_fstatfs64(int fd, void *output) { return fstatfs64(fd, output); }
+typedef int (*statx_output_call)(int, const char *, int, unsigned, struct statx *);
+static void expect_statx_output_efault(statx_output_call call, int fd)
+{
+    size_t size = sizeof(struct statx);
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0 && size < (size_t)page_size);
+    void *protected = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(protected != MAP_FAILED);
+    ERROR(call(fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS, protected), EFAULT);
+    CHECK(munmap(protected, (size_t)page_size) == 0);
+
+    unsigned char *readonly = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(readonly != MAP_FAILED);
+    memset(readonly, 0xa5, (size_t)page_size);
+    CHECK(mprotect(readonly, (size_t)page_size, PROT_READ) == 0);
+    ERROR(call(fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS, (struct statx *)readonly), EFAULT);
+    CHECK(munmap(readonly, (size_t)page_size) == 0);
+
+    unsigned char *cross_page = mmap(NULL, (size_t)page_size * 2,
+                                     PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(cross_page != MAP_FAILED);
+    memset(cross_page, 0xa5, (size_t)page_size * 2);
+    CHECK(mprotect(cross_page + page_size, (size_t)page_size, PROT_READ) == 0);
+    struct statx *partial = (struct statx *)(cross_page + page_size - size / 2);
+    ERROR(call(fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS, partial), EFAULT);
+    CHECK(munmap(cross_page, (size_t)page_size * 2) == 0);
+}
 static int output_statat_empty(at_output_call call, int fd, void *output)
 { return call(fd, "", output, AT_EMPTY_PATH); }
 static void expect_output_efault(fd_output_call call, int fd, size_t size)
@@ -561,6 +590,32 @@ static void descriptor_stat_output_faults(void)
     CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
     char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2);
     CHECK(!memcmp(bytes, "ok", sizeof(bytes)));
+    finish(p);
+}
+
+static void descriptor_statx_output_faults(void)
+{
+    struct pair p = connected();
+    statx_output_call exported = dlsym(RTLD_DEFAULT, "statx");
+    CHECK(exported != NULL);
+    const struct {const char *name; statx_output_call call;} calls[] = {
+        {"statx", statx}, {"exported statx", exported},
+    };
+    for (size_t i = 0; i < sizeof(calls) / sizeof(calls[0]); ++i) {
+        struct statx actual;
+        CHECK(calls[i].call(p.client, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &actual) == 0);
+        CHECK((actual.stx_mask & (STATX_TYPE | STATX_INO)) == (STATX_TYPE | STATX_INO));
+        expect_statx_output_efault(calls[i].call, p.client);
+        ERROR(calls[i].call(p.client, NULL, AT_EMPTY_PATH, STATX_BASIC_STATS, NULL), EFAULT);
+        /* Linux syscall errors win before Ker copies a successful result out. */
+        ERROR(calls[i].call(p.client, "relative-child", 0, STATX_BASIC_STATS,
+                            (struct statx *)(uintptr_t)1), ENOTDIR);
+    }
+    struct stat after;
+    CHECK(fstat(p.client, &after) == 0);
+    CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
+    char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2);
+    CHECK(memcmp(bytes, "ok", sizeof(bytes)) == 0);
     finish(p);
 }
 
@@ -1543,6 +1598,7 @@ int main(void)
         {"file-lifecycle-owner-routing", file_lifecycle_operations},
         {"filesystem-statistics-owner-routing", filesystem_statistics},
         {"descriptor-stat-output-faults-and-recovery", descriptor_stat_output_faults},
+        {"descriptor-statx-output-faults-and-recovery", descriptor_statx_output_faults},
         {"descriptor-permissions-owner-routing", descriptor_permissions},
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},

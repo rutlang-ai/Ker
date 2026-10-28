@@ -145,9 +145,19 @@ static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, 
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_statx, fd, path, flags, mask, output);
-    if (path && path[0] == '/') {
-        ker_fd_put(entry);
-        return syscall(SYS_statx, fd, path, flags, mask, output);
+    char local_path[PATH_MAX];
+    if (path) {
+        if (copy_native_path(path, local_path) < 0) {
+            int error = errno;
+            ker_fd_put(entry);
+            errno = error;
+            return -1;
+        }
+        path = local_path;
+        if (path[0] == '/') {
+            ker_fd_put(entry);
+            return syscall(SYS_statx, fd, path, flags, mask, output);
+        }
     }
     int lookup = flags & ~(AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE);
     if (!path && lookup != AT_EMPTY_PATH) {
@@ -157,8 +167,8 @@ static int descriptor_statx(int fd, const char *path, int flags, unsigned mask, 
     long result = lkl_sys_statx(entry->native, path, flags, mask, &native);
     ker_fd_put(entry);
     if (result < 0) { errno = (int)-result; return -1; }
-    if (!output) { errno = EFAULT; return -1; }
-    memcpy(output, &native, sizeof(native));
+    long copied = ker_copy_to_user(output, &native, sizeof(native));
+    if (copied < 0) { errno = (int)-copied; return -1; }
     return 0;
 }
 int statx(int fd, const char *path, int flags, unsigned mask, struct statx *output)
