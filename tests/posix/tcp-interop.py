@@ -2254,13 +2254,14 @@ def inside(args):
                     stats = json.loads(stats_path.read_text())
                     if args.fd_coexistence:
                         if ('PASS: independent host/native UDP same tuple, mixed epoll and both close orders' not in fd_output
-                                or stats['native']['udp_in_datagrams'] != (4 if args.fd_payload_faults else 3)
-                                or stats['native']['udp_out_datagrams'] != (5 if args.fd_payload_faults else 3)):
+                                or stats['native']['udp_in_datagrams'] != (3 + int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter))
+                                or stats['native']['udp_out_datagrams'] != (3 + 2 * int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter))):
                             raise RuntimeError('host/native coexistence missed isolated kernel UDP accounting: ' + str(stats))
-                    if args.fd_payload_faults:
-                        expected = {'udp_in_errors': 1, 'udp_no_ports': 0,
-                                    'udp6_in_datagrams': 1, 'udp6_out_datagrams': 2,
-                                    'udp6_in_errors': 1, 'udp6_no_ports': 0}
+                    if args.fd_payload_faults or args.fd_reuseport_filter:
+                        expected = {'udp_in_errors': int(args.fd_payload_faults), 'udp_no_ports': 0,
+                                    'udp6_in_datagrams': int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter),
+                                    'udp6_out_datagrams': 2 * int(args.fd_payload_faults) + 3 * int(args.fd_reuseport_filter),
+                                    'udp6_in_errors': int(args.fd_payload_faults), 'udp6_no_ports': 0}
                         if any(stats['native'][key] != value for key, value in expected.items()):
                             raise RuntimeError('payload copy-fault accounting differs from original UDP: ' + str(stats))
                     if (stats['outstanding'] or not stats['native']['active_opens'] or
@@ -2309,6 +2310,7 @@ def main():
     parser.add_argument('--fd-app', type=Path)
     parser.add_argument('--fd-coexistence', action='store_true')
     parser.add_argument('--fd-payload-faults', action='store_true')
+    parser.add_argument('--fd-reuseport-filter', action='store_true')
     parser.add_argument('--dualstack-app', type=Path)
     parser.add_argument('--epoll-app', type=Path)
     parser.add_argument('--message-app', type=Path)

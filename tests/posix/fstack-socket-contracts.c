@@ -623,6 +623,46 @@ static void process_helper_boundary(void)
     char byte; CHECK(recv(p.server, &byte, 1, 0) == 1 && byte == 'p'); finish(p);
 }
 
+static void reuseport_classic_bpf_steering(void)
+{
+    for (int family = 0; family < 2; ++family) {
+        int domain = family ? AF_INET6 : AF_INET;
+        int rx[2] = {socket(domain, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0),
+                     socket(domain, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)};
+        int tx = socket(domain, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        CHECK(rx[0] >= 0 && rx[1] >= 0 && tx >= 0);
+        set(rx[0], SOL_SOCKET, SO_REUSEPORT, 1); set(rx[1], SOL_SOCKET, SO_REUSEPORT, 1);
+        struct sockaddr_storage address = {0}; socklen_t size;
+        if (family) {
+            struct sockaddr_in6 value = {.sin6_family = AF_INET6, .sin6_addr = IN6ADDR_LOOPBACK_INIT};
+            memcpy(&address, &value, sizeof(value)); size = sizeof(value);
+        } else {
+            struct sockaddr_in value = local(); memcpy(&address, &value, sizeof(value)); size = sizeof(value);
+        }
+        CHECK(bind(rx[0], (void *)&address, size) == 0);
+        CHECK(getsockname(rx[0], (void *)&address, &size) == 0);
+        CHECK(bind(rx[1], (void *)&address, size) == 0);
+        struct sock_filter instruction = BPF_STMT(BPF_RET | BPF_K, 1);
+        struct sock_fprog program = {.len = 1, .filter = &instruction};
+        CHECK(setsockopt(rx[0], SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &program, sizeof(program)) == 0);
+        struct sock_filter invalid = BPF_STMT(0xffff, 0);
+        struct sock_fprog rejected = {.len = 1, .filter = &invalid};
+        ERROR(setsockopt(rx[0], SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &rejected, sizeof(rejected)), EINVAL);
+        CHECK(sendto(tx, "one", 3, 0, (void *)&address, size) == 3); ready(rx[1]);
+        char bytes[8]; CHECK(recv(rx[1], bytes, sizeof(bytes), 0) == 3 && !memcmp(bytes, "one", 3));
+        ERROR(recv(rx[0], bytes, sizeof(bytes), MSG_DONTWAIT), EAGAIN);
+        instruction.k = 0;
+        CHECK(setsockopt(rx[1], SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &program, sizeof(program)) == 0);
+        CHECK(sendto(tx, "two", 3, 0, (void *)&address, size) == 3); ready(rx[0]);
+        CHECK(recv(rx[0], bytes, sizeof(bytes), 0) == 3 && !memcmp(bytes, "two", 3));
+        ERROR(recv(rx[1], bytes, sizeof(bytes), MSG_DONTWAIT), EAGAIN);
+        CHECK(close(rx[0]) == 0); /* Original Linux moves the last group member to index zero. */
+        CHECK(sendto(tx, "end", 3, 0, (void *)&address, size) == 3); ready(rx[1]);
+        CHECK(recv(rx[1], bytes, sizeof(bytes), 0) == 3 && !memcmp(bytes, "end", 3));
+        CHECK(close(rx[1]) == 0 && close(tx) == 0);
+    }
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -2300,6 +2340,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"original-UDP-reuseport-classic-BPF-steering-replacement-and-compaction", reuseport_classic_bpf_steering},
         {"post-initialization-process-helper-boundaries", process_helper_boundary},
         {"legacy-stat-ABI-version-validation-and-precedence", legacy_stat_versions},
         {"host-eBPF-program-descriptor-boundary-and-classic-filter-preservation", host_bpf_descriptor_boundary},
