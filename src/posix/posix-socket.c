@@ -134,6 +134,14 @@ int setsockopt(int fd, int level, int option, const void *value, socklen_t lengt
 {
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_setsockopt, fd, level, option, value, length);
+    if (entry->kind != KER_FD_EPOLL && level == SOL_SOCKET &&
+        (option == SO_ATTACH_BPF || option == SO_ATTACH_REUSEPORT_EBPF)) {
+        /* These arguments are host program descriptors. There is no imported
+         * BPF-program ownership bridge; never reinterpret their numbers. */
+        ker_fd_put(entry);
+        errno = EOPNOTSUPP;
+        return -1;
+    }
     struct ker_native_option_guard *guard = NULL;
     int token = level == SOL_SOCKET && option == SO_ZEROCOPY ? ker_native_buffer_option_begin(entry->native, &guard) : 0;
     long result;

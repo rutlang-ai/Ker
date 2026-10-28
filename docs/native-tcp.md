@@ -1539,3 +1539,5 @@ select/pselect 使用私有 fd-set 快照，按原始 Linux 的 long-word 对齐
 不触碰超出此前缀的字节或 nfds=0 的集合。非法 fd 不回写集合；输出故障保留已写入的
 前置集合且不消费数据。timeval 先安全读入，剩余时间的可选回写失败不覆盖等待结果，
 因此可读但只读的 timeval 与原始内核一样不会导致成功后的进程崩溃。
+
+`SO_ATTACH_BPF` and `SO_ATTACH_REUSEPORT_EBPF` return `EOPNOTSUPP` for imported sockets: host eBPF program descriptors have no original-kernel ownership bridge. Host sockets keep their host syscall behavior. Classic socket and reuseport BPF programs remain original Linux operations; rejected eBPF attachment does not replace an installed classic filter.
