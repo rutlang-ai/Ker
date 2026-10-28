@@ -27,14 +27,15 @@ def broker(fd, plan_path):
     """Real master parent; pass duplicate control FDs without owning the reader."""
     plan = json.loads(Path(plan_path).read_text())
     channel = socket.socket(fileno=fd)
-    children = {}
+    children = {}; expected_exits = {}
     print('MASTER '+json.dumps({'pid': os.getpid()}), flush=True)
     for slot, command in plan['workers']:
         with open(plan['root']+'/worker-'+str(slot)+'.stderr', 'wb') as error:
             child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error, bufsize=0)
         children[child.pid] = child
+        expected_exits[child.pid] = plan.get('expected_exits', {}).get(str(slot), 0)
         fds = array.array('i', [child.stdin.fileno(), child.stdout.fileno()])
-        channel.sendmsg([json.dumps({'pid':child.pid,'slot':slot}).encode()], [(socket.SOL_SOCKET,socket.SCM_RIGHTS,fds)])
+        channel.sendmsg([json.dumps({'pid':child.pid,'slot':slot,'expected_exit':expected_exits[child.pid]}).encode()], [(socket.SOL_SOCKET,socket.SCM_RIGHTS,fds)])
         child.stdin.close(); child.stdout.close()
     channel.close()
     for line in sys.stdin:
@@ -43,7 +44,7 @@ def broker(fd, plan_path):
             pid = int(fields[1]); code = children[pid].wait(timeout=20)
             print('REAPED '+json.dumps({'pid':pid,'exit':code}),flush=True)
         elif fields == ['exit']:
-            require(all(p.poll() == 0 for p in children.values()), 'master still owns a live/failed worker')
+            require(all(p.poll() == expected_exits[pid] for pid,p in children.items()), 'master still owns a live/unexpectedly failed worker')
             print('CLOSED '+json.dumps({'children':len(children)}),flush=True)
             return 0
         else:
@@ -107,6 +108,7 @@ class Actor:
     def __init__(self, master, metadata, fds):
         self.master=master;self.child=SimpleNamespace(pid=metadata['pid'],stdin=os.fdopen(fds[0],'wb',buffering=0),stdout=os.fdopen(fds[1],'rb',buffering=0))
         self.slot=metadata['slot'];self.log=[];self.pidfd=os.pidfd_open(self.child.pid);self.reaped=False
+        self.expected_exit=metadata.get('expected_exit',0)
 
     def reap(self):
         if self.reaped:return
@@ -114,9 +116,9 @@ class Actor:
         require(poll.poll(20000), 'worker did not exit before reap deadline')
         if self.master.adopted:
             pid,status=os.waitpid(self.child.pid,0)
-            require(pid==self.child.pid and os.WIFEXITED(status) and os.WEXITSTATUS(status)==0,'adopted worker exit failed')
+            require(pid==self.child.pid and os.WIFEXITED(status) and os.WEXITSTATUS(status)==self.expected_exit,'adopted worker exit failed')
         else:
-            require(self.master.command('reap '+str(self.child.pid),'REAPED')=={'pid':self.child.pid,'exit':0},'master did not reap actual worker')
+            require(self.master.command('reap '+str(self.child.pid),'REAPED')=={'pid':self.child.pid,'exit':self.expected_exit},'master did not reap actual worker')
         self.reaped=True
 
     def close(self):

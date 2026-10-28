@@ -1100,6 +1100,8 @@ add_test(NAME fstack-address-policy-import COMMAND "${Python3_EXECUTABLE}" "${CM
 set_tests_properties(fstack-address-policy-import PROPERTIES TIMEOUT 15 LABELS provenance)
 add_test(NAME fstack-packet-dispatcher-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/packet-dispatcher-import.py")
 set_tests_properties(fstack-packet-dispatcher-import PROPERTIES TIMEOUT 15 LABELS provenance)
+add_test(NAME fstack-reload-live-slot-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-live-slot-import.py")
+set_tests_properties(fstack-reload-live-slot-import PROPERTIES TIMEOUT 15 LABELS provenance)
 target_link_libraries(ker-fstack-address-policy-test PRIVATE ker::address_policy)
 target_compile_options(ker-fstack-address-policy-test PRIVATE -Wall -Wextra -Werror)
 add_executable(ker-address-policy-lifetime-test address-policy-lifetime.c)
@@ -1169,6 +1171,18 @@ if(KER_WITH_DPDK)
     target_compile_definitions(ker-fstack-reload-directory-test PRIVATE ${ker_reload_private_definitions})
     target_include_directories(ker-fstack-reload-directory-test PRIVATE ${ker_reload_private_includes})
     target_link_libraries(ker-fstack-reload-directory-test PRIVATE ker::ipc)
+    add_executable(ker-fstack-reload-live-slot-test fstack-reload-live-slot.c)
+    target_compile_definitions(ker-fstack-reload-live-slot-test PRIVATE ${ker_reload_private_definitions})
+    target_include_directories(ker-fstack-reload-live-slot-test PRIVATE ${ker_reload_private_includes})
+    target_link_libraries(ker-fstack-reload-live-slot-test PRIVATE ker::ipc)
+    add_test(NAME fstack-reload-live-slot COMMAND ker-fstack-reload-live-slot-test)
+    set_tests_properties(fstack-reload-live-slot PROPERTIES TIMEOUT 15 LABELS fstack
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-reload-live-slot-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-live-slot.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-live-slot-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-live-slot-multiprocess PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "fstack;multiprocess")
     add_executable(ker-fstack-reload-directory-eal-test fstack-reload-directory-eal.c)
     target_include_directories(ker-fstack-reload-directory-eal-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
     target_link_libraries(ker-fstack-reload-directory-eal-test PRIVATE ker::reload)
