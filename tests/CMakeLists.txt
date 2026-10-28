@@ -1038,3 +1038,24 @@ if(KER_WITH_DPDK)
         LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-poll-test fstack-reload-poll.c)
+    target_link_libraries(ker-fstack-reload-poll-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-poll-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-markers COMMAND ker-fstack-reload-poll-test markers)
+    add_test(NAME fstack-reload-barrier COMMAND ker-fstack-reload-poll-test barrier)
+    set_tests_properties(fstack-reload-markers fstack-reload-barrier PROPERTIES TIMEOUT 15
+        LABELS "fstack;fstack-reload"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    find_library(ker_reload_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
+    add_executable(ker-fstack-reload-multiprocess-test fstack-reload-multiprocess.c)
+    target_link_libraries(ker-fstack-reload-multiprocess-test PRIVATE ker::reload "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-reload-multiprocess-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-multiprocess.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-poll-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-multiprocess PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+endif()

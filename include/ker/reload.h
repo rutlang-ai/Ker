@@ -25,4 +25,41 @@ KER_API void ker_reload_message_fill(ker_ipc_message *message, int command,
     int generation, int status, uint64_t heartbeat);
 KER_API int ker_reload_message_parse(const ker_ipc_message *message, int *command,
     int *generation, int *status, uint64_t *heartbeat);
+/* Block-only, same-master polling adapter. A controller must wait for every
+ * old worker's exact park-epoch acknowledgement before releasing ownership.
+ * Callback runs synchronously only when the original runtime permits RX.
+ * A denied pass acknowledges only after the prior callback has returned.
+ * Callback owns its packet/API work; its result is forwarded unchanged.
+ * Select a worker slot before polling. Serialize calls within each process;
+ * recursive poll/control fails EBUSY. Unbinding inside a callback aborts.
+ * No cross-master directory, hardware journal or crash recovery is provided. */
+typedef int (*ker_reload_poll_fn)(void *argument);
+KER_API int ker_reload_poll(ker_reload_poll_fn poll, void *argument);
+/* Select the process's generation and worker slot (0..127). Changing either
+ * requires a quiescent worker. This is not an authenticated registration. */
+KER_API int ker_reload_worker_select(int generation, unsigned slot);
+/* Legacy enabled=0 preserves original always-poll behavior. Configure before
+ * the first poll after bind; cannot change it during a polling lifetime. */
+KER_API int ker_reload_set_enabled(int enabled);
+KER_API int ker_reload_rx_owner(void);
+KER_API int ker_reload_rx_stopped(void);
+KER_API int ker_reload_rx_allowed(void);
+/* Controller-only marker restoration: all affected callbacks must already be
+ * quiescent. Ordinary handover uses arm, exact acknowledgements, release/claim.
+ * These original marker primitives do not themselves prove quiescence. */
+KER_API int ker_reload_rx_mark(int owner, int stopped);
+enum ker_reload_handover_result {
+    KER_RELOAD_HANDOVER_OK = 0,
+    KER_RELOAD_HANDOVER_INVAL = -1,
+    KER_RELOAD_HANDOVER_BUSY = -2,
+    KER_RELOAD_HANDOVER_TIMEOUT = -3
+};
+KER_API int ker_reload_rx_release(int to_generation);
+KER_API int ker_reload_rx_claim(int from_generation, int to_generation, unsigned timeout_ms);
+KER_API int ker_reload_park_arm(uint32_t *epoch);
+KER_API int ker_reload_parked(unsigned slot, uint32_t epoch);
+/* Manual acknowledgement only after the caller has quiesced its RX callback
+ * and will keep it stopped until release. Normal workers use poll's denied
+ * pass instead. Acknowledgement is epoch-tagged, not an authorization token. */
+KER_API int ker_reload_park_ack(void);
 #endif
