@@ -8,6 +8,15 @@ target_include_directories(ker-reload PRIVATE
     "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
 target_compile_definitions(ker-reload PRIVATE
     ff_global_cfg=ker_reload_upstream_configuration
+    ff_log=ker_reload_upstream_log
+    ff_reload_gendir_attach=ker_reload_upstream_reload_gendir_attach
+    ff_reload_gendir_detach=ker_reload_upstream_reload_gendir_detach
+    ff_reload_gendir_present=ker_reload_upstream_reload_gendir_present
+    ff_reload_gendir_epoch_live=ker_reload_upstream_reload_gendir_epoch_live
+    ff_reload_gendir_mint=ker_reload_upstream_reload_gendir_mint
+    ff_reload_gendir_reset_pending=ker_reload_upstream_reload_gendir_reset_pending
+    ff_reload_gendir_reset_pending_peek=ker_reload_upstream_reload_gendir_reset_pending_peek
+    ff_reload_gendir_retire=ker_reload_upstream_reload_gendir_retire
     ff_is_drain_generation=ker_reload_upstream_is_drain_generation
     ff_no_hw_mode=ker_reload_upstream_no_hw_mode
     ff_no_hw_mode_nosync=ker_reload_upstream_no_hw_mode_nosync
@@ -106,6 +115,6 @@ install(TARGETS ker-reload EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES include/ker/reload.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ker)
+install(FILES include/ker/reload-directory.h include/ker/reload.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ker)
 install(FILES third_party/fstack-reload/LICENSE third_party/fstack-reload/UPSTREAM.json
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-reload)

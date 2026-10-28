@@ -1092,3 +1092,23 @@ endif()
 add_test(NAME fstack-reload-controller-import
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-controller-import.py")
 set_tests_properties(fstack-reload-controller-import PROPERTIES TIMEOUT 15 LABELS provenance)
+
+if(KER_WITH_DPDK)
+    # Compile the actual production TU with private fixture access. This target
+    # deliberately does not link ker::reload or install fixture entry points.
+    add_executable(ker-fstack-reload-directory-test fstack-reload-directory.c)
+    get_target_property(ker_reload_private_definitions ker-reload COMPILE_DEFINITIONS)
+    get_target_property(ker_reload_private_includes ker-reload INCLUDE_DIRECTORIES)
+    target_compile_definitions(ker-fstack-reload-directory-test PRIVATE ${ker_reload_private_definitions})
+    target_include_directories(ker-fstack-reload-directory-test PRIVATE ${ker_reload_private_includes})
+    target_link_libraries(ker-fstack-reload-directory-test PRIVATE ker::ipc)
+    add_executable(ker-fstack-reload-directory-eal-test fstack-reload-directory-eal.c)
+    target_include_directories(ker-fstack-reload-directory-eal-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
+    target_link_libraries(ker-fstack-reload-directory-eal-test PRIVATE ker::reload)
+    target_compile_options(ker-fstack-reload-directory-eal-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-directory-foundation COMMAND ker-fstack-reload-directory-test)
+    add_test(NAME fstack-reload-directory-primary-eal COMMAND ker-fstack-reload-directory-eal-test)
+    set_tests_properties(fstack-reload-directory-foundation fstack-reload-directory-primary-eal PROPERTIES TIMEOUT 30
+        LABELS "fstack;fstack-reload;directory-foundation"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()

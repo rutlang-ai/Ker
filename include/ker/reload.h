@@ -25,14 +25,16 @@ KER_API void ker_reload_message_fill(ker_ipc_message *message, int command,
     int generation, int status, uint64_t heartbeat);
 KER_API int ker_reload_message_parse(const ker_ipc_message *message, int *command,
     int *generation, int *status, uint64_t *heartbeat);
-/* Block-only, same-master polling adapter. A controller must wait for every
- * old worker's exact park-epoch acknowledgement before releasing ownership.
+/* Same-master polling adapter, optionally gated by reload-directory.h. A
+ * controller must wait for every old worker's exact park-epoch acknowledgement
+ * before releasing ownership.
  * Callback runs synchronously only when the original runtime permits RX.
  * A denied pass acknowledges only after the prior callback has returned.
  * Callback owns its packet/API work; its result is forwarded unchanged.
  * Select a worker slot before polling. Serialize calls within each process;
  * recursive poll/control fails EBUSY. Unbinding inside a callback aborts.
- * No cross-master directory, hardware journal or crash recovery is provided. */
+ * Cross-master directory attachment is explicit; no hardware journal or
+ * automatic crash supervisor is provided. */
 typedef int (*ker_reload_poll_fn)(void *argument);
 KER_API int ker_reload_poll(ker_reload_poll_fn poll, void *argument);
 /* Select the process's generation and worker slot (0..127). Changing either
@@ -43,6 +45,8 @@ KER_API int ker_reload_worker_select(int generation, unsigned slot);
 KER_API int ker_reload_set_enabled(int enabled);
 KER_API int ker_reload_rx_owner(void);
 KER_API int ker_reload_rx_stopped(void);
+/* Gate observation only; does not register a hardware-user lease. Use poll
+ * for directory-backed hardware work. */
 KER_API int ker_reload_rx_allowed(void);
 /* Controller-only marker restoration: all affected callbacks must already be
  * quiescent. Ordinary handover uses arm, exact acknowledgements, release/claim.

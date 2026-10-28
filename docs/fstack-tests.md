@@ -704,3 +704,7 @@ UT-NR-10 原始纯策略断言。实际 caller controller 的双轮次、abort/r
 READY/park/drain/pidfd 门禁和真实 PMD/EAL 回收在仓库/安装程序中通过；
 见 [合同及散列](fstack-reload-controller.md)。策略不进入 Ker 核心库。
 当前本轮 **31/50**，累计249 adapted，尚需19个基线未完成案例。
+
+跨 master 的[目录适配正在实现](fstack-reload-directory.md)。已引入未修改的
+原版目录后端并补充用户证明、primary EAL 生命周期断言；尚未取得真实跨
+master PMD 与安装消费者的完整证明，因此不增加完成计数，也不提升目录案例状态。

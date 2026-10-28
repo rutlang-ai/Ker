@@ -1,17 +1,24 @@
 #define _GNU_SOURCE
 #include <ker/reload.h>
+#include <ker/reload-directory.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <rte_log.h>
+#include <rte_errno.h>
+#include <rte_lcore.h>
 #include "ff_config.h"
 /* Keep the exact upstream configuration layout private. Only its original
  * graceful_reload field is consumed by this runtime translation unit. */
 struct ff_config ff_global_cfg;
 #include "ff_reload.c"
+#include "ff_reload_gendir.c"
 
 static int borrowed;
 static int polling, polled;
+#include "reload-directory.c"
 size_t ker_reload_state_size(void) { return sizeof(struct ff_reload_state); }
 int ker_reload_state_init(void *storage, size_t size, int generation)
 {
@@ -53,6 +60,10 @@ void ker_reload_unbind_state(void)
         fputs("ker reload: unbind during active callback\n", stderr);
         abort();
     }
+    if (g_dir && ker_reload_directory_detach()) {
+        fputs("ker reload: unbind with outstanding directory leases\n", stderr);
+        abort();
+    }
     ff_reload_attach_state(NULL);
     ff_reload_gendir_install(NULL, 0);
     ff_reload_set_epoch(0);
@@ -79,9 +90,12 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
     if (!borrowed) return -ENOTCONN;
     if (!poll) return -EINVAL;
     if (g_reload_slot < 0) return -EINVAL;
+    if (g_dir && rte_eal_process_type() != RTE_PROC_SECONDARY) return -EPERM;
+    if (g_dir && directory_retiring) return -ESHUTDOWN;
+    if (g_dir && ff_reload_gendir_user_add(ff_reload_epoch(), ff_reload_gen())) return -ENOSPC;
     polled = 1;
     ff_reload_heartbeat_tick();
-    if (ff_no_hw_mode()) {
+    if (directory_no_hw_mode()) {
         ff_reload_handover_ack();
         return 0;
     }
@@ -93,6 +107,7 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
 int ker_reload_worker_select(int generation, unsigned slot)
 {
     if (polling) return -EBUSY;
+    if (g_dir) return -EBUSY;
     if (!borrowed) return -ENOTCONN;
     if (generation < 0 || generation >= FF_RELOAD_GEN_MAX || slot >= FF_RELOAD_MAX_PROCS) return -EINVAL;
     ff_reload_set_gen(generation);
@@ -101,7 +116,7 @@ int ker_reload_worker_select(int generation, unsigned slot)
 }
 int ker_reload_set_enabled(int enabled)
 {
-    if (polling || polled) return -EBUSY;
+    if (polling || polled || g_dir) return -EBUSY;
     if (!borrowed) return -ENOTCONN;
     if (enabled != 0 && enabled != 1) return -EINVAL;
     ff_global_cfg.dpdk.graceful_reload = enabled;
@@ -109,7 +124,7 @@ int ker_reload_set_enabled(int enabled)
 }
 int ker_reload_rx_owner(void) { return ff_reload_rx_owner_gen(); }
 int ker_reload_rx_stopped(void) { return ff_reload_rx_stopped(); }
-int ker_reload_rx_allowed(void) { return !ff_no_hw_mode(); }
+int ker_reload_rx_allowed(void) { return !directory_no_hw_mode(); }
 int ker_reload_rx_mark(int owner, int stopped)
 {
     if (polling) return -EBUSY;
