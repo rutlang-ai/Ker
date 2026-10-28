@@ -5,7 +5,10 @@
 #include "ff_reload.h" /* Exact layout for caller-owned state storage. */
 #include "eal.h"
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -66,6 +69,11 @@ static void primary_eal(void)
     CHECK(ker_reload_directory_attach() == -EINVAL);
     CHECK(!ker_reload_worker_select(0, 0));
     CHECK(ker_reload_directory_attach() == -ENODEV);
+    char runtime_template[] = "/tmp/ker-reload-directory-eal-XXXXXX";
+    char *runtime_root = mkdtemp(runtime_template);
+    CHECK(runtime_root);
+    CHECK(!setenv("RUNTIME_DIRECTORY", runtime_root, 1));
+    CHECK(!setenv("XDG_RUNTIME_DIR", runtime_root, 1));
     ker_test_eal_init();
     CHECK(!ker_reload_directory_attach());
     CHECK(!ker_reload_directory_view(&view));
@@ -95,6 +103,19 @@ static void primary_eal(void)
     CHECK(!ker_reload_directory_destroy());
     ker_reload_unbind_state();
     CHECK(!rte_eal_cleanup());
+    char runtime_parent[PATH_MAX], runtime_prefix[PATH_MAX], registration_lock[PATH_MAX];
+    int length = snprintf(runtime_parent, sizeof(runtime_parent), "%s/dpdk", runtime_root);
+    CHECK(length > 0 && (size_t)length < sizeof(runtime_parent));
+    length = snprintf(runtime_prefix, sizeof(runtime_prefix), "%s/ker-test-%ld", runtime_parent, (long)getpid());
+    CHECK(length > 0 && (size_t)length < sizeof(runtime_prefix));
+    length = snprintf(registration_lock, sizeof(registration_lock), "%s/ker-reload-gendir-register.lock", runtime_prefix);
+    CHECK(length > 0 && (size_t)length < sizeof(registration_lock));
+    /* The lock inode must remain stable for every EAL participant. This test
+     * removes it only after EAL cleanup has ended the namespace lifetime. */
+    CHECK(!unlink(registration_lock));
+    CHECK(!rmdir(runtime_prefix));
+    CHECK(!rmdir(runtime_parent));
+    CHECK(!rmdir(runtime_root));
 }
 
 int main(void)
