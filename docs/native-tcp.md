@@ -1541,3 +1541,5 @@ select/pselect 使用私有 fd-set 快照，按原始 Linux 的 long-word 对齐
 因此可读但只读的 timeval 与原始内核一样不会导致成功后的进程崩溃。
 
 `SO_ATTACH_BPF` and `SO_ATTACH_REUSEPORT_EBPF` return `EOPNOTSUPP` for imported sockets: host eBPF program descriptors have no original-kernel ownership bridge. Host sockets keep their host syscall behavior. Classic socket and reuseport BPF programs remain original Linux operations; rejected eBPF attachment does not replace an installed classic filter.
+
+After imported-kernel initialization, `posix_spawn`/`posix_spawnp` return `EOPNOTSUPP` without changing the output PID; `system(command)` and `popen` fail with `errno=EOPNOTSUPP`. `system(NULL)` reports no supported shell facility. These libc helpers can bypass `pthread_atfork` via clone, so they cannot safely copy the in-process kernel. The boundary remains active during shutdown; launch independent applications through the external Ker launcher.

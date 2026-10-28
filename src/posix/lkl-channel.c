@@ -92,6 +92,11 @@ static struct in6_addr add_ipv6_address(int index, const char *configuration)
     if (result) fail("IPv6 interface configuration", result);
     return address6;
 }
+static atomic_bool process_isolation;
+bool ker_native_process_isolated(void)
+{
+    return atomic_load_explicit(&process_isolation, memory_order_acquire);
+}
 static void fork_child(void)
 {
     static const char error[] = "ker: fork after native kernel initialization is unsupported; launch each process with ker-run\n";
@@ -101,6 +106,7 @@ static void fork_child(void)
 int ker_native_host_usercopy_probe(void);
 __attribute__((constructor)) static void initialize(void)
 {
+    atomic_store_explicit(&process_isolation, true, memory_order_release);
     int fd = (int)parse_number(required("KER_PACKET_FD"), INT_MAX), type = 0;
     socklen_t length = sizeof(type);
     if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &length) || type != SOCK_DGRAM)

@@ -42,14 +42,16 @@
 #include <linux/close_range.h>
 #include <linux/limits.h>
 #include <sys/time.h>
-#include <sys/ioctl.h>
-#include <linux/sockios.h>
 #include <net/if.h>
 #include <ifaddrs.h>
 #include <linux/if_packet.h>
 #include <linux/if_link.h>
 #include <limits.h>
 #include <sys/sendfile.h>
+#include <pthread.h>
+#include <sched.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
@@ -585,6 +587,40 @@ static void legacy_stat_versions(void)
         }
     }
     CHECK(munmap(bad, (size_t)page) == 0 && close(host) == 0); finish(p);
+}
+
+static void process_helper_boundary(void)
+{
+    extern char **environ;
+    char *arguments[] = {"true", NULL};
+    int native = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release") != NULL;
+    pid_t child = -99;
+    if (native) {
+        errno = 1234;
+        CHECK(posix_spawn(&child, "/bin/true", NULL, NULL, arguments, environ) == EOPNOTSUPP);
+        CHECK(child == -99 && errno == 1234);
+        CHECK(posix_spawnp(&child, "true", NULL, NULL, arguments, environ) == EOPNOTSUPP);
+        CHECK(child == -99 && errno == 1234);
+        CHECK(system(NULL) == 0);
+        ERROR(system("true"), EOPNOTSUPP);
+        errno = 0; CHECK(popen("printf process-boundary", "r") == NULL && errno == EOPNOTSUPP);
+        int (*legacy_system)(const char *) = dlsym(RTLD_DEFAULT, "__libc_system");
+        FILE *(*legacy_popen)(const char *, const char *) = dlsym(RTLD_DEFAULT, "_IO_popen");
+        CHECK(legacy_system && legacy_popen);
+        ERROR(legacy_system("true"), EOPNOTSUPP);
+        errno = 0; CHECK(legacy_popen("true", "r") == NULL && errno == EOPNOTSUPP);
+    } else {
+        CHECK(posix_spawn(&child, "/bin/true", NULL, NULL, arguments, environ) == 0);
+        int status; CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(posix_spawnp(&child, "true", NULL, NULL, arguments, environ) == 0);
+        CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(system(NULL) != 0 && system("true") == 0);
+        FILE *stream = popen("printf process-boundary", "r"); CHECK(stream);
+        char output[32]; CHECK(fgets(output, sizeof(output), stream) && !strcmp(output, "process-boundary"));
+        CHECK(pclose(stream) == 0);
+    }
+    struct pair p = connected(); CHECK(send(p.client, "p", 1, MSG_NOSIGNAL) == 1);
+    char byte; CHECK(recv(p.server, &byte, 1, 0) == 1 && byte == 'p'); finish(p);
 }
 
 static void host_path_faults(void)
@@ -2264,6 +2300,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"post-initialization-process-helper-boundaries", process_helper_boundary},
         {"legacy-stat-ABI-version-validation-and-precedence", legacy_stat_versions},
         {"host-eBPF-program-descriptor-boundary-and-classic-filter-preservation", host_bpf_descriptor_boundary},
         {"duplicate-file-query-owner-pair-translation", duplicate_file_queries},
