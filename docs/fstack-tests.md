@@ -656,3 +656,12 @@ primary 与 20 个独立 secondary 完成 12 项源验证及 64/64 对象回收�
 本轮累计 **21/50**，当前总完成数 **239**；还需完成 29 个基线中的
 blocked/partial 源案例。`fstack-ipc-multiprocess` 在缺少共享 hugepages
 时返回 77，不能将该 skip 或来源审计单独记为源案例通过。
+
+
+### 第四批：epoch-slot 及旧队列布局（2 项）
+
+`fstack-ipc-epoch-names` 和 `fstack-ipc-legacy-names` 完成
+`test_ut_nr_m5_epoch_slot_and_ring_name`、
+`test_ut_nr_m5_graceful_zero_epoch_invariance`。逐项命名断言、安装调用方、
+Debug/static、Release/shared 以及 guest2 的真实 legacy secondary 收发
+均通过。当前本轮累计 **23/50**，剩余 27 项；总数为 241 adapted。

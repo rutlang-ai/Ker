@@ -2305,9 +2305,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Original epoch-slot mapping, legacy byte names, generation-only slot0 names, epoch-slot names, longest source coordinate, truncation and invalid buffer rejection are exercised through the provider-side public builder. The actual EAL primary uses that builder for its generation and legacy queues. This completes source naming assertions through an actual caller-owned EAL transport, not directory arbitration, cross-generation packet handover or complete reload. Upstream F-Stack naming code remains byte-identical. Debug/static and Release/shared passed, as did an installed consumer and isolated original-EAL multiprocess guest2.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-epoch-names",
+          "provenance_case": "fstack-ipc-epoch-names"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-epoch-names"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_gendir_arbitration",
@@ -2347,9 +2356,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All six source epochs, four process IDs, both generations and every source output type preserve exact unsuffixed legacy names. Real EAL secondary AUTO detection discovers the primary legacy proc0 ring, uses the exact proc1 unsuffixed ring for byte-preserving request/reply and fully reclaims the shared pool; unspecified coordinates remain unspecified in the snapshot. This completes source naming assertions through an actual caller-owned EAL transport, not directory arbitration, cross-generation packet handover or complete reload. Upstream F-Stack naming code remains byte-identical. Debug/static and Release/shared passed, as did an installed consumer and isolated original-EAL multiprocess guest2.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-legacy-names",
+          "provenance_case": "fstack-ipc-legacy-names"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-legacy-names"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_handover_sequence",

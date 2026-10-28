@@ -625,13 +625,16 @@
       ],
       "adaptation": "Actual original-DPDK IPv4 geometry plus bounded mbuf reads rejects an IHL60-byte header in a24-byte payload as unknown. The same CTest requires15 exact classifier markers and then both policy profiles over original net_tap/veth, independent peer namespace and real original host/native IPv4/IPv6 TCP/UDP. Three injected ARP channel EAGAIN returns must not duplicate control clones, checked against independent RX PCAP. Two actual fragment inputs hit the explicit unsupported port-ownership drop boundary. All successful parsing/transport operations use original DPDK/Linux; no source algorithm mirror is executed."
     },
-    "fstack-config-zero-lcore": {
-      "source_file": "tests/unit/test_ff_config.c",
-      "source_case": "test_ff_load_config_lcore_mask_no_bits",
-      "ker_ctests": [
-        "fstack-config-zero-lcore"
+    "fstack-ipc-generation": {
+      "source_file": "tests/unit/test_ff_ipc.c",
+      "source_case": [
+        "test_ff_ipc_proc_id_gen"
       ],
-      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config zero lcore. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_zero_lcore. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
+      "ker_ctests": [
+        "fstack-ipc-generation",
+        "fstack-ipc-multiprocess"
+      ],
+      "adaptation": "Process1:generation0 preserves the unspecified epoch and uses the original literal ring name for an actual secondary request/reply. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior. The host multiprocess CTest explicitly skips77 without shared hugepages; that skip is not completion evidence. Actual guest result manifest fstack-unfinished-ipc-guest1/actual-result-attempt1.json SHA256 9c82301736dc6f197adacd8403b41a59f49503dc959d645dce50ac52a4aa940f binds candidate source/binary hashes, image and serial log; original EAL primary and20 distinct secondary PIDs, all12 source markers, example exit0 and normal power-down passed. Debug/static and Release/shared unit cases passed; installed CMake consumer linked only ker::ipc and completed actual EAL/pool/ring lifecycle."
     },
     "udp-neighbor-create": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -652,6 +655,14 @@
       ],
       "adaptation": "Use the production DPDK worker monotonic-nanosecond adapter. Unwrapped host CLOCK_MONOTONIC samples are positive and advance across a real sleep. Test-only wrapping additionally checks exact seconds/nanoseconds conversion, INT64_MAX bounds, invalid samples, EIO, unchanged output on failure and recovery. A real net_tap worker in a private namespace drains successfully with the host clock, then a second worker receives one injected CLOCK_MONOTONIC EIO after READY and before control-channel drain. It must report nonzero status with a clock diagnostic, emit exactly one DONE with zero outstanding mbufs and call actual rte_eal_cleanup successfully. This adapts the upstream positive/non-regressing nanosecond scenario; no CPU TSC/frequency conversion or ff_get_tsc_ns ABI equivalence is claimed. Kernel protocol clocks and upstream implementations are unchanged."
     },
+    "fstack-config-zero-lcore": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": "test_ff_load_config_lcore_mask_no_bits",
+      "ker_ctests": [
+        "fstack-config-zero-lcore"
+      ],
+      "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config zero lcore. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_zero_lcore. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
+    },
     "fstack-config-bond-without-count": {
       "source_file": "tests/unit/test_ff_config.c",
       "source_case": "test_bond_cfg_handler_no_nb_bond",
@@ -667,17 +678,6 @@
         "fstack-config-ini-inline-comment"
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: ini inline comment. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_ini_inline_comment. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
-    },
-    "fstack-ipc-generation": {
-      "source_file": "tests/unit/test_ff_ipc.c",
-      "source_case": [
-        "test_ff_ipc_proc_id_gen"
-      ],
-      "ker_ctests": [
-        "fstack-ipc-generation",
-        "fstack-ipc-multiprocess"
-      ],
-      "adaptation": "Process1:generation0 preserves the unspecified epoch and uses the original literal ring name for an actual secondary request/reply. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior. The host multiprocess CTest explicitly skips77 without shared hugepages; that skip is not completion evidence. Actual guest result manifest fstack-unfinished-ipc-guest1/actual-result-attempt1.json SHA256 9c82301736dc6f197adacd8403b41a59f49503dc959d645dce50ac52a4aa940f binds candidate source/binary hashes, image and serial log; original EAL primary and20 distinct secondary PIDs, all12 source markers, example exit0 and normal power-down passed. Debug/static and Release/shared unit cases passed; installed CMake consumer linked only ker::ipc and completed actual EAL/pool/ring lifecycle."
     },
     "fstack-config-address": {
       "source_file": "tests/unit/test_ff_config.c",
@@ -2146,6 +2146,17 @@
       ],
       "adaptation": "The pinned source body passes -t bogus_proc_type to ff_load_config and checks rejection, despite its IPFW-style name. Real Ker INI configurations pass both --proc-type=bogus_proc_type and --proc-type bogus_proc_type to original DPDK EAL, which rejects each before readiness, TAP creation, runtime namespace or application entry. The worker PID must be gone, no app sentinel/statistics may exist, and subsequent same-prefix primary startup completes native host TCP/UDP. Exit125 is the Ker infrastructure-failure adaptation of source rejection, not F-Stack parser/API equivalence. The same CTest requires live same-prefix primary exclusion, concurrent distinct-prefix original EAL/native instances, actual runtime files, four positive raw/INI/CLI profiles, real host TCP/UDP and zero outstanding mbufs. Rejected arguments are handled by unchanged original EAL, not a test-only launcher stub or an unknown-option failure."
     },
+    "fstack-ipc-epoch-names": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_epoch_slot_and_ring_name"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-epoch-names",
+        "fstack-ipc-multiprocess"
+      ],
+      "adaptation": "Original epoch-slot mapping, legacy byte names, generation-only slot0 names, epoch-slot names, longest source coordinate, truncation and invalid buffer rejection are exercised through the provider-side public builder. The actual EAL primary uses that builder for its generation and legacy queues. This completes source naming assertions through an actual caller-owned EAL transport, not directory arbitration, cross-generation packet handover or complete reload. Upstream F-Stack naming code remains byte-identical. Debug/static and Release/shared passed, as did an installed consumer and isolated original-EAL multiprocess guest2. Candidate5340a307 passed all14 source phases and21 distinct secondary lifetimes with64/64 pool reclamation, exported example0 and normal power-down. Actual-result fstack-unfinished-ipc-guest2/actual-result-attempt1.json SHA256038cc08da07417ae3ae0b02116de4b1fc8196dd5591375dc7049a283805a2eba binds candidate, image and serial. The host skip77 is not completion evidence. Source invalid-buffer -1 is translated to a documented negative errno at the Ker boundary; upstream truncation remains -1."
+    },
     "fstack-config-ini-colon": {
       "source_file": "tests/unit/test_ff_ini_parser.c",
       "source_case": "test_ini_parse_stream_colon_separator",
@@ -2997,6 +3008,17 @@
         "native-fstack-session-standby"
       ],
       "adaptation": "Two real master/secondary chains retain their original EAL attachments and coordinate-specific controls while the resident grants one original ring-PMD consumer. Both masters and workers remain alive through synchronized control/owner samples; only the owner executes actual174-byte TX/RX bursts with exact original counter deltas. Serialized resident owner snapshots prevent mixing a grant with a recycled slot epoch. Master death and a frozen live orphan do not permit preemption. Exact borrower death recovers the old journaled object, and the same standby PID/EAL/epoch then acquires and performs actual PMD bursts without restart. Production epoch-status proves dead epochs become non-live, resident epoch0 remains live and slot reuse cannot revive an old epoch. Zero-count standby performs control only and does not fabricate frame traffic. All511 original objects return. This qualifies only source test_it_a14_epoch_liveness_after_exit in addition to previously qualified scenarios; TC-3 stays partial because separate fixed network dispatch and exception/KNI ownership agreement have no implemented packet-routing path. No imported-Linux packet delivery, physical-device handover, original heartbeat-timeout ABI or full application reload claim."
+    },
+    "fstack-ipc-legacy-names": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ut_nr_m5_graceful_zero_epoch_invariance"
+      ],
+      "ker_ctests": [
+        "fstack-ipc-legacy-names",
+        "fstack-ipc-multiprocess"
+      ],
+      "adaptation": "All six source epochs, four process IDs, both generations and every source output type preserve exact unsuffixed legacy names. Real EAL secondary AUTO detection discovers the primary legacy proc0 ring, uses the exact proc1 unsuffixed ring for byte-preserving request/reply and fully reclaims the shared pool; unspecified coordinates remain unspecified in the snapshot. This completes source naming assertions through an actual caller-owned EAL transport, not directory arbitration, cross-generation packet handover or complete reload. Upstream F-Stack naming code remains byte-identical. Debug/static and Release/shared passed, as did an installed consumer and isolated original-EAL multiprocess guest2. Candidate5340a307 passed all14 source phases and21 distinct secondary lifetimes with64/64 pool reclamation, exported example0 and normal power-down. Actual-result fstack-unfinished-ipc-guest2/actual-result-attempt1.json SHA256038cc08da07417ae3ae0b02116de4b1fc8196dd5591375dc7049a283805a2eba binds candidate, image and serial. The host skip77 is not completion evidence. Source invalid-buffer -1 is translated to a documented negative errno at the Ker boundary; upstream truncation remains -1."
     },
     "native-fstack-buffer-writer-zero": {
       "source_file": "tests/unit/test_ff_zc_send.c",

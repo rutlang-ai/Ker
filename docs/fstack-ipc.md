@@ -18,7 +18,8 @@ unchanged.
 
 Calls must be serialized: the pinned client has one process-global pending
 request. Process/generation/epoch parsing preserves AUTO and unspecified epoch;
-transport requires explicit generation rather than silently resolving AUTO.
+transport requires explicit generation unless an actual proc0 legacy input ring exists.
+AUTO then uses the original legacy detector; its address snapshot stays unspecified.
 The bounded probe currently requires process0. An accepted timed-out request is
 still owned by the queue/provider. Detach returns `-EBUSY` until the entire typed
 cache0 pool is quiescent. The caller must coordinate reclamation after receiver
@@ -80,10 +81,47 @@ completed the exported example, then powered down normally. Artifact directory:
 
 The package manifest binds source and executable hashes. Actual result validation
 requires every source marker, distinct secondary identities, full reclamation,
-example exit0, normal power-down and QEMU exit0. The inherited guest root does not
+example exit 0, normal power-down and QEMU exit 0. The inherited guest root does not
 imply that unrelated historical suites were rerun. On hosts without usable shared
 hugepages the CTest returns skip77; that result is never counted as completion.
 
 These twelve cases move from baseline blocked to scenario-adapted. They do not
 complete remaining generation/reload contracts, physical NIC handover, control
-command semantics or TCP continuity. The baseline-to-completed total is21/50.
+command semantics or TCP continuity. The initial batch baseline-to-completed total was 21/50; the extension below brings it to 23/50.
+
+
+## Provider names and legacy transport extension
+
+`ker_ipc_format_ring` lets a caller construct its actual provider rings without
+changing the process-global client selection. It uses the unchanged imported
+naming implementation. With generation-aware names disabled, every epoch and
+generation yields the exact legacy name. A client with AUTO may attach when an
+actual legacy proc0 input ring exists; the original client then discovers the
+unsuffixed ring namespace. Other unresolved AUTO configurations remain explicit
+unsupported boundaries.
+
+`test_ut_nr_m5_epoch_slot_and_ring_name` and
+`test_ut_nr_m5_graceful_zero_epoch_invariance` in `test_ff_config.c` map to
+`fstack-ipc-epoch-names` and `fstack-ipc-legacy-names`, plus the multiprocess test.
+They cover source slot0/NONE/1/2/3/4 mapping, exact names, longest source coordinate,
+truncation, and the full six-epoch/four-process/two-generation/type matrix.
+Invalid buffers return a negative Ker errno; upstream truncation remains -1.
+The original EAL primary now creates both namespace layouts with the exported
+builder. An actual secondary discovers legacy mode, sends to the unsuffixed
+proc1 queue, receives its exact payload and permits full reclamation.
+
+The extension passed Debug/static, Release/shared and an independently installed
+consumer. Guest2 candidate `5340a307` passed all 14 source phases, including the
+original 12, with 21 distinct secondary PIDs, 64/64 reclaimed objects, example exit 0
+and normal power-down. It does not qualify directory arbitration or handover.
+Artifact directory: `/home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest2`.
+
+| Artifact | SHA256 |
+|---|---|
+| `actual-result-attempt1.json` | `038cc08da07417ae3ae0b02116de4b1fc8196dd5591375dc7049a283805a2eba` |
+| `package-manifest.json` | `060603e86960833b27da6ef6c03759160c881a45ebdf9c9bb9537599a95289e6` |
+| `initramfs.cpio.gz` | `eac3433dd8c5e9f9004af7a8155d24c30574c9f84eb1ecfc2a1063c99e039152` |
+| `serial-attempt1.log` | `902c1dc4670b013aa01aa4ea4925a2771125a7ddc7fe13634511f479fef21855` |
+
+The extension completes exactly two additional baseline-blocked source cases.
+The current baseline-to-completed total is 23/50; 27 remain.
