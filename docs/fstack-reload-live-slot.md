@@ -37,5 +37,28 @@ Actual secondary EAL requires shared hugepages. A host skip77 is not completion.
 Qualification must run both repository and independently installed public-API
 consumers in the networkless isolated guest with private hugepages, preserve
 all existing shared-runtime profiles after the fixture change, and record
-source/binary/image/serial hashes and normal power-down. Until that completes,
-this case is not added to the49 completed source IDs.
+source/binary/image/serial hashes and normal power-down. The qualification below completes the50th distinct baseline-incomplete source ID.
+
+## Qualified evidence
+
+Candidate `e821e67ab9749cab4c8cc3cd55cd16c30f0d46fc` passed fresh isolated
+guest14 on its first attempt. Both repository and independently installed P1
+consumers pass the exact admission/continued-service contract above. All prior
+11 runtime profiles and two existing examples also pass after the expected-exit
+fixture extension; the guest powers down normally and QEMU exits0. The host
+shared-hugepage skip is not used as evidence.
+
+`/home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest14/actual-result-attempt1.json`
+has SHA256
+`12c7514d4ce66d7c88b6f43368f2a13130d3619941239fb61b60b8def3819168`.
+The package/result bind source, actual executable, independently installed
+source/CMake/link/library, image, serial and command hashes. Separate source
+and import CTests pass in Debug/static and Release/shared. Host final relevant
+suites pass14/static and15/shared tests with one explicit shared-hugepage
+MPskip each; the actual MP acceptance above supplies the required evidence.
+
+The objective is **50/50**:44 previously blocked and6 previously partial IDs,
+verified against actual baseline commit `7f46febca`. The full catalog changes
+from218 to268 adapted,127 to83 blocked and18 to12 partial; these remaining
+catalog entries are not claimed complete. Every eligible completed ID and its
+assertion/runtime tests is recorded in `tests/fstack-unfinished-completed.json`.

@@ -1,9 +1,9 @@
 {
   "baseline_commit": "7f46febcade4166c5820f79b204d5a2b9413408f",
   "target": 50,
-  "newly_completed": 49,
-  "remaining": 1,
-  "status": "in-progress",
+  "newly_completed": 50,
+  "remaining": 0,
+  "status": "complete",
   "cases": [
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
@@ -785,6 +785,21 @@
         {
           "ctest": "fstack-packet-dispatcher-pmd",
           "provenance_case": "fstack-packet-dispatcher-unregister"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-reload-live-slot",
+          "provenance_case": "fstack-reload-live-slot"
+        },
+        {
+          "ctest": "fstack-reload-live-slot-multiprocess",
+          "provenance_case": "fstack-reload-live-slot"
         }
       ]
     }

@@ -760,3 +760,18 @@ net_ring双RX/TX消费者处理12个报文、发出9个，调用方丢弃2个、
 每次恢复池127/127。Debug/static、Release/shared与独立安装消费的完整源测试、
 生命周期和PMD检查均通过，不包含skip。详见[dispatcher合同及证据](fstack-packet-dispatcher.md)。
 当前 **49/50**，仍需完成P1 live-slot及其实际多进程/报文证明。
+
+
+### 第十四批：P1 live-slot 与目标完成（1 项）
+
+完整原始P1断言验证两次拒绝不改变原epoch、RX word、primary slot与空闲槽。
+guest14的仓库/安装消费者分别使用四个真实master和四个EAL secondary：
+epoch5碰撞仍存活的epoch2槽，拒绝使用另一个可回收槽；原owner在失败前后
+完成PMD2/2和两次原始typed IPC QUERY，88个FF命名ring保持一致、两个池63/63。
+13组运行profile及两个旧示例全部通过，正常关机；详见
+[P1合同与证据](fstack-reload-live-slot.md)。
+
+**目标已完成：50/50 个原先未完成的上游源案例**，包括44个基线blocked、6个partial。
+与真实基线commit `7f46febca` 对照，目录从218→268 adapted、127→83 blocked、
+18→12 partial；额外回归、skip、重复安装运行及原已完成案例均未计入。
+[50项完整差分清单](../tests/fstack-unfinished-completed.json)记录每项原始ID、基线与测试。

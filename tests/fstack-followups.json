@@ -85,7 +85,10 @@
         "tests/posix/fstack-pools.py",
         "tests/pool-import.py",
         "docs/fstack-pools.md",
-        "/home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest13/actual-result-attempt1.json"
+        "/home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest13/actual-result-attempt1.json",
+        "tests/fstack-reload-live-slot.c",
+        "tests/posix/fstack-reload-live-slot.py",
+        "docs/fstack-reload-live-slot.md"
       ],
       "acceptance": [
         "Specify generation lifecycle, single-consumer admission, peer liveness, failure recovery and ownership before adding implementation.",
@@ -113,7 +116,6 @@
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
         "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
-        "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
         "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_window",
         "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_exhausted",
         "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",
