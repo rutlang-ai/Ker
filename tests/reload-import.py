@@ -19,3 +19,10 @@ for directory, names in [
         blob = b'blob ' + str(len(data)).encode() + b'\0' + data
         assert hashlib.sha1(blob).hexdigest() == record['git_blob'], name
 print('PASS: unchanged pinned reload runtime, configuration layout and IPC dependencies')
+
+# The assertion-level P2/RX-15 excerpt is unchanged from the pinned test file.
+original = (root / 'tests/upstream/fstack/tests/unit/test_ff_config.c').read_text()
+start = original.index('/* ---- P2 (B01-1 / B02-1): takeover proof')
+end = original.index('\nmain(void)', start)
+assert (root / 'tests/fstack-reload-directory-source.inc').read_text() == original[start:end]
+print('PASS: unchanged pinned P2/RX-15 source assertions')

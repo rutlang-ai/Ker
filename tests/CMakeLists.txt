@@ -1106,9 +1106,28 @@ if(KER_WITH_DPDK)
     target_include_directories(ker-fstack-reload-directory-eal-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
     target_link_libraries(ker-fstack-reload-directory-eal-test PRIVATE ker::reload)
     target_compile_options(ker-fstack-reload-directory-eal-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-fstack-reload-directory-multiprocess-test fstack-reload-directory-multiprocess.c)
+    target_link_libraries(ker-fstack-reload-directory-multiprocess-test PRIVATE ker::reload "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-reload-directory-multiprocess-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-directory-multiprocess
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-directory.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-multiprocess-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-directory-multiprocess PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
     add_test(NAME fstack-reload-directory-foundation COMMAND ker-fstack-reload-directory-test)
     add_test(NAME fstack-reload-directory-primary-eal COMMAND ker-fstack-reload-directory-eal-test)
     set_tests_properties(fstack-reload-directory-foundation fstack-reload-directory-primary-eal PROPERTIES TIMEOUT 30
         LABELS "fstack;fstack-reload;directory-foundation"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+endif()
+
+if(KER_WITH_DPDK)
+    foreach(directory_case hw-users reclaim release orphans ring-census)
+        add_test(NAME fstack-reload-directory-${directory_case}
+            COMMAND ker-fstack-reload-directory-test ${directory_case})
+        set_tests_properties(fstack-reload-directory-${directory_case} PROPERTIES TIMEOUT 30
+            LABELS "fstack;fstack-reload;directory-foundation"
+            ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    endforeach()
 endif()

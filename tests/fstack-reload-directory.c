@@ -92,11 +92,27 @@ static void primary_probe_fallback(void)
     ff_global_cfg.dpdk.graceful_reload = 0;
 }
 
+/* Unchanged pinned source tests; CHECK replaces only cmocka's assertion host. */
+#define assert_int_equal(left, right) CHECK((left) == (right))
+#define assert_true(value) CHECK(value)
+#include "fstack-reload-directory-source.inc"
 
-int main(void)
+int main(int argc, char **argv)
 {
-    hardware_users();
-    primary_probe_fallback();
-    puts("PASS: directory source assertions; multiprocess qualification pending");
+    if (argc == 2) {
+        if (!strcmp(argv[1], "hw-users")) test_p2_hw_user_proof(NULL);
+        else if (!strcmp(argv[1], "reclaim")) test_p2_reclaim_needs_user_proof(NULL);
+        else if (!strcmp(argv[1], "release")) test_p2_release_epoch_needs_proof(NULL);
+        else if (!strcmp(argv[1], "orphans")) test_p2_orphan_workers_keep_epoch_live(NULL);
+        else if (!strcmp(argv[1], "ring-census")) test_rx15_ring_user_census_and_purge_lock(NULL);
+        else CHECK(0);
+    } else {
+        CHECK(argc == 1);
+        hardware_users(); primary_probe_fallback();
+        test_p2_hw_user_proof(NULL); test_p2_reclaim_needs_user_proof(NULL);
+        test_p2_release_epoch_needs_proof(NULL); test_p2_orphan_workers_keep_epoch_live(NULL);
+        test_rx15_ring_user_census_and_purge_lock(NULL);
+    }
+    puts("PASS: directory source assertions; multiprocess qualification required");
     return 0;
 }
