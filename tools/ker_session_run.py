@@ -1,6 +1,7 @@
 """Launch an original Linux instance on a granted secondary packet session."""
 import errno
 import faulthandler
+import hashlib
 import ipaddress
 import json
 import os
@@ -74,6 +75,107 @@ def tap_interfaces_for_process(pid, *, fdinfo_dir=None):
         names.extend(line.split(':', 1)[1].strip() for line in information.splitlines()
             if line.startswith('iff:'))
     return names
+
+
+def _read_proc_fields(path, allowed, maximum):
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(maximum + 1)
+    except OSError as error:
+        return {'error': {'type': type(error).__name__, 'errno': error.errno}}
+    truncated = len(raw) > maximum
+    text = raw[:maximum].decode('utf-8', errors='replace')
+    fields = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(':')
+        if separator and key in allowed:
+            bounded = ''.join(ch if ch.isalnum() or ch in '._:-' else '?' for ch in value.strip()[:96])
+            fields[key] = bounded
+    return {'fields': fields, 'bytes_read': min(len(raw), maximum), 'truncated': truncated}
+
+
+def _proc_link_summary(path):
+    try:
+        target = os.readlink(path)
+    except OSError as error:
+        return {'error': {'type': type(error).__name__, 'errno': error.errno}}
+    if target == '/dev/net/tun':
+        kind = 'tun-device'
+    elif target.startswith('/dev/'):
+        kind = 'device-path'
+    elif target.startswith('socket:['):
+        kind = 'socket'
+    elif target.startswith('pipe:['):
+        kind = 'pipe'
+    elif target.startswith('anon_inode:['):
+        kind = 'anon-inode'
+    elif target.startswith('/'):
+        kind = 'absolute-path'
+    else:
+        kind = 'other'
+    return {'kind': kind, 'target_bytes': len(os.fsencode(target)),
+        'target_sha256': hashlib.sha256(os.fsencode(target)).hexdigest()}
+
+
+def _old_endpoint_fd_diagnostics(pid, fd, *, expected_interface, expected_ifindex,
+                                 owner_key, old_tun_interfaces, pidfd, proc_root='/proc'):
+    process_dir = Path(proc_root) / str(pid)
+    fd_path = process_dir / 'fd' / str(fd)
+    fdinfo_path = process_dir / 'fdinfo' / str(fd)
+    try:
+        pidfd_readable = bool(select.select([pidfd], [], [], 0)[0]) if pidfd is not None else None
+    except (OSError, TypeError, ValueError) as error:
+        pidfd_readable = None
+        pidfd_error = {'type': type(error).__name__, 'errno': getattr(error, 'errno', None)}
+    else:
+        pidfd_error = None
+    names = []
+    for name in list(old_tun_interfaces)[:64]:
+        names.append(''.join(ch if ch.isalnum() or ch in '._:-' else '?' for ch in str(name)[:64]))
+    return {
+        'worker': {'pid': pid, 'captured_pidfd_readable': pidfd_readable,
+            'pidfd_error': pidfd_error},
+        'expected_endpoint': {'interface': str(expected_interface)[:64],
+            'ifindex': expected_ifindex, 'owner_key': owner_key},
+        'pre_stat_tun_census': {'completed': True, 'names': names,
+            'truncated': len(old_tun_interfaces) > 64},
+        'fdinfo': _read_proc_fields(fdinfo_path,
+            {'pos', 'flags', 'mnt_id', 'ino', 'iff'}, 4096),
+        'fdlink': _proc_link_summary(fd_path),
+        'process_status': _read_proc_fields(process_dir / 'status',
+            {'Name', 'State', 'Tgid', 'Pid', 'PPid', 'Uid', 'Gid', 'NSpid', 'NStgid',
+             'TracerPid', 'NoNewPrivs', 'Seccomp'}, 16384),
+    }
+
+
+def old_endpoint_fd_path_exists(pid, fd, *, expected_interface, expected_ifindex,
+                                owner_key, old_tun_interfaces, pidfd, proc_root='/proc'):
+    """Following-stat one old fd slot, logging bounded context but preserving errors."""
+    path = Path(proc_root) / str(pid) / 'fd' / str(fd)
+    try:
+        path.stat()
+    except OSError as original_error:
+        if original_error.errno == errno.ENOENT:
+            return False
+        try:
+            diagnostic = _old_endpoint_fd_diagnostics(pid, fd,
+                expected_interface=expected_interface, expected_ifindex=expected_ifindex,
+                owner_key=owner_key, old_tun_interfaces=old_tun_interfaces,
+                pidfd=pidfd, proc_root=proc_root)
+        except Exception as diagnostic_error:
+            diagnostic = {'diagnostic_collection_error': {
+                'type': type(diagnostic_error).__name__,
+                'errno': getattr(diagnostic_error, 'errno', None)}}
+        diagnostic['failure'] = {'operation': 'proc-fd-following-stat',
+            'type': type(original_error).__name__, 'errno': original_error.errno}
+        try:
+            print('KER_SESSION_OLD_ENDPOINT_FD_STAT_FAILURE ' +
+                json.dumps(diagnostic, sort_keys=True, separators=(',', ':')),
+                file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        raise
+    return True
 
 
 def capture_exited_process_stdout(process, *, max_bytes=262144, budget=0.05):
@@ -913,8 +1015,14 @@ def _run_session_impl(args, api):
         validate_parked_owner_cleared(owner_cleared, worker.pid)
         old_exception_fd = metrics['geometry'].get('exception_endpoint_fd_number')
         old_tun_interfaces = tap_interfaces_for_process(worker.pid)
-        if (not isinstance(old_exception_fd, int) or Path(f'/proc/{worker.pid}/fd/{old_exception_fd}').exists() or
-                metrics['geometry'].get('exception_endpoint_ifindex') <= 0 or
+        if not isinstance(old_exception_fd, int):
+            raise RuntimeError('parked owner still holds the session exception endpoint or another alias to its TAP')
+        old_exception_fd_present = old_endpoint_fd_path_exists(worker.pid, old_exception_fd,
+            expected_interface=metrics['exception_endpoint_name'],
+            expected_ifindex=metrics['geometry'].get('exception_endpoint_ifindex'),
+            owner_key=metrics['grant'].get('exception_endpoint_owner_key'),
+            old_tun_interfaces=old_tun_interfaces, pidfd=worker_pidfd)
+        if (old_exception_fd_present or metrics['geometry'].get('exception_endpoint_ifindex') <= 0 or
                 metrics['exception_endpoint_name'] in old_tun_interfaces):
             raise RuntimeError('parked owner still holds the session exception endpoint or another alias to its TAP')
         if os.write(peer_control_w, b'P') != 1:

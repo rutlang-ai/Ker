@@ -15,6 +15,8 @@
 #include <stdatomic.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <linux/sockios.h>
 #include <sys/syscall.h>
 #include <stdlib.h>
 #include <string.h>
@@ -184,6 +186,71 @@ static void bind_collision(void)
     CHECK(server >= 0 && close(listener) == 0);
     finish((struct pair){client, server});
 }
+static void empty_path_stat(void)
+{
+    struct pair p = connected(); int alias = dup(p.client); CHECK(alias >= 0);
+    struct stat expected, result; CHECK(fstat(p.client, &expected) == 0);
+    CHECK(fstatat(alias, "", &result, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) == 0);
+    CHECK(S_ISSOCK(result.st_mode) && result.st_ino == expected.st_ino && result.st_dev == expected.st_dev);
+    int (*stat_at)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat");
+    CHECK(stat_at && stat_at(alias, NULL, &result, AT_EMPTY_PATH) == 0);
+    CHECK(result.st_ino == expected.st_ino);
+    ERROR(stat_at(alias, "", NULL, AT_EMPTY_PATH), EFAULT);
+    struct stat64 wide; CHECK(fstatat64(alias, "", &wide, AT_EMPTY_PATH) == 0);
+    CHECK(wide.st_ino == expected.st_ino && wide.st_mode == expected.st_mode);
+    ERROR(fstatat(alias, "", &result, 0), ENOENT);
+    ERROR(fstatat(alias, "relative-child", &result, 0), ENOTDIR);
+    ERROR(fstatat(alias, "relative-child", &result, 0x40000000), EINVAL);
+    char path[] = "/tmp/ker-stat-at-XXXXXX"; int host = mkstemp(path); CHECK(host >= 0);
+    CHECK(write(host, "stat-at", 7) == 7);
+    struct stat host_stat; CHECK(fstat(host, &host_stat) == 0);
+    CHECK(fstatat(alias, path, &result, 0) == 0 && result.st_ino == host_stat.st_ino && result.st_size == 7);
+    CHECK(fstatat(host, "", &result, AT_EMPTY_PATH) == 0 && result.st_ino == host_stat.st_ino);
+    CHECK(close(host) == 0 && unlink(path) == 0);
+    CHECK(close(p.client) == 0 && fstatat(alias, "", &result, AT_EMPTY_PATH) == 0);
+    CHECK(result.st_ino == expected.st_ino && write(alias, "ok", 2) == 2);
+    char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2 && memcmp(bytes, "ok", 2) == 0);
+    CHECK(close(alias) == 0 && close(p.server) == 0);
+}
+static void unreadable_path_statat(void)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0);
+    void *unreadable = mmap(NULL, (size_t)page_size, PROT_NONE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(unreadable != MAP_FAILED);
+    int host = open("/dev/null", O_RDONLY | O_CLOEXEC); CHECK(host >= 0);
+    struct stat result;
+    int (*stat_at)(int, const char *, struct stat *, int) = dlsym(RTLD_DEFAULT, "fstatat");
+    CHECK(stat_at != NULL);
+    ERROR(fstatat(AT_FDCWD, unreadable, &result, 0), EFAULT);
+    ERROR(stat_at(AT_FDCWD, unreadable, &result, 0), EFAULT);
+    ERROR(fstatat(host, unreadable, &result, 0), EFAULT);
+    ERROR(stat_at(host, unreadable, &result, 0), EFAULT);
+    if (dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        struct pair p = connected();
+        char *pages = mmap(NULL, (size_t)page_size * 2, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(pages != MAP_FAILED);
+        CHECK(mprotect(pages + page_size, (size_t)page_size, PROT_NONE) == 0);
+        char *boundary = pages + page_size - 1;
+        boundary[0] = 'x';
+        ERROR(fstatat(p.client, unreadable, &result, 0), EFAULT);
+        ERROR(stat_at(p.client, unreadable, &result, 0), EFAULT);
+        ERROR(fstatat(p.client, boundary, &result, 0), EFAULT);
+        ERROR(stat_at(p.client, boundary, &result, 0), EFAULT);
+        /* A NUL at the end of the readable page must not probe the next page. */
+        boundary[0] = '\0';
+        CHECK(fstatat(p.client, boundary, &result, AT_EMPTY_PATH) == 0);
+        CHECK(stat_at(p.client, boundary, &result, AT_EMPTY_PATH) == 0);
+        CHECK(fstat(p.client, &result) == 0);
+        CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
+        char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2);
+        CHECK(memcmp(bytes, "ok", sizeof(bytes)) == 0);
+        finish(p);
+        CHECK(munmap(pages, (size_t)page_size * 2) == 0);
+    }
+    CHECK(close(host) == 0 && munmap(unreadable, (size_t)page_size) == 0);
+}
 static void duplicate_identity(void)
 {
     struct pair p = connected();
@@ -315,6 +382,139 @@ static void file_lifecycle_operations(void)
     CHECK(ftruncate(fd, 5) == 0 && pread(fd, &byte, 1, 4) == 1 && byte == 0);
     CHECK(close(fd) == 0);
     ERROR(fsync(fd), EBADF); ERROR(fdatasync(fd), EBADF); ERROR(ftruncate(fd, 0), EBADF);
+}
+
+typedef int (*fd_output_call)(int, void *);
+typedef int (*at_output_call)(int, const char *, void *, int);
+static int output_fstat(int fd, void *output) { return fstat(fd, output); }
+static int output_fstat64(int fd, void *output) { return fstat64(fd, output); }
+static int output_fxstat(int fd, void *output)
+{
+    int (*call)(int, int, void *) = dlsym(RTLD_DEFAULT, "__fxstat"); CHECK(call);
+    return call(0, fd, output);
+}
+static int output_fxstat64(int fd, void *output)
+{
+    int (*call)(int, int, void *) = dlsym(RTLD_DEFAULT, "__fxstat64"); CHECK(call);
+    return call(0, fd, output);
+}
+static int output_fstatat(int fd, const char *path, void *output, int flags)
+{ return fstatat(fd, path, output, flags); }
+static int output_fstatat64(int fd, const char *path, void *output, int flags)
+{ return fstatat64(fd, path, output, flags); }
+static int output_fxstatat(int fd, const char *path, void *output, int flags)
+{
+    int (*call)(int, int, const char *, void *, int) = dlsym(RTLD_DEFAULT, "__fxstatat"); CHECK(call);
+    return call(0, fd, path, output, flags);
+}
+static int output_fxstatat64(int fd, const char *path, void *output, int flags)
+{
+    int (*call)(int, int, const char *, void *, int) = dlsym(RTLD_DEFAULT, "__fxstatat64"); CHECK(call);
+    return call(0, fd, path, output, flags);
+}
+static int output_fstatfs(int fd, void *output) { return fstatfs(fd, output); }
+static int output_fstatfs64(int fd, void *output) { return fstatfs64(fd, output); }
+static int output_statat_empty(at_output_call call, int fd, void *output)
+{ return call(fd, "", output, AT_EMPTY_PATH); }
+static void expect_output_efault(fd_output_call call, int fd, size_t size)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0 && size < (size_t)page_size);
+    void *protected = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(protected != MAP_FAILED);
+    ERROR(call(fd, protected), EFAULT);
+    CHECK(munmap(protected, (size_t)page_size) == 0);
+
+    unsigned char *readonly = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(readonly != MAP_FAILED);
+    memset(readonly, 0xa5, (size_t)page_size);
+    CHECK(mprotect(readonly, (size_t)page_size, PROT_READ) == 0);
+    ERROR(call(fd, readonly), EFAULT);
+    CHECK(munmap(readonly, (size_t)page_size) == 0);
+
+    unsigned char *cross_page = mmap(NULL, (size_t)page_size * 2,
+                                     PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(cross_page != MAP_FAILED);
+    memset(cross_page, 0xa5, (size_t)page_size * 2);
+    CHECK(mprotect(cross_page + page_size, (size_t)page_size, PROT_READ) == 0);
+    void *partial = cross_page + page_size - size / 2;
+    ERROR(call(fd, partial), EFAULT);
+    CHECK(munmap(cross_page, (size_t)page_size * 2) == 0);
+}
+static void expect_at_output_efault(at_output_call call, int fd, size_t size)
+{
+    long page_size = sysconf(_SC_PAGESIZE); CHECK(page_size > 0 && size < (size_t)page_size);
+    void *protected = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(protected != MAP_FAILED);
+    ERROR(output_statat_empty(call, fd, protected), EFAULT);
+    CHECK(munmap(protected, (size_t)page_size) == 0);
+
+    unsigned char *readonly = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(readonly != MAP_FAILED);
+    memset(readonly, 0xa5, (size_t)page_size);
+    CHECK(mprotect(readonly, (size_t)page_size, PROT_READ) == 0);
+    ERROR(output_statat_empty(call, fd, readonly), EFAULT);
+    CHECK(munmap(readonly, (size_t)page_size) == 0);
+
+    unsigned char *cross_page = mmap(NULL, (size_t)page_size * 2,
+                                     PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(cross_page != MAP_FAILED);
+    memset(cross_page, 0xa5, (size_t)page_size * 2);
+    CHECK(mprotect(cross_page + page_size, (size_t)page_size, PROT_READ) == 0);
+    void *partial = cross_page + page_size - size / 2;
+    ERROR(output_statat_empty(call, fd, partial), EFAULT);
+    CHECK(munmap(cross_page, (size_t)page_size * 2) == 0);
+}
+static void descriptor_stat_output_faults(void)
+{
+    struct pair p = connected();
+    struct stat expected, result;
+    CHECK(fstat(p.client, &expected) == 0);
+    const struct {const char *name; fd_output_call call;} stat_calls[] = {
+        {"fstat", output_fstat}, {"fstat64", output_fstat64},
+        {"__fxstat", output_fxstat}, {"__fxstat64", output_fxstat64},
+    };
+    for (size_t i = 0; i < sizeof(stat_calls) / sizeof(stat_calls[0]); ++i) {
+        struct stat actual;
+        CHECK(stat_calls[i].call(p.client, &actual) == 0);
+        CHECK(actual.st_ino == expected.st_ino && actual.st_dev == expected.st_dev);
+        expect_output_efault(stat_calls[i].call, p.client, sizeof(actual));
+        ERROR(stat_calls[i].call(p.client, NULL), EFAULT);
+    }
+    const struct {const char *name; at_output_call call;} at_calls[] = {
+        {"fstatat", output_fstatat}, {"fstatat64", output_fstatat64},
+        {"__fxstatat", output_fxstatat}, {"__fxstatat64", output_fxstatat64},
+    };
+    for (size_t i = 0; i < sizeof(at_calls) / sizeof(at_calls[0]); ++i) {
+        struct stat actual;
+        CHECK(output_statat_empty(at_calls[i].call, p.client, &actual) == 0);
+        CHECK(actual.st_ino == expected.st_ino && actual.st_dev == expected.st_dev);
+        expect_at_output_efault(at_calls[i].call, p.client, sizeof(actual));
+        ERROR(output_statat_empty(at_calls[i].call, p.client, NULL), EFAULT);
+        /* The imported syscall's ENOTDIR wins before any output copyout. */
+        ERROR(at_calls[i].call(p.client, "relative-child", (void *)1, 0), ENOTDIR);
+    }
+
+    const struct {const char *name; fd_output_call call;} statfs_calls[] = {
+        {"fstatfs", output_fstatfs}, {"fstatfs64", output_fstatfs64},
+    };
+    for (size_t i = 0; i < sizeof(statfs_calls) / sizeof(statfs_calls[0]); ++i) {
+        struct statfs actual;
+        CHECK(statfs_calls[i].call(p.client, &actual) == 0);
+        CHECK(actual.f_type == SOCKFS_MAGIC && actual.f_bsize > 0);
+        expect_output_efault(statfs_calls[i].call, p.client, sizeof(actual));
+        ERROR(statfs_calls[i].call(p.client, NULL), EFAULT);
+    }
+    CHECK(fstat(p.client, &result) == 0 && result.st_ino == expected.st_ino);
+    CHECK(write(p.client, "ok", 2) == 2); ready(p.server);
+    char bytes[2]; CHECK(recv(p.server, bytes, sizeof(bytes), MSG_WAITALL) == 2);
+    CHECK(!memcmp(bytes, "ok", sizeof(bytes)));
+    finish(p);
 }
 
 static void filesystem_statistics(void)
@@ -1173,8 +1373,10 @@ static void checked_entry_cancellation(void)
     checked_host_cancellation(CHECKED_READ);
     checked_host_cancellation(CHECKED_RECV);
     checked_host_cancellation(CHECKED_RECVFROM);
-    checked_host_cancellation(CHECKED_POLL);
-    checked_host_cancellation(CHECKED_PPOLL);
+    for (unsigned i = 0; i < 8; ++i) {
+        checked_host_cancellation(CHECKED_POLL);
+        checked_host_cancellation(CHECKED_PPOLL);
+    }
     checked_host_pread_cancellation();
 }
 static void fortified_io(void)
@@ -1187,9 +1389,18 @@ static void fortified_io(void)
     CHECK(lseek(hostfd, 0, SEEK_CUR) == 5 && close(hostfd) == 0);
     volatile size_t count = 1; volatile nfds_t descriptors = 1;
     CHECK(write(p.client, "f", 1) == 1); ready(p.server);
+    int hostready[2]; CHECK(pipe(hostready) == 0);
+    CHECK(write(hostready[1], "h", 1) == 1);
+    struct timespec timeout = {0, 0};
+    struct pollfd host_event = {hostready[0], POLLIN, 0};
+    CHECK(__poll_chk(&host_event, 1, 0, sizeof host_event) == 1 && (host_event.revents & POLLIN));
+    host_event.revents = 0;
+    CHECK(__ppoll_chk(&host_event, 1, &timeout, NULL, sizeof host_event) == 1 && (host_event.revents & POLLIN));
+    char host_byte; CHECK(read(hostready[0], &host_byte, 1) == 1 && host_byte == 'h');
+    CHECK(close(hostready[0]) == 0 && close(hostready[1]) == 0);
+
     struct pollfd event = {p.server, POLLIN, 0};
     CHECK(__poll_chk(&event, descriptors, 0, sizeof event) == 1 && (event.revents & POLLIN));
-    struct timespec timeout = {0, 0};
     CHECK(__ppoll_chk(&event, descriptors, &timeout, NULL, sizeof event) == 1 && (event.revents & POLLIN));
     CHECK(__recv_chk(p.server, bytes, count, sizeof bytes, MSG_PEEK) == 1 && bytes[0] == 'f');
     CHECK(__recvfrom_chk(p.server, bytes, count, sizeof bytes, MSG_PEEK, NULL, NULL) == 1 && bytes[0] == 'f');
@@ -1284,6 +1495,7 @@ int main(void)
     const struct {const char *name; void (*run)(void);} cases[] = {
         {"file-lifecycle-owner-routing", file_lifecycle_operations},
         {"filesystem-statistics-owner-routing", filesystem_statistics},
+        {"descriptor-stat-output-faults-and-recovery", descriptor_stat_output_faults},
         {"descriptor-permissions-owner-routing", descriptor_permissions},
         {"descriptor-timestamp-owner-routing", descriptor_timestamps},
         {"file-allocation-owner-routing", file_allocation},
@@ -1308,6 +1520,8 @@ int main(void)
         {"socket-options-errors-and-recovery", option_roundtrip},
         {"bind-collision-preserves-listener", bind_collision},
         {"duplicate-stat-identity-and-self-duplication", duplicate_identity},
+        {"empty-path-stat-owner-routing", empty_path_stat},
+        {"unreadable-host-path-statat", unreadable_path_statat},
         {"host-native-identical-udp-tuple", host_native_same_tuple},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
