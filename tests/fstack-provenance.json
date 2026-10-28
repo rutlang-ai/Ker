@@ -512,6 +512,18 @@
         "native-fstack-tcp-listener-restart"
       ]
     },
+    "fstack-address-policy-ipv6": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-ipv6",
+        "fstack-address-policy-lifetime",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md."
+    },
     "native-fstack-udp-errors": {
       "source_example": "adapter/syscall/main_stack_udp.c",
       "adaptation": "Ker-specific Linux error-queue extension of the pinned UDP socket/epoll example; IP_RECVERR is not claimed as an upstream F-Stack test or API. The same POSIX assertions run first on host Linux and then on the complete imported Linux kernel with connected and unconnected UDP. An independent host kernel generates real ICMP port-unreachable for an unused port in an isolated namespace. Tests require unsolicited EPOLLERR, SO_ERROR ECONNREFUSED, persistent queue readiness after SO_ERROR is read, quoted payload and destination, sock_extended_err errno/origin/type/code and offender address, empty-queue EAGAIN, cleared error readiness, and verified echo recovery on the same socket. Native runs require original-Linux UDP counters, DPDK TX/RX and zero outstanding buffers. No synthetic ICMP, protocol implementation, ff implementation, mock, kernel source change, general ancillary-data, IPv6 or io_uring support is introduced."
@@ -1995,6 +2007,18 @@
       ],
       "adaptation": "Additional independent configuration regression using the production Ker INI reader and launcher argument validation: config nonnumeric ceiling. Test selector: tests/posix/test_fstack_config_cases.py SourceCases.test_config_nonnumeric_ceiling. Errors are checked before worker/application execution where applicable, with valid-load recovery and independent state assertions. The source case was already scenario-adapted; this adds a runnable regression, not a newly completed upstream case. No F-Stack callback/C ABI, original-Linux protocol or DPDK traffic evidence is claimed."
     },
+    "fstack-address-policy-register": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_regist_pcblddr_fun_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-register",
+        "fstack-address-policy-lifetime",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md."
+    },
     "native-fstack-session-orphan-safety": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": "test_rx15_primary_purges_orphaned_rings",
@@ -2126,6 +2150,18 @@
         "native-fstack-virtio-kernel-offloads"
       ],
       "adaptation": "Fresh native-fstack-virtio-kernel-offloads execution runs original virtio-user through host vhost-net/TAP and original Linux software checksum/segmentation. The tested profiles cover off, checksum, IPv4/IPv6 TSO, large/scatter buffers, one/two queues, persistent TAP and interface rename. Independent capture verifies TCP payload coverage, IPv4/TCP/UDP checksums, MTU bounds and zero AF_PACKET capture drops. Shutdown accounting is profile-specific: the rename profile asserts its permitted rx_shutdown_discarded=1; other ownership and cleanup counters are checked in their respective profiles, with pools restored at teardown. This is software-path evidence, not physical-NIC qualification. The native receive-mode adapter verifies/restores actual host TAP flags only for the supported named vhost backend."
+    },
+    "fstack-address-policy-ipv4": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_in_pcbladdr_af_inet_dispatches"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-ipv4",
+        "fstack-address-policy-lifetime",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md."
     },
     "native-fstack-udp-lowwater": {
       "source_example": "adapter/syscall/main_stack_udp.c",
@@ -2674,6 +2710,18 @@
         "native-fstack-jumbo-mtu"
       ],
       "adaptation": "INI-provided MTU9000 configures actual DPDK port and original Linux interface. Real net_tap/veth links use9000; TCP transfers and UDP payloads0/1/1472/8972 run against independent host peers in both native roles plus host-reference UDP. IP_MTU must be9000; DF payload8973 fails with EMSGSIZE. Native UDP counters and zero fragmentation/reassembly plus PCAP in each direction require an actual complete9014-byte Ethernet frame containing an unfragmented9000-byte IPv4 UDP packet. Zero outstanding mbufs required. The Ker adapter negotiates original LKL virtio mergeable RX buffers for jumbo; checksum/segmentation offloads stay disabled. DPDK uses contiguous buffers sized with Ethernet/CRC/headroom. No modified upstream code, FreeBSD scatter API, DPDK scatter mode or external IPv6 jumbo claim."
+    },
+    "fstack-address-policy-default": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_in_pcbladdr_no_callback"
+      ],
+      "ker_ctests": [
+        "fstack-address-policy-default",
+        "fstack-address-policy-lifetime",
+        "native-fstack-address-policy-sockets"
+      ],
+      "adaptation": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md."
     },
     "headroom-export": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",

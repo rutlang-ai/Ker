@@ -222,11 +222,16 @@
       "id": "packet-dispatch-hooks",
       "title": "Define packet-dispatch and PCB callback adaptation boundaries",
       "disposition": "contract-review",
-      "reason": "F-Stack dispatcher/context and PCB-local-address callbacks are not Ker APIs. A Linux packet-device bridge or legacy dispatcher is not a registration-compatible substitute.",
+      "reason": "Four PCB address-callback cases completed through the original dispatch and an explicit native-Linux caller, with repository/installed payload and lifetime proof. Packet plain/context dispatcher registration and unregister still require an actual useful packet consumer and original callback forwarding/ownership/quiescence contract.",
       "evidence": [
         "include/ker/posix.h",
         "src/posix/packet-device.c",
-        "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c"
+        "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c",
+        "include/ker/address-policy.h",
+        "src/compat/address-policy.c",
+        "tests/posix/address-policy-sockets.c",
+        "tests/address-policy-lifetime.c",
+        "docs/fstack-address-policy.md"
       ],
       "acceptance": [
         "For every callback, decide whether a runtime hook has a useful Ker caller and an ownership/quiescence contract, or document why the FreeBSD ABI is excluded.",
@@ -234,12 +239,8 @@
         "Do not expose an unused setter solely to pass smoke tests or bypass original Linux protocol behavior."
       ],
       "cases": [
-        "tests/unit/test_ff_dpdk_if.c::test_ff_regist_pcblddr_fun_smoke",
         "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
         "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_no_callback",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet_dispatches",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap",
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/222"

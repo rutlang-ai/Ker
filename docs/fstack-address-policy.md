@@ -65,3 +65,16 @@ the native caller and a separately configured installed consumer using only
 assertion fixtures are exact source copies. This component needs no EAL and
 does not depend on DPDK; the native socket qualification uses the actual native
 kernel/EAL runtime separately.
+
+## Qualified candidate
+
+Candidate `38f4e5c5b02b4a946c8997cc986f3271c5cda5dc` passes all seven
+Release/shared and six Debug/static CTests without skips. Independently
+installed source/lifetime executables pass too; the installed native caller
+completes the same six exchanges as the repository build. Full evidence is in
+`/home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1`,
+whose `manifest.json` SHA256 is
+`d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6`.
+The manifest binds complete runtime records, source, installed source/CMake/link
+inputs, library and executable bytes. These four baseline-blocked source IDs
+raise the objective to **46/50**; four unfinished cases are still required.

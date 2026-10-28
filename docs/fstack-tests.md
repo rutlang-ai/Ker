@@ -739,3 +739,14 @@ PMD收发、claim前保持停用、活目标拒绝回退、实际目标master死
 仓库/安装消费者和此前九组profile在guest13全部通过，两个旧示例与正常关机也通过；
 见[pool合同及散列](fstack-pools.md)。当前目标 **42/50**，尚需8项，完整源ID见
 [基线差分清单](../tests/fstack-unfinished-completed.json)。
+
+
+### 第十二批：原始地址回调（4 项）
+
+`ker::address_policy` 保留原始PCB回调分发及完整源断言，支持注册、NULL默认行为、
+IPv4参数/返回值透传、IPv6的28→10转换。调用方显式选择源地址后使用原始Linux的
+bind/connect；不注入隐式POSIX钩子，不移植FreeBSD协议实现。实际仓库/安装消费者
+各完成六次双栈TCP通信，验证源127.0.0.2、地址/端口、拒绝、注销恢复及FIN/EOF。
+替换/注销等待、嵌套调用、重入拒绝和取消清理另有回归，不重复计数。Debug/static、
+Release/shared、独立find_package安装消费均通过，证据见
+[地址回调合同](fstack-address-policy.md)。当前 **46/50**，仍需4个原先未完成的案例。

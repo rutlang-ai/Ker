@@ -1,8 +1,8 @@
 {
   "baseline_commit": "7f46febcade4166c5820f79b204d5a2b9413408f",
   "target": 50,
-  "newly_completed": 42,
-  "remaining": 8,
+  "newly_completed": 46,
+  "remaining": 4,
   "status": "in-progress",
   "cases": [
     {
@@ -652,6 +652,82 @@
         {
           "ctest": "fstack-ipc-multiprocess",
           "provenance_case": "fstack-ipc-probe"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_pcblddr_fun_smoke",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-address-policy-register",
+          "provenance_case": "fstack-address-policy-register"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-register"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-register"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_no_callback",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-address-policy-default",
+          "provenance_case": "fstack-address-policy-default"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-default"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-default"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet_dispatches",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-address-policy-ipv4",
+          "provenance_case": "fstack-address-policy-ipv4"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-ipv4"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-ipv4"
+        }
+      ]
+    },
+    {
+      "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap",
+      "baseline": "blocked",
+      "now": "scenario-adapted",
+      "tests": [
+        {
+          "ctest": "fstack-address-policy-ipv6",
+          "provenance_case": "fstack-address-policy-ipv6"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-ipv6"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-ipv6"
         }
       ]
     }
