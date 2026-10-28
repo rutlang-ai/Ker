@@ -9,6 +9,9 @@
  * Missing/incompatible/conflicting directories retain upstream's fatal startup
  * refusal. Precondition errors use negative errno. Attachment fixes this
  * process's generation/worker slot until detach. No EAL teardown is owned here.
+ * Requires a writable EAL runtime directory for the stable Ker registration lock
+ * file; coordination failures return negative errno. Keep that file in place
+ * until every participant in this EAL namespace has quiesced.
  * Every secondary starts with a STOPPED registration, including workers that
  * have not polled yet. Distinct masters require distinct actual parents. */
 KER_API int ker_reload_directory_attach(void);

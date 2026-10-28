@@ -5,6 +5,8 @@
 #include "check.h"
 #include <inttypes.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <time.h>
 #include <rte_eal.h>
@@ -181,6 +183,40 @@ static void wait_stale(uint32_t epoch)
     CHECK(!live);
     printf("STALE {\"epoch\":%u,\"elapsed_ms\":%" PRIu64 "}\n",epoch,now_ms()-start); flush();
 }
+static void locate_until(unsigned expected_epoch, unsigned expected_gen)
+{
+    /* ff_reload.c caches a positive PID liveness probe for 50 ms. A retired
+     * master can therefore remain the QUERY answer briefly after the separate
+     * directory epoch-live check observes its death; require convergence. */
+    uint64_t start = now_ms(), deadline = start + 1000;
+    uint32_t observed_epoch[8] = {0}, observed_gen[8] = {0};
+    unsigned attempts = 0, saved = 0;
+    ker_ipc_message message;
+    for (;;) {
+        ker_reload_message_fill(&message, FF_RELOAD_CMD_QUERY, 0, 0, 7);
+        if (attempts < 8) {
+            observed_epoch[attempts] = message.reload.epoch;
+            observed_gen[attempts] = message.reload.active_gen;
+            saved++;
+        }
+        attempts++;
+        if (message.reload.epoch == expected_epoch &&
+            message.reload.active_gen == expected_gen) break;
+        CHECK(now_ms() < deadline);
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 5000000};
+        nanosleep(&delay, NULL);
+    }
+    if (attempts > 1) {
+        printf("LOCATOR_RETRY {\"expected\":[%u,%u],\"attempts\":%u,\"wait_ms\":%" PRIu64 ",\"observed\":[",
+            expected_epoch, expected_gen, attempts, now_ms() - start);
+        for (unsigned i = 0; i < saved; ++i)
+            printf("%s[%u,%u]", i ? "," : "", observed_epoch[i], observed_gen[i]);
+        puts("]}");
+        flush();
+    }
+    printf("LOCATED {\"epoch\":%u,\"generation\":%u}\n", expected_epoch, expected_gen);
+    flush();
+}
 static int observations(char *command)
 {
     unsigned epoch,gen;
@@ -195,6 +231,7 @@ static int observations(char *command)
     } else if(sscanf(command,"live %u",&epoch)==1) {
         printf("LIVE {\"epoch\":%u,\"live\":%d}\n",epoch,ker_reload_directory_epoch_live(epoch));flush();
     } else if(sscanf(command,"wait-stale %u",&epoch)==1) wait_stale(epoch);
+    else if(sscanf(command,"locate-until %u %u",&epoch,&gen)==2) locate_until(epoch,gen);
     else return 0;
     return 1;
 }
@@ -293,6 +330,36 @@ static int packet_poll(void *argument)
     return (int)received;
 }
 
+static void wait_attach_barrier(unsigned worker_slot)
+{
+    const char *directory = getenv("KER_DIRECTORY_ATTACH_BARRIER");
+    if (!directory) return;
+    char marker[PATH_MAX];
+    int length = snprintf(marker, sizeof(marker), "%s/slot-%u", directory, worker_slot);
+    CHECK(length > 0 && (size_t)length < sizeof(marker));
+    int fd = open(marker, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "ready", 5) == 5);
+    CHECK(!close(fd));
+    char go[PATH_MAX];
+    length = snprintf(go, sizeof(go), "%s/go", directory);
+    CHECK(length > 0 && (size_t)length < sizeof(go));
+    uint64_t deadline = now_ms() + 10000;
+    for (;;) {
+        if (access(go, F_OK) == 0) break;
+        CHECK(now_ms() < deadline);
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&delay, NULL);
+    }
+    char attempt[PATH_MAX];
+    length = snprintf(attempt, sizeof(attempt), "%s/attempt-%u", directory, worker_slot);
+    CHECK(length > 0 && (size_t)length < sizeof(attempt));
+    fd = open(attempt, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "attempt", 7) == 7);
+    CHECK(!close(fd));
+}
+
 static void worker(unsigned gen,unsigned worker_slot)
 {
     CHECK(rte_eal_process_type()==RTE_PROC_SECONDARY&&gen<2&&worker_slot<4);
@@ -300,7 +367,9 @@ static void worker(unsigned gen,unsigned worker_slot)
     char name[64];snprintf(name,sizeof(name),"ker_directory_state_%u",index);
     const struct rte_memzone *state=rte_memzone_lookup(name),*identity=rte_memzone_lookup(META);CHECK(state&&identity);shared=identity->addr;
     const char *pid=getenv("KER_DIRECTORY_PRIMARY_PID");CHECK(pid&&shared->magic==MAGIC&&shared->nonce==nonce()&&shared->primary==strtoul(pid,NULL,10));
-    CHECK(!ker_reload_bind_state(state->addr,state->len,0,(int)gen));CHECK(!ker_reload_worker_select((int)gen,worker_slot));CHECK(!ker_reload_directory_attach());
+    CHECK(!ker_reload_bind_state(state->addr,state->len,0,(int)gen));CHECK(!ker_reload_worker_select((int)gen,worker_slot));
+    wait_attach_barrier(worker_slot);
+    CHECK(!ker_reload_directory_attach());
     generation=gen;slot=worker_slot;pool=rte_mempool_lookup(POOL);messages=rte_mempool_lookup("ker_directory_messages");CHECK(pool&&messages);rings(0);CHECK(!rte_eth_dev_get_port_by_name(PORT,&port));
     struct rte_eth_dev_info info;CHECK(!rte_eth_dev_info_get(port,&info)&&!strcmp(info.driver_name,"net_ring"));
     struct ker_reload_directory_view view;CHECK(!ker_reload_directory_view(&view));

@@ -2,13 +2,16 @@
 """Original M5 locator, complete FF ring family sweep and same-gen handover."""
 import argparse
 import ctypes
+import fcntl
 import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
 import tempfile
+import time
 from hugepage_preflight import hugepage_capacity_error
 
 spec=importlib.util.spec_from_file_location('directory_fixture',Path(__file__).with_name('fstack-reload-directory.py'))
@@ -29,7 +32,7 @@ def main():
     libc=ctypes.CDLL(None,use_errno=True);prior=ctypes.c_int()
     require(libc.prctl(37,ctypes.byref(prior),0,0,0)==0 and libc.prctl(36,1,0,0,0)==0,'subreaper setup failed')
     nonce=format(int.from_bytes(os.urandom(7),'big') or 1,'x')
-    evidence={'profile':'original M5 QUERY-routed FF IPC and same-generation distinct-master net_ring ownership','nonce':nonce,'cases':[],'pool_reclaimed':False}
+    evidence={'profile':'original M5 QUERY-routed FF IPC and same-generation distinct-master net_ring ownership','nonce':nonce,'cases':[],'pool_reclaimed':False,'locator_retries':[]}
     with tempfile.TemporaryDirectory(prefix='ker-coordinates-') as temporary:
         root=Path(temporary);huge=args.huge_dir/('ker-coordinates-'+nonce);huge.mkdir(mode=0o700)
         masters=[];actors=[];primary=None
@@ -40,17 +43,61 @@ def main():
             require(checked.returncode==0 and 'PASS: directory source assertions' in checked.stdout,'complete source assertions failed: '+checked.stdout+checked.stderr)
             primary=Process([str(args.app),'primary','--proc-type=primary','-m','64',*common],env,root,'primary')
             require(primary.record('READY')=={'pid':primary.child.pid,'nonce':nonce,'available':63,'driver':'net_ring'},'primary identity/PMD mismatch')
-            def group(index,gen,slots,name):
+            def group(index,gen,slots,name,synchronized=False):
                 worker_env=dict(env,KER_DIRECTORY_PRIMARY_PID=str(primary.child.pid),KER_DIRECTORY_STATE_INDEX=str(index))
-                plan={'root':str(root),'workers':[(s,[str(args.app),'worker',str(gen),str(s),'--proc-type=secondary',*common]) for s in slots]}
+                barrier=root/(name+'-attach-barrier')
+                if synchronized:
+                    barrier.mkdir()
+                    worker_env['KER_DIRECTORY_ATTACH_BARRIER']=str(barrier)
+                cpus=sorted(os.sched_getaffinity(0))
+                if synchronized:require(len(cpus)>=2,'same-parent attach race regression requires two allowed CPUs')
+                workers=[]
+                for position,s in enumerate(slots):
+                    worker_common=common
+                    if synchronized:worker_common=[f'--lcores=0@{cpus[position]}',*common[1:]]
+                    workers.append((s,[str(args.app),'worker',str(gen),str(s),'--proc-type=secondary',*worker_common]))
+                plan={'root':str(root),'workers':workers}
                 master=Master(plan,worker_env,root,name);masters.append(master);group=[]
                 require(master.record('MASTER')=={'pid':master.child.pid},'actual master identity mismatch')
                 for _ in slots:
-                    metadata,fds=master.receive();actor=Actor(master,metadata,fds);actors.append(actor)
+                    metadata,fds=master.receive();actor=Actor(master,metadata,fds);actors.append(actor);group.append(actor)
+                held_lock=None
+                if synchronized:
+                    # Hold the same production lock while both real secondary
+                    # EALs reach the attach call boundary. Without adapter
+                    # serialization they would attach and notify the broker.
+                    runtime_dir=root/'dpdk'/('coordinates-'+nonce)
+                    held_lock=(runtime_dir/'ker-reload-gendir-register.lock').open('a+b')
+                    try:
+                        fcntl.flock(held_lock.fileno(),fcntl.LOCK_EX)
+                        deadline=time.monotonic()+10
+                        while not all((barrier/f'slot-{s}').exists() for s in slots):
+                            require(time.monotonic()<deadline,'siblings did not reach attach barrier')
+                            time.sleep(.001)
+                        (barrier/'go').touch()
+                        while not all((barrier/f'attempt-{s}').exists() for s in slots):
+                            require(time.monotonic()<deadline,'siblings did not reach attach call boundary')
+                            time.sleep(.001)
+                        readable,_,_=select.select([a.child.stdout for a in group],[],[],.1)
+                        require(not readable,'worker attached while registration lock was held')
+                    finally:
+                        fcntl.flock(held_lock.fileno(),fcntl.LOCK_UN)
+                        held_lock.close();held_lock=None
+                for actor in group:
                     attached=actor.record('ATTACHED');require(attached['pid']==actor.child.pid and attached['parent']==master.child.pid and attached['primary']==primary.child.pid and attached['generation']==gen and attached['slot']==actor.slot,'real secondary parent/state/driver mismatch')
-                    actor.epoch=attached['epoch'];actor.directory_slot=attached['directory_slot'];group.append(actor)
+                    actor.epoch=attached['epoch'];actor.directory_slot=attached['directory_slot']
+                if synchronized:
+                    for marker in barrier.iterdir():marker.unlink()
+                    barrier.rmdir()
                 require(len({a.epoch for a in group})==1,'one master split into different epochs')
+                if synchronized:require(len({a.directory_slot for a in group})==1,'sibling attach split one parent across directory slots')
                 return master,group
+            def locate_after_retirement(epoch,gen):
+                before=sum(line.startswith('LOCATOR_RETRY ') for line in primary.log)
+                result=primary.command(f'locate-until {epoch} {gen}','LOCATED')
+                require(result=={'epoch':epoch,'generation':gen},'QUERY locator did not converge after retired-master PID-cache TTL')
+                retries=[json.loads(line[len('LOCATOR_RETRY '):]) for line in primary.log if line.startswith('LOCATOR_RETRY ')][before:]
+                evidence['locator_retries'].extend(retries)
             def result(p,command,expected=0):require(p.command(command,'RESULT')=={'result':expected},'bad result for '+command)
             def locate(epoch,gen):require(primary.command('locate','LOCATED')=={'epoch':epoch,'generation':gen},'QUERY locator chose an unserved namespace')
             def names(epoch,create=True):require(primary.command(('names ' if create else 'drop ')+str(epoch),'NAMES')=={'epoch':epoch,'count':88,'created':int(create)},'complete FF family ring lifetime failed')
@@ -69,13 +116,14 @@ def main():
             ma,(a,)=group(0,0,[0],'probe-a');mb,(b,)=group(1,1,[2],'probe-b')
             require(a.epoch!=b.epoch and a.directory_slot!=b.directory_slot,'master namespace collision')
             names(a.epoch);names(b.epoch);locate(b.epoch,1);rpc(b,1,127,10,True)
-            b.close();mb.close();primary.command(f'wait-stale {b.epoch}','STALE');locate(a.epoch,0);rpc(a,0,127,10,True)
-            a.close();ma.close();primary.command(f'wait-stale {a.epoch}','STALE');locate(0,0)
+            b.close();mb.close();primary.command(f'wait-stale {b.epoch}','STALE');locate_after_retirement(a.epoch,0);rpc(a,0,127,10,True)
+            a.close();ma.close();primary.command(f'wait-stale {a.epoch}','STALE');locate_after_retirement(0,0)
             names(a.epoch,False);names(b.epoch,False)
             result(primary,'init-state 1 0')
-            mc,(c,c1)=group(0,0,[0,1],'master-c');md,(d,)=group(1,0,[2],'master-d')
+            mc,(c,c1)=group(0,0,[0,1],'master-c',synchronized=True);md,(d,)=group(1,0,[2],'master-d')
             require(c.epoch!=d.epoch and c.directory_slot!=d.directory_slot and c.epoch<d.epoch,'actual same-gen master coordinates invalid')
             require([c.directory_slot,d.directory_slot]==[1,2],'real successive epochs did not reach original e1/e2 naming slots')
+            require(c.epoch==c1.epoch and c.directory_slot==c1.directory_slot,'barrier-synchronized siblings did not share their parent coordinate')
             names(c.epoch);names(d.epoch);locate(d.epoch,0);rpc(d,0,127,10,True)
             # Every original source dimension traverses actual FF input/output
             # queues and typed pool, including same proc/gen under two masters.
@@ -89,6 +137,8 @@ def main():
                 require(r=={'result':packet,'callbacks':counts[actor.slot],'received':received[actor.slot],'completed':received[actor.slot]},'same-gen directory gate/PMD mismatch '+str(r))
             def inject(seq):require(primary.command(f'inject {seq}','INJECTED')=={'sequence':seq,'available':62},'actual hardware frame allocation failed')
             def collect(seq):require(primary.command('collect','COLLECTED')=={'sequence':seq,'available':63},'same exact PMD mbuf/payload did not return')
+            inject(0);poll(c1,1,True);collect(0)
+            evidence['sibling_registration']={'barrier_synchronized':True,'epoch':c.epoch,'directory_slot':c.directory_slot,'workers':[c.child.pid,c1.child.pid],'both_served_pmd':True}
             inject(1);c.child.stdin.write(b'poll hold\n');c.child.stdin.flush()
             require(c.record('ENTERED')=={'slot':0,'generation':0},'old same-gen owner did not hold real callback');counts[0]+=1
             poll(d);result(d,f'claim {c.epoch} 0',-3)

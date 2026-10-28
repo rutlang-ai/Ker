@@ -3,6 +3,61 @@
 static int directory_log_type = -1;
 static int directory_retiring;
 
+static uint64_t directory_monotonic_ms(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
+/* Serialize the imported parent-PID lookup and slot registration across
+ * sibling EAL secondaries. This separate runtime-directory lock never nests
+ * on DPDK's memzone/config lock; its inode stays stable for the EAL lifetime. */
+static int directory_registration_lock(void)
+{
+    const char *runtime_dir = rte_eal_get_runtime_dir();
+    if (!runtime_dir || !*runtime_dir) return -ENODEV;
+    char path[PATH_MAX];
+    int length = snprintf(path, sizeof(path), "%s/ker-reload-gendir-register.lock", runtime_dir);
+    if (length < 0 || (size_t)length >= sizeof(path)) return -ENAMETOOLONG;
+    int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0660);
+    if (fd < 0) return -errno;
+    struct stat file_status;
+    if (fstat(fd, &file_status) != 0) {
+        int error = errno;
+        close(fd);
+        return -error;
+    }
+    if (!S_ISREG(file_status.st_mode)) {
+        close(fd);
+        return -EINVAL;
+    }
+
+    uint64_t start = directory_monotonic_ms();
+    if (!start) { close(fd); return -EIO; }
+    for (;;) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) return fd;
+        int error = errno;
+        if (error != EINTR && error != EWOULDBLOCK && error != EAGAIN) {
+            close(fd);
+            return -error;
+        }
+        uint64_t now = directory_monotonic_ms();
+        if (!now || now - start >= 10000u) {
+            close(fd);
+            return now ? -ETIMEDOUT : -EIO;
+        }
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 2000000};
+        (void)nanosleep(&delay, NULL);
+    }
+}
+
+static void directory_registration_unlock(int fd)
+{
+    (void)flock(fd, LOCK_UN);
+    (void)close(fd);
+}
+
 int ff_log(uint32_t level, uint32_t type, const char *format, ...)
 {
     (void)type; /* The imported backend uses only FF_LOGTYPE_FSTACK_LIB. */
@@ -26,7 +81,7 @@ static int directory_no_hw_mode(void)
     if (!g_dir) return ff_no_hw_mode();
     if (rte_eal_process_type() != RTE_PROC_SECONDARY) return 1;
     if (directory_retiring) return 1;
-    uint32_t epoch, stopped;
+    uint32_t epoch = FF_RELOAD_EPOCH_NONE, stopped = 0;
     ff_reload_gendir_rx_owner(&epoch, NULL, &stopped);
     if (epoch == FF_RELOAD_EPOCH_NONE) {
         /* Use the original CAS operation for concurrent first claimants,
@@ -102,9 +157,14 @@ int ker_reload_directory_attach(void)
      * establish a configured EAL. The caller still owns successful init and
      * must never call this after EAL cleanup. */
     if (!rte_lcore_count() || (role != RTE_PROC_PRIMARY && role != RTE_PROC_SECONDARY)) return -ENODEV;
+    int registration_fd = directory_registration_lock();
+    if (registration_fd < 0) return registration_fd;
     if (directory_log_type < 0) {
         directory_log_type = rte_log_register("ker.reload.directory");
-        if (directory_log_type < 0) return -ENOMEM;
+        if (directory_log_type < 0) {
+            directory_registration_unlock(registration_fd);
+            return -ENOMEM;
+        }
     }
     ff_reload_gendir_attach(); /* Required attach retains original fatal errors. */
     directory_retiring = 0;
@@ -113,10 +173,12 @@ int ker_reload_directory_attach(void)
          * departing orphan could retire the epoch beneath this borrower. */
         if (ff_reload_gendir_user_add(ff_reload_epoch(), ff_reload_gen())) {
             (void)ker_reload_directory_detach();
+            directory_registration_unlock(registration_fd);
             return -ENOSPC;
         }
         ff_reload_gendir_user_stop(ff_reload_epoch(), ff_reload_gen());
     }
+    directory_registration_unlock(registration_fd);
     return 0;
 }
 
@@ -225,7 +287,7 @@ int ker_reload_directory_release(uint32_t epoch, int generation)
     if (result) return result;
     if (directory_retiring) return -ESHUTDOWN;
     if (epoch == 0 || epoch == FF_RELOAD_EPOCH_NONE || generation < 0 || generation >= FF_RELOAD_GEN_MAX) return FF_RELOAD_HANDOVER_INVAL;
-    uint32_t owner, gen;
+    uint32_t owner = FF_RELOAD_EPOCH_NONE, gen = 0;
     ff_reload_gendir_rx_owner(&owner, &gen, NULL);
     if (owner == epoch && gen == (uint32_t)generation) return FF_RELOAD_HANDOVER_OK;
     if (owner != ff_reload_epoch() || gen != (uint32_t)ff_reload_gen()) return FF_RELOAD_HANDOVER_BUSY;
