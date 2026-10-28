@@ -1069,3 +1069,26 @@ if(KER_WITH_DPDK)
     set_tests_properties(fstack-reload-heartbeat PROPERTIES TIMEOUT 15 LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
+
+if(KER_WITH_DPDK)
+    add_executable(ker-fstack-reload-controller-test fstack-reload-controller.c)
+    target_link_libraries(ker-fstack-reload-controller-test PRIVATE ker-example-reload-policy)
+    target_compile_options(ker-fstack-reload-controller-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-reload-fsm-transitions COMMAND ker-fstack-reload-controller-test transitions)
+    add_test(NAME fstack-reload-fsm-legal COMMAND ker-fstack-reload-controller-test legal)
+    add_test(NAME fstack-reload-fsm-illegal COMMAND ker-fstack-reload-controller-test illegal)
+    add_test(NAME fstack-reload-fsm-recovery COMMAND ker-fstack-reload-controller-test recovery)
+    set_tests_properties(fstack-reload-fsm-transitions fstack-reload-fsm-legal
+        fstack-reload-fsm-illegal fstack-reload-fsm-recovery PROPERTIES TIMEOUT 15
+        LABELS "fstack;fstack-reload"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+    add_test(NAME fstack-reload-controller
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-controller.py"
+            --app "$<TARGET_FILE:ker-reload-controller>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-controller-test>" --pmd-root "${ker_ipc_pmd_root}")
+    set_tests_properties(fstack-reload-controller PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+endif()
+add_test(NAME fstack-reload-controller-import
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reload-controller-import.py")
+set_tests_properties(fstack-reload-controller-import PROPERTIES TIMEOUT 15 LABELS provenance)

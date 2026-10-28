@@ -180,6 +180,10 @@ if(KER_WITH_NATIVE_TCP)
     include(cmake/NativeLinux.cmake)
 endif()
 
+if(KER_WITH_DPDK AND (KER_BUILD_EXAMPLES OR BUILD_TESTING))
+    include(cmake/ReloadController.cmake)
+endif()
+
 if(KER_BUILD_EXAMPLES)
     if(KER_WITH_DPDK)
         add_executable(ker-ipc-channel examples/ipc-channel.c)
