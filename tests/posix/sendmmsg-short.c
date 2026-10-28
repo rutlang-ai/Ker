@@ -21,6 +21,15 @@ static int guard_storage;
 #define GUARD_TOKEN ((struct ker_native_option_guard *)&guard_storage)
 static unsigned int lower_calls, guard_begins, guard_ends;
 
+/* This focused sendmmsg unit links posix-socket.c without the fd-table
+ * runtime. The F_DUPFD_QUERY adapter is outside this test's scope. */
+int ker_fd_same_file(int fd, int other)
+{
+    (void)fd; (void)other;
+    errno = ENOSYS;
+    return -1;
+}
+
 struct ker_fd *ker_fd_get(int fd)
 {
     return fd == 123 ? &socket_entry : NULL;

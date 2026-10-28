@@ -486,6 +486,34 @@ static void filesystem_vfs_statistics(void)
     char byte; CHECK(recv(p.server, &byte, 1, 0) == 1 && byte == 'v'); finish(p);
 }
 
+static void duplicate_file_queries(void)
+{
+    enum {query = 1027};
+    struct pair p = connected();
+    int supported = fcntl(p.client, query, p.client);
+    if (supported < 0 && errno == EINVAL && !dlsym(RTLD_DEFAULT, "ker_posix_kernel_release")) {
+        puts("SKIP: host kernel does not implement F_DUPFD_QUERY"); finish(p); return;
+    }
+    CHECK(supported == 1);
+    int copy = fcntl(p.client, F_DUPFD_CLOEXEC, 256); CHECK(copy >= 256);
+    CHECK(fcntl(p.client, query, copy) == 1 && fcntl64(copy, query, p.client) == 1);
+    CHECK(fcntl(p.client, query, p.server) == 0);
+    int host[2]; CHECK(pipe(host) == 0); int alias = dup(host[0]); CHECK(alias >= 0);
+    CHECK(fcntl(p.client, query, host[0]) == 0 && fcntl(host[0], query, p.client) == 0);
+    int host_support = fcntl(host[0], query, alias);
+    CHECK(host_support == 1 || (host_support == -1 && errno == EINVAL));
+    if (host_support == 1) CHECK(fcntl(host[0], query, host[1]) == 0);
+    ERROR(fcntl(p.client, query, -1), EBADF); ERROR(fcntl(-1, query, p.client), EBADF);
+    CHECK(close(copy) == 0); ERROR(fcntl(p.client, query, copy), EBADF);
+    CHECK(dup2(p.server, copy) == copy && fcntl(p.client, query, copy) == 0);
+    CHECK(close(copy) == 0 && close(alias) == 0 && close(host[0]) == 0 && close(host[1]) == 0);
+    int ep = epoll_create1(EPOLL_CLOEXEC); CHECK(ep >= 0); copy = dup(ep); CHECK(copy >= 0);
+    CHECK(fcntl(ep, query, copy) == 1 && fcntl(ep, query, p.client) == 0);
+    CHECK(close(ep) == 0 && close(copy) == 0);
+    CHECK(send(p.client, "q", 1, MSG_NOSIGNAL) == 1);
+    char byte; CHECK(recv(p.server, &byte, 1, 0) == 1 && byte == 'q'); finish(p);
+}
+
 static void host_path_faults(void)
 {
     char name[] = "/tmp/ker-at-fault-XXXXXX";
@@ -2163,6 +2191,7 @@ int main(void)
         {"host-at-path-fault-routing", host_path_faults},
         {"host-fstatat64-fault-boundary", host_fstatat64_fault_boundary},
         {"native-user-memory-faults-and-recovery", user_memory_faults},
+        {"duplicate-file-query-owner-pair-translation", duplicate_file_queries},
         {"descriptor-owned-fstatvfs-and-64-bit-layout", filesystem_vfs_statistics},
         {"concurrent-usercopy-faults-thread-errno-and-exit-recovery", concurrent_usercopy_faults},
         {"partial-TCP-copy-retention-and-UDP-datagram-fault-consumption", partial_payload_faults},

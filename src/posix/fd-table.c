@@ -65,6 +65,29 @@ struct ker_fd *ker_fd_get(int fd)
     pthread_mutex_unlock(&mutex);
     return entry;
 }
+int ker_fd_same_file(int fd, int other)
+{
+    pthread_mutex_lock(&mutex);
+    struct ker_fd *left = fd >= 0 && fd < KER_FD_LIMIT ? entries[fd] : NULL;
+    struct ker_fd *right = other >= 0 && other < KER_FD_LIMIT ? entries[other] : NULL;
+    if (left && right) {
+        atomic_fetch_add_explicit(&left->references, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&right->references, 1, memory_order_relaxed);
+        pthread_mutex_unlock(&mutex);
+        long result = lkl_sys_fcntl(left->native, KER_F_DUPFD_QUERY, right->native);
+        ker_fd_put(right); ker_fd_put(left);
+        return ker_native_result(result);
+    }
+    /* Keep host classification and the host syscall in the same critical
+     * section as dup2/close. No temporary fd allocation is needed. */
+    long result;
+    if (!left && !right) result = syscall(SYS_fcntl, fd, KER_F_DUPFD_QUERY, other);
+    else result = syscall(SYS_fcntl, left ? other : fd, F_GETFD) < 0 ? -1 : 0;
+    int saved = errno;
+    pthread_mutex_unlock(&mutex);
+    errno = saved;
+    return (int)result;
+}
 long ker_fd_put(struct ker_fd *entry)
 {
     long result = 0;

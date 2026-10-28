@@ -404,6 +404,7 @@ int fcntl(int fd, int command, ...)
         va_end(args);
     }
     }
+    if (command == KER_F_DUPFD_QUERY) return ker_fd_same_file(fd, (int)argument);
     struct ker_fd *entry = ker_fd_get(fd);
     if (!entry) return syscall(SYS_fcntl, fd, command, argument);
     int value;
