@@ -2752,9 +2752,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source asserts ff_global_cfg.stack.kernel_coexist==1 after loading a fixture. Ker rejects supplied [stack]/kernel_coexist before startup; normal native INET sockets and actual host descriptors coexist by descriptor ownership without that flag. Real same-tuple UDP/mixed epoll traffic is a Ker extension, not evidence of this parsed field. See docs/stack-coexistence.md and issue228.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_stack_coexist_enabled",
+          "provenance_case": "fstack-config-source-test_ff_load_config_stack_coexist_enabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_absent_defaults_disabled",
