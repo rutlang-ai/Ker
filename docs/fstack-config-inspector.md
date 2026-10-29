@@ -94,3 +94,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_parse_lcore_mask_proc_id_in_range` | `fstack-config-source-test_parse_lcore_mask_proc_id_in_range` |
 | `test_parse_lcore_mask_proc_id_over_count_fails` | `fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails` |
 | `test_ff_load_config_dpdk_extra_keys` | `fstack-config-source-test_ff_load_config_dpdk_extra_keys` |
+| `test_ff_load_config_bond_vdev_repeat_keys_no_leak` | `fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak` |

@@ -251,41 +251,6 @@
       "issue": "https://github.com/rutlang-ai/Ker/issues/223"
     },
     {
-      "id": "dpdk-devices",
-      "title": "Adapt typed vdev, bond and multi-port configuration",
-      "disposition": "adaptation-needed",
-      "reason": "Three typed interface/vdev/bond configuration allocation-failure rejection scenarios now have real loader/CLI failure and recovery evidence. Remaining source fixture/ABI, combined topology and RSS/lcore contracts stay partial; real typed device traffic does not prove those remaining assertions. The exact repeated source bond sequence now drives original mode4 PMD readback for final members0/1, primary1,MACcc:dd:ee:ff:00:11,l34 and independent Linux LACP/dual-stack ICMP after member-path loss. Source member names are explicitly translated to the two TAP ethdev IDs; combined bond/vdev and allocator ABI remain incomplete. test_ff_load_config_dpdk_full is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_ff_load_config_vdev_full is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
-      "evidence": [
-        "tools/ker-run.py",
-        "src/posix/io-worker.c",
-        "tests/upstream/fstack/tests/unit/fixtures/valid_vdev.ini",
-        "tests/upstream/fstack/tests/unit/fixtures/valid_bond.ini",
-        "tests/posix/test_typed_vdev.py",
-        "tests/posix/typed-vdev.py",
-        "tests/posix/vhost-bridge.c",
-        "src/posix/bond-policy.c",
-        "tests/posix/typed-bond.py",
-        "tests/posix/test_typed_bond.py",
-        "src/posix/extra-interfaces.c",
-        "tests/posix/native-multiport.py",
-        "tests/posix/test_multiport_config.py",
-        "src/posix/worker-receive-mode.c",
-        "tests/posix/virtio-kernel-offloads.py",
-        "tests/posix/test_ker_run_config.py",
-        "docs/fstack-config-inspector.md"
-      ],
-      "acceptance": [
-        "Specify useful typed configuration mappings to real supported EAL/PMD options while preserving strict validation.",
-        "Test repeated sections/options, missing count/configuration, invalid section/index and allocation failures before runtime side effects.",
-        "Qualify actual vdev/bond/multi-port behavior and cleanup on a capable backend; configuration parsing alone is not a device pass.",
-        "Resolve the pinned source iface+Unix-socket mismatch explicitly. Retain qualified named vhost-kernel iface traffic/rollback coverage; do not drop iface or call socket-backend traffic a full source fixture pass."
-      ],
-      "cases": [
-        "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/224"
-    },
-    {
       "id": "configuration-contracts",
       "title": "Resolve remaining typed configuration and intentional schema differences",
       "disposition": "contract-review",

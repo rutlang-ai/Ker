@@ -1981,8 +1981,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Exact pinned repeated bond and vdev strings retain final members/primary/MAC/policy/iface/path values. Repeated-invalid-to-valid configuration drives real original DPDK LACP bond and virtio-user/vhost traffic with final settings and complete buffer cleanup. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence. The literal repeated source bond sequence now also has actual mode4 PMD readback for final members0/1, primary1,MACcc:dd:ee:ff:00:11 and l34, independent Linux LACP/dual-stack ICMP and member-path-loss cleanup evidence; source eth0/eth1 are explicitly mapped to TAP ethdev IDs.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -2011,9 +2011,12 @@
         {
           "ctest": "native-fstack-typed-bond-config",
           "provenance_case": "native-fstack-bond-source-repeat"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+          "provenance_case": "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak"
         }
-      ],
-      "remaining": "The literal source fixture combines iface with a Unix socket path, which pinned DPDK explicitly rejects; the supported named vhost-kernel backend is separately qualified. Full F-Stack config structs, combined bond/vdev topology and C allocation-failure/strdup/free/valgrind ABI remain unqualified under issue224. Active kernel-backend queue pairs are not RSS evidence."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
