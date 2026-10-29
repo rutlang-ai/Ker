@@ -3107,9 +3107,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_23_flow_map",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-basic",
+          "provenance_case": "fstack-flow-map-basic"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher",
@@ -3316,30 +3321,50 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-single-phase",
+          "provenance_case": "fstack-flow-map-single-phase"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_admission_rule",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-admission",
+          "provenance_case": "fstack-flow-map-admission"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_revoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-revoke",
+          "provenance_case": "fstack-flow-map-revoke"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p3_flow_map_bounded_growth",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-flow-map-growth",
+          "provenance_case": "fstack-flow-map-growth"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",

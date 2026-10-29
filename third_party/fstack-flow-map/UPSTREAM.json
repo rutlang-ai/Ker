@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "mode": "Unchanged process-local metadata table, linked only into a caller example; no Linux or FreeBSD protocol hooks.",
+  "files": {
+    "ff_flow_map.c": {
+      "source_file": "lib/ff_flow_map.c",
+      "sha256": "6bb5cc73b6f320233c1d6e92d21fecca04aba8bbffe6d240987e50d186bad0ee",
+      "git_blob": "9e29b9151996a12758ce794ba8f4d8b8133ca18c"
+    },
+    "ff_flow_map.h": {
+      "source_file": "lib/ff_flow_map.h",
+      "sha256": "2f900c3a91afdd072cfd64b3c2342a7420ffc4827a42159d6632e88f16e18f10",
+      "git_blob": "8d8939e6f46eab2c16881c2812017c4c09c362c6"
+    }
+  }
+}

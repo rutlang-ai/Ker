@@ -11,6 +11,27 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_test(NAME fstack-flow-map-router COMMAND ker-flow-map-router)
+    set_tests_properties(fstack-flow-map-router PROPERTIES TIMEOUT 30 LABELS "fstack;flow-map;dpdk")
+    add_executable(ker-fstack-flow-map-test fstack-flow-map.c)
+    target_include_directories(ker-fstack-flow-map-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-reload" "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
+    target_link_libraries(ker-fstack-flow-map-test PRIVATE ker-example-flow-map)
+    target_compile_options(ker-fstack-flow-map-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-flow-map-test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-flow-map-basic COMMAND ker-fstack-flow-map-test basic)
+    add_test(NAME fstack-flow-map-single-phase COMMAND ker-fstack-flow-map-test single-phase)
+    add_test(NAME fstack-flow-map-admission COMMAND ker-fstack-flow-map-test admission)
+    add_test(NAME fstack-flow-map-revoke COMMAND ker-fstack-flow-map-test revoke)
+    add_test(NAME fstack-flow-map-growth COMMAND ker-fstack-flow-map-test growth)
+    add_test(NAME fstack-flow-map-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/flow-map-import.py")
+    set_tests_properties(fstack-flow-map-basic fstack-flow-map-single-phase fstack-flow-map-admission
+        fstack-flow-map-revoke fstack-flow-map-growth fstack-flow-map-import
+        PROPERTIES TIMEOUT 15 LABELS "fstack;flow-map")
+endif()
+
+if(KER_WITH_DPDK)
     add_executable(ker-fstack-rss-thash-test fstack-rss-thash.c)
     target_link_libraries(ker-fstack-rss-thash-test PRIVATE PkgConfig::DPDK)
     target_compile_options(ker-fstack-rss-thash-test PRIVATE -Wall -Wextra -Werror)
