@@ -2433,9 +2433,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original names, process/lcore and generation-selection contract through the unchanged caller-side parser, real bound ker::reload state and public ker::ipc formatter. Actual selected-generation observation is consumed by a caller example. No runtime topology or traffic is configured.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-generation-mapping",
+          "provenance_case": "fstack-config-generation-mapping"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
