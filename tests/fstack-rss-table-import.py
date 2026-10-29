@@ -27,6 +27,19 @@ for name in (root / 'tests/fstack-rss-cases.txt').read_text().splitlines():
     start = test_source.index('static void\n' + name + '(')
     end = test_source.index('\n}', start) + 2
     assert (root / 'tests/fstack-rss-source' / (name + '.inc')).read_text().rstrip() == test_source[start:end]
-helpers = (root / 'tests/fstack-rss-source-helpers.inc').read_text().split('\n\n')
-for part in helpers:
-    assert part.rstrip() in test_source, part[:80]
+expected = []
+for name in ('test_rsskey_40', 'test_saddr6', 'test_daddr6'):
+    start = test_source.index('static const uint8_t ' + name + '[')
+    end = test_source.index('\n};', start) + 3
+    expected.append(test_source[start:end])
+for name in ('test_toeplitz', 'test_expected_rss_check', 'test_expected_rss_check6',
+             'test_rss_build_table', 'test_rss_softc', 'test_rss6_build_table'):
+    match = re.search(r'static (?:uint32_t|int|void \*)\n' + name + r'\(', test_source)
+    assert match, name
+    end = test_source.index('\n}', match.start()) + 2
+    expected.append(test_source[match.start():end])
+for name in ('TEST_RSS_PORT', 'TEST_RSS_NBQ', 'TEST_RSS_QID', 'TEST_RSS_RETA', 'TEST_RSS_FIRST', 'TEST_RSS_LAST'):
+    expected.insert(0, next(line for line in test_source.splitlines() if line.startswith('#define ' + name + ' ')))
+expected.insert(6, 'static struct ff_rss_check_cfg g_rss_cfg;\nstatic struct ff_dpdk_if_context g_test_ctx;')
+assert (root / 'tests/fstack-rss-source-helpers.inc').read_text() == '\n\n'.join(expected) + '\n'
+print('complete original RSS helper declarations/functions verified')

@@ -1,1 +1,2 @@
 test_ff_rss_tbl_set_portrange_disabled
+test_ff_rss_tbl_set_portrange_inverted_range

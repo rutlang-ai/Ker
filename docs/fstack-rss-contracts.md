@@ -4,9 +4,9 @@
 source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. The two
 standalone IPv4/IPv6 thash equivalence cases were qualified earlier. Three
 parsed-document contracts and the NULL-config table-setter contract are now
-separately qualified in caller-side examples;24 remain in this issue
-(1 partial,23 blocked). The table below preserves
-all31 exact contracts and identifies those two qualifications. It records
+separately qualified in caller-side examples;23 remain in this issue
+(0 partial,23 blocked). The table below preserves
+all31 exact contracts and identifies the scope of each qualification. It records
 actual assertions, not promises of future real-machine acceptance.
 
 ## Three different kinds of evidence
@@ -66,8 +66,8 @@ socket allocation are separate integration requirements.
 under [tests/upstream/fstack/tests/unit](../tests/upstream/fstack/tests/unit).
 Every original #220 exact ID appears once below. Qualified rows distinguish parsed-document inspection, software table/helper
 contracts and standalone equivalence. None establishes the native kernel
-allocation hook or hardware RSS landing. The existing partial range-validation
-mapping remains partial until its actual table setter is qualified.
+allocation hook or hardware RSS landing. The inverted-range row now checks the actual enabled table setter; it does
+not turn Linux range validation into native RSS port steering.
 
 | Source file | Exact case | Assertion and remaining boundary |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ mapping remains partial until its actual table setter is qualified.
 | `test_ff_config.c` | `test_rss_check_thash_adjust_off_parses` | The source valid configuration succeeds with RSS enabled and thash_adjust=0. The complete original parsed-document assertions are qualified in the caller inspector; no Ker source-port optimization is enabled or disabled by this document inspection. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_no_cfg` | The original table setter declines with -1 for NULL configuration. Qualified by fstack-rss-table-no-config plus an actual enabled caller-side software table consumer; see docs/fstack-rss-table.md. Native Linux port allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_disabled` | Source setter returns-1 with enable=0. The complete original guard and actual enabled candidate-table lifecycle are qualified in the caller-only software classifier. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_inverted_range` | Source enabled-table setter rejects first>last. Existing original-Linux ephemeral-range validation is partial evidence only; no Ker RSS candidate table update or queue ownership contract is implemented. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_inverted_range` | Source enabled-table setter rejects first>last with-1. This actual setter is now qualified, with an enabled-table consumer; the earlier Linux range test remains listed as related evidence. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_no_cfg` | Source lookup declines with -1 when configuration is NULL. No corresponding real Ker lookup consumer is qualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_disabled` | Source lookup declines with -1 when configuration is disabled. No matching enabled/disabled candidate-table lifecycle is qualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_smoke` | Source invokes lookup against uncontrolled table state and discards its return value; the assertion is only that this actual path does not crash, not hit/miss correctness or packet landing. |
@@ -113,8 +113,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is324 scenario-adapted,3 partial,36 blocked,
-15 architecture-specific and55 harness-only out of433. All39 blocked/partial
+The current catalog is325 scenario-adapted,2 partial,36 blocked,
+15 architecture-specific and55 harness-only out of433. All38 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,
