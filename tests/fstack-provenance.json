@@ -3830,6 +3830,17 @@
         "fstack-a10-source-import"
       ],
       "adaptation": "The original stack-free mechanism judgment is preserved: two same-tuple ACK-shaped fixtures forward and consume exactly once through the parked software-input path without classifier recirculation; the owner cannot consume that peer ring, and an aborted/closed round drops a subsequent miss with exact segment counter and pool restoration. Real primary EAL/net_ring RX, public ker::peer_dispatcher and ker::reload, and the unchanged caller-only flow map/classifier/packet helpers are used. Independent PMD callbacks/driver counts, exact pointer/bytes and role checks, unique pool512/512 recovery, and an external consumer of installed public Ker libraries qualify this mechanism. The original source harness itself simulates admission and links no TCP stack. This is not Linux SYN/PCB/syncache-hook, ESTABLISHED/no-RST, physical NIC, cross-process handover or full RV12/reload qualification. See docs/fstack-a10-dispatch.md."
+    },
+    "fstack-config-original-unload": {
+      "source_file": "tests/unit/test_ff_config.c",
+      "source_case": [
+        "test_ff_unload_config_zeroes_state"
+      ],
+      "ker_ctests": [
+        "fstack-config-original-unload",
+        "fstack-config-original-import"
+      ],
+      "adaptation": "Unchanged pinned configuration implementation in a symbol-isolated caller-side inspector. Complete original function retained verbatim; assertions call upstream cleanup directly so adapter clearing cannot conceal missed frees/nulls. 100 real load/unload cycles and sanitizer evidence. Original DPDK rte_strsplit is linked, not stubbed. The CLI consumes the parsed snapshot/EAL plan without executing it and reports unsupported runtime boundaries. No FreeBSD startup, Ker native settings, EAL startup or network behavior is qualified."
     }
   }
 }
