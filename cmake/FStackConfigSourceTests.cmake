@@ -88,3 +88,6 @@ set_tests_properties(fstack-config-source-test_greload_off_no_new_checks PROPERT
 add_test(NAME fstack-config-source-test_greload_bad_value_atoi COMMAND ker-test_greload_bad_value_atoi)
 set_tests_properties(fstack-config-source-test_greload_bad_value_atoi PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ut_nr_20_queue_mapping_config COMMAND ker-test_ut_nr_20_queue_mapping_config)
+set_tests_properties(fstack-config-source-test_ut_nr_20_queue_mapping_config PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
