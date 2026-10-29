@@ -1116,16 +1116,26 @@
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_dispatch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original synthetic dispatch judgment is preserved: an unrecorded tuple transfers the original ACK-shaped mbuf to peer generation1 without a free; explicitly caller-recorded metadata is visible before a second packet enters, and that hit reaches the local application input once while the old peer packet remains queued. Real primary EAL/net_ring RX, public ker::peer_dispatcher and ker::reload, and the unchanged caller-only flow map/classifier/packet helpers are used. Independent PMD callbacks/driver counts, exact pointer/bytes and role checks, unique pool512/512 recovery, and an external consumer of installed public Ker libraries qualify this mechanism. The original source harness itself simulates admission and links no TCP stack. This is not Linux SYN/PCB/syncache-hook, ESTABLISHED/no-RST, physical NIC, cross-process handover or full RV12/reload qualification. See docs/fstack-a10-dispatch.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a10-halfopen-dispatch",
+          "provenance_case": "fstack-a10-halfopen-dispatch"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_window_mechanism",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The original stack-free mechanism judgment is preserved: two same-tuple ACK-shaped fixtures forward and consume exactly once through the parked software-input path without classifier recirculation; the owner cannot consume that peer ring, and an aborted/closed round drops a subsequent miss with exact segment counter and pool restoration. Real primary EAL/net_ring RX, public ker::peer_dispatcher and ker::reload, and the unchanged caller-only flow map/classifier/packet helpers are used. Independent PMD callbacks/driver counts, exact pointer/bytes and role checks, unique pool512/512 recovery, and an external consumer of installed public Ker libraries qualify this mechanism. The original source harness itself simulates admission and links no TCP stack. This is not Linux SYN/PCB/syncache-hook, ESTABLISHED/no-RST, physical NIC, cross-process handover or full RV12/reload qualification. See docs/fstack-a10-dispatch.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-a10-window-mechanism",
+          "provenance_case": "fstack-a10-window-mechanism"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_main_loop_parked_pass",

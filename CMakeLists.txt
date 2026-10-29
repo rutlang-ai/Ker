@@ -188,6 +188,7 @@ endif()
 if(KER_WITH_DPDK AND (KER_BUILD_EXAMPLES OR BUILD_TESTING))
     include(cmake/ReloadController.cmake)
     include(cmake/FlowMapExample.cmake)
+    include(cmake/A10Dispatch.cmake)
 endif()
 
 if(KER_BUILD_EXAMPLES)

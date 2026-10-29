@@ -11,6 +11,19 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_executable(ker-fstack-a10-dispatch-test fstack-a10-dispatch.c)
+    target_link_libraries(ker-fstack-a10-dispatch-test PRIVATE ker-example-a10-dispatch "${ker_controller_ring_pmd}")
+    target_compile_options(ker-fstack-a10-dispatch-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-a10-dispatch-test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-a10-halfopen-dispatch COMMAND ker-fstack-a10-dispatch-test dispatch)
+    add_test(NAME fstack-a10-window-mechanism COMMAND ker-fstack-a10-dispatch-test mechanism)
+    add_test(NAME fstack-a10-classifier-bounds COMMAND ker-fstack-a10-dispatch-test bounds)
+    add_test(NAME fstack-a10-source-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/a10-dispatch-import.py")
+    set_tests_properties(fstack-a10-halfopen-dispatch fstack-a10-window-mechanism fstack-a10-classifier-bounds
+        fstack-a10-source-import PROPERTIES TIMEOUT 30 LABELS "fstack;dpdk")
+endif()
+
+if(KER_WITH_DPDK)
     add_executable(ker-fstack-parked-tx-test fstack-parked-tx.c)
     target_link_libraries(ker-fstack-parked-tx-test PRIVATE ker::reload_tx ker::packet_dispatcher "${ker_controller_ring_pmd}")
     target_compile_options(ker-fstack-parked-tx-test PRIVATE -Wall -Wextra -Werror)
