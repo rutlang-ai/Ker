@@ -69,3 +69,11 @@ This source unit case requires pointer cleanup, not traffic. The other legacy
 schema, startup, hardware, allocation and runtime cases are not promoted by
 this import. In the new request for 50 additional cases, this is case 1; prior
 migration batches are excluded from that count.
+
+## Additional source contracts
+
+Each row is added in its own PR. All rows qualify document parsing only.
+
+| Source case | CTest |
+|---|---|
+| `test_ff_load_config_valid_minimal_ini` | `fstack-config-source-test_ff_load_config_valid_minimal_ini` |

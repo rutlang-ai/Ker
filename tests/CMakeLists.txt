@@ -11,6 +11,18 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    include("${PROJECT_SOURCE_DIR}/cmake/FStackConfigSourceTests.cmake")
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-cases.txt" config_source_cases)
+    foreach(source_case IN LISTS config_source_cases)
+        set(config_target "ker-${source_case}")
+        add_executable(${config_target} fstack-config-case.c)
+        target_compile_definitions(${config_target} PRIVATE
+            "SOURCE_INCLUDE=fstack-config-source/${source_case}.inc" "SOURCE_FUNCTION=${source_case}")
+        target_link_libraries(${config_target} PRIVATE ker-example-fstack-config)
+        target_link_options(${config_target} PRIVATE -Wl,--wrap=calloc)
+        target_compile_options(${config_target} PRIVATE -Wall -Wextra -Werror)
+        set_target_properties(${config_target} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    endforeach()
     add_executable(ker-fstack-config-unload-test fstack-config-unload.c)
     target_link_libraries(ker-fstack-config-unload-test PRIVATE ker-example-fstack-config)
     target_compile_options(ker-fstack-config-unload-test PRIVATE -Wall -Wextra -Werror)
