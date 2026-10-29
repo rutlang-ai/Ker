@@ -96,3 +96,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_ff_load_config_dpdk_extra_keys` | `fstack-config-source-test_ff_load_config_dpdk_extra_keys` |
 | `test_ff_load_config_bond_vdev_repeat_keys_no_leak` | `fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak` |
 | `test_parse_lcore_mask_calloc_oom_returns_error` | `fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error` |
+| `test_ff_load_config_thread_mode_enabled` | `fstack-config-source-test_ff_load_config_thread_mode_enabled` |

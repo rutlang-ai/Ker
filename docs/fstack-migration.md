@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 305 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 306 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 4 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 54 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 53 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为305 scenario-adapted、4 partial、54 blocked，共58项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为306 scenario-adapted、4 partial、53 blocked，共57项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共128项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：58项行为未完成
-（4 partial + 54 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共127项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：57项行为未完成
+（4 partial + 53 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -72,7 +72,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Adapt typed vdev, bond and multi-port configuration | 0 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
 | Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
 | Resolve remaining typed configuration and intentional schema differences | 1 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
-| Decide F-Stack primary/secondary and thread-mode compatibility | 3 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
+| Decide F-Stack primary/secondary and thread-mode compatibility | 2 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
 | Document and qualify host/native stack coexistence configuration | 4 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
 | Resolve unmapped host memory, time, environment and kqueue helpers | 3 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
@@ -2204,3 +2204,7 @@ Complete original assertions and fixtures: `fstack-config-source-test_ff_load_co
 ### Original parser case: `test_parse_lcore_mask_calloc_oom_returns_error`
 
 Complete original assertions and fixtures: `fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error`. The catalog becomes305/4/54. This caller-side document inspection does not apply legacy settings to Ker.
+
+### Original parser case: `test_ff_load_config_thread_mode_enabled`
+
+Complete original assertions and fixtures: `fstack-config-source-test_ff_load_config_thread_mode_enabled`. The catalog becomes306/4/53. This caller-side document inspection does not apply legacy settings to Ker.

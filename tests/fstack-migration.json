@@ -2225,9 +2225,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source mode1 derives4threads, collapses nb_procs to1, forces primary and preserves full proc_mask0xf; its fixture describes multi-thread/multi-stack semantics. Existing Ker EAL RX pollers feeding one original Linux instance are not that process/stack table. No no-op thread_mode flag or pass mapping is added. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_thread_mode_enabled",
+          "provenance_case": "fstack-config-source-test_ff_load_config_thread_mode_enabled"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
