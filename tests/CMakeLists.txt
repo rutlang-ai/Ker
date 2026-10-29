@@ -11,6 +11,15 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_executable(ker-fstack-peer-dispatch-test fstack-peer-dispatch.c)
+    target_link_libraries(ker-fstack-peer-dispatch-test PRIVATE ker::peer_dispatcher "${ker_controller_ring_pmd}")
+    target_compile_options(ker-fstack-peer-dispatch-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-peer-dispatch-test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-peer-dispatch-ownership COMMAND ker-fstack-peer-dispatch-test)
+    set_tests_properties(fstack-peer-dispatch-ownership PROPERTIES TIMEOUT 30 LABELS "fstack;dpdk")
+endif()
+
+if(KER_WITH_DPDK)
     add_test(NAME fstack-flow-map-router COMMAND ker-flow-map-router)
     set_tests_properties(fstack-flow-map-router PROPERTIES TIMEOUT 30 LABELS "fstack;flow-map;dpdk")
     add_executable(ker-fstack-flow-map-test fstack-flow-map.c)
