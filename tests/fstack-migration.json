@@ -1537,9 +1537,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Section appears before port configuration; source only asserts rss_check_cfgs stays NULL and discards the loader result. No assertion of successful load or of a particular error code. Ker has no equivalent ordered RSS-table loader contract. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan",
+          "provenance_case": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
