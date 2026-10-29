@@ -64,7 +64,12 @@ static int rsskey_len = sizeof(default_rsskey_40bytes);
 static uint8_t *rsskey = default_rsskey_40bytes;
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 #include "rss-tables.inc"
+#pragma GCC diagnostic push
+/* Keep the unchanged lookup's unused local visible without promoting it to
+ * an error. Ker-owned adaptation code retains the project's strict flags. */
+#pragma GCC diagnostic warning "-Wunused-variable"
 #include "rss-functions.inc"
+#pragma GCC diagnostic pop
 
 static struct ff_rss_check_cfg owned_rules;
 static int configured;

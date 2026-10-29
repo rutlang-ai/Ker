@@ -2,7 +2,6 @@
 #include <arpa/inet.h>
 #include <string.h>
 #include "check.h"
-#include "eal.h"
 #include "rss-table-policy.h"
 #include "rss-table-internal.h"
 #include <ker/packet-dispatcher.h>
