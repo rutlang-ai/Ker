@@ -91,3 +91,6 @@ set_tests_properties(fstack-config-source-test_greload_bad_value_atoi PROPERTIES
 add_test(NAME fstack-config-source-test_ut_nr_20_queue_mapping_config COMMAND ker-test_ut_nr_20_queue_mapping_config)
 set_tests_properties(fstack-config-source-test_ut_nr_20_queue_mapping_config PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ut_nr_25_drain_ring_size_config COMMAND ker-test_ut_nr_25_drain_ring_size_config)
+set_tests_properties(fstack-config-source-test_ut_nr_25_drain_ring_size_config PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
