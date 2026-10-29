@@ -11,6 +11,12 @@ set_source_files_properties("${PROJECT_SOURCE_DIR}/third_party/fstack-config/ff_
     PROPERTIES COMPILE_DEFINITIONS
     "_GNU_SOURCE;ff_global_cfg=example_upstream_global_cfg;ff_load_config=example_upstream_load_config;ff_unload_config=example_upstream_unload_config;dpdk_argc=example_upstream_dpdk_argc;dpdk_argv=example_upstream_dpdk_argv;short_options=example_upstream_short_options;long_options=example_upstream_long_options;FF_LOG_FILENAME_PREFIX=example_upstream_log_filename_prefix;ini_parse=example_upstream_ini_parse")
 add_executable(ker-fstack-config-inspect "${PROJECT_SOURCE_DIR}/examples/fstack-config-inspect.c")
+# Preserve visible diagnostics from immutable upstream units under global -Werror.
+set_property(SOURCE "${PROJECT_SOURCE_DIR}/third_party/fstack-config/ff_config.c"
+    APPEND PROPERTY COMPILE_OPTIONS
+    "-Wno-error=unused-variable" "$<$<C_COMPILER_ID:GNU>:-Wno-error=format-truncation>")
+set_property(SOURCE "${PROJECT_SOURCE_DIR}/examples/fstack-config-ini.c"
+    APPEND PROPERTY COMPILE_OPTIONS "$<$<C_COMPILER_ID:GNU>:-Wno-error=stringop-truncation>")
 target_link_libraries(ker-fstack-config-inspect PRIVATE ker-example-fstack-config)
 set_target_properties(ker-example-fstack-config ker-fstack-config-inspect PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
