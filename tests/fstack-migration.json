@@ -2788,9 +2788,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_disabled_explicit",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source asserts explicit kernel_coexist=0 produces a F-Stack global field0. Ker rejects supplied [stack] rather than installing a no-op boolean or disabling safe host-fd dispatch. Native/host same-tuple UDP, mixed epoll, flags and independent close lifetimes are qualified separately; no source config-field pass is claimed. See docs/stack-coexistence.md and issue228.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit",
+          "provenance_case": "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config_pa.c::test_page_array_rejects_graceful_reload",
