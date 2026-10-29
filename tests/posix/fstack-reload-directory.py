@@ -141,6 +141,7 @@ def main():
     parser.add_argument('--app',type=Path,required=True);parser.add_argument('--unit-app',type=Path,required=True)
     parser.add_argument('--pmd-root',type=Path,required=True);parser.add_argument('--huge-dir',type=Path,default=Path('/dev/hugepages'))
     parser.add_argument('--evidence',type=Path)
+    parser.add_argument('--verify-reclaim-gate',action='store_true')
     args=parser.parse_args()
     reason=hugepage_capacity_error(args.huge_dir,64*1024*1024)
     if reason:print('SKIP: '+reason+'; no host settings changed');return 77
@@ -183,6 +184,30 @@ def main():
             def poll(p,packet=0,allowed=False):
                 r=p.command('poll','POLL');counts[p.slot]+=int(allowed);received[p.slot]+=packet
                 require(r=={'result':packet,'callbacks':counts[p.slot],'received':received[p.slot],'completed':received[p.slot]},'callback gate/data mismatch '+str(r))
+            def reclaim_race(claimant,orphan):
+                gate=root/'reclaim-after-proof';gate.mkdir()
+                callbacks_before=counts[orphan.slot]
+                claimant.child.stdin.write(('reclaim-pause '+str(gate)+'\n').encode());claimant.child.stdin.flush()
+                deadline=time.monotonic()+10
+                while not (gate/'proof').exists():
+                    require(time.monotonic()<deadline,'reclaim did not reach proof-before-CAS barrier')
+                    time.sleep(.001)
+                try:
+                    orphan.child.stdin.write(b'poll hold\n');orphan.child.stdin.flush()
+                    readable,_,_=select.select([orphan.child.stdout],[],[],.2)
+                    require(not readable,'stopped orphan entered polling while reclaim held the proof/CAS boundary')
+                finally:
+                    (gate/'resume').touch()
+                require(claimant.record('RESULT')=={'result':0},'proof-complete reclaim did not take ownership')
+                r=orphan.record('POLL')
+                require(r=={'result':0,'callbacks':counts[orphan.slot],
+                    'received':received[orphan.slot],'completed':received[orphan.slot]},
+                    'orphan resumed after reclaim but was not denied before callback')
+                poll(orphan) # A subsequent foreign pass remains denied as well.
+                evidence['reclaim_serialization']={'proof_before_cas_pause':True,
+                    'orphan_poll_blocked_until_cas':True,'reclaim_result':0,
+                    'callbacks_before_after':[callbacks_before,counts[orphan.slot]],
+                    'resumed_orphan_denied':True}
             def inject(sequence):require(primary.command(f'inject {sequence}','INJECTED')=={'sequence':sequence,'available':62},'packet allocation failed')
             def collect(sequence):require(primary.command('collect','COLLECTED')=={'sequence':sequence,'available':63},'packet identity/payload/reclamation failed')
             refusals=0
@@ -236,7 +261,9 @@ def main():
             purged=b0.command('purge','PURGED');require(purged=={'count':0,'dead_markers':1,'available':61},'purge consumed a live peer ring or lost dead marker')
             require(primary.command('census','CENSUS')['dead'][aslot]==[1,0],'busy slot did not preserve dead user marker')
             require(a1.command('drain','DRAINED')=={'count':2,'available':63},'live-consumer FIFO/identity preservation failed')
-            result(a1,'stop');users(ae,0,0);result(b0,'reclaim')
+            result(a1,'stop');users(ae,0,0)
+            if args.verify_reclaim_gate:reclaim_race(b0,a1)
+            else:result(b0,'reclaim')
             require(primary.command('view','VIEW')['refused']==refusals,'successful proof changed refusal counter')
             inject(4);poll(a1);poll(b0,1,True);collect(4)
             require(b0.command('idle','IDLED')['elapsed_ms']>=2300,'live-master/stale-stamp interval was not observed')

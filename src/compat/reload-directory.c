@@ -10,10 +10,9 @@ static uint64_t directory_monotonic_ms(void)
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
 }
 
-/* Serialize the imported parent-PID lookup and slot registration across
- * sibling EAL secondaries. This separate runtime-directory lock never nests
- * on DPDK's memzone/config lock; its inode stays stable for the EAL lifetime. */
-static int directory_registration_lock(void)
+/* Serialize directory lifecycle decisions across EAL processes. This stable
+ * runtime-directory inode is separate from DPDK's memzone/config lock files. */
+static int directory_registration_lock(int operation)
 {
     const char *runtime_dir = rte_eal_get_runtime_dir();
     if (!runtime_dir || !*runtime_dir) return -ENODEV;
@@ -36,7 +35,7 @@ static int directory_registration_lock(void)
     uint64_t start = directory_monotonic_ms();
     if (!start) { close(fd); return -EIO; }
     for (;;) {
-        if (flock(fd, LOCK_EX | LOCK_NB) == 0) return fd;
+        if (flock(fd, operation | LOCK_NB) == 0) return fd;
         int error = errno;
         if (error != EINTR && error != EWOULDBLOCK && error != EAGAIN) {
             close(fd);
@@ -157,7 +156,7 @@ int ker_reload_directory_attach(void)
      * establish a configured EAL. The caller still owns successful init and
      * must never call this after EAL cleanup. */
     if (!rte_lcore_count() || (role != RTE_PROC_PRIMARY && role != RTE_PROC_SECONDARY)) return -ENODEV;
-    int registration_fd = directory_registration_lock();
+    int registration_fd = directory_registration_lock(LOCK_EX);
     if (registration_fd < 0) return registration_fd;
     if (directory_log_type < 0) {
         directory_log_type = rte_log_register("ker.reload.directory");
@@ -315,12 +314,15 @@ int ker_reload_directory_reclaim(void)
     int result = directory_worker();
     if (result) return result;
     if (directory_retiring) return -ESHUTDOWN;
+    int registration_fd = directory_registration_lock(LOCK_EX);
+    if (registration_fd < 0) return registration_fd;
     result = ff_reload_gendir_rx_reclaim(ff_reload_epoch(), (uint32_t)ff_reload_gen());
     if (result == FF_RELOAD_HANDOVER_OK) {
         __atomic_store_n(&g_reload_state->reserved[4], 0u, __ATOMIC_SEQ_CST);
         ff_reload_rx_owner_gen_set(ff_reload_gen());
         ff_reload_rx_stopped_set(0);
     }
+    directory_registration_unlock(registration_fd);
     return result;
 }
 

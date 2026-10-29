@@ -21,12 +21,51 @@
 /* Keep the exact upstream configuration layout private. Only its original
  * graceful_reload field is consumed by this runtime translation unit. */
 struct ff_config ff_global_cfg;
+#ifdef KER_RELOAD_TESTING
+static uint64_t *ker_reload_test_rx_owner_word;
+static void (*ker_reload_test_before_rx_cas)(void);
+
+static int ker_reload_test_cas_u32(uint32_t *pointer, uint32_t *expected,
+    uint32_t desired, int weak, int success, int failure)
+{
+    return __atomic_compare_exchange_n(pointer, expected, desired, weak,
+        success, failure);
+}
+
+static int ker_reload_test_cas_u64(uint64_t *pointer, uint64_t *expected,
+    uint64_t desired, int weak, int success, int failure)
+{
+    if ((void *)pointer == (void *)ker_reload_test_rx_owner_word &&
+        ker_reload_test_before_rx_cas) {
+        void (*hook)(void) = ker_reload_test_before_rx_cas;
+        ker_reload_test_rx_owner_word = NULL;
+        ker_reload_test_before_rx_cas = NULL;
+        hook();
+    }
+    return __atomic_compare_exchange_n(pointer, expected, desired, weak,
+        success, failure);
+}
+
+#define __atomic_compare_exchange_n(pointer, expected, desired, weak, success, failure) \
+    _Generic((pointer), uint32_t *: ker_reload_test_cas_u32, \
+        uint64_t *: ker_reload_test_cas_u64)(pointer, expected, desired, weak, success, failure)
+#endif
 #include "ff_reload.c"
 #include "ff_reload_gendir.c"
+#ifdef KER_RELOAD_TESTING
+#undef __atomic_compare_exchange_n
+#endif
 
 static int borrowed;
 static int polling, polled;
 #include "reload-directory.c"
+#ifdef KER_RELOAD_TESTING
+void ker_reload_test_arm_reclaim_cas_hook(void (*hook)(void))
+{
+    ker_reload_test_rx_owner_word = g_dir ? &g_dir->rx_owner_word : NULL;
+    ker_reload_test_before_rx_cas = hook;
+}
+#endif
 size_t ker_reload_state_size(void) { return sizeof(struct ff_reload_state); }
 int ker_reload_state_init(void *storage, size_t size, int generation)
 {
@@ -100,13 +139,30 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
     if (g_reload_slot < 0) return -EINVAL;
     if (g_dir && rte_eal_process_type() != RTE_PROC_SECONDARY) return -EPERM;
     if (g_dir && directory_retiring) return -ESHUTDOWN;
-    if (g_dir && ff_reload_gendir_user_add(ff_reload_epoch(), ff_reload_gen())) return -ENOSPC;
+    int admission_fd = -1;
+    if (g_dir) {
+        /* User activation and the original ownership decision are one short
+         * admission transaction. The ACTIVE lease protects the callback
+         * after releasing this gate, and exclusion also covers implicit
+         * reclaim when the directory has no owner. */
+        admission_fd = directory_registration_lock(LOCK_EX);
+        if (admission_fd < 0) return admission_fd;
+        if (ff_reload_gendir_user_add(ff_reload_epoch(), ff_reload_gen())) {
+            directory_registration_unlock(admission_fd);
+            return -ENOSPC;
+        }
+    }
     polled = 1;
     ff_reload_heartbeat_tick();
     if (directory_no_hw_mode()) {
         ff_reload_handover_ack();
+        if (admission_fd >= 0) directory_registration_unlock(admission_fd);
         return 0;
     }
+    /* ACTIVE is published and ownership checked before leaving the gate.
+     * Reclaim now refuses while this callback lease is ACTIVE, but other
+     * sibling workers remain free to enter their own polling passes. */
+    if (admission_fd >= 0) directory_registration_unlock(admission_fd);
     polling = 1;
     int result = poll(argument);
     polling = 0;
@@ -132,7 +188,15 @@ int ker_reload_set_enabled(int enabled)
 }
 int ker_reload_rx_owner(void) { return ff_reload_rx_owner_gen(); }
 int ker_reload_rx_stopped(void) { return ff_reload_rx_stopped(); }
-int ker_reload_rx_allowed(void) { return !directory_no_hw_mode(); }
+int ker_reload_rx_allowed(void)
+{
+    if (!g_dir) return !directory_no_hw_mode();
+    int admission_fd = directory_registration_lock(LOCK_EX);
+    if (admission_fd < 0) return 0;
+    int allowed = !directory_no_hw_mode();
+    directory_registration_unlock(admission_fd);
+    return allowed;
+}
 int ker_reload_rx_mark(int owner, int stopped)
 {
     if (polling) return -EBUSY;

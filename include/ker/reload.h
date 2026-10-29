@@ -30,6 +30,9 @@ KER_API int ker_reload_message_parse(const ker_ipc_message *message, int *comman
  * before releasing ownership.
  * Callback runs synchronously only when the original runtime permits RX.
  * A denied pass acknowledges only after the prior callback has returned.
+ * With a directory, a short interprocess gate orders ACTIVE lease admission
+ * and the ownership check against reclaim; it is released before callback.
+ * Failure to acquire the gate returns negative errno.
  * Callback owns its packet/API work; its result is forwarded unchanged.
  * Select a worker slot before polling. Serialize calls within each process;
  * recursive poll/control fails EBUSY. Unbinding inside a callback aborts.
@@ -46,7 +49,8 @@ KER_API int ker_reload_set_enabled(int enabled);
 KER_API int ker_reload_rx_owner(void);
 KER_API int ker_reload_rx_stopped(void);
 /* Gate observation only; does not register a hardware-user lease. Use poll
- * for directory-backed hardware work. */
+ * for directory-backed hardware work. Gate-acquisition failure is fail-closed
+ * (returns0). */
 KER_API int ker_reload_rx_allowed(void);
 /* Controller-only marker restoration: all affected callbacks must already be
  * quiescent. Ordinary handover uses arm, exact acknowledgements, release/claim.

@@ -56,6 +56,26 @@ static uint64_t now_ms(void)
     struct timespec stamp; CHECK(!clock_gettime(CLOCK_MONOTONIC, &stamp));
     return (uint64_t)stamp.tv_sec*1000 + (unsigned long)stamp.tv_nsec/1000000;
 }
+#ifdef KER_RELOAD_TESTING
+extern void ker_reload_test_arm_reclaim_cas_hook(void (*hook)(void));
+static char reclaim_gate_directory[PATH_MAX];
+static void pause_after_reclaim_proof(void)
+{
+    char path[PATH_MAX];
+    int length = snprintf(path, sizeof(path), "%s/proof", reclaim_gate_directory);
+    CHECK(length > 0 && (size_t)length < sizeof(path));
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    CHECK(fd >= 0 && write(fd, "proof", 5) == 5 && !close(fd));
+    length = snprintf(path, sizeof(path), "%s/resume", reclaim_gate_directory);
+    CHECK(length > 0 && (size_t)length < sizeof(path));
+    uint64_t deadline = now_ms() + 10000;
+    while (access(path, F_OK) != 0) {
+        CHECK(now_ms() < deadline);
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&delay, NULL);
+    }
+}
+#endif
 static void frame_check(struct rte_mbuf *packet, unsigned sequence)
 {
     CHECK(packet && packet->pool == pool && rte_pktmbuf_pkt_len(packet) == sizeof(struct frame));
@@ -392,6 +412,13 @@ static void worker(unsigned gen,unsigned worker_slot)
         } else if(!strncmp(command,"claim ",6)) {
             unsigned e,g;CHECK(sscanf(command,"claim %u %u",&e,&g)==2);printf("RESULT {\"result\":%d}\n",ker_reload_directory_claim(e,(int)g,20));flush();
         } else if(!strcmp(command,"reclaim\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_reclaim());flush();}
+#ifdef KER_RELOAD_TESTING
+        else if(!strncmp(command,"reclaim-pause ",14)) {
+            CHECK(sscanf(command,"reclaim-pause %1023s",reclaim_gate_directory)==1);
+            ker_reload_test_arm_reclaim_cas_hook(pause_after_reclaim_proof);
+            printf("RESULT {\"result\":%d}\n",ker_reload_directory_reclaim());flush();
+        }
+#endif
         else if(!strcmp(command,"stop\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_user_stop());flush();}
         else if(!strcmp(command,"detach\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_detach());flush();}
         else if(!strcmp(command,"ring-attach\n")) {printf("RESULT {\"result\":%d}\n",ker_reload_directory_ring_attach(20));flush();}

@@ -59,7 +59,8 @@ KER_API int ker_reload_directory_user_release(void);
 /* Original bounded release waits for every old ACTIVE user to stop or exit.
  * No production timeout override is exposed. Claim never steals; reclaim
  * requires a dead/stale owner and actual user proof. Only the calling
- * secondary's coordinate can claim/reclaim. Return original HANDOVER values. */
+ * secondary's coordinate can claim/reclaim. Return original HANDOVER values;
+ * interprocess gate acquisition failures return negative errno. */
 KER_API int ker_reload_directory_release(uint32_t epoch, int generation);
 KER_API int ker_reload_directory_claim(uint32_t from_epoch, int from_generation,
     unsigned timeout_ms);
