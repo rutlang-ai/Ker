@@ -49,3 +49,6 @@ set_tests_properties(fstack-config-source-test_parse_lcore_mask_proc_id_in_range
 add_test(NAME fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails COMMAND ker-test_parse_lcore_mask_proc_id_over_count_fails)
 set_tests_properties(fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ff_load_config_dpdk_extra_keys COMMAND ker-test_ff_load_config_dpdk_extra_keys)
+set_tests_properties(fstack-config-source-test_ff_load_config_dpdk_extra_keys PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
