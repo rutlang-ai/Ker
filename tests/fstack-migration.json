@@ -850,7 +850,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker’s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker’s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
+      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker\u2019s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker\u2019s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -2202,30 +2202,66 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_reload_fsm_transitions",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Exact original happy chain, re-entry/jump rejection, T1 failures/reset and all state-name assertions. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-transitions",
+          "provenance_case": "fstack-reload-fsm-transitions"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-transitions"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_all_legal_transitions",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All12 original legal transitions and two consecutive fully reusable rounds. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-legal",
+          "provenance_case": "fstack-reload-fsm-legal"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-legal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_illegal_combinations_exhaustive",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete7-state/11-event matrix, every illegal pair and all three out-of-range source states. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-illegal",
+          "provenance_case": "fstack-reload-fsm-illegal"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-illegal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_10_error_recovery_and_abort",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All five original failure-entry transitions, RESET-only recovery, forbidden exits and a fresh successful chain after each failure. The unchanged pinned nginx pure policy is consumed by a real caller example, never a Ker library. Its state controls actual Ker READY/park/release/claim, raw-record drain, cooperative retirement and exact pidfd-confirmed exit before commit. Both repository and independently installed consumers run two complete original-EAL/net_ring cycles and a real safely parked READY-timeout abort/reset. Premature READY, handover, drain, re-entry and old-exit events are refused; a held old callback completes before transfer; final original PMD RX/TX4/4 and63/63 mbuf reclamation pass. This qualifies the source pure-policy contract through an actual runtime caller, not full nginx reload, cross-master behavior, crash recovery, Linux traffic or TCP continuity. Application business policy remains outside Ker implementation; Ker and upstream Linux/DPDK code are unchanged in this batch.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-fsm-recovery",
+          "provenance_case": "fstack-reload-fsm-recovery"
+        },
+        {
+          "ctest": "fstack-reload-controller",
+          "provenance_case": "fstack-reload-fsm-recovery"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
@@ -2237,35 +2273,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_14_reload_msg_serdes",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial control-message boundary adaptation through the actual resident process, original DPDK EAL and production Python client over real credential-checked AF_UNIX SOCK_SEQPACKET connections. Three profiles verify STATUS/EPOCH_LIVE roundtrips including high-bit64-bit fields; truncated/oversized records disconnect; malformed magic/version/status, forbidden query fields and unsupported commands are rejected with signed errno replies and valid successor queries. Exact MASTER/RELEASE retransmissions return byte-identical cached replies; conflicting or older sequence numbers cannot release the epoch. Every profile verifies511 available objects, zero leases/users and exact resident/socket cleanup. No host-socket result is presented as native network-stack delivery. Additional Ker control-adapter profiles verify independent same-PID master connections and replay caches, foreign/released connection release rejection, corrupt and stale credentials, all three nonresident slots exhausted with cached ENOSPC, successful higher-sequence retry after release, and slot reuse with a strictly newer epoch. Rejected requests preserve live epochs, zero users and all511 available objects; final exact release and resident cleanup are required. These are primary-only adapter extensions, not evidence for F-Stack reload command semantics or cross-process ownership.",
+      "status": "scenario-adapted",
+      "reason": "The optional exported ker::reload adapter uses byte-identical pinned ff_reload.c and original configuration/message layouts. Full source assertions now cover fill fields, DRAIN_DONE roundtrip, every known command including QUERY, wrong-type/out-of-range/zero rejection, NULL message rejection and independently optional outputs. An actual original-EAL primary uses the same fill/parse adapters to answer read-only QUERY from a borrowed valid original runtime state;22 distinct secondaries roundtrip all7 command payloads through real shared rings while preserving PID/cookie/payload and reclaiming64/64 objects. Other control operations return explicit EOPNOTSUPP; source acceptance is serialization, not execution of reload commands. Debug/static, Release/shared and an independently installed ker::reload consumer passed. This optional ABI component is distinct from the authenticated resident control protocol and does not qualify hardware handover or complete reload.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-session-control-roundtrip",
-          "provenance_case": "native-fstack-session-control-frames"
+          "ctest": "fstack-reload-message-serdes",
+          "provenance_case": "fstack-reload-message-serdes"
         },
         {
-          "ctest": "native-fstack-session-control-malformed",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-replay",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-isolation",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-capacity",
-          "provenance_case": "native-fstack-session-control-frames"
-        },
-        {
-          "ctest": "native-fstack-session-control-recycle",
-          "provenance_case": "native-fstack-session-control-frames"
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-reload-message-serdes"
         }
-      ],
-      "remaining": "F-Stack FF_RELOAD fill/parse ABI and positive READY/HANDOVER_REQ/HANDOVER_ACK/DRAIN_PROGRESS/DRAIN_DONE/REJECT/QUERY command semantics, generation/status/heartbeat payload meanings, NULL input and optional C output-pointer contracts are not implemented. Ker uses its own versioned same-host control ABI. These primary-only control-frame tests do not qualify secondary shared-ring messaging, Linux packet traffic, TCP continuity or full reload/handover."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
@@ -2277,9 +2296,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_22_heartbeat_and_rx_return",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported original-runtime adapter now validates exact shared block headers, exposes target heartbeat/READY/round observations, and ticks the unchanged original heartbeat on actual target poll passes, including denied RX. Full source assertions cover advance/window/exact-timeout/disabled/backwards/NULL evaluation, valid/invalid block layouts, begin/target/window, target ticks, observer stall/rebase, PID/epoch READY matching, complete, closed-window tick suppression, abort and unbound defaults. In real original-EAL/net_ring profiles the exact target secondary is SIGSTOPped with parent WUNTRACED confirmation; the original DPDK timer sampler detects one bounded stall and rebases while RX ownership remains0. SIGCONT resumes heartbeat progression, actual PID READY matches its round, and complete/abort preserve source observations. Both repository and independently installed consumers retain actual PMD4/4 RX/TX and63/63 reclamation. This is liveness observation and trusted same-master runtime control, not automatic RX takeover, hardware proof, imported-Linux traffic or full reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-heartbeat",
+          "provenance_case": "fstack-reload-heartbeat"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-heartbeat"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
@@ -2291,43 +2319,88 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_26_rx_handover_markers",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Original unbound/legacy gate defaults, generation ownership, invalid arguments, bounded non-stealing timeout, parked release, claim/unpark, idempotent claim, reverse ownership and enabled=0 behavior are all asserted. The exported ker::reload synchronous poll adapter invokes actual caller packet work only when the unchanged original runtime allows it; denied passes acknowledge after earlier callback completion. Real original EAL secondaries share the original block and net_ring PMD. An in-flight old callback blocks release, callback return alone is insufficient until its exact epoch acknowledgement, new workers cannot steal, and both transfer and reverse transfer deliver original RX/TX records. All63/63 mbufs return and a same-slot successor reuses the same queue. The installed-package consumer independently repeats the entire real PMD lifecycle. This is trusted same-master block-only polling; it does not qualify cross-master directories, hardware-driver crash recovery, imported-Linux networking or complete application reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-markers",
+          "provenance_case": "fstack-reload-markers"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-markers"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_11_handover_barrier",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Original monotonic park epochs, slot-specific acknowledgements, stale-epoch rejection, out-of-range slots, parked-before-owner-transfer and reversible single-generation gate judgments are all asserted. The exported ker::reload synchronous poll adapter invokes actual caller packet work only when the unchanged original runtime allows it; denied passes acknowledge after earlier callback completion. Real original EAL secondaries share the original block and net_ring PMD. An in-flight old callback blocks release, callback return alone is insufficient until its exact epoch acknowledgement, new workers cannot steal, and both transfer and reverse transfer deliver original RX/TX records. All63/63 mbufs return and a same-slot successor reuses the same queue. The installed-package consumer independently repeats the entire real PMD lifecycle. This is trusted same-master block-only polling; it does not qualify cross-master directories, hardware-driver crash recovery, imported-Linux networking or complete application reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-barrier",
+          "provenance_case": "fstack-reload-barrier"
+        },
+        {
+          "ctest": "fstack-reload-multiprocess",
+          "provenance_case": "fstack-reload-barrier"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_epoch_slot_and_ring_name",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Original epoch-slot mapping, legacy byte names, generation-only slot0 names, epoch-slot names, longest source coordinate, truncation and invalid buffer rejection are exercised through the provider-side public builder. The actual EAL primary uses that builder for its generation and legacy queues. This completes source naming assertions through an actual caller-owned EAL transport, not directory arbitration, cross-generation packet handover or complete reload. Upstream F-Stack naming code remains byte-identical. Debug/static and Release/shared passed, as did an installed consumer and isolated original-EAL multiprocess guest2.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-epoch-names",
+          "provenance_case": "fstack-ipc-epoch-names"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-epoch-names"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_gendir_arbitration",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All unchanged original directory install/layout, initial claim, RX/active/observation ownership, same-master other-gen and same-gen foreign-master gates, nonowner/third-coordinate refusal, peer selection and fresh/stale orphan/window/block-mirror assertions. A public peer observation adapter drives actual caller release-peer selection. Real same-gen masters borrow distinct state blocks; only the directory disambiguates their hardware and observer ownership. Target private-block mirroring cannot clear a transferred park order before explicit claim. Uses unchanged pinned F-Stack runtime behind Ker-owned EAL/lifetime adapters and caller-owned control policy. This completes the named source contract, not physical NIC DMA, FreeBSD control execution, imported-Linux traffic, TCP continuity or complete application reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-m5-arbitration",
+          "provenance_case": "fstack-reload-m5-arbitration"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-arbitration"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_probe_epoch_fallback",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All unchanged original primary QUERY fallback assertions: newest live epoch/generation, next newest after retirement, epoch0 with no live master, explicit active word outranking newer peers. Actual primary QUERY selects the exact original FF IPC address; process127 sends a typed QUERY to the chosen EAL secondary and receives its original PID/cookie/payload-preserving reply. Real master/worker lifetimes end between fallback stages, and a serving older master wins over the newer live master. Uses unchanged pinned F-Stack runtime behind Ker-owned EAL/lifetime adapters and caller-owned control policy. This completes the named source contract, not physical NIC DMA, FreeBSD control execution, imported-Linux traffic, TCP continuity or complete application reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-m5-probe",
+          "provenance_case": "fstack-reload-m5-probe"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-probe"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_name_isolation",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial master namespace-isolation adaptation through the production resident name builder and original DPDK ring APIs. All128 supported slot/generation/process/channel tuples create distinct names and actual ring objects; duplicate creation fails with EEXIST without replacing an existing object. Exact buffer capacity succeeds, truncation preserves canaries and invalid coordinates are explicitly rejected. All128 rings each hold64 distinct caller-owned tokens: full enqueue fails, FIFO pointer/byte identity is preserved and no other coordinate is consumed. Draining/freeing and recreating slots1/2 preserves queued objects in slots0/3. Every ring is drained, freed and absent from lookup before original EAL cleanup.",
+      "status": "scenario-adapted",
+      "reason": "All unchanged original process0/1/7/127, gen0/1, input and FF_SYSCTL..FF_RELOAD output-family, e1/e2 isolation, legacy epoch0/NONE alias and name-length assertions. Real directory epochs4/5 use slots1/2: each master has88 original FF-named rings. The full160-coordinate matrix traverses actual original ker::ipc send/receive, typed DPDK pool and secondary provider, validating exact mbuf-independent message identity, PID/cookie, nonce and payload. All352 ring lifetimes across four epochs are created/destroyed with no alias or outstanding request. Non-QUERY command execution returns EOPNOTSUPP; transport and naming, not FreeBSD command handlers, are qualified. Uses unchanged pinned F-Stack runtime behind Ker-owned EAL/lifetime adapters and caller-owned control policy. This completes the named source contract, not physical NIC DMA, FreeBSD control execution, imported-Linux traffic, TCP continuity or complete application reload.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-namespace-names",
@@ -2340,29 +2413,54 @@
         {
           "ctest": "native-fstack-session-namespace-recreate",
           "provenance_case": "native-fstack-session-ring-namespaces"
+        },
+        {
+          "ctest": "fstack-reload-m5-names",
+          "provenance_case": "fstack-reload-m5-names"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-names"
         }
-      ],
-      "remaining": "Ker has4 slots,2 generations,4 processes and4 channels. This does not implement the source F-Stack process IDs7/127, FF_SYSCTL..FF_MSG_NUM message-type namespace, legacy/no-epoch name equivalence or literal ff_msg_ring_* ABI. These are primary-only original-DPDK ring/component tests with caller-owned tokens, not mbuf leases, resident registration, secondary-EAL visibility, packet delivery, epoch admission/recycle authorization or full reload."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_graceful_zero_epoch_invariance",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All six source epochs, four process IDs, both generations and every source output type preserve exact unsuffixed legacy names. Real EAL secondary AUTO detection discovers the primary legacy proc0 ring, uses the exact proc1 unsuffixed ring for byte-preserving request/reply and fully reclaims the shared pool; unspecified coordinates remain unspecified in the snapshot. This completes source naming assertions through an actual caller-owned EAL transport, not directory arbitration, cross-generation packet handover or complete reload. Upstream F-Stack naming code remains byte-identical. Debug/static and Release/shared passed, as did an installed consumer and isolated original-EAL multiprocess guest2.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-legacy-names",
+          "provenance_case": "fstack-ipc-legacy-names"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-legacy-names"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ut_nr_m5_cross_master_handover_sequence",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "All unchanged original two-private-block same-generation source assertions: peer publication, park-before-transfer, new claim/unpark, old-owner denial, live-new-master rollback refusal, dead-epoch reclaim, old target/block reset and no steal by surviving target workers. Actual two same-gen masters use independent shared blocks and original net_ring queues. A held callback prevents bounded release; the caller selects its foreign peer through the public original peer adapter. Polling before explicit claim preserves park. Real target-master death leaves its worker adopted and alive; stopped/stale proof permits rollback, the old owner resumes original PMD RX/TX and the surviving target remains denied. Uses unchanged pinned F-Stack runtime behind Ker-owned EAL/lifetime adapters and caller-owned control policy. This completes the named source contract, not physical NIC DMA, FreeBSD control execution, imported-Linux traffic, TCP continuity or complete application reload.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-m5-handover",
+          "provenance_case": "fstack-reload-m5-handover"
+        },
+        {
+          "ctest": "fstack-reload-coordinate-multiprocess",
+          "provenance_case": "fstack-reload-m5-handover"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_hw_user_proof",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial user-registration proof through actual resident pre-EAL control reservations and read-only STATUS queries. Independent direct children perform byte-identical RESERVE retries that retain exactly one mbuf/user, duplicate-coordinate requests on a second connection that return EBUSY without changing the original lease, and invalid generation/process bounds or slot/session/epoch/token requests that allocate nothing. A valid generation1/process3 reservation succeeds after all invalid requests on the same connection. The live accepted borrower blocks MASTER RELEASE, survives transport EOF and is reclaimed only after exact pidfd death; final release restores511 available objects and zero slots/users.",
+      "status": "scenario-adapted",
+      "reason": "Exact original hardware-user registration, idempotent add, ACTIVE/STOPPED versus disappearance, live/dead PID, coordinate and epoch-wide clearance assertions. Actual two-master/four-secondary EAL consumers exercise automatic registration, callback gating, repeated polls, STOPPED detach refusal, real user death and coordinate isolation. The optional ker::reload component executes unchanged pinned F-Stack runtime behind caller-owned EAL/state/lifetime adapters. This completes only the named source contract; physical NIC DMA, imported-Linux packet delivery, TCP continuity and full application reload remain unqualified.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-control-reservation-replay",
@@ -2375,22 +2473,38 @@
         {
           "ctest": "native-fstack-session-control-reservation-bounds",
           "provenance_case": "native-fstack-session-reservation-admission"
+        },
+        {
+          "ctest": "fstack-reload-directory-hw-users",
+          "provenance_case": "fstack-reload-directory-hw-users"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-hw-users"
         }
-      ],
-      "remaining": "Only control-reservation registration and census are covered. These children do not attach a secondary EAL or use hardware. The source hardware-user ACTIVE/STOPPED table ABI, own user_add idempotence across distinct operations, explicit stop/release acknowledgements, users_clear/epoch_users_clear behavior and independent hardware-coordinate proofs remain unimplemented. Identical sequence replay is transport idempotence; Ker deliberately rejects a fresh RESERVE on an already reserved connection with EINVAL and a duplicate coordinate with EBUSY, so these are not equivalent to the source idempotent user_add API. No complete source pass, RX takeover or packet delivery is claimed."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_reclaim_needs_user_proof",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Exact original dead/stale master with live ACTIVE worker refusal, counter and owner preservation, then STOPPED-proven reclaim assertions. In actual EAL, a killed master leaves two adopted workers; stale timestamps and normal poll cannot bypass their ACTIVE leases. Reaping one real crashed user still leaves the survivor blocking; only its STOPPED proof permits takeover and subsequent original PMD traffic. The optional ker::reload component executes unchanged pinned F-Stack runtime behind caller-owned EAL/state/lifetime adapters. This completes only the named source contract; physical NIC DMA, imported-Linux packet delivery, TCP continuity and full application reload remain unqualified.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-directory-reclaim",
+          "provenance_case": "fstack-reload-directory-reclaim"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-reclaim"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_release_epoch_needs_proof",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial release-proof adaptation through real resident control leases. Independent direct-child processes reserve actual control-pool mbufs at authenticated slot/generation/process coordinates. MASTER RELEASE returns EBUSY while a borrower lives, including after its socket EOF; no epoch or lease is lost. Exact normal exit or SIGKILL permits pidfd-based reclamation. With two borrowers at generation0/process0 and generation1/process3, reaping the first returns exactly one object but the survivor still blocks release; only the final death permits release. Every stage checks exact user/object counts and epoch liveness, with511 objects and zero slots/users at shutdown.",
+      "status": "scenario-adapted",
+      "reason": "Exact original bounded release refusal, unchanged owner and counter, then proven owner-generation flip assertions. Actual EAL release waits the unchanged production5s budget and refuses both a held original PMD callback and a returned-but-unacknowledged lease. STOPPED allows epoch/generation release, claim and reversal; a live reverse peer also refuses, all local parked markers roll back on failure, and counters are asserted. The optional ker::reload component executes unchanged pinned F-Stack runtime behind caller-owned EAL/state/lifetime adapters. This completes only the named source contract; physical NIC DMA, imported-Linux packet delivery, TCP continuity and full application reload remain unqualified.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-control-reservation-eof",
@@ -2403,15 +2517,22 @@
         {
           "ctest": "native-fstack-session-control-reservation-coordinates",
           "provenance_case": "native-fstack-session-reservation-proof"
+        },
+        {
+          "ctest": "fstack-reload-directory-release",
+          "provenance_case": "fstack-reload-directory-release"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-release"
         }
-      ],
-      "remaining": "These children reserve control leases only: they do not attach a secondary EAL, enter hardware, acknowledge STOPPED, transfer RX ownership to a new generation, test the bounded hardware reclaim timeout/refusal counter, or implement the F-Stack ff_reload_rx_release_epoch API. The original source owner-generation flip after proof remains unqualified; no complete source pass or network delivery is claimed."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_p2_orphan_workers_keep_epoch_live",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial orphan-epoch lifetime adaptation using real resident control reservations. A distinct master registers one or two direct-child borrowers, then dies by SIGKILL while the borrowers remain alive. EOF-disconnected and SIGSTOP-frozen borrowers retain their exact mbuf leases and epoch; two generation/process coordinates are reclaimed separately only after their exact pidfd deaths, and the final borrower death retires the epoch and frees the slot. A separate live master and resident epoch0 remain live throughout. Reuse requires a newer epoch and rejects the retired ticket. Each stage checks exact user/object counts; final resident cleanup restores511 objects and removes its socket.",
+      "status": "scenario-adapted",
+      "reason": "Exact original fresh/stale orphan stamp, live-master/stale-stamp contrast and retired-slot takeover assertions. An actual master is SIGKILLed/reaped, its two EAL workers are adopted by a subreaper with working transferred pipe FDs, and four original polling passes refresh liveness. Real inactivity expires the stamp but ACTIVE users still block; stopped/dead proof allows takeover. A separate live master remains protected after an actual2300ms no-poll interval. The optional ker::reload component executes unchanged pinned F-Stack runtime behind caller-owned EAL/state/lifetime adapters. This completes only the named source contract; physical NIC DMA, imported-Linux packet delivery, TCP continuity and full application reload remain unqualified.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-orphan-reservation-eof",
@@ -2424,16 +2545,32 @@
         {
           "ctest": "native-fstack-session-orphan-reservation-staged",
           "provenance_case": "native-fstack-session-orphan-reservations"
+        },
+        {
+          "ctest": "fstack-reload-directory-orphans",
+          "provenance_case": "fstack-reload-directory-orphans"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-orphans"
         }
-      ],
-      "remaining": "These are pre-EAL control reservations, not secondary EALs or hardware users. Ker retains exact pidfd-backed registrations rather than F-Stack heartbeat timestamps. The source fresh/stale stamp takeover decisions, live-master/stale-stamp contrast, retired-slot takeover semantics, RX ownership transfer and ff_reload_gendir_rx_reclaim return/counter ABI remain unqualified. No complete source pass, hardware access or network delivery is claimed."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rx15_ring_user_census_and_purge_lock",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged complete RX-15 source test covers no-directory behavior, idempotent registration/detach, per-slot/generation live/dead census, marker preservation and idle clearing, 128 existing entries with capacity for the next master, exclusive/idempotent purge locking, live-holder timeout/attach rollback, nonowner unlock and dead-holder takeover. Actual two-master EAL users reproduce the lock/registration/death/census paths. Six original mbufs traverse a live-preserved FIFO, idle purge and same-ring re-admission with exact object identity/nonce/sequence/payload validation and complete original-pool reclamation. The optional ker::reload component executes unchanged pinned F-Stack runtime behind caller-owned EAL/state/lifetime adapters. This completes only the named source contract; physical NIC DMA, imported-Linux packet delivery, TCP continuity and full application reload remain unqualified.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-directory-ring-census",
+          "provenance_case": "fstack-reload-directory-ring-census"
+        },
+        {
+          "ctest": "fstack-reload-directory-multiprocess",
+          "provenance_case": "fstack-reload-directory-ring-census"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
@@ -2516,23 +2653,62 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_pcblddr_fun_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-register",
+          "provenance_case": "fstack-address-policy-register"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-register"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-register"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-plain",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-plain"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_regist_packet_dispatcher_context_smoke",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-context",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-context"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_get_tsc_ns_basic",
@@ -2549,23 +2725,62 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_no_callback",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-default",
+          "provenance_case": "fstack-address-policy-default"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-default"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-default"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet_dispatches",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-ipv4",
+          "provenance_case": "fstack-address-policy-ipv4"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-ipv4"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-ipv4"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::address_policy compiles unchanged original PCB callback declarations/dispatch, preserving NULL/no-op, family2 and28->10, exact address pointers/port/result and unknown-family host EADDRNOTAVAIL. Complete unchanged source assertions run against its public API. Real native Linux callers explicitly select a source, then bind/connect and exchange exact dual-stack TCP payloads, verify selected IPv4 source127.0.0.2/client-peer ports, rejection, FIN/EOF and recovery after NULL unregister. This is an explicit caller adapter, not an implicit POSIX hook or a FreeBSD PCB implementation. Original Linux owns port allocation and all protocol processing. Replacement/unregister quiescence, nested dispatch, reentrant refusal and deferred-cancellation cleanup pass. Debug/static, Release/shared and separately configured installed consumers pass. Candidate38f4e5c5b02b4a946c8997cc986f3271c5cda5dc qualified in /home/hurricane/.local/state/ker-compat-work/fstack-address-policy-qualified1/manifest.json SHA256 d27a6781d25b685060e39570954653cadd5ca4531e8b0a3aa5a932f5c33676e6; repository and installed native profiles each complete six real loopback TCP exchanges with original null-PMD runtime, actual kernel identity, shutdown acknowledgement and zero live mbufs/native buffers. No external-wire evidence claimed. See docs/fstack-address-policy.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-address-policy-ipv6",
+          "provenance_case": "fstack-address-policy-ipv6"
+        },
+        {
+          "ctest": "fstack-address-policy-lifetime",
+          "provenance_case": "fstack-address-policy-ipv6"
+        },
+        {
+          "ctest": "native-fstack-address-policy-sockets",
+          "provenance_case": "fstack-address-policy-ipv6"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
@@ -2814,16 +3029,42 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged original source assertions validate exact socket0/gen0 and socket3/gen1 names, invalid generations and truncation, gen count2, legacy shared-pool fallback, missing generation NULL, selection and invalid-setter preservation. ker::pools compiles the exact original selection globals/functions and name helper, while retaining the complete upstream sources unchanged. Actual public-API consumers create real original-named gen0/gen1 pools, prove missing-generation NULL/ENOENT despite an available shared RX pool, allocate actual TX responses from the selected bank, switch while an old object is outstanding and retain gen1 on invalid2/-1. A new actual EAL secondary joins while gen0 owns an output mbuf, then returns that old object while selecting gen1; repeated reverse selection and original-pool reclamation complete all four real PMD frames. The caller owns EAL, control policy, devices, queues, pools and object lifetimes. No original Linux/DPDK source or kernel protocol behavior changes.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-pool-generation",
+          "provenance_case": "fstack-pool-generation"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "fstack-pool-generation"
+        },
+        {
+          "ctest": "fstack-pool-multiprocess",
+          "provenance_case": "fstack-pool-generation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_21_shared_pool_cache_size",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source assertions cover mbuf/reference legacy256, message legacy16, shared0 for all three roles and reserved FREE_RING_SIZE>0. The factory consumes the exact original policy in real DPDK creation. Actual legacy mbuf, typed ff_msg and opaque per-packet reference pools use caches256/16/256, consume4 original net_ring frame lifecycles, prove nonempty cache use and explicitly flush to1023/1023. Shared primary/two-secondary EAL users share lcore0 and operate with all caches0: fixed RX pool, two generation response pools, typed messages and real per-packet reference journals are allocated/consumed/freed across processes and generations. This qualifies memory/cache policy; the opaque reference record does not implement the FreeBSD page-array reference ABI. The caller owns EAL, control policy, devices, queues, pools and object lifetimes. No original Linux/DPDK source or kernel protocol behavior changes.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-pool-cache",
+          "provenance_case": "fstack-pool-cache"
+        },
+        {
+          "ctest": "fstack-pool-legacy-consumer",
+          "provenance_case": "fstack-pool-cache"
+        },
+        {
+          "ctest": "fstack-pool-multiprocess",
+          "provenance_case": "fstack-pool-cache"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_19_drain_ring_sp_sc",
@@ -2863,9 +3104,22 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_24_unregist_dispatcher",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "ker::packet_dispatcher compiles literal original callback ABI/context layout, globals, setters/unsetters and invocation block from unchanged pinned full sources. Plain precedence, borrowed data/length/queue/count, stripped/unstripped VLAN/network-order TCI and raw results are preserved. Caller retains mbuf ownership and owns routing/drop/response policy; no FreeBSD protocol/peer implementation imported. Three complete unchanged source tests run through public APIs. Actual original net_ring two-RX/two-TX consumer processes12frames, transmits9, drops2 and transfers1 through an explicit caller-owned peer queue, checking exact bytes, length, metadata, replacement, repeated unregister/NULL recovery and per-frame pool127/127. Both plain/context quiescent update, nested/reentrant and deferred-cancellation lifetime checks pass. Debug/static6 and Release/shared6 CTests, independently configured installed source/lifetime and PMD consumers pass without skips. Candidatee40a712a077fd60ad7bbdfb2150c44eb58c1cb57; /home/hurricane/.local/state/ker-compat-work/fstack-dispatcher-qualified1/manifest.json SHA256ac3d7b68b667ccc3538523297a599ae8636cf53d2e74fe30114ce910ff66231a binds source/binary/library/installed-CMake/link/evidence inputs. No imported-kernel packet or physical NIC DMA claim. See docs/fstack-packet-dispatcher.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-packet-dispatcher-unregister",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-lifetime",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        },
+        {
+          "ctest": "fstack-packet-dispatcher-pmd",
+          "provenance_case": "fstack-packet-dispatcher-unregister"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
@@ -2944,9 +3198,18 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_live_slot",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Pinned F-Stack refuses an occupied epoch-derived candidate slot without fallback. Ker's authenticated resident instead selects any free slot; duplicate/live-borrower denial does not prove the source's fixed-slot no-fallback boundary. See issue218.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The actual ker::reload directory adapter compiles unchanged original ff_reload_gendir.c, preserving exact epoch-derived slot admission without scanning another free slot. Complete unchanged p1_directory_conflict(0)/test_p1_directory_live_slot assertions run against the actual production TU with test-only EAL-role/memzone/fatal interception: two failed attempts retain epoch9, absent directory, cleared reset pending and disabled publication; RX word/primary-slot bytes and alternate free slot remain unchanged. Real repository and independently installed public-API EAL consumers each use4actualmasterparents/4secondarylifetimes: Aepoch2/slot2live, Bepoch3/slot3exits/reaped, Cepoch4/slot1live, Depoch5mustfailoriginaldiagnostic/status1ratherthanreusingreclaimableslot3. Before/after failure, Acontinues originalPMD2/2 and2typedQUERYIPCroundtrips through88FFnamedrings, unchangedprimary/ownerpublicview, foreignCdenied, exactpayload/pointer/cookie andbothpools63/63. Allownedparticipantsreaped andprimaryEALcleaned. Debug/static andRelease/shared exact source/import tests pass; hostMPskip77 is not completion. Candidatee821e67ab9749cab4c8cc3cd55cd16c30f0d46fc isolatedguest14 passes13runtimeprofiles plus2existingexamples andnormalpowerdown/QEMU0. Result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest14/actual-result-attempt1.json SHA25612c7514d4ce66d7c88b6f43368f2a13130d3619941239fb61b60b8def3819168 binds source/binary/installedCMake/link/library/image/serial inputs. No upstream Linux/DPDK or kernel protocol changes; failed-boundary guard alone is not the proof. See docs/fstack-reload-live-slot.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-live-slot",
+          "provenance_case": "fstack-reload-live-slot"
+        },
+        {
+          "ctest": "fstack-reload-live-slot-multiprocess",
+          "provenance_case": "fstack-reload-live-slot"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_directory_full",
@@ -3921,16 +4184,26 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_map_shared_anon",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The literal 4096-byte shared-anonymous profile runs through the active exported Ker mmap owner adapter, proven by dladdr against the active native-runtime ABI. Zeroed/writable bytes, unmap reclamation, and a native-socket fd ignored by anonymous mmap are verified. The real original-Linux instance and original net_null worker halt with explicit acknowledgement and zero outstanding mbufs. Host shared-memory mapping is proved; cross-process fork sharing, native file mappings, packet traffic and NIC behavior are not claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-mmap-shared",
+          "provenance_case": "native-fstack-host-mmap-shared"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_file_backed_no_anon",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The literal 4096-byte MAP_PRIVATE file-backed profile runs through the active exported Ker mmap owner adapter, not a libc-only process. A real host temporary file is unlinked, sized and mapped without MAP_ANONYMOUS; zero initialization, private COW, a second page-offset mapping, post-close lifetime and unmap reclamation are verified. Native socket descriptors instead reach the original-Linux non-MMU mmap rejection path and never the host placeholder. Actual native/EAL shutdown acknowledges zero outstanding mbufs; no native regular-file mmap, protocol or wire evidence is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-mmap-file",
+          "provenance_case": "native-fstack-host-mmap-file"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_get_current_time_null_sec",
@@ -3983,9 +4256,14 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_update_current_ts_assert_fail_on_clock_error",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A test application interposes only its host CLOCK_REALTIME read during actual preloaded native startup; other reads still execute the host syscall. EIO must be observed at the real ker_native_sync_realtime caller, which terminates initialization with status125 before application entry, while the original null-PMD worker is reclaimed with zero outstanding mbufs. A fresh nonfaulted process then initializes the original-Linux clock, reads valid current time, runs and explicitly halts native/EAL backends. Ker uses fail-closed startup rather than a cached FreeBSD current_ts or a C assertion; no getter error-to-success stub, protocol timer change or network-traffic evidence is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-realtime-startup-fatal",
+          "provenance_case": "native-fstack-realtime-startup-fatal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_kernel_fd_encode_roundtrip",
@@ -4337,9 +4615,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_no_section",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker requires known named sections; F-Stack sectionless key callbacks are not implemented.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-no-section",
+          "provenance_case": "fstack-ini-callback-no-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_invalid_syntax",
@@ -4360,9 +4643,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_handler_returns_zero",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker validates its typed settings directly; arbitrary caller handlers and handler-return-zero semantics are not exposed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-handler-rejection",
+          "provenance_case": "fstack-ini-callback-handler-rejection"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_bom_utf8",
@@ -4399,9 +4687,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_file_null",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker opens configuration paths and reads valid text streams; no F-Stack C NULL FILE-pointer entrypoint is provided.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-null-file",
+          "provenance_case": "fstack-ini-callback-null-file"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_filename_not_exist",
@@ -4438,9 +4731,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_section_name",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker rejects unknown section names instead of silently truncating names to the F-Stack fixed buffer size.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-long-section",
+          "provenance_case": "fstack-ini-callback-long-section"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_long_key_name",
@@ -4465,9 +4763,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_user_data_passed",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The Ker configuration schema has no opaque caller handler/userdata callback interface.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ini-callback-user-data",
+          "provenance_case": "fstack-ini-callback-user-data"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_zero_byte_input",
@@ -4520,15 +4823,14 @@
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_multiline_value_continuation",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "The production Ker launcher INI reader validates real streams/files, parser syntax and typed settings; configuration is also exercised by actual DPDK/native TCP workers. This adapts parse outcomes, not the F-Stack callback ABI or integer return-code API.",
+      "status": "scenario-adapted",
+      "reason": "The exported ker::ini component adapts the original callback stream/file API using byte-identical F-Stack/inih parser sources at the catalog pin. Tests call real Ker wrappers and verify the source callback sequence, exact first-error line, caller stream ownership, bounded section storage and user identity as applicable. This raw C reader is distinct from the strict ker-run network schema; no FreeBSD configuration or network behavior is claimed.",
       "ker_tests": [
         {
-          "ctest": "native-fstack-launcher-config",
-          "provenance_case": "native-fstack-launcher-config"
+          "ctest": "fstack-ini-callback-multiline",
+          "provenance_case": "fstack-ini-callback-multiline"
         }
-      ],
-      "remaining": "Ker combines continuation lines into one EAL string. F-Stack invokes the handler separately for the initial value and every continuation line; that callback sequence is not implemented."
+      ]
     },
     {
       "id": "tests/unit/test_ff_ini_parser.c::test_ini_parse_stream_colon_separator",
@@ -4669,86 +4971,194 @@
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_plain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Plain process1 preserves AUTO and unspecified epoch; real secondary attaches to EAL and observes the primary identity without falsely resolving AUTO. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-process",
+          "provenance_case": "fstack-ipc-process"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-process"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Process1:generation0 preserves the unspecified epoch and uses the original literal ring name for an actual secondary request/reply. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation",
+          "provenance_case": "fstack-ipc-generation"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_gen_epoch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Process1:generation0:epoch3 selects the original epoch-slot ring name and actual secondary transport. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation-epoch",
+          "provenance_case": "fstack-ipc-generation-epoch"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-epoch"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_proc_id_full_coordinate",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Process2:generation1:epoch1 selects exact coordinates and the original literal ring name for real secondary transport. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-coordinate",
+          "provenance_case": "fstack-ipc-coordinate"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-coordinate"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_epoch",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Separate generation1:epoch2 option overrides the default process0 coordinates; original ring naming and real secondary transport are checked. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation-option-epoch",
+          "provenance_case": "fstack-ipc-generation-option-epoch"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-option-epoch"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_gen_str_plain",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Separate generation0 option preserves unspecified epoch and source ring naming; independent unit assertions and secondary transport cover both option forms. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-generation-option",
+          "provenance_case": "fstack-ipc-generation-option"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-generation-option"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_ff_ipc_rejects_malformed",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Every malformed source coordinate exits1 in an exact reaped child. A valid subsequent selection and real secondary RPC prove recovery and unchanged pool census. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-malformed",
+          "provenance_case": "fstack-ipc-malformed"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-malformed"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_own_reply",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Actual secondary sends its PID/cookie-stamped object through shared rings; the original receiver returns the same object with payload intact and only its rightful owner frees it. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-own-reply",
+          "provenance_case": "fstack-ipc-own-reply"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-own-reply"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_live_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "One real secondary with its own pending request cannot consume another live secondary reply. The original requeue counter advances, output sentinel remains unchanged, rightful owner receives its bytes, and stale own request plus all objects are reclaimed. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-foreign-live",
+          "provenance_case": "fstack-ipc-foreign-live"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-foreign-live"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_foreign_without_send",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "A real secondary without a pending send cannot steal a live peer reply; unchanged output/counters and rightful-owner retrieval prove preservation. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-foreign-no-send",
+          "provenance_case": "fstack-ipc-foreign-no-send"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-foreign-no-send"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_recv_orphan_dead_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "After exact real secondary death, original receiver reclaims its orphan message without dereferencing the dead process private buffer. Actual shared-pool census and a new secondary prove reusable capacity. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-orphan",
+          "provenance_case": "fstack-ipc-orphan"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-orphan"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_ipc.c::test_p4_probe_is_non_destructive",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack process:generation:epoch IPC address/ring schema is absent from Ker.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "An actual secondary QUERY probe times out with optional outputs unchanged while preserving another live secondary FF_RELOAD reply. Both real candidate QUERY objects are reclaimed only after the exact caller completion marker, then a successor proves clean reuse. The unit provider also supplies a real successful QUERY response. Optional exported ker::ipc borrows caller-owned original EAL and unchanged pinned F-Stack transport; it is distinct from the authenticated resident session protocol. Real multiprocess acceptance and full 64/64 pool reclamation passed in isolated guest1 at candidate dbdfd324d5ef18d6eb5ded186d8ba9ea1fd59994. This does not implement FreeBSD control commands, hardware generation handover or network protocol behavior.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-ipc-probe",
+          "provenance_case": "fstack-ipc-probe"
+        },
+        {
+          "ctest": "fstack-ipc-multiprocess",
+          "provenance_case": "fstack-ipc-probe"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_log.c::test_ff_log_open_set_normal",

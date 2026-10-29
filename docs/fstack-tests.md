@@ -596,3 +596,182 @@ FreeBSD/F-Stack C 回调和结构布局、进程类型、默认 MTU 开关等差
 
 该组在 `BUILD_TESTING=ON` 时始终注册，DPDK 关闭也可运行，不需要 root、
 namespace、EAL、PMD 或完整原生内核。
+
+## 未完成案例迁移：原始 INI 回调接口
+
+新增独立 `ker::ini` CMake 组件和 `<ker/ini.h>`。组件从测试所用的固定
+F-Stack revision 导入未经修改的 inih 源码及头文件；Ker 只提供导出符号和
+参数保护。导入散列与许可证位于 `third_party/inih/`，`fstack-ini-import`
+逐字节核对。上游解析行为没有通过自写解析器或成功 stub 替代。
+
+`ker_ini_parse_stream`、`ker_ini_parse_file`、`ker_ini_parse` 分别接收
+调用方 reader/FILE 和文件路径，保持同步 borrowed 字符串、原始 user 指针、
+逐行 continuation 回调、handler 拒绝时首个错误行号和调用方流所有权。
+`ker-ini-events` 示例展示调用方消费回调；安装包导出 `ker::ini` 和公共头文件。
+它是低层读取 API；`ker-run` 原有的严格网络配置 schema 不因此接受任意字段。
+
+以下原先的五个 blocked 和一个 partial 案例现由各自的真实 CTest 完成：
+
+| 上游 `test_ff_ini_parser.c` 案例 | CTest 后缀（前缀 `fstack-ini-callback-`） |
+|---|---|
+| `test_ini_parse_stream_no_section` | `no-section` |
+| `test_ini_parse_stream_handler_returns_zero` | `handler-rejection` |
+| `test_ini_parse_file_null` | `null-file` |
+| `test_ini_parse_stream_long_section_name` | `long-section` |
+| `test_ini_parse_stream_user_data_passed` | `user-data` |
+| `test_ini_parse_stream_multiline_value_continuation` | `multiline` |
+
+以 `7f46febca` 的 218 项完成数为本轮基线，首批新增完成 **6** 个不同的
+未完成源案例，累计 224 项；后续进度见下节。此计数没有纳入已有
+场景的补充测试，也不将导入散列检查或示例单独计为完成案例。
+
+
+### 第二批：实际 host 映射与时钟启动失败（3 项）
+
+`native-fstack-host-mmap-shared` 和 `native-fstack-host-mmap-file` 在实际
+预加载原生运行时中消费生产 `mmap` 适配器，以 `dladdr` 验证映射入口属于
+活动 Ker 库，并验证 source 的 shared-anonymous / private file-backed
+4096-byte profile。扩展检查包括初始零字节、private COW、page offset、关闭
+文件后的映射生命周期、munmap 回收及 native socket fd 的隔离。这里证明的是
+适配器的 host 映射路径，不是原生文件系统映射或网络报文传输。
+
+`native-fstack-realtime-startup-fatal` 在真实应用进程启动阶段注入 host
+CLOCK_REALTIME EIO，必须命中 `ker_native_sync_realtime` 的生产调用方，
+在 app main 之前以 125 终止。worker 回收后，新的正常进程验证原版 Linux
+实时时钟读数及显式 native/EAL 关闭。没有将可恢复 getter 错误冒充 fatal
+合同，也没有引入另一个 cached timestamp 实现。
+
+这三个源案例此前均为 blocked，实际运行后转为完成。本轮累计 **9/50**，
+总完成数 **227**，仍需完成 41 个基线中的 blocked/partial 源案例。
+
+
+### 第三批：共享 IPC 地址与跨进程消息所有权（12 项）
+
+[IPC 合同](fstack-ipc.md)列出全部 12 个源 ID、独立 CTest 及真实 EAL
+多进程验证。Debug/static 和 Release/shared 的源断言通过；安装后的
+独立 `ker::ipc` 消费者完成真实 EAL/池/队列生命周期。隔离 guest 中的
+primary 与 20 个独立 secondary 完成 12 项源验证及 64/64 对象回收。
+原始 F-Stack IPC 源码和头文件保持字节不变，由 `fstack-ipc-import` 审计。
+
+本轮累计 **21/50**，当前总完成数 **239**；还需完成 29 个基线中的
+blocked/partial 源案例。`fstack-ipc-multiprocess` 在缺少共享 hugepages
+时返回 77，不能将该 skip 或来源审计单独记为源案例通过。
+
+
+### 第四批：epoch-slot 及旧队列布局（2 项）
+
+`fstack-ipc-epoch-names` 和 `fstack-ipc-legacy-names` 完成
+`test_ut_nr_m5_epoch_slot_and_ring_name`、
+`test_ut_nr_m5_graceful_zero_epoch_invariance`。逐项命名断言、安装调用方、
+Debug/static、Release/shared 以及 guest2 的真实 legacy secondary 收发
+均通过。当前本轮累计 **23/50**，剩余 27 项；总数为 241 adapted。
+
+
+### 第五批：原始 reload 消息填充/解析（1 项）
+
+`fstack-reload-message-serdes` 和真实 `fstack-ipc-multiprocess` 完成
+`test_ut_nr_14_reload_msg_serdes` 的所有源断言。Debug/static、Release/shared、
+独立安装消费者通过；guest3 中 22 个 secondary、15 项源案例、两个示例以及
+64/64 回收和正常关机全部通过，来源及散列见
+[消息合同](fstack-reload-messages.md)。该源案例原为 partial；本轮现为
+**24/50**，总计 242 adapted，尚需完成 26 项。
+
+
+### 第六批：原版 poll gate 与停用确认（2 项）
+
+`test_ut_nr_26_rx_handover_markers`、`test_ut_nr_11_handover_barrier`
+的全部源断言在 Debug/static 与 Release/shared 通过。真实原版 net_ring
+跨进程验证及独立安装消费者均证明未完成回调阻止切换、epoch 关联、
+切换/切回、4/4 实际 RX/TX、同 slot 后继和 63/63 对象回收。
+参见 [polling 合同](fstack-reload-polling.md)。本轮累计 **26/50**，
+总数为 244 adapted，剩余目标 24 项；宿主共享 hugepages 的 skip 未计入。
+
+
+### 第七批：原版 heartbeat/READY/轮次（1 项）
+
+`fstack-reload-heartbeat` 完成 `test_ut_nr_22_heartbeat_and_rx_return`
+全部断言，并在真实 EAL/net_ring 与独立安装消费者中验证目标进程停止/恢复、
+原版计时采样、READY、完成/中止以及完整回收；证据见
+[heartbeat 合同](fstack-reload-heartbeat.md)。本轮累计 **27/50**，
+当前 245 adapted，剩余目标 23 项。
+
+
+### 第八批：调用方 reload 策略（4 项）
+
+`fstack-reload-fsm-transitions`、`fstack-reload-fsm-legal`、
+`fstack-reload-fsm-illegal`、`fstack-reload-fsm-recovery` 完成四项
+UT-NR-10 原始纯策略断言。实际 caller controller 的双轮次、abort/reset、
+READY/park/drain/pidfd 门禁和真实 PMD/EAL 回收在仓库/安装程序中通过；
+见 [合同及散列](fstack-reload-controller.md)。策略不进入 Ker 核心库。
+当前本轮 **31/50**，累计249 adapted，尚需19个基线未完成案例。
+
+### 第九批：跨 master 目录与使用者证明（5 项）
+
+`fstack-reload-directory-hw-users`、`-reclaim`、`-release`、`-orphans`、
+`-ring-census` 对应五项完整原始 P2/RX-15 源断言。实际仓库和安装消费者在
+两 master、四个真实 EAL secondary 下验证5秒有界拒绝/回滚、持有回调、
+STOPPED/死亡证明、孤儿刷新与过期、ring FIFO 保留/清理/重新准入和63/63回收。
+原版 net_ring RX/TX 均为4/4，拒绝计数精确为5；七个运行 profile 和两个旧示例
+全部通过并正常关机。参见[目录合同及散列](fstack-reload-directory.md)。
+当前本轮 **36/50**，累计254 adapted，尚需14个基线未完成案例。
+基线差分的完整源 ID、原状态与 CTest 链接见
+[已完成清单](../tests/fstack-unfinished-completed.json)。
+
+
+### 第十批：M5 目录定位与同代 master 交接（4 项）
+
+`fstack-reload-m5-arbitration`、`-probe`、`-names`、`-handover` 分别运行四项
+未修改的完整原始函数。真实主进程 QUERY 选择实际消费的 FF IPC 队列；每个仓库/
+安装 profile 完成166次原版消息往返，其中160项覆盖两个master × 两代 ×
+四个process ID × 十种消息类型。同代 master 通过独立状态块与目录完成3/3原版
+PMD收发、claim前保持停用、活目标拒绝回退、实际目标master死亡后恢复旧服务。
+两类池均63/63回收，guest12全部九组运行验证与两个旧示例通过并正常关机；
+见[M5合同及散列](fstack-reload-coordinates.md)。目标当前 **40/50**，尚需10项；
+[完整源ID差分](../tests/fstack-unfinished-completed.json)不计重复运行与额外回归。
+
+
+### 第十一批：generation pool 与 cache 策略（2 项）
+
+`fstack-pool-generation`、`fstack-pool-cache` 运行完整未修改的原始NR18/NR21断言。
+真实 legacy 程序使用并flush256/16/256 cache，完成4个PMD报文生命周期、三个池1023/1023。
+共享模式下primary和两个EAL secondary同用lcore0，五个池cache均为0；新secondary在
+旧代TX mbuf及message/reference尚未归还时加入，实际跨进程/跨代归还恢复全部63/63。
+仓库/安装消费者和此前九组profile在guest13全部通过，两个旧示例与正常关机也通过；
+见[pool合同及散列](fstack-pools.md)。当前目标 **42/50**，尚需8项，完整源ID见
+[基线差分清单](../tests/fstack-unfinished-completed.json)。
+
+
+### 第十二批：原始地址回调（4 项）
+
+`ker::address_policy` 保留原始PCB回调分发及完整源断言，支持注册、NULL默认行为、
+IPv4参数/返回值透传、IPv6的28→10转换。调用方显式选择源地址后使用原始Linux的
+bind/connect；不注入隐式POSIX钩子，不移植FreeBSD协议实现。实际仓库/安装消费者
+各完成六次双栈TCP通信，验证源127.0.0.2、地址/端口、拒绝、注销恢复及FIN/EOF。
+替换/注销等待、嵌套调用、重入拒绝和取消清理另有回归，不重复计数。Debug/static、
+Release/shared、独立find_package安装消费均通过，证据见
+[地址回调合同](fstack-address-policy.md)。当前 **46/50**，仍需4个原先未完成的案例。
+
+
+### 第十三批：原始 packet dispatcher 回调（3 项）
+
+`ker::packet_dispatcher` 编译原始回调ABI、context布局、注册/注销函数和调用分支，
+支持普通回调优先、VLAN metadata、返回值/长度透传及安全替换/注销。实际原始
+net_ring双RX/TX消费者处理12个报文、发出9个，调用方丢弃2个、peer队列转交1个；
+每次恢复池127/127。Debug/static、Release/shared与独立安装消费的完整源测试、
+生命周期和PMD检查均通过，不包含skip。详见[dispatcher合同及证据](fstack-packet-dispatcher.md)。
+当前 **49/50**，仍需完成P1 live-slot及其实际多进程/报文证明。
+
+
+### 第十四批：P1 live-slot 与目标完成（1 项）
+
+完整原始P1断言验证两次拒绝不改变原epoch、RX word、primary slot与空闲槽。
+guest14的仓库/安装消费者分别使用四个真实master和四个EAL secondary：
+epoch5碰撞仍存活的epoch2槽，拒绝使用另一个可回收槽；原owner在失败前后
+完成PMD2/2和两次原始typed IPC QUERY，88个FF命名ring保持一致、两个池63/63。
+13组运行profile及两个旧示例全部通过，正常关机；详见
+[P1合同与证据](fstack-reload-live-slot.md)。
+
+**目标已完成：50/50 个原先未完成的上游源案例**，包括44个基线blocked、6个partial。
+与真实基线commit `7f46febca` 对照，目录从218→268 adapted、127→83 blocked、
+18→12 partial；额外回归、skip、重复安装运行及原已完成案例均未计入。
+[50项完整差分清单](../tests/fstack-unfinished-completed.json)记录每项原始ID、基线与测试。

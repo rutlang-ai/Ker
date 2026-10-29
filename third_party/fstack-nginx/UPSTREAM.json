@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "mode": "unchanged application policy, used only by caller example/tests; never linked into Ker libraries",
+  "files": {
+    "ngx_ff_reload_fsm.h": {
+      "source_file": "app/nginx-1.28.0/src/event/modules/ngx_ff_reload_fsm.h",
+      "sha256": "3a3a96e8010f3b0fab3e8e430cbbcc6eb7cebb470d1f84c1ee72e9a0f6c11e0a",
+      "git_blob": "387a61b231074eb8e0f16b5bf5f7f8a12783ed5b"
+    },
+    "LICENSE.fstack": {
+      "source_file": "LICENSE",
+      "sha256": "2d663af37353eebc435c03b97bfaebc0c358a7df82d5767802cf27e30a4dc544",
+      "git_blob": "604ef9762695864bc4b2b35f50d9ea6c8a10cb53"
+    },
+    "LICENSE.nginx": {
+      "source_file": "app/nginx-1.28.0/LICENSE",
+      "sha256": "77c01620abf36ed747b7eca4bd271e49023fe3a8e2b3525bcf4b09c8e3aa28e4",
+      "git_blob": "4efd90b510ac08fcea609b7fc6fb00121f3cfebd"
+    }
+  }
+}
