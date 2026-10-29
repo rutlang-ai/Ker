@@ -3139,9 +3139,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_27_dispatch_peer_boundary",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Source-shaped PEER ownership adaptation through the optional public ker::peer_dispatcher component: the callback borrows bytes; a live bound reload round transfers the original mbuf to the caller-selected peer ring without freeing it; ring-full and closed/unbound rounds free exactly once and expose exact counters. Real EAL/net_ring checks exact packet bytes/pointer, 63-entry FIFO retention, 64 PMD receives, full=1, closed=3, dropped_segments=5 including a two-segment chain, non-PEER caller ownership, invalid-argument retention and a unique 127-object pool exhaustion/refill. A separately installed public consumer repeats the same contract. No FreeBSD global/PCB ABI, peer discovery/USR2 mirror, cross-master transport or full reload is claimed. See docs/fstack-peer-dispatch.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-peer-dispatch-ownership",
+          "provenance_case": "peer-dispatch-ownership"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_f_m4_1_drain_ring_full_visible",
@@ -3195,7 +3200,7 @@
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
+      "reason": "The resident generation-ring bank admits only one identity per generation across all epochs. A same-generation worker from a second master/epoch therefore cannot coexist in that bank; changing detach authorization alone cannot qualify the source foreign-epoch owner scenario. An isolated distinct-parent EAL investigation failed before detach and was not accepted as migration evidence. Epoch-isolated banks and their admission/cleanup proof remain required; this case stays blocked. See docs/fstack-peer-dispatch.md.",
       "ker_tests": []
     },
     {

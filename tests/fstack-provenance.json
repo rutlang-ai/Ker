@@ -3748,6 +3748,16 @@
         "fstack-flow-map-import"
       ],
       "adaptation": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md."
+    },
+    "peer-dispatch-ownership": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_27_dispatch_peer_boundary"
+      ],
+      "ker_ctests": [
+        "fstack-peer-dispatch-ownership"
+      ],
+      "adaptation": "Source-shaped PEER ownership adaptation through the optional public ker::peer_dispatcher component: the callback borrows bytes; a live bound reload round transfers the original mbuf to the caller-selected peer ring without freeing it; ring-full and closed/unbound rounds free exactly once and expose exact counters. Real EAL/net_ring checks exact packet bytes/pointer, 63-entry FIFO retention, 64 PMD receives, full=1, closed=3, dropped_segments=5 including a two-segment chain, non-PEER caller ownership, invalid-argument retention and a unique 127-object pool exhaustion/refill. A separately installed public consumer repeats the same contract. No FreeBSD global/PCB ABI, peer discovery/USR2 mirror, cross-master transport or full reload is claimed. See docs/fstack-peer-dispatch.md."
     }
   }
 }
