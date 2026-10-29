@@ -85,3 +85,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_rss_tbl_cfg_handler_bad_tuple` | `fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple` |
 | `test_rss_check_thash_adjust_off_parses` | `fstack-config-source-test_rss_check_thash_adjust_off_parses` |
 | `test_vlan_cfg_handler_id_not_in_filter_returns_one` | `fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one` |
+| `test_ff_load_config_vdev_full` | `fstack-config-source-test_ff_load_config_vdev_full` |

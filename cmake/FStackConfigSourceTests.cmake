@@ -25,3 +25,6 @@ set_tests_properties(fstack-config-source-test_rss_check_thash_adjust_off_parses
 add_test(NAME fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one COMMAND ker-test_vlan_cfg_handler_id_not_in_filter_returns_one)
 set_tests_properties(fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ff_load_config_vdev_full COMMAND ker-test_ff_load_config_vdev_full)
+set_tests_properties(fstack-config-source-test_ff_load_config_vdev_full PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)

@@ -254,7 +254,7 @@
       "id": "dpdk-devices",
       "title": "Adapt typed vdev, bond and multi-port configuration",
       "disposition": "adaptation-needed",
-      "reason": "Three typed interface/vdev/bond configuration allocation-failure rejection scenarios now have real loader/CLI failure and recovery evidence. Remaining source fixture/ABI, combined topology and RSS/lcore contracts stay partial; real typed device traffic does not prove those remaining assertions. The exact repeated source bond sequence now drives original mode4 PMD readback for final members0/1, primary1,MACcc:dd:ee:ff:00:11,l34 and independent Linux LACP/dual-stack ICMP after member-path loss. Source member names are explicitly translated to the two TAP ethdev IDs; combined bond/vdev and allocator ABI remain incomplete. test_ff_load_config_dpdk_full is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
+      "reason": "Three typed interface/vdev/bond configuration allocation-failure rejection scenarios now have real loader/CLI failure and recovery evidence. Remaining source fixture/ABI, combined topology and RSS/lcore contracts stay partial; real typed device traffic does not prove those remaining assertions. The exact repeated source bond sequence now drives original mode4 PMD readback for final members0/1, primary1,MACcc:dd:ee:ff:00:11,l34 and independent Linux LACP/dual-stack ICMP after member-path loss. Source member names are explicitly translated to the two TAP ethdev IDs; combined bond/vdev and allocator ABI remain incomplete. test_ff_load_config_dpdk_full is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_ff_load_config_vdev_full is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
@@ -281,7 +281,6 @@
         "Resolve the pinned source iface+Unix-socket mismatch explicitly. Retain qualified named vhost-kernel iface traffic/rollback coverage; do not drop iface or call socket-backend traffic a full source fixture pass."
       ],
       "cases": [
-        "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
         "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/224"
