@@ -142,6 +142,7 @@ def main():
     parser.add_argument('--pmd-root',type=Path,required=True);parser.add_argument('--huge-dir',type=Path,default=Path('/dev/hugepages'))
     parser.add_argument('--evidence',type=Path)
     parser.add_argument('--verify-reclaim-gate',action='store_true')
+    parser.add_argument('--negative-control',action='store_true')
     args=parser.parse_args()
     reason=hugepage_capacity_error(args.huge_dir,64*1024*1024)
     if reason:print('SKIP: '+reason+'; no host settings changed');return 77
@@ -208,6 +209,30 @@ def main():
                     'orphan_poll_blocked_until_cas':True,'reclaim_result':0,
                     'callbacks_before_after':[callbacks_before,counts[orphan.slot]],
                     'resumed_orphan_denied':True}
+            def reclaim_negative_control(claimant,orphan):
+                gate=root/'reclaim-after-proof-negative';gate.mkdir()
+                claimant.child.stdin.write(('reclaim-pause '+str(gate)+'\n').encode());claimant.child.stdin.flush()
+                deadline=time.monotonic()+10
+                while not (gate/'proof').exists():
+                    require(time.monotonic()<deadline,'negative control reclaim missed proof/CAS barrier')
+                    time.sleep(.001)
+                orphan.child.stdin.write(b'poll hold\n');orphan.child.stdin.flush()
+                entered=orphan.record('ENTERED',timeout=5)
+                require(entered=={'slot':orphan.slot,'generation':0},'negative control orphan callback did not enter')
+                (gate/'resume').touch()
+                require(claimant.record('RESULT')=={'result':0},'negative control claimant CAS did not succeed')
+                claimant.child.stdin.write(b'poll hold\n');claimant.child.stdin.flush()
+                waiter=select.poll();waiter.register(claimant.pidfd,select.POLLIN)
+                require(bool(waiter.poll(10000)),'negative control claimant callback did not observe the overlapping old callback')
+                reaped=claimant.master.command('reap '+str(claimant.child.pid),'REAPED')
+                stderr=(root/('worker-'+str(claimant.slot)+'.stderr')).read_text(errors='replace')
+                require(reaped=={'pid':claimant.child.pid,'exit':1} and
+                    'check failed: !atomic_load(&shared->active[1-generation])' in stderr,
+                    'negative control did not capture claimant callback overlapping old callback')
+                evidence['reclaim_negative_control']={'proof_sampled_before_orphan_resume':True,
+                    'orphan_callback_entered':entered,'claimant_cas_succeeded':True,
+                    'claimant_callback_detected_overlap':True,'claimant_exit':reaped['exit'],
+                    'overlap_guard': 'active[1-generation]'}
             def inject(sequence):require(primary.command(f'inject {sequence}','INJECTED')=={'sequence':sequence,'available':62},'packet allocation failed')
             def collect(sequence):require(primary.command('collect','COLLECTED')=={'sequence':sequence,'available':63},'packet identity/payload/reclamation failed')
             refusals=0
@@ -262,6 +287,11 @@ def main():
             require(primary.command('census','CENSUS')['dead'][aslot]==[1,0],'busy slot did not preserve dead user marker')
             require(a1.command('drain','DRAINED')=={'count':2,'available':63},'live-consumer FIFO/identity preservation failed')
             result(a1,'stop');users(ae,0,0)
+            if args.negative_control:
+                reclaim_negative_control(b0,a1)
+                if args.evidence:args.evidence.write_text(json.dumps(evidence,indent=2)+'\n')
+                print('PASS: negative control reproduced reclaim/orphan callback overlap')
+                return 0
             if args.verify_reclaim_gate:reclaim_race(b0,a1)
             else:result(b0,'reclaim')
             require(primary.command('view','VIEW')['refused']==refusals,'successful proof changed refusal counter')

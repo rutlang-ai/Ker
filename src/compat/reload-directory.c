@@ -314,15 +314,19 @@ int ker_reload_directory_reclaim(void)
     int result = directory_worker();
     if (result) return result;
     if (directory_retiring) return -ESHUTDOWN;
+#ifndef KER_RELOAD_TESTING_NO_RECLAIM_GATE
     int registration_fd = directory_registration_lock(LOCK_EX);
     if (registration_fd < 0) return registration_fd;
+#endif
     result = ff_reload_gendir_rx_reclaim(ff_reload_epoch(), (uint32_t)ff_reload_gen());
     if (result == FF_RELOAD_HANDOVER_OK) {
         __atomic_store_n(&g_reload_state->reserved[4], 0u, __ATOMIC_SEQ_CST);
         ff_reload_rx_owner_gen_set(ff_reload_gen());
         ff_reload_rx_stopped_set(0);
     }
+#ifndef KER_RELOAD_TESTING_NO_RECLAIM_GATE
     directory_registration_unlock(registration_fd);
+#endif
     return result;
 }
 

@@ -1213,12 +1213,33 @@ if(KER_WITH_DPDK)
         ${ker_reload_private_includes})
     target_link_libraries(ker-fstack-reload-directory-reclaim-race-test PRIVATE ker::ipc "${ker_reload_ring_pmd}")
     target_compile_options(ker-fstack-reload-directory-reclaim-race-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-reload-directory-reclaim-race-test PROPERTIES
+        C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE ON)
     add_test(NAME fstack-reload-directory-reclaim-race
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-directory.py"
             --app "$<TARGET_FILE:ker-fstack-reload-directory-reclaim-race-test>"
             --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}"
             --verify-reclaim-gate)
     set_tests_properties(fstack-reload-directory-reclaim-race PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
+        LABELS "fstack;fstack-reload;multiprocess")
+    # Negative control removes only the new poll/reclaim gate, retaining the
+    # exact same production CAS interposition and fixture.
+    add_executable(ker-fstack-reload-directory-reclaim-negative-test
+        fstack-reload-directory-multiprocess.c "${PROJECT_SOURCE_DIR}/src/compat/reload.c")
+    target_compile_definitions(ker-fstack-reload-directory-reclaim-negative-test PRIVATE
+        ${ker_reload_private_definitions} KER_RELOAD_TESTING KER_RELOAD_TESTING_NO_RECLAIM_GATE)
+    target_include_directories(ker-fstack-reload-directory-reclaim-negative-test PRIVATE
+        ${ker_reload_private_includes})
+    target_link_libraries(ker-fstack-reload-directory-reclaim-negative-test PRIVATE ker::ipc "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-reload-directory-reclaim-negative-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-reload-directory-reclaim-negative-test PROPERTIES
+        C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE ON)
+    add_test(NAME fstack-reload-directory-reclaim-negative-control
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-directory.py"
+            --app "$<TARGET_FILE:ker-fstack-reload-directory-reclaim-negative-test>"
+            --unit-app "$<TARGET_FILE:ker-fstack-reload-directory-test>" --pmd-root "${ker_ipc_pmd_root}"
+            --negative-control)
+    set_tests_properties(fstack-reload-directory-reclaim-negative-control PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77
         LABELS "fstack;fstack-reload;multiprocess")
     add_test(NAME fstack-reload-coordinate-multiprocess
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-reload-coordinates.py"

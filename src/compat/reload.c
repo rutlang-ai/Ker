@@ -140,6 +140,9 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
     if (g_dir && rte_eal_process_type() != RTE_PROC_SECONDARY) return -EPERM;
     if (g_dir && directory_retiring) return -ESHUTDOWN;
     int admission_fd = -1;
+#ifdef KER_RELOAD_TESTING_NO_RECLAIM_GATE
+    if (g_dir && ff_reload_gendir_user_add(ff_reload_epoch(), ff_reload_gen())) return -ENOSPC;
+#else
     if (g_dir) {
         /* User activation and the original ownership decision are one short
          * admission transaction. The ACTIVE lease protects the callback
@@ -152,6 +155,7 @@ int ker_reload_poll(ker_reload_poll_fn poll, void *argument)
             return -ENOSPC;
         }
     }
+#endif
     polled = 1;
     ff_reload_heartbeat_tick();
     if (directory_no_hw_mode()) {
@@ -190,12 +194,16 @@ int ker_reload_rx_owner(void) { return ff_reload_rx_owner_gen(); }
 int ker_reload_rx_stopped(void) { return ff_reload_rx_stopped(); }
 int ker_reload_rx_allowed(void)
 {
+#ifdef KER_RELOAD_TESTING_NO_RECLAIM_GATE
+    return !directory_no_hw_mode();
+#else
     if (!g_dir) return !directory_no_hw_mode();
     int admission_fd = directory_registration_lock(LOCK_EX);
     if (admission_fd < 0) return 0;
     int allowed = !directory_no_hw_mode();
     directory_registration_unlock(admission_fd);
     return allowed;
+#endif
 }
 int ker_reload_rx_mark(int owner, int stopped)
 {
