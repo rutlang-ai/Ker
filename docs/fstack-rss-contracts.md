@@ -4,8 +4,8 @@
 source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. The two
 standalone IPv4/IPv6 thash equivalence cases were qualified earlier. Three
 parsed-document contracts and the NULL-config table-setter contract are now
-separately qualified in caller-side examples;15 remain in this issue
-(0 partial,15 blocked). The table below preserves
+separately qualified in caller-side examples;14 remain in this issue
+(0 partial,14 blocked). The table below preserves
 all31 exact contracts and identifies the scope of each qualification. It records
 actual assertions, not promises of future real-machine acceptance.
 
@@ -89,7 +89,7 @@ not turn Linux range validation into native RSS port steering.
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. An EAL-init skip does not reach these assertions. Qualified by `fstack-rss-thash-ipv4` and the repeat/failure controls; see [evidence](fstack-rss-thash.md). This is not observed PMD queue landing. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 verdicts match its independent software Toeplitz replica across64 ports and include a hit. Complete original assertions retain BSS RETA0/mask0xffff as unit setup; this is not a device RETA query or observed hardware landing. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_check6_single_queue` | Source IPv6 predicate returns1 for a fixed tuple with one software queue. Its complete original assertion is qualified through the actual predicate, not ordinary TCP delivery. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | IPv6 rule initialization and lookup return a candidate array whose sampled ports pass the source own-queue predicate; missing tuples must miss. Ker has no IPv6 candidate table consumer. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | Complete original IPv6 table init/hit/nonempty interval, up to128 candidate predicate checks and different-source miss assertions are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_guard` | Source IPv6 adjustment rejects NULL softc/output and declines after initialization with RETA0/unready context. Neither disabled device RSS nor zero packet counters proves these guards. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash6_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. An EAL-init skip does not reach these assertions. Qualified by `fstack-rss-thash-ipv6` and the repeat/failure controls; see [evidence](fstack-rss-thash.md). No device RX queue is observed. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_off` | Source makes100 IPv4 adjustments with recheck=0, all declining at the unready-context guard, and asserts zero wrapped own-queue checks. The recheck branch is not reached. |
@@ -113,8 +113,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is333 scenario-adapted,2 partial,28 blocked,
-15 architecture-specific and55 harness-only out of433. All30 blocked/partial
+The current catalog is334 scenario-adapted,2 partial,27 blocked,
+15 architecture-specific and55 harness-only out of433. All29 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,
