@@ -3688,6 +3688,66 @@
         "fstack-rss-thash-import"
       ],
       "adaptation": "Complete original test bodies, shared key, deterministic seeds, tuple loops and independent software oracle helpers are byte-checked against the pinned snapshot. The test-only EAL/assertion adapter uses real no-huge primary EAL and DPDK thash, makes missing EAL or skip fatal, and checks both contexts removed plus EAL cleanup. Each address family runs RETA128/512 with 200 tuples, positive adjustment count and exact 200/200 full-loop software landing. Qualification repeats both families with identical measured output and separately executes the real solver while rejecting all its results, requiring the original positive-adjustment gate to fail. An actual invalid EAL argument must fail without a pass marker. No production API, source-port allocator or upstream implementation is added or modified. No physical PMD/hash/queue observation or Linux socket allocation behavior is claimed. See docs/fstack-rss-thash.md."
+    },
+    "fstack-flow-map-basic": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_23_flow_map"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-basic",
+        "fstack-flow-map-router",
+        "fstack-flow-map-import"
+      ],
+      "adaptation": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md."
+    },
+    "fstack-flow-map-single-phase": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_a1_flow_map_single_phase"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-single-phase",
+        "fstack-flow-map-router",
+        "fstack-flow-map-import"
+      ],
+      "adaptation": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md."
+    },
+    "fstack-flow-map-admission": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_a1_flow_map_admission_rule"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-admission",
+        "fstack-flow-map-router",
+        "fstack-flow-map-import"
+      ],
+      "adaptation": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md."
+    },
+    "fstack-flow-map-revoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_a1_flow_map_revoke"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-revoke",
+        "fstack-flow-map-router",
+        "fstack-flow-map-import"
+      ],
+      "adaptation": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md."
+    },
+    "fstack-flow-map-growth": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p3_flow_map_bounded_growth"
+      ],
+      "ker_ctests": [
+        "fstack-flow-map-growth",
+        "fstack-flow-map-router",
+        "fstack-flow-map-import"
+      ],
+      "adaptation": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md."
     }
   }
 }
