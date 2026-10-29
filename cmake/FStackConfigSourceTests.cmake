@@ -19,3 +19,6 @@ set_tests_properties(fstack-config-source-test_rss_check_cfg_handler_no_port_no_
 add_test(NAME fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple COMMAND ker-test_rss_tbl_cfg_handler_bad_tuple)
 set_tests_properties(fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_rss_check_thash_adjust_off_parses COMMAND ker-test_rss_check_thash_adjust_off_parses)
+set_tests_properties(fstack-config-source-test_rss_check_thash_adjust_off_parses PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)

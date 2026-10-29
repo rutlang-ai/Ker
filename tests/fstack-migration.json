@@ -1561,9 +1561,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Valid source configuration succeeds with RSS enabled and thash_adjust=0. Ker has no corresponding source-port optimization toggle; rejecting the field is not this positive contract. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_check_thash_adjust_off_parses",
+          "provenance_case": "fstack-config-source-test_rss_check_thash_adjust_off_parses"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state",
