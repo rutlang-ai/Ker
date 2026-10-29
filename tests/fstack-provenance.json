@@ -54,6 +54,10 @@
     "tests/unit/test_ff_ipc.c": {
       "sha256": "817c033c07c099b063688e45b089be623329b4b568314266a6c86652053e6831",
       "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/unit/test_ff_ipc.c"
+    },
+    "tests/integration/test_ff_reload_integration.c": {
+      "sha256": "09a9e44777c012bcb1c4ef1f95f3f43c8577c554ff9c140656d18dadfea4487c",
+      "url": "https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/tests/integration/test_ff_reload_integration.c"
     }
   },
   "cases": {
@@ -3748,6 +3752,60 @@
         "fstack-flow-map-import"
       ],
       "adaptation": "Complete unchanged original metadata-table assertions execute against the unchanged pinned ff_flow_map implementation in a caller-only example, with real ker::reload state binding/observations. The corresponding case retains its exact layout, gate, insertion/lookup, duplication, collision-chain revoke or bounded-growth assertions. The real EAL/net_ring UDP caller consumer proves 30 exact IPv4/IPv6 metadata routing deliveries, immediate visibility, duplicate/revoke/reopen behavior, production poll denial, caller ownership on output-full, unsupported TCP refusal and pool63/63 cleanup. This is process-local single-thread caller metadata, not Linux SYN/PCB integration, cross-generation packet transport, TCP continuity or full reload. See docs/fstack-flow-map.md."
+    },
+    "peer-dispatch-ownership": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ut_nr_27_dispatch_peer_boundary"
+      ],
+      "ker_ctests": [
+        "fstack-peer-dispatch-ownership"
+      ],
+      "adaptation": "Source-shaped PEER ownership adaptation through the optional public ker::peer_dispatcher component: the callback borrows bytes; a live bound reload round transfers the original mbuf to the caller-selected peer ring without freeing it; ring-full and closed/unbound rounds free exactly once and expose exact counters. Real EAL/net_ring checks exact packet bytes/pointer, 63-entry FIFO retention, 64 PMD receives, full=1, closed=3, dropped_segments=5 including a two-segment chain, non-PEER caller ownership, invalid-argument retention and a unique 127-object pool exhaustion/refill. A separately installed public consumer repeats the same contract. No FreeBSD global/PCB ABI, peer discovery/USR2 mirror, cross-master transport or full reload is claimed. See docs/fstack-peer-dispatch.md."
+    },
+    "fstack-parked-tx-divert": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_tx_divert_no_hw"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-divert",
+        "fstack-parked-tx-ownership"
+      ],
+      "adaptation": "Eight copied packets plus four owned/raw packets divert while generation0 is parked: no PMD calls or drops, exactly12 drain entries, then exactly one owner burst carrying12 packets. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md."
+    },
+    "fstack-parked-tx-watermark": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_drain_ring_tx_watermark"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-watermark",
+        "fstack-parked-tx-ownership"
+      ],
+      "adaptation": "Four rounds of64 produce exactly8 owner bursts/256 packets; a255-entry ring plus one overflow counts exactly one full/divert drop with no owner-side drop; final owner drain yields16 cumulative bursts/511 packets. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md."
+    },
+    "fstack-parked-tx-guard": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_send_burst_guard"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-guard",
+        "fstack-parked-tx-ownership"
+      ],
+      "adaptation": "Thirty-two actual borrowed RESPONSE callback results enter staging while parked; the final hardware gate drops all32, leaves no staging or PMD call and restores the512-object pool. The same reply path succeeds as owner. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md."
+    },
+    "fstack-parked-tx-pass": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": [
+        "test_it_a09_main_loop_parked_pass"
+      ],
+      "ker_ctests": [
+        "fstack-parked-tx-pass",
+        "fstack-parked-tx-ownership"
+      ],
+      "adaptation": "Five packets staged as owner survive a quiescent handover: one parked caller TX pass diverts all five, performs no hardware call or drain dequeue, then the selected owner transmits all five. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md."
     }
   }
 }
