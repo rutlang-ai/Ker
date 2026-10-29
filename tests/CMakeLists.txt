@@ -11,6 +11,20 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_executable(ker-fstack-parked-tx-test fstack-parked-tx.c)
+    target_link_libraries(ker-fstack-parked-tx-test PRIVATE ker::reload_tx ker::packet_dispatcher "${ker_controller_ring_pmd}")
+    target_compile_options(ker-fstack-parked-tx-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-parked-tx-test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-parked-tx-divert COMMAND ker-fstack-parked-tx-test divert)
+    add_test(NAME fstack-parked-tx-watermark COMMAND ker-fstack-parked-tx-test watermark)
+    add_test(NAME fstack-parked-tx-guard COMMAND ker-fstack-parked-tx-test guard)
+    add_test(NAME fstack-parked-tx-pass COMMAND ker-fstack-parked-tx-test pass)
+    add_test(NAME fstack-parked-tx-ownership COMMAND ker-fstack-parked-tx-test ownership)
+    set_tests_properties(fstack-parked-tx-divert fstack-parked-tx-watermark fstack-parked-tx-guard
+        fstack-parked-tx-pass fstack-parked-tx-ownership PROPERTIES TIMEOUT 30 LABELS "fstack;dpdk")
+endif()
+
+if(KER_WITH_DPDK)
     add_executable(ker-fstack-peer-dispatch-test fstack-peer-dispatch.c)
     target_link_libraries(ker-fstack-peer-dispatch-test PRIVATE ker::peer_dispatcher "${ker_controller_ring_pmd}")
     target_compile_options(ker-fstack-peer-dispatch-test PRIVATE -Wall -Wextra -Werror)
