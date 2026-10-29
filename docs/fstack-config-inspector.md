@@ -80,3 +80,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_ff_load_config_unknown_section` | `fstack-config-source-test_ff_load_config_unknown_section` |
 | `test_ff_load_config_all_sections` | `fstack-config-source-test_ff_load_config_all_sections` |
 | `test_ff_load_config_dpdk_full` | `fstack-config-source-test_ff_load_config_dpdk_full` |
+| `test_ff_load_config_portlist_nonint` | `fstack-config-source-test_ff_load_config_portlist_nonint` |

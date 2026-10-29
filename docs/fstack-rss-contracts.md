@@ -111,8 +111,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is289 scenario-adapted,8 partial,66 blocked,
-15 architecture-specific and55 harness-only out of433. All74 blocked/partial
+The current catalog is290 scenario-adapted,8 partial,65 blocked,
+15 architecture-specific and55 harness-only out of433. All73 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,
