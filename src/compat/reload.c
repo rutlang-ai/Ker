@@ -182,6 +182,7 @@ int ker_reload_worker_select(int generation, unsigned slot)
     ff_reload_set_slot((int)slot);
     return 0;
 }
+int ker_reload_selected_generation(void) { return ff_reload_gen(); }
 int ker_reload_set_enabled(int enabled)
 {
     if (polling || polled || g_dir) return -EBUSY;
