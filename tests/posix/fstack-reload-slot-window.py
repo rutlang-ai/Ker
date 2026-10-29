@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 from hugepage_preflight import hugepage_capacity_error
 
 spec=importlib.util.spec_from_file_location('directory_fixture',Path(__file__).with_name('fstack-reload-directory.py'))
@@ -41,6 +42,7 @@ def run(args,mode):
                 failed=collision and mode=='exhausted'
                 if collision:
                     extra['KER_DIRECTORY_ATTACH_TIMING']='1'
+                    extra['KER_DIRECTORY_ATTACH_BARRIER']=str(root/'admission')
                     if failed:
                         executable=args.budget_app;extra['KER_DIRECTORY_TEST_BUDGET_MS']='50'
                 plan={'root':str(root),'workers':[(slot,[str(executable),'worker',str(gen),str(slot),'--proc-type=secondary',*common])],
@@ -64,6 +66,13 @@ def run(args,mode):
                 m,b=group(1,1,2,'master-'+str(epoch));row=attached(b,1)
                 require(row['epoch']==epoch,'mint sequence');b.close();m.close()
                 primary.command('wait-stale '+str(epoch),'STALE');departed.append(row)
+            require(primary.command('init-state 1 1','RESULT')=={'result':0},'reset next caller state')
+            barrier=root/'admission';barrier.mkdir()
+            md,d=group(1,1,2,'master-collision',True)
+            deadline=time.monotonic()+15
+            while not (barrier/'slot-2').exists():
+                require(time.monotonic()<deadline,'new worker did not finish real EAL setup')
+                time.sleep(.005)
             require(a.command('poll','POLL')=={'result':0,'callbacks':1,'received':0,'completed':0},'old owner callback')
             require(a.command('stop','RESULT')=={'result':0},'quiesce old callback lease')
             before=primary.command('slot-state 2','SLOT')
@@ -73,8 +82,7 @@ def run(args,mode):
             require(primary.command('live 2','LIVE')=={'epoch':2,'live':1},'fresh orphan stamp did not retain liveness')
             alternate=[primary.command('slot-state '+str(i),'SLOT') for i in (1,3)]
             view=primary.command('view','VIEW')
-            require(primary.command('init-state 1 1','RESULT')=={'result':0},'reset next caller state')
-            md,d=group(1,1,2,'master-collision',True)
+            (barrier/'go').touch()
             begin=d.record('ATTACH_BEGIN')['now'];age=(begin-before['stamp'])&0xffffffff
             require(age<1000,'collision did not start in the transient window')
             if mode=='window':
