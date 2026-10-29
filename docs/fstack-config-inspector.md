@@ -84,3 +84,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_rss_check_cfg_handler_no_port_no_vlan` | `fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan`; a test-only callback proxy verifies the retained `rss_check.enable` handler runs and returns 0 after the production preflight separately rejects the same unsafe fixture. |
 | `test_rss_tbl_cfg_handler_bad_tuple` | `fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple` |
 | `test_rss_check_thash_adjust_off_parses` | `fstack-config-source-test_rss_check_thash_adjust_off_parses` |
+| `test_vlan_cfg_handler_id_not_in_filter_returns_one` | `fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one` |
