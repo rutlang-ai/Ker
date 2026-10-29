@@ -850,7 +850,7 @@
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_main_loop_one_iteration_then_stop",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker\u2019s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker\u2019s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
+      "reason": "Scenario adaptation limited to the callback-stop-return-teardown smoke behavior. The pinned fixture boots a real one-port net_null EAL, invokes a callback that calls ff_dpdk_stop, then returns through its cleanup path; its body has no explicit datapath, callback-count, or EAL-cleanup-result assertions. Ker’s one-shot run-stop case verifies exactly one caller callback, real original-Linux IPv4/IPv6 TCP/UDP traffic, stop, acknowledged EAL-worker reaping, and zero owned buffers before return. The source comments describe a single coupled EAL-main-loop turn, but that internal scheduling is not an asserted result and is not implemented by Ker’s autonomous workers. This mapping does not claim EAL-lcore callback or coupled dispatch/RX/message/TX/accounting-loop equivalence; that broader architecture remains tracked separately under issue223.",
       "ker_tests": [
         {
           "ctest": "ethdev-rx",
@@ -3274,16 +3274,34 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_window",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Unchanged original transient-slot helpers and both complete source assertion bodies execute against the actual production reload TU; only EAL role/mapping/fatal interception hosts those source assertions. Real EAL qualification uses four actual master/secondary lifetimes per profile, kills and reaps the old master with its STOPPED orphan adopted, and starts collision admission only after secondary EAL setup via an explicit barrier. Read-only pinned layout observations prove a fresh original worker stamp, exact epoch5/slot2 reuse after the remaining 2000ms stale window, unchanged alternate slots and refusal counters on success. The old orphan cannot enter hardware after explicit proof-bearing reclaim; original net_ring receives/transmits one exact frame and restores all63 buffers. The budget-exhausted real-EAL profile uses only the original private test knob (50ms) in a separate noninstalled production-TU executable: no role/mapping/CAS/clock/fatal substitution, original fatal status1, exactly one refusal increment, same old slot/stamp/owner and untouched alternatives. Production and installed APIs retain the original default budget; no timeout override or new runtime API is exposed. Guest2 candidate fad9912c7e3804a019261e0dc6326a07535bed89, result SHA256 0cdc60ade1540aa38300e847b37e47a8c8b8395a5f443cee8dfb9ef0d8433ae6, two CPUs/no NIC,64 guest-only hugepages,normal shutdown/QEMU0; repository two profiles and independently installed positive profile. Original F-Stack/Linux/DPDK bytes and production Ker runtime are unchanged. See docs/fstack-reload-slot-window.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-slot-window",
+          "provenance_case": "fstack-reload-slot-window"
+        },
+        {
+          "ctest": "fstack-reload-slot-window-multiprocess",
+          "provenance_case": "fstack-reload-slot-window"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p2_slot_transient_exhausted",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Unchanged original transient-slot helpers and both complete source assertion bodies execute against the actual production reload TU; only EAL role/mapping/fatal interception hosts those source assertions. Real EAL qualification uses four actual master/secondary lifetimes per profile, kills and reaps the old master with its STOPPED orphan adopted, and starts collision admission only after secondary EAL setup via an explicit barrier. Read-only pinned layout observations prove a fresh original worker stamp, exact epoch5/slot2 reuse after the remaining 2000ms stale window, unchanged alternate slots and refusal counters on success. The old orphan cannot enter hardware after explicit proof-bearing reclaim; original net_ring receives/transmits one exact frame and restores all63 buffers. The budget-exhausted real-EAL profile uses only the original private test knob (50ms) in a separate noninstalled production-TU executable: no role/mapping/CAS/clock/fatal substitution, original fatal status1, exactly one refusal increment, same old slot/stamp/owner and untouched alternatives. Production and installed APIs retain the original default budget; no timeout override or new runtime API is exposed. Guest2 candidate fad9912c7e3804a019261e0dc6326a07535bed89, result SHA256 0cdc60ade1540aa38300e847b37e47a8c8b8395a5f443cee8dfb9ef0d8433ae6, two CPUs/no NIC,64 guest-only hugepages,normal shutdown/QEMU0; repository two profiles and independently installed positive profile. Original F-Stack/Linux/DPDK bytes and production Ker runtime are unchanged. See docs/fstack-reload-slot-window.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-slot-exhausted",
+          "provenance_case": "fstack-reload-slot-exhausted"
+        },
+        {
+          "ctest": "fstack-reload-slot-window-multiprocess",
+          "provenance_case": "fstack-reload-slot-exhausted"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_a1_flow_map_single_phase",

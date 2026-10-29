@@ -3642,6 +3642,28 @@
         "fstack-reload-live-slot-multiprocess"
       ],
       "adaptation": "The actual ker::reload directory adapter compiles unchanged original ff_reload_gendir.c, preserving exact epoch-derived slot admission without scanning another free slot. Complete unchanged p1_directory_conflict(0)/test_p1_directory_live_slot assertions run against the actual production TU with test-only EAL-role/memzone/fatal interception: two failed attempts retain epoch9, absent directory, cleared reset pending and disabled publication; RX word/primary-slot bytes and alternate free slot remain unchanged. Real repository and independently installed public-API EAL consumers each use4actualmasterparents/4secondarylifetimes: Aepoch2/slot2live, Bepoch3/slot3exits/reaped, Cepoch4/slot1live, Depoch5mustfailoriginaldiagnostic/status1ratherthanreusingreclaimableslot3. Before/after failure, Acontinues originalPMD2/2 and2typedQUERYIPCroundtrips through88FFnamedrings, unchangedprimary/ownerpublicview, foreignCdenied, exactpayload/pointer/cookie andbothpools63/63. Allownedparticipantsreaped andprimaryEALcleaned. Debug/static andRelease/shared exact source/import tests pass; hostMPskip77 is not completion. Candidatee821e67ab9749cab4c8cc3cd55cd16c30f0d46fc isolatedguest14 passes13runtimeprofiles plus2existingexamples andnormalpowerdown/QEMU0. Result /home/hurricane/.local/state/ker-compat-work/fstack-unfinished-ipc-guest14/actual-result-attempt1.json SHA25612c7514d4ce66d7c88b6f43368f2a13130d3619941239fb61b60b8def3819168 binds source/binary/installedCMake/link/library/image/serial inputs. No upstream Linux/DPDK or kernel protocol changes; failed-boundary guard alone is not the proof. See docs/fstack-reload-live-slot.md."
+    },
+    "fstack-reload-slot-window": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p2_slot_transient_window"
+      ],
+      "ker_ctests": [
+        "fstack-reload-slot-window",
+        "fstack-reload-slot-window-multiprocess"
+      ],
+      "adaptation": "Unchanged original transient-slot helpers and both complete source assertion bodies execute against the actual production reload TU; only EAL role/mapping/fatal interception hosts those source assertions. Real EAL qualification uses four actual master/secondary lifetimes per profile, kills and reaps the old master with its STOPPED orphan adopted, and starts collision admission only after secondary EAL setup via an explicit barrier. Read-only pinned layout observations prove a fresh original worker stamp, exact epoch5/slot2 reuse after the remaining 2000ms stale window, unchanged alternate slots and refusal counters on success. The old orphan cannot enter hardware after explicit proof-bearing reclaim; original net_ring receives/transmits one exact frame and restores all63 buffers. The budget-exhausted real-EAL profile uses only the original private test knob (50ms) in a separate noninstalled production-TU executable: no role/mapping/CAS/clock/fatal substitution, original fatal status1, exactly one refusal increment, same old slot/stamp/owner and untouched alternatives. Production and installed APIs retain the original default budget; no timeout override or new runtime API is exposed. Guest2 candidate fad9912c7e3804a019261e0dc6326a07535bed89, result SHA256 0cdc60ade1540aa38300e847b37e47a8c8b8395a5f443cee8dfb9ef0d8433ae6, two CPUs/no NIC,64 guest-only hugepages,normal shutdown/QEMU0; repository two profiles and independently installed positive profile. Original F-Stack/Linux/DPDK bytes and production Ker runtime are unchanged. See docs/fstack-reload-slot-window.md."
+    },
+    "fstack-reload-slot-exhausted": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p2_slot_transient_exhausted"
+      ],
+      "ker_ctests": [
+        "fstack-reload-slot-exhausted",
+        "fstack-reload-slot-window-multiprocess"
+      ],
+      "adaptation": "Unchanged original transient-slot helpers and both complete source assertion bodies execute against the actual production reload TU; only EAL role/mapping/fatal interception hosts those source assertions. Real EAL qualification uses four actual master/secondary lifetimes per profile, kills and reaps the old master with its STOPPED orphan adopted, and starts collision admission only after secondary EAL setup via an explicit barrier. Read-only pinned layout observations prove a fresh original worker stamp, exact epoch5/slot2 reuse after the remaining 2000ms stale window, unchanged alternate slots and refusal counters on success. The old orphan cannot enter hardware after explicit proof-bearing reclaim; original net_ring receives/transmits one exact frame and restores all63 buffers. The budget-exhausted real-EAL profile uses only the original private test knob (50ms) in a separate noninstalled production-TU executable: no role/mapping/CAS/clock/fatal substitution, original fatal status1, exactly one refusal increment, same old slot/stamp/owner and untouched alternatives. Production and installed APIs retain the original default budget; no timeout override or new runtime API is exposed. Guest2 candidate fad9912c7e3804a019261e0dc6326a07535bed89, result SHA256 0cdc60ade1540aa38300e847b37e47a8c8b8395a5f443cee8dfb9ef0d8433ae6, two CPUs/no NIC,64 guest-only hugepages,normal shutdown/QEMU0; repository two profiles and independently installed positive profile. Original F-Stack/Linux/DPDK bytes and production Ker runtime are unchanged. See docs/fstack-reload-slot-window.md."
     }
   }
 }
