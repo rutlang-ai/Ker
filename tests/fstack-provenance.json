@@ -4250,6 +4250,18 @@
         "fstack-config-original-import"
       ],
       "adaptation": "Complete original function retained verbatim. Actual Ker borrowed-state generation selection and observation, existing public IPC formatter for legacy/generation names and truncation, unchanged parser process/lcore map. Invalid selections leave the actual selected generation untouched. Real caller example prints both roles without applying legacy configuration to Ker; no EAL traffic or TCP continuity is claimed."
+    },
+    "fstack-rss-table-no-config": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_set_portrange_no_cfg"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-no-config",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Complete original source NULL-config setter assertion, unchanged pinned table/hash code and original configuration/memory layouts. Actual caller-side enabled table lifecycle classifies128 IPv4/IPv6 fixtures via public Ker dispatcher after original ring-PMD transport; independent hash,32/96 buckets, exact pointers/bytes/counters and unique pool511/511. External consumer of installed unchanged public dispatcher and always-local negative control. This is software metadata policy, not native Linux socket port selection or observed hardware RSS."
     }
   }
 }

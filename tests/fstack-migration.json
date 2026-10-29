@@ -2987,9 +2987,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source table setter declines with -1 when rss_check_cfgs is NULL. An absent Ker table API or rejected INI section is not a demonstrated setter guard. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original NULL-configuration table-setter guard through unchanged table code in the caller-only software classifier. Actual enabled IPv4/IPv6 candidate tables feed public Ker dispatch of128 original ring-PMD fixtures, independent software hash and full pool recovery. No native port allocation or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-no-config",
+          "provenance_case": "fstack-rss-table-no-config"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
