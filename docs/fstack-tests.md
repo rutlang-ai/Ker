@@ -16,6 +16,7 @@ FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存�
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| fstack-rss-thash-ipv4 / fstack-rss-thash-ipv6 | test_ff_rss_thash_equivalence_hitrate / test_ff_rss_thash6_equivalence_hitrate | 完整原始断言、真实 DPDK thash 与独立软件 Toeplitz；每个地址族 RETA128/512 各200/200，固定种子重复、solver/EAL 失败控制及 context/EAL 回收。仅数值合同，见 [验证记录](fstack-rss-thash.md) |
 | fstack-reload-slot-window / fstack-reload-slot-exhausted / fstack-reload-slot-window-multiprocess | test_p2_slot_transient_window / test_p2_slot_transient_exhausted | 完整原始断言及真实 master 退出、orphan、时间戳等待/预算拒绝、固定槽位/计数、安装后生产消费者及 PMD/pool 回收；50ms 旋钮只在私有测试程序，不是生产 API。见 [验证记录](fstack-reload-slot-window.md) |
 | native-fstack-idle-wait | test_ff_load_config_valid_minimal_ini 的 idle_sleep 子集 | INI/CLI 微秒等待、实际 ppoll 超时计数、静默后独立宿主 TCP/UDP 和控制关闭；默认保留 Ker 1ms，完整配置合同仍 partial |
 | native-fstack-promiscuous | test_ff_load_config_valid_minimal_ini 的 promiscuous 配置子集 | 真实 PMD 开关/回读、INI/CLI、外来 MAC 帧 RX 抓包与原始 Linux socket 过滤；完整最小配置合同仍 partial |

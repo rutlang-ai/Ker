@@ -11,6 +11,24 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_executable(ker-fstack-rss-thash-test fstack-rss-thash.c)
+    target_link_libraries(ker-fstack-rss-thash-test PRIVATE PkgConfig::DPDK)
+    target_compile_options(ker-fstack-rss-thash-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-fstack-rss-thash-negative-test fstack-rss-thash.c)
+    target_compile_definitions(ker-fstack-rss-thash-negative-test PRIVATE KER_THASH_TEST_REJECT_ADJUST)
+    target_link_libraries(ker-fstack-rss-thash-negative-test PRIVATE PkgConfig::DPDK)
+    target_compile_options(ker-fstack-rss-thash-negative-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-rss-thash-ipv4 COMMAND ker-fstack-rss-thash-test ipv4)
+    add_test(NAME fstack-rss-thash-ipv6 COMMAND ker-fstack-rss-thash-test ipv6)
+    add_test(NAME fstack-rss-thash-quality-gates
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/posix/fstack-rss-thash.py"
+            --app "$<TARGET_FILE:ker-fstack-rss-thash-test>"
+            --negative-app "$<TARGET_FILE:ker-fstack-rss-thash-negative-test>")
+    set_tests_properties(fstack-rss-thash-ipv4 fstack-rss-thash-ipv6
+        fstack-rss-thash-quality-gates PROPERTIES TIMEOUT 60 LABELS "fstack;dpdk")
+    add_test(NAME fstack-rss-thash-import
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/rss-thash-import.py")
+    set_tests_properties(fstack-rss-thash-import PROPERTIES TIMEOUT 15 LABELS provenance)
     add_executable(ker-ipv4-fields-test ipv4-fields.c)
     target_include_directories(ker-ipv4-fields-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_compile_definitions(ker-ipv4-fields-test PRIVATE _GNU_SOURCE)

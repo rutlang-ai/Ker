@@ -171,14 +171,17 @@
       "id": "rss-port-steering",
       "title": "Qualify RSS steering and queue-aware source-port contracts",
       "disposition": "adaptation-needed",
-      "reason": "Exact source audit distinguishes configuration/table/guard assertions, standalone real-DPDK software equivalence, skipped unready microbench and actual RSS packet landing. Ker key/RETA control readback and independent vhost queue injection do not implement the original FreeBSD PCB caller source-port candidate-table integration. Original Linux allocation remains authoritative; see docs/fstack-rss-contracts.md.",
+      "reason": "Exact source audit distinguishes configuration/table/guard assertions, standalone real-DPDK software equivalence, skipped unready microbench and actual RSS packet landing. Ker key/RETA control readback and independent vhost queue injection do not implement the original FreeBSD PCB caller source-port candidate-table integration. Original Linux allocation remains authoritative; see docs/fstack-rss-contracts.md. The two standalone IPv4/IPv6 thash equivalence cases are now qualified separately with unchanged source, real DPDK, repeated RETA128/512 full loops and failure controls; only those two IDs leave this issue. The remaining 29 cases (28 blocked, one partial) retain their full boundaries.",
       "evidence": [
         "src/posix/io-worker.c",
         "tests/posix/ephemeral-ports.c",
         "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c",
         "src/posix/worker-rss.c",
         "tests/posix/rss-control.c",
-        "docs/fstack-rss-contracts.md"
+        "docs/fstack-rss-contracts.md",
+        "tests/fstack-rss-thash.c",
+        "tests/posix/fstack-rss-thash.py",
+        "docs/fstack-rss-thash.md"
       ],
       "acceptance": [
         "Qualify exact source assertions in docs/fstack-rss-contracts.md through actual Ker consumers, distinguishing early unready guards, software arithmetic and ready-context behavior; do not require a physical NIC merely for a pure helper assertion or label a skipped microbench a performance pass.",
@@ -202,12 +205,10 @@
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_null",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_degraded",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_single_queue",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_equivalence_hitrate",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_landing",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_guard",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash6_equivalence_hitrate",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_off",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_on",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_off",
