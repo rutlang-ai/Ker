@@ -82,3 +82,6 @@ set_tests_properties(fstack-config-source-test_graceful_reload_requires_slim PRO
 add_test(NAME fstack-config-source-test_greload_thread_mode_mutex COMMAND ker-test_greload_thread_mode_mutex)
 set_tests_properties(fstack-config-source-test_greload_thread_mode_mutex PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_greload_off_no_new_checks COMMAND ker-test_greload_off_no_new_checks)
+set_tests_properties(fstack-config-source-test_greload_off_no_new_checks PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
