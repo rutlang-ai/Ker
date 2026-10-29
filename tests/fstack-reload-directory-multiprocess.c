@@ -2,6 +2,9 @@
  * Parent/master identity, all buffers and supervision belong to this caller. */
 #define _GNU_SOURCE
 #include <ker/reload-directory.h>
+#ifdef KER_RELOAD_SLOT_OBSERVATIONS
+#include "ff_reload.h" /* Read-only pinned layout oracle in the slot fixture. */
+#endif
 #include "check.h"
 #include <inttypes.h>
 #include <errno.h>
@@ -287,6 +290,19 @@ static void primary(void)
     char command[128];struct rte_mbuf *pending=NULL;unsigned sequence=0;
     while(fgets(command,sizeof(command),stdin)) {
         if(observations(command))continue;
+#ifdef KER_RELOAD_SLOT_OBSERVATIONS
+        if (!strncmp(command,"slot-state ",11)) {
+            unsigned index; CHECK(sscanf(command,"slot-state %u",&index)==1 && index<4);
+            const struct rte_memzone *mz=rte_memzone_lookup(FF_RELOAD_GENDIR_NAME); CHECK(mz);
+            struct ff_reload_gendir *directory=mz->addr;
+            struct ff_reload_epoch_slot *entry=&directory->slot[index];
+            printf("SLOT {\"slot\":%u,\"epoch\":%u,\"master\":%u,\"stamp\":%u,\"now\":%u,\"refused\":%u}\n",
+                index,__atomic_load_n(&entry->epoch,__ATOMIC_SEQ_CST),
+                __atomic_load_n(&entry->master_pid,__ATOMIC_SEQ_CST),
+                __atomic_load_n(&entry->pad,__ATOMIC_SEQ_CST),(uint32_t)now_ms(),
+                __atomic_load_n(&directory->reclaim_refused,__ATOMIC_SEQ_CST)); flush();
+        } else
+#endif
         if(!strncmp(command,"names ",6)||!strncmp(command,"drop ",5)) {
             unsigned e;int create=command[0]=='n';CHECK(sscanf(command+(create?6:5),"%u",&e)==1);rpc_names(e,create);
         } else if(!strcmp(command,"locate\n")) {
@@ -388,8 +404,21 @@ static void worker(unsigned gen,unsigned worker_slot)
     const struct rte_memzone *state=rte_memzone_lookup(name),*identity=rte_memzone_lookup(META);CHECK(state&&identity);shared=identity->addr;
     const char *pid=getenv("KER_DIRECTORY_PRIMARY_PID");CHECK(pid&&shared->magic==MAGIC&&shared->nonce==nonce()&&shared->primary==strtoul(pid,NULL,10));
     CHECK(!ker_reload_bind_state(state->addr,state->len,0,(int)gen));CHECK(!ker_reload_worker_select((int)gen,worker_slot));
+#ifdef KER_RELOAD_SLOT_TESTING
+    /* Original upstream test knob, confined to the private fixture. Production
+     * and separately installed consumers keep the original default budget. */
+    const char *budget=getenv("KER_DIRECTORY_TEST_BUDGET_MS");
+    if (budget) {char *end;unsigned long value=strtoul(budget,&end,10);CHECK(!*end && value>0 && value<=5000);ff_reload_reclaim_timeout_set((unsigned)value);}
+#endif
     wait_attach_barrier(worker_slot);
+    uint64_t attach_started=now_ms();
+    if (getenv("KER_DIRECTORY_ATTACH_TIMING")) {
+        printf("ATTACH_BEGIN {\"now\":%u}\n",(uint32_t)attach_started);flush();
+    }
     CHECK(!ker_reload_directory_attach());
+    if (getenv("KER_DIRECTORY_ATTACH_TIMING")) {
+        printf("ATTACH_END {\"elapsed_ms\":%" PRIu64 "}\n",now_ms()-attach_started);flush();
+    }
     generation=gen;slot=worker_slot;pool=rte_mempool_lookup(POOL);messages=rte_mempool_lookup("ker_directory_messages");CHECK(pool&&messages);rings(0);CHECK(!rte_eth_dev_get_port_by_name(PORT,&port));
     struct rte_eth_dev_info info;CHECK(!rte_eth_dev_info_get(port,&info)&&!strcmp(info.driver_name,"net_ring"));
     struct ker_reload_directory_view view;CHECK(!ker_reload_directory_view(&view));
