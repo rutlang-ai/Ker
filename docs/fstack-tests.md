@@ -782,4 +782,12 @@ epoch5碰撞仍存活的epoch2槽，拒绝使用另一个可回收槽；原owner
 18→12 partial；额外回归、skip、重复安装运行及原已完成案例均未计入。
 [50项完整差分清单](../tests/fstack-unfinished-completed.json)记录每项原始ID、基线与测试。
 
+## Additional50-case PR series (#393–#442)
+
+This is a new50-case series beyond the earlier historical completion ledger.
+See the [per-source-case PR/CTest index](fstack-migration-pr-series-393-442.md)
+for the38 configuration and12 software RSS unit contracts and their boundaries.
+
+| Source contract | CTest | Scope |
+|---|---|---|
 | Original config unload pointer cleanup / idempotence | `fstack-config-original-unload` | [Caller-only parser scope](fstack-config-inspector.md) |

@@ -25,6 +25,11 @@
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
 
+## Earlier runtime-subset evidence (historical)
+
+以下段落保留较早批次的状态；当前源单测迁移见[新增50项系列](fstack-migration-pr-series-393-442.md)。
+调用方解析器与软件表单测不会补全 Ker 的运行配置或硬件能力。
+
 本批补齐 `valid_inet6.ini` 中 VLAN IPv6 网关的相关功能，通过
 `native-fstack-ipv6-vlan-route` 验证单一默认网关、全局/link-local 下一跳、
 原始 Linux 路由失败边界及独立路由器后的双向 TCP/UDP。来源注册用例
@@ -48,7 +53,7 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 ## 剩余案例的 issue 追踪
 
-下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
+下面的 issue 表与当前机器清单同步；后续各批次记录保留其历史计数，当前总数以上表为准。
 
 持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共99项记录在
 [后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：29项行为未完成
@@ -63,22 +68,14 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 4 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
-| Qualify RSS steering and queue-aware source-port contracts | 14 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
-| Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
-| Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
-| Resolve device/run lifecycle and upstream fault-injection contracts | 2 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
-| Adapt typed vdev, bond and multi-port configuration | 0 | 需要适配器实现 | [#224](https://github.com/rutlang-ai/Ker/issues/224) |
-| Define a Linux-native zero-copy send and ownership contract | 7 | 合同差异待决策 | [#225](https://github.com/rutlang-ai/Ker/issues/225) |
-| Resolve remaining typed configuration and intentional schema differences | 1 | 合同差异待决策 | [#226](https://github.com/rutlang-ai/Ker/issues/226) |
-| Decide F-Stack primary/secondary and thread-mode compatibility | 1 | 合同差异待决策 | [#227](https://github.com/rutlang-ai/Ker/issues/227) |
-| Document and qualify host/native stack coexistence configuration | 1 | 合同差异待决策 | [#228](https://github.com/rutlang-ai/Ker/issues/228) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 3 | 合同差异待决策 | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
-| Resolve INI callback, userdata and section semantics | 6 | 合同差异待决策 | [#230](https://github.com/rutlang-ai/Ker/issues/230) |
-| Record FreeBSD thread context and join-result assertions | 3 | 架构专用 | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
-| Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | 架构专用 | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
-| Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | 上游工具链专用 | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
+| Design generation-aware reload, IPC and drain ownership | 4 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Define a supported host exception bridge and KNI policy adaptation | 6 | adaptation-needed | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Qualify RSS steering and queue-aware source-port contracts | 14 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
+| Resolve device/run lifecycle and upstream fault-injection contracts | 2 | contract-review | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 3 | contract-review | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
+| Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
+| Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | harness-only | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
 
 默认审计还检查：每个非 `scenario-adapted` 案例都恰好出现一次、issue 必须是
 Ker issue 链接、固定版本一致、分组有理由及验收条件。它不联网判定 issue 关闭
@@ -2335,3 +2332,9 @@ not kernel allocation or hardware RSS. Catalog333/2/28.
 
 Complete original assertions: `fstack-rss-table-test_ff_rss_tbl6_set_get`. Caller-only table classification,
 not kernel allocation or hardware RSS. Catalog334/2/27.
+
+## Additional50-case PR series completed
+
+The new [50-case index](fstack-migration-pr-series-393-442.md) excludes earlier
+batches and binds one original case to each PR. Current334/2/27;29 behavioral
+cases remain incomplete. No merge was performed.

@@ -49,7 +49,7 @@ real use and positive lifecycle. Neither the table tests nor this software
 classifier qualify original Linux PCB allocation hooks, reverse adjustment,
 physical NIC RSS, real TCP/UDP interoperability or full F-Stack reload.
 
-| Source case added by this PR | Source CTest |
+| Qualified source case | Source CTest |
 |---|---|
 | `test_ff_rss_tbl_set_portrange_no_cfg` | `fstack-rss-table-no-config` |
 | `test_ff_rss_tbl_set_portrange_disabled` | `fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled` |
@@ -63,3 +63,7 @@ physical NIC RSS, real TCP/UDP interoperability or full F-Stack reload.
 | `test_ff_rss_check6_landing` | `fstack-rss-table-test_ff_rss_check6_landing` |
 | `test_ff_rss_check6_single_queue` | `fstack-rss-table-test_ff_rss_check6_single_queue` |
 | `test_ff_rss_tbl6_set_get` | `fstack-rss-table-test_ff_rss_tbl6_set_get` |
+
+The [50-case PR index](fstack-migration-pr-series-393-442.md) identifies the
+separate PR for each row. These12 software cases do not close the14 remaining
+RSS optimization/runtime contracts.

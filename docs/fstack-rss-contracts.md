@@ -1,13 +1,12 @@
 # Exact RSS source contracts and qualification boundaries
 
 [Issue #220](https://github.com/rutlang-ai/Ker/issues/220) originally tracked31
-source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. The two
-standalone IPv4/IPv6 thash equivalence cases were qualified earlier. Three
-parsed-document contracts and the NULL-config table-setter contract are now
-separately qualified in caller-side examples;14 remain in this issue
-(0 partial,14 blocked). The table below preserves
-all31 exact contracts and identifies the scope of each qualification. It records
-actual assertions, not promises of future real-machine acceptance.
+source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. Two standalone
+IPv4/IPv6 thash equivalence cases were qualified earlier. Three parsed-document
+contracts and12 software table/predicate contracts are now separately qualified
+in caller-side examples;14 optimization/runtime cases remain blocked. The
+matrix preserves the original assertion scope. None of these software
+qualifications establishes a native allocation hook or observed hardware RSS.
 
 ## Three different kinds of evidence
 
@@ -29,8 +28,10 @@ actual assertions, not promises of future real-machine acceptance.
    injects alternating queues and must not be relabeled as RSS evidence.
 
 In particular the source tests' BSS `rss_reta_size[] == 0` is a unit setup,
-not a legitimate runtime capability query. Its software predicate uses the
-resulting mask0xffff. Several adjustment guards run before the branches their
+not a legitimate runtime capability query. The source oracle narrows
+`reta_size - 1` to16 bits (0xffff for zero), while the imported predicates use
+ordinary C integer promotion. The fixed four-queue source cases compare the
+same low two bits; they do not isolate mask width or model a queried device RETA. Several adjustment guards run before the branches their
 names suggest. Their exact assertions are useful, but do not prove those later
 branches. The microbench calls `skip()` on unready context; it supplies no timing
 result on that path. When their EAL initialization succeeds, the IPv4/IPv6
@@ -87,7 +88,7 @@ not turn Linux range validation into native RSS port steering.
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_degraded` | With BSS RETA size0, context initialization succeeds but leaves ports unready; adjustment declines -1 for native/software fallback. This is degraded readiness, not working reverse calculation. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_single_queue` | Source sets one queue but the earlier unready-context guard already returns -1 in this unit environment. It does not isolate the one-queue branch or prove traffic landing. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. An EAL-init skip does not reach these assertions. Qualified by `fstack-rss-thash-ipv4` and the repeat/failure controls; see [evidence](fstack-rss-thash.md). This is not observed PMD queue landing. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 verdicts match its independent software Toeplitz replica across64 ports and include a hit. Complete original assertions retain BSS RETA0/mask0xffff as unit setup; this is not a device RETA query or observed hardware landing. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 verdicts match its independent software Toeplitz replica across64 ports and include a hit. Complete original assertions retain BSS RETA0 and the four-queue oracle as unit setup; this is not a device RETA query or observed hardware landing. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_check6_single_queue` | Source IPv6 predicate returns1 for a fixed tuple with one software queue. Its complete original assertion is qualified through the actual predicate, not ordinary TCP delivery. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | Complete original IPv6 table init/hit/nonempty interval, up to128 candidate predicate checks and different-source miss assertions are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_guard` | Source IPv6 adjustment rejects NULL softc/output and declines after initialization with RETA0/unready context. Neither disabled device RSS nor zero packet counters proves these guards. |

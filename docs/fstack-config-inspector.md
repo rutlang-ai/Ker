@@ -51,7 +51,7 @@ pinned parser source and its manifest hash stay unchanged, and a document that
 would exceed the parser's capacities produces an error instead of memory
 corruption.
 
-Exactly one source case is newly qualified here:
+The initial PR (#393) qualified one source case:
 `tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state`.
 The full original function is retained in `tests/fstack-config-unload-source.inc`.
 Its assertions call the upstream unload function directly, checking every
@@ -112,3 +112,8 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_ff_load_config_stack_absent_defaults_disabled` | `fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled` |
 | `test_ff_load_config_stack_garbage_defaults_disabled` | `fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled` |
 | `test_ff_load_config_stack_coexist_disabled_explicit` | `fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit` |
+
+The completed [new50-case series](fstack-migration-pr-series-393-442.md) lists
+all later parser/mapping qualifications. The initial case1 wording above is
+a historical batch boundary, not the current total. Runtime configuration
+support is not inferred from these source parsing assertions.
