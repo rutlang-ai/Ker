@@ -43,3 +43,6 @@ set_tests_properties(fstack-config-source-test_ff_load_config_argv_t_override PR
 add_test(NAME fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips COMMAND ker-test_vlan_cfg_handler_portid_over_max_skips)
 set_tests_properties(fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_parse_lcore_mask_proc_id_in_range COMMAND ker-test_parse_lcore_mask_proc_id_in_range)
+set_tests_properties(fstack-config-source-test_parse_lcore_mask_proc_id_in_range PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
