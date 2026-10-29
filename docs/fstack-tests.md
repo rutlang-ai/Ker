@@ -16,6 +16,7 @@ FreeBSD 栈或 cmocka mock/stub 当作 Ker 实现。上游测试和脚本另存�
 
 | Ker CTest | 上游场景 | 适配边界 |
 |---|---|---|
+| fstack-parked-tx-divert / watermark / guard / pass | test_it_a09_tx_divert_no_hw / test_it_a09_drain_ring_tx_watermark / test_it_a09_send_burst_guard / test_it_a09_main_loop_parked_pass | 原始12包、4×64与255+1、32包guard、5包残留断言；真实 net_ring、独立PMD回调/计数、FIFO及池512/512唯一回收。仅在所有调用完成后切换owner的单进程场景，见 [验证记录](fstack-parked-tx.md) |
 | fstack-peer-dispatch-ownership | test_ut_nr_27_dispatch_peer_boundary | PEER 成功转移原始 mbuf，ring-full/关闭窗口释放一次；真实 net_ring64 FIFO、分段计数、普通 callback 所有权不变、池127/127唯一性及安装后消费者。见 [验证记录](fstack-peer-dispatch.md) |
 | fstack-flow-map-basic / single-phase / admission / revoke / growth | test_ut_nr_23_flow_map / test_a1_flow_map_single_phase / test_a1_flow_map_admission_rule / test_a1_flow_map_revoke / test_p3_flow_map_bounded_growth | 完整原始表断言与调用方示例；真实 reload 状态、EAL/net_ring IPv4/IPv6 UDP 元数据路由30/30、poll 拒绝、ring-full 所有权及pool63/63；不代表 Linux SYN/PCB 或完整 reload。见 [验证记录](fstack-flow-map.md) |
 | fstack-rss-thash-ipv4 / fstack-rss-thash-ipv6 | test_ff_rss_thash_equivalence_hitrate / test_ff_rss_thash6_equivalence_hitrate | 完整原始断言、真实 DPDK thash 与独立软件 Toeplitz；每个地址族 RETA128/512 各200/200，固定种子重复、solver/EAL 失败控制及 context/EAL 回收。仅数值合同，见 [验证记录](fstack-rss-thash.md) |

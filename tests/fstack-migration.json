@@ -1080,23 +1080,38 @@
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Eight copied packets plus four owned/raw packets divert while generation0 is parked: no PMD calls or drops, exactly12 drain entries, then exactly one owner burst carrying12 packets. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-divert",
+          "provenance_case": "fstack-parked-tx-divert"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_drain_ring_tx_watermark",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Four rounds of64 produce exactly8 owner bursts/256 packets; a255-entry ring plus one overflow counts exactly one full/divert drop with no owner-side drop; final owner drain yields16 cumulative bursts/511 packets. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-watermark",
+          "provenance_case": "fstack-parked-tx-watermark"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_send_burst_guard",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Thirty-two actual borrowed RESPONSE callback results enter staging while parked; the final hardware gate drops all32, leaves no staging or PMD call and restores the512-object pool. The same reply path succeeds as owner. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-guard",
+          "provenance_case": "fstack-parked-tx-guard"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a10_halfopen_dispatch",
@@ -1115,9 +1130,14 @@
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_main_loop_parked_pass",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Five packets staged as owner survive a quiescent handover: one parked caller TX pass diverts all five, performs no hardware call or drain dequeue, then the selected owner transmits all five. Public optional ker::reload_tx transports caller bytes/mbufs through real ker::reload gating and original DPDK net_ring. Independent PMD callbacks, exact FIFO payloads, driver TX counters, reentry rejection and unique pool512/512 recovery are checked. This adapts the numeric/ownership scenario, not FreeBSD API/global/veth layout, native PCB integration, concurrent or cross-master takeover, physical NIC or full reload. See docs/fstack-parked-tx.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-parked-tx-pass",
+          "provenance_case": "fstack-parked-tx-pass"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_graceful_reload.sh::entrypoint",
