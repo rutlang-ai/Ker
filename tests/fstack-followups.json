@@ -175,7 +175,7 @@
       "id": "rss-port-steering",
       "title": "Qualify RSS steering and queue-aware source-port contracts",
       "disposition": "adaptation-needed",
-      "reason": "Exact source audit distinguishes configuration/table/guard assertions, standalone real-DPDK software equivalence, skipped unready microbench and actual RSS packet landing. Ker key/RETA control readback and independent vhost queue injection do not implement the original FreeBSD PCB caller source-port candidate-table integration. Original Linux allocation remains authoritative; see docs/fstack-rss-contracts.md. The two standalone IPv4/IPv6 thash equivalence cases are now qualified separately with unchanged source, real DPDK, repeated RETA128/512 full loops and failure controls; only those two IDs leave this issue. The remaining 29 cases (28 blocked, one partial) retain their full boundaries. test_rss_check_cfg_handler_no_port_no_vlan is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
+      "reason": "Exact source audit distinguishes configuration/table/guard assertions, standalone real-DPDK software equivalence, skipped unready microbench and actual RSS packet landing. Ker key/RETA control readback and independent vhost queue injection do not implement the original FreeBSD PCB caller source-port candidate-table integration. Original Linux allocation remains authoritative; see docs/fstack-rss-contracts.md. The two standalone IPv4/IPv6 thash equivalence cases are now qualified separately with unchanged source, real DPDK, repeated RETA128/512 full loops and failure controls; only those two IDs leave this issue. The remaining 29 cases (28 blocked, one partial) retain their full boundaries. test_rss_check_cfg_handler_no_port_no_vlan is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_rss_tbl_cfg_handler_bad_tuple is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
       "evidence": [
         "src/posix/io-worker.c",
         "tests/posix/ephemeral-ports.c",
@@ -195,7 +195,6 @@
         "Qualify table lifecycle/hit/miss/caller-owned rotation, enabled/disabled/degraded states and ready-context recheck/range paths; record actual non-skipped performance evidence before any microbench claim."
       ],
       "cases": [
-        "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
         "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
         "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
