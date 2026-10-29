@@ -37,3 +37,6 @@ set_tests_properties(fstack-config-source-test_ff_load_config_freebsd_boot_multi
 add_test(NAME fstack-config-source-test_ff_load_config_inet6_fixture_ignored COMMAND ker-test_ff_load_config_inet6_fixture_ignored)
 set_tests_properties(fstack-config-source-test_ff_load_config_inet6_fixture_ignored PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ff_load_config_argv_t_override COMMAND ker-test_ff_load_config_argv_t_override)
+set_tests_properties(fstack-config-source-test_ff_load_config_argv_t_override PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
