@@ -14,3 +14,5 @@ add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation COMMAND ke
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation PROPERTIES TIMEOUT 30)
 add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_miss COMMAND ker-test_ff_rss_tbl_get_portrange_miss)
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_miss PROPERTIES TIMEOUT 30)
+add_test(NAME fstack-rss-table-test_ff_rss_check6_landing COMMAND ker-test_ff_rss_check6_landing)
+set_tests_properties(fstack-rss-table-test_ff_rss_check6_landing PROPERTIES TIMEOUT 30)

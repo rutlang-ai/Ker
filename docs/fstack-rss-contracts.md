@@ -4,8 +4,8 @@
 source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. The two
 standalone IPv4/IPv6 thash equivalence cases were qualified earlier. Three
 parsed-document contracts and the NULL-config table-setter contract are now
-separately qualified in caller-side examples;17 remain in this issue
-(0 partial,17 blocked). The table below preserves
+separately qualified in caller-side examples;16 remain in this issue
+(0 partial,16 blocked). The table below preserves
 all31 exact contracts and identifies the scope of each qualification. It records
 actual assertions, not promises of future real-machine acceptance.
 
@@ -87,7 +87,7 @@ not turn Linux range validation into native RSS port steering.
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_degraded` | With BSS RETA size0, context initialization succeeds but leaves ports unready; adjustment declines -1 for native/software fallback. This is degraded readiness, not working reverse calculation. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_single_queue` | Source sets one queue but the earlier unready-context guard already returns -1 in this unit environment. It does not isolate the one-queue branch or prove traffic landing. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone real DPDK thash contexts use RETA128/512 and deterministic seeds for200 IPv4 tuples each. First-candidate rates are reported; adjustment success must be positive and the full retry loop must land200/200 with independent software verification. An EAL-init skip does not reach these assertions. Qualified by `fstack-rss-thash-ipv4` and the repeat/failure controls; see [evidence](fstack-rss-thash.md). This is not observed PMD queue landing. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 own-queue verdicts match an independent software Toeplitz replica over64 destination ports and include at least one hit. Source BSS RETA0 implies mask0xffff; it is not a queried device RETA. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_check6_landing` | Source IPv6 verdicts match its independent software Toeplitz replica across64 ports and include a hit. Complete original assertions retain BSS RETA0/mask0xffff as unit setup; this is not a device RETA query or observed hardware landing. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_check6_single_queue` | Source own-queue predicate returns1 for a fixed IPv6 tuple with one queue. Ordinary single-queue TCP delivery does not invoke or establish a corresponding Ker predicate ABI. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | IPv6 rule initialization and lookup return a candidate array whose sampled ports pass the source own-queue predicate; missing tuples must miss. Ker has no IPv6 candidate table consumer. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_guard` | Source IPv6 adjustment rejects NULL softc/output and declines after initialization with RETA0/unready context. Neither disabled device RSS nor zero packet counters proves these guards. |
@@ -113,8 +113,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is331 scenario-adapted,2 partial,30 blocked,
-15 architecture-specific and55 harness-only out of433. All32 blocked/partial
+The current catalog is332 scenario-adapted,2 partial,29 blocked,
+15 architecture-specific and55 harness-only out of433. All31 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,

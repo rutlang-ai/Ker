@@ -60,3 +60,4 @@ physical NIC RSS, real TCP/UDP interoperability or full F-Stack reload.
 | `test_ff_rss_tbl_get_portrange_hit` | `fstack-rss-table-test_ff_rss_tbl_get_portrange_hit` |
 | `test_ff_rss_tbl_get_portrange_rotation` | `fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation` |
 | `test_ff_rss_tbl_get_portrange_miss` | `fstack-rss-table-test_ff_rss_tbl_get_portrange_miss` |
+| `test_ff_rss_check6_landing` | `fstack-rss-table-test_ff_rss_check6_landing` |
