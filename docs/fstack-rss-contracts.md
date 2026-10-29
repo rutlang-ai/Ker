@@ -4,8 +4,8 @@
 source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. The two
 standalone IPv4/IPv6 thash equivalence cases were qualified earlier. Three
 parsed-document contracts and the NULL-config table-setter contract are now
-separately qualified in caller-side examples;25 remain in this issue
-(one partial,24 blocked). The table below preserves
+separately qualified in caller-side examples;24 remain in this issue
+(1 partial,23 blocked). The table below preserves
 all31 exact contracts and identifies those two qualifications. It records
 actual assertions, not promises of future real-machine acceptance.
 
@@ -75,7 +75,7 @@ mapping remains partial until its actual table setter is qualified.
 | `test_ff_config.c` | `test_rss_tbl_cfg_handler_bad_tuple` | The source malformed three-token rule leaves nb_rss_tbl zero if the block exists and discards the loader result. Qualified by the actual unchanged rule parser in the caller-side inspector, not generic unknown-section rejection. |
 | `test_ff_config.c` | `test_rss_check_thash_adjust_off_parses` | The source valid configuration succeeds with RSS enabled and thash_adjust=0. The complete original parsed-document assertions are qualified in the caller inspector; no Ker source-port optimization is enabled or disabled by this document inspection. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_no_cfg` | The original table setter declines with -1 for NULL configuration. Qualified by fstack-rss-table-no-config plus an actual enabled caller-side software table consumer; see docs/fstack-rss-table.md. Native Linux port allocation and hardware RSS remain unqualified. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_disabled` | Source table setter declines with -1 for enable=0; the surrounding enabled table contract is still required. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_disabled` | Source setter returns-1 with enable=0. The complete original guard and actual enabled candidate-table lifecycle are qualified in the caller-only software classifier. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_inverted_range` | Source enabled-table setter rejects first>last. Existing original-Linux ephemeral-range validation is partial evidence only; no Ker RSS candidate table update or queue ownership contract is implemented. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_no_cfg` | Source lookup declines with -1 when configuration is NULL. No corresponding real Ker lookup consumer is qualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_disabled` | Source lookup declines with -1 when configuration is disabled. No matching enabled/disabled candidate-table lifecycle is qualified. |
@@ -113,8 +113,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is323 scenario-adapted,3 partial,37 blocked,
-15 architecture-specific and55 harness-only out of433. All40 blocked/partial
+The current catalog is324 scenario-adapted,3 partial,36 blocked,
+15 architecture-specific and55 harness-only out of433. All39 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,

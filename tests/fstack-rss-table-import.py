@@ -23,3 +23,10 @@ start = test_source.index('static void\ntest_ff_rss_tbl_set_portrange_no_cfg(')
 end = test_source.index('\n}', start) + 2
 assert (root / 'tests/fstack-rss-table-source.inc').read_text().rstrip() == test_source[start:end]
 print('RSS table/hash implementation and complete source assertion verified')
+for name in (root / 'tests/fstack-rss-cases.txt').read_text().splitlines():
+    start = test_source.index('static void\n' + name + '(')
+    end = test_source.index('\n}', start) + 2
+    assert (root / 'tests/fstack-rss-source' / (name + '.inc')).read_text().rstrip() == test_source[start:end]
+helpers = (root / 'tests/fstack-rss-source-helpers.inc').read_text().split('\n\n')
+for part in helpers:
+    assert part.rstrip() in test_source, part[:80]
