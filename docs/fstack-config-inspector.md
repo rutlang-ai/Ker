@@ -22,6 +22,15 @@ scalars and resets `getopt`, so documents do not inherit unrelated flags.
 Call unload after success or failure. This adapter does not change the original
 configuration structures or parser semantics.
 
+Because the retained parser writes its EAL plan into fixed-size storage without
+bounds checks, the adapter preflights each document with the same unchanged INI
+parser and rejects oversized plans before calling upstream load. The preflight
+counts every argument source against `DPDK_CONFIG_NUM`, checks each formatted
+argument against `DPDK_CONFIG_MAXLEN`, and bounds port, lcore, slave-port and
+VLAN-filter list expansion. This is a caller-side policy: the pinned parser
+source and its manifest hash stay unchanged, and a document that would exceed
+the parser's capacities produces an error instead of memory corruption.
+
 Exactly one source case is newly qualified here:
 `tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state`.
 The full original function is retained in `tests/fstack-config-unload-source.inc`.

@@ -3838,9 +3838,10 @@
       ],
       "ker_ctests": [
         "fstack-config-original-unload",
-        "fstack-config-original-import"
+        "fstack-config-original-import",
+        "fstack-config-capacity-preflight"
       ],
-      "adaptation": "Unchanged pinned configuration implementation in a symbol-isolated caller-side inspector. Complete original function retained verbatim; assertions call upstream cleanup directly so adapter clearing cannot conceal missed frees/nulls. 100 real load/unload cycles and sanitizer evidence. Original DPDK rte_strsplit is linked, not stubbed. The CLI consumes the parsed snapshot/EAL plan without executing it and reports unsupported runtime boundaries. No FreeBSD startup, Ker native settings, EAL startup or network behavior is qualified."
+      "adaptation": "Unchanged pinned configuration implementation in a symbol-isolated caller-side inspector. Complete original function retained verbatim; assertions call upstream cleanup directly so adapter clearing cannot conceal missed frees/nulls. 100 real load/unload cycles and sanitizer evidence. Original DPDK rte_strsplit is linked, not stubbed. The CLI consumes the parsed snapshot/EAL plan without executing it and reports unsupported runtime boundaries. No FreeBSD startup, Ker native settings, EAL startup or network behavior is qualified. A caller-side preflight, built from the same unchanged INI parser, rejects documents whose projected EAL plan would exceed dpdk_argv/DPDK_CONFIG_MAXLEN or the port/lcore/vlan list arrays before upstream load runs."
     }
   }
 }

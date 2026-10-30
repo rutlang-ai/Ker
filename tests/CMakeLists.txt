@@ -21,6 +21,13 @@ if(KER_WITH_DPDK)
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/upstream/fstack/tests/unit" TIMEOUT 30)
     add_test(NAME fstack-config-original-import COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/fstack-config-import.py")
+    add_executable(ker-fstack-config-preflight-test fstack-config-preflight.c)
+    target_link_libraries(ker-fstack-config-preflight-test PRIVATE ker-example-fstack-config)
+    target_compile_options(ker-fstack-config-preflight-test PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-config-preflight-test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-config-capacity-preflight COMMAND ker-fstack-config-preflight-test)
+    set_tests_properties(fstack-config-capacity-preflight PROPERTIES TIMEOUT 30 LABELS "fstack;dpdk")
     add_executable(ker-fstack-a10-dispatch-test fstack-a10-dispatch.c)
     target_link_libraries(ker-fstack-a10-dispatch-test PRIVATE ker-example-a10-dispatch "${ker_controller_ring_pmd}")
     target_compile_options(ker-fstack-a10-dispatch-test PRIVATE -Wall -Wextra -Werror)
