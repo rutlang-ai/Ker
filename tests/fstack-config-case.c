@@ -12,6 +12,30 @@ int load_with_fixture(const char *path)
     char *argv[] = {program, option, (char *)path, NULL};
     return example_fstack_config_load(3, argv);
 }
+/* Exercise a bounded negative fixture through the retained parser without
+ * disabling the production inspector's capacity preflight. */
+extern int example_upstream_load_config(int argc, char *const argv[]);
+int load_with_original_fixture(const char *path)
+{
+    char program[] = "config-inspect", option[] = "-c";
+    char *argv[] = {program, option, (char *)path, NULL};
+
+    example_fstack_config_unload();
+    optind = 0;
+    return example_upstream_load_config(3, argv);
+}
+#ifdef FSTACK_CONFIG_TEST_WRAP_STRSPLIT
+static unsigned g_invalid_portlist_rte_strsplit_calls;
+int __real_rte_strsplit(char *string, int stringlen, char **tokens,
+                        int maxtokens, char delim);
+int __wrap_rte_strsplit(char *string, int stringlen, char **tokens,
+                        int maxtokens, char delim)
+{
+    if (strstr(string, "not_an_int") != NULL)
+        g_invalid_portlist_rte_strsplit_calls++;
+    return __real_rte_strsplit(string, stringlen, tokens, maxtokens, delim);
+}
+#endif
 int load_with_proc(const char *path, const char *type, const char *id)
 {
     char program[] = "config-inspect", conf[] = "-c", proc[] = "-t", index[] = "-p";
@@ -38,10 +62,26 @@ void *__wrap_calloc(size_t count, size_t size)
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
 #include STRINGIFY(SOURCE_INCLUDE)
+#ifdef FSTACK_CONFIG_TEST_WRAP_STRSPLIT
+static void verify_original_portlist_nonint_error_path(void)
+{
+    int rv;
+
+    g_invalid_portlist_rte_strsplit_calls = 0;
+    rv = load_with_original_fixture(FIXTURE_PATH("invalid_portlist_nonint.ini"));
+    CHECK(rv == -1);
+    CHECK(g_invalid_portlist_rte_strsplit_calls == 1);
+    CHECK(example_fstack_config_current()->dpdk.nb_ports == 0);
+    CHECK(example_fstack_config_current()->dpdk.bond_cfgs == NULL);
+}
+#endif
 int main(void)
 {
     for (unsigned i = 0; i < 5; ++i) {
         SOURCE_FUNCTION(NULL);
+#ifdef FSTACK_CONFIG_TEST_WRAP_STRSPLIT
+        verify_original_portlist_nonint_error_path();
+#endif
         example_fstack_config_unload();
         CHECK(example_fstack_config_eal_argc() == 0);
     }
