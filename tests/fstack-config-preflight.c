@@ -417,6 +417,66 @@ static void test_range_endpoint_out_of_int_rejected(void)
     CHECK(load_config(NULL) != 0);
 }
 
+/* A range whose upper endpoint is INT_MAX makes the retained loop execute
+ * ++j past INT_MAX; reject it before counting. */
+static void test_range_upper_int_max_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "vlan_filter=2147483647-2147483647\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
+/* A KNI owner_proc_id outside [0, RTE_MAX_LCORE) indexes proc_lcore out of
+ * bounds in ff_check_config; reject it before upstream load. */
+static void test_kni_owner_proc_id_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=3\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "primary_slim=1\n"
+             "[kni]\n"
+             "enable=1\n"
+             "method=accept\n"
+             "owner_proc_id=-1\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=3\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "primary_slim=1\n"
+             "[kni]\n"
+             "enable=1\n"
+             "method=accept\n"
+             "owner_proc_id=%d\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n", RTE_MAX_LCORE);
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -435,5 +495,7 @@ int main(void)
     test_vlan_attachment_before_port_rejected();
     test_lcore_mask_population_rejected();
     test_range_endpoint_out_of_int_rejected();
+    test_range_upper_int_max_rejected();
+    test_kni_owner_proc_id_rejected();
     return 0;
 }
