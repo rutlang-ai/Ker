@@ -1549,9 +1549,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Malformed three-token rule leaves nb_rss_tbl zero if the source RSS block exists; loader result is discarded. Generic unknown-section rejection does not prove rule-parser behavior. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple",
+          "provenance_case": "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
