@@ -52,3 +52,6 @@ set_tests_properties(fstack-config-source-test_parse_lcore_mask_proc_id_over_cou
 add_test(NAME fstack-config-source-test_ff_load_config_dpdk_extra_keys COMMAND ker-test_ff_load_config_dpdk_extra_keys)
 set_tests_properties(fstack-config-source-test_ff_load_config_dpdk_extra_keys PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak COMMAND ker-test_ff_load_config_bond_vdev_repeat_keys_no_leak)
+set_tests_properties(fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
