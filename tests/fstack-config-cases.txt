@@ -5,3 +5,4 @@ test_ff_load_config_dpdk_full
 test_ff_load_config_portlist_nonint
 test_rss_check_cfg_handler_no_port_no_vlan
 test_rss_tbl_cfg_handler_bad_tuple
+test_rss_check_thash_adjust_off_parses
