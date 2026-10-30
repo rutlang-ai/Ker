@@ -498,6 +498,39 @@ static void test_missing_lcore_mask_with_kni_rejected(void)
     CHECK(load_config(NULL) != 0);
 }
 
+/* A negative -p proc id narrows to zero in the retained range check but then
+ * indexes proc_lcore[proc_id] out of bounds; reject it before upstream load. */
+static void test_negative_proc_id_rejected(void)
+{
+    char program[] = "config-inspect";
+    char option[] = "-c";
+    char proc_type[] = "-t";
+    char primary[] = "primary";
+    char proc_id[] = "-p";
+    char bad_id[] = "-65536";
+    char *argv[] = { program, option, config_path, proc_type, primary,
+                     proc_id, bad_id, NULL };
+    int result;
+
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=3\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "primary_slim=1\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_config();
+
+    result = example_fstack_config_load(7, argv);
+    example_fstack_config_unload();
+    CHECK(result != 0);
+    CHECK(unlink(config_path) == 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -519,5 +552,6 @@ int main(void)
     test_range_upper_int_max_rejected();
     test_kni_owner_proc_id_rejected();
     test_missing_lcore_mask_with_kni_rejected();
+    test_negative_proc_id_rejected();
     return 0;
 }

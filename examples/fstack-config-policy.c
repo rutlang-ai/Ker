@@ -655,7 +655,8 @@ static int plan_valid(const struct config_plan *plan)
     return 1;
 }
 
-static const char *config_path_from_args(int argc, char *const argv[])
+static const char *config_path_from_args(int argc, char *const argv[],
+                                         int *args_invalid)
 {
     const char *path = "config.ini";
     int option_index = 0;
@@ -664,12 +665,28 @@ static const char *config_path_from_args(int argc, char *const argv[])
     /* Use the same option table as ff_parse_args so the preflight and the
      * retained parser select the same document, including getopt's `--`
      * handling, attached short-option values and unambiguous long options. */
+    *args_invalid = 0;
     optind = 1;
     while ((c = getopt_long(argc, argv, example_upstream_short_options,
                             example_upstream_long_options,
                             &option_index)) != -1) {
-        if (c == 'c')
+        switch (c) {
+        case 'c':
             path = optarg;
+            break;
+        case 'p': {
+            long proc_id = strtol(optarg, NULL, 10);
+
+            /* The retained parser narrows proc_id to uint16_t before its
+             * range check, so a negative or over-large value survives and
+             * later indexes proc_lcore[] out of bounds. */
+            if (proc_id < 0 || proc_id >= RTE_MAX_LCORE)
+                *args_invalid = 1;
+            break;
+        }
+        default:
+            break;
+        }
     }
     return path;
 }
@@ -697,8 +714,12 @@ void example_fstack_config_unload(void)
 }
 int example_fstack_config_load(int argc, char *const argv[])
 {
+    const char *path;
+    int args_invalid = 0;
+
     example_fstack_config_unload();
-    if (!config_plan_allows(config_path_from_args(argc, argv))) {
+    path = config_path_from_args(argc, argv, &args_invalid);
+    if (args_invalid || !config_plan_allows(path)) {
         fprintf(stderr, "configuration exceeds retained F-Stack parser "
                         "capacities; refusing to build an EAL argument plan\n");
         return -1;
