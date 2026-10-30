@@ -27,6 +27,20 @@ static void write_config(void)
     CHECK(fclose(file) == 0);
 }
 
+static void write_body_to(char *path, const char *content)
+{
+    int fd;
+    FILE *file;
+
+    memcpy(path, CONFIG_PATH_TEMPLATE, sizeof(CONFIG_PATH_TEMPLATE));
+    fd = mkstemp(path);
+    CHECK(fd >= 0);
+    file = fdopen(fd, "w");
+    CHECK(file != NULL);
+    CHECK(fputs(content, file) >= 0);
+    CHECK(fclose(file) == 0);
+}
+
 static int load_config(int *eal_argc)
 {
     char program[] = "config-inspect";
@@ -247,6 +261,95 @@ static void test_port_list_without_section_rejected(void)
     CHECK(load_config(NULL) != 0);
 }
 
+/* A negative vlan parent-port id indexes port_cfgs[-1] in the retained parser;
+ * reject it before upstream load. */
+static void test_negative_vlan_portid_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "vlan_filter=1\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n"
+             "[vlan1]\n"
+             "portid=-1\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
+/* Repeated vlan attachments to one port write past vlan_cfgs[DPDK_MAX_VLAN_FILTER];
+ * reject before upstream load. */
+static void test_vlan_attachment_overflow_rejected(void)
+{
+    size_t used;
+    int i;
+
+    used = (size_t)snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "vlan_filter=1\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n"
+             "[vlan1]\n");
+    CHECK(used < sizeof(body));
+    for (i = 0; i <= DPDK_MAX_VLAN_FILTER; i++) {
+        int written = snprintf(body + used, sizeof(body) - used, "portid=0\n");
+        CHECK(written > 0 && (size_t)written < sizeof(body) - used);
+        used += (size_t)written;
+    }
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
+/* The preflight must resolve the same document as ff_parse_args: getopt stops
+ * at `--`, so the trailing `-c safe.ini` must not hide the oversized unsafe.ini. */
+static void test_option_terminator_filename_rejected(void)
+{
+    char unsafe_path[sizeof(CONFIG_PATH_TEMPLATE)];
+    char safe_path[sizeof(CONFIG_PATH_TEMPLATE)];
+    char safe_body[1024];
+    char program[] = "config-inspect";
+    char option[] = "-c";
+    char terminator[] = "--";
+    char *argv[] = { program, option, unsafe_path, terminator, option, safe_path, NULL };
+    int result;
+
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0-%d\n", RTE_MAX_ETHPORTS);
+    write_body_to(unsafe_path, body);
+
+    snprintf(safe_body, sizeof(safe_body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_body_to(safe_path, safe_body);
+
+    result = example_fstack_config_load(6, argv);
+    example_fstack_config_unload();
+    CHECK(result != 0);
+    CHECK(unlink(unsafe_path) == 0);
+    CHECK(unlink(safe_path) == 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -259,5 +362,8 @@ int main(void)
     test_oversized_list_then_malformed_rejected();
     test_negative_port_section_rejected();
     test_port_list_without_section_rejected();
+    test_negative_vlan_portid_rejected();
+    test_vlan_attachment_overflow_rejected();
+    test_option_terminator_filename_rejected();
     return 0;
 }
