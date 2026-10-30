@@ -74,6 +74,8 @@ struct config_plan {
     size_t extra_max_len;
     int nb_vdev;
     int nb_bond;
+    int has_port_list;
+    int has_port_section;
     int invalid;
     struct vdev_plan vdev[RTE_MAX_ETHPORTS];
     struct bond_plan bond[RTE_MAX_ETHPORTS];
@@ -281,6 +283,8 @@ static int plan_handler(void *user, const char *section, const char *name,
             if (elements == 0 || elements > (size_t)RTE_MAX_ETHPORTS ||
                 !list_values_in_range(value, RTE_MAX_ETHPORTS))
                 plan->invalid = 1;
+            else
+                plan->has_port_list = 1;
         } else if (strcmp(name, "vlan_filter") == 0) {
             size_t elements = list_elements(value);
 
@@ -367,6 +371,15 @@ static int plan_handler(void *user, const char *section, const char *name,
     }
 
     if (strncmp(section, "port", 4) == 0) {
+        int id;
+
+        if (sscanf(section, "port%d", &id) != 1)
+            return 1;
+        if (id < 0) {
+            plan->invalid = 1;
+            return 1;
+        }
+        plan->has_port_section = 1;
         if (strcmp(name, "lcore_list") == 0) {
             size_t elements = list_elements(value);
 
@@ -388,6 +401,8 @@ static int plan_valid(const struct config_plan *plan)
     int i;
 
     if (plan->invalid)
+        return 0;
+    if (plan->has_port_list && !plan->has_port_section)
         return 0;
     if (plan->nb_vdev < 0 || plan->nb_vdev > RTE_MAX_ETHPORTS)
         return 0;

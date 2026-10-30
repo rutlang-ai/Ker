@@ -28,7 +28,10 @@ parser and rejects oversized plans before calling upstream load. The preflight
 counts every argument source against `DPDK_CONFIG_NUM`, checks each formatted
 argument against `DPDK_CONFIG_MAXLEN`, bounds port, lcore, slave-port and
 VLAN-filter list expansion, and rejects port ids outside `RTE_MAX_ETHPORTS`
-(since those ids index a fixed-size allocation). A parse error does not turn a
+(since those ids index a fixed-size allocation). It also rejects negative port
+section ids and a listed port that has no `[portN]` section, so the retained
+parser can neither index `port_cfgs[-1]` nor dereference the unallocated
+`port_cfgs` array in `ff_check_config`. A parse error does not turn a
 partially inspected oversized plan into permission to run the retained parser:
 an unsafe partial plan is still rejected. This is a caller-side policy: the
 pinned parser source and its manifest hash stay unchanged, and a document that
