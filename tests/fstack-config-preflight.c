@@ -182,6 +182,40 @@ static void test_empty_list_rejected(void)
     CHECK(load_config(NULL) != 0);
 }
 
+/* Port ids index a RTE_MAX_ETHPORTS-sized allocation, so a single out-of-range
+ * value must be rejected even though the element count stays in bounds. */
+static void test_port_id_value_range(void)
+{
+    char dpdk_lines[128];
+
+    snprintf(dpdk_lines, sizeof(dpdk_lines), "port_list=%d",
+             RTE_MAX_ETHPORTS - 1);
+    build_body(dpdk_lines, RTE_MAX_ETHPORTS);
+    write_config();
+    CHECK(load_config(NULL) == 0);
+
+    snprintf(dpdk_lines, sizeof(dpdk_lines), "port_list=%d", RTE_MAX_ETHPORTS);
+    build_body(dpdk_lines, 1);
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
+/* A malformed line after an oversized list must not turn the preflight's
+ * recorded invalid plan into permission to replay the list through the
+ * retained parser. */
+static void test_oversized_list_then_malformed_rejected(void)
+{
+    char dpdk_lines[128];
+
+    snprintf(dpdk_lines, sizeof(dpdk_lines), "port_list=0-%d",
+             RTE_MAX_ETHPORTS);
+    build_body(dpdk_lines, 1);
+    CHECK(strlen(body) + sizeof("[unclosed\n") < sizeof(body));
+    strcat(body, "[unclosed\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -190,5 +224,7 @@ int main(void)
     test_oversized_allow_entry_rejected();
     test_oversized_port_list_rejected();
     test_empty_list_rejected();
+    test_port_id_value_range();
+    test_oversized_list_then_malformed_rejected();
     return 0;
 }
