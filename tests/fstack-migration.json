@@ -1773,9 +1773,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source -t secondary -p0 must load successfully and store secondary/proc_id0. Ker rejects explicit secondary in effective main/aux EAL args before worker execution; real CLI primary-over-INI-secondary acceptance is the reverse override and does not qualify the source assertion. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_argv_t_override",
+          "provenance_case": "fstack-config-source-test_ff_load_config_argv_t_override"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_blank_and_multibit",

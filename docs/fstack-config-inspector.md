@@ -89,3 +89,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_port_cfg_handler_id_over_max_returns_one` | `fstack-config-source-test_port_cfg_handler_id_over_max_returns_one` |
 | `test_ff_load_config_freebsd_boot_multi_entries` | `fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries` |
 | `test_ff_load_config_inet6_fixture_ignored` | `fstack-config-source-test_ff_load_config_inet6_fixture_ignored` |
+| `test_ff_load_config_argv_t_override` | `fstack-config-source-test_ff_load_config_argv_t_override` |
