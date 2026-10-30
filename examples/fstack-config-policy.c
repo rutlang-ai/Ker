@@ -287,6 +287,36 @@ static int vlan_in_filter(const struct config_plan *plan, int vlanid)
     return 0;
 }
 
+/* Counts the enabled cores in a hex lcore mask. parse_lcore_mask turns each
+ * set bit into one entry of nb_procs, and port_cfg_handler copies nb_procs
+ * entries into the DPDK_MAX_LCORE-sized lcore_list array, so a mask enabling
+ * more than DPDK_MAX_LCORE cores would overflow that destination. */
+static size_t lcore_mask_popcount(const char *value)
+{
+    size_t count = 0;
+
+    while (*value == ' ' || *value == '\t')
+        value++;
+    if (value[0] == '0' && (value[1] == 'x' || value[1] == 'X'))
+        value += 2;
+    while (*value != '\0') {
+        char c = *value++;
+        unsigned val;
+
+        if (c >= '0' && c <= '9')
+            val = (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f')
+            val = (unsigned)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')
+            val = (unsigned)(c - 'A' + 10);
+        else
+            continue;
+        count += (size_t)((val & 1) + ((val >> 1) & 1) +
+                          ((val >> 2) & 1) + ((val >> 3) & 1));
+    }
+    return count;
+}
+
 /* Mirrors strtok_r(value, delimiters) used for allow/extra_eal_args. */
 static void scan_tokens(const char *value, char delimiter, size_t *count,
                         size_t *max_length)
@@ -330,6 +360,8 @@ static int plan_handler(void *user, const char *section, const char *name,
         } else if (strcmp(name, "lcore_mask") == 0) {
             plan->has_lcore_mask = 1;
             plan->lcore_mask_len = strlen(value);
+            if (lcore_mask_popcount(value) > (size_t)DPDK_MAX_LCORE)
+                plan->invalid = 1;
         } else if (strcmp(name, "base_virtaddr") == 0) {
             plan->has_base_virtaddr = 1;
             plan->base_virtaddr_len = strlen(value);
@@ -472,7 +504,11 @@ static int plan_handler(void *user, const char *section, const char *name,
         if (strcmp(name, "portid") == 0) {
             int portid = atoi(value);
 
-            if (portid < 0) {
+            if (!plan->has_port_section) {
+                /* port_cfgs is allocated by the first [portN] section; an
+                 * attachment before then dereferences a null pointer. */
+                plan->invalid = 1;
+            } else if (portid < 0) {
                 plan->invalid = 1;
             } else if (portid < RTE_MAX_ETHPORTS) {
                 if (plan->vlan_attachments[portid] >= DPDK_MAX_VLAN_FILTER)

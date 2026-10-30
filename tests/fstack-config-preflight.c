@@ -350,6 +350,54 @@ static void test_option_terminator_filename_rejected(void)
     CHECK(unlink(safe_path) == 0);
 }
 
+/* A vlan attachment that precedes the first [portN] section dereferences the
+ * still-unallocated port_cfgs array; reject it before upstream load. */
+static void test_vlan_attachment_before_port_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "vlan_filter=1\n"
+             "[vlan1]\n"
+             "portid=0\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
+/* A mask enabling more than DPDK_MAX_LCORE cores overflows the per-port
+ * lcore_list copy; reject it before upstream load. */
+static void test_lcore_mask_population_rejected(void)
+{
+    char mask[64];
+    int i;
+
+    mask[0] = '0';
+    mask[1] = 'x';
+    for (i = 0; i < 33; i++)
+        mask[2 + i] = 'f';
+    mask[35] = '\0';
+
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=%s\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n", mask);
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -365,5 +413,7 @@ int main(void)
     test_negative_vlan_portid_rejected();
     test_vlan_attachment_overflow_rejected();
     test_option_terminator_filename_rejected();
+    test_vlan_attachment_before_port_rejected();
+    test_lcore_mask_population_rejected();
     return 0;
 }
