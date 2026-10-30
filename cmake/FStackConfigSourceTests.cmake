@@ -40,3 +40,6 @@ set_tests_properties(fstack-config-source-test_ff_load_config_inet6_fixture_igno
 add_test(NAME fstack-config-source-test_ff_load_config_argv_t_override COMMAND ker-test_ff_load_config_argv_t_override)
 set_tests_properties(fstack-config-source-test_ff_load_config_argv_t_override PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips COMMAND ker-test_vlan_cfg_handler_portid_over_max_skips)
+set_tests_properties(fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
