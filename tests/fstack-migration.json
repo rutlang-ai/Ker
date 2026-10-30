@@ -1413,15 +1413,18 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_all_sections",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "All currently supported Ker schema families load together, preserving relative paths, typed scalars, sysctl settings and VLAN address lists.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-config-lifecycle",
           "provenance_case": "native-fstack-config-lifecycle"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_all_sections",
+          "provenance_case": "fstack-config-source-test_ff_load_config_all_sections"
         }
-      ],
-      "remaining": "F-Stack KNI, FreeBSD boot, bond, RSS, vdev, reload and other unsupported schema sections remain unimplemented; this is only the supported Ker subset."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
