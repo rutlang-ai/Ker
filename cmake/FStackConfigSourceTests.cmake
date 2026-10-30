@@ -58,3 +58,6 @@ set_tests_properties(fstack-config-source-test_ff_load_config_bond_vdev_repeat_k
 add_test(NAME fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error COMMAND ker-test_parse_lcore_mask_calloc_oom_returns_error)
 set_tests_properties(fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ff_load_config_thread_mode_enabled COMMAND ker-test_ff_load_config_thread_mode_enabled)
+set_tests_properties(fstack-config-source-test_ff_load_config_thread_mode_enabled PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
