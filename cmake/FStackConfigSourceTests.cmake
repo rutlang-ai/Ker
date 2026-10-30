@@ -31,3 +31,6 @@ set_tests_properties(fstack-config-source-test_ff_load_config_vdev_full PROPERTI
 add_test(NAME fstack-config-source-test_port_cfg_handler_id_over_max_returns_one COMMAND ker-test_port_cfg_handler_id_over_max_returns_one)
 set_tests_properties(fstack-config-source-test_port_cfg_handler_id_over_max_returns_one PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries COMMAND ker-test_ff_load_config_freebsd_boot_multi_entries)
+set_tests_properties(fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)

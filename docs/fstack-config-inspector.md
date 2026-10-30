@@ -87,3 +87,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_vlan_cfg_handler_id_not_in_filter_returns_one` | `fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one` |
 | `test_ff_load_config_vdev_full` | `fstack-config-source-test_ff_load_config_vdev_full` |
 | `test_port_cfg_handler_id_over_max_returns_one` | `fstack-config-source-test_port_cfg_handler_id_over_max_returns_one` |
+| `test_ff_load_config_freebsd_boot_multi_entries` | `fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries` |
