@@ -80,6 +80,8 @@ struct config_plan {
     int has_port_section;
     int has_owner_proc_id;
     int owner_proc_id;
+    int primary_slim;
+    int kni_enable;
     size_t vlan_filter_count;
     uint16_t vlan_filter_ids[DPDK_MAX_VLAN_FILTER];
     int vlan_attachments[RTE_MAX_ETHPORTS];
@@ -390,6 +392,8 @@ static int plan_handler(void *user, const char *section, const char *name,
             plan->nb_vdev = atoi(value);
         } else if (strcmp(name, "nb_bond") == 0) {
             plan->nb_bond = atoi(value);
+        } else if (strcmp(name, "primary_slim") == 0) {
+            plan->primary_slim = atoi(value) != 0;
         } else if (strcmp(name, "port_list") == 0) {
             size_t elements = list_elements(value);
 
@@ -537,6 +541,8 @@ static int plan_handler(void *user, const char *section, const char *name,
         if (strcmp(name, "owner_proc_id") == 0) {
             plan->has_owner_proc_id = 1;
             plan->owner_proc_id = atoi(value);
+        } else if (strcmp(name, "enable") == 0) {
+            plan->kni_enable = atoi(value) != 0;
         }
         return 1;
     }
@@ -554,6 +560,8 @@ static int plan_valid(const struct config_plan *plan)
         return 0;
     if (plan->has_owner_proc_id &&
         (plan->owner_proc_id < 0 || plan->owner_proc_id >= RTE_MAX_LCORE))
+        return 0;
+    if (!plan->has_lcore_mask && (plan->primary_slim || plan->kni_enable))
         return 0;
     if (plan->nb_vdev < 0 || plan->nb_vdev > RTE_MAX_ETHPORTS)
         return 0;
