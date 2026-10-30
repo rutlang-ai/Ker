@@ -477,6 +477,27 @@ static void test_kni_owner_proc_id_rejected(void)
     CHECK(load_config(NULL) != 0);
 }
 
+/* primary_slim or kni.enable dereference proc_lcore in ff_check_config, which
+ * is only allocated when lcore_mask is present; reject the missing allocation. */
+static void test_missing_lcore_mask_with_kni_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "primary_slim=1\n"
+             "[kni]\n"
+             "enable=1\n"
+             "method=accept\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -497,5 +518,6 @@ int main(void)
     test_range_endpoint_out_of_int_rejected();
     test_range_upper_int_max_rejected();
     test_kni_owner_proc_id_rejected();
+    test_missing_lcore_mask_with_kni_rejected();
     return 0;
 }
