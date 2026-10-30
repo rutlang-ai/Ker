@@ -13,3 +13,6 @@ set_tests_properties(fstack-config-source-test_ff_load_config_dpdk_full PROPERTI
 add_test(NAME fstack-config-source-test_ff_load_config_portlist_nonint COMMAND ker-test_ff_load_config_portlist_nonint)
 set_tests_properties(fstack-config-source-test_ff_load_config_portlist_nonint PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan COMMAND ker-test_rss_check_cfg_handler_no_port_no_vlan)
+set_tests_properties(fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)

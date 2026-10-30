@@ -68,7 +68,7 @@ range-validation mapping remains partial.
 
 | Source file | Exact case | Assertion and remaining boundary |
 | --- | --- | --- |
-| `test_ff_config.c` | `test_rss_check_cfg_handler_no_port_no_vlan` | Section appears before port configuration; source only asserts rss_check_cfgs stays NULL and discards the loader result. No assertion of successful load or of a particular error code. Ker has no equivalent ordered RSS-table loader contract. |
+| `test_ff_config.c` | `test_rss_check_cfg_handler_no_port_no_vlan` | Section appears before port configuration; the original source only asserts rss_check_cfgs stays NULL and discards the loader result. The caller-side source test now separately confirms the retained `rss_check.enable` callback ran and returned 0 with the NULL port list, while the production inspector still rejects the unsafe document before upstream loading. This proves the original missing-port guard only; Ker has no equivalent ordered RSS-table loader contract. |
 | `test_ff_config.c` | `test_rss_tbl_cfg_handler_bad_tuple` | Malformed three-token rule leaves nb_rss_tbl zero if the source RSS block exists; loader result is discarded. Generic unknown-section rejection does not prove rule-parser behavior. |
 | `test_ff_config.c` | `test_rss_check_thash_adjust_off_parses` | Valid source configuration succeeds with RSS enabled and thash_adjust=0. Ker has no corresponding source-port optimization toggle; rejecting the field is not this positive contract. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_no_cfg` | Source table setter declines with -1 when rss_check_cfgs is NULL. An absent Ker table API or rejected INI section is not a demonstrated setter guard. |
@@ -111,8 +111,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is290 scenario-adapted,8 partial,65 blocked,
-15 architecture-specific and55 harness-only out of433. All73 blocked/partial
+The current catalog is291 scenario-adapted,8 partial,64 blocked,
+15 architecture-specific and55 harness-only out of433. All72 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,
