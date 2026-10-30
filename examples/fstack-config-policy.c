@@ -19,6 +19,8 @@ extern int example_upstream_dpdk_argc;
 extern char *example_upstream_dpdk_argv[];
 extern int example_upstream_ini_parse(const char *filename,
                                       ini_handler handler, void *user);
+extern char *const example_upstream_short_options;
+extern struct option example_upstream_long_options[];
 /* The parser only reads this default string; it does not call ff_log(). */
 char example_upstream_log_filename_prefix[] = "./f-stack-";
 
@@ -76,6 +78,9 @@ struct config_plan {
     int nb_bond;
     int has_port_list;
     int has_port_section;
+    size_t vlan_filter_count;
+    uint16_t vlan_filter_ids[DPDK_MAX_VLAN_FILTER];
+    int vlan_attachments[RTE_MAX_ETHPORTS];
     int invalid;
     struct vdev_plan vdev[RTE_MAX_ETHPORTS];
     struct bond_plan bond[RTE_MAX_ETHPORTS];
@@ -220,6 +225,68 @@ static int list_values_in_range(const char *value, long max_value)
     return 1;
 }
 
+/* Mirrors __parse_config_list's expansion for vlan_filter, storing the ids so
+ * a later [vlanN] section can be checked for membership before its portid is
+ * counted. Caller has already bounded the element count. */
+static void store_vlan_filter(struct config_plan *plan, const char *value)
+{
+    size_t length = strlen(value);
+    size_t position = 0;
+    size_t count = 0;
+    unsigned tokens = 0;
+
+    for (;;) {
+        size_t start = position;
+        size_t token_length;
+        char token[4096];
+        char *middle;
+
+        while (position < length && value[position] != ',')
+            position++;
+        token_length = position - start;
+        if (++tokens > 128 || token_length == 0)
+            break;
+        if (token_length >= sizeof(token))
+            break;
+        memcpy(token, value + start, token_length);
+        token[token_length] = '\0';
+
+        middle = strchr(token, '-');
+        if (middle == NULL) {
+            if (count < (size_t)DPDK_MAX_VLAN_FILTER)
+                plan->vlan_filter_ids[count++] =
+                    (uint16_t)strtol(trim_spaces(token), NULL, 10);
+        } else {
+            long lower;
+            long upper;
+            long v;
+
+            *middle = '\0';
+            lower = strtol(trim_spaces(token), NULL, 10);
+            upper = strtol(trim_spaces(middle + 1), NULL, 10);
+            for (v = lower; v <= upper && count < (size_t)DPDK_MAX_VLAN_FILTER; ++v)
+                plan->vlan_filter_ids[count++] = (uint16_t)v;
+        }
+        if (position >= length)
+            break;
+        position++;
+        if (position >= length)
+            break;
+    }
+    plan->vlan_filter_count = count;
+}
+
+static int vlan_in_filter(const struct config_plan *plan, int vlanid)
+{
+    size_t i;
+
+    for (i = 0; i < plan->vlan_filter_count; i++) {
+        if (plan->vlan_filter_ids[i] == (uint16_t)vlanid)
+            return 1;
+    }
+    return 0;
+}
+
 /* Mirrors strtok_r(value, delimiters) used for allow/extra_eal_args. */
 static void scan_tokens(const char *value, char delimiter, size_t *count,
                         size_t *max_length)
@@ -290,6 +357,8 @@ static int plan_handler(void *user, const char *section, const char *name,
 
             if (elements == 0 || elements > (size_t)DPDK_MAX_VLAN_FILTER)
                 plan->invalid = 1;
+            else
+                store_vlan_filter(plan, value);
         }
         return 1;
     }
@@ -390,6 +459,27 @@ static int plan_handler(void *user, const char *section, const char *name,
 
             if (elements == 0 || elements > (size_t)RTE_MAX_ETHPORTS)
                 plan->invalid = 1;
+        }
+    }
+
+    if (strncmp(section, "vlan", 4) == 0) {
+        int vlanid;
+
+        if (sscanf(section, "vlan%d", &vlanid) != 1)
+            return 1;
+        if (!vlan_in_filter(plan, vlanid))
+            return 1;
+        if (strcmp(name, "portid") == 0) {
+            int portid = atoi(value);
+
+            if (portid < 0) {
+                plan->invalid = 1;
+            } else if (portid < RTE_MAX_ETHPORTS) {
+                if (plan->vlan_attachments[portid] >= DPDK_MAX_VLAN_FILTER)
+                    plan->invalid = 1;
+                else
+                    plan->vlan_attachments[portid]++;
+            }
         }
     }
     return 1;
@@ -499,19 +589,18 @@ static int plan_valid(const struct config_plan *plan)
 static const char *config_path_from_args(int argc, char *const argv[])
 {
     const char *path = "config.ini";
-    int i;
+    int option_index = 0;
+    int c;
 
-    for (i = 1; i < argc; i++) {
-        const char *argument = argv[i];
-
-        if (strcmp(argument, "-c") == 0 || strcmp(argument, "--conf") == 0) {
-            if (i + 1 < argc)
-                path = argv[++i];
-        } else if (strncmp(argument, "--conf=", 7) == 0) {
-            path = argument + 7;
-        } else if (strncmp(argument, "-c", 2) == 0 && argument[2] != '\0') {
-            path = argument + 2;
-        }
+    /* Use the same option table as ff_parse_args so the preflight and the
+     * retained parser select the same document, including getopt's `--`
+     * handling, attached short-option values and unambiguous long options. */
+    optind = 1;
+    while ((c = getopt_long(argc, argv, example_upstream_short_options,
+                            example_upstream_long_options,
+                            &option_index)) != -1) {
+        if (c == 'c')
+            path = optarg;
     }
     return path;
 }

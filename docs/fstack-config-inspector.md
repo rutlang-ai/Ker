@@ -31,7 +31,12 @@ VLAN-filter list expansion, and rejects port ids outside `RTE_MAX_ETHPORTS`
 (since those ids index a fixed-size allocation). It also rejects negative port
 section ids and a listed port that has no `[portN]` section, so the retained
 parser can neither index `port_cfgs[-1]` nor dereference the unallocated
-`port_cfgs` array in `ff_check_config`. A parse error does not turn a
+`port_cfgs` array in `ff_check_config`. VLAN sections are inspected too:
+negative parent-port ids and repeated attachments beyond
+`DPDK_MAX_VLAN_FILTER` per port are rejected, and the preflight resolves the
+configuration filename with the same option table as `ff_parse_args` so `--`
+and other `getopt` behavior cannot make the two parsers select different
+documents. A parse error does not turn a
 partially inspected oversized plan into permission to run the retained parser:
 an unsafe partial plan is still rejected. This is a caller-side policy: the
 pinned parser source and its manifest hash stay unchanged, and a document that
