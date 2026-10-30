@@ -91,3 +91,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_ff_load_config_inet6_fixture_ignored` | `fstack-config-source-test_ff_load_config_inet6_fixture_ignored` |
 | `test_ff_load_config_argv_t_override` | `fstack-config-source-test_ff_load_config_argv_t_override` |
 | `test_vlan_cfg_handler_portid_over_max_skips` | `fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips` |
+| `test_parse_lcore_mask_proc_id_in_range` | `fstack-config-source-test_parse_lcore_mask_proc_id_in_range` |
