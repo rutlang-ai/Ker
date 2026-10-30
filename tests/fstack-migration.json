@@ -1217,8 +1217,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker minimal typed network/DPDK configuration loads with verified defaults and normalized lcore selection. Explicit promiscuous mode reaches a real PMD with readback, RX capture and original-Linux MAC/socket admission checks; omission preserves PMD state. The idle_sleep subset configures actual bounded worker ppoll waits, with timeout counters, native host TCP/UDP traffic and control shutdown validation; the existing Ker 1ms default is preserved. The channel subset translates into original DPDK EAL -n and verifies actual EAL readback alongside real native TCP/UDP traffic. The numa_on subset selects lcore-local or socket0 pool/queue allocation, with real worker policy and pool metadata checks plus native host TCP/UDP traffic. The pkt_tx_delay subset adds bounded Ethernet TX batching with first-packet deadlines, retained PMD suffix ownership, deterministic partial-acceptance tests, real timer flushes and queued stop/EOF delivery.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-config-lifecycle",
@@ -1243,9 +1243,12 @@
         {
           "ctest": "native-fstack-tx-delay",
           "provenance_case": "native-fstack-tx-delay"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_valid_minimal_ini",
+          "provenance_case": "fstack-config-source-test_ff_load_config_valid_minimal_ini"
         }
-      ],
-      "remaining": "F-Stack global configuration ABI/layout, defaults and periodic-TSC/multiprocess TX scheduling equivalence are not implemented; physical multi-node NUMA and NIC performance are not qualified."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_no_dpdk_section",

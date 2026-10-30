@@ -1,0 +1,1 @@
+test_ff_load_config_valid_minimal_ini
