@@ -161,6 +161,63 @@ static size_t list_elements(const char *value)
     return total;
 }
 
+/* Mirrors __parse_config_list's value expansion and rejects any element
+ * outside [0, max_value). Port ids index a RTE_MAX_ETHPORTS-sized allocation
+ * in the retained parser, so their values must stay in range as well as their
+ * count. */
+static int list_values_in_range(const char *value, long max_value)
+{
+    size_t length = strlen(value);
+    size_t position = 0;
+    unsigned tokens = 0;
+
+    for (;;) {
+        size_t start = position;
+        size_t token_length;
+        char token[4096];
+        char *middle;
+
+        while (position < length && value[position] != ',')
+            position++;
+        token_length = position - start;
+        if (++tokens > 128 || token_length == 0)
+            return 0;
+        if (token_length >= sizeof(token))
+            return 0;
+        memcpy(token, value + start, token_length);
+        token[token_length] = '\0';
+
+        middle = strchr(token, '-');
+        if (middle == NULL) {
+            char *end;
+            long v = strtol(trim_spaces(token), &end, 10);
+
+            if (*end != '\0' || v < 0 || v >= max_value)
+                return 0;
+        } else {
+            char *end;
+            long lower;
+            long upper;
+
+            *middle = '\0';
+            lower = strtol(trim_spaces(token), &end, 10);
+            if (*end != '\0')
+                return 0;
+            upper = strtol(trim_spaces(middle + 1), &end, 10);
+            if (*end != '\0')
+                return 0;
+            if (lower < 0 || upper >= max_value)
+                return 0;
+        }
+        if (position >= length)
+            break;
+        position++;
+        if (position >= length)
+            break;
+    }
+    return 1;
+}
+
 /* Mirrors strtok_r(value, delimiters) used for allow/extra_eal_args. */
 static void scan_tokens(const char *value, char delimiter, size_t *count,
                         size_t *max_length)
@@ -221,7 +278,8 @@ static int plan_handler(void *user, const char *section, const char *name,
         } else if (strcmp(name, "port_list") == 0) {
             size_t elements = list_elements(value);
 
-            if (elements == 0 || elements > (size_t)RTE_MAX_ETHPORTS)
+            if (elements == 0 || elements > (size_t)RTE_MAX_ETHPORTS ||
+                !list_values_in_range(value, RTE_MAX_ETHPORTS))
                 plan->invalid = 1;
         } else if (strcmp(name, "vlan_filter") == 0) {
             size_t elements = list_elements(value);
@@ -446,12 +504,14 @@ static const char *config_path_from_args(int argc, char *const argv[])
 static int config_plan_allows(const char *path)
 {
     struct config_plan plan;
-    int result;
 
     memset(&plan, 0, sizeof(plan));
-    result = example_upstream_ini_parse(path, plan_handler, &plan);
-    if (result != 0)
-        return 1; /* Let the retained parser report open/parse failures. */
+    /* A parse error must not bypass a partial plan that already reached an
+     * oversized or out-of-range list: the retained parser would replay that
+     * list and overflow before reporting the same error. plan_valid() accepts
+     * an absent document or a within-capacity partial plan, so the retained
+     * parser still reports its own open/parse failures. */
+    example_upstream_ini_parse(path, plan_handler, &plan);
     return plan_valid(&plan);
 }
 
