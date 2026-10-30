@@ -398,6 +398,25 @@ static void test_lcore_mask_population_rejected(void)
     CHECK(load_config(NULL) != 0);
 }
 
+/* Range endpoints that exceed int range narrow in the retained int loop,
+ * diverging from the preflight count; reject them before counting. */
+static void test_range_endpoint_out_of_int_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "vlan_filter=4294967296-4294967296\n"
+             "[port0]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -415,5 +434,6 @@ int main(void)
     test_option_terminator_filename_rejected();
     test_vlan_attachment_before_port_rejected();
     test_lcore_mask_population_rejected();
+    test_range_endpoint_out_of_int_rejected();
     return 0;
 }

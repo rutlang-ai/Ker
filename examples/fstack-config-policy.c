@@ -115,6 +115,15 @@ static char *trim_spaces(char *text)
     return text;
 }
 
+/* The retained __parse_config_list runs its range expansion with an int loop
+ * variable, so endpoints outside int range make the retained writes diverge
+ * from this preflight's count. */
+static int range_endpoints_fit_int(long lower, long upper)
+{
+    return lower >= INT_MIN && lower <= INT_MAX &&
+           upper >= INT_MIN && upper <= INT_MAX;
+}
+
 /* Mirrors rte_strsplit(..., ',') plus __parse_config_list's range expansion. */
 static size_t list_elements(const char *value)
 {
@@ -153,6 +162,8 @@ static size_t list_elements(const char *value)
                 return SIZE_MAX;
             upper = strtol(trim_spaces(middle + 1), &end, 10);
             if (*end != '\0')
+                return SIZE_MAX;
+            if (!range_endpoints_fit_int(lower, upper))
                 return SIZE_MAX;
             if (upper >= lower)
                 total += (size_t)(upper - lower) + 1;
