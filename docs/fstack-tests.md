@@ -781,3 +781,5 @@ epoch5碰撞仍存活的epoch2槽，拒绝使用另一个可回收槽；原owner
 与真实基线commit `7f46febca` 对照，目录从218→268 adapted、127→83 blocked、
 18→12 partial；额外回归、skip、重复安装运行及原已完成案例均未计入。
 [50项完整差分清单](../tests/fstack-unfinished-completed.json)记录每项原始ID、基线与测试。
+
+| Original config unload pointer cleanup / idempotence | `fstack-config-original-unload` | [Caller-only parser scope](fstack-config-inspector.md) |

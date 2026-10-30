@@ -1541,9 +1541,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack ff_load_config/INI schema and FreeBSD/DPDK startup configuration are not Ker APIs; no equivalent loader or fault-injection boundary exists.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original pointer-cleanup/idempotence contract through unchanged namespaced parser in caller-side configuration inspector; 100 load/unload cycles under ASan/UBSan, real CLI consumer, and no-op cleanup negative control. Does not configure Ker networking or qualify legacy runtime settings.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-original-unload",
+          "provenance_case": "fstack-config-original-unload"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_parse_lcore_mask_uppercase_0X_succeeds",
