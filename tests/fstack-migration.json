@@ -1649,8 +1649,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "All six source vdev fields are parsed with final-value precedence and map to original DPDK net_virtio_user arguments. Actual independent vhost/TAP IPv4/IPv6 traffic verifies the supported socket-backend subset, MAC, two-pair capacity,512 descriptors and cleanup. The pinned PMD explicitly rejects the source iface+Unix-socket tuple; no field is silently discarded. The supported kernel-backend path=/dev/vhost-net with explicit iface now has actual IPv4/IPv6 TCP/UDP checksum/TSO, queue geometry and cleanup evidence.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-typed-vdev-config",
@@ -1663,9 +1663,12 @@
         {
           "ctest": "native-fstack-virtio-kernel-offloads",
           "provenance_case": "native-fstack-virtio-kernel-config"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_vdev_full",
+          "provenance_case": "fstack-config-source-test_ff_load_config_vdev_full"
         }
-      ],
-      "remaining": "The literal source fixture combines iface with a Unix socket path, which pinned DPDK explicitly rejects; the supported named vhost-kernel backend is separately qualified. Full F-Stack config structs, combined bond/vdev topology and C allocation-failure/strdup/free/valgrind ABI remain unqualified under issue224. Active kernel-backend queue pairs are not RSS evidence."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_bond_full",
