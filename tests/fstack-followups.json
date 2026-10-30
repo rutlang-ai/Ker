@@ -313,7 +313,7 @@
       "id": "process-modes",
       "title": "Decide F-Stack primary/secondary and thread-mode compatibility",
       "disposition": "contract-review",
-      "reason": "Explicit main/aux secondary EAL requests now fail preflight before worker execution; a live same-prefix primary survives and completes real native TCP/UDP. Actual isolated auto-primary and CLI primary overriding INI secondary are qualified extensions. The six pinned cases instead require secondary acceptance/proc_id tables and valid thread_mode multi-stack/global process-count semantics, which remain absent. Four local RX pollers or independent primaries are not those contracts. test_ff_load_config_argv_t_override is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_parse_lcore_mask_proc_id_in_range is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
+      "reason": "Explicit main/aux secondary EAL requests now fail preflight before worker execution; a live same-prefix primary survives and completes real native TCP/UDP. Actual isolated auto-primary and CLI primary overriding INI secondary are qualified extensions. The six pinned cases instead require secondary acceptance/proc_id tables and valid thread_mode multi-stack/global process-count semantics, which remain absent. Four local RX pollers or independent primaries are not those contracts. test_ff_load_config_argv_t_override is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_parse_lcore_mask_proc_id_in_range is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_parse_lcore_mask_proc_id_over_count_fails is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
       "evidence": [
         "tools/ker-run.py",
         "src/posix/io-worker.c",
@@ -329,7 +329,6 @@
         "Do not relabel multiple independent native instances as F-Stack secondary processes."
       ],
       "cases": [
-        "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",
         "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",
         "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
         "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict"
