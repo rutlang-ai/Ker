@@ -216,6 +216,37 @@ static void test_oversized_list_then_malformed_rejected(void)
     CHECK(load_config(NULL) != 0);
 }
 
+/* A negative port section id indexes port_cfgs[-1] in the retained parser;
+ * reject it before upstream load. */
+static void test_negative_port_section_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n"
+             "[port-1]\n"
+             "addr=192.168.0.10\n"
+             "netmask=255.255.255.0\n"
+             "broadcast=192.168.0.255\n"
+             "gateway=192.168.0.1\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
+/* A listed port with no [portN] section leaves port_cfgs NULL, so ff_check_config
+ * dereferences a null pointer; reject it before upstream load. */
+static void test_port_list_without_section_rejected(void)
+{
+    snprintf(body, sizeof(body),
+             "[dpdk]\n"
+             "lcore_mask=1\n"
+             "channel=4\n"
+             "port_list=0\n");
+    write_config();
+    CHECK(load_config(NULL) != 0);
+}
+
 int main(void)
 {
     test_minimal_document_loads();
@@ -226,5 +257,7 @@ int main(void)
     test_empty_list_rejected();
     test_port_id_value_range();
     test_oversized_list_then_malformed_rejected();
+    test_negative_port_section_rejected();
+    test_port_list_without_section_rejected();
     return 0;
 }
