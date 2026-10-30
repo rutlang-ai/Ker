@@ -2237,9 +2237,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source absent thread_mode stores0threads and derives4processes from mask0xf. Ker does not launch one native application/kernel stack per mask bit; enabling multiple EAL cores or independent primary instances does not qualify that default multi-process contract. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_thread_mode_default_off",
+          "provenance_case": "fstack-config-source-test_ff_load_config_thread_mode_default_off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict",
