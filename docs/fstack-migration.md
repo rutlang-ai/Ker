@@ -2147,4 +2147,4 @@ Complete original assertions and fixtures: `fstack-config-source-test_ff_load_co
 
 ### Original parser case: `test_rss_check_cfg_handler_no_port_no_vlan`
 
-Complete original assertions and fixtures: `fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan`. The catalog becomes291/8/64. This caller-side document inspection does not apply legacy settings to Ker.
+The unchanged source assertion and fixture run through `fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan`. A target-only postcheck first verifies that the production inspector rejects the unsafe plan with its configuration still reset, then invokes the retained upstream loader and records the real `rss_check.enable` INI callback returning 0. This makes the NULL assertion evidence of the original handler's missing-port guard rather than reset state. The catalog becomes291/8/64; no legacy settings are applied to Ker.

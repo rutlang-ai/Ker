@@ -1538,7 +1538,7 @@
       "id": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
       "kind": "cmocka",
       "status": "scenario-adapted",
-      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "reason": "Retains the original fixture and assertion. A target-only postcheck verifies the production inspector rejects the unsafe plan before initializing upstream state, then invokes the namespaced upstream loader and wraps only its INI callback to prove rss_check.enable reached the original handler and returned 0 with rss_check_cfgs still NULL. Production preflight remains unchanged; this qualifies the original handler guard only, not Ker runtime configuration.",
       "ker_tests": [
         {
           "ctest": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan",
