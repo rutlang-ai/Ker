@@ -1429,8 +1429,8 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Two actual DPDK/EAL workers now attach independent devices to the same original Linux instance. Both interfaces have their own IPv4/IPv6 primary and3/2 VIPs, native TCP source bindings, per-interface MTU controls and zero-buffer/process cleanup. Asymmetric UDP leaves the second interface with the first address and returns through the first, proving a shared kernel socket/route namespace. Bond configuration fields are separately covered by original mode4 LACP acceptance. Active RX/TX queue pairs are now configured through the original ethdev API, all RX queues are polled fairly and actual queue1 traffic is verified with an independent vhost/TAP backend. RSS control-plane types/key/RETA are verified through the original API on a null PMD; this is not hardware or flow landing evidence.",
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
       "ker_tests": [
         {
           "ctest": "native-fstack-multiport",
@@ -1463,9 +1463,12 @@
         {
           "ctest": "native-fstack-rss-control",
           "provenance_case": "native-fstack-rss-control"
+        },
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_dpdk_full",
+          "provenance_case": "fstack-config-source-test_ff_load_config_dpdk_full"
         }
-      ],
-      "remaining": "Global4/per-port2 lcore scheduling, symmetric RSS/actual hashed flow landing, thash source-port adjustment, per-port80/443 RSS table contracts and exact F-Stack config structures remain unqualified. The new single-thread queue poller and independent backend queue1 injection do not implement those contracts. Native Linux still exclusively chooses automatic socket ports. RSS key/RETA control-plane readback alone does not complete any source RSS landing or thash case; issues224/220 remain open."
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_lcore_mask_no_bits",
