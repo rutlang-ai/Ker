@@ -36,8 +36,9 @@ negative parent-port ids and repeated attachments beyond
 `DPDK_MAX_VLAN_FILTER` per port are rejected, attachments that precede the
 first `[portN]` section are rejected (that section allocates `port_cfgs`), a
 lcore mask enabling more than `DPDK_MAX_LCORE` cores is rejected, list range
-endpoints that cannot fit the retained parser's `int` loop variable are
-rejected, and the
+endpoints that cannot fit the retained parser's `int` loop variable (or whose
+upper endpoint is `INT_MAX`) are rejected, a KNI `owner_proc_id` outside
+`[0, RTE_MAX_LCORE)` is rejected, and the
 preflight resolves the
 configuration filename with the same option table as `ff_parse_args` so `--`
 and other `getopt` behavior cannot make the two parsers select different

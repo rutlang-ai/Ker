@@ -78,6 +78,8 @@ struct config_plan {
     int nb_bond;
     int has_port_list;
     int has_port_section;
+    int has_owner_proc_id;
+    int owner_proc_id;
     size_t vlan_filter_count;
     uint16_t vlan_filter_ids[DPDK_MAX_VLAN_FILTER];
     int vlan_attachments[RTE_MAX_ETHPORTS];
@@ -116,12 +118,13 @@ static char *trim_spaces(char *text)
 }
 
 /* The retained __parse_config_list runs its range expansion with an int loop
- * variable, so endpoints outside int range make the retained writes diverge
- * from this preflight's count. */
+ * variable and executes ++j after the last element, so endpoints outside int
+ * range, or an upper endpoint of INT_MAX whose ++j overflows, make the
+ * retained writes diverge from this preflight's count. */
 static int range_endpoints_fit_int(long lower, long upper)
 {
     return lower >= INT_MIN && lower <= INT_MAX &&
-           upper >= INT_MIN && upper <= INT_MAX;
+           upper >= INT_MIN && upper < INT_MAX;
 }
 
 /* Mirrors rte_strsplit(..., ',') plus __parse_config_list's range expansion. */
@@ -529,6 +532,14 @@ static int plan_handler(void *user, const char *section, const char *name,
             }
         }
     }
+
+    if (strcmp(section, "kni") == 0) {
+        if (strcmp(name, "owner_proc_id") == 0) {
+            plan->has_owner_proc_id = 1;
+            plan->owner_proc_id = atoi(value);
+        }
+        return 1;
+    }
     return 1;
 }
 
@@ -540,6 +551,9 @@ static int plan_valid(const struct config_plan *plan)
     if (plan->invalid)
         return 0;
     if (plan->has_port_list && !plan->has_port_section)
+        return 0;
+    if (plan->has_owner_proc_id &&
+        (plan->owner_proc_id < 0 || plan->owner_proc_id >= RTE_MAX_LCORE))
         return 0;
     if (plan->nb_vdev < 0 || plan->nb_vdev > RTE_MAX_ETHPORTS)
         return 0;
