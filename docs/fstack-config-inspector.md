@@ -100,3 +100,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_ff_load_config_thread_mode_default_off` | `fstack-config-source-test_ff_load_config_thread_mode_default_off` |
 | `test_ff_load_config_thread_mode_secondary_conflict` | `fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict` |
 | `test_ff_load_config_tcp_ecn_default_off` | `fstack-config-source-test_ff_load_config_tcp_ecn_default_off` |
+| `test_graceful_reload_default_off` | `fstack-config-source-test_graceful_reload_default_off` |
