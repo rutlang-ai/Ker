@@ -3011,8 +3011,8 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_inverted_range",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Ker rejects inverted automatic local-port ranges before launch. Valid ranges reach original Linux ip_local_port_range and are verified through actual TCP/UDP IPv4/IPv6 allocation, exhaustion/reuse and independent DPDK traffic.",
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
       "ker_tests": [
         {
           "ctest": "native-fstack-launcher-config",
@@ -3021,9 +3021,12 @@
         {
           "ctest": "native-fstack-ephemeral-ports",
           "provenance_case": "native-fstack-ephemeral-ports"
+        },
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range",
+          "provenance_case": "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range"
         }
-      ],
-      "remaining": "Source enabled-table setter rejects first>last. Existing original-Linux ephemeral-range validation is partial evidence only; no Ker RSS candidate table update or queue ownership contract is implemented. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed."
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",
