@@ -35,6 +35,18 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-host-readiness-echo>"
             --pmd-root "${ker_caller_clock_pmd_root}" --profile consumer --poll-hz 100)
+    add_executable(ker-host-readiness-high-rate-test examples/host-readiness-echo.c
+        tests/posix/caller-clock-high-rate-poll.c)
+    target_include_directories(ker-host-readiness-high-rate-test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_link_libraries(ker-host-readiness-high-rate-test PRIVATE ker-example-host-readiness
+        ker-example-host-mapping ker-example-caller-clock ${CMAKE_DL_LIBS})
+    target_compile_options(ker-host-readiness-high-rate-test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(ker-host-readiness-high-rate-test PRIVATE -Wl,--wrap=example_host_kqueue_poll)
+    add_test(NAME native-fstack-caller-clock-consumer-high-rate-delayed-peer
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-host-readiness.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-host-readiness-high-rate-test>"
+            --pmd-root "${ker_caller_clock_pmd_root}" --profile consumer-high-rate --poll-hz 1000000)
     add_test(NAME native-fstack-caller-clock-invalid-zero
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-host-readiness.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py" --library "$<TARGET_FILE:ker-posix>"
@@ -46,7 +58,8 @@ if(BUILD_TESTING)
             --worker "$<TARGET_FILE:ker-io-worker>" --app "$<TARGET_FILE:ker-host-readiness-echo>"
             --pmd-root "${ker_caller_clock_pmd_root}" --profile clock-invalid --poll-hz 1000001)
     set_tests_properties(native-fstack-caller-clock-source native-fstack-caller-clock-round-down
-        native-fstack-caller-clock-consumer-100hz native-fstack-caller-clock-invalid-zero
+        native-fstack-caller-clock-consumer-100hz native-fstack-caller-clock-consumer-high-rate-delayed-peer
+        native-fstack-caller-clock-invalid-zero
         native-fstack-caller-clock-invalid-high PROPERTIES TIMEOUT 60 LABELS "native-tcp;fstack;fstack-newly-adapted")
     add_test(NAME fstack-caller-clock-original-import
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/fstack-caller-clock-import.py")

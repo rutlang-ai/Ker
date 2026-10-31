@@ -63,7 +63,7 @@ int main(int argc, char **argv)
     struct timespec pause = {.tv_sec = (time_t)(interval_ns / UINT64_C(1000000000)),
                              .tv_nsec = (long)(interval_ns % UINT64_C(1000000000))};
     uint64_t waited_ns = 0, waits = 0, started = now_ns();
-    for (unsigned tries = 0; tries < 10000 && !(got_udp && got_tcp); ++tries) {
+    while (!(got_udp && got_tcp)) {
         REQUIRE(now_ns() - started < UINT64_C(10000000000));
         uint64_t before = now_ns();
         struct timespec remaining = pause;

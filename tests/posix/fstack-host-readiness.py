@@ -26,7 +26,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--profile', choices=('source', 'consumer', 'fault', 'mmap-fatal', 'mmap-return', 'clock-source', 'clock-round-down', 'clock-invalid'), required=True)
+    parser.add_argument('--profile', choices=('source', 'consumer', 'consumer-high-rate', 'fault', 'mmap-fatal', 'mmap-return', 'clock-source', 'clock-round-down', 'clock-invalid'), required=True)
     parser.add_argument('--poll-hz', type=int, default=1000)
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--install-example-from', type=Path)
@@ -41,7 +41,7 @@ def main():
             command += ['--install-example-from', str(args.install_example_from.resolve()),
                         '--install-bindir', args.install_bindir]
         return subprocess.run(command).returncode
-    wire = args.profile == 'consumer'
+    wire = args.profile in ('consumer', 'consumer-high-rate')
     driver = 'net_tap' if wire else 'net_null'
     modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_' + driver + '.so'))
     require(len(modules) == 1, 'one original ' + driver + ' PMD is required; no skip')
@@ -85,12 +85,26 @@ def main():
             started = time.monotonic_ns()
             app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log,
                                    env=environment, text=True)
+            high_rate_marker_seen = False
             try:
                 if wire:
                     with selectors.DefaultSelector() as selector:
                         selector.register(app.stdout, selectors.EVENT_READ)
                         require(selector.select(20), 'caller readiness startup timeout')
                     require(app.stdout.readline().startswith('READY '), 'caller not ready')
+                    if args.profile == 'consumer-high-rate':
+                        deadline = time.monotonic() + 10
+                        with selectors.DefaultSelector() as selector:
+                            selector.register(app.stdout, selectors.EVENT_READ)
+                            while True:
+                                remaining = deadline - time.monotonic()
+                                require(remaining > 0 and selector.select(remaining),
+                                        'caller did not reach poll 10001 before its elapsed-time deadline')
+                                marker = app.stdout.readline()
+                                require(marker, 'caller exited before poll 10001')
+                                if marker.strip() == 'HIGH_RATE_POLL_10001':
+                                    high_rate_marker_seen = True
+                                    break
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
                         udp.settimeout(8)
                         udp.sendto(PAYLOAD, ('198.18.0.2', 29912))
@@ -172,6 +186,9 @@ def main():
                     require(interval == expected and waits > 0 and waited >= waits * interval
                             and time.monotonic_ns() - started >= waited,
                             'caller did not consume the original interval in real waits: ' + output)
+                    if args.profile == 'consumer-high-rate':
+                        require(waits > 10000 and high_rate_marker_seen,
+                                'delayed peers did not exercise more than 10000 real caller waits: ' + output)
                     require(output.count('HOST_MAPPING_BUFFER_RECLAIMED') == 1,
                             'real caller mapped network buffer was not reclaimed')
                     require(native['udp_in_datagrams'] == native['udp_out_datagrams'] == 1,
