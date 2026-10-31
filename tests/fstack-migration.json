@@ -780,15 +780,30 @@
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Related Ker tests exist, but the complete upstream contract is not covered.",
+      "status": "scenario-adapted",
+      "reason": "The complete original source test executes the unchanged ff_dpdk_if_send body in a caller-only owned-frame bridge. Its failure flag selects a real127-byte original DPDK input for the original128-byte request; rte_pktmbuf_read fails and the original copy-error branch releases its output head and consumes the input. Five original runs plus a later third-segment failure restore all511 unique pool objects without PMD output; the same sender then successfully transmits/receives exact recovery bytes. A false-copy-success mutation fails the original return assertion. Independent normal/installed consumers perform exact64/4096/9014-byte original net_ring exchanges. This qualifies actual copy failure/disposal through a DPDK memory adapter, not FreeBSD m_copydata ABI, Linux protocol behavior or hardware offloads. See docs/fstack-owned-send.md.",
       "ker_tests": [
         {
           "ctest": "fstack-export-exhaustion-retry",
           "provenance_case": "export-exhaustion-retry"
+        },
+        {
+          "ctest": "fstack-owned-send-copy-failure",
+          "provenance_case": "fstack-owned-send-copy-failure"
+        },
+        {
+          "ctest": "fstack-owned-send-false-copy-control",
+          "provenance_case": "fstack-owned-send-copy-failure"
+        },
+        {
+          "ctest": "fstack-owned-send-consumer",
+          "provenance_case": "fstack-owned-send-copy-failure"
+        },
+        {
+          "ctest": "fstack-owned-send-installed-consumer",
+          "provenance_case": "fstack-owned-send-copy-failure"
         }
-      ],
-      "remaining": "Pool exhaustion/retry tests do not inject a failure in the upstream FreeBSD m_copydata path."
+      ]
     },
     {
       "id": "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_raw_packet_send_basic",
@@ -3285,9 +3300,26 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The source invalid-context guard consumes an owned FreeBSD mbuf through ff_mbuf_free. Ker original-Linux netdev callbacks borrow caller iovecs; they must leave those bytes and vectors intact even on error. No owned FreeBSD mbuf enters this boundary. NULL-context/borrowed-vector rejection is tested, but it cannot prove the source owned-mbuf disposal contract. Preserve this incompatible ownership boundary under issue223 rather than invent an unused mbuf clone or free caller storage.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete original source assertion now reaches the unchanged ff_dpdk_if_send NULL-context guard through a caller-only bridge owning a real original DPDK mbuf. The source stack sentinel is only a harness token; a real owned packet is supplied without dereferencing/freeing the sentinel. Five runs require -1, exact input disposal, no copy/TX/RX, pool511 restoration and unique-object exhaustion/recovery. Suppressing the actual input release fails conservation. The same sender subsequently transmits/receives exact bytes through original net_ring. Independent normal/installed callers consume original DPDK mbufs for exact64/4096/9014-byte exchanges. This qualifies caller-owned packet disposal, not a FreeBSD mbuf ABI or Ker borrowed-iovec ownership change. See docs/fstack-owned-send.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-owned-send-null",
+          "provenance_case": "fstack-owned-send-null"
+        },
+        {
+          "ctest": "fstack-owned-send-no-free-control",
+          "provenance_case": "fstack-owned-send-null"
+        },
+        {
+          "ctest": "fstack-owned-send-consumer",
+          "provenance_case": "fstack-owned-send-null"
+        },
+        {
+          "ctest": "fstack-owned-send-installed-consumer",
+          "provenance_case": "fstack-owned-send-null"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",

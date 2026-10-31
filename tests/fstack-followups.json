@@ -207,32 +207,6 @@
       "issue": "https://github.com/rutlang-ai/Ker/issues/220"
     },
     {
-      "id": "device-run-lifecycle",
-      "title": "Resolve device/run lifecycle and upstream fault-injection contracts",
-      "disposition": "contract-review",
-      "reason": "Actual native context allocation/free/fd ownership and both-NULL TX/RX rejection are now qualified, including real Linux registration/removal and traffic. The bounded late interface activation failure/no-app cleanup case and callback-stop-return-teardown smoke case are also scenario-adapted; neither claims the F-Stack ABI, exit(1), multi-port rollback, or coupled EAL-lcore main-loop implementation. Remaining cases require owned FreeBSD mbuf/m_copydata disposal semantics or that unimplemented coupled-loop architecture; borrowed iovecs must never be freed as an mbuf substitute.",
-      "evidence": [
-        "src/posix/lkl-channel.c",
-        "src/posix/io-worker.c",
-        "tests/upstream/fstack/tests/unit/test_ff_init.c",
-        "src/posix/run-loop.c",
-        "tests/posix/run-stop.c",
-        "tests/posix/run-stop.py",
-        "src/posix/packet-device.c",
-        "tests/posix/fstack-packet-device.c"
-      ],
-      "acceptance": [
-        "Separate portable startup/ownership requirements from FreeBSD ABI/callback/ordering requirements for each listed case.",
-        "Implement missing supported adapters with real registration/run/stop/failure and cleanup evidence, or record an explicit incompatible boundary.",
-        "Do not treat real Linux failure tests as proof of F-Stack callback forwarding or an injected m_copydata failure."
-      ],
-      "cases": [
-        "tests/integration/test_ff_dpdk_if_integration.c::test_ff_dpdk_if_send_copydata_fail",
-        "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_if_send_null_ctx_with_mbuf"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/223"
-    },
-    {
       "id": "thread-context-abi",
       "title": "Resolve FreeBSD thread context and join-result assertions",
       "disposition": "architecture-specific",

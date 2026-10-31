@@ -4431,6 +4431,28 @@
         "native-fstack-host-readiness-installed-consumer"
       ],
       "adaptation": "Complete unchanged source assertions exercise the unchanged namespaced interval formula, including ceiling quantization, legacy-equivalent rates and both invalid-rate guards. A round-down mutation fails the original 2.999999 GHz ceiling assertion. The actual TCP/UDP readiness caller consumes the formula at CLOCK_MONOTONIC nanosecond frequency to pace polls; 100 Hz and 1000 Hz exchanges require exact payloads, observed wait intervals, native counters, clean shutdown and zero outstanding original-PMD mbufs. The independently installed caller repeats the 1000 Hz exchange. Zero and >1MHz rates are rejected before the caller loop with clean native shutdown. This adapts only pure caller interval planning, not FreeBSD hardclock callbacks, TSC calibration, Linux timer cadence or kernel protocol timing. See docs/fstack-caller-clock.md."
+    },
+    "fstack-owned-send-null": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": "test_ff_dpdk_if_send_null_ctx_with_mbuf",
+      "ker_ctests": [
+        "fstack-owned-send-null",
+        "fstack-owned-send-no-free-control",
+        "fstack-owned-send-consumer",
+        "fstack-owned-send-installed-consumer"
+      ],
+      "adaptation": "The complete original source assertion now reaches the unchanged ff_dpdk_if_send NULL-context guard through a caller-only bridge owning a real original DPDK mbuf. The source stack sentinel is only a harness token; a real owned packet is supplied without dereferencing/freeing the sentinel. Five runs require -1, exact input disposal, no copy/TX/RX, pool511 restoration and unique-object exhaustion/recovery. Suppressing the actual input release fails conservation. The same sender subsequently transmits/receives exact bytes through original net_ring. Independent normal/installed callers consume original DPDK mbufs for exact64/4096/9014-byte exchanges. This qualifies caller-owned packet disposal, not a FreeBSD mbuf ABI or Ker borrowed-iovec ownership change. See docs/fstack-owned-send.md."
+    },
+    "fstack-owned-send-copy-failure": {
+      "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
+      "source_case": "test_ff_dpdk_if_send_copydata_fail",
+      "ker_ctests": [
+        "fstack-owned-send-copy-failure",
+        "fstack-owned-send-false-copy-control",
+        "fstack-owned-send-consumer",
+        "fstack-owned-send-installed-consumer"
+      ],
+      "adaptation": "The complete original source test executes the unchanged ff_dpdk_if_send body in a caller-only owned-frame bridge. Its failure flag selects a real127-byte original DPDK input for the original128-byte request; rte_pktmbuf_read fails and the original copy-error branch releases its output head and consumes the input. Five original runs plus a later third-segment failure restore all511 unique pool objects without PMD output; the same sender then successfully transmits/receives exact recovery bytes. A false-copy-success mutation fails the original return assertion. Independent normal/installed consumers perform exact64/4096/9014-byte original net_ring exchanges. This qualifies actual copy failure/disposal through a DPDK memory adapter, not FreeBSD m_copydata ABI, Linux protocol behavior or hardware offloads. See docs/fstack-owned-send.md."
     }
   }
 }

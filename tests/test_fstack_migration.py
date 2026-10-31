@@ -176,6 +176,9 @@ class CatalogTests(unittest.TestCase):
         partial = next(item['id'] for item in self.manifest['cases'] if item['status'] == 'partial')
         group = next(group for group in self.followups['groups'] if partial in group['cases'])
         group['disposition'] = 'harness-only'
+        # Exercise this partial case before any blocked case in the same group.
+        group['cases'].remove(partial)
+        group['cases'].insert(0, partial)
         self.followup_path.write_text(json.dumps(self.followups))
         with self.assertRaisesRegex(ValueError, 'Wrong follow-up disposition for partial'):
             audit.validate(self.root)
