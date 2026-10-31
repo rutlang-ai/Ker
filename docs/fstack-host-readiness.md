@@ -31,7 +31,8 @@ The adapter belongs to the caller example, not Ker's exported API. It does not
 add a FreeBSD `ff_kevent` ABI, EVFILT flags, a mixed host/native descriptor
 namespace or a protocol implementation. Its inherited void/error behavior is
 preserved; callers needing an error-reporting registration API should use native
-epoll directly. Fatal mmap, hardclock and all other unfinished source contracts
+epoll directly. Fatal mmap is now separately qualified as [caller policy](fstack-host-mmap-fatal.md).
+Hardclock and all other unfinished source contracts
 remain unqualified.
 
 With the pinned native Linux build and DPDK configured, build

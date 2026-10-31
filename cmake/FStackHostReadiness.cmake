@@ -7,7 +7,7 @@ if(KER_BUILD_EXAMPLES OR BUILD_TESTING)
     set_target_properties(ker-example-host-readiness PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
     add_executable(ker-host-readiness-echo examples/host-readiness-echo.c)
     target_include_directories(ker-host-readiness-echo PRIVATE "${PROJECT_SOURCE_DIR}/include")
-    target_link_libraries(ker-host-readiness-echo PRIVATE ker-example-host-readiness ${CMAKE_DL_LIBS})
+    target_link_libraries(ker-host-readiness-echo PRIVATE ker-example-host-readiness ker-example-host-mapping ${CMAKE_DL_LIBS})
     target_compile_options(ker-host-readiness-echo PRIVATE -Wall -Wextra -Werror)
     if(KER_BUILD_EXAMPLES)
         install(TARGETS ker-host-readiness-echo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

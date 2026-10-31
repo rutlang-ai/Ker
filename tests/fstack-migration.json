@@ -4431,9 +4431,30 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source assertion executes the unchanged namespaced non-page-array ff_mmap body in a real native application. Ordinary Ker mmap first returns MAP_FAILED/EINVAL; the caller policy then logs the real failure and exits exactly 1 in debug and NDEBUG builds. A return-only negative control exits 3 and is distinguished. The same caller mapping/munmap bodies allocate actual TCP/UDP payload buffers in repository and independently installed examples, with zero initialization, exact payloads, reclamation and zero outstanding original-PMD buffers. This qualifies caller fail-stop policy, not a fatal Ker mmap ABI, page-array allocation or LKL fixed-address callback failure. See docs/fstack-host-mmap-fatal.md.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-mmap-fatal-debug",
+          "provenance_case": "native-fstack-host-mmap-fatal"
+        },
+        {
+          "ctest": "native-fstack-host-mmap-fatal-release",
+          "provenance_case": "native-fstack-host-mmap-fatal"
+        },
+        {
+          "ctest": "native-fstack-host-mmap-fatal-return-control",
+          "provenance_case": "native-fstack-host-mmap-fatal"
+        },
+        {
+          "ctest": "native-fstack-host-readiness-consumer",
+          "provenance_case": "native-fstack-host-mmap-fatal"
+        },
+        {
+          "ctest": "native-fstack-host-readiness-installed-consumer",
+          "provenance_case": "native-fstack-host-mmap-fatal"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_realloc_zero_size_returns_p",
