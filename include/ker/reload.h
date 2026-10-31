@@ -43,6 +43,9 @@ KER_API int ker_reload_poll(ker_reload_poll_fn poll, void *argument);
 /* Select the process's generation and worker slot (0..127). Changing either
  * requires a quiescent worker. This is not an authenticated registration. */
 KER_API int ker_reload_worker_select(int generation, unsigned slot);
+/* Actual selected process generation (0 or1), distinct from the round's
+ * target/active generation. Observation only; grants no RX permission. */
+KER_API int ker_reload_selected_generation(void);
 /* Legacy enabled=0 preserves original always-poll behavior. Configure before
  * the first poll after bind; cannot change it during a polling lifetime. */
 KER_API int ker_reload_set_enabled(int enabled);

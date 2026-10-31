@@ -23,3 +23,6 @@ set_property(SOURCE "${PROJECT_SOURCE_DIR}/examples/fstack-config-ini.c"
 target_link_libraries(ker-fstack-config-inspect PRIVATE ker-example-fstack-config)
 set_target_properties(ker-example-fstack-config ker-fstack-config-inspect PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+add_executable(ker-config-generation-plan "${PROJECT_SOURCE_DIR}/examples/config-generation-plan.c")
+target_link_libraries(ker-config-generation-plan PRIVATE ker-example-fstack-config ker::reload)
+set_target_properties(ker-config-generation-plan PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
