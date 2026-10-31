@@ -5,3 +5,4 @@ test_ff_rss_tbl_get_portrange_disabled
 test_ff_rss_tbl_get_portrange_smoke
 test_ff_rss_tbl_get_portrange_hit
 test_ff_rss_tbl_get_portrange_rotation
+test_ff_rss_tbl_get_portrange_miss

@@ -12,3 +12,5 @@ add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_hit COMMAND ker-tes
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_hit PROPERTIES TIMEOUT 30)
 add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation COMMAND ker-test_ff_rss_tbl_get_portrange_rotation)
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation PROPERTIES TIMEOUT 30)
+add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_miss COMMAND ker-test_ff_rss_tbl_get_portrange_miss)
+set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_miss PROPERTIES TIMEOUT 30)
