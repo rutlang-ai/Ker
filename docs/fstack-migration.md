@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 340 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 342 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 1 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 22 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 20 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为340 scenario-adapted、1 partial、22 blocked，共23项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为342 scenario-adapted、1 partial、20 blocked，共21项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -55,9 +55,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下面的 issue 表与当前机器清单同步；后续各批次记录保留其历史计数，当前总数以上表为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共93项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：23项行为未完成
-（1 partial + 22 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共91项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：21项行为未完成
+（1 partial + 20 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -69,7 +69,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
 | Design generation-aware reload, IPC and drain ownership | 3 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Define a supported host exception bridge and KNI policy adaptation | 6 | adaptation-needed | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
+| Define a supported host exception bridge and KNI policy adaptation | 4 | adaptation-needed | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 14 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
@@ -133,7 +133,7 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 96 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 51 | 1 | 15 | 0 | 0 |
-| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 19 | 0 | 6 | 0 | 0 |
+| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 21 | 0 | 4 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 34 | 0 | 0 | 0 | 0 |
@@ -2357,3 +2357,7 @@ The complete original `test_ff_dpdk_if_send_null_ctx_with_mbuf` and `test_ff_dpd
 ## Reload caller boot state
 
 The complete original `test_it_a09_boot_state` function now qualifies attached/owner0 state, the allowed gate, four actual named drain rings, a real activated original PMD and live TX callback with zero initialization traffic. The real and independently installed callers consume all four rings through the existing reload/TX API, with exact bytes/pointers, park acknowledgement/release/claim, PMD TX2/RX3 and pool511 restoration. Five close/recreate cycles and two startup mutations guard lifecycle and counter wiring. This is isolated same-process caller composition, not FreeBSD veth, authenticated resident generations, cross-process epoch banks or full reload. See [scope and reproduction](fstack-reload-boot.md). Current catalog:340 scenario-adapted,1 partial,22 blocked;23 behavioral contracts remain unfinished.
+
+## KNI named allocation failures
+
+The complete original `test_p1_kni_stats_oom` and `test_p1_kni_slot_oom` assertions now qualify exact named table/slot failures in an ordinary EAL primary. Separate processes verify actual exit1 and SIGABRT. A working original TAP/kernel-vhost virtio-user caller and independently installed consumer exchange exact frames in both directions, record live statistics, remove both ports and restore pool2047. This allocation scope does not qualify the four remaining future-owner/nonowner cases or full reload. See [scope and reproduction](fstack-kni-allocation.md). Current catalog:342 scenario-adapted,1 partial,20 blocked;21 behavioral contracts remain unfinished.
