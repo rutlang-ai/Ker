@@ -4417,6 +4417,20 @@
         "native-fstack-host-readiness-installed-consumer"
       ],
       "adaptation": "The complete unchanged source assertion executes the unchanged namespaced non-page-array ff_mmap body in a real native application. Ordinary Ker mmap first returns MAP_FAILED/EINVAL; the caller policy then logs the real failure and exits exactly 1 in debug and NDEBUG builds. A return-only negative control exits 3 and is distinguished. The same caller mapping/munmap bodies allocate actual TCP/UDP payload buffers in repository and independently installed examples, with zero initialization, exact payloads, reclamation and zero outstanding original-PMD buffers. This qualifies caller fail-stop policy, not a fatal Ker mmap ABI, page-array allocation or LKL fixed-address callback failure. See docs/fstack-host-mmap-fatal.md."
+    },
+    "native-fstack-caller-clock": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": "test_ut_nr_17_hardclock_interval",
+      "ker_ctests": [
+        "native-fstack-caller-clock-source",
+        "native-fstack-caller-clock-round-down",
+        "native-fstack-caller-clock-invalid-zero",
+        "native-fstack-caller-clock-invalid-high",
+        "native-fstack-caller-clock-consumer-100hz",
+        "native-fstack-host-readiness-consumer",
+        "native-fstack-host-readiness-installed-consumer"
+      ],
+      "adaptation": "Complete unchanged source assertions exercise the unchanged namespaced interval formula, including ceiling quantization, legacy-equivalent rates and both invalid-rate guards. A round-down mutation fails the original 2.999999 GHz ceiling assertion. The actual TCP/UDP readiness caller consumes the formula at CLOCK_MONOTONIC nanosecond frequency to pace polls; 100 Hz and 1000 Hz exchanges require exact payloads, observed wait intervals, native counters, clean shutdown and zero outstanding original-PMD mbufs. The independently installed caller repeats the 1000 Hz exchange. Zero and >1MHz rates are rejected before the caller loop with clean native shutdown. This adapts only pure caller interval planning, not FreeBSD hardclock callbacks, TSC calibration, Linux timer cadence or kernel protocol timing. See docs/fstack-caller-clock.md."
     }
   }
 }

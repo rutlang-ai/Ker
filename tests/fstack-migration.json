@@ -3292,9 +3292,38 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "No full equivalent for this F-Stack DPDK glue scenario is recorded. RSS/port adjustment, directory/generation reload, PCB hooks and fault injection need their actual adapters before migration.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged source assertions exercise the unchanged namespaced interval formula, including ceiling quantization, legacy-equivalent rates and both invalid-rate guards. A round-down mutation fails the original 2.999999 GHz ceiling assertion. The actual TCP/UDP readiness caller consumes the formula at CLOCK_MONOTONIC nanosecond frequency to pace polls; 100 Hz and 1000 Hz exchanges require exact payloads, observed wait intervals, native counters, clean shutdown and zero outstanding original-PMD mbufs. The independently installed caller repeats the 1000 Hz exchange. Zero and >1MHz rates are rejected before the caller loop with clean native shutdown. This adapts only pure caller interval planning, not FreeBSD hardclock callbacks, TSC calibration, Linux timer cadence or kernel protocol timing. See docs/fstack-caller-clock.md.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-caller-clock-source",
+          "provenance_case": "native-fstack-caller-clock"
+        },
+        {
+          "ctest": "native-fstack-caller-clock-round-down",
+          "provenance_case": "native-fstack-caller-clock"
+        },
+        {
+          "ctest": "native-fstack-caller-clock-invalid-zero",
+          "provenance_case": "native-fstack-caller-clock"
+        },
+        {
+          "ctest": "native-fstack-caller-clock-invalid-high",
+          "provenance_case": "native-fstack-caller-clock"
+        },
+        {
+          "ctest": "native-fstack-caller-clock-consumer-100hz",
+          "provenance_case": "native-fstack-caller-clock"
+        },
+        {
+          "ctest": "native-fstack-host-readiness-consumer",
+          "provenance_case": "native-fstack-caller-clock"
+        },
+        {
+          "ctest": "native-fstack-host-readiness-installed-consumer",
+          "provenance_case": "native-fstack-caller-clock"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ut_nr_18_gen_pool_config",

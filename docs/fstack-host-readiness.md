@@ -32,8 +32,9 @@ add a FreeBSD `ff_kevent` ABI, EVFILT flags, a mixed host/native descriptor
 namespace or a protocol implementation. Its inherited void/error behavior is
 preserved; callers needing an error-reporting registration API should use native
 epoll directly. Fatal mmap is now separately qualified as [caller policy](fstack-host-mmap-fatal.md).
-Hardclock and all other unfinished source contracts
-remain unqualified.
+The pure hardclock interval formula is separately qualified as
+[caller polling cadence](fstack-caller-clock.md); FreeBSD hardclock execution
+and all other unfinished source contracts remain unqualified.
 
 With the pinned native Linux build and DPDK configured, build
 `ker-host-readiness-source-test`, `ker-host-readiness-mod-failure-test`,

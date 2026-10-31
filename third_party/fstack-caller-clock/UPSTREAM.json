@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "source": "lib/ff_dpdk_if.c",
+  "retained_source": "../fstack-pools/ff_dpdk_if.c",
+  "source_sha256": "6d8800e5ab069a4ede742ec1ec75dfa8fc08ef05999a7528dda8c95d519e3cbe",
+  "function": "ff_hardclock_interval_tsc",
+  "mode": "Unchanged pure interval formula; caller polling cadence only, no FreeBSD hardclock or kernel timer adaptation."
+}
