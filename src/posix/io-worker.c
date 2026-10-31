@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -233,7 +234,8 @@ int main(int argc, char **argv)
         printf("{\"max_numa_nodes\":%d}\n", RTE_MAX_NUMA_NODES);
         return RTE_MAX_NUMA_NODES > 0 ? 0 : 1;
     }
-    int packet_fd = -1, control_fd = -1, mtu_fd = -1, split = 0;
+    int packet_fd = -1, control_fd = -1, mtu_fd = -1, idle_timeout_arm_fd = -1;
+    int idle_timeout_notify_fd = -1, split = 0;
     bool rss_enabled = false;
     int queues = 1;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
@@ -242,6 +244,7 @@ int main(int argc, char **argv)
     const char *exception_mode = "ethertype", *exception_policy = "accept", *exception_tcp = NULL, *exception_udp = NULL;
     struct ker_exception_filter exception_filter;
     int idle_sleep_us = 1000, tx_delay_us = 0;
+    bool idle_timeout_armed = false;
     int promiscuous = -1, tx_offloads = 0;
     int log_level = -1, mtu = KER_NATIVE_DEFAULT_MTU, maximum_mtu = 0;
     int pcap_snaplen = 65535, pcap_maximum = 16 * 1024 * 1024;
@@ -269,6 +272,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--exception-rate")) exception_rate = number(argv[++i]);
         else if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
+        else if (!strcmp(argv[i], "--test-idle-timeout-arm-fd")) idle_timeout_arm_fd = number(argv[++i]);
+        else if (!strcmp(argv[i], "--test-idle-timeout-notify-fd")) idle_timeout_notify_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
         else if (!strcmp(argv[i], "--tx-offloads")) tx_offloads = number(argv[++i]);
@@ -298,9 +303,27 @@ int main(int argc, char **argv)
     if (!maximum_mtu) maximum_mtu = mtu;
     if (maximum_mtu < mtu || maximum_mtu > KER_NATIVE_MAX_MTU) return 1;
     if (tx_offloads < 0 || tx_offloads > 2 || queues < 1 || queues > MAX_QUEUES || (rss_enabled && queues < 2) || tx_delay_us < 0 || tx_delay_us > 100 || idle_sleep_us < 0 || idle_sleep_us > 100000 || (strcmp(mbuf_mode, "large") && strcmp(mbuf_mode, "scatter")) || mtu < KER_NATIVE_MIN_MTU || mtu > KER_NATIVE_MAX_MTU || packet_fd < 0 || control_fd < 0 || !port_name || !split || pcap_snaplen <= 0 || pcap_maximum <= 0 ||
+        idle_timeout_arm_fd < -1 || idle_timeout_notify_fd < -1 ||
+        ((idle_timeout_arm_fd >= 0) != (idle_timeout_notify_fd >= 0)) ||
+        (idle_timeout_arm_fd >= 0 && (idle_timeout_arm_fd == idle_timeout_notify_fd ||
+            idle_timeout_arm_fd == packet_fd || idle_timeout_arm_fd == control_fd ||
+            idle_timeout_arm_fd == mtu_fd || idle_timeout_notify_fd == packet_fd ||
+            idle_timeout_notify_fd == control_fd || idle_timeout_notify_fd == mtu_fd)) ||
         (log_level_set && (log_level < (int)RTE_LOG_EMERG || log_level > (int)RTE_LOG_DEBUG))) {
         fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--tx-offloads 0..2] [--rss] [--queues 1..16] [--mtu-fd N] [--max-mtu 1280..9000] [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--tx-delay-us 0..100] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
+    }
+    if (idle_timeout_arm_fd >= 0) {
+        struct stat arm_status, notify_status;
+        int arm_flags = fcntl(idle_timeout_arm_fd, F_GETFL);
+        int notify_flags = fcntl(idle_timeout_notify_fd, F_GETFL);
+        if (fstat(idle_timeout_arm_fd, &arm_status) || fstat(idle_timeout_notify_fd, &notify_status) ||
+            !S_ISFIFO(arm_status.st_mode) || !S_ISFIFO(notify_status.st_mode) ||
+            arm_flags < 0 || notify_flags < 0 || (arm_flags & O_ACCMODE) != O_RDONLY ||
+            (notify_flags & O_ACCMODE) != O_WRONLY ||
+            fcntl(idle_timeout_notify_fd, F_SETFL, notify_flags | O_NONBLOCK)) {
+            perror("ker: idle timeout test pipe"); return 1;
+        }
     }
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
         perror("ker packet/control channel"); return 1;
@@ -899,7 +922,7 @@ int main(int argc, char **argv)
                 int remaining_us = ker_worker_tx_wait_us(&batch, tx_delay_us, tx_now);
                 if (wait_us > remaining_us) wait_us = remaining_us;
             }
-            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}, {rx_workers.notify_fd, POLLIN, 0}};
+            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}, {rx_workers.notify_fd, POLLIN, 0}, {idle_timeout_arm_fd, POLLIN, 0}};
             /* Ethernet PMD RX has no channel readiness notification. Idle
              * channel TX and control wake ppoll; retained work uses bounded
              * retries and RX suffixes watch channel writability. Linux owns
@@ -907,8 +930,28 @@ int main(int argc, char **argv)
             if (bond_policy && wait_us > 10000) wait_us = 10000;
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
-            int result = ppoll(fds, 5, &timeout, NULL);
-            if (!result) idle_timeouts++;
+            int result = ppoll(fds, idle_timeout_arm_fd >= 0 ? 6 : 5, &timeout, NULL);
+            if (idle_timeout_arm_fd >= 0 && fds[5].revents) {
+                char arm;
+                if (!(fds[5].revents & POLLIN) || read(idle_timeout_arm_fd, &arm, 1) != 1 || arm != 'A') {
+                    fprintf(stderr, "ker: invalid idle timeout arm message\n"); status = 1; break;
+                }
+                idle_timeout_armed = true;
+                close(idle_timeout_arm_fd);
+                idle_timeout_arm_fd = -1;
+            }
+            if (!result) {
+                idle_timeouts++;
+                if (idle_timeout_armed && idle_timeout_notify_fd >= 0) {
+                    char notification = 'T';
+                    ssize_t written;
+                    do { written = write(idle_timeout_notify_fd, &notification, 1); }
+                    while (written < 0 && errno == EINTR);
+                    if (written != 1) { perror("ker: idle timeout test notification"); status = 1; break; }
+                    close(idle_timeout_notify_fd);
+                    idle_timeout_notify_fd = -1;
+                }
+            }
             else if (result < 0 && errno != EINTR) { perror("ker: idle wait"); status = 1; break; }
         }
     }
@@ -1006,5 +1049,7 @@ cleanup:
     close(packet_fd);
     close(control_fd);
     if (mtu_fd >= 0) close(mtu_fd);
+    if (idle_timeout_arm_fd >= 0) close(idle_timeout_arm_fd);
+    if (idle_timeout_notify_fd >= 0) close(idle_timeout_notify_fd);
     return status;
 }
