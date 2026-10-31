@@ -8,3 +8,5 @@ add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled COMMAND ke
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled PROPERTIES TIMEOUT 30)
 add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke COMMAND ker-test_ff_rss_tbl_get_portrange_smoke)
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke PROPERTIES TIMEOUT 30)
+add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_hit COMMAND ker-test_ff_rss_tbl_get_portrange_hit)
+set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_hit PROPERTIES TIMEOUT 30)
