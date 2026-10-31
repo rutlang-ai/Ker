@@ -1088,9 +1088,30 @@
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_boot_state",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Ker has no original Linux generation packet transport, TX diversion/drain ownership or hardware epoch handover protocol. Shared-control leases and namespace recycling do not implement this case.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged source boot assertions run through existing public Ker reload state/gate/TX APIs and real original DPDK resources. The source host maps registration to a real reload-TX context and activation to actual PMD start/callback registration, not FreeBSD veth. Initial attached state, owner0/allowed gate, all four exact RX/TX drain-ring lookups, one real port, live TX callback and zero actual TX baseline are required. Five complete close/recreate cycles use original vdev uninit and restore pool511, all rings, port and state. Real and independently installed callers actually use all four rings with serialized same-process park-epoch acknowledgement/release/claim and original net_ring TX2/RX3 for exact64/4096/9014-byte pointer-preserving transfers. Hook-allocation failure and premature real TX fail the original activation/zero-counter assertions. This qualifies bounded caller boot state, not FreeBSD veth ABI, authenticated resident ownership, cross-process epoch banks, Linux protocol behavior or full graceful reload. See docs/fstack-reload-boot.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-reload-boot-source",
+          "provenance_case": "fstack-reload-boot-state"
+        },
+        {
+          "ctest": "fstack-reload-boot-no-hook-control",
+          "provenance_case": "fstack-reload-boot-state"
+        },
+        {
+          "ctest": "fstack-reload-boot-premature-tx-control",
+          "provenance_case": "fstack-reload-boot-state"
+        },
+        {
+          "ctest": "fstack-reload-boot-consumer",
+          "provenance_case": "fstack-reload-boot-state"
+        },
+        {
+          "ctest": "fstack-reload-boot-installed-consumer",
+          "provenance_case": "fstack-reload-boot-state"
+        }
+      ]
     },
     {
       "id": "tests/integration/test_ff_reload_integration.c::test_it_a09_tx_divert_no_hw",

@@ -4453,6 +4453,18 @@
         "fstack-owned-send-installed-consumer"
       ],
       "adaptation": "The complete original source test executes the unchanged ff_dpdk_if_send body in a caller-only owned-frame bridge. Its failure flag selects a real127-byte original DPDK input for the original128-byte request; rte_pktmbuf_read fails and the original copy-error branch releases its output head and consumes the input. Five original runs plus a later third-segment failure restore all511 unique pool objects without PMD output; the same sender then successfully transmits/receives exact recovery bytes. A false-copy-success mutation fails the original return assertion. Independent normal/installed consumers perform exact64/4096/9014-byte original net_ring exchanges. This qualifies actual copy failure/disposal through a DPDK memory adapter, not FreeBSD m_copydata ABI, Linux protocol behavior or hardware offloads. See docs/fstack-owned-send.md."
+    },
+    "fstack-reload-boot-state": {
+      "source_file": "tests/integration/test_ff_reload_integration.c",
+      "source_case": "test_it_a09_boot_state",
+      "ker_ctests": [
+        "fstack-reload-boot-source",
+        "fstack-reload-boot-no-hook-control",
+        "fstack-reload-boot-premature-tx-control",
+        "fstack-reload-boot-consumer",
+        "fstack-reload-boot-installed-consumer"
+      ],
+      "adaptation": "Complete unchanged source boot assertions run through existing public Ker reload state/gate/TX APIs and real original DPDK resources. The source host maps registration to a real reload-TX context and activation to actual PMD start/callback registration, not FreeBSD veth. Initial attached state, owner0/allowed gate, all four exact RX/TX drain-ring lookups, one real port, live TX callback and zero actual TX baseline are required. Five complete close/recreate cycles use original vdev uninit and restore pool511, all rings, port and state. Real and independently installed callers actually use all four rings with serialized same-process park-epoch acknowledgement/release/claim and original net_ring TX2/RX3 for exact64/4096/9014-byte pointer-preserving transfers. Hook-allocation failure and premature real TX fail the original activation/zero-counter assertions. This qualifies bounded caller boot state, not FreeBSD veth ABI, authenticated resident ownership, cross-process epoch banks, Linux protocol behavior or full graceful reload. See docs/fstack-reload-boot.md."
     }
   }
 }
