@@ -9,15 +9,12 @@ import socket
 import subprocess
 import sys
 import tempfile
-import time
 
 from dpdk_runtime import private_runtime_environment
 
 PAYLOAD = b'native-mac-only\0'
 MAX_IDLE_SLEEP_US = 100_000
-QUIET_WINDOW_MIN_SECONDS = 0.35
-QUIET_WINDOW_PERIODS = 3
-QUIET_WINDOW_MARGIN_SECONDS = 0.05
+IDLE_TIMEOUT_OBSERVATION_SECONDS = 5
 IDLE_PROFILES = (('default', None, [], 1000), ('ini-20us', 20, [], 20),
     ('cli-busy', 100000, ['--idle-sleep-us', '0'], 0),
     ('ini-max', 100000, [], 100000),
@@ -33,11 +30,17 @@ def ip(*args):
     subprocess.run(['ip', *args], check=True)
 
 
-def idle_quiet_window_seconds(max_idle_sleep_us):
-    if type(max_idle_sleep_us) is not int or not 0 <= max_idle_sleep_us <= MAX_IDLE_SLEEP_US:
-        raise ValueError('maximum idle sleep must be in 0..100000 microseconds')
-    return max(QUIET_WINDOW_MIN_SECONDS,
-        QUIET_WINDOW_PERIODS * max_idle_sleep_us / 1_000_000 + QUIET_WINDOW_MARGIN_SECONDS)
+def observe_idle_timeout(arm_fd, notify_fd, timeout=IDLE_TIMEOUT_OBSERVATION_SECONDS):
+    with selectors.DefaultSelector() as selector:
+        selector.register(notify_fd, selectors.EVENT_READ)
+        if selector.select(0):
+            raise RuntimeError('idle timeout notification arrived before application readiness')
+        if os.write(arm_fd, b'A') != 1:
+            raise RuntimeError('cannot arm idle timeout observation')
+        if not selector.select(timeout):
+            raise RuntimeError('worker did not complete an idle timeout after application readiness')
+    if os.read(notify_fd, 1) != b'T':
+        raise RuntimeError('invalid idle timeout notification')
 
 
 def main():
@@ -59,7 +62,6 @@ def main():
     cpu = min(os.sched_getaffinity(0))
     eal = f'--lcores=0@{cpu} --no-huge --no-pci --no-shconf --no-telemetry --iova-mode=va -m 64 --vdev=net_tap0,iface=kerpeer,remote=kerlink'
     profiles = IDLE_PROFILES
-    quiet_seconds = idle_quiet_window_seconds(max(profile[3] for profile in profiles))
     with tempfile.TemporaryDirectory(prefix='ker-idle-wait-') as directory:
         root = Path(directory)
         environment = private_runtime_environment(root / 'dpdk')
@@ -67,21 +69,28 @@ def main():
             config, stats = root / (name + '.ini'), root / (name + '.json')
             config.write_text('' if ini is None else '[dpdk]\nidle_sleep=' + str(ini) + '\n')
             port = 29900 + index
+            arm_read, arm_write = os.pipe()
+            notify_read, notify_write = os.pipe()
             command = [sys.executable, str(args.launcher), '--library', str(args.library),
                 '--io-worker', str(args.worker), '--address', '198.18.0.2/24', '--port', 'net_tap0',
                 '--eal', eal, '--config', str(config), *options, '--stats', str(stats),
+                '--test-idle-timeout-arm-fd', str(arm_read),
+                '--test-idle-timeout-notify-fd', str(notify_write),
                 '--', str(args.app), str(port)]
             with (root / (name + '.log')).open('w+') as log:
-                app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True,
-                    env=environment)
+                app = None
                 try:
+                    app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log, text=True,
+                        env=environment, pass_fds=(arm_read, notify_write))
+                    os.close(arm_read); arm_read = -1
+                    os.close(notify_write); notify_write = -1
                     with selectors.DefaultSelector() as selector:
                         selector.register(app.stdout, selectors.EVENT_READ)
                         require(selector.select(20), 'idle worker startup timeout')
                     require(app.stdout.readline().startswith('READY '), 'idle application not ready')
-                    # Let the native app block in recvfrom while the worker has
-                    # a bounded quiet interval after readiness and before traffic.
-                    time.sleep(quiet_seconds)
+                    observe_idle_timeout(arm_write, notify_read)
+                    os.close(arm_write); arm_write = -1
+                    os.close(notify_read); notify_read = -1
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
                         udp.settimeout(8); udp.connect(('198.18.0.2', port)); udp.send(PAYLOAD)
                         require(udp.recv(256) == PAYLOAD, 'idle worker did not receive/echo UDP')
@@ -107,7 +116,10 @@ def main():
                     log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
                     raise
                 finally:
-                    if app.poll() is None:
+                    for fd in (arm_read, arm_write, notify_read, notify_write):
+                        if fd >= 0:
+                            os.close(fd)
+                    if app is not None and app.poll() is None:
                         app.terminate()
                         try:
                             app.wait(timeout=10)

@@ -36,6 +36,15 @@ def resolve_exit_code(exit_code, app_returncode, infrastructure_failure, preserv
     return exit_code if exit_code >= 0 else 128 - exit_code
 
 
+def idle_timeout_test_fds(arm_fd, notify_fd):
+    if arm_fd is None and notify_fd is None:
+        return ()
+    if (arm_fd is None or notify_fd is None or arm_fd < 0 or notify_fd < 0 or
+            arm_fd == notify_fd):
+        raise ValueError('idle-timeout test descriptors must be a distinct nonnegative pair')
+    return arm_fd, notify_fd
+
+
 # CMake substitutes the relative library path for the installed launcher.
 LIB_FROM_BIN = '@KER_POSIX_LIB_FROM_BIN@'
 if LIB_FROM_BIN.startswith('@'):
@@ -533,6 +542,8 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--io-worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-worker')
     parser.add_argument('--shutdown-timeout-ms', type=int)
     parser.add_argument('--stats', type=Path, help='write Ethernet I/O counters at shutdown')
+    parser.add_argument('--test-idle-timeout-arm-fd', type=int, help=argparse.SUPPRESS)
+    parser.add_argument('--test-idle-timeout-notify-fd', type=int, help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -552,6 +563,11 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     values.update(vars(supplied))
     values['sysctls'] = sysctls
     args = argparse.Namespace(**values)
+    try:
+        idle_timeout_test_fds(getattr(args, 'test_idle_timeout_arm_fd', None),
+            getattr(args, 'test_idle_timeout_notify_fd', None))
+    except ValueError as error:
+        parser.error(str(error))
     missing = [name for name in ('address', 'port', 'eal') if getattr(args, name) is None]
     if missing:
         parser.error('required via CLI or --config: ' + ', '.join('--' + name for name in missing))
@@ -1213,9 +1229,21 @@ def main():
                 if value is not None:
                     exception_options += ['--exception-' + name + '-ports', value]
         rx_lcore_options = ['--rx-lcores', args.rx_lcores] if args.rx_lcores is not None else []
+        idle_timeout_test_options = []
+        idle_timeout_test_fds = ()
+        test_arm_fd = getattr(args, 'test_idle_timeout_arm_fd', None)
+        test_notify_fd = getattr(args, 'test_idle_timeout_notify_fd', None)
+        if test_arm_fd is not None:
+            idle_timeout_test_options = ['--test-idle-timeout-arm-fd', str(test_arm_fd),
+                '--test-idle-timeout-notify-fd', str(test_notify_fd)]
+            idle_timeout_test_fds = (test_arm_fd, test_notify_fd)
+            if set(idle_timeout_test_fds) & {channel_io.fileno(), mtu_io.fileno(), control_read}:
+                raise RuntimeError('idle-timeout test descriptor collides with a worker channel')
         worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), *(['--rss'] if args.rss else []), '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, *exception_options, *rx_lcore_options, '--', *args.eal_args],
-            pass_fds=(channel_io.fileno(), mtu_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
+            '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), *(['--rss'] if args.rss else []), '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, *exception_options, *rx_lcore_options, *idle_timeout_test_options, '--', *args.eal_args],
+            pass_fds=(channel_io.fileno(), mtu_io.fileno(), control_read, *idle_timeout_test_fds), stdout=subprocess.PIPE, text=True)
+        for fd in idle_timeout_test_fds:
+            os.close(fd)
         channel_io.close()
         mtu_io.close()
         os.close(control_read)

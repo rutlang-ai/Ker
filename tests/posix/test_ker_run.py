@@ -133,6 +133,13 @@ class KerRunMainTests(unittest.TestCase):
     def test_missing_native_done_overrides_nonzero_app_exit(self):
         self.assertEqual(self.run_launcher(7, native_done=False), 125)
 
+    def test_idle_timeout_test_fds_require_an_optional_distinct_pair(self):
+        self.assertEqual(ker_run.idle_timeout_test_fds(None, None), ())
+        self.assertEqual(ker_run.idle_timeout_test_fds(7, 8), (7, 8))
+        for pair in ((7, None), (None, 8), (-1, 8), (7, -1), (7, 7)):
+            with self.subTest(pair=pair), self.assertRaises(ValueError):
+                ker_run.idle_timeout_test_fds(*pair)
+
     def test_worker_failure_overrides_nonzero_app_exit(self):
         self.assertEqual(self.run_launcher(7, native_done=True, worker_code=9), 125)
 
