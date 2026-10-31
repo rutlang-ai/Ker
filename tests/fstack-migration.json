@@ -3148,9 +3148,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source own-queue predicate returns1 for a fixed IPv6 tuple with one queue. Ordinary single-queue TCP delivery does not invoke or establish a corresponding Ker predicate ABI. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original software table/helper unit assertions against unchanged pinned functions in the caller-side metadata classifier. Original private BSS/queue setup is preserved where the source uses it; it is not a runtime capability query. The enabled IPv4/IPv6 model feeds real public Ker dispatch after original PMD transport. No Linux port allocation, reverse optimizer or hardware RSS is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-table-test_ff_rss_check6_single_queue",
+          "provenance_case": "fstack-rss-table-test_ff_rss_check6_single_queue"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",

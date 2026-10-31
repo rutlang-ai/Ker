@@ -16,3 +16,5 @@ add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_miss COMMAND ker-te
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_miss PROPERTIES TIMEOUT 30)
 add_test(NAME fstack-rss-table-test_ff_rss_check6_landing COMMAND ker-test_ff_rss_check6_landing)
 set_tests_properties(fstack-rss-table-test_ff_rss_check6_landing PROPERTIES TIMEOUT 30)
+add_test(NAME fstack-rss-table-test_ff_rss_check6_single_queue COMMAND ker-test_ff_rss_check6_single_queue)
+set_tests_properties(fstack-rss-table-test_ff_rss_check6_single_queue PROPERTIES TIMEOUT 30)
