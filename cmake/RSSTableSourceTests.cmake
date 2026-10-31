@@ -2,3 +2,5 @@ add_test(NAME fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled COMMAND ke
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled PROPERTIES TIMEOUT 30)
 add_test(NAME fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range COMMAND ker-test_ff_rss_tbl_set_portrange_inverted_range)
 set_tests_properties(fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range PROPERTIES TIMEOUT 30)
+add_test(NAME fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg COMMAND ker-test_ff_rss_tbl_get_portrange_no_cfg)
+set_tests_properties(fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg PROPERTIES TIMEOUT 30)
