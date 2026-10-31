@@ -111,3 +111,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_ff_load_config_stack_coexist_enabled` | `fstack-config-source-test_ff_load_config_stack_coexist_enabled` |
 | `test_ff_load_config_stack_absent_defaults_disabled` | `fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled` |
 | `test_ff_load_config_stack_garbage_defaults_disabled` | `fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled` |
+| `test_ff_load_config_stack_coexist_disabled_explicit` | `fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit` |

@@ -244,30 +244,6 @@
       "issue": "https://github.com/rutlang-ai/Ker/issues/223"
     },
     {
-      "id": "stack-coexistence",
-      "title": "Document and qualify host/native stack coexistence configuration",
-      "disposition": "contract-review",
-      "reason": "Actual Ker descriptor-based coexistence now has real host/native identical-UDP-tuple traffic, mixed epoll full64-bit tags, independent close orders and exact native-only UDP counters. The four pinned assertions instead inspect a F-Stack global boolean:1/0/garbage supplied sections are explicitly rejected by Ker, while section absence keeps coexistence active without a synthetic default field. These source configuration contracts remain blocked, not runtime passes. test_ff_load_config_stack_coexist_enabled is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_ff_load_config_stack_absent_defaults_disabled is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred. test_ff_load_config_stack_garbage_defaults_disabled is separately qualified only for its complete original parsed-document contract in the caller-side inspector; no Ker startup or network runtime support is inferred.",
-      "evidence": [
-        "src/posix/fd-table.c",
-        "tests/posix/fstack-fd-map.c",
-        "tests/upstream/fstack/tests/unit/test_ff_config.c",
-        "docs/stack-coexistence.md",
-        "tests/posix/fstack-socket-contracts.c",
-        "tests/posix/test_ker_run_config.py",
-        "docs/fstack-config-inspector.md"
-      ],
-      "acceptance": [
-        "Record the supported Ker coexistence contract and whether a global mode flag is needed.",
-        "Retain real host/native same-number descriptor and independent-traffic evidence; do not infer equivalence to F-Stack boolean parsing.",
-        "Add any useful configuration behavior and rejection tests, or document why the original flag/default assertions are not portable."
-      ],
-      "cases": [
-        "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_disabled_explicit"
-      ],
-      "issue": "https://github.com/rutlang-ai/Ker/issues/228"
-    },
-    {
       "id": "host-helper-abi",
       "title": "Resolve unmapped host memory, time, environment and kqueue helpers",
       "disposition": "contract-review",
