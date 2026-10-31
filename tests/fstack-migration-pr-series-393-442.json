@@ -1,0 +1,468 @@
+{
+  "schema": 1,
+  "source_revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "baseline_commit": "50111783520b3566d3e8be5161196e55a72ad08a",
+  "target_cases": 50,
+  "completed_source_cases": 50,
+  "separate_prs": 50,
+  "counts_after": {
+    "scenario-adapted": 334,
+    "partial": 2,
+    "blocked": 27,
+    "architecture-specific": 15,
+    "harness-only": 55
+  },
+  "cases": [
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_unload_config_zeroes_state",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-original-unload",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/393",
+      "branch": "test/fstack-config-inspector",
+      "validated_implementation_commit": "67c7a15b7c52e4acd8bd3962f9c0feb100a5badb",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_valid_minimal_ini",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_valid_minimal_ini",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/394",
+      "branch": "test/fstack-config-source-minimal",
+      "validated_implementation_commit": "8fe18968eb68046d3d2f831e5a548f37aee802d3",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_unknown_section",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_unknown_section",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/395",
+      "branch": "test/fstack-config-ff-load-config-unknown-section",
+      "validated_implementation_commit": "d955fe0ffdf930608d1f578f740803a83fdb1dbb",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_all_sections",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_all_sections",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/396",
+      "branch": "test/fstack-config-ff-load-config-all-sections",
+      "validated_implementation_commit": "6dfb223ec3d2ad5d9a011447218b60574ab865d0",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_full",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_dpdk_full",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/397",
+      "branch": "test/fstack-config-ff-load-config-dpdk-full",
+      "validated_implementation_commit": "e5ac8c19ed6e28dbe09dc7fe076ac394e9d4f947",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_portlist_nonint",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_portlist_nonint",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/398",
+      "branch": "test/fstack-config-ff-load-config-portlist-nonint",
+      "validated_implementation_commit": "4c2ef8776d4951f0809c58a74a3c75959b5b0e61",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_rss_check_cfg_handler_no_port_no_vlan",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_rss_check_cfg_handler_no_port_no_vlan",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/399",
+      "branch": "test/fstack-config-rss-check-cfg-handler-no-port-no-vlan",
+      "validated_implementation_commit": "801dced8c363a1ae4c604ef59fef4b25516aeade",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_rss_tbl_cfg_handler_bad_tuple",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_rss_tbl_cfg_handler_bad_tuple",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/400",
+      "branch": "test/fstack-config-rss-tbl-cfg-handler-bad-tuple",
+      "validated_implementation_commit": "4c3731e77327d7e3d0790afe4484fcf388cf4218",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_rss_check_thash_adjust_off_parses",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_rss_check_thash_adjust_off_parses",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/401",
+      "branch": "test/fstack-config-rss-check-thash-adjust-off-parses",
+      "validated_implementation_commit": "5c4d5b708facfd099762c4c5a8d1cd40d88c1201",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_id_not_in_filter_returns_one",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_vlan_cfg_handler_id_not_in_filter_returns_one",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/402",
+      "branch": "test/fstack-config-vlan-cfg-handler-id-not-in-filter-returns-one",
+      "validated_implementation_commit": "3a9aa8004fd193acb03a7313f0528b7c5048c5c4",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_vdev_full",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_vdev_full",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/403",
+      "branch": "test/fstack-config-ff-load-config-vdev-full",
+      "validated_implementation_commit": "5292de5ea848175f516a3badb7f1fa2d7ad95042",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_port_cfg_handler_id_over_max_returns_one",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_port_cfg_handler_id_over_max_returns_one",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/404",
+      "branch": "test/fstack-config-port-cfg-handler-id-over-max-returns-one",
+      "validated_implementation_commit": "1e01738d5876d313934a2a5154c61040b8c37c88",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_freebsd_boot_multi_entries",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_freebsd_boot_multi_entries",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/405",
+      "branch": "test/fstack-config-ff-load-config-freebsd-boot-multi-entries",
+      "validated_implementation_commit": "084d6319b377eb51a4b8ee1b3b5d037b90f26fec",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_inet6_fixture_ignored",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_inet6_fixture_ignored",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/406",
+      "branch": "test/fstack-config-ff-load-config-inet6-fixture-ignored",
+      "validated_implementation_commit": "ffd6b24870fa05c08c6b32add72050c507599de3",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_argv_t_override",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_argv_t_override",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/407",
+      "branch": "test/fstack-config-ff-load-config-argv-t-override",
+      "validated_implementation_commit": "9f6f75566dce212d50c967d88b5608de639c905b",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_vlan_cfg_handler_portid_over_max_skips",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_vlan_cfg_handler_portid_over_max_skips",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/408",
+      "branch": "test/fstack-config-vlan-cfg-handler-portid-over-max-skips",
+      "validated_implementation_commit": "409cf5b43ba0536c8099fed9aaaee72860ed44a1",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_in_range",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_parse_lcore_mask_proc_id_in_range",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/409",
+      "branch": "test/fstack-config-parse-lcore-mask-proc-id-in-range",
+      "validated_implementation_commit": "982bd0f3aaa879e5671b9d0acbf05305c3b18ed5",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_parse_lcore_mask_proc_id_over_count_fails",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_parse_lcore_mask_proc_id_over_count_fails",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/410",
+      "branch": "test/fstack-config-parse-lcore-mask-proc-id-over-count-fails",
+      "validated_implementation_commit": "98c9a9c4327bdeb503fa0c289467950d7ce61be9",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_dpdk_extra_keys",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_dpdk_extra_keys",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/411",
+      "branch": "test/fstack-config-ff-load-config-dpdk-extra-keys",
+      "validated_implementation_commit": "692e637d29418529e9922af116ecdb434f06ae12",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_bond_vdev_repeat_keys_no_leak",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/412",
+      "branch": "test/fstack-config-ff-load-config-bond-vdev-repeat-keys-no-leak",
+      "validated_implementation_commit": "e082932d3aabba958ee862c500f79035d93dd832",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_parse_lcore_mask_calloc_oom_returns_error",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/413",
+      "branch": "test/fstack-config-parse-lcore-mask-calloc-oom-returns-error",
+      "validated_implementation_commit": "f44ea8631525074403a2f4dd16dab713e9cfd325",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_enabled",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_thread_mode_enabled",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/414",
+      "branch": "test/fstack-config-ff-load-config-thread-mode-enabled",
+      "validated_implementation_commit": "5dc277733a51cfb6808be13de6ddb2141ef5a69d",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_default_off",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_thread_mode_default_off",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/415",
+      "branch": "test/fstack-config-ff-load-config-thread-mode-default-off",
+      "validated_implementation_commit": "14598d6c16d997a1b81a2e671ff252be4f12ad8f",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/416",
+      "branch": "test/fstack-config-ff-load-config-thread-mode-secondary-conflict",
+      "validated_implementation_commit": "09688837a8156fc16a84e9192f12d439dfa57637",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_tcp_ecn_default_off",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/417",
+      "branch": "test/fstack-config-ff-load-config-tcp-ecn-default-off",
+      "validated_implementation_commit": "748b5652834b4f4ca1693a8044ef248b8b5f91e9",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_graceful_reload_default_off",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_graceful_reload_default_off",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/418",
+      "branch": "test/fstack-config-graceful-reload-default-off",
+      "validated_implementation_commit": "5d5115d3353bbe27f4a7d02ca8f78fe258b0410e",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_graceful_reload_parse",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_graceful_reload_parse",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/419",
+      "branch": "test/fstack-config-graceful-reload-parse",
+      "validated_implementation_commit": "d46b2ac4568d17fae163d7c5c981288447f663d9",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_graceful_reload_requires_slim",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_graceful_reload_requires_slim",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/420",
+      "branch": "test/fstack-config-graceful-reload-requires-slim",
+      "validated_implementation_commit": "7fc939cacd019198770e6ac83e02a35ae5cdfd6d",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_greload_thread_mode_mutex",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_greload_thread_mode_mutex",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/421",
+      "branch": "test/fstack-config-greload-thread-mode-mutex",
+      "validated_implementation_commit": "53a7162fd6ed257979972e3555cb9025ae916e35",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_greload_off_no_new_checks",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_greload_off_no_new_checks",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/422",
+      "branch": "test/fstack-config-greload-off-no-new-checks",
+      "validated_implementation_commit": "bc3277d30789e2db6a4c245434d471d7d09c5198",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_greload_bad_value_atoi",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_greload_bad_value_atoi",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/423",
+      "branch": "test/fstack-config-greload-bad-value-atoi",
+      "validated_implementation_commit": "4d4ae5256308149bcdbf9a3d688cba890a4c06d7",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ut_nr_20_queue_mapping_config",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ut_nr_20_queue_mapping_config",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/424",
+      "branch": "test/fstack-config-ut-nr-20-queue-mapping-config",
+      "validated_implementation_commit": "206da98d6d485a2b6bdb3442e9d622c6c776f7bd",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ut_nr_25_drain_ring_size_config",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ut_nr_25_drain_ring_size_config",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/425",
+      "branch": "test/fstack-config-ut-nr-25-drain-ring-size-config",
+      "validated_implementation_commit": "a0f68dec80b398acc74d807521d8aded39afdc54",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_enabled",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_stack_coexist_enabled",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/426",
+      "branch": "test/fstack-config-ff-load-config-stack-coexist-enabled",
+      "validated_implementation_commit": "319b986efd7ed7546e3a0b54702ea3e187a88741",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_stack_absent_defaults_disabled",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/427",
+      "branch": "test/fstack-config-ff-load-config-stack-absent-defaults-disabled",
+      "validated_implementation_commit": "bd212675361007b18f4cb1e38c0453ab06a3e35d",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_stack_garbage_defaults_disabled",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/428",
+      "branch": "test/fstack-config-ff-load-config-stack-garbage-defaults-disabled",
+      "validated_implementation_commit": "bdd04409a3d54ef22ca7f4353ac6b7def90126d3",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ff_load_config_stack_coexist_disabled_explicit",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-source-test_ff_load_config_stack_coexist_disabled_explicit",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/429",
+      "branch": "test/fstack-config-ff-load-config-stack-coexist-disabled-explicit",
+      "validated_implementation_commit": "b657467d7f62af0379fb336256f95b8657e2be8d",
+      "scope": "configuration document parsing"
+    },
+    {
+      "source_case": "tests/unit/test_ff_config.c::test_ut_nr_12_generation_mapping",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-config-generation-mapping",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/430",
+      "branch": "test/fstack-generation-config",
+      "validated_implementation_commit": "9f39f4776986d593e7f76bfce87a9c6503c09095",
+      "scope": "configuration map plus actual reload generation/IPC names"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_no_cfg",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-no-config",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/431",
+      "branch": "test/fstack-rss-table-router",
+      "validated_implementation_commit": "09238ea162bd6028b36d48deef6609b99c823b97",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_disabled",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/432",
+      "branch": "test/fstack-rss-set-disabled",
+      "validated_implementation_commit": "4453afcd6c454a8ac08fb731b18f8168f3a51eb0",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_set_portrange_inverted_range",
+      "baseline_status": "partial",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_set_portrange_inverted_range",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/433",
+      "branch": "test/fstack-rss-tbl-set-portrange-inverted-range",
+      "validated_implementation_commit": "599f696c6bb009b78b365f40d7770307e321ca40",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_no_cfg",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_no_cfg",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/434",
+      "branch": "test/fstack-rss-tbl-get-portrange-no-cfg",
+      "validated_implementation_commit": "ed3908d2fad9d121a204ec114384878dfcb9e5c3",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_disabled",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_disabled",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/435",
+      "branch": "test/fstack-rss-tbl-get-portrange-disabled",
+      "validated_implementation_commit": "d8866c0c7112851f20ca7fb5f6f52cb7a5d9a224",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_smoke",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/436",
+      "branch": "test/fstack-rss-tbl-get-portrange-smoke",
+      "validated_implementation_commit": "b4219382c16f21f7254331f949ac80165e174353",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_hit",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_hit",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/437",
+      "branch": "test/fstack-rss-tbl-get-portrange-hit",
+      "validated_implementation_commit": "56099659eb9bb053444c740ef2cdf3b212352c9b",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_rotation",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_rotation",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/438",
+      "branch": "test/fstack-rss-tbl-get-portrange-rotation",
+      "validated_implementation_commit": "b6b025340263940c8352d049e7d1aeaed58a60e7",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl_get_portrange_miss",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl_get_portrange_miss",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/439",
+      "branch": "test/fstack-rss-tbl-get-portrange-miss",
+      "validated_implementation_commit": "e1ccf76f5a984821739fab1463c20449eda53527",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_landing",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_check6_landing",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/440",
+      "branch": "test/fstack-rss-check6-landing",
+      "validated_implementation_commit": "411115abebae942848208857719728adf2259878",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_check6_single_queue",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_check6_single_queue",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/441",
+      "branch": "test/fstack-rss-check6-single-queue",
+      "validated_implementation_commit": "ef62d152c58dd7d1ec4ce392dff7313696beca69",
+      "scope": "software RSS table/hash metadata policy"
+    },
+    {
+      "source_case": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_tbl6_set_get",
+      "baseline_status": "blocked",
+      "qualified_ctest": "fstack-rss-table-test_ff_rss_tbl6_set_get",
+      "pr": "https://github.com/rutlang-ai/Ker/pull/442",
+      "branch": "test/fstack-rss-tbl6-set-get",
+      "validated_implementation_commit": "5549ea34671143609f94e43434b4bc9c51a1cb5e",
+      "scope": "software RSS table/hash metadata policy"
+    }
+  ],
+  "boundary": "Complete original unit contracts only. Caller inspection does not configure Ker runtime; software RSS metadata policy does not qualify Linux port allocation or physical RSS. Historical migrations, repeats, framework cases and skips are excluded."
+}
