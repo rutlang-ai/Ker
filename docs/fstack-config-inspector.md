@@ -98,3 +98,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_parse_lcore_mask_calloc_oom_returns_error` | `fstack-config-source-test_parse_lcore_mask_calloc_oom_returns_error` |
 | `test_ff_load_config_thread_mode_enabled` | `fstack-config-source-test_ff_load_config_thread_mode_enabled` |
 | `test_ff_load_config_thread_mode_default_off` | `fstack-config-source-test_ff_load_config_thread_mode_default_off` |
+| `test_ff_load_config_thread_mode_secondary_conflict` | `fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict` |

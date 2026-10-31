@@ -2249,9 +2249,14 @@
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_thread_mode_secondary_conflict",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source mode1 plus secondary is rejected, with mode1/primary as its accepted control. Ker now rejects explicit secondary before EAL for all modes, but has no valid source-style mode1/global stack table. Blanket secondary rejection does not qualify the conditional conflict case. See docs/process-modes.md and issue227.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete original configuration-parser assertions through the unchanged, namespaced caller-side legacy inspector. This qualifies parsed document state only; it neither applies those settings to Ker nor changes native Linux defaults. Original fixtures/assertions, repeated cleanup, real DPDK string splitting, GCC/Clang and ASan/UBSan validation are retained.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict",
+          "provenance_case": "fstack-config-source-test_ff_load_config_thread_mode_secondary_conflict"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_config.c::test_ff_load_config_tcp_ecn_default_off",
