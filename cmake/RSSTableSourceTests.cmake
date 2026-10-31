@@ -1,0 +1,2 @@
+add_test(NAME fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled COMMAND ker-test_ff_rss_tbl_set_portrange_disabled)
+set_tests_properties(fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled PROPERTIES TIMEOUT 30)

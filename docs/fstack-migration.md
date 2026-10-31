@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 323 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 324 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 3 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 37 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 36 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为323 scenario-adapted、3 partial、37 blocked，共40项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为324 scenario-adapted、3 partial、36 blocked，共39项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -50,9 +50,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下方按批次记录的计数是对应记录时点的历史快照，不是当前汇总；当前状态以本页顶部表格和最后的集成更新为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共110项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：40项行为未完成
-（3 partial + 37 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共109项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：39项行为未完成
+（3 partial + 36 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -63,9 +63,9 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 5 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Design generation-aware reload, IPC and drain ownership | 4 | 需要适配器实现 | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
 | Define a supported host exception bridge and KNI policy adaptation | 6 | 需要适配器实现 | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
-| Qualify RSS steering and queue-aware source-port contracts | 26 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
+| Qualify RSS steering and queue-aware source-port contracts | 24 | 需要适配器实现 | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Add positive hardware checksum and TSO acceptance coverage | 4 | 需要适配器实现 | [#221](https://github.com/rutlang-ai/Ker/issues/221) |
 | Define packet-dispatch and PCB callback adaptation boundaries | 7 | 合同差异待决策 | [#222](https://github.com/rutlang-ai/Ker/issues/222) |
 | Resolve device/run lifecycle and upstream fault-injection contracts | 2 | 合同差异待决策 | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
@@ -2280,3 +2280,8 @@ Catalog322/3/38. No traffic/reload continuity is claimed.
 One exact source helper contract is now qualified by an actual caller-only software
 classifier using Ker dispatch and original ring-PMD transport. See
 [scope](fstack-rss-table.md). Catalog323/3/37; native port allocation/hardware RSS stay unqualified.
+
+### Original software RSS contract: `test_ff_rss_tbl_set_portrange_disabled`
+
+Complete original assertions: `fstack-rss-table-test_ff_rss_tbl_set_portrange_disabled`. Caller-only table classification,
+not kernel allocation or hardware RSS. Catalog324/3/36.
