@@ -105,3 +105,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_graceful_reload_requires_slim` | `fstack-config-source-test_graceful_reload_requires_slim` |
 | `test_greload_thread_mode_mutex` | `fstack-config-source-test_greload_thread_mode_mutex` |
 | `test_greload_off_no_new_checks` | `fstack-config-source-test_greload_off_no_new_checks` |
+| `test_greload_bad_value_atoi` | `fstack-config-source-test_greload_bad_value_atoi` |
