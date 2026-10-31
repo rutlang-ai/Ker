@@ -7,6 +7,9 @@ target_include_directories(ker-example-fstack-config PUBLIC
     "${PROJECT_SOURCE_DIR}/examples" "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
     PRIVATE "${PROJECT_SOURCE_DIR}/third_party/inih" "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
 target_link_libraries(ker-example-fstack-config PUBLIC PkgConfig::DPDK)
+# Caller parser and all consumers must agree on the optional upstream layout.
+# This enables document inspection, not Ker host/native coexistence behavior.
+target_compile_definitions(ker-example-fstack-config PUBLIC FF_KERNEL_COEXIST)
 set_source_files_properties("${PROJECT_SOURCE_DIR}/third_party/fstack-config/ff_config.c"
     PROPERTIES COMPILE_DEFINITIONS
     "_GNU_SOURCE;ff_global_cfg=example_upstream_global_cfg;ff_load_config=example_upstream_load_config;ff_unload_config=example_upstream_unload_config;dpdk_argc=example_upstream_dpdk_argc;dpdk_argv=example_upstream_dpdk_argv;short_options=example_upstream_short_options;long_options=example_upstream_long_options;FF_LOG_FILENAME_PREFIX=example_upstream_log_filename_prefix;ini_parse=example_upstream_ini_parse")

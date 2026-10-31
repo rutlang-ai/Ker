@@ -108,3 +108,4 @@ Each row is added in its own PR. All rows qualify document parsing only.
 | `test_greload_bad_value_atoi` | `fstack-config-source-test_greload_bad_value_atoi` |
 | `test_ut_nr_20_queue_mapping_config` | `fstack-config-source-test_ut_nr_20_queue_mapping_config` |
 | `test_ut_nr_25_drain_ring_size_config` | `fstack-config-source-test_ut_nr_25_drain_ring_size_config` |
+| `test_ff_load_config_stack_coexist_enabled` | `fstack-config-source-test_ff_load_config_stack_coexist_enabled` |
