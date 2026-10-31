@@ -16,7 +16,7 @@ table/hash contracts with an actual caller-side Ker dispatcher consumer.
 This does not apply legacy configuration to Ker or qualify Linux PCB port
 allocation, physical RSS, protocol interoperability or complete reload.
 
-Current catalog:334 scenario-adapted,2 partial,27 blocked,15 architecture-specific
+Catalog at completion of this series:334 scenario-adapted,2 partial,27 blocked,15 architecture-specific
 and55 harness-only out of433. **29 behavioral cases remain unfinished.**
 
 Validation: each source case has its whole original assertions and provenance.

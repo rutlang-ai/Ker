@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "source": "lib/ff_host_interface.c",
+  "source_sha256": "65fbe1791945b81623572bd4810df047905a176131f233f6aa1f60f15ae63ddc",
+  "functions": [
+    "ff_host_close",
+    "ff_host_epoll_create1",
+    "ff_host_kqueue_ctl",
+    "ff_host_kqueue_poll"
+  ],
+  "mode": "Unchanged host epoll/readiness excerpts; caller-owned event adapter. No FreeBSD kqueue ABI or protocol implementation."
+}

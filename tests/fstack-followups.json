@@ -236,7 +236,7 @@
       "id": "host-helper-abi",
       "title": "Resolve unmapped host memory, time, environment and kqueue helpers",
       "disposition": "contract-review",
-      "reason": "Three allocation scenarios now have actual native-buffer-domain acceptance: zero-initialized allocation, prefix-preserving resize and zero-size pointer identity. Remaining F-Stack cached time/environment, fatal/shared/file mapping and host kqueue helper ABI cases need their actual adapter or explicit incompatibility disposition; no libc-only test or successful unsupported stub qualifies. The observable two-refresh advancing-realtime case now uses the production synchronization adapter and actual private Linux clock; the cached getter/nullable split-output and fatal refresh-error ABI cases remain incomplete.",
+      "reason": "The remaining hardclock interval and fatal mmap error contracts still need an actual supported adapter or explicit incompatible-boundary disposition. The duplicate host-readiness ADD case is now separately qualified with unchanged retained helper/source-test bodies, original Linux epoll through the active Ker POSIX adapter, an installed TCP/UDP readiness caller, and a real MOD failure control. This does not implement the FreeBSD ff_kevent/filter ABI or a mixed host/native descriptor namespace. No libc-only test or successful unsupported stub qualifies the remaining cases.",
       "evidence": [
         "src/posix/host-memory.c",
         "src/posix/host-clock.c",
@@ -247,7 +247,12 @@
         "docs/native-buffers.md",
         "docs/application-environment.md",
         "src/posix/realtime-clock.c",
-        "tests/posix/fstack-realtime.c"
+        "tests/posix/fstack-realtime.c",
+        "examples/host-readiness.c",
+        "examples/host-readiness-echo.c",
+        "tests/posix/fstack-host-readiness.c",
+        "tests/posix/fstack-host-readiness.py",
+        "docs/fstack-host-readiness.md"
       ],
       "acceptance": [
         "Determine an actual Ker/LKL consumer and contract for each helper, or record why the source-specific API is unsuitable.",
@@ -256,8 +261,7 @@
       ],
       "cases": [
         "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
-        "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits",
-        "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_add_idempotent"
+        "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/229"
     },

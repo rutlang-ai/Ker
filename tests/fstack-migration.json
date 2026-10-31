@@ -4718,9 +4718,22 @@
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_host_kqueue_ctl_add_idempotent",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "F-Stack host helper/FreeBSD ABI surface has no demonstrated Ker adaptation for this case. Native runtime coverage must be connected to the actual Ker/LKL adapter, not libc-only or no-op substitutes.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete byte-identical source test runs against unchanged host epoll helper excerpts through active Ker original-Linux epoll/socket adapters. Repeated ADD remaps the application tag via the real EEXIST/MOD path with exactly one registration. An installed caller uses the same helper for host/native TCP and UDP, with native shutdown and zero outstanding original-PMD mbufs; fault injection rejects a broken MOD path. No FreeBSD kevent/filter ABI or native/host coexistence is claimed.",
+      "ker_tests": [
+        {
+          "ctest": "native-fstack-host-readiness-idempotent",
+          "provenance_case": "native-fstack-host-readiness-idempotent"
+        },
+        {
+          "ctest": "native-fstack-host-readiness-consumer",
+          "provenance_case": "native-fstack-host-readiness-idempotent"
+        },
+        {
+          "ctest": "native-fstack-host-readiness-installed-consumer",
+          "provenance_case": "native-fstack-host-readiness-idempotent"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_host_interface.c::test_ff_host_readv_writev",
