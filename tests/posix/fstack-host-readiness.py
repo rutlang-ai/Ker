@@ -24,7 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--profile', choices=('source', 'consumer', 'fault'), required=True)
+    parser.add_argument('--profile', choices=('source', 'consumer', 'fault', 'mmap-fatal', 'mmap-return'), required=True)
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--install-example-from', type=Path)
     parser.add_argument('--install-bindir', default='bin')
@@ -99,6 +99,23 @@ def main():
                         require(response == PAYLOAD, 'TCP caller payload mismatch')
                 output = app.communicate(timeout=30)[0]
                 log.flush(); log.seek(0); errors = log.read()
+                if args.profile.startswith('mmap-'):
+                    record = json.loads(stats.read_text())
+                    expected_code = 1 if args.profile == 'mmap-fatal' else 3
+                    require(app.returncode == expected_code
+                            and 'NATIVE_MMAP_ERROR_RETURNED' in output
+                            and 'HOST_MMAP_FATAL_ARMED' in output,
+                            'missing real caller mmap exit evidence: ' + output + errors + str(record))
+                    if args.profile == 'mmap-fatal':
+                        require('fst mmap failed:' in errors and 'HOST_MMAP_FATAL_RETURNED' not in output,
+                                'original fatal mmap branch did not terminate the caller: ' + output + errors)
+                    else:
+                        require('HOST_MMAP_FATAL_RETURNED' in output and 'fst mmap failed:' not in errors,
+                                'negative control did not distinguish a mere mmap error return')
+                    require(record['outstanding'] == 0 and record['io']['driver'] == driver,
+                            'caller exit leaked original PMD buffers')
+                    print('PASS: real caller mmap ' + args.profile + '; exact app exit and zero PMD buffers')
+                    return 0
                 if args.profile == 'fault':
                     require(app.returncode != 0 and 'HOST_READINESS_MOD_FAULT' in errors
                             and '(triples[0]) == (app_fd2)' in errors,
@@ -118,6 +135,8 @@ def main():
                 native = record['native']
                 require(native['passive_opens'] == (1 if wire else 5), 'original Linux TCP accept count mismatch')
                 if wire:
+                    require(output.count('HOST_MAPPING_BUFFER_RECLAIMED') == 1,
+                            'real caller mapped network buffer was not reclaimed')
                     require(native['udp_in_datagrams'] == native['udp_out_datagrams'] == 1,
                             'original Linux UDP exchange not observed')
                 print('PASS: native host readiness ' + args.profile + '; original Linux and zero outstanding mbufs')

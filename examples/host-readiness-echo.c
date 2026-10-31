@@ -2,9 +2,11 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include "host-readiness.h"
 #include "host-readiness-native.h"
+#include "host-mapping.h"
 enum { LISTENER = 101, DATAGRAM = 102, STREAM = 103, STALE = 104 };
 static void watch(int epfd, int fd, int tag)
 {
@@ -18,6 +20,10 @@ int main(int argc, char **argv)
     long port = strtol(argv[1], &end, 10);
     REQUIRE(*argv[1] && !*end && port > 0 && port <= 65535);
     example_require_native();
+    /* Use the caller's original fail-stop allocation policy for network data. */
+    unsigned char *mapping = example_host_mmap(NULL, 4096, ff_PROT_READ | ff_PROT_WRITE,
+        ff_MAP_SHARED | ff_MAP_ANON, -1, 0);
+    for (unsigned i = 0; i < 4096; ++i) REQUIRE(mapping[i] == 0);
     int epfd = example_host_epoll_create1(0);
     int tcp = socket(AF_INET, SOCK_STREAM, 0);
     int udp = socket(AF_INET, SOCK_DGRAM, 0), peer = -1;
@@ -29,7 +35,9 @@ int main(int argc, char **argv)
     watch(epfd, udp, DATAGRAM);
     puts("READY host-readiness"); fflush(stdout);
     int got_udp = 0, got_tcp = 0;
-    char stream[128]; size_t used = 0;
+    enum { BUFFER_SIZE = 128 };
+    char *stream = (char *)mapping;
+    size_t used = 0;
     struct timespec pause = {.tv_nsec = 1000000};
     for (unsigned tries = 0; tries < 10000 && !(got_udp && got_tcp); ++tries) {
         int triples[12], count = example_host_kqueue_poll(epfd, triples, 4);
@@ -44,14 +52,15 @@ int main(int argc, char **argv)
                 example_host_kqueue_ctl(epfd, 1, tcp, LISTENER, 0);
                 watch(epfd, peer, STREAM);
             } else if (tag == DATAGRAM) {
-                char bytes[128]; struct sockaddr_in sender; socklen_t length = sizeof(sender);
-                ssize_t size = recvfrom(udp, bytes, sizeof(bytes), 0, (void *)&sender, &length);
+                char *bytes = (char *)mapping + 2048;
+                struct sockaddr_in sender; socklen_t length = sizeof(sender);
+                ssize_t size = recvfrom(udp, bytes, BUFFER_SIZE, 0, (void *)&sender, &length);
                 REQUIRE(size > 0 && sendto(udp, bytes, (size_t)size, 0, (void *)&sender, length) == size);
                 got_udp = 1;
                 example_host_kqueue_ctl(epfd, 1, udp, DATAGRAM, 0);
             } else {
-                REQUIRE(tag == STREAM && peer >= 0 && used < sizeof(stream));
-                ssize_t size = recv(peer, stream + used, sizeof(stream) - used, 0);
+                REQUIRE(tag == STREAM && peer >= 0 && used < BUFFER_SIZE);
+                ssize_t size = recv(peer, stream + used, BUFFER_SIZE - used, 0);
                 REQUIRE(size > 0); used += (size_t)size;
                 if (!memchr(stream, '\0', used)) continue;
                 size_t sent = 0;
@@ -67,6 +76,11 @@ int main(int argc, char **argv)
     REQUIRE(got_udp && got_tcp);
     REQUIRE(example_host_close(peer) == 0 && example_host_close(tcp) == 0);
     REQUIRE(example_host_close(udp) == 0 && example_host_close(epfd) == 0);
+    REQUIRE(example_host_munmap(mapping, 4096) == 0);
+    unsigned char resident;
+    errno = 0;
+    REQUIRE(mincore(mapping, 4096, &resident) == -1 && errno == ENOMEM);
+    puts("HOST_MAPPING_BUFFER_RECLAIMED");
     example_finish_native();
     puts("PASS: native TCP/UDP consumed remapped readiness tags");
     return 0;

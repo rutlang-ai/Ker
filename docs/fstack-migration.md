@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 335 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 336 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 2 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 26 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 25 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为335 scenario-adapted、2 partial、26 blocked，共28项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为336 scenario-adapted、2 partial、25 blocked，共27项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -72,7 +72,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Define a supported host exception bridge and KNI policy adaptation | 6 | adaptation-needed | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 14 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Resolve device/run lifecycle and upstream fault-injection contracts | 2 | contract-review | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 2 | contract-review | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
+| Resolve unmapped host memory, time, environment and kqueue helpers | 1 | contract-review | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | harness-only | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
@@ -2343,3 +2343,7 @@ below update the current totals.
 ## Host readiness duplicate ADD contract
 
 `test_ff_host_kqueue_ctl_add_idempotent` is now scenario-adapted by the complete unchanged source function and four unchanged namespaced host-helper excerpts. They call Ker’s active POSIX epoll/socket boundary, so original Linux owns registration, readiness and TCP behavior. A real and independently installed TCP/UDP caller consumes the remapped tags. Injecting an actual MOD error makes the source’s updated-tag assertion fail. No FreeBSD kevent ABI, filter flags or host/native descriptor coexistence is inferred. See [scope and reproduction](fstack-host-readiness.md). Current catalog:335 scenario-adapted,2 partial,26 blocked;28 behavioral contracts remain unfinished.
+
+## Caller fatal mapping policy
+
+`test_ff_mmap_failure_exits` now executes the complete unchanged source test against the unchanged namespaced non-page-array helper. Debug/NDEBUG processes exit exactly1; a return-only control exits3. Ordinary Ker mmap errors still return to the caller. Real and installed TCP/UDP examples use the mapping for payload buffers and verify reclamation. See [scope and checks](fstack-host-mmap-fatal.md). Current catalog:336 scenario-adapted,2 partial,25 blocked;27 behavioral contracts remain unfinished.

@@ -13,4 +13,5 @@ third_party/fstack-rss-table/*.inc -text -filter -ident -whitespace
 
 # Literal host helper sources retain the pinned upstream whitespace, including EOF.
 third_party/fstack-host-readiness/ff_host_interface.c -text -filter -ident -whitespace
+third_party/fstack-host-readiness/ff_host_interface.h -text -filter -ident -whitespace
 third_party/fstack-host-readiness/*.inc -text -filter -ident -whitespace

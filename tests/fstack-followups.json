@@ -236,7 +236,7 @@
       "id": "host-helper-abi",
       "title": "Resolve unmapped host memory, time, environment and kqueue helpers",
       "disposition": "contract-review",
-      "reason": "The remaining hardclock interval and fatal mmap error contracts still need an actual supported adapter or explicit incompatible-boundary disposition. The duplicate host-readiness ADD case is now separately qualified with unchanged retained helper/source-test bodies, original Linux epoll through the active Ker POSIX adapter, an installed TCP/UDP readiness caller, and a real MOD failure control. This does not implement the FreeBSD ff_kevent/filter ABI or a mixed host/native descriptor namespace. No libc-only test or successful unsupported stub qualifies the remaining cases.",
+      "reason": "The remaining hardclock interval contract still needs an actual supported adapter or explicit incompatible-boundary disposition. The duplicate host-readiness ADD case is now separately qualified with unchanged retained helper/source-test bodies, original Linux epoll through the active Ker POSIX adapter, an installed TCP/UDP readiness caller, and a real MOD failure control. This does not implement the FreeBSD ff_kevent/filter ABI or a mixed host/native descriptor namespace. No libc-only test or successful unsupported stub qualifies the remaining cases. Fatal mmap is separately qualified as a caller fail-stop policy through unchanged original helpers/source assertion, exact debug/NDEBUG process exits, a return-only negative control and real installed TCP/UDP payload mapping. Ker mmap error returns and LKL fixed-address callbacks retain their existing semantics.",
       "evidence": [
         "src/posix/host-memory.c",
         "src/posix/host-clock.c",
@@ -252,7 +252,10 @@
         "examples/host-readiness-echo.c",
         "tests/posix/fstack-host-readiness.c",
         "tests/posix/fstack-host-readiness.py",
-        "docs/fstack-host-readiness.md"
+        "docs/fstack-host-readiness.md",
+        "examples/host-mapping.c",
+        "tests/posix/fstack-host-mmap-fatal.c",
+        "docs/fstack-host-mmap-fatal.md"
       ],
       "acceptance": [
         "Determine an actual Ker/LKL consumer and contract for each helper, or record why the source-specific API is unsuitable.",
@@ -260,8 +263,7 @@
         "Do not add unused wrappers, libc-only smoke tests, successful unsupported stubs or a FreeBSD hardclock layer merely to reduce migration counts."
       ],
       "cases": [
-        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval",
-        "tests/unit/test_ff_host_interface.c::test_ff_mmap_failure_exits"
+        "tests/unit/test_ff_dpdk_if.c::test_ut_nr_17_hardclock_interval"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/229"
     },

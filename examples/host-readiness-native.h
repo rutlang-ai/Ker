@@ -10,13 +10,13 @@
 #include <unistd.h>
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s errno=%d\n", __FILE__, __LINE__, #x, errno); exit(1); } } while (0)
 static void (*example_native_stop)(void);
-static int example_stop(void *unused)
+static inline int example_stop(void *unused)
 {
     (void)unused;
     example_native_stop();
     return 0;
 }
-static void example_require_native(void)
+static inline void example_require_native(void)
 {
     uint64_t (*capabilities)(void) = dlsym(RTLD_DEFAULT, "ker_posix_capabilities");
     const char *(*release)(void) = dlsym(RTLD_DEFAULT, "ker_posix_kernel_release");
@@ -30,7 +30,7 @@ static void example_require_native(void)
     }
     REQUIRE(syscall(SYS_socket, AF_INET, SOCK_STREAM, 0) == -1 && errno == EPERM);
 }
-static void example_finish_native(void)
+static inline void example_finish_native(void)
 {
     int (*run)(ker_posix_loop_func, void *) = dlsym(RTLD_DEFAULT, "ker_posix_run");
     example_native_stop = dlsym(RTLD_DEFAULT, "ker_posix_stop_run");
