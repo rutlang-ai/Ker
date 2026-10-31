@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/F-Stack/f-stack",
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "source": "lib/ff_dpdk_kni.c",
+  "source_sha256": "8f70287d407fd1995ea8f6b40e2cbce1a5a87c7d3ad9d9332350f8e3d0ea2940",
+  "header_source": "lib/ff_dpdk_kni.h",
+  "header_sha256": "48205f52327a166e6aea8395e1846d0fd8f40e11dbf1c7539f3066b7fd2137e3",
+  "functions": [
+    "ff_kni_is_owner_thread",
+    "ff_kni_is_runtime_owner",
+    "kni_needs_stats",
+    "set_bitmap",
+    "kni_set_bitmap",
+    "kni_process_tx",
+    "kni_process_rx",
+    "ff_kni_init",
+    "ff_kni_alloc",
+    "ff_kni_process",
+    "ff_kni_enqueue"
+  ],
+  "mode": "Unchanged allocation and packet-memory/PMD forwarding excerpts. Caller-only actual primary EAL, original TAP and kernel-vhost virtio-user; no FreeBSD stack, future-generation or KNI ABI emulation."
+}

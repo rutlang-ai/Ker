@@ -193,6 +193,7 @@ if(KER_WITH_DPDK AND (KER_BUILD_EXAMPLES OR BUILD_TESTING))
     include(cmake/RSSTableExample.cmake)
     include(cmake/OwnedFrameExample.cmake)
     include(cmake/ReloadFrameExample.cmake)
+    include(cmake/KNIBridgeExample.cmake)
 endif()
 
 if(KER_BUILD_EXAMPLES)

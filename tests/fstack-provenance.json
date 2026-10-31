@@ -91,7 +91,7 @@
       "ker_ctests": [
         "native-fstack-session-drain-peer"
       ],
-      "adaptation": "This maps only test_it_a14_usr2_drain_peer_semantics. The pinned TC-7 source starts a drain-hold worker and a peer-sampling worker, reaps the old worker\u2019s master while the worker stays alive, requires peer1=1 while its heartbeat stamp is fresh, then releases that worker and requires peer1=0 after the source freshness interval. Ker runs two real EAL secondaries under the authenticated resident with distinct epochs/slots but the same source generation0/process0. Only the exact ATTACHED worker can enter drain mode; its own monotonic heartbeat remains valid after master death, and PEER_STATUS selects its fresh epoch/generation. Exact worker death stops heartbeat updates; after the 2-second freshness window PEER_STATUS returns caller-epoch/opposite-generation fallback and clears only the advisory draining bit. The same production adapter test also checks reload-active suppression, coherent true-to-true peer replacement, ordinary worker exit on master death, exact pidfd cleanup and a 511-object resource baseline. The F-M5-1 helper/mirror proof supports the fallback-coordinate oracle but is not a second catalog mapping. The combined CMake-built guest5 evidence record is usr2-drain-peer-guest5-final/run-evidence-attemptusr2final5.json (SHA256 8bccb9243a48f257f0c2b4ce5d946a9af17b6f272f0e70149818cf5227bf133e); all five bound guest suites exited zero and the guest powered down. This TC-7 mapping does not cover P1 detach retention, nonowner/foreign TX, flow-map, external packet TX, established TCP continuity or full reload; P1 queue-ownership and peer-TX retention are recorded separately. No F-Stack protocol implementation or upstream source is modified."
+      "adaptation": "This maps only test_it_a14_usr2_drain_peer_semantics. The pinned TC-7 source starts a drain-hold worker and a peer-sampling worker, reaps the old worker’s master while the worker stays alive, requires peer1=1 while its heartbeat stamp is fresh, then releases that worker and requires peer1=0 after the source freshness interval. Ker runs two real EAL secondaries under the authenticated resident with distinct epochs/slots but the same source generation0/process0. Only the exact ATTACHED worker can enter drain mode; its own monotonic heartbeat remains valid after master death, and PEER_STATUS selects its fresh epoch/generation. Exact worker death stops heartbeat updates; after the 2-second freshness window PEER_STATUS returns caller-epoch/opposite-generation fallback and clears only the advisory draining bit. The same production adapter test also checks reload-active suppression, coherent true-to-true peer replacement, ordinary worker exit on master death, exact pidfd cleanup and a 511-object resource baseline. The F-M5-1 helper/mirror proof supports the fallback-coordinate oracle but is not a second catalog mapping. The combined CMake-built guest5 evidence record is usr2-drain-peer-guest5-final/run-evidence-attemptusr2final5.json (SHA256 8bccb9243a48f257f0c2b4ce5d946a9af17b6f272f0e70149818cf5227bf133e); all five bound guest suites exited zero and the guest powered down. This TC-7 mapping does not cover P1 detach retention, nonowner/foreign TX, flow-map, external packet TX, established TCP continuity or full reload; P1 queue-ownership and peer-TX retention are recorded separately. No F-Stack protocol implementation or upstream source is modified."
     },
     "native-fstack-session-generation-detach": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
@@ -1963,7 +1963,7 @@
       "ker_ctests": [
         "native-fstack-run-stop"
       ],
-      "adaptation": "Scenario-adapted for the pinned fixture\u2019s observable callback-stop-return-teardown smoke: the real EAL fixture invokes a callback that requests stop and returns through teardown, without explicit assertions for the main-loop phases or cleanup return code. Ker verifies one caller callback, actual original-Linux traffic, worker stop/reap acknowledgement, and zero outstanding buffers before API return. Ker executes the callback in the application process while independent EAL workers poll; it does not implement the single coupled EAL-lcore dispatch/RX/message/TX/accounting iteration described in the source comments. No F-Stack callback symbol or lcore ABI equivalence is claimed."
+      "adaptation": "Scenario-adapted for the pinned fixture’s observable callback-stop-return-teardown smoke: the real EAL fixture invokes a callback that requests stop and returns through teardown, without explicit assertions for the main-loop phases or cleanup return code. Ker verifies one caller callback, actual original-Linux traffic, worker stop/reap acknowledgement, and zero outstanding buffers before API return. Ker executes the callback in the application process while independent EAL workers poll; it does not implement the single coupled EAL-lcore dispatch/RX/message/TX/accounting iteration described in the source comments. No F-Stack callback symbol or lcore ABI equivalence is claimed."
     },
     "native-fstack-interface-context": {
       "source_file": "tests/integration/test_ff_dpdk_if_integration.c",
@@ -4465,6 +4465,30 @@
         "fstack-reload-boot-installed-consumer"
       ],
       "adaptation": "Complete unchanged source boot assertions run through existing public Ker reload state/gate/TX APIs and real original DPDK resources. The source host maps registration to a real reload-TX context and activation to actual PMD start/callback registration, not FreeBSD veth. Initial attached state, owner0/allowed gate, all four exact RX/TX drain-ring lookups, one real port, live TX callback and zero actual TX baseline are required. Five complete close/recreate cycles use original vdev uninit and restore pool511, all rings, port and state. Real and independently installed callers actually use all four rings with serialized same-process park-epoch acknowledgement/release/claim and original net_ring TX2/RX3 for exact64/4096/9014-byte pointer-preserving transfers. Hook-allocation failure and premature real TX fail the original activation/zero-counter assertions. This qualifies bounded caller boot state, not FreeBSD veth ABI, authenticated resident ownership, cross-process epoch banks, Linux protocol behavior or full graceful reload. See docs/fstack-reload-boot.md."
+    },
+    "fstack-kni-stats-oom": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_p1_kni_stats_oom",
+      "ker_ctests": [
+        "native-fstack-kni-stats-oom-source",
+        "native-fstack-kni-stats-real-exit",
+        "native-fstack-kni-host-consumer",
+        "native-fstack-kni-host-installed-consumer",
+        "native-fstack-kni-allocation-bypass-control"
+      ],
+      "adaptation": "Complete unchanged source assertions exercise the original named kni:stat table allocation failure through the actual EAL primary caller. The original fatal path is also verified in a subprocess; original TAP/kernel-vhost virtio-user transfers, live statistics, installed consumer and full pool reclamation establish a working positive boundary. This qualifies the allocation contract only, not primary_slim future-owner, secondary/reload ownership or FreeBSD KNI ABI; see docs/fstack-kni-allocation.md. Five close/recreate assertion cycles use real rte_zmalloc forwarding except the exact named fault. Fatal interception is test-only; separate processes forward actual rte_exit(1)/rte_panic(SIGABRT). Bypassing the table fault fails the unchanged fatal expectation. No transport parser is imported; experimental Ethernet frames retain exact bytes in both directions. Original function bodies, stats layout and source test bodies remain byte-identical and SHA256 audited."
+    },
+    "fstack-kni-slot-oom": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_p1_kni_slot_oom",
+      "ker_ctests": [
+        "native-fstack-kni-slot-oom-source",
+        "native-fstack-kni-slot-real-panic",
+        "native-fstack-kni-host-consumer",
+        "native-fstack-kni-host-installed-consumer",
+        "native-fstack-kni-allocation-bypass-control"
+      ],
+      "adaptation": "Complete unchanged source assertions exercise the original named kni:stat_lcore slot allocation failure through the actual EAL primary caller. The original fatal path is also verified in a subprocess; original TAP/kernel-vhost virtio-user transfers, live statistics, installed consumer and full pool reclamation establish a working positive boundary. This qualifies the allocation contract only, not primary_slim future-owner, secondary/reload ownership or FreeBSD KNI ABI; see docs/fstack-kni-allocation.md. Five close/recreate assertion cycles use real rte_zmalloc forwarding except the exact named fault. Fatal interception is test-only; separate processes forward actual rte_exit(1)/rte_panic(SIGABRT). Bypassing the table fault fails the unchanged fatal expectation. No transport parser is imported; experimental Ethernet frames retain exact bytes in both directions. Original function bodies, stats layout and source test bodies remain byte-identical and SHA256 audited."
     }
   }
 }

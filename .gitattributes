@@ -22,3 +22,6 @@ third_party/fstack-caller-clock/*.inc -text -filter -ident -whitespace
 # Preserve literal owned-send implementation and metadata declarations.
 third_party/fstack-owned-send/*.inc -text -filter -ident -whitespace
 third_party/fstack-owned-send/ff_dpdk_if.h -text -filter -ident -whitespace
+
+# Retain the pinned KNI allocator/PMD source bytes.
+third_party/fstack-kni-bridge/* -text -filter -ident -whitespace
