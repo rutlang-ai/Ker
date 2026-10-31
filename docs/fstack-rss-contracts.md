@@ -2,8 +2,10 @@
 
 [Issue #220](https://github.com/rutlang-ai/Ker/issues/220) originally tracked31
 source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. The two
-standalone IPv4/IPv6 thash equivalence cases are now scenario-adapted;
-29 remain in that issue (one partial,28 blocked). The table below preserves
+standalone IPv4/IPv6 thash equivalence cases were qualified earlier. Three
+parsed-document contracts and the NULL-config table-setter contract are now
+separately qualified in caller-side examples;25 remain in this issue
+(one partial,24 blocked). The table below preserves
 all31 exact contracts and identifies those two qualifications. It records
 actual assertions, not promises of future real-machine acceptance.
 
@@ -62,16 +64,17 @@ socket allocation are separate integration requirements.
 
 `test_ff_config.c` and `test_ff_dpdk_if.c` refer to the unchanged retained files
 under [tests/upstream/fstack/tests/unit](../tests/upstream/fstack/tests/unit).
-Every original #220 exact ID appears once below. Only the two explicitly
-qualified equivalence rows have new pass mappings; the existing partial
-range-validation mapping remains partial.
+Every original #220 exact ID appears once below. Qualified rows distinguish parsed-document inspection, software table/helper
+contracts and standalone equivalence. None establishes the native kernel
+allocation hook or hardware RSS landing. The existing partial range-validation
+mapping remains partial until its actual table setter is qualified.
 
 | Source file | Exact case | Assertion and remaining boundary |
 | --- | --- | --- |
 | `test_ff_config.c` | `test_rss_check_cfg_handler_no_port_no_vlan` | Section appears before port configuration; the original source only asserts rss_check_cfgs stays NULL and discards the loader result. The caller-side source test now separately confirms the retained `rss_check.enable` callback ran and returned 0 with the NULL port list, while the production inspector still rejects the unsafe document before upstream loading. This proves the original missing-port guard only; Ker has no equivalent ordered RSS-table loader contract. |
-| `test_ff_config.c` | `test_rss_tbl_cfg_handler_bad_tuple` | Malformed three-token rule leaves nb_rss_tbl zero if the source RSS block exists; loader result is discarded. Generic unknown-section rejection does not prove rule-parser behavior. |
-| `test_ff_config.c` | `test_rss_check_thash_adjust_off_parses` | Valid source configuration succeeds with RSS enabled and thash_adjust=0. Ker has no corresponding source-port optimization toggle; rejecting the field is not this positive contract. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_no_cfg` | Source table setter declines with -1 when rss_check_cfgs is NULL. An absent Ker table API or rejected INI section is not a demonstrated setter guard. |
+| `test_ff_config.c` | `test_rss_tbl_cfg_handler_bad_tuple` | The source malformed three-token rule leaves nb_rss_tbl zero if the block exists and discards the loader result. Qualified by the actual unchanged rule parser in the caller-side inspector, not generic unknown-section rejection. |
+| `test_ff_config.c` | `test_rss_check_thash_adjust_off_parses` | The source valid configuration succeeds with RSS enabled and thash_adjust=0. The complete original parsed-document assertions are qualified in the caller inspector; no Ker source-port optimization is enabled or disabled by this document inspection. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_no_cfg` | The original table setter declines with -1 for NULL configuration. Qualified by fstack-rss-table-no-config plus an actual enabled caller-side software table consumer; see docs/fstack-rss-table.md. Native Linux port allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_disabled` | Source table setter declines with -1 for enable=0; the surrounding enabled table contract is still required. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_set_portrange_inverted_range` | Source enabled-table setter rejects first>last. Existing original-Linux ephemeral-range validation is partial evidence only; no Ker RSS candidate table update or queue ownership contract is implemented. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl_get_portrange_no_cfg` | Source lookup declines with -1 when configuration is NULL. No corresponding real Ker lookup consumer is qualified. |
@@ -99,7 +102,6 @@ range-validation mapping remains partial.
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash_ctx_init_thash_adjust_off` | Source initialization returns0 when optimization is disabled. This is a deliberate disabled-path result, not evidence that a usable reverse-hash context exists. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_range_params` | Source IPv4 adjustment declines for an inverted range and a two-port sub-RETA range, but RETA0/unready context may reject earlier. The unit does not independently reach ready-context range validation. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_range_params` | Source IPv6 adjustment similarly declines inverted and too-small ranges with the earlier unready guard active. Original Linux range checks alone do not qualify reverse-hash candidate selection. |
-
 ## Next implementation gates
 
 First establish the original Linux allocation extension point and its real
@@ -111,8 +113,8 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is322 scenario-adapted,3 partial,38 blocked,
-15 architecture-specific and55 harness-only out of433. All41 blocked/partial
+The current catalog is323 scenario-adapted,3 partial,37 blocked,
+15 architecture-specific and55 harness-only out of433. All40 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
 production helper. This qualification does not satisfy the remaining table,
