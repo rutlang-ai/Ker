@@ -187,6 +187,7 @@ if(KER_BUILD_EXAMPLES)
     add_executable(ker-socket-echo examples/posix-echo.c)
     install(TARGETS ker-socket-echo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
+include("${PROJECT_SOURCE_DIR}/cmake/FStackHostReadiness.cmake")
 install(FILES "${ker_native_source}/COPYING" "${ker_native_source}/LICENSES/preferred/GPL-2.0"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux)
 if(BUILD_TESTING)
