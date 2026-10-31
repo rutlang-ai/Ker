@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 336 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 337 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 2 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 25 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 24 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为336 scenario-adapted、2 partial、25 blocked，共27项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为337 scenario-adapted、2 partial、24 blocked，共26项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -55,9 +55,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下面的 issue 表与当前机器清单同步；后续各批次记录保留其历史计数，当前总数以上表为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共98项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：28项行为未完成
-（2 partial + 26 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共96项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：26项行为未完成
+（2 partial + 24 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -72,7 +72,6 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | Define a supported host exception bridge and KNI policy adaptation | 6 | adaptation-needed | [#219](https://github.com/rutlang-ai/Ker/issues/219) |
 | Qualify RSS steering and queue-aware source-port contracts | 14 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Resolve device/run lifecycle and upstream fault-injection contracts | 2 | contract-review | [#223](https://github.com/rutlang-ai/Ker/issues/223) |
-| Resolve unmapped host memory, time, environment and kqueue helpers | 1 | contract-review | [#229](https://github.com/rutlang-ai/Ker/issues/229) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | harness-only | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
@@ -125,26 +124,26 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 
 | 上游入口 | 总数 | 场景适配 | 部分覆盖 | 阻塞 | 架构特有 | 工具自测 |
 |---|---:|---:|---:|---:|---:|---:|
-| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 14 | 6 | 0 | 0 | 0 |
-| [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
+| [integration/test_ff_dpdk_if_integration.c](../tests/upstream/fstack/tests/integration/test_ff_dpdk_if_integration.c) | 20 | 19 | 1 | 0 | 0 | 0 |
+| [integration/test_ff_gendir_mp_integration.c](../tests/upstream/fstack/tests/integration/test_ff_gendir_mp_integration.c) | 7 | 7 | 0 | 0 | 0 | 0 |
 | [integration/test_ff_kni_integration.c](../tests/upstream/fstack/tests/integration/test_ff_kni_integration.c) | 8 | 8 | 0 | 0 | 0 | 0 |
-| [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 0 | 0 | 7 | 0 | 0 |
+| [integration/test_ff_reload_integration.c](../tests/upstream/fstack/tests/integration/test_ff_reload_integration.c) | 7 | 6 | 0 | 1 | 0 | 0 |
 | [integration/test_graceful_reload.sh](../tests/upstream/fstack/tests/integration/test_graceful_reload.sh) | 1 | 0 | 0 | 1 | 0 | 0 |
 | [integration/test_mtu.sh](../tests/upstream/fstack/tests/integration/test_mtu.sh) | 1 | 1 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
-| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 32 | 9 | 55 | 0 | 0 |
+| [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 96 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 6 | 2 | 59 | 0 | 0 |
-| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 15 | 0 | 10 | 0 | 0 |
+| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 50 | 1 | 16 | 0 | 0 |
+| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 19 | 0 | 6 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 26 | 0 | 8 | 0 | 0 |
-| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 19 | 1 | 5 | 0 | 0 |
-| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 5 | 1 | 0 | 0 | 0 |
-| [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 0 | 0 | 12 | 0 | 0 |
+| [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 34 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_ini_parser.c](../tests/upstream/fstack/tests/unit/test_ff_ini_parser.c) | 25 | 25 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_init.c](../tests/upstream/fstack/tests/unit/test_ff_init.c) | 6 | 6 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_ipc.c](../tests/upstream/fstack/tests/unit/test_ff_ipc.c) | 12 | 12 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_log.c](../tests/upstream/fstack/tests/unit/test_ff_log.c) | 13 | 13 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_thread.c](../tests/upstream/fstack/tests/unit/test_ff_thread.c) | 5 | 2 | 0 | 0 | 3 | 0 |
-| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 4 | 0 | 7 | 2 | 0 |
+| [unit/test_ff_zc_send.c](../tests/upstream/fstack/tests/unit/test_ff_zc_send.c) | 13 | 11 | 0 | 0 | 2 | 0 |
 | [unit/test_hello.c](../tests/upstream/fstack/tests/unit/test_hello.c) | 2 | 0 | 0 | 0 | 0 | 2 |
 | [unit/test_reload_harness.py](../tests/upstream/fstack/tests/unit/test_reload_harness.py) | 53 | 0 | 0 | 0 | 0 | 53 |
 
@@ -2347,3 +2346,7 @@ below update the current totals.
 ## Caller fatal mapping policy
 
 `test_ff_mmap_failure_exits` now executes the complete unchanged source test against the unchanged namespaced non-page-array helper. Debug/NDEBUG processes exit exactly1; a return-only control exits3. Ordinary Ker mmap errors still return to the caller. Real and installed TCP/UDP examples use the mapping for payload buffers and verify reclamation. See [scope and checks](fstack-host-mmap-fatal.md). Current catalog:336 scenario-adapted,2 partial,25 blocked;27 behavioral contracts remain unfinished.
+
+## Caller interval planning
+
+`test_ut_nr_17_hardclock_interval` now runs its complete original assertions against the unchanged interval function. The TCP/UDP readiness caller uses that function for its actual polling delay at100/1000Hz; independent installation, measured waits, invalid-rate rejection and a round-down mutation qualify consumption and the original ceiling assertion. This covers the pure source formula, not FreeBSD hardclock or Linux protocol timers. See [scope and reproduction](fstack-caller-clock.md). All source cases previously tracked in [#229](https://github.com/rutlang-ai/Ker/issues/229) now have individual adaptations. Current catalog:337 scenario-adapted,2 partial,24 blocked;26 behavioral contracts remain unfinished. The per-file overview above is refreshed from this catalog, including earlier completed migrations.

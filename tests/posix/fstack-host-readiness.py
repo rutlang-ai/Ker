@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+import re
+import time
 from pathlib import Path
 import selectors
 import socket
@@ -24,21 +26,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
         parser.add_argument('--' + name, type=Path, required=True)
-    parser.add_argument('--profile', choices=('source', 'consumer', 'fault', 'mmap-fatal', 'mmap-return'), required=True)
+    parser.add_argument('--profile', choices=('source', 'consumer', 'consumer-high-rate', 'fault', 'mmap-fatal', 'mmap-return', 'clock-source', 'clock-round-down', 'clock-invalid'), required=True)
+    parser.add_argument('--poll-hz', type=int, default=1000)
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--install-example-from', type=Path)
     parser.add_argument('--install-bindir', default='bin')
     args = parser.parse_args()
     if not args.inside:
         command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
-                   '--inside', '--profile', args.profile]
+                   '--inside', '--profile', args.profile, '--poll-hz', str(args.poll_hz)]
         for name in ('launcher', 'library', 'worker', 'app', 'pmd-root'):
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         if args.install_example_from:
             command += ['--install-example-from', str(args.install_example_from.resolve()),
                         '--install-bindir', args.install_bindir]
         return subprocess.run(command).returncode
-    wire = args.profile == 'consumer'
+    wire = args.profile in ('consumer', 'consumer-high-rate')
     driver = 'net_tap' if wire else 'net_null'
     modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_' + driver + '.so'))
     require(len(modules) == 1, 'one original ' + driver + ' PMD is required; no skip')
@@ -65,7 +68,9 @@ def main():
                             '--component', 'host-readiness-example'], check=True)
             application = prefix / args.install_bindir / args.app.name
             require(application.is_file(), 'caller example not installed')
-            require(list(prefix.rglob('LICENSE')), 'upstream license not installed')
+            licenses = list(prefix.rglob('LICENSE'))
+            require(len(licenses) == 2 and {path.parent.name for path in licenses} ==
+                    {'host-readiness', 'caller-clock'}, 'both upstream licenses must be installed')
         environment = private_runtime_environment(root / 'dpdk')
         environment['LD_PRELOAD'] = str(modules[0])
         environment['LD_LIBRARY_PATH'] = str(args.pmd_root) + ':' + environment.get('LD_LIBRARY_PATH', '')
@@ -74,17 +79,26 @@ def main():
                    '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
                    '--port', 'net_tap0' if wire else 'net_null0', '--eal', eal,
                    '--stats', str(stats), '--', str(application)]
-        if wire:
-            command += ['29912']
+        if wire or args.profile == 'clock-invalid':
+            command += ['29912', str(args.poll_hz)]
         with (root / 'stderr').open('w+') as log:
+            started = time.monotonic_ns()
             app = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=log,
                                    env=environment, text=True)
+            high_rate_marker_seen = False
             try:
                 if wire:
                     with selectors.DefaultSelector() as selector:
                         selector.register(app.stdout, selectors.EVENT_READ)
                         require(selector.select(20), 'caller readiness startup timeout')
                     require(app.stdout.readline().startswith('READY '), 'caller not ready')
+                    if args.profile == 'consumer-high-rate':
+                        # readline shares TextIOWrapper's buffer with the READY line above;
+                        # the app's existing 10-second deadline and CTest timeout bound this wait.
+                        marker = app.stdout.readline()
+                        require(marker.strip() == 'HIGH_RATE_POLL_10001',
+                                'caller exited before poll 10001: ' + marker)
+                        high_rate_marker_seen = True
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
                         udp.settimeout(8)
                         udp.sendto(PAYLOAD, ('198.18.0.2', 29912))
@@ -99,6 +113,30 @@ def main():
                         require(response == PAYLOAD, 'TCP caller payload mismatch')
                 output = app.communicate(timeout=30)[0]
                 log.flush(); log.seek(0); errors = log.read()
+                if args.profile in ('clock-source', 'clock-round-down', 'clock-invalid'):
+                    record = json.loads(stats.read_text())
+                    require(record['outstanding'] == 0 and record['io']['driver'] == driver,
+                            'clock profile leaked original PMD buffers')
+                    if args.profile == 'clock-round-down':
+                        require(app.returncode == 1 and 'CALLER_CLOCK_ROUND_DOWN' in errors
+                                and 'check failed:' in errors and '30000000ULL' in errors
+                                and 'CLOCK_SOURCE_CASE' not in output,
+                                'original ceiling assertion did not reject round-down mutation: ' + errors)
+                    else:
+                        require(record['run_shutdown'] and record['run_shutdown_ack'],
+                                'native clock profile did not shut down cleanly')
+                        if args.profile == 'clock-invalid':
+                            require(app.returncode == 2 and 'Unsupported caller poll frequency' in errors
+                                    and 'READY ' not in output and 'CALLER_CADENCE' not in output,
+                                    'invalid poll rate reached the caller loop: ' + output + errors)
+                        else:
+                            require(app.returncode == 0 and
+                                    output.count('CLOCK_SOURCE_CASE test_ut_nr_17_hardclock_interval') == 1,
+                                    'complete clock source test did not pass: ' + output + errors)
+                        require(record['native']['passive_opens'] == 0,
+                                'clock-only profile unexpectedly accepted a TCP connection')
+                    print('PASS: native caller interval ' + args.profile)
+                    return 0
                 if args.profile.startswith('mmap-'):
                     record = json.loads(stats.read_text())
                     expected_code = 1 if args.profile == 'mmap-fatal' else 3
@@ -135,6 +173,16 @@ def main():
                 native = record['native']
                 require(native['passive_opens'] == (1 if wire else 5), 'original Linux TCP accept count mismatch')
                 if wire:
+                    cadence = re.findall(r'CALLER_CADENCE interval_ns=(\d+) waits=(\d+) waited_ns=(\d+)', output)
+                    require(len(cadence) == 1, 'missing/duplicate caller cadence observation: ' + output)
+                    interval, waits, waited = map(int, cadence[0])
+                    expected = 1000 * (1000000 // args.poll_hz)
+                    require(interval == expected and waits > 0 and waited >= waits * interval
+                            and time.monotonic_ns() - started >= waited,
+                            'caller did not consume the original interval in real waits: ' + output)
+                    if args.profile == 'consumer-high-rate':
+                        require(waits > 10000 and high_rate_marker_seen,
+                                'delayed peers did not exercise more than 10000 real caller waits: ' + output)
                     require(output.count('HOST_MAPPING_BUFFER_RECLAIMED') == 1,
                             'real caller mapped network buffer was not reclaimed')
                     require(native['udp_in_datagrams'] == native['udp_out_datagrams'] == 1,
