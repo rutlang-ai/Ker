@@ -76,3 +76,6 @@ set_tests_properties(fstack-config-source-test_graceful_reload_default_off PROPE
 add_test(NAME fstack-config-source-test_graceful_reload_parse COMMAND ker-test_graceful_reload_parse)
 set_tests_properties(fstack-config-source-test_graceful_reload_parse PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_graceful_reload_requires_slim COMMAND ker-test_graceful_reload_requires_slim)
+set_tests_properties(fstack-config-source-test_graceful_reload_requires_slim PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
