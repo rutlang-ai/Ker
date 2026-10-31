@@ -100,3 +100,6 @@ set_tests_properties(fstack-config-source-test_ff_load_config_stack_coexist_enab
 add_test(NAME fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled COMMAND ker-test_ff_load_config_stack_absent_defaults_disabled)
 set_tests_properties(fstack-config-source-test_ff_load_config_stack_absent_defaults_disabled PROPERTIES
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
+add_test(NAME fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled COMMAND ker-test_ff_load_config_stack_garbage_defaults_disabled)
+set_tests_properties(fstack-config-source-test_ff_load_config_stack_garbage_defaults_disabled PROPERTIES
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/unit" TIMEOUT 30)
