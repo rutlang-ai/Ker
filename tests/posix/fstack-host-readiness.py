@@ -93,18 +93,12 @@ def main():
                         require(selector.select(20), 'caller readiness startup timeout')
                     require(app.stdout.readline().startswith('READY '), 'caller not ready')
                     if args.profile == 'consumer-high-rate':
-                        deadline = time.monotonic() + 10
-                        with selectors.DefaultSelector() as selector:
-                            selector.register(app.stdout, selectors.EVENT_READ)
-                            while True:
-                                remaining = deadline - time.monotonic()
-                                require(remaining > 0 and selector.select(remaining),
-                                        'caller did not reach poll 10001 before its elapsed-time deadline')
-                                marker = app.stdout.readline()
-                                require(marker, 'caller exited before poll 10001')
-                                if marker.strip() == 'HIGH_RATE_POLL_10001':
-                                    high_rate_marker_seen = True
-                                    break
+                        # readline shares TextIOWrapper's buffer with the READY line above;
+                        # the app's existing 10-second deadline and CTest timeout bound this wait.
+                        marker = app.stdout.readline()
+                        require(marker.strip() == 'HIGH_RATE_POLL_10001',
+                                'caller exited before poll 10001: ' + marker)
+                        high_rate_marker_seen = True
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
                         udp.settimeout(8)
                         udp.sendto(PAYLOAD, ('198.18.0.2', 29912))
