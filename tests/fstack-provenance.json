@@ -4310,6 +4310,18 @@
         "fstack-rss-table-import"
       ],
       "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
+    },
+    "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_tbl_get_portrange_smoke"
+      ],
+      "ker_ctests": [
+        "fstack-rss-table-test_ff_rss_tbl_get_portrange_smoke",
+        "fstack-rss-table-consumer",
+        "fstack-rss-table-import"
+      ],
+      "adaptation": "Whole original source function and supporting source helpers retained literally. Actual unchanged table/hash functions, original layouts, real allocated metadata contexts and five reset/run/cleanup cycles. Source BSS RETA0 is retained only as the source unit setup, never claimed as a queried device capability. Common enabled consumer uses128 IPv4/IPv6 original-PMD fixtures and public Ker dispatch, independent hash,32/96 software classifications, exact pointers/bytes/counters and unique pool511/511. GCC/Clang/ASan/UBSan and source integrity checks. Native Linux allocation hooks, reverse adjustment and physical RSS remain outside this software contract."
     }
   }
 }
