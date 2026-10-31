@@ -191,6 +191,7 @@ if(KER_WITH_DPDK AND (KER_BUILD_EXAMPLES OR BUILD_TESTING))
     include(cmake/A10Dispatch.cmake)
     include(cmake/FStackConfigExample.cmake)
     include(cmake/RSSTableExample.cmake)
+    include(cmake/OwnedFrameExample.cmake)
 endif()
 
 if(KER_BUILD_EXAMPLES)

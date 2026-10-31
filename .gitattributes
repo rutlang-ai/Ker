@@ -18,3 +18,7 @@ third_party/fstack-host-readiness/*.inc -text -filter -ident -whitespace
 
 # Original caller clock formula retains source whitespace.
 third_party/fstack-caller-clock/*.inc -text -filter -ident -whitespace
+
+# Preserve literal owned-send implementation and metadata declarations.
+third_party/fstack-owned-send/*.inc -text -filter -ident -whitespace
+third_party/fstack-owned-send/ff_dpdk_if.h -text -filter -ident -whitespace
