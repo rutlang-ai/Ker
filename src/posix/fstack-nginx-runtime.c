@@ -289,6 +289,13 @@ ker_fstack_nginx_runtime_preflight(int argc, char * const argv[])
     ker_socket_client_close(&probe);
     runtime_trace("ff_init_stage stage=broker_probe_ready pid=%ld path=%s\n",
         (long)getpid(), plan.config.broker_path);
+    if (ker_sb_preload_ff_owner_begin() != 0) {
+        int saved_errno = errno;
+        runtime_trace("ff_init_stage stage=owner_context_failed pid=%ld errno=%d\n",
+            (long)getpid(), saved_errno);
+        errno = saved_errno;
+        return -1;
+    }
 
     plan.proc_id = proc_id;
     plan.proc_type = proc_type;
@@ -459,4 +466,3 @@ void ff_regist_packet_dispatcher_context(dispatch_func_context_t callback)
 void ff_unregist_packet_dispatcher_context(void)
 { unsupported_abort("ff_unregist_packet_dispatcher_context"); }
 int ff_syncache_count(void) { unsupported_abort("ff_syncache_count"); }
-int ff_socket_snd_pending(void) { unsupported_abort("ff_socket_snd_pending"); }

@@ -27,10 +27,10 @@ route selected unchanged `ff_api.h` TCP socket calls through the original-Linux
 broker. The opt-in [bounded FF-enabled Nginx runtime profile](fstack-nginx-runtime.md)
 now binds those leaves to the pinned executable's detached `graceful_reload=0`
 caller path, restores its FF fd offset, and demonstrates a one-worker
-HUP/USR2/WINCH lifecycle over original Linux TCP. It explicitly rejects
-secondary-worker initialization; multiworker `reuseport` clone ownership
-remains unsupported. The profile does not implement generation reload or
-census behavior.
+HUP/USR2/WINCH lifecycle over original Linux TCP. The validated worker shim
+also supports one- and two-worker `reuseport` listener ownership across HUP,
+USR2, and WINCH while retaining `graceful_reload=0`. This caller profile does
+not implement the F-Stack generation reload FSM.
 
 The `native-socket-broker-generation-handoff` caller test exercises the
 broker's fixed two-member original-Linux reuseport selector with two old and
@@ -75,8 +75,8 @@ through the leaf bridge.
 This hook is not the pinned source's whole process FD-table walk: raw or
 unregistered descriptors are outside its view, and the public FF/POSIX socket
 creation adapters still reject UDP. The graceful-off caller profile does not
-invoke the generation FSM; syncache, send-pending, flow-map and dispatcher hooks
-remain unsupported. The source inventory entry remains blocked.
+invoke the generation FSM; syncache, flow-map, and dispatcher hooks remain
+unsupported. The source inventory entry remains blocked.
 
 The bounded FF bridge now supports `ff_dup` for registered TCP descriptors via
 the existing namespaced `F_DUPFD` adapter. Tests cover lowest-free slot reuse,
@@ -87,6 +87,24 @@ by the FF bridge. This leaf does not add `ff_dup2` or establish full F-Stack FD
 table equivalence; the broader drain, lifecycle and blocked source inventory
 status are unchanged. The pinned [`ff_dup` implementation](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c#L2167-L2189)
 routes F-Stack descriptors through `sys_dup`.
+
+The opt-in runtime now provides `ff_socket_snd_pending` for ordinary
+ready-copy TCP sockets created through the authenticated FF owner context. Each
+process receives a distinct broker-owned mark bound to its host PID, process
+start time, and pidfd; accepted children and duplicated aliases retain that
+owner. The hook reports original-Linux queued payload bytes, including
+descriptorless full sockets, and clamps to the upstream `int` result range.
+Generic, inherited, or foreign registered sockets cause the query to fail
+closed, even after those descriptors close. Sticky history is stored by the
+broker against the authenticated PID, process start time, and pidfd, so it
+survives session reconnect and `exec`; owner marks remain stable for the live
+process. The same-process native broker is within the trusted boundary. The
+check does not defend against privileged code with direct access to sockets in
+the same LKL instance and the ability to set their marks. The
+profile excludes sendfile and
+does not enable graceful reload. It still requires generation admission
+quiescence and the original F-Stack FSM before a zero result can drive a
+promotion decision; the source inventory entry remains blocked.
 
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
