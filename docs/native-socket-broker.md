@@ -96,3 +96,8 @@ registration, accepts another connection from the inherited listener, and
 closes all capability references so the broker can finalize original Linux.
 The test does not claim that arbitrary host applications or nginx can use this
 limited API without a caller adapter.
+
+The separate [`ker::socket-preload` caller adapter](native-socket-preload.md)
+maps a documented POSIX subset onto this SDK. Its tested no-FF Nginx lifecycle
+is a frontend prerequisite only; it does not qualify the F-Stack module or
+complete graceful-reload migration.

@@ -278,7 +278,9 @@ int ker_socket_client_socket(struct ker_socket_client *client, int domain, int t
     int fd = -1;
     if (socket_call(client, -1, KER_SB_SOCKET, &args, sizeof(args), NULL, 0, &fd, NULL) < 0) return -1;
     int flags = (type & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
-    if (fcntl(fd, F_SETFD, flags) < 0) { int error = errno; close(fd); return fail(error); }
+    if (syscall(SYS_fcntl, fd, F_SETFD, flags) < 0) {
+        int error = errno; (void)syscall(SYS_close, fd); return fail(error);
+    }
     return fd;
 }
 
@@ -314,8 +316,8 @@ int ker_socket_client_accept4(struct ker_socket_client *client, int cap_fd,
         (void)syscall(SYS_close, new_cap); return fail(EPROTO);
     }
     int descriptor_flags = (flags & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
-    if (fcntl(new_cap, F_SETFD, descriptor_flags) < 0) {
-        int error = errno; close(new_cap); return fail(error);
+    if (syscall(SYS_fcntl, new_cap, F_SETFD, descriptor_flags) < 0) {
+        int error = errno; (void)syscall(SYS_close, new_cap); return fail(error);
     }
     if (address && length) {
         socklen_t copy = *length < output.length ? *length : (socklen_t)output.length;
@@ -405,8 +407,9 @@ int ker_socket_client_epoll_create1(struct ker_socket_client *client, int flags)
     struct ker_sb_epoll_create input = {.flags = flags};
     int cap = -1;
     if (socket_call(client, -1, KER_SB_EPOLL_CREATE1, &input, sizeof(input), NULL, 0, &cap, NULL) < 0) return -1;
-    if (fcntl(cap, F_SETFD, (flags & EPOLL_CLOEXEC) ? FD_CLOEXEC : 0) < 0) {
-        int error = errno; close(cap); return fail(error);
+    if (syscall(SYS_fcntl, cap, F_SETFD,
+            (flags & EPOLL_CLOEXEC) ? FD_CLOEXEC : 0) < 0) {
+        int error = errno; (void)syscall(SYS_close, cap); return fail(error);
     }
     return cap;
 }
@@ -459,7 +462,7 @@ int ker_socket_client_dup(struct ker_socket_client *client, int cap_fd)
     int duplicate = -1;
     if (socket_call(client, cap_fd, KER_SB_DUP, NULL, 0, NULL, 0,
             &duplicate, NULL) < 0) return -1;
-    if (fcntl(duplicate, F_SETFD, 0) < 0) {
+    if (syscall(SYS_fcntl, duplicate, F_SETFD, 0) < 0) {
         int error = errno;
         (void)syscall(SYS_close, duplicate);
         return fail(error);
