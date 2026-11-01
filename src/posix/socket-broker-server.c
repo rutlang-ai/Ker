@@ -36,10 +36,22 @@
 
 struct sb_group {
     bool live;
+    bool owner_aware;
+    bool materialized;
+    bool failed;
+    bool slot_issued[2];
     uint16_t port;
     int base_fd[2];
     uint32_t member_mark[2];
     uint64_t member_cookie[2];
+    uint64_t incarnation;
+    uint64_t claim_generation[2];
+    uint64_t member_owner_token[2];
+    pid_t member_owner_pid[2];
+    uint64_t member_owner_start_time[2];
+    struct sockaddr_in address;
+    int backlog;
+    uint32_t group_rights;
     size_t handles;
 };
 struct sb_object {
@@ -61,11 +73,17 @@ struct sb_object {
     uint16_t census_local_port;
     uint64_t census_listener_cookie;
     uint64_t owner_token;
+    uint64_t group_incarnation;
+    uint64_t group_claim_generation;
 };
 struct sb_owner {
     bool live;
     bool unowned_network_history;
     bool owned_socket_history;
+    bool owner_group_claimed;
+    uint64_t owner_group_incarnation;
+    uint64_t owner_group_claim_generation;
+    uint32_t owner_group_index;
     pid_t pid;
     uid_t uid;
     gid_t gid;
@@ -129,6 +147,7 @@ struct ker_socket_broker_server {
     struct sb_owner owners[KER_SB_CLIENTS];
     uint64_t next_owner_token;
     struct sb_group groups[KER_SB_OBJECTS];
+    uint64_t next_group_incarnation;
     struct sb_client clients[KER_SB_CLIENTS];
     struct sb_census_job census_jobs[KER_SB_CENSUS_JOBS];
 };
@@ -210,6 +229,7 @@ static int host_getsockopt(int fd, int level, int option, void *value, socklen_t
 static int fail(int error) { errno = error; return -1; }
 static struct sb_owner *owner_by_token(struct ker_socket_broker_server *server,
     uint64_t token);
+static int owner_identity_alive(struct sb_owner *owner);
 
 /* Socket options are copied as flat bytes in the broker protocol. Keep the
  * surface explicit: options containing pointers or descriptor values need a
@@ -297,6 +317,12 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_FF_OWNER_ADMISSION_RETIRE:
     case KER_SB_FF_OWNER_ADMISSION_REARM:
     case KER_SB_FF_OWNER_ADMISSION_STATUS: return KER_SOCKET_BROKER_CONTROL;
+    case KER_SB_FF_OWNER_GROUP_SLOT:
+    case KER_SB_FF_OWNER_GROUP_PUBLISH:
+        return KER_SOCKET_BROKER_CONTROL;
+    case KER_SB_FF_OWNER_GROUP_CLAIM:
+    case KER_SB_FF_OWNER_GROUP_MEMBER:
+        return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_MATCH: case KER_SB_FF_OWNER_PAYLOAD:
     case KER_SB_FF_OWNER_REQUESTS:
         return KER_SOCKET_BROKER_READ;
@@ -318,7 +344,7 @@ static void close_client(struct ker_socket_broker_server *server, struct sb_clie
 static void close_object(struct ker_socket_broker_server *server, struct sb_object *object)
 {
     if (!object->live) return;
-    if (object->owner_token) {
+    if (object->owner_token && object->native_fd >= 0) {
         struct sb_owner *owner = owner_by_token(server, object->owner_token);
         if (owner && owner->admission_task &&
             owner->admission_listener_native_fd == object->native_fd) {
@@ -335,8 +361,21 @@ static void close_object(struct ker_socket_broker_server *server, struct sb_obje
     if (object->group_slot >= 0) {
         struct sb_group *group = &server->groups[object->group_slot];
         if (group && group->live && group->handles && --group->handles == 0) {
-            (void)close(group->base_fd[0]);
-            (void)close(group->base_fd[1]);
+            if (group->owner_aware) {
+                for (unsigned i = 0; i < 2; ++i) {
+                    struct sb_owner *owner = owner_by_token(server,
+                        group->member_owner_token[i]);
+                    if (owner && owner->admission_task &&
+                        owner->admission_listener_native_fd == group->base_fd[i]) {
+                        (void)ker_posix_ff_admission_task_listener_closed(
+                            owner->admission_task, group->base_fd[i]);
+                        owner->admission_listener_native_fd = -1;
+                        owner->admission_failed = true;
+                    }
+                }
+            }
+            if (group->base_fd[0] >= 0) (void)close(group->base_fd[0]);
+            if (group->base_fd[1] >= 0) (void)close(group->base_fd[1]);
             *group = (struct sb_group){.base_fd = {-1, -1}};
         }
     }
@@ -421,6 +460,7 @@ static int group_handle(struct ker_socket_broker_server *server, int group_slot,
     struct sb_object *object = &server->objects[object_slot];
     object->group_slot = group_slot;
     object->group_index = (uint8_t)index;
+    object->group_incarnation = server->groups[group_slot].incarnation;
     server->groups[group_slot].handles++;
     return capability;
 }
@@ -431,6 +471,8 @@ static int member_census_capability(struct ker_socket_broker_server *server,
     if (!group_object || group_object->kind != KER_SOCKET_BROKER_REUSEPORT_GROUP ||
         group_object->group_slot < 0 || index > 1) return fail(ENOTSOCK);
     struct sb_group *group = &server->groups[group_object->group_slot];
+    if (group_object->group_incarnation != group->incarnation) return fail(ESTALE);
+    if (group->owner_aware && !group->materialized) return fail(EAGAIN);
     if (!group->live || !group->member_mark[index] || !group->member_cookie[index])
         return fail(EBADF);
     size_t slot = KER_SB_OBJECTS;
@@ -527,6 +569,12 @@ static int owner_require_client(struct sb_owner *owner, struct sb_client *client
     if (status) return status;
     if (client->credential.pid != owner->pid || start_time != owner->start_time)
         return -EXDEV;
+    return owner_identity_alive(owner);
+}
+
+static int owner_identity_alive(struct sb_owner *owner)
+{
+    if (!owner || !owner->live) return -ESTALE;
     struct pollfd pidfd = {.fd = owner->pidfd, .events = POLLIN};
     int ready = (int)syscall(SYS_poll, &pidfd, 1, 0);
     if (ready < 0) return -errno;
@@ -1170,6 +1218,278 @@ error: {
     }
 }
 
+static int owner_group_plan_create(struct ker_socket_broker_server *server,
+    const struct ker_sb_ff_owner_group_plan *args, int *capability_out)
+{
+    if (!server || !args || !capability_out) return -EINVAL;
+    struct sockaddr_in address = {0};
+    memcpy(&address, args->address, sizeof(address));
+    if (address.sin_family != AF_INET || !address.sin_port || args->backlog < 0 ||
+        !(args->group_rights & KER_SOCKET_BROKER_CONTROL) ||
+        (args->group_rights & ~KER_SOCKET_BROKER_ALL)) return -EINVAL;
+    int authority = native_net_admin_present();
+    if (authority < 0) return authority;
+    uint16_t port = ntohs(address.sin_port);
+    if (group_port_reserved(server, port)) return -EADDRINUSE;
+    bool existing_binding = false;
+    if (broker_has_binding(server, port, &existing_binding)) return -errno;
+    if (existing_binding) return -EADDRINUSE;
+    size_t slot = KER_SB_OBJECTS;
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
+        if (!server->groups[i].live) { slot = i; break; }
+    if (slot == KER_SB_OBJECTS) return -EMFILE;
+    if (server->next_group_incarnation == UINT64_MAX) return -EOVERFLOW;
+    uint64_t incarnation = ++server->next_group_incarnation;
+    server->groups[slot] = (struct sb_group){.live = true, .owner_aware = true,
+        .port = port, .base_fd = {-1, -1}, .incarnation = incarnation,
+        .claim_generation = {1, 1}, .address = address, .backlog = args->backlog,
+        .group_rights = args->group_rights};
+    int capability = group_handle(server, (int)slot, -1,
+        KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN, KER_SOCKET_BROKER_CONTROL, 0);
+    if (capability < 0) {
+        int error = errno;
+        server->groups[slot] = (struct sb_group){.base_fd = {-1, -1}};
+        return -error;
+    }
+    *capability_out = capability;
+    return 0;
+}
+
+static int owner_group_delegate_slot(struct ker_socket_broker_server *server,
+    struct sb_object *plan, unsigned index, int *capability_out)
+{
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || index > 1) return -ENOTSOCK;
+    struct sb_group *group = &server->groups[plan->group_slot];
+    if (!group->live || !group->owner_aware ||
+        plan->group_incarnation != group->incarnation) return -ESTALE;
+    if (group->failed) return -ECANCELED;
+    if (group->materialized || group->slot_issued[index]) return -EALREADY;
+    int capability = group_handle(server, plan->group_slot, -1,
+        KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT, KER_SOCKET_BROKER_CONTROL, index);
+    if (capability < 0) return -errno;
+    /* group_handle creates the new object in the first available slot; locate
+     * it by the returned capability before recording its immutable generation. */
+    struct sb_object *delegated = lookup_cap(server, capability);
+    if (!delegated) {
+        (void)host_close(capability);
+        return -EIO;
+    }
+    delegated->group_claim_generation = group->claim_generation[index];
+    delegated->owner_token = group->member_owner_token[index];
+    group->slot_issued[index] = true;
+    *capability_out = capability;
+    return 0;
+}
+
+static int owner_group_claim_slot(struct ker_socket_broker_server *server,
+    struct sb_client *client, int owner_cap, int slot_cap)
+{
+    struct sb_object *owner_object = lookup_cap(server, owner_cap);
+    struct sb_object *claim = lookup_cap(server, slot_cap);
+    struct sb_owner *owner = NULL;
+    int status = owner_require_actor(server, client, owner_object, &owner);
+    if (status) return status;
+    if (!(owner_object->rights & KER_SOCKET_BROKER_CONTROL) ||
+        !claim || claim->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT ||
+        !(claim->rights & KER_SOCKET_BROKER_CONTROL) || claim->group_slot < 0 ||
+        claim->group_index > 1) return -EACCES;
+    struct sb_group *group = &server->groups[claim->group_slot];
+    unsigned index = claim->group_index;
+    if (!group->live || !group->owner_aware ||
+        claim->group_incarnation != group->incarnation ||
+        claim->group_claim_generation != group->claim_generation[index]) return -ESTALE;
+    if (group->member_owner_token[index]) return -EALREADY;
+    if (group->failed || group->materialized) return -ECANCELED;
+    if (owner->unowned_network_history || owner->owned_socket_history) return -EOPNOTSUPP;
+    if (!owner->mark || !owner->token) return -ESTALE;
+    if (owner->owner_group_claimed) return -EALREADY;
+    unsigned other = index ^ 1u;
+    if (group->member_owner_token[other] &&
+        (group->member_owner_token[other] == owner->token ||
+         (group->member_owner_pid[other] == owner->pid &&
+          group->member_owner_start_time[other] == owner->start_time)))
+        return -EEXIST;
+    group->member_owner_token[index] = owner->token;
+    group->member_owner_pid[index] = owner->pid;
+    group->member_owner_start_time[index] = owner->start_time;
+    group->member_mark[index] = owner->mark;
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
+        struct sb_object *candidate = &server->objects[i];
+        if (candidate->live &&
+            candidate->kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT &&
+            candidate->group_slot == claim->group_slot &&
+            candidate->group_incarnation == group->incarnation &&
+            candidate->group_index == index &&
+            candidate->group_claim_generation == group->claim_generation[index])
+            candidate->owner_token = owner->token;
+    }
+    owner->owner_group_claimed = true;
+    owner->owner_group_incarnation = group->incarnation;
+    owner->owner_group_claim_generation = group->claim_generation[index];
+    owner->owner_group_index = index;
+    return 0;
+}
+
+static int owner_group_materialize(struct ker_socket_broker_server *server,
+    struct sb_object *plan, int *group_capability)
+{
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
+        return -ENOTSOCK;
+    struct sb_group *group = &server->groups[plan->group_slot];
+    if (!group->live || !group->owner_aware ||
+        group->incarnation != plan->group_incarnation) return -ESTALE;
+    if (group->failed) return -ECANCELED;
+    if (group->materialized) return -EALREADY;
+    if (!group->member_owner_token[0] || !group->member_owner_token[1]) return -EAGAIN;
+    struct sb_owner *owners[2] = {
+        owner_by_token(server, group->member_owner_token[0]),
+        owner_by_token(server, group->member_owner_token[1])};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!owners[i] || owners[i]->pid != group->member_owner_pid[i] ||
+            owners[i]->start_time != group->member_owner_start_time[i] ||
+            owners[i]->mark != group->member_mark[i]) {
+            group->failed = true;
+            return -ESTALE;
+        }
+        int live = owner_identity_alive(owners[i]);
+        if (live) {
+            group->failed = true;
+            return live;
+        }
+    }
+    if (owners[0]->token == owners[1]->token || owners[0]->pid == owners[1]->pid)
+        return -EEXIST;
+    if ((owners[0]->admission_prepared && owners[1]->admission_prepared) ||
+        owners[0]->admission_prepared) return -EOPNOTSUPP;
+    if (owners[1]->admission_prepared) {
+        int ready = owner_admission_ready_status(owners[1]);
+        if (ready <= 0) return ready < 0 ? ready : -EAGAIN;
+    }
+    int authority = native_net_admin_present();
+    if (authority < 0) return authority;
+    /* Claim is the boundary between reservation and socket effects. Any
+     * network history acquired afterwards invalidates the whole reservation. */
+    for (unsigned i = 0; i < 2; ++i) {
+        if (owners[i]->unowned_network_history || owners[i]->owned_socket_history)
+            return -EOPNOTSUPP;
+    }
+    owners[0]->owned_socket_history = true;
+    owners[1]->owned_socket_history = true;
+
+    int listener[2] = {-1, -1};
+    bool admission_registered = false;
+    int status = 0;
+    int one = 1;
+    listener[0] = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (listener[0] < 0) { status = -errno; goto fail; }
+    if (setsockopt(listener[0], SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) ||
+        set_member_mark(listener[0], group->member_mark[0]) ||
+        bind(listener[0], (const struct sockaddr *)&group->address,
+            sizeof(group->address)) ||
+        listen(listener[0], group->backlog) || reuseport_filter(listener[0], 0)) {
+        status = -errno; goto fail;
+    }
+    if (socket_cookie(listener[0], &group->member_cookie[0])) {
+        status = -errno; goto fail;
+    }
+    listener[1] = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (listener[1] < 0) { status = -errno; goto fail; }
+    if (setsockopt(listener[1], SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) ||
+        set_member_mark(listener[1], group->member_mark[1]) ||
+        bind(listener[1], (const struct sockaddr *)&group->address,
+            sizeof(group->address))) {
+        status = -errno; goto fail;
+    }
+    if (owners[1]->admission_prepared) {
+        status = ker_posix_ff_admission_task_set_listener(
+            owners[1]->admission_task, listener[1]);
+        if (status) goto fail;
+        owners[1]->admission_listener_native_fd = listener[1];
+        admission_registered = true;
+    }
+    if (listen(listener[1], group->backlog)) { status = -errno; goto fail; }
+    if (socket_cookie(listener[1], &group->member_cookie[1])) {
+        status = -errno; goto fail;
+    }
+    group->base_fd[0] = listener[0];
+    group->base_fd[1] = listener[1];
+    int capability = group_handle(server, plan->group_slot, -1,
+        KER_SOCKET_BROKER_REUSEPORT_GROUP, group->group_rights, 0);
+    if (capability < 0) {
+        status = -errno;
+        group->base_fd[0] = group->base_fd[1] = -1;
+        goto fail;
+    }
+    group->materialized = true;
+    *group_capability = capability;
+    return 0;
+fail:
+    if (admission_registered) {
+        (void)ker_posix_ff_admission_task_listener_closed(
+            owners[1]->admission_task, listener[1]);
+        owners[1]->admission_listener_native_fd = -1;
+        owners[1]->admission_failed = true;
+    }
+    if (listener[1] >= 0) (void)close(listener[1]);
+    if (listener[0] >= 0) (void)close(listener[0]);
+    group->member_cookie[0] = group->member_cookie[1] = 0;
+    group->failed = true;
+    return status ? status : -EIO;
+}
+
+static int owner_group_member_create(struct ker_socket_broker_server *server,
+    struct sb_client *client, int owner_cap, int claim_cap, int *member_cap)
+{
+    struct sb_object *owner_object = lookup_cap(server, owner_cap);
+    struct sb_object *claim = lookup_cap(server, claim_cap);
+    struct sb_owner *owner = NULL;
+    int status = owner_require_actor(server, client, owner_object, &owner);
+    if (status) return status;
+    if (!(owner_object->rights & KER_SOCKET_BROKER_CONTROL) || !claim ||
+        claim->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT ||
+        !(claim->rights & KER_SOCKET_BROKER_CONTROL) || claim->group_slot < 0 ||
+        claim->group_index > 1) return -EACCES;
+    struct sb_group *group = &server->groups[claim->group_slot];
+    unsigned index = claim->group_index;
+    if (!group->live || !group->owner_aware || !group->materialized || group->failed ||
+        claim->group_incarnation != group->incarnation ||
+        claim->group_claim_generation != group->claim_generation[index] ||
+        claim->owner_token != owner->token ||
+        group->member_owner_token[index] != owner->token) return -ESTALE;
+    status = owner_identity_alive(owner);
+    if (status) return status;
+    if (owner->unowned_network_history) return -EOPNOTSUPP;
+    uint64_t cookie = 0;
+    if (socket_cookie(group->base_fd[index], &cookie)) return -errno;
+    if (cookie != group->member_cookie[index]) return -ESTALE;
+    int mark = 0;
+    socklen_t mark_length = sizeof(mark);
+    if (getsockopt(group->base_fd[index], SOL_SOCKET, SO_MARK,
+            &mark, &mark_length)) return -errno;
+    if (mark_length != sizeof(mark) || (uint32_t)mark != owner->mark)
+        return -ESTALE;
+    int native_fd = fcntl(group->base_fd[index], F_DUPFD_CLOEXEC, 0);
+    if (native_fd < 0) return -errno;
+    int capability = group_handle(server, claim->group_slot, native_fd,
+        KER_SOCKET_BROKER_SOCKET, KER_SOCKET_BROKER_ALL, index);
+    if (capability < 0) {
+        int error = errno;
+        (void)close(native_fd);
+        return -error;
+    }
+    struct sb_object *member = lookup_cap(server, capability);
+    if (!member) {
+        (void)host_close(capability);
+        return -EIO;
+    }
+    member->owner_token = owner->token;
+    member->group_claim_generation = group->claim_generation[index];
+    *member_cap = capability;
+    return 0;
+}
+
 int ker_socket_broker_server_reuseport_group_create(struct ker_socket_broker_server *server,
     const struct sockaddr_in *address, int backlog, uint32_t rights)
 {
@@ -1450,9 +1770,12 @@ static int dispatch_request(struct ker_socket_broker_server *server,
     size_t expected_rights = request->operation == KER_SB_SOCKET ||
         request->operation == KER_SB_EPOLL_CREATE1 ||
         request->operation == KER_SB_REUSEPORT_GROUP_CREATE ||
-        request->operation == KER_SB_FF_OWNER_CREATE ? 0 :
+        request->operation == KER_SB_FF_OWNER_CREATE ||
+        request->operation == KER_SB_FF_OWNER_GROUP_PLAN ? 0 :
         request->operation == KER_SB_EPOLL_CTL ||
-        request->operation == KER_SB_FF_OWNER_MATCH ? 2 : 1;
+        request->operation == KER_SB_FF_OWNER_MATCH ||
+        request->operation == KER_SB_FF_OWNER_GROUP_CLAIM ||
+        request->operation == KER_SB_FF_OWNER_GROUP_MEMBER ? 2 : 1;
     if (fd_count != expected_rights) return -EPROTO;
     if (expected_rights && request->operation != KER_SB_EPOLL_CTL &&
         request->operation != KER_SB_FF_OWNER_SOCKET &&
@@ -1461,7 +1784,9 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         request->operation != KER_SB_FF_OWNER_ADMISSION_RETIRE &&
         request->operation != KER_SB_FF_OWNER_ADMISSION_REARM &&
         request->operation != KER_SB_FF_OWNER_ADMISSION_STATUS &&
-        request->operation != KER_SB_FF_OWNER_ADMISSION_PREPARE) {
+        request->operation != KER_SB_FF_OWNER_ADMISSION_PREPARE &&
+        request->operation != KER_SB_FF_OWNER_GROUP_CLAIM &&
+        request->operation != KER_SB_FF_OWNER_GROUP_MEMBER) {
         struct sb_object *object;
         enum ker_socket_broker_kind expected_kind = KER_SOCKET_BROKER_SOCKET;
         if (request->operation == KER_SB_EPOLL_WAIT) expected_kind = KER_SOCKET_BROKER_EPOLL;
@@ -1472,6 +1797,9 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             expected_kind = KER_SOCKET_BROKER_REUSEPORT_GROUP;
         else if (request->operation == KER_SB_MEMBER_CENSUS_SNAPSHOT)
             expected_kind = KER_SOCKET_BROKER_MEMBER_CENSUS;
+        else if (request->operation == KER_SB_FF_OWNER_GROUP_SLOT ||
+            request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH)
+            expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
         else if (request->operation == KER_SB_TCP_OBSERVER_SNAPSHOT)
             expected_kind = KER_SOCKET_BROKER_TCP_OBSERVER;
         else if (request->operation == KER_SB_DESCRIBE || request->operation == KER_SB_DUP ||
@@ -1507,6 +1835,49 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
     }
+    case KER_SB_FF_OWNER_GROUP_PLAN: {
+        if (input_length != sizeof(struct ker_sb_ff_owner_group_plan) || fd_count)
+            return -EPROTO;
+        struct ker_sb_ff_owner_group_plan args;
+        memcpy(&args, input, sizeof(args));
+        int capability = -1;
+        status = owner_group_plan_create(server, &args, &capability);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_SLOT: {
+        if (input_length != sizeof(struct ker_sb_ff_owner_group_slot) || fd_count != 1)
+            return -EPROTO;
+        struct ker_sb_ff_owner_group_slot args;
+        memcpy(&args, input, sizeof(args));
+        if (args.reserved || args.index > 1) return -EINVAL;
+        struct sb_object *plan = lookup_cap(server, fds[0]);
+        int capability = -1;
+        status = owner_group_delegate_slot(server, plan, args.index, &capability);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_CLAIM:
+        if (input_length || fd_count != 2) return -EPROTO;
+        status = owner_group_claim_slot(server, client, fds[0], fds[1]);
+        if (status) return status;
+        *result = 0; return 0;
+    case KER_SB_FF_OWNER_GROUP_PUBLISH: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        struct sb_object *plan = lookup_cap(server, fds[0]);
+        int capability = -1;
+        status = owner_group_materialize(server, plan, &capability);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_MEMBER: {
+        if (input_length || fd_count != 2) return -EPROTO;
+        int capability = -1;
+        status = owner_group_member_create(server, client, fds[0], fds[1],
+            &capability);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
+    }
     case KER_SB_FF_OWNER_ADMISSION_PREPARE: {
         if (input_length || fd_count != 1) return -EPROTO;
         struct ker_sb_ff_owner_admission_prepare response = {0};
@@ -1535,6 +1906,19 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (status) return status;
         if (!owner_object || (owner_object->rights & KER_SOCKET_BROKER_CONTROL) == 0)
             return -EACCES;
+        if (owner->owner_group_claimed) {
+            bool group_found = false;
+            for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
+                struct sb_group *group = &server->groups[i];
+                if (group->live && group->owner_aware &&
+                    group->incarnation == owner->owner_group_incarnation) {
+                    group_found = true;
+                    break;
+                }
+            }
+            if (group_found) return -EBUSY;
+            if (!group_found) return -ESTALE;
+        }
         if (owner->admission_prepared) {
             int ready = owner_admission_ready_status(owner);
             if (ready <= 0) return ready < 0 ? ready : -EAGAIN;
@@ -1607,6 +1991,7 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             return -ENOTSOCK;
         struct sb_group *group = &server->groups[object->group_slot];
         if (!group->live) return -EBADF;
+        if (group->owner_aware) return -EOPNOTSUPP;
         int native_fd = fcntl(group->base_fd[args.index], F_DUPFD_CLOEXEC, 0);
         if (native_fd < 0) return -errno;
         int capability = group_handle(server, object->group_slot, native_fd,
@@ -1625,6 +2010,20 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             return -ENOTSOCK;
         struct sb_group *group = &server->groups[object->group_slot];
         if (!group->live) return -EBADF;
+        if (object->group_incarnation != group->incarnation) return -ESTALE;
+        if (group->owner_aware) {
+            if (!group->materialized || group->failed) return -EAGAIN;
+            struct sb_owner *owner = owner_by_token(server,
+                group->member_owner_token[args.index]);
+            status = owner_identity_alive(owner);
+            if (status) return status;
+            if (args.index == 1 && owner->admission_prepared) {
+                int ready = owner_admission_ready_status(owner);
+                if (ready <= 0) return ready < 0 ? ready : -EAGAIN;
+                if (owner->admission_listener_native_fd != group->base_fd[1])
+                    return -ESTALE;
+            }
+        }
         if (reuseport_filter(group->base_fd[0], args.index)) return -errno;
         *result = 0; return 0;
     }
@@ -1645,6 +2044,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (!object) return -EBADF;
         int flags = 0;
         if (object->kind != KER_SOCKET_BROKER_REUSEPORT_GROUP &&
+            object->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN &&
+            object->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT &&
             object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS &&
             object->kind != KER_SOCKET_BROKER_TCP_OBSERVER &&
             object->kind != KER_SOCKET_BROKER_FF_OWNER) {
@@ -1664,6 +2065,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             if (owner && owner->admission_prepared) return -EOPNOTSUPP;
         }
         if (object->kind == KER_SOCKET_BROKER_REUSEPORT_GROUP) return -EOPNOTSUPP;
+        if (object->kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+            object->kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT) return -EOPNOTSUPP;
         if (object->kind == KER_SOCKET_BROKER_MEMBER_CENSUS) return -EOPNOTSUPP;
 
         if (object->kind == KER_SOCKET_BROKER_TCP_OBSERVER) return -EOPNOTSUPP;
@@ -1677,6 +2080,10 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             int capability = group_handle(server, object->group_slot, native_fd,
                 KER_SOCKET_BROKER_SOCKET, object->rights, object->group_index);
             if (capability < 0) { int error = errno; (void)close(native_fd); return -error; }
+            struct sb_object *duplicate = lookup_cap(server, capability);
+            if (!duplicate) { (void)host_close(capability); return -EIO; }
+            duplicate->owner_token = object->owner_token;
+            duplicate->group_claim_generation = object->group_claim_generation;
             *passed_fd = capability;
             status = 0;
         } else {
@@ -2021,8 +2428,11 @@ static size_t expected_rights(uint16_t operation)
 {
     if (operation == KER_SB_SOCKET || operation == KER_SB_EPOLL_CREATE1 ||
         operation == KER_SB_REUSEPORT_GROUP_CREATE ||
-        operation == KER_SB_FF_OWNER_CREATE) return 0;
-    return operation == KER_SB_EPOLL_CTL || operation == KER_SB_FF_OWNER_MATCH ? 2 : 1;
+        operation == KER_SB_FF_OWNER_CREATE ||
+        operation == KER_SB_FF_OWNER_GROUP_PLAN) return 0;
+    return operation == KER_SB_EPOLL_CTL || operation == KER_SB_FF_OWNER_MATCH ||
+        operation == KER_SB_FF_OWNER_GROUP_CLAIM ||
+        operation == KER_SB_FF_OWNER_GROUP_MEMBER ? 2 : 1;
 }
 
 static int start_member_census_job(struct ker_socket_broker_server *server,
@@ -2288,6 +2698,12 @@ static void reap_dead(struct ker_socket_broker_server *server)
         for (size_t j = 0; owner->token && j < KER_SB_CENSUS_JOBS; ++j)
             if (server->census_jobs[j].live && server->census_jobs[j].owner_token == owner->token)
                 referenced = true;
+        for (size_t j = 0; owner->token && j < KER_SB_OBJECTS; ++j) {
+            struct sb_group *group = &server->groups[j];
+            if (group->live && group->owner_aware &&
+                (group->member_owner_token[0] == owner->token ||
+                 group->member_owner_token[1] == owner->token)) referenced = true;
+        }
         if (!referenced) {
             owner_admission_endpoint_close(owner);
             if (owner->admission_task) {

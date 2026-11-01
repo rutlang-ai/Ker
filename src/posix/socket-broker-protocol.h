@@ -34,7 +34,12 @@ enum ker_sb_operation {
     KER_SB_FF_OWNER_ADMISSION_PREPARE = 48,
     KER_SB_FF_OWNER_ADMISSION_RETIRE = 49,
     KER_SB_FF_OWNER_ADMISSION_REARM = 50,
-    KER_SB_FF_OWNER_ADMISSION_STATUS = 51
+    KER_SB_FF_OWNER_ADMISSION_STATUS = 51,
+    KER_SB_FF_OWNER_GROUP_PLAN = 52,
+    KER_SB_FF_OWNER_GROUP_SLOT = 53,
+    KER_SB_FF_OWNER_GROUP_CLAIM = 54,
+    KER_SB_FF_OWNER_GROUP_PUBLISH = 55,
+    KER_SB_FF_OWNER_GROUP_MEMBER = 56
 };
 
 struct ker_sb_header {
@@ -92,6 +97,15 @@ struct ker_sb_ff_owner_admission_window {
     uint64_t epoch;
     int32_t status;
     uint32_t reserved2;
+} __attribute__((packed));
+struct ker_sb_ff_owner_group_plan {
+    unsigned char address[sizeof(struct sockaddr_in)];
+    int32_t backlog;
+    uint32_t group_rights;
+} __attribute__((packed));
+struct ker_sb_ff_owner_group_slot {
+    uint32_t index;
+    uint32_t reserved;
 } __attribute__((packed));
 #define KER_SB_MAX_REQUEST (KER_SOCKET_BROKER_IO_MAX + sizeof(struct ker_sb_io))
 

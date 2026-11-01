@@ -129,6 +129,33 @@ table equivalence; the broader drain, lifecycle and blocked source inventory
 status are unchanged. The pinned [`ff_dup` implementation](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c#L2167-L2189)
 routes F-Stack descriptors through `sys_dup`.
 
+The SDK now has a deferred owner-aware fixed two-member IPv4 reuseport-group
+constructor. Its five calls reserve the tuple (`owner_group_plan`), issue one
+index-scoped slot (`owner_group_slot`), authenticate the owner (`ff_owner_group_claim`),
+create both listeners (`owner_group_publish`), and retrieve aliases for the
+owner's member (`owner_group_member`). The claim capability is a one-use,
+phase-checked receipt that can be reused only to retrieve aliases for that
+same owner, index, group incarnation, and member cookie. It grants neither
+group selection nor delegation. The coordinator retains separate group
+CONTROL authority; each worker gets only its owner CONTROL capability and
+claimed receipt.
+
+Both distinct live owners must claim before publication. The listeners receive
+their respective immutable owner marks from creation; those same marks
+authorize owner payload snapshots and member READ censuses. Fresh FF TCP
+creation is rejected while an owner is associated with this group, so another
+socket cannot pollute the member census. Publication fails if either owner is
+dead or has acquired sticky owned/unowned network history after claiming;
+repeated claims and publication return `EALREADY`. The native TAP test checks
+owner isolation, these lifecycle failures, selector changes, and TCP exchanges
+accepted by both owners. An old accepted stream remains usable after selection
+moves to the second listener, including a descriptorless pending-payload
+snapshot checked against a real ACK-drop capture.
+
+This SDK leaf supports one fixed two-member IPv4 group. It does not bind Nginx
+generation startup, worker dispatcher behavior, repeated generations, or the
+graceful-reload FSM; the source inventory entry remains blocked.
+
 The opt-in runtime now provides `ff_socket_snd_pending` for ordinary
 ready-copy TCP sockets created through the authenticated FF owner context. Each
 process receives a distinct broker-owned mark bound to its host PID, process
