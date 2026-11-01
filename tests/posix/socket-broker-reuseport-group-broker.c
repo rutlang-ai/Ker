@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <ker/socket-broker-server.h>
 #include <arpa/inet.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
