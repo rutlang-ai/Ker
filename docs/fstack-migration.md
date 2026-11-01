@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 361 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
-| partial | 1 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
+| scenario-adapted | 362 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| partial | 0 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
 | blocked | 1 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为361 scenario-adapted、1 partial、1 blocked，共2项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为362 scenario-adapted、0 partial、1 blocked，共1项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -55,9 +55,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下面的 issue 表与当前机器清单同步；后续各批次记录保留其历史计数，当前总数以上表为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共72项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：2项行为未完成
-（1 partial + 1 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共71项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：1项行为未完成
+（0 partial + 1 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -68,7 +68,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
-| Design generation-aware reload, IPC and drain ownership | 2 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
+| Design generation-aware reload, IPC and drain ownership | 1 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | harness-only | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
@@ -130,8 +130,8 @@ Linux/FreeBSD/DPDK 原始实现均不修改，不宣称支持任意坏指针。
 | [unit/test_ff_callout.c](../tests/upstream/fstack/tests/unit/test_ff_callout.c) | 6 | 0 | 0 | 0 | 6 | 0 |
 | [unit/test_ff_config.c](../tests/upstream/fstack/tests/unit/test_ff_config.c) | 96 | 96 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_config_pa.c](../tests/upstream/fstack/tests/unit/test_ff_config_pa.c) | 2 | 0 | 0 | 0 | 2 | 0 |
-| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 53 | 1 | 13 | 0 | 0 |
-| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 21 | 0 | 4 | 0 | 0 |
+| [unit/test_ff_dpdk_if.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c) | 67 | 67 | 0 | 0 | 0 | 0 |
+| [unit/test_ff_dpdk_kni.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c) | 25 | 25 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_dpdk_pcap.c](../tests/upstream/fstack/tests/unit/test_ff_dpdk_pcap.c) | 9 | 9 | 0 | 0 | 0 | 0 |
 | [unit/test_ff_epoll.c](../tests/upstream/fstack/tests/unit/test_ff_epoll.c) | 21 | 19 | 0 | 0 | 2 | 0 |
 | [unit/test_ff_host_interface.c](../tests/upstream/fstack/tests/unit/test_ff_host_interface.c) | 34 | 34 | 0 | 0 | 0 | 0 |
@@ -1558,8 +1558,7 @@ F-Stack缓存getter、NULL分离输出参数ABI及fatal刷新错误场景继续�
 
 ## RX-15 resident 孤儿 ring 回收安全
 
-`test_rx15_primary_purges_orphaned_rings` 从blocked推进为partial，继续留在
-issue #218；完整适配仍为208项，13项partial、142项blocked，共155项行为未完成。
+`test_rx15_primary_purges_orphaned_rings` 在早期 resident-only 检查点从blocked推进为partial；当时完整适配为208项、13项partial、142项blocked。随后，未修改的原版 RX-15 测试通过独立单队列 primary EAL fixture 完整适配；该 resident 组件范围仍不能替代原版源码合同，当前状态见本清单顶部及末尾说明。
 三个独立CTest `native-fstack-session-orphan-live`、`-identity`、`-reap` 使用
 生产generation-ring adapter、真实原版DPDK EAL/ring/mempool及真实子进程pidfd。
 所有adapter调用由primary执行，子进程仅提供实际存活/死亡证据，不是secondary
@@ -2474,5 +2473,23 @@ queue1 of a real two-queue `net_ring` PMD after epoch2/gen0 becomes owner. The
 source teardown restores the 64-object pool. This does not qualify a real
 secondary, coexisting-master admission or the secondary-only F-Stack main loop;
 the Ker resident bank still admits one identity per generation. See [scope and
-reproduction](fstack-drain-foreign-epoch.md). The combined current catalog is361 scenario-adapted,1 partial,1 blocked; two behavioral contracts remain
-unfinished.
+reproduction](fstack-drain-foreign-epoch.md). At the foreign-epoch checkpoint the combined catalog was361 scenario-adapted,1 partial,1 blocked; two behavioral contracts remained unfinished.
+
+
+### RX-15 orphan-purge source case
+
+The complete unchanged `test_rx15_primary_purges_orphaned_rings` body and its
+helpers now run against the pinned original drain-ring and reload-directory
+implementation in a real, one-queue primary EAL. The fixture uses the actual
+named rings, a real child that is forked and reaped, the original no-directory
+and live-user paths, selective RX reclamation with TX retention, an externally
+held purge lock, the bounded reset timeout, dead-marker retirement, fresh
+unregistered traffic and whole-slot reset. The source assertions restore all
+64 mbufs; the fixture then frees the pool and exits EAL. Per the original
+implementation, pointer arrays and named rings live until EAL/process teardown.
+The source test's PID-1 live-user stand-in remains explicit; this does not claim
+secondary EAL visibility or authenticated resident admission. The separate
+foreign-epoch caller test exercises the original drain TX path through a real
+`net_ring` PMD. See [source scope and reproduction](fstack-drain-rx15.md). Current catalog:
+362 scenario-adapted,0 partial,1 blocked; the graceful-reload shell entrypoint
+remains incomplete.

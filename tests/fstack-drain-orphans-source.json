@@ -1,0 +1,10 @@
+{
+  "source_file": "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c",
+  "source_sha256": "785ca7c734b1ec783a3b31b3e7b4d01cebf2f78393d2e09c20e958dbf0bbedfe",
+  "helpers": [
+    "p1_dead_pid",
+    "rx15_ring_empty",
+    "rx15_ring_put",
+    "test_rx15_primary_purges_orphaned_rings"
+  ]
+}

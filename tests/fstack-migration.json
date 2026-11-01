@@ -1189,7 +1189,7 @@
       "id": "tests/integration/test_graceful_reload.sh::entrypoint",
       "kind": "shell-e2e",
       "status": "blocked",
-      "reason": "Requires F-Stack nginx reload generations, remote probes, manifests, process ownership and a configured test host; Ker has no equivalent graceful-reload service.",
+      "reason": "The original operational entrypoint requires real nginx/F-Stack HUP/USR2 reload behavior, live remote TCP probes, reload/drain state and fault/cleanup oracles. Ker's initialized native Linux process cannot fork/daemonize; spawn/shell helpers are rejected, and native descriptors cannot be inherited through exec or SCM_RIGHTS. The existing caller controller exercises raw-record queues, not nginx's live-connection FSM; the packet-session runtime has one packet consumer and no replacement-service handoff. This is a runtime/process-handoff boundary, not only a missing test host; running F-Stack alone is an upstream baseline. See docs/fstack-graceful-reload-gap.md.",
       "ker_tests": []
     },
     {
@@ -3899,8 +3899,8 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_rx15_primary_purges_orphaned_rings",
       "kind": "cmocka",
-      "status": "partial",
-      "reason": "Partial resident-component adaptation using the production generation-ring adapter, real original DPDK EAL/rings/pools and real child pidfds. Three profiles seed16 distinct objects across eight RX/TX rings: exact live identities and six forged identity fields cannot reclaim or alter queued bytes/counts, including forged requests after death proof; confirmed generation1 death reclaims exactly8 objects while preserving generation0 RX and generation1 TX for its live consumer. The consumer either drains exact retained pointers/bytes in FIFO order or dies, allowing the final8 objects to be reclaimed. Replay fails and the127-object pool is fully restored. All adapter calls execute in the primary; children provide lifetimes only, not secondary EALs or packet workers. Three additional in-flight profiles now qualify active live-consumer RX/TX lease refusal, bounded reap timeout with gate rollback, partial-return refusal and complete-return recovery. This is not the source external purge-owner lock/reset API contract.",
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source helpers and RX-15 assertion body are byte-audited and run in a real DPDK primary EAL against the pinned original ff_drain_ring.c and original reload/generation-directory runtime. The one-queue profile uses actual named RX/TX rings, an actual forked then reaped child PID, and the original directory/census/purge/reset/lock-timeout calls. It proves no-directory and live-not-attached preservation; dead-consumer RX purge while live RX and TX remain; source-set purge-owner lock refusal and bounded reset timeout; dead-marker retirement and retention of fresh unregistered traffic; and whole-slot reset. Exact ring/pool assertions restore all64 mbufs. The source fixture uses the upstream PID-1 live-user stand-in; it does not claim a separate service, secondary EAL, authenticated resident bank or cross-process visibility. The adjacent foreign-epoch case separately exercises the original drain path through a real net_ring PMD.",
       "ker_tests": [
         {
           "ctest": "native-fstack-session-orphan-live",
@@ -3925,9 +3925,12 @@
         {
           "ctest": "native-fstack-session-orphan-inflight-both",
           "provenance_case": "native-fstack-session-orphan-inflight"
+        },
+        {
+          "ctest": "fstack-drain-rx15-orphans",
+          "provenance_case": "fstack-drain-rx15-orphans"
         }
-      ],
-      "remaining": "The source no-directory and not-yet-attached-consumer preservation, externally held purge-owner lock/reset timeout, dead-marker retirement with fresh unregistered-consumer packets, and whole-slot reset branches are not qualified. Ker enqueues require admitted target identities rather than directly populating unowned rings. This fixture does not qualify cross-process EAL visibility, full F-Stack directory/reset ABI, external packet delivery or a general reload/crash matrix."
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_ff_kni_enqueue_no_ratelimit",

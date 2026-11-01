@@ -1433,6 +1433,25 @@ if(KER_WITH_DPDK)
     set_tests_properties(fstack-drain-foreign-epoch PROPERTIES TIMEOUT 30
         LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+
+    # RX-15 configures one queue, unlike the foreign-epoch fixture's two.
+    # Keep the original drain implementation's process-lifetime queue arrays
+    # isolated instead of resizing or reusing them across profiles.
+    add_executable(ker-fstack-drain-orphans-source-test fstack-drain-orphans-source.c)
+    target_compile_definitions(ker-fstack-drain-orphans-source-test PRIVATE
+        ${ker_reload_private_definitions})
+    target_include_directories(ker-fstack-drain-orphans-source-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/tests/fstack-drain-compat"
+        ${ker_reload_private_includes}
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-pools")
+    target_link_libraries(ker-fstack-drain-orphans-source-test PRIVATE
+        ker::ipc "${ker_reload_ring_pmd}")
+    target_compile_options(ker-fstack-drain-orphans-source-test PRIVATE
+        -Wall -Wextra -Werror)
+    add_test(NAME fstack-drain-rx15-orphans COMMAND ker-fstack-drain-orphans-source-test)
+    set_tests_properties(fstack-drain-rx15-orphans PROPERTIES TIMEOUT 30
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
 
 if(KER_WITH_DPDK)

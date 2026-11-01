@@ -113,7 +113,8 @@ class CatalogTests(unittest.TestCase):
             audit.validate(self.root)
 
     def test_missing_followup_case_is_rejected(self):
-        self.followups['groups'][0]['cases'].pop()
+        group = max(self.followups['groups'], key=lambda item: len(item['cases']))
+        group['cases'].pop()
         self.followup_path.write_text(json.dumps(self.followups))
         with self.assertRaisesRegex(ValueError, 'Missing follow-up cases'):
             audit.validate(self.root)
@@ -173,12 +174,19 @@ class CatalogTests(unittest.TestCase):
             audit.validate(self.root)
 
     def test_partial_case_cannot_use_exclusion_disposition(self):
-        partial = next(item['id'] for item in self.manifest['cases'] if item['status'] == 'partial')
-        group = next(group for group in self.followups['groups'] if partial in group['cases'])
+        partial_item = next(item for item in self.manifest['cases']
+                            if item['status'] == 'scenario-adapted')
+        partial = partial_item['id']
+        partial_item['status'] = 'partial'
+        partial_item['remaining'] = 'synthetic partial boundary for mutation test'
+        group = next(group for group in self.followups['groups']
+                     if group['id'] == 'reload-generations')
+        group['cases'].append(partial)
         group['disposition'] = 'harness-only'
         # Exercise this partial case before any blocked case in the same group.
         group['cases'].remove(partial)
         group['cases'].insert(0, partial)
+        self.save()
         self.followup_path.write_text(json.dumps(self.followups))
         with self.assertRaisesRegex(ValueError, 'Wrong follow-up disposition for partial'):
             audit.validate(self.root)
