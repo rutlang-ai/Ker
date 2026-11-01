@@ -50,6 +50,7 @@ struct host_libc_functions {
 
 static struct host_libc_functions host_libc;
 static atomic_bool host_libc_initialized = false;
+static void *host_libc_handle;
 
 static bool host_libc_ready(void)
 {
@@ -60,7 +61,13 @@ int ker_sb_preload_resolve_host_functions(void)
 {
 #define RESOLVE_HOST_FUNCTION(member, symbol) do { \
     host_libc.member = (__typeof__(host_libc.member))dlsym(RTLD_NEXT, symbol); \
-    if (!host_libc.member) { errno = ENOSYS; return -1; } \
+    if (!host_libc.member) { \
+        if (!host_libc_handle) \
+            host_libc_handle = dlopen("libc.so.6", RTLD_NOW | RTLD_NOLOAD); \
+        if (host_libc_handle) \
+            host_libc.member = (__typeof__(host_libc.member))dlsym(host_libc_handle, symbol); \
+        if (!host_libc.member) { errno = ENOSYS; return -1; } \
+    } \
 } while (0)
     RESOLVE_HOST_FUNCTION(socket, "socket");
     RESOLVE_HOST_FUNCTION(close, "close");
