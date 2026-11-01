@@ -57,9 +57,23 @@ network data. `shutdown()` on it returns `ENOTSOCK`.
 The frontend client context is caller-serialized. After `fork()`, its next API
 call closes the inherited RPC session and authenticates a fresh one for the
 child. Capabilities can be inherited or passed to the replacement with normal
-host FD operations. A duplicated capability still addresses the same
-broker-owned socket; it does not create a second original-Linux descriptor or
-the distinct epoll-registration behavior of native POSIX `dup()`.
+host FD operations. Host `dup(cap_fd)` adds a reference to the same
+broker-owned descriptor. The explicit `ker_socket_client_dup()` operation
+instead calls original Linux `F_DUPFD_CLOEXEC`, then returns a capability for
+that distinct descriptor. The duplicate shares its open file description and
+status flags while retaining original Linux's separate epoll registration key.
+The returned host capability has `FD_CLOEXEC` cleared like POSIX `dup()`;
+the broker's private native duplicate remains close-on-exec.
+
+The descriptor SDK exposes `DESCRIBE` for socket/epoll kind and original
+`F_GETFL` flags, `DUP`, and `GETFL`/restricted `SETFL`. `SETFL` requires
+`O_NONBLOCK` to remain set and rejects changes to all other status flags.
+`ioctl` is limited to enabling `FIONBIO` and reading `FIONREAD`; clearing
+nonblocking mode and all other requests return `EOPNOTSUPP`. `SEND` accepts
+only `MSG_DONTWAIT`, `MSG_MORE`, and `MSG_NOSIGNAL`; the broker always adds
+`MSG_NOSIGNAL`. `RECV` accepts only `MSG_PEEK` and `MSG_DONTWAIT`. Other flags
+are rejected before original Linux. Reads, writes, option values, and epoll
+readiness continue to be supplied by original Linux.
 
 ## Scope
 

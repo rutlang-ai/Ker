@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -125,9 +126,12 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_GETSOCKNAME: case KER_SB_GETPEERNAME: return KER_SOCKET_BROKER_NAME;
     case KER_SB_GETSOCKOPT: return KER_SOCKET_BROKER_OPTION;
     case KER_SB_EPOLL_WAIT: return KER_SOCKET_BROKER_WAIT;
+    case KER_SB_DUP: case KER_SB_SETFL: case KER_SB_FIONBIO:
     case KER_SB_BIND: case KER_SB_CONNECT: case KER_SB_LISTEN: case KER_SB_ACCEPT4:
     case KER_SB_SHUTDOWN: case KER_SB_SETSOCKOPT: case KER_SB_EPOLL_CTL:
         return KER_SOCKET_BROKER_CONTROL;
+    case KER_SB_FIONREAD: case KER_SB_RECV: return KER_SOCKET_BROKER_READ;
+    case KER_SB_SEND: return KER_SOCKET_BROKER_WRITE;
     default: return 0;
     }
 }
@@ -290,7 +294,7 @@ static int receive_request(struct sb_client *client, struct ker_sb_header *heade
         (size_t)amount < sizeof(*header)) goto invalid;
     memcpy(header, packet, sizeof(*header));
     if (header->magic != KER_SB_MAGIC || header->version != KER_SB_VERSION ||
-        header->flags || header->result || header->payload_length > KER_SOCKET_BROKER_IO_MAX ||
+        header->flags || header->result || header->payload_length > KER_SB_MAX_REQUEST ||
         (size_t)amount != sizeof(*header) + header->payload_length ||
         client->sequence == UINT64_MAX || header->sequence != client->sequence + 1 ||
         header->rights_count != found ||
@@ -362,14 +366,100 @@ static int dispatch_request(struct ker_socket_broker_server *server,
     if (fd_count != expected_rights) return -EPROTO;
     if (expected_rights && request->operation != KER_SB_EPOLL_CTL) {
         struct sb_object *object;
-        int status = object_for_request(server, fds[0], request->operation,
-            request->operation == KER_SB_EPOLL_WAIT ? KER_SOCKET_BROKER_EPOLL : KER_SOCKET_BROKER_SOCKET,
-            &object);
+        enum ker_socket_broker_kind expected_kind = KER_SOCKET_BROKER_SOCKET;
+        if (request->operation == KER_SB_EPOLL_WAIT) expected_kind = KER_SOCKET_BROKER_EPOLL;
+        else if (request->operation == KER_SB_DESCRIBE || request->operation == KER_SB_DUP ||
+            request->operation == KER_SB_GETFL) expected_kind = 0;
+        int status;
+        if (!expected_kind) {
+            object = lookup_cap(server, fds[0]);
+            status = object ? 0 : -EBADF;
+            uint32_t right = required_right(request->operation);
+            if (!status && right && !(object->rights & right)) status = -EACCES;
+        } else {
+            status = object_for_request(server, fds[0], request->operation, expected_kind, &object);
+        }
         if (status) return status;
     }
     struct sb_object *first = NULL, *second = NULL;
     int status;
     switch (request->operation) {
+    case KER_SB_DESCRIBE: {
+        if (input_length) return -EPROTO;
+        struct sb_object *object = lookup_cap(server, fds[0]);
+        if (!object) return -EBADF;
+        int flags = fcntl(object->native_fd, F_GETFL);
+        if (flags < 0) return -errno;
+        struct ker_sb_describe description = {.kind = object->kind, .flags = flags};
+        memcpy(output, &description, sizeof(description));
+        *output_length = sizeof(description); *result = 0; return 0;
+    }
+    case KER_SB_DUP: {
+        if (input_length) return -EPROTO;
+        struct sb_object *object = lookup_cap(server, fds[0]);
+        if (!object) return -EBADF;
+        int native_fd = fcntl(object->native_fd, F_DUPFD_CLOEXEC, 0);
+        if (native_fd < 0) return -errno;
+        status = make_native_object(server, native_fd, object->kind, object->rights, passed_fd);
+        if (status) { (void)close(native_fd); return status; }
+        *result = 1; return 0;
+    }
+    case KER_SB_GETFL: {
+        if (input_length) return -EPROTO;
+        struct ker_sb_integer flags = {.value = fcntl(lookup_cap(server, fds[0])->native_fd, F_GETFL)};
+        if (flags.value < 0) return -errno;
+        memcpy(output, &flags, sizeof(flags));
+        *output_length = sizeof(flags); *result = 0; return 0;
+    }
+    case KER_SB_SETFL: {
+        if (input_length != sizeof(struct ker_sb_integer)) return -EPROTO;
+        struct sb_object *object = lookup_cap(server, fds[0]);
+        if (!object) return -EBADF;
+        if (object->kind != KER_SOCKET_BROKER_SOCKET) return -ENOTSOCK;
+        struct ker_sb_integer args; memcpy(&args, input, sizeof(args));
+        int current = fcntl(object->native_fd, F_GETFL);
+        if (current < 0) return -errno;
+        if (!(args.value & O_NONBLOCK) || ((args.value ^ current) & ~O_NONBLOCK))
+            return -EOPNOTSUPP;
+        int call_result = fcntl(object->native_fd, F_SETFL, args.value);
+        *result = call_result < 0 ? -errno : call_result; return 0;
+    }
+    case KER_SB_FIONBIO: {
+        if (input_length != sizeof(struct ker_sb_integer)) return -EPROTO;
+        struct ker_sb_integer args; memcpy(&args, input, sizeof(args));
+        if (args.value != 1) return -EOPNOTSUPP;
+        int enabled = 1;
+        int call_result = ioctl(lookup_cap(server, fds[0])->native_fd, FIONBIO, &enabled);
+        *result = call_result < 0 ? -errno : call_result; return 0;
+    }
+    case KER_SB_FIONREAD: {
+        if (input_length) return -EPROTO;
+        int available = 0;
+        int call_result = ioctl(lookup_cap(server, fds[0])->native_fd, FIONREAD, &available);
+        if (call_result < 0) return -errno;
+        struct ker_sb_integer output_value = {.value = available};
+        memcpy(output, &output_value, sizeof(output_value));
+        *output_length = sizeof(output_value); *result = 0; return 0;
+    }
+    case KER_SB_SEND: {
+        if (input_length < sizeof(struct ker_sb_io)) return -EPROTO;
+        struct ker_sb_io args; memcpy(&args, input, sizeof(args));
+        if (args.length != input_length - sizeof(args)) return -EPROTO;
+        if (args.flags & ~(MSG_DONTWAIT | MSG_MORE | MSG_NOSIGNAL)) return -EOPNOTSUPP;
+        ssize_t count = send(lookup_cap(server, fds[0])->native_fd,
+            input + sizeof(args), args.length, args.flags | MSG_NOSIGNAL);
+        *result = count < 0 ? -errno : count; return 0;
+    }
+    case KER_SB_RECV: {
+        if (input_length != sizeof(struct ker_sb_io)) return -EPROTO;
+        struct ker_sb_io args; memcpy(&args, input, sizeof(args));
+        if (args.length > KER_SOCKET_BROKER_IO_MAX) return -EINVAL;
+        if (args.flags & ~(MSG_PEEK | MSG_DONTWAIT)) return -EOPNOTSUPP;
+        ssize_t count = recv(lookup_cap(server, fds[0])->native_fd, output,
+            args.length, args.flags);
+        if (count < 0) return -errno;
+        *output_length = (size_t)count; *result = count; return 0;
+    }
     case KER_SB_SOCKET: {
         if (input_length != sizeof(struct ker_sb_socket_args)) return -EPROTO;
         struct ker_sb_socket_args args; memcpy(&args, input, sizeof(args));
@@ -526,7 +616,7 @@ static size_t expected_rights(uint16_t operation)
 static void service_client(struct ker_socket_broker_server *server, struct sb_client *client)
 {
     struct ker_sb_header request = {0};
-    unsigned char input[KER_SOCKET_BROKER_IO_MAX] = {0};
+    unsigned char input[KER_SB_MAX_REQUEST] = {0};
     size_t input_length = 0, fd_count = 0;
     int fds[KER_SB_MAX_RIGHTS] = {-1, -1};
     int receive_result = receive_request(client, &request, input, &input_length, fds, &fd_count);

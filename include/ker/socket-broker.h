@@ -18,6 +18,11 @@ extern "C" {
 #define KER_SOCKET_BROKER_IO_MAX 4096
 #define KER_SOCKET_BROKER_EVENTS_MAX 64
 
+enum ker_socket_broker_kind {
+    KER_SOCKET_BROKER_SOCKET = 1,
+    KER_SOCKET_BROKER_EPOLL = 2
+};
+
 struct ker_socket_client {
     char path[KER_SOCKET_BROKER_PATH_MAX + 1];
     int session_fd;
@@ -40,8 +45,10 @@ void ker_socket_client_close(struct ker_socket_client *client);
  * supported on a capability fd. Do not pass one to poll/select/epoll for
  * readiness: its poll state reports only capability lifetime. shutdown
  * returns ENOTSOCK. Accidental writes are drained and ignored; do not use the
- * pipe as data transport. Duplicated capabilities refer to one broker socket
- * and do not provide POSIX dup's distinct epoll-registration semantics. Calls return
+ * pipe as data transport. A host dup(cap_fd) is another reference to the same
+ * broker descriptor. ker_socket_client_dup() asks original Linux for a
+ * distinct descriptor sharing the open file description and its separate
+ * epoll-registration key. Calls return
  * 0/nonnegative result or -1 with errno set. EAGAIN is returned from
  * original Linux without blocking the broker loop. A transport failure after
  * sending a request can leave operation completion unknown; the client never
@@ -85,6 +92,29 @@ int ker_socket_client_epoll_ctl(struct ker_socket_client *client, int epoll_cap,
  * Linux supplies all readiness and event data. */
 int ker_socket_client_epoll_wait(struct ker_socket_client *client, int epoll_cap,
     struct epoll_event *events, int maxevents);
+
+/* Descriptor inspection and duplication preserve original-Linux descriptor
+ * and open-file-description semantics. DUP returns a new capability backed
+ * by a distinct original descriptor. The returned host capability has
+ * FD_CLOEXEC cleared, like POSIX dup(); the broker's private native duplicate
+ * remains close-on-exec. */
+int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
+    enum ker_socket_broker_kind *kind, int *status_flags);
+int ker_socket_client_dup(struct ker_socket_client *client, int cap_fd);
+int ker_socket_client_getfl(struct ker_socket_client *client, int cap_fd);
+int ker_socket_client_setfl(struct ker_socket_client *client, int cap_fd, int flags);
+/* ioctl is intentionally limited to FIONBIO (enable only) and FIONREAD;
+ * other requests return EOPNOTSUPP without forwarding caller pointers. */
+int ker_socket_client_ioctl(struct ker_socket_client *client, int cap_fd,
+    unsigned long request, void *argument);
+int ker_socket_client_fionbio(struct ker_socket_client *client, int cap_fd, int enabled);
+int ker_socket_client_fionread(struct ker_socket_client *client, int cap_fd, int *available);
+/* SEND accepts MSG_DONTWAIT, MSG_MORE, MSG_NOSIGNAL; the broker always adds
+ * MSG_NOSIGNAL. RECV accepts MSG_PEEK and MSG_DONTWAIT. */
+ssize_t ker_socket_client_send(struct ker_socket_client *client, int cap_fd,
+    const void *buffer, size_t length, int flags);
+ssize_t ker_socket_client_recv(struct ker_socket_client *client, int cap_fd,
+    void *buffer, size_t length, int flags);
 
 #ifdef __cplusplus
 }
