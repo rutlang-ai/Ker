@@ -237,7 +237,7 @@ accept/reject policies. It requires both charged classes, their sum equal to
 selected, no admission drops, and no repeated charge under the existing three
 ARP channel EAGAIN injections, while real host/native IPv4/IPv6 TCP/UDP completes.
 
-Two KNI source cases remain for short-TX and full-ring contracts. Fragment/encapsulation, full multicast/generation fanout and automatic cross-stack ephemeral ownership gaps
+One KNI source case remains for the full-ring contract. Fragment/encapsulation, full multicast/generation fanout and automatic cross-stack ephemeral ownership gaps
 remain explicit; admission limits do not implement those behaviors.
 
 

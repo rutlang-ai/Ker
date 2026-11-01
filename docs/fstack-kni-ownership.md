@@ -47,8 +47,9 @@ primary with a bound original reload state; it does not claim to be a genuine
 secondary future-owner process. The source fixture's process-type wrapper is
 not part of the caller. This batch does not establish cross-process reload,
 cross-master directory ownership, FreeBSD KNI ABI, physical NIC behavior,
-short-TX handling, full-ring behavior or complete graceful reload. The latter
-two source cases remain independently blocked until their own tranche.
+full-ring behavior or complete graceful reload. Short-TX backpressure is covered
+separately in [its scope](fstack-kni-short-tx.md); the full-ring source case
+remains independently blocked until its own tranche.
 
 ## Build and reproduce
 

@@ -35,7 +35,7 @@ The source suite's synthetic future-owner setup is replaced only for these two
 allocation assertions by the actual primary's supported statistics ownership.
 These allocation cases cover ordinary-primary named allocation only. A
 separate scoped adaptation covers owner activation and nonowner selection;
-short TX and full RX-ring cases remain blocked. Neither batch qualifies
+the full RX-ring case remains blocked. Neither batch qualifies
 cross-process secondary ownership, generation banks, FreeBSD KNI ABI, physical
 NIC behavior, rate-limit policy or a Ker protocol stack. The example exports
 no KNI API and does not route Ker application traffic automatically.
@@ -66,6 +66,6 @@ GCC and Clang builds use strict warnings. Two existing upstream diagnostics
 suppressed only around the unchanged excerpt; the caller admits only port0,
 whose ring name fits the original fixed bound.
 
-The catalog now records344 scenario-adapted,1 partial and18 blocked out of433.
-The remaining19 behavioral contracts remain unfinished; `--require-complete`
+The catalog now records345 scenario-adapted,1 partial and17 blocked out of433.
+The remaining18 behavioral contracts remain unfinished; `--require-complete`
 continues to fail.
