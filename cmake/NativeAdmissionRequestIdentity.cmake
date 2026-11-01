@@ -1,7 +1,4 @@
 # Included after the native POSIX targets and C14 request-revoke target.
-target_sources(ker-posix PRIVATE
-	"${PROJECT_SOURCE_DIR}/src/posix/ff-admission-request-identity.c")
-
 if(BUILD_TESTING)
 	add_executable(ker-ff-admission-request-identity-parser-test
 		"${PROJECT_SOURCE_DIR}/tests/posix/ff-admission-request-identity-parser.c")
@@ -51,8 +48,8 @@ if(BUILD_TESTING)
 		KER_FF_ADMISSION_REQUEST_IDENTITY_TESTING)
 	file(READ "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
 		ker_c15_identity_test_export_map)
-	string(REPLACE "ker_native_tcp_request_revoke; local: *;"
-		"ker_native_tcp_request_revoke; ker_ff_admission_request_identity_begin; ker_ff_admission_request_identity_step; ker_ff_admission_request_identity_revalidate; ker_ff_admission_request_identity_close; ker_ff_admission_request_identity_test_parse; local: *;"
+	string(REPLACE "ker_c15_admission_test_run; local: *;"
+		"ker_c15_admission_test_run; ker_ff_admission_request_identity_begin; ker_ff_admission_request_identity_step; ker_ff_admission_request_identity_revalidate; ker_ff_admission_request_identity_close; ker_ff_admission_request_identity_test_parse; local: *;"
 		ker_c15_identity_test_export_map "${ker_c15_identity_test_export_map}")
 	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
 		"${ker_c15_identity_test_export_map}")

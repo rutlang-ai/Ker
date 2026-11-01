@@ -43,9 +43,12 @@ add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.
     src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
     src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
     src/posix/ff-owner-requests-diag.c src/posix/ff-owner-requests-parse.c
-    src/posix/tcp-payload-snapshot.c)
+    src/posix/ff-admission-request-identity.c
+    src/posix/tcp-payload-snapshot.c src/posix/ff-admission-queue.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+target_include_directories(ker-posix PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include")
 add_library(ker::posix ALIAS ker-posix)
 target_include_directories(ker-posix PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
@@ -567,6 +570,7 @@ if(BUILD_TESTING)
         "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
     target_link_libraries(ker-member-census-runtime-test PRIVATE ker-posix-member-census-test-runtime)
     include("${PROJECT_SOURCE_DIR}/cmake/NativeRequestRevoke.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/NativeAdmissionRequestIdentity.cmake")
     add_executable(ker-socket-broker-inherited-group-client
         tests/posix/socket-broker-inherited-group-client.c)
     target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
