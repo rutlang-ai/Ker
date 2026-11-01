@@ -473,6 +473,7 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
          output.kind != KER_SOCKET_BROKER_REUSEPORT_GROUP &&
          output.kind != KER_SOCKET_BROKER_TCP_OBSERVER &&
          output.kind != KER_SOCKET_BROKER_MEMBER_CENSUS &&
+         output.kind != KER_SOCKET_BROKER_FF_OWNER &&
          output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN &&
          output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT))
         return fail(EPROTO);

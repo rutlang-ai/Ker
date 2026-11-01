@@ -108,6 +108,44 @@ static int exec_inherited_group_probe(const char *rpc_path, const char *helper,
     return 0;
 }
 
+static int exec_inherited_owner_group_probe(const char *rpc_path, const char *helper,
+    const char *preload, int plan, int slot, int owner)
+{
+    int capabilities[] = {plan, slot, owner};
+    int original_flags[3];
+    char descriptors[3][32];
+    for (size_t i = 0; i < 3; ++i) {
+        original_flags[i] = fcntl(capabilities[i], F_GETFD);
+        if (original_flags[i] < 0 ||
+            fcntl(capabilities[i], F_SETFD, original_flags[i] & ~FD_CLOEXEC)) {
+            for (size_t j = 0; j < i; ++j)
+                (void)fcntl(capabilities[j], F_SETFD, original_flags[j]);
+            return -1;
+        }
+        snprintf(descriptors[i], sizeof(descriptors[i]), "%d", capabilities[i]);
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        if (setenv("KER_SOCKET_BROKER_PATH", rpc_path, 1) ||
+            setenv("LD_PRELOAD", preload, 1)) _exit(120);
+        execl(helper, helper, rpc_path, descriptors[0], descriptors[1],
+            descriptors[2], "owner-bundle", (char *)NULL);
+        _exit(121);
+    }
+    int saved = errno;
+    for (size_t i = 0; i < 3; ++i)
+        (void)fcntl(capabilities[i], F_SETFD, original_flags[i]);
+    if (child < 0) { errno = saved; return -1; }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "inherited owner-group bundle probe failed: wait_status=%d\n", status);
+        errno = ECHILD;
+        return -1;
+    }
+    return 0;
+}
+
 static int snapshot_live_member(struct ker_socket_client *client, int census,
     int member, uint64_t expected_cookie)
 {
@@ -312,7 +350,7 @@ static int owner_group_child(struct ker_socket_client *inherited_client,
 }
 
 static int owner_group_smoke(struct ker_socket_client *client, const char *rpc_path,
-    int foreign_group)
+    const char *inherited_helper, const char *preload_library, int foreign_group)
 {
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4100)};
     if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
@@ -324,6 +362,13 @@ static int owner_group_smoke(struct ker_socket_client *client, const char *rpc_p
     int slot0 = ker_socket_client_owner_group_slot(client, plan, 0);
     int slot1 = ker_socket_client_owner_group_slot(client, plan, 1);
     if (slot0 < 0 || slot1 < 0) return -1;
+    /* The preload constructor must retain these typed opaque capabilities
+     * across exec without classifying them as application sockets. The
+     * inherited probe describes each and runs its normal main after loading
+     * the preload library. */
+    if (!inherited_helper || !preload_library ||
+        exec_inherited_owner_group_probe(rpc_path, inherited_helper, preload_library,
+            plan, slot0, owner)) return -1;
     errno = 0;
     if (ker_socket_client_owner_group_slot(client, plan, 0) != -1 || errno != EALREADY)
         { errno = EPROTO; return -1; }
@@ -594,7 +639,7 @@ int main(int argc, char **argv)
     CHECK(ker_socket_client_member_census_snapshot(&client, denied_group,
         &invalid_snapshot) == -1 && errno == ENOTSOCK);
 
-    CHECK(owner_group_smoke(&client, argv[1], denied_group) == 0);
+    CHECK(owner_group_smoke(&client, argv[1], argv[3], argv[4], denied_group) == 0);
     CHECK(owner_group_history_rejection(&client, argv[1], denied_group) == 0);
     CHECK(owner_group_dead_owner_rejection(&client, argv[1], denied_group) == 0);
 

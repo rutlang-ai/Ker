@@ -7,8 +7,46 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int owner_bundle_mode(char **argv)
+{
+    int capabilities[3];
+    enum ker_socket_broker_kind expected[] = {
+        KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN,
+        KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT,
+        KER_SOCKET_BROKER_FF_OWNER};
+    for (size_t i = 0; i < 3; ++i) {
+        char *end = NULL;
+        long value = strtol(argv[i + 2], &end, 10);
+        if (!end || *end || value < 0 || value > INT32_MAX) return 2;
+        capabilities[i] = (int)value;
+        int descriptor_flags = fcntl(capabilities[i], F_GETFD);
+        if (descriptor_flags < 0 || (descriptor_flags & FD_CLOEXEC)) return 3;
+        int flags = fcntl(capabilities[i], F_GETFL);
+        if (flags < 0 || (flags & O_ACCMODE) != O_WRONLY) return 3;
+    }
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, argv[1])) {
+        perror("open inherited owner-group bundle client");
+        return 4;
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        enum ker_socket_broker_kind kind = 0;
+        int flags = -1;
+        if (ker_socket_client_describe(&client, capabilities[i], &kind, &flags) ||
+            kind != expected[i] || flags != 0) {
+            perror("describe inherited owner-group bundle capability");
+            ker_socket_client_close(&client);
+            return 5;
+        }
+    }
+    ker_socket_client_close(&client);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 6 && !strcmp(argv[5], "owner-bundle"))
+        return owner_bundle_mode(argv);
     if (argc != 5) return 2;
     char *end = NULL;
     long capability_value = strtol(argv[2], &end, 10);
