@@ -3,6 +3,7 @@
 import argparse
 import array
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -109,6 +110,99 @@ def receive_bootstrap(connection):
             os.close(fd)
         raise RuntimeError(f'bootstrap delivered {len(fds)} capabilities, expected exactly two')
     return fds
+
+
+def receive_group_bootstrap(connection):
+    data, ancillary, flags, _ = connection.recvmsg(16, socket.CMSG_SPACE(array.array('i').itemsize),
+        socket.MSG_CMSG_CLOEXEC)
+    require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC), 'group bootstrap frame was truncated')
+    require(data == struct.pack('=IHH', 0x4b534243, 1, 1),
+        f'group bootstrap record differs: {data!r}')
+    fds = []
+    for level, kind, payload in ancillary:
+        require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
+            'group bootstrap carried unexpected ancillary data')
+        values = array.array('i'); values.frombytes(payload[:len(payload) - len(payload) % values.itemsize])
+        fds.extend(values.tolist())
+    if len(fds) != 1:
+        for fd in fds: os.close(fd)
+        raise RuntimeError(f'group bootstrap delivered {len(fds)} capabilities, expected one')
+    return fds
+
+
+def run_reuseport_group_client(args, rpc_path, broker, capability):
+    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+        str(args.inherited_group_probe), str(args.preload_library)],
+        pass_fds=(capability,), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    os.close(capability)
+    try:
+        require(read_line(client.stdout, 20, client) == 'GROUP_READY_0',
+            'client did not publish selector-zero group')
+        first = socket.create_connection(('198.18.0.2', 4097), timeout=10)
+        first.settimeout(10); first.sendall(b'FIRST-00')
+        require(recv_exact(first, 8) == b'REPLY-00', 'selector zero did not deliver to listener zero')
+        require(read_line(client.stdout, 20, client) == 'ACCEPTED_0',
+            'initial selector did not accept on listener zero')
+
+        require(read_line(client.stdout, 20, client) == 'GROUP_READY_1',
+            'client did not switch the original group selector to one')
+        second = socket.create_connection(('198.18.0.2', 4097), timeout=10)
+        second.settimeout(10); second.sendall(b'SECOND-1')
+        first.sendall(b'FLIP-000')
+        require(recv_exact(second, 8) == b'REPLY-01', 'selector one did not deliver to listener one')
+        require(recv_exact(first, 8) == b'FLIP-ACK', 'accepted stream changed across selector flip')
+        require(read_line(client.stdout, 20, client) == 'ACCEPTED_1_AND_PRIOR_STREAM_OK',
+            'selector-one accept or prior stream check failed')
+
+        require(read_line(client.stdout, 20, client) == 'GROUP_READY_0_AGAIN',
+            'client did not switch the original group selector back to zero')
+        third = socket.create_connection(('198.18.0.2', 4097), timeout=10)
+        third.settimeout(10); third.sendall(b'THIRD-00')
+        require(recv_exact(third, 8) == b'REPLY-02', 'selector-zero restoration did not reach listener zero')
+        require(read_line(client.stdout, 20, client) == 'ALL_GROUP_HANDLES_CLOSED',
+            'client did not close group and managed-member capabilities')
+        require(recv_exact(first, 11) == b'AFTER-CLOSE',
+            'accepted stream did not survive final group/member capability close')
+        require(read_line(client.stdout, 20, client) == 'ACCEPTED_STREAM_AFTER_LISTENER_CLOSE',
+            'client did not complete accepted-stream write after listener close')
+
+        # The broker observes capability HUP asynchronously. Retry only the
+        # connection attempt; any successful connection is a real failure.
+        deadline = time.monotonic() + 5
+        refused = False
+        attempts = 0
+        while time.monotonic() < deadline:
+            attempts += 1
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.settimeout(0.25)
+            try:
+                probe.connect(('198.18.0.2', 4097))
+            except OSError as error:
+                refused = error.errno == errno.ECONNREFUSED
+            else:
+                probe.close()
+                raise RuntimeError('fresh connection succeeded after final group/member capability close')
+            finally:
+                probe.close()
+            if refused: break
+            time.sleep(0.02)
+        require(refused, 'listener group remained reachable after all group handles closed')
+        first.sendall(b'CLOSE-REPLY!')
+        require(read_line(client.stdout, 20, client) == 'GROUP_CLIENT_DONE',
+            'client failed to finish the accepted stream after listener teardown')
+        first.shutdown(socket.SHUT_WR); second.close(); third.close()
+        require(first.recv(1) == b'', 'accepted stream had unexpected data after close reply')
+        first.close()
+        output, errors = client.communicate(timeout=20)
+        require(client.returncode == 0,
+            f'reuseport group client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+        print(f'REUSEPORT_GROUP selector0/1/0 delivered exact streams; accepted TCP survived final listener close; '
+            f'fresh-connect attempts={attempts}')
+    except BaseException:
+        if client.poll() is None:
+            client.kill(); client.wait()
+        raise
 
 
 def send_host_socket_probe(connection):
@@ -608,10 +702,11 @@ def inside(args):
             stats_path = root / 'stats.json'
             with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
                 bootstrap.bind(str(bootstrap_path)); os.chmod(bootstrap_path, 0o600); bootstrap.listen(1)
+                selected_broker = args.group_broker if args.reuseport_group_client else args.broker
                 command = [sys.executable, str(args.launcher), '--library', str(args.library),
                     '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
                     '--port', 'net_tap0', '--eal', eal, '--stats', str(stats_path), '--',
-                    str(args.broker), str(rpc_path), str(bootstrap_path)]
+                    str(selected_broker), str(rpc_path), str(bootstrap_path)]
                 environment = os.environ | {
                     'PYTHONDONTWRITEBYTECODE': '1',
                     'RUNTIME_DIRECTORY': str(root),
@@ -629,11 +724,32 @@ def inside(args):
                     raise RuntimeError(f'broker did not connect bootstrap; exit={broker.returncode}; '
                         f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
                 with connection:
-                    cap_fds = receive_bootstrap(connection)
+                    cap_fds = receive_group_bootstrap(connection) if args.reuseport_group_client else receive_bootstrap(connection)
                     connection.settimeout(5)
-                    send_host_socket_probe(connection)
+                    if not args.reuseport_group_client:
+                        send_host_socket_probe(connection)
                 broker_line = read_line(broker.stdout, 15, broker)
                 require(broker_line == 'BROKER_READY', f'broker failed to enter its request loop: {broker_line}')
+
+                if args.reuseport_group_client:
+                    run_reuseport_group_client(args, rpc_path, broker, cap_fds[0])
+                    cap_fds.clear()
+                    try:
+                        output, errors = broker.communicate(timeout=30)
+                    except subprocess.TimeoutExpired as error:
+                        broker.kill(); output, errors = broker.communicate(timeout=10)
+                        raise RuntimeError(f'broker did not release reuseport group after all capabilities closed: '
+                            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+                    require(broker.returncode == 0 and b'BROKER_DONE' in output,
+                        f'broker did not finalize reuseport group: {output!r} {errors.decode(errors="replace")}')
+                    stats = json.loads(stats_path.read_text())
+                    native = stats.get('native', {})
+                    require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
+                        stats.get('outstanding') == 0 and native.get('passive_opens', 0) >= 3,
+                        f'original-Linux reuseport traffic or cleanup evidence missing: {stats!r}')
+                    print('PASS: broker-created two-member original-Linux reuseport cBPF group, selector transitions, '
+                        'group/member lifetime and accepted-stream teardown')
+                    return 0
 
                 if args.nginx_binary:
                     run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
@@ -837,7 +953,12 @@ def main():
     parser.add_argument('--preload-library', type=Path)
     parser.add_argument('--nginx-binary', type=Path)
     parser.add_argument('--fstack-runtime', type=Path)
+    parser.add_argument('--group-broker', type=Path)
+    parser.add_argument('--reuseport-group-client', type=Path)
+    parser.add_argument('--inherited-group-probe', type=Path)
     args = parser.parse_args()
+    if args.reuseport_group_client and (not args.inherited_group_probe or not args.preload_library):
+        parser.error('reuseport group test requires inherited group probe and preload library')
     if not args.inside:
         if args.nginx_binary:
             command = ['unshare', '-Un', '--keep-caps', f'--map-user={os.getuid()}',
@@ -856,6 +977,12 @@ def main():
             command += ['--nginx-binary', str(args.nginx_binary.resolve())]
         if args.fstack_runtime:
             command += ['--fstack-runtime', str(args.fstack_runtime.resolve())]
+        if args.group_broker:
+            command += ['--group-broker', str(args.group_broker.resolve())]
+        if args.reuseport_group_client:
+            command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
+        if args.inherited_group_probe:
+            command += ['--inherited-group-probe', str(args.inherited_group_probe.resolve())]
         return subprocess.run(command).returncode
     try:
         return inside(args)

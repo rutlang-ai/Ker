@@ -29,7 +29,10 @@ Both directions also support `IPPROTO_TCP` `TCP_NODELAY`, `TCP_CORK`,
 `TCP_FASTOPEN`, and `IPPROTO_IPV6` `IPV6_V6ONLY`. Unknown options and options
 whose values contain pointers or descriptor numbers (including packet-filter
 programs and reuse-port BPF descriptors) return `EOPNOTSUPP` before original
-Linux is called. For supported options, original Linux still validates the
+Linux is called. The dedicated two-member reuseport group API below is the
+only exception for classic reuseport cBPF: its server constructs the fixed
+selector locally; callers cannot supply instructions, pointers, or native
+descriptor values. For supported options, original Linux still validates the
 value length and contents. `SO_LINGER` is restricted to disabled mode or
 enabled mode with zero duration; enabled nonzero durations return
 `EOPNOTSUPP` before changing original Linux state because the broker's final
@@ -74,6 +77,52 @@ only `MSG_DONTWAIT`, `MSG_MORE`, and `MSG_NOSIGNAL`; the broker always adds
 `MSG_NOSIGNAL`. `RECV` accepts only `MSG_PEEK` and `MSG_DONTWAIT`. Other flags
 are rejected before original Linux. Reads, writes, option values, and epoll
 readiness continue to be supplied by original Linux.
+
+## Fixed two-member IPv4 reuseport group
+
+`ker_socket_client_reuseport_group_create()` asks the broker to create two
+original-Linux IPv4 TCP listeners on one fixed, nonzero port. The broker sets
+`SO_REUSEPORT`, binds and listens on member 0, attaches a locally constructed
+single-instruction `BPF_RET | BPF_K` selector returning 0, and only then binds
+and listens on member 1. This order prevents initial traffic from selecting a
+listener that has not joined the group. `..._member(group, 0|1)` returns a
+managed listener capability; `..._select(group, 0|1)` atomically replaces the
+original-Linux group's selector. Invalid indices and unauthorized or
+wrong-kind capabilities fail before selection changes.
+
+The group capability reports kind `REUSEPORT_GROUP` and has control authority.
+The pre-run server factory accepts an explicit rights mask so fixtures can
+exercise a group capability without control rights. SDK `ker_socket_client_dup`
+is unsupported for a group cap; ordinary host `dup`, `SCM_RIGHTS`, or inherited
+FD references retain the same group capability. Create/member APIs return
+`FD_CLOEXEC` capabilities by default; callers must explicitly clear the flag
+or pass the descriptor when inheritance is intended. Managed member SDK duplicates
+are distinct original-Linux descriptors and retain their group/member identity.
+Managed members support accept, I/O, names, options reads, and readiness, but
+cannot bind, connect, listen, shut down, or change socket options. Generic
+broker socket binds cannot claim a port reserved by a live group, and generic
+`SO_REUSEPORT` listeners cannot join one. Existing broker bindings prevent
+group creation on their port.
+
+The server owns both base listener descriptors while any group capability or
+managed member capability remains. Accepted sockets are independent and do
+not extend group lifetime. After the final group/member reference closes, the
+broker closes both listeners; an already accepted connection remains governed
+by its separate original-Linux socket descriptor. This is a bounded broker
+API for two-member IPv4 TCP selection, not arbitrary cBPF support or general
+reuseport-group adoption.
+
+Adding these typed operations advances the private broker wire protocol to
+version 2; client and broker must be built from compatible API versions.
+
+`native-socket-broker-reuseport-group` runs the selector 0→1→0 over real TAP
+traffic. It verifies exact payloads and listener-specific readiness, rights
+and type failures, reserved-port guards, managed-member restrictions, and an
+accepted stream across selector changes and final listener close. A fresh
+connection is refused after all group/member capabilities close, while the
+accepted stream completes and original-Linux buffer accounting returns to
+zero. The test does not claim IPv6 group selection, arbitrary BPF programs,
+Nginx/F-Stack lifecycle behavior, or Ker-owned TCP behavior.
 
 ## Scope
 
