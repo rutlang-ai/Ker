@@ -46,6 +46,6 @@ ctest --test-dir BUILD --output-on-failure -R '^fstack-rss-'
 ```
 
 The separate disabled-adjustment qualification is documented in
-[fstack-rss-adjust-disabled.md](fstack-rss-adjust-disabled.md). The
-unmeasured microbenchmark remains blocked under issue
-[#220](https://github.com/rutlang-ai/Ker/issues/220).
+[fstack-rss-adjust-disabled.md](fstack-rss-adjust-disabled.md). The original
+microbenchmark’s BSS skip remains a control, while its ready timing fixture is
+qualified separately; see the [RSS contract matrix](fstack-rss-contracts.md).

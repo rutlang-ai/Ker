@@ -4640,6 +4640,17 @@
       ],
       "adaptation": "The unchanged complete source range assertions execute in BSS/unready state. A separate ready-context fixture explicitly sets thash_adjust=1 and multiple queues, verifies the v6 context is ready, then checks inverted and sub-RETA ranges decline with output sentinel unchanged. Real caller follows with a valid tuple sent through the original software predicate and net_ring. See docs/fstack-rss-adjust-guards.md."
     },
+    "fstack-rss-adjust-microbench": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_microbench"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-microbench-original-import",
+        "fstack-rss-adjust-microbench"
+      ],
+      "adaptation": "The complete original rd_now_ns helper, N=10000 and timing body are byte-audited. The original BSS setup executes as an expected-skip control only and is not counted as a compatibility pass or performance result. A separate ready fixture invokes the literal original table builder and explicitly sets thash_adjust=1, then uses real primary DPDK v4/v6 thash contexts from the production uninstrumented caller library. Candidate suggestions are checked against published-key/RETA Toeplitz and the original software predicate. The unchanged source body runs once with CLOCK_MONOTONIC and its strict t_off<t_on assertion. This does not qualify Linux port allocation, physical NIC queue landing or hardware RSS performance."
+    },
     "fstack-rss-adjust-sport-recheck-off": {
       "source_file": "tests/unit/test_ff_dpdk_if.c",
       "source_case": [

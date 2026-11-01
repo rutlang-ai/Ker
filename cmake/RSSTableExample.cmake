@@ -39,13 +39,27 @@ if(BUILD_TESTING)
         C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
     add_test(NAME fstack-rss-adjust-original-import
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/fstack-rss-adjust-import.py")
+    add_executable(ker-fstack-rss-adjust-microbench-test
+        "${PROJECT_SOURCE_DIR}/tests/fstack-rss-adjust-microbench.c")
+    target_include_directories(ker-fstack-rss-adjust-microbench-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/tests" "${PROJECT_SOURCE_DIR}/examples"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-pools")
+    target_link_libraries(ker-fstack-rss-adjust-microbench-test PRIVATE ker-example-rss-table)
+    target_compile_options(ker-fstack-rss-adjust-microbench-test PRIVATE -Wall -Wextra -Werror -fwrapv)
+    set_target_properties(ker-fstack-rss-adjust-microbench-test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-rss-adjust-microbench-original-import
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/fstack-rss-microbench-import.py")
+    add_test(NAME fstack-rss-adjust-microbench
+        COMMAND ker-fstack-rss-adjust-microbench-test)
     add_test(NAME fstack-rss-adjust-source
         COMMAND ker-fstack-rss-adjust-source-test)
     add_test(NAME fstack-rss-adjust-caller
         COMMAND ker-rss-table-router)
-    set_tests_properties(fstack-rss-adjust-original-import PROPERTIES LABELS "fstack;provenance")
+    set_tests_properties(fstack-rss-adjust-original-import fstack-rss-adjust-microbench-original-import
+        PROPERTIES LABELS "fstack;provenance")
     string(REPLACE ";" ":" ker_rss_runtime_library_path "${DPDK_LIBRARY_DIRS}")
-    set_tests_properties(fstack-rss-adjust-source fstack-rss-adjust-caller
+    set_tests_properties(fstack-rss-adjust-source fstack-rss-adjust-caller fstack-rss-adjust-microbench
         PROPERTIES LABELS "fstack;fstack-newly-adapted" TIMEOUT 30
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_rss_runtime_library_path}:$ENV{LD_LIBRARY_PATH}")
 endif()

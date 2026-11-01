@@ -58,9 +58,10 @@ The four focused CTests include the two source cases, qualification controls
 and byte provenance. The catalog audit retains106 pinned files and433 cases;
 its21 mutation/regression tests pass. At this qualification checkpoint the
 catalog changed270/12/81 to272/12/79 (adapted/partial/blocked), leaving91
-behavioral cases incomplete. The later advisory tranches reduce
-issue220 to1 case, the unready microbenchmark; see the current [RSS contract
-matrix](fstack-rss-contracts.md).
+behavioral cases incomplete. Later tranches separately qualify the microbenchmark with a ready context fixture;
+its unchanged BSS setup remains an expected-skip control. Linux source-port
+allocation and hardware RSS still require separate work; see the current [RSS
+contract matrix](fstack-rss-contracts.md).
 
 This is dependency arithmetic qualification. No physical PMD RX queue, actual
 packet distribution, source-port table or original Linux allocator integration
