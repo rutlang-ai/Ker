@@ -33,7 +33,7 @@ struct epoll_entry {
 struct wait_pin_entry { int host_fd; int broker_fd; pid_t owner_tid; };
 
 static pthread_mutex_t preload_lock = PTHREAD_MUTEX_INITIALIZER;
-static atomic_bool preload_runtime_initialized = ATOMIC_VAR_INIT(false);
+static atomic_bool preload_runtime_initialized = false;
 static _Thread_local sigset_t preload_saved_signal_mask;
 static _Thread_local unsigned preload_lock_depth;
 static _Thread_local pid_t preload_fork_owner_tid;

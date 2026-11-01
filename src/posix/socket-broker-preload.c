@@ -49,7 +49,7 @@ struct host_libc_functions {
 };
 
 static struct host_libc_functions host_libc;
-static atomic_bool host_libc_initialized = ATOMIC_VAR_INIT(false);
+static atomic_bool host_libc_initialized = false;
 
 static bool host_libc_ready(void)
 {
