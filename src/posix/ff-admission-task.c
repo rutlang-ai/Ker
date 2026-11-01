@@ -288,7 +288,10 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 	prepare_sent = true;
 	status = task_wait_result(task, KER_FF_ADMISSION_PREPARED,
 		packet->deadline_ns, &response, false);
-	if (status) goto drop;
+	if (status) {
+		if (status == -ETIMEDOUT) task_test_trace("prepared-timeout", packet);
+		goto drop;
+	}
 	status = ker_ff_admission_request_identity_revalidate(identity);
 	if (status) goto drop;
 	int sent = 0;
@@ -347,7 +350,13 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 				&response);
 			if (!cancel && !response.status) map_cancelled = true;
 		}
-		if (!map_cancelled) status = cancel ? cancel : -EIO;
+		if (!map_cancelled) {
+			task_test_trace("cancel-unsent-unresolved", packet);
+			/* The owner may still hold the map reservation. Do not let the
+			 * worker reuse this channel for another packet after an uncertain
+			 * cancellation; quarantine it until the owner exits or resolves it. */
+			status = -EOWNERDEAD;
+		}
 	} else if (map_command_sent && !accept_sent && !map_cancelled) {
 		if (!ker_ff_admission_channel_send_control(task->channel,
 			KER_FF_ADMISSION_CANCEL, request.command_id, packet->id)) {

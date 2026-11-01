@@ -112,6 +112,46 @@ def captured_synacks(capture, destination_ports):
     return matches
 
 
+def captured_syns(capture, source_ports):
+    matches = []
+    while True:
+        try:
+            packet = capture.recv(65535)
+        except TimeoutError:
+            break
+        if len(packet) < 14 + 20 + 20 or packet[12:14] != b'\x08\x00':
+            continue
+        ip_offset = 14
+        if packet[ip_offset + 9] != socket.IPPROTO_TCP:
+            continue
+        tcp_offset = ip_offset + (packet[ip_offset] & 0xf) * 4
+        if len(packet) < tcp_offset + 20:
+            continue
+        source_port, destination_port = struct.unpack_from('!HH', packet, tcp_offset)
+        flags = packet[tcp_offset + 13]
+        if (source_port in source_ports and destination_port == 8080 and
+            flags & 0x12 == 0x02):
+            matches.append(source_port)
+    return matches
+
+
+def drain_process_lines(process):
+    recent = getattr(process, '_ker_recent_lines', [])
+    pending = getattr(process, '_ker_line_buffer', bytearray())
+    while select.select([process.stdout], [], [], 0)[0]:
+        byte = os.read(process.stdout.fileno(), 1)
+        if not byte:
+            break
+        pending.extend(byte)
+        if byte == b'\n':
+            recent.append(pending.decode(errors='replace').rstrip())
+            del recent[:-16]
+            pending = bytearray()
+    process._ker_recent_lines = recent
+    process._ker_line_buffer = pending
+    return recent
+
+
 def inside(args):
     for command in (
         ['ip', 'link', 'set', 'lo', 'up'],
@@ -157,6 +197,10 @@ def inside(args):
             if args.finalized_timeout_only:
                 os.mkfifo(finalized_fifo, 0o600)
                 app_env['KER_C16_TEST_HOLD_FINALIZED_FIFO'] = str(finalized_fifo)
+            cancel_fifo = root / 'cancel.release'
+            if args.cancel_unsent_timeout_only:
+                os.mkfifo(cancel_fifo, 0o600)
+                app_env['KER_C16_TEST_HOLD_PREPARED_FIFO'] = str(cancel_fifo)
             if not args.pump_failure_only:
                 app_env |= {'KER_C16_TEST_PUMP_DELAY_US': '80000',
                     'KER_C16_TEST_RECURSIVE_WAIT': '1'}
@@ -171,7 +215,7 @@ def inside(args):
             if args.listener_close_only:
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             app_argument = ('pump-failure' if args.pump_failure_only else
-                '1' if args.finalized_timeout_only else
+                '1' if (args.finalized_timeout_only or args.cancel_unsent_timeout_only) else
                 'owner-probe' if (args.registration_negative_only or
                     args.malformed_owner_hello_only or args.owner_death_only or
                     args.listener_close_only) else '16')
@@ -316,7 +360,7 @@ def inside(args):
                 print('C16_LISTENER_CLOSE_CLEANUP_PASS owner_alive=1 '
                     'fail_closed=ECONNRESET endpoint_unlinked=1 pool=0')
                 return 0
-            if args.finalized_timeout_only:
+            if args.finalized_timeout_only or args.cancel_unsent_timeout_only:
                 tfo_guard = wait_line(app, 'C16_TFO_GUARD_PASS', 20)
                 require('prebind=EOPNOTSUPP' in tfo_guard and
                     'postlisten=EOPNOTSUPP' in tfo_guard,
@@ -391,6 +435,78 @@ def inside(args):
                     f'finalization quarantine leaked broker I/O state: {report!r}')
                 print('C16_FINALIZE_QUARANTINE_PASS accepted=1 map_retained=1 '
                     'followup_synack=0 owner=fail_closed pool=0')
+                return 0
+            if args.cancel_unsent_timeout_only:
+                run_progress_client(args.progress_client, rpc_path)
+                first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                first.setblocking(False)
+                first.bind(('198.18.0.1', 12004))
+                pending = first.connect_ex(('198.18.0.2', 8080))
+                require(pending in (errno.EINPROGRESS, errno.EALREADY),
+                    f'initial unaccepted connection did not remain pending: {pending}')
+                held = wait_line(app, 'C16_PREPARED_REPLY_HELD', 5)
+                require('owner_prepared=1 created=1 reservation=retained' in held,
+                    f'owner did not hold a prepared map reservation: {held!r}')
+                prepared_timeout = wait_line(broker,
+                    'C16_ADMISSION prepared-timeout remote_port=12004', 5)
+                timeout_ns, packet_deadline_ns = trace_times(
+                    prepared_timeout, 'prepared-timeout', 12004)
+                require(timeout_ns >= packet_deadline_ns,
+                    f'PREPARED wait did not expire at the packet deadline: '
+                    f'{prepared_timeout!r}')
+                request_revoked = wait_line(broker,
+                    'C16_ADMISSION request-revoked remote_port=12004', 5)
+                require('request-revoked' in request_revoked,
+                    f'pre-accept request was not revoked: {request_revoked!r}')
+                unresolved = wait_line(broker,
+                    'C16_ADMISSION cancel-unsent-unresolved remote_port=12004', 5)
+                require('cancel-unsent-unresolved' in unresolved,
+                    f'unacknowledged cancel did not quarantine the worker: {unresolved!r}')
+
+                second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                second.setblocking(False)
+                second.bind(('198.18.0.1', 12005))
+                pending = second.connect_ex(('198.18.0.2', 8080))
+                require(pending in (errno.EINPROGRESS, errno.EALREADY),
+                    f'follow-up SYN did not remain pending: {pending}')
+                captured = set()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline and 12005 not in captured:
+                    captured.update(captured_syns(capture, {12005}))
+                    if 12005 not in captured:
+                        time.sleep(0.01)
+                require(12005 in captured,
+                    'follow-up SYN never reached the original-Linux TAP ingress')
+                time.sleep(0.35)
+                lines = drain_process_lines(broker)
+                reused = [line for line in lines if 'remote_port=12005' in line and
+                    ('identity-ready' in line or 'request-revoked' in line)]
+                require(not reused,
+                    f'quarantined admission worker reused the stale channel: {reused!r}')
+                synacks = captured_synacks(capture, {12005})
+                require(not synacks,
+                    f'quarantined admission worker emitted a follow-up SYNACK: {synacks!r}')
+
+                with open(cancel_fifo, 'wb', buffering=0) as gate:
+                    gate.write(b'R')
+                output, errors = app.communicate(timeout=8)
+                require(app.returncode == 3 and
+                    'ker owner pump callback status=-32' in errors,
+                    f'owner did not fail closed after channel quarantine: '
+                    f'rc={app.returncode}; stdout={output!r}; stderr={errors!r}')
+                first.close()
+                second.close()
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                bout, berr = broker.communicate(timeout=35)
+                require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
+                    f'broker failed after unresolved cancel quarantine: '
+                    f'rc={broker.returncode}; stdout={bout!r}; stderr={berr!r}')
+                report = json.loads(stats.read_text())
+                require(report.get('outstanding') == 0,
+                    f'unresolved cancel leaked broker I/O state: {report!r}')
+                print('C16_CANCEL_UNSENT_QUARANTINE_PASS reservation=held '
+                    'unrelated_request_revoked=0 followup_synack=0 pool=0')
                 return 0
             require('pump_timeout=retained' in app_ready and
                 'host_only=eopnotsupp' in app_ready and 'tfo_guard=ok' in app_ready,
@@ -554,6 +670,7 @@ def main():
     parser.add_argument('--owner-death-only', action='store_true')
     parser.add_argument('--listener-close-only', action='store_true')
     parser.add_argument('--finalized-timeout-only', action='store_true')
+    parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if args.inside:
@@ -574,6 +691,8 @@ def main():
         command.append('--listener-close-only')
     if args.finalized_timeout_only:
         command.append('--finalized-timeout-only')
+    if args.cancel_unsent_timeout_only:
+        command.append('--cancel-unsent-timeout-only')
     return subprocess.run(command).returncode
 
 

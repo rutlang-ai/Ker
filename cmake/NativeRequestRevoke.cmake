@@ -162,6 +162,22 @@ if(BUILD_TESTING)
             TIMEOUT 90 LABELS "native-tcp;admission;broker;quarantine;negative"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
+        add_test(NAME native-c16-cancel-unsent-timeout-quarantine
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --cancel-unsent-timeout-only)
+        set_tests_properties(native-c16-cancel-unsent-timeout-quarantine PROPERTIES
+            TIMEOUT 90 LABELS "native-tcp;admission;broker;quarantine;negative"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
         add_test(NAME native-c16-owner-pump-failure
             COMMAND "${Python3_EXECUTABLE}"
                 "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
