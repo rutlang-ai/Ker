@@ -65,6 +65,13 @@ int ker_socket_client_getsockname(struct ker_socket_client *client, int cap_fd,
     struct sockaddr *address, socklen_t *length);
 int ker_socket_client_getpeername(struct ker_socket_client *client, int cap_fd,
     struct sockaddr *address, socklen_t *length);
+/* Socket options are restricted to flat, explicitly supported values:
+ * SOL_SOCKET REUSEADDR, REUSEPORT, KEEPALIVE, RCVBUF, SNDBUF, RCVLOWAT,
+ * SNDLOWAT, LINGER, RCVTIMEO and SNDTIMEO for set/get; TYPE, ERROR, DOMAIN,
+ * PROTOCOL and ACCEPTCONN for get only; TCP NODELAY, CORK, DEFER_ACCEPT,
+ * KEEPIDLE, KEEPINTVL, KEEPCNT and FASTOPEN; and IPv6 V6ONLY. Unknown and
+ * pointer- or descriptor-bearing options return EOPNOTSUPP before reaching
+ * original Linux. Allowed flat options retain original Linux validation. */
 int ker_socket_client_setsockopt(struct ker_socket_client *client, int cap_fd,
     int level, int option, const void *value, socklen_t length);
 int ker_socket_client_getsockopt(struct ker_socket_client *client, int cap_fd,

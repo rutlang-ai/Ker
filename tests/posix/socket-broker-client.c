@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <linux/filter.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -175,6 +176,39 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
     CHECK(ker_socket_client_getsockname(&client, listener,
         (struct sockaddr *)&bound, &bound_length) == 0);
     CHECK(bound.sin_port == htons(4097));
+    int option_value = 0;
+    socklen_t option_length = sizeof(option_value);
+    CHECK(ker_socket_client_getsockopt(&client, listener, SOL_SOCKET, SO_TYPE,
+        &option_value, &option_length) == 0);
+    CHECK(option_length == sizeof(option_value) && option_value == SOCK_STREAM);
+    option_value = 1;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_KEEPALIVE,
+        &option_value, sizeof(option_value)) == 0);
+    option_value = 0; option_length = sizeof(option_value);
+    CHECK(ker_socket_client_getsockopt(&client, listener, SOL_SOCKET, SO_KEEPALIVE,
+        &option_value, &option_length) == 0);
+    CHECK(option_length == sizeof(option_value) && option_value == 1);
+
+    struct sock_fprog pointer_option = {.len = 1,
+        .filter = (struct sock_filter *)(uintptr_t)1};
+    errno = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_ATTACH_FILTER,
+        &pointer_option, sizeof(pointer_option)) == -1 && errno == EOPNOTSUPP);
+#ifdef SO_ATTACH_REUSEPORT_EBPF
+    int raw_fd_option = 0;
+    errno = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET,
+        SO_ATTACH_REUSEPORT_EBPF, &raw_fd_option, sizeof(raw_fd_option)) == -1 &&
+        errno == EOPNOTSUPP);
+#endif
+    option_value = 0; option_length = sizeof(option_value);
+    errno = 0;
+    CHECK(ker_socket_client_getsockopt(&client, listener, SOL_SOCKET, 0x7fff,
+        &option_value, &option_length) == -1 && errno == EOPNOTSUPP);
+    option_value = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_KEEPALIVE,
+        &option_value, sizeof(option_value)) == 0);
+
     errno = 0;
     int unsupported = ker_socket_client_socket(&client, AF_INET, SOCK_RAW, IPPROTO_RAW);
     CHECK(unsupported == -1 &&

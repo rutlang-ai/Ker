@@ -4,6 +4,8 @@
 #include <ker/posix.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -59,6 +61,52 @@ static int host_close(int fd)
 static int host_getsockopt(int fd, int level, int option, void *value, socklen_t *length)
 { return (int)syscall(SYS_getsockopt, fd, level, option, value, length); }
 static int fail(int error) { errno = error; return -1; }
+
+/* Socket options are copied as flat bytes in the broker protocol. Keep the
+ * surface explicit: options containing pointers or descriptor values need a
+ * dedicated translation and must never be forwarded as opaque client bytes. */
+static bool socket_option_supported(int level, int option, bool setting)
+{
+    if (level == SOL_SOCKET) {
+        switch (option) {
+        case SO_REUSEADDR:
+        case SO_REUSEPORT:
+        case SO_KEEPALIVE:
+        case SO_RCVBUF:
+        case SO_SNDBUF:
+        case SO_RCVLOWAT:
+        case SO_SNDLOWAT:
+        case SO_LINGER:
+        case SO_RCVTIMEO:
+        case SO_SNDTIMEO:
+            return true;
+        case SO_TYPE:
+        case SO_ERROR:
+        case SO_DOMAIN:
+        case SO_PROTOCOL:
+        case SO_ACCEPTCONN:
+            return !setting;
+        default:
+            return false;
+        }
+    }
+    if (level == IPPROTO_TCP) {
+        switch (option) {
+        case TCP_NODELAY:
+        case TCP_CORK:
+        case TCP_DEFER_ACCEPT:
+        case TCP_KEEPIDLE:
+        case TCP_KEEPINTVL:
+        case TCP_KEEPCNT:
+        case TCP_FASTOPEN:
+            return true;
+        default:
+            return false;
+        }
+    }
+    if (level == IPPROTO_IPV6 && option == IPV6_V6ONLY) return true;
+    return false;
+}
 
 static uint32_t required_right(uint16_t operation)
 {
@@ -430,6 +478,7 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (input_length < sizeof(struct ker_sb_option)) return -EPROTO;
         struct ker_sb_option args; memcpy(&args, input, sizeof(args));
         if (args.length != input_length - sizeof(args)) return -EPROTO;
+        if (!socket_option_supported(args.level, args.option, true)) return -EOPNOTSUPP;
         int call_result = setsockopt(lookup_cap(server, fds[0])->native_fd,
             args.level, args.option, input + sizeof(args), args.length);
         *result = call_result < 0 ? -errno : call_result; return 0;
@@ -438,6 +487,7 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (input_length != sizeof(struct ker_sb_option)) return -EPROTO;
         struct ker_sb_option args; memcpy(&args, input, sizeof(args));
         if (args.length > KER_SOCKET_BROKER_IO_MAX - sizeof(uint32_t)) return -EINVAL;
+        if (!socket_option_supported(args.level, args.option, false)) return -EOPNOTSUPP;
         socklen_t length = args.length;
         int call_result = getsockopt(lookup_cap(server, fds[0])->native_fd,
             args.level, args.option, output + sizeof(uint32_t), &length);

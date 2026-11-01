@@ -19,6 +19,19 @@ the original-Linux operation's completion unknown. The client never retries
 requests automatically; a caller must reconcile that state before retrying a
 mutating operation.
 
+Socket-option RPCs accept only explicitly supported flat values. Both
+`getsockopt` and `setsockopt` support `SOL_SOCKET` `SO_REUSEADDR`,
+`SO_REUSEPORT`, `SO_KEEPALIVE`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_RCVLOWAT`,
+`SO_SNDLOWAT`, `SO_LINGER`, `SO_RCVTIMEO`, and `SO_SNDTIMEO`; get-only options
+are `SO_TYPE`, `SO_ERROR`, `SO_DOMAIN`, `SO_PROTOCOL`, and `SO_ACCEPTCONN`.
+Both directions also support `IPPROTO_TCP` `TCP_NODELAY`, `TCP_CORK`,
+`TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT`,
+`TCP_FASTOPEN`, and `IPPROTO_IPV6` `IPV6_V6ONLY`. Unknown options and options
+whose values contain pointers or descriptor numbers (including packet-filter
+programs and reuse-port BPF descriptors) return `EOPNOTSUPP` before original
+Linux is called. For supported options, original Linux still validates the
+value length and contents.
+
 ## Capability and session lifetime
 
 Place the broker's `SOCK_SEQPACKET` path in a directory inaccessible to
