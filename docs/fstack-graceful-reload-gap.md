@@ -11,16 +11,23 @@ client, build manifest and configured test host are part of the test contract.
 Running the F-Stack service by itself is an upstream baseline, not evidence of
 Ker migration.
 
-Ker's native Linux backend currently isolates its initialized kernel from
+The in-process `ker-posix` API still isolates its initialized kernel from
 post-init process creation. [`lkl-channel.c`](../src/posix/lkl-channel.c)
 registers an at-fork child handler that exits with status 125;
 [`posix-process.c`](../src/posix/posix-process.c) rejects `posix_spawn`,
-`system` and `popen` after initialization. The documented native boundary also
-requires each process to start through its own `ker-run` and does not support
-passing native descriptors to a replacement through `exec` or `SCM_RIGHTS`
-([native TCP limits](native-tcp.md)). Thus the original daemon/re-exec service
-lifecycle and inherited live connections are not currently available to a Ker
-caller.
+`system` and `popen` after initialization. A separate authenticated
+[native socket broker](native-socket-broker.md) and its
+[POSIX caller adapter](native-socket-preload.md) now transfer selected original
+Linux TCP socket/epoll capabilities across frontend fork/exec. The verified
+no-FF Nginx lifecycle exercises that bounded caller path. It does not initialize
+the F-Stack Nginx module or provide its full application runtime.
+
+Ker's [`ker::fstack-socket-bridge` leaf adapter](fstack-socket-bridge.md) can
+route selected unchanged `ff_api.h` TCP socket calls through the original-Linux
+broker. It does not initialize or run the FF application runtime, configure
+Nginx's lifecycle, integrate its executable FD offset, or implement
+reload/census operations. The leaf adapter and no-FF Nginx lifecycle are
+implemented prerequisites; the FF-enabled service path remains unqualified.
 
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
@@ -32,14 +39,14 @@ runtime limits, not missing test-host setup.
 
 ## Path to meaningful qualification
 
-Keep packet and connection behavior in one authoritative original Linux kernel
-socket runtime. A future adapter needs an authenticated supervisor and an
-explicit replacement-process boundary that transfers or reopens authenticated
-handles to the same socket and epoll state; it must not recreate TCP state in
-Ker. The real nginx caller must run its signal-driven FSM while workers change.
-Qualification must observe actual FSM transitions, nginx/runtime logs, counters,
-live connection results and cleanup side effects, rather than fabricated
-oracle text or a raw-record queue substitute.
+Keep packet and connection behavior in the one authoritative original Linux
+kernel socket runtime already used by the broker. The remaining adapter work
+must connect the FF-enabled Nginx caller to that runtime, restore its executable
+FD offset at the right boundaries, and provide real caller-side FF lifecycle,
+event and drain behavior. The real Nginx caller must run its signal-driven FSM
+while workers change. Qualification must observe actual FSM transitions,
+Nginx/runtime logs, counters, live connection results and cleanup side effects,
+rather than fabricated oracle text or a raw-record queue substitute.
 
 Run the original script's applicable cases explicitly in a disposable Linux
 guest with independent remote clients, build/source identity, fault-injection
@@ -51,6 +58,7 @@ Do not treat that alias as the full matrix, and do not count `LIMITED` or `SKIP`
 original result artifacts and distinguish failed or skipped profiles from
 passes.
 
-Until that process and socket handoff exists, the source entry remains
-`blocked`. Neither an F-Stack-only run, the pure nginx FSM tests, nor the
-single-process caller controller completes it.
+Until the FF-enabled service and its original runtime counters, drain behavior,
+fault cases and cleanup are exercised end to end, the source entry remains
+`blocked`. Neither an F-Stack-only run, the pure Nginx FSM tests, the no-FF
+Nginx lifecycle, nor the single-process caller controller completes it.

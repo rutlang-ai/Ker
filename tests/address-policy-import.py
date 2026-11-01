@@ -7,7 +7,7 @@ root = Path(__file__).resolve().parents[1]
 base = root / 'third_party/fstack-address-policy'
 m = json.loads((base / 'UPSTREAM.json').read_text())
 assert m['revision'] == '646a641cfff77f4815e1e29829a09e1ed15a2999'
-assert set(m['files']) == {'ff_api.h', '../fstack-pools/ff_dpdk_if.c'}
+assert set(m['files']) == {'ff_api.h', 'ff_event.h', 'ff_errno.h', '../fstack-pools/ff_dpdk_if.c'}
 for name, record in m['files'].items():
     data = (base / name).read_bytes()
     assert hashlib.sha256(data).hexdigest() == record['sha256']

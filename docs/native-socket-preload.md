@@ -110,5 +110,7 @@ This demonstrates that the current caller adapter can support this tested
 no-FF Nginx profile. It does not run Nginx's F-Stack module, qualify the full
 upstream F-Stack fault/performance matrix, or migrate the graceful-reload
 compatibility case. That case remains blocked until the original F-Stack
-runtime lifecycle and its service-level counters and state transitions are
-exercised end to end.
+runtime initialization, executable descriptor integration, and service-level
+counters and state transitions are exercised end to end. The separate
+[`ker::fstack-socket-bridge` leaf adapter](fstack-socket-bridge.md) covers only
+the selected original FF TCP socket calls and does not complete that lifecycle.
