@@ -211,6 +211,7 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	int prepared = 0;
 	int accept_sent = 0;
 	int unread_accept_ack = getenv("KER_C15_UNREAD_ACCEPT_ACK") != NULL;
+	int no_final_ack_test = getenv("KER_C15_NO_FINAL_ACK_TEST") != NULL;
 	int stopped_owner_timeout = getenv("KER_C15_STOP_OWNER_TIMEOUT") != NULL;
 	int duplicate_mode = getenv("KER_C15_DUPLICATE_MODE") != NULL;
 	const char *expire_after_prepared_env = getenv("KER_C15_EXPIRE_AFTER_PREPARED");
@@ -219,7 +220,8 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	const char *late_prepared_env = getenv("KER_C15_LATE_PREPARED_INDEX");
 	unsigned int late_prepared_index = late_prepared_env ?
 		(unsigned int)strtoul(late_prepared_env, NULL, 10) : 0;
-	unsigned int packet_limit = expire_after_prepared_index ? expire_after_prepared_index :
+	unsigned int packet_limit = no_final_ack_test ? 1U :
+		expire_after_prepared_index ? expire_after_prepared_index :
 		late_prepared_index ? late_prepared_index : duplicate_mode ? 2U : 17U;
 	int prepared_expiry_handled = 0;
 	int owner_timeout_handled = 0;
@@ -248,6 +250,14 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	if (host_write_file(state_path, "OWNER_CONNECTED")) { result = -EIO; goto out; }
 	/* The kernel mark gate and authenticated map owner are ready before the
 	 * application descriptor becomes a listening socket. */
+	/* SOCK_NONBLOCK passed to accept4 applies only to the accepted socket; the
+	 * bounded EAGAIN/deadline loop also needs its listener nonblocking. */
+	int listener_flags = fcntl(listener_fd, F_GETFL);
+	if (listener_flags < 0 || (!(listener_flags & O_NONBLOCK) &&
+	    fcntl(listener_fd, F_SETFL, listener_flags | O_NONBLOCK) < 0)) {
+		result = -errno;
+		goto out;
+	}
 	if (listen(listener_fd, 64) != 0) { result = -errno; goto out; }
 	if (host_write_file(state_path, "READY")) { result = -EIO; goto out; }
 	for (unsigned int index = 1; index <= ((unread_accept_ack || stopped_owner_timeout) ?
@@ -462,7 +472,22 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 		identity = NULL;
 		admitted++;
 		if (!stopped_owner_timeout && !(duplicate_mode && index == 1)) {
+			if (no_final_ack_test && host_write_file(state_path,
+				"NO_FINAL_ACK_WAIT index=1")) { result = -EIO; goto out; }
+			uint64_t accept_started = monotonic_ns();
 			result = accept_application_connection(listener_fd, 5000);
+			if (no_final_ack_test && result == -ETIMEDOUT) {
+				uint64_t elapsed_ms = (monotonic_ns() - accept_started) /
+					UINT64_C(1000000);
+				if (snprintf(state, sizeof(state),
+					"NO_FINAL_ACK_TIMEOUT elapsed_ms=%llu",
+					(unsigned long long)elapsed_ms) >= (int)sizeof(state) ||
+				    host_write_file(state_path, state)) {
+					result = -EIO;
+					goto out;
+				}
+				goto out;
+			}
 			if (result) goto out;
 		}
 		if (snprintf(state, sizeof(state), "ADMITTED index=%u map_created=%u", index,

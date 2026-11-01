@@ -5,6 +5,7 @@ import errno
 import importlib.util
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import socket
@@ -256,6 +257,7 @@ def run_probe(args, eal, root, native):
         for peer in peers:
             peer.close()
         peers.clear()
+        run_no_final_ack_probe(args, eal, root, native)
         run_unread_accept_ack_probe(args, eal, root, native)
         run_stopped_owner_timeout_probe(args, eal, root, native)
         run_prepared_accept_expiry_probe(args, eal, root, native)
@@ -266,6 +268,7 @@ def run_probe(args, eal, root, native):
         print('C15_TAP_ADMISSION_OK original_lkl=true held_synack=true '
             'map_admit=real_ff_flow_map collision_flows=16 mapfull=17 '
             'exact_c14_revoke=true late_ack_rst=true host_handshake=true '
+            'no_final_ack=bounded_accept_timeout=true '
             'unread_accept_ack=map_retained=true')
     finally:
         if process is not None and process.poll() is None:
@@ -276,6 +279,108 @@ def run_probe(args, eal, root, native):
             owner.wait()
         for peer in peers:
             peer.close()
+        capture.close()
+
+
+def run_no_final_ack_probe(args, eal, root, native):
+    root = root / 'c15-no-final-ack'
+    root.mkdir(mode=0o700)
+    capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    table = f'ker_c15_noack_{os.getpid()}'
+    owner = process = peer = None
+    table_created = False
+    prefix = root / 'control'
+    owner_prefix = root / 'owner'
+    owner_path = root / 'owner.sock'
+    peer_port = 11998
+    try:
+        capture.bind(('kerhost', 0))
+        capture.settimeout(.01)
+        native.census_nft('add', 'table', 'inet', table)
+        table_created = True
+        native.census_nft('add', 'chain', 'inet', table, 'output', '{', 'type', 'filter',
+            'hook', 'output', 'priority', 'filter;', 'policy', 'accept;', '}')
+        native.census_nft('add', 'rule', 'inet', table, 'output', 'oifname', 'kerhost',
+            'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'sport', str(peer_port), 'tcp', 'dport', '8080',
+            'tcp', 'flags', '&', '(fin', '|', 'syn', '|', 'rst', '|', 'ack)',
+            '==', 'ack', 'counter', 'drop')
+        owner = subprocess.Popen([str(args.owner), str(owner_path), str(owner_prefix)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        wait_state(str(owner_prefix), 'OWNER_READY', owner)
+        command = [sys.executable, str(args.launcher), '--library', str(args.library),
+            '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
+            '--port', 'net_tap0', '--eal', eal, '--stats', str(root / 'stats.json'),
+            '--', str(args.client)]
+        environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1',
+            'RUNTIME_DIRECTORY': str(root), 'KER_C15_ADMISSION_CONTROL': str(prefix),
+            'KER_C15_OWNER_PATH': str(owner_path), 'KER_C15_OWNER_PID': str(owner.pid),
+            'KER_C15_NO_FINAL_ACK_TEST': '1'}
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, text=True)
+        wait_owner_identity(prefix, process, owner_prefix, owner)
+        wait_state(prefix, 'READY', process)
+        peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        peer.bind(('198.18.0.1', peer_port))
+        peer.setblocking(False)
+        result = peer.connect_ex(('198.18.0.2', 8080))
+        require(result in (0, errno.EINPROGRESS, errno.EALREADY),
+            f'no-final-ACK peer did not enter SYN_SENT: {result}')
+        wait_state(prefix, 'HELD index=1', process)
+        send_command(prefix, 'ADMIT')
+        wait_state(prefix, 'NO_FINAL_ACK_WAIT index=1', process)
+
+        synack_seen = False
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = native.ipv4_tcp_frame(frame)
+            if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                    packet['sport'] == 8080 and packet['dport'] == peer_port and \
+                    packet['flags'] & 0x12 == 0x12:
+                synack_seen = True
+        require(synack_seen, 'admitted no-final-ACK flow did not emit the original Linux SYN-ACK')
+        chain = native.census_nft('list', 'chain', 'inet', table, 'output')
+        match = re.search(r'counter packets (\d+)', chain)
+        require(match is not None and int(match.group(1)) > 0,
+            f'host final ACK was not dropped before reaching the listener: {chain!r}')
+
+        started = time.monotonic()
+        output, errors = process.communicate(timeout=9)
+        elapsed = time.monotonic() - started
+        require(process.returncode != 0,
+            f'no-final-ACK client unexpectedly completed: stdout={output!r}; stderr={errors!r}')
+        state = Path(str(prefix) + '.state').read_text().strip()
+        require(state.startswith('NO_FINAL_ACK_TIMEOUT elapsed_ms='),
+            f'accept did not report its own deadline cleanup: {state!r}')
+        elapsed_ms = int(state.split('elapsed_ms=', 1)[1])
+        require(4900 <= elapsed_ms <= 7000 and elapsed < 9,
+            f'accept deadline was not the timeout source: internal={elapsed_ms}ms outer={elapsed:.3f}s')
+        owner_output, owner_errors = owner.communicate(timeout=8)
+        require(owner.returncode == 0,
+            f'map owner did not clean up after listener timeout: rc={owner.returncode}; '
+            f'stdout={owner_output!r}; stderr={owner_errors!r}')
+        owner_state = Path(str(owner_prefix) + '.state').read_text().strip()
+        require(owner_state.startswith('OWNER_DONE inserted=1 duplicates=0 full=0') and
+            'revoked=0' in owner_state,
+            f'accepted map entry was incorrectly revoked after missing final ACK: {owner_state!r}')
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        if owner is not None and owner.poll() is None:
+            owner.kill()
+            owner.wait()
+        if peer is not None:
+            peer.close()
+        if table_created:
+            try:
+                native.census_nft('delete', 'table', 'inet', table)
+            except BaseException:
+                pass
         capture.close()
 
 
