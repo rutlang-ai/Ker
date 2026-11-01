@@ -4502,6 +4502,15 @@
       ],
       "adaptation": "Complete unchanged `p1_cold_*` helpers and `test_p1_future_kni_owner` body run against the original KNI implementation. The source fixture confines its EAL process-type wrapper to the fixture, binds the source-shaped original reload block through `ker::reload`, and delegates owner matching to pinned `ff_reload_kni_owner_match`. It verifies pending owner statistics before activation, no hotplug, both original named ring lookups, no preactivation TX, exact3-packet PMD callback, counters and full pool recovery. A real EAL primary caller binds selected generation1/active0, observes one exact packet queued in the original KNI RX ring, proves no TAP-to-host TX before reload activation, then executes the original `ff_kni_inject_process` through actual TAP/kernel-vhost virtio-user PMDs. Generation and proc identity mismatches are denied then restored. The installed caller passes. The caller-gate bypass control proves the pending queued frame escapes before activation. This is same-process caller integration, not true-secondary or cross-master reload. Original `ff_kni_inject_process` bytes are hash-audited; source helpers and assertions are compared byte-for-byte to the pinned snapshot. See docs/fstack-kni-ownership.md."
     },
+    "fstack-kni-future-short-tx": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_p1_future_kni_short_tx",
+      "ker_ctests": [
+        "fstack-kni-owner-original-import",
+        "fstack-kni-short-tx-source"
+      ],
+      "adaptation": "The complete unchanged p1_cold_tx_check(1) helper and test_p1_future_kni_short_tx assertion run against the original KNI implementation and exact source IDs. The fixture requires tx_packets=1, dropped=2 and complete pool recovery. It then uses the unchanged ff_kni_inject_process with the real net_ring PMD and a bounded sink whose capacity is exactly one: the first of three distinct mbufs is accepted with exact pointer/FIFO/payload, the other two are released, and exact TX/drop deltas and pool census are checked. A fresh packet retry is accepted and reclaimed. This is a caller backpressure test using a source-fixture PMD, not an installed short-TX caller, true secondary, protocol behavior or full RX-ring qualification. Source implementation and test bytes are audited against the pinned snapshot. See docs/fstack-kni-short-tx.md."
+    },
     "fstack-kni-nonowner": {
       "source_file": "tests/unit/test_ff_dpdk_kni.c",
       "source_case": "test_p1_kni_nonowner",

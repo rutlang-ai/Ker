@@ -10,6 +10,7 @@ add_executable(ker-kni-host-bridge examples/kni-host-bridge.c)
 target_link_libraries(ker-kni-host-bridge PRIVATE ker-example-kni-bridge)
 target_compile_options(ker-kni-host-bridge PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
+    find_library(ker_kni_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
     add_executable(ker-kni-owner-bypass-test examples/kni-host-bridge.c)
     target_compile_definitions(ker-kni-owner-bypass-test PRIVATE KER_KNI_TEST_BYPASS_OWNER=1)
     target_link_libraries(ker-kni-owner-bypass-test PRIVATE ker-example-kni-bridge)
@@ -37,7 +38,7 @@ if(BUILD_TESTING)
         -Wl,--wrap=__rte_panic -Wl,--wrap=rte_eal_hotplug_add)
     add_executable(ker-kni-owner-source-test tests/fstack-kni-owner.c)
     target_include_directories(ker-kni-owner-source-test PRIVATE tests third_party/fstack-ipc)
-    target_link_libraries(ker-kni-owner-source-test PRIVATE ker-example-kni-bridge)
+    target_link_libraries(ker-kni-owner-source-test PRIVATE ker-example-kni-bridge "${ker_kni_ring_pmd}")
     target_compile_options(ker-kni-owner-source-test PRIVATE -Wall -Wextra -Werror)
     target_link_options(ker-kni-owner-source-test PRIVATE -Wl,--wrap=rte_zmalloc
         -Wl,--wrap=rte_eal_process_type -Wl,--wrap=rte_eal_hotplug_add
@@ -54,8 +55,13 @@ if(BUILD_TESTING)
     add_test(NAME fstack-kni-owner-source
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-kni-owner-source.py"
             --app "$<TARGET_FILE:ker-kni-owner-source-test>" --pmd-root "${ker_kni_source_pmd_root}")
+    add_test(NAME fstack-kni-short-tx-source
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-kni-owner-source.py"
+            --app "$<TARGET_FILE:ker-kni-owner-source-test>" --pmd-root "${ker_kni_source_pmd_root}"
+            --profile short-tx)
     set_tests_properties(fstack-kni-owner-original-import PROPERTIES LABELS "fstack;provenance")
     set_tests_properties(fstack-kni-owner-source PROPERTIES LABELS "fstack;fstack-newly-adapted" TIMEOUT 30)
+    set_tests_properties(fstack-kni-short-tx-source PROPERTIES LABELS "fstack;fstack-newly-adapted" TIMEOUT 30)
 endif()
 # The native CI profile provisions namespaces, tun and /dev/vhost-net before
 # its full CTest graph. Other DPDK builds still compile the caller and harness.

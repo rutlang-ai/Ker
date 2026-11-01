@@ -3993,9 +3993,18 @@
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source helper and short-TX assertion require exactly one accepted packet, two drops and full pool recovery. The fixture then exercises unchanged ff_kni_inject_process against a real capacity-one net_ring PMD sink, checking accepted pointer/FIFO/payload, rejected-mbuf release, exact counters, pool recovery and fresh-packet retry. This qualifies bounded caller TX backpressure only; it does not cover the distinct full RX-ring case or protocol behavior. See docs/fstack-kni-short-tx.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-owner-original-import",
+          "provenance_case": "fstack-kni-future-short-tx"
+        },
+        {
+          "ctest": "fstack-kni-short-tx-source",
+          "provenance_case": "fstack-kni-future-short-tx"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
