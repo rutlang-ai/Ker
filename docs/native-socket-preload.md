@@ -36,6 +36,20 @@ destination `dup2`/`dup3` onto native capabilities is also unsupported and
 fails before mutation. Ordinary host `dup2`, including daemon log and stderr
 redirection, remains host behavior.
 
+The preload recognizes broker capabilities registered by its socket/accept/dup
+wrappers and capabilities authenticated during the inherited-descriptor scan
+at process startup. It does not discover capabilities received later through
+raw `SCM_RIGHTS` or adopted directly from the standalone broker SDK; those
+descriptors remain outside this POSIX profile until an explicit adoption API
+exists. Ordinary host descriptor operations do not probe FIFO-shaped files
+with broker RPC. Preload descriptor-map critical sections block catchable
+signals before locking and restore the caller's mask after unlocking, so a
+handler that closes a host descriptor or writes a self-pipe cannot re-enter a
+lock held by an interrupted broker operation. This is a bounded reentrancy
+guard, not a claim that every preload operation is async-signal-safe. Nested
+composite epoll registration is rejected with `EOPNOTSUPP`; registering only
+the host half would lose broker-side readiness.
+
 This is an explicit compatibility profile, not a transparent general-purpose
 POSIX backend. Native UDP, arbitrary socket families, arbitrary ioctl or
 fcntl commands, ancillary data, unsupported message flags, `select`/`poll`,

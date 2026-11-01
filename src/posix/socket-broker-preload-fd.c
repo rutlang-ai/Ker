@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <linux/limits.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,8 @@ struct epoll_entry {
 };
 
 static pthread_mutex_t preload_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local sigset_t preload_saved_signal_mask;
+static _Thread_local unsigned preload_lock_depth;
 static struct ker_socket_client preload_client = {.session_fd = -1};
 static bool client_open;
 static struct network_entry network_fds[PRELOAD_FD_SLOTS];
@@ -43,9 +46,36 @@ struct linux_dirent64 {
     char name[];
 };
 
-static void fork_prepare(void) { (void)pthread_mutex_lock(&preload_lock); }
-static void fork_parent(void) { (void)pthread_mutex_unlock(&preload_lock); }
-static void fork_child(void) { (void)pthread_mutex_unlock(&preload_lock); }
+static int block_signals(sigset_t *previous)
+{
+    sigset_t all_signals;
+    sigfillset(&all_signals);
+    int error = pthread_sigmask(SIG_SETMASK, &all_signals, previous);
+    if (error) { errno = error; return -1; }
+    return 0;
+}
+
+static int restore_signals(const sigset_t *previous)
+{
+    int error = pthread_sigmask(SIG_SETMASK, previous, NULL);
+    if (error) { errno = error; return -1; }
+    return 0;
+}
+
+static _Noreturn void preload_lock_fatal(const char *message)
+{
+    size_t length = strlen(message);
+    (void)syscall(SYS_write, STDERR_FILENO, message, length);
+    _exit(127);
+}
+
+static void fork_prepare(void)
+{
+    ker_sb_preload_lock();
+}
+
+static void fork_parent(void) { ker_sb_preload_unlock(); }
+static void fork_child(void) { ker_sb_preload_unlock(); }
 
 static int ensure_client_locked(void)
 {
@@ -57,8 +87,29 @@ static int ensure_client_locked(void)
     return 0;
 }
 
-void ker_sb_preload_lock(void) { (void)pthread_mutex_lock(&preload_lock); }
-void ker_sb_preload_unlock(void) { (void)pthread_mutex_unlock(&preload_lock); }
+void ker_sb_preload_lock(void)
+{
+    if (preload_lock_depth) { ++preload_lock_depth; return; }
+    if (block_signals(&preload_saved_signal_mask))
+        preload_lock_fatal("ker socket preload: cannot block signals before locking\n");
+    int error = pthread_mutex_lock(&preload_lock);
+    if (error) {
+        (void)restore_signals(&preload_saved_signal_mask);
+        preload_lock_fatal("ker socket preload: descriptor-map lock failed\n");
+    }
+    preload_lock_depth = 1;
+}
+
+void ker_sb_preload_unlock(void)
+{
+    if (!preload_lock_depth)
+        preload_lock_fatal("ker socket preload: unmatched descriptor-map unlock\n");
+    if (--preload_lock_depth) return;
+    int error = pthread_mutex_unlock(&preload_lock);
+    if (error) preload_lock_fatal("ker socket preload: descriptor-map unlock failed\n");
+    if (restore_signals(&preload_saved_signal_mask))
+        preload_lock_fatal("ker socket preload: cannot restore signal mask\n");
+}
 struct ker_socket_client *ker_sb_preload_client_locked(void)
 {
     return ensure_client_locked() ? NULL : &preload_client;
@@ -170,14 +221,6 @@ int ker_sb_preload_register_network_locked(int app_fd)
     return 0;
 }
 
-static bool capability_shape(int fd)
-{
-    struct stat value = {0};
-    int flags = (int)syscall(SYS_fcntl, fd, F_GETFL);
-    return flags >= 0 && (flags & O_ACCMODE) == O_WRONLY &&
-        syscall(SYS_fstat, fd, &value) == 0 && S_ISFIFO(value.st_mode);
-}
-
 int ker_sb_preload_network_fd_locked(int app_fd, int *broker_fd)
 {
     if (ker_sb_preload_is_private_fd_locked(app_fd)) { errno = EOPNOTSUPP; return -1; }
@@ -189,19 +232,10 @@ int ker_sb_preload_network_fd_locked(int app_fd, int *broker_fd)
         }
         ker_sb_preload_remove_network_locked(app_fd);
     }
-    if (!capability_shape(app_fd)) return 0;
-    if (ensure_client_locked()) return -1;
-    enum ker_socket_broker_kind kind = 0;
-    int flags = 0;
-    if (ker_socket_client_describe(&preload_client, app_fd, &kind, &flags)) {
-        if (errno == EBADF) return 0; /* Authenticated: this is an ordinary host pipe. */
-        return -1;                    /* Transport/protocol errors never select host I/O. */
-    }
-    if (kind != KER_SOCKET_BROKER_SOCKET) { errno = EOPNOTSUPP; return -1; }
-    if (ker_sb_preload_register_network_locked(app_fd)) return -1;
-    slot = find_network_slot(app_fd);
-    if (broker_fd) *broker_fd = network_fds[slot].private_fd;
-    return 1;
+    /* POSIX preload capabilities are registered by socket/accept/dup or the
+     * authenticated inherited-capability scan. Never probe arbitrary host
+     * pipes with a blocking DESCRIBE RPC from ordinary descriptor operations. */
+    return 0;
 }
 
 int ker_sb_preload_any_native_locked(int fd)

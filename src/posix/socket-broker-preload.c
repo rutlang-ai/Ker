@@ -451,6 +451,14 @@ int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event)
     int epoll_cap = -1;
     int composite = ker_sb_preload_composite_epoll_locked(epfd, &epoll_cap);
     if (composite < 0) { ker_sb_preload_unlock(); return -1; }
+    /* A composite epoll is split between a host epoll and a broker epoll.
+     * Registering its host half in another epoll would silently lose native
+     * readiness, regardless of whether the outer epoll is composite. */
+    int target_epoll = ker_sb_preload_composite_epoll_locked(fd, NULL);
+    if (target_epoll < 0) { ker_sb_preload_unlock(); return -1; }
+    if (target_epoll) {
+        ker_sb_preload_unlock(); errno = EOPNOTSUPP; return -1;
+    }
     int cap = -1, native = ker_sb_preload_network_fd_locked(fd, &cap);
     if (native < 0) { ker_sb_preload_unlock(); return -1; }
     if (!composite) {

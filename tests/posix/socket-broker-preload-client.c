@@ -25,6 +25,11 @@ extern char **environ;
 
 static volatile sig_atomic_t signal_log_fd = -1;
 static volatile sig_atomic_t caught_sigpipe_count = 0;
+static volatile sig_atomic_t rpc_signal_close_fd = -1;
+static volatile sig_atomic_t rpc_signal_seen = 0;
+static volatile sig_atomic_t rpc_signal_close_result = -2;
+static volatile sig_atomic_t rpc_signal_write_result = -2;
+static int rpc_signal_pipe_write_fd = -1;
 static void preload_signal_handler(int signal_number)
 {
     (void)signal_number;
@@ -35,6 +40,16 @@ static void caught_sigpipe(int signal_number)
 {
     (void)signal_number;
     ++caught_sigpipe_count;
+}
+
+static void rpc_signal_handler(int signal_number)
+{
+    (void)signal_number;
+    const char marker = 'R';
+    rpc_signal_close_result = close((int)rpc_signal_close_fd);
+    rpc_signal_write_result = (sig_atomic_t)write(rpc_signal_pipe_write_fd,
+        &marker, sizeof(marker));
+    ++rpc_signal_seen;
 }
 
 struct wake_thread_args { pthread_t target; int event_fd; };
@@ -241,12 +256,61 @@ static int common_checks(int listener, int inherited_epoll)
     int remote = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     CHECK(remote >= 0);
     int type = 0; socklen_t type_length = sizeof(type);
+
+    int host_fifo[2]; CHECK(pipe2(host_fifo, O_CLOEXEC) == 0);
+    int close_in_handler = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    CHECK(close_in_handler >= 0);
+    int handler_pipe[2]; CHECK(pipe2(handler_pipe, O_CLOEXEC) == 0);
+    rpc_signal_close_fd = close_in_handler;
+    rpc_signal_pipe_write_fd = handler_pipe[1];
+    rpc_signal_seen = 0;
+    rpc_signal_close_result = -2;
+    rpc_signal_write_result = -2;
+    struct sigaction rpc_action = {.sa_handler = rpc_signal_handler};
+    struct sigaction previous_rpc_action; sigemptyset(&rpc_action.sa_mask);
+    CHECK(sigaction(SIGUSR2, &rpc_action, &previous_rpc_action) == 0);
+    puts("BROKER_STOP_HOST_FIFO"); fflush(stdout);
+    char gate = 0;
+    CHECK(read(STDIN_FILENO, &gate, 1) == 1 && gate == 'H');
+    CHECK(write(host_fifo[1], "F", 1) == 1);
+    CHECK(read(host_fifo[0], &gate, 1) == 1 && gate == 'F');
+    puts("HOST_FIFO_WRITE_OK"); fflush(stdout);
+
+    puts("BROKER_STOP_SIGNAL_RPC"); fflush(stdout);
+    CHECK(read(STDIN_FILENO, &gate, 1) == 1 && gate == 'R');
     CHECK(getsockopt(remote, SOL_SOCKET, SO_TYPE, &type, &type_length) == 0 && type == SOCK_STREAM);
+    CHECK(rpc_signal_seen == 1 && rpc_signal_close_result == 0 &&
+        rpc_signal_write_result == 1);
+    char signal_marker = 0;
+    CHECK(read(handler_pipe[0], &signal_marker, 1) == 1 && signal_marker == 'R');
+    CHECK(sigaction(SIGUSR2, &previous_rpc_action, NULL) == 0);
+    rpc_signal_close_fd = -1;
+    rpc_signal_pipe_write_fd = -1;
+    CHECK(close(handler_pipe[0]) == 0 && close(handler_pipe[1]) == 0);
+    CHECK(close(host_fifo[0]) == 0 && close(host_fifo[1]) == 0);
     errno = 0; CHECK(dup2(remote, 17) == -1 && errno == EOPNOTSUPP);
     CHECK(close(remote) == 0);
 
     int epoll_alias = dup(epoll_fd); CHECK(epoll_alias >= 0);
     CHECK(close(epoll_alias) == 0);
+    int inner_epoll = epoll_create1(EPOLL_CLOEXEC); CHECK(inner_epoll >= 0);
+    int inner_alias = dup(inner_epoll); CHECK(inner_alias >= 0);
+    int host_outer = (int)syscall(SYS_epoll_create1, EPOLL_CLOEXEC);
+    CHECK(host_outer >= 0);
+    struct epoll_event nested_event = {.events = EPOLLIN, .data.u64 = UINT64_C(0x4e455354)};
+    errno = 0;
+    CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, inner_epoll, &nested_event) == -1 &&
+        errno == EOPNOTSUPP);
+    errno = 0;
+    CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, inner_alias, &nested_event) == -1 &&
+        errno == EOPNOTSUPP);
+    errno = 0;
+    CHECK(epoll_ctl(host_outer, EPOLL_CTL_ADD, inner_epoll, &nested_event) == -1 &&
+        errno == EOPNOTSUPP);
+    errno = 0;
+    CHECK(epoll_ctl(host_outer, EPOLL_CTL_ADD, inner_alias, &nested_event) == -1 &&
+        errno == EOPNOTSUPP);
+    CHECK(close(host_outer) == 0 && close(inner_alias) == 0 && close(inner_epoll) == 0);
     CHECK(fcntl(epoll_fd, F_SETFD, 0) == 0);
     errno = 0;
     char *arguments[] = {(char *)"/bin/true", NULL};

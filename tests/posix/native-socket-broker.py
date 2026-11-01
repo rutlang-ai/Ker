@@ -129,12 +129,31 @@ def run_preloaded_frontend(args, rpc_path, broker, capabilities):
         'PYTHONDONTWRITEBYTECODE': '1',
     }
     frontend = subprocess.Popen([str(args.preload_client), str(capabilities[0]),
-        str(capabilities[1])], pass_fds=tuple(capabilities), stdin=subprocess.DEVNULL,
+        str(capabilities[1])], pass_fds=tuple(capabilities), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
     for fd in capabilities:
         os.close(fd)
     capabilities.clear()
+    broker_stopped = False
     try:
+        require(read_line(frontend.stdout, 20, frontend) == 'BROKER_STOP_HOST_FIFO',
+            'preloaded caller did not reach the host-FIFO signal-safety check')
+        os.killpg(broker.pid, signal.SIGSTOP)
+        broker_stopped = True
+        frontend.stdin.write(b'H'); frontend.stdin.flush()
+        require(read_line(frontend.stdout, 5, frontend) == 'HOST_FIFO_WRITE_OK',
+            'ordinary host FIFO write waited on broker classification while broker was stopped')
+        require(read_line(frontend.stdout, 5, frontend) == 'BROKER_STOP_SIGNAL_RPC',
+            'preloaded caller did not reach the delayed-RPC signal test')
+        frontend.stdin.write(b'R'); frontend.stdin.flush()
+        time.sleep(0.1)
+        frontend.send_signal(signal.SIGUSR2)
+        time.sleep(0.1)
+        try:
+            os.killpg(broker.pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+        broker_stopped = False
         require(read_line(frontend.stdout, 20, frontend) == 'PARENT_READY',
             'preloaded caller did not finish host/mixed-epoll checks')
         peer = socket.create_connection(('198.18.0.2', 4097), timeout=10)
@@ -172,6 +191,11 @@ def run_preloaded_frontend(args, rpc_path, broker, capabilities):
             f'preloaded frontend failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
         return frontend
     except BaseException:
+        if broker_stopped:
+            try:
+                os.killpg(broker.pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
         if frontend.poll() is None:
             frontend.kill(); frontend.wait()
         raise
@@ -430,7 +454,8 @@ def inside(args):
                     str(args.broker), str(rpc_path), str(bootstrap_path)]
                 environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1'}
                 broker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0,
+                    start_new_session=True)
                 bootstrap.settimeout(30)
                 try:
                     connection, _ = bootstrap.accept()
