@@ -21,11 +21,14 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include "tcp-observer-diag-wire.h"
 #include "member-census-diag-wire.h"
 #include "member-census-diag.h"
 #include "member-census-runtime.h"
+#include "ff-owner-admission-control.h"
+#include "ff-admission-task.h"
 
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
@@ -62,11 +65,30 @@ struct sb_object {
 struct sb_owner {
     bool live;
     bool unowned_network_history;
+    bool owned_socket_history;
     pid_t pid;
+    uid_t uid;
+    gid_t gid;
     uint64_t start_time;
     uint64_t token;
     uint32_t mark;
     int pidfd;
+    int admission_listener_fd;
+    int admission_peer_fd;
+    bool admission_prepared;
+    bool admission_attached;
+    bool admission_ready;
+    bool admission_failed;
+    struct ker_ff_admission_task *admission_task;
+    int admission_listener_native_fd;
+    uint64_t admission_registration_id;
+    uint64_t admission_deadline_ns;
+    char admission_directory[80];
+    char admission_path[KER_SOCKET_BROKER_PATH_MAX + 1];
+    dev_t admission_directory_dev;
+    ino_t admission_directory_ino;
+    dev_t admission_path_dev;
+    ino_t admission_path_ino;
 };
 struct sb_client {
     int fd;
@@ -107,11 +129,44 @@ struct ker_socket_broker_server {
     struct sb_census_job census_jobs[KER_SB_CENSUS_JOBS];
 };
 
-
 static int host_close(int fd)
 {
     if (fd >= 0) return (int)syscall(SYS_close, fd);
     return 0;
+}
+static void owner_admission_endpoint_close(struct sb_owner *owner)
+{
+    if (!owner) return;
+    if (owner->admission_task)
+        (void)ker_posix_ff_admission_task_request_stop(owner->admission_task);
+    (void)host_close(owner->admission_peer_fd);
+    (void)host_close(owner->admission_listener_fd);
+    owner->admission_peer_fd = -1;
+    owner->admission_listener_fd = -1;
+    struct stat identity;
+    if (owner->admission_path[0] &&
+        !lstat(owner->admission_path, &identity) &&
+        identity.st_dev == owner->admission_path_dev &&
+        identity.st_ino == owner->admission_path_ino)
+        (void)syscall(SYS_unlinkat, AT_FDCWD, owner->admission_path, 0);
+    if (owner->admission_directory[0] &&
+        !lstat(owner->admission_directory, &identity) &&
+        identity.st_dev == owner->admission_directory_dev &&
+        identity.st_ino == owner->admission_directory_ino)
+        (void)syscall(SYS_unlinkat, AT_FDCWD, owner->admission_directory,
+            AT_REMOVEDIR);
+    owner->admission_path[0] = '\0';
+    owner->admission_directory[0] = '\0';
+}
+static uint64_t host_monotonic_ns(void)
+{
+    struct timespec now = {0};
+    if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &now)) return 0;
+    if (now.tv_sec < 0 || now.tv_nsec < 0 || now.tv_nsec >= 1000000000L ||
+        (uint64_t)now.tv_sec > (UINT64_MAX - (uint64_t)now.tv_nsec) /
+            UINT64_C(1000000000)) return 0;
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+        (uint64_t)now.tv_nsec;
 }
 static void release_runtime_lease(struct ker_socket_broker_server *server)
 {
@@ -123,6 +178,8 @@ static void release_runtime_lease(struct ker_socket_broker_server *server)
 static int host_getsockopt(int fd, int level, int option, void *value, socklen_t *length)
 { return (int)syscall(SYS_getsockopt, fd, level, option, value, length); }
 static int fail(int error) { errno = error; return -1; }
+static struct sb_owner *owner_by_token(struct ker_socket_broker_server *server,
+    uint64_t token);
 
 /* Socket options are copied as flat bytes in the broker protocol. Keep the
  * surface explicit: options containing pointers or descriptor values need a
@@ -206,6 +263,7 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_MEMBER_CENSUS_SNAPSHOT:
     case KER_SB_MEMBER_PAYLOAD_SNAPSHOT: return KER_SOCKET_BROKER_READ;
     case KER_SB_FF_OWNER_SOCKET: return KER_SOCKET_BROKER_CONTROL;
+    case KER_SB_FF_OWNER_ADMISSION_PREPARE: return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_MATCH: case KER_SB_FF_OWNER_PAYLOAD:
     case KER_SB_FF_OWNER_REQUESTS:
         return KER_SOCKET_BROKER_READ;
@@ -227,6 +285,16 @@ static void close_client(struct ker_socket_broker_server *server, struct sb_clie
 static void close_object(struct ker_socket_broker_server *server, struct sb_object *object)
 {
     if (!object->live) return;
+    if (object->owner_token) {
+        struct sb_owner *owner = owner_by_token(server, object->owner_token);
+        if (owner && owner->admission_task &&
+            owner->admission_listener_native_fd == object->native_fd) {
+            (void)ker_posix_ff_admission_task_listener_closed(
+                owner->admission_task, object->native_fd);
+            owner->admission_listener_native_fd = -1;
+            owner->admission_failed = true;
+        }
+    }
     /* Do not retain the adopted descriptor through epoll metadata. The final
      * capability close is the final userspace fd close; original Linux applies
      * its own epoll/OFD close semantics. */
@@ -254,6 +322,27 @@ static size_t client_count(const struct ker_socket_broker_server *server)
     size_t result = 0;
     for (size_t i = 0; i < KER_SB_CLIENTS; ++i) result += server->clients[i].fd >= 0;
     return result;
+}
+
+static bool admission_tasks_stopping(struct ker_socket_broker_server *server)
+{
+    bool active = false;
+    for (size_t i = 0; i < KER_SB_CLIENTS; ++i) {
+        struct sb_owner *owner = &server->owners[i];
+        if (!owner->admission_task) continue;
+        (void)ker_posix_ff_admission_task_request_stop(owner->admission_task);
+        uint64_t lease = 0;
+        int state = ker_posix_ff_admission_task_poll(owner->admission_task, &lease);
+        if (state == KER_FF_ADMISSION_TASK_STARTING ||
+            state == KER_FF_ADMISSION_TASK_READY ||
+            state == KER_FF_ADMISSION_TASK_STOPPING) {
+            active = true;
+        } else {
+            (void)ker_posix_ff_admission_task_release(owner->admission_task);
+            owner->admission_task = NULL;
+        }
+    }
+    return active;
 }
 
 static struct sb_object *lookup_cap(struct ker_socket_broker_server *server, int fd)
@@ -436,7 +525,10 @@ static struct sb_owner *owner_for_client(struct ker_socket_broker_server *server
         int pidfd = (int)syscall(SYS_fcntl, client->pidfd, F_DUPFD_CLOEXEC, 0);
         if (pidfd < 0) { if (status_out) *status_out = -errno; return NULL; }
         *owner = (struct sb_owner){.live = true, .pid = client->credential.pid,
-            .start_time = start_time, .pidfd = pidfd};
+            .uid = client->credential.uid, .gid = client->credential.gid,
+            .start_time = start_time, .pidfd = pidfd,
+            .admission_listener_fd = -1, .admission_peer_fd = -1,
+            .admission_listener_native_fd = -1};
         if (status_out) *status_out = 0;
         return owner;
     }
@@ -515,6 +607,340 @@ static int create_ff_owner(struct ker_socket_broker_server *server,
     if (cap < 0) return -errno;
     server->objects[slot].owner_token = owner->token;
     *capability_out = cap;
+    return 0;
+}
+
+static int owner_admission_prepare(struct ker_socket_broker_server *server,
+    struct sb_client *client, int owner_cap,
+    struct ker_sb_ff_owner_admission_prepare *response)
+{
+    struct sb_object *object = lookup_cap(server, owner_cap);
+    struct sb_owner *owner = NULL;
+    int status = owner_require_actor(server, client, object, &owner);
+    if (status) return status;
+    if (!(object->rights & KER_SOCKET_BROKER_CONTROL)) return -EACCES;
+    if (owner->unowned_network_history) return -EOPNOTSUPP;
+    if (owner->admission_prepared || owner->admission_failed) return -EALREADY;
+    if (owner->owned_socket_history) return -EBUSY;
+    /* Admission attaches before the first broker-owned socket is created.
+     * This one-listener profile intentionally cannot retrofit an owner that
+     * already has network descriptors. */
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
+        if (server->objects[i].live &&
+            server->objects[i].kind == KER_SOCKET_BROKER_SOCKET &&
+            server->objects[i].owner_token == owner->token)
+            return -EBUSY;
+
+    uint64_t registration = 0;
+    long random_result = syscall(SYS_getrandom, &registration,
+        sizeof(registration), 0);
+    if (random_result < 0) return -errno;
+    if (random_result != (long)sizeof(registration)) return -EIO;
+    if (!registration) return -EIO;
+    uint64_t now = host_monotonic_ns();
+    if (!now || now > UINT64_MAX - UINT64_C(5000000000)) return -EOVERFLOW;
+    uint64_t deadline = now + UINT64_C(5000000000);
+    char directory[80], path[KER_SOCKET_BROKER_PATH_MAX + 1];
+    const char *temporary_root = getenv("TMPDIR");
+    if (!temporary_root || !*temporary_root) temporary_root = "/dev/shm";
+    size_t root_length = strnlen(temporary_root, 64);
+    struct stat root_identity;
+    if (!root_length || root_length >= 64 || temporary_root[0] != '/' ||
+        lstat(temporary_root, &root_identity) || !S_ISDIR(root_identity.st_mode) ||
+        ((root_identity.st_mode & S_ISVTX) == 0 &&
+            (root_identity.st_mode & 0022) != 0) ||
+        (root_identity.st_uid != geteuid() && root_identity.st_uid != 0))
+        return -EACCES;
+    int length = snprintf(directory, sizeof(directory),
+        "%s/ker-adm-%ld-%016llx", temporary_root, (long)getpid(),
+        (unsigned long long)registration);
+    if (length <= 0 || (size_t)length >= sizeof(directory)) return -ENAMETOOLONG;
+    length = snprintf(path, sizeof(path), "%s/control", directory);
+    if (length <= 0 || (size_t)length >= sizeof(path)) return -ENAMETOOLONG;
+    if (syscall(SYS_mkdirat, AT_FDCWD, directory, 0700)) return -errno;
+    struct stat directory_identity;
+    if (lstat(directory, &directory_identity) ||
+        !S_ISDIR(directory_identity.st_mode) ||
+        directory_identity.st_uid != geteuid() ||
+        (directory_identity.st_mode & 0777) != 0700) {
+        int error = errno ? errno : EACCES;
+        (void)syscall(SYS_unlinkat, AT_FDCWD, directory, AT_REMOVEDIR);
+        return -error;
+    }
+    int listener = (int)syscall(SYS_socket, AF_UNIX,
+        SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (listener < 0) {
+        int error = errno;
+        (void)syscall(SYS_unlinkat, AT_FDCWD, directory, AT_REMOVEDIR);
+        return -error;
+    }
+    int pass_credentials = 1;
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    memcpy(address.sun_path, path, (size_t)length + 1);
+    int result = 0;
+    if (syscall(SYS_setsockopt, listener, SOL_SOCKET, SO_PASSCRED,
+            &pass_credentials, sizeof(pass_credentials)) ||
+        syscall(SYS_bind, listener, &address,
+            (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
+                strlen(path) + 1)) ||
+        syscall(SYS_chmod, path, 0600) || syscall(SYS_listen, listener, 1))
+        result = -errno;
+    struct stat path_identity;
+    if (!result && (lstat(path, &path_identity) ||
+        !S_ISSOCK(path_identity.st_mode) || path_identity.st_uid != geteuid()))
+        result = -(errno ? errno : EACCES);
+    if (result) {
+        int error = -result;
+        (void)host_close(listener);
+        (void)syscall(SYS_unlinkat, AT_FDCWD, path, 0);
+        (void)syscall(SYS_unlinkat, AT_FDCWD, directory, AT_REMOVEDIR);
+        return -error;
+    }
+    owner->admission_listener_fd = listener;
+    owner->admission_peer_fd = -1;
+    owner->admission_prepared = true;
+    owner->admission_deadline_ns = deadline;
+    owner->admission_registration_id = registration;
+    owner->admission_directory_dev = directory_identity.st_dev;
+    owner->admission_directory_ino = directory_identity.st_ino;
+    owner->admission_path_dev = path_identity.st_dev;
+    owner->admission_path_ino = path_identity.st_ino;
+    memcpy(owner->admission_directory, directory, strlen(directory) + 1);
+    memcpy(owner->admission_path, path, strlen(path) + 1);
+    memcpy(response->endpoint_path, path, strlen(path) + 1);
+    response->registration_id = registration;
+    response->reserved = 0;
+    return 0;
+}
+
+static int owner_admission_peer_valid(struct sb_owner *owner, int fd)
+{
+    struct ucred peer = {0};
+    socklen_t length = sizeof(peer);
+    if (host_getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &length))
+        return -errno;
+    if (length != sizeof(peer)) return -EPROTO;
+    if (peer.pid != owner->pid || peer.uid != owner->uid || peer.gid != owner->gid)
+        return -EACCES;
+    uint64_t start_time = 0;
+    int status = process_start_time(peer.pid, &start_time);
+    if (status) return status;
+    if (start_time != owner->start_time) return -ESTALE;
+    struct pollfd owner_pidfd = {.fd = owner->pidfd, .events = POLLIN};
+    int ready = (int)syscall(SYS_poll, &owner_pidfd, 1, 0);
+    if (ready < 0) return -errno;
+    if (ready && (owner_pidfd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
+        return -ESRCH;
+    int peer_pidfd = -1;
+    length = sizeof(peer_pidfd);
+    if (host_getsockopt(fd, SOL_SOCKET, SO_PEERPIDFD, &peer_pidfd, &length)) {
+        int error = errno ? errno : EPROTO;
+        if (peer_pidfd >= 0) (void)host_close(peer_pidfd);
+        return -error;
+    }
+    if (length != sizeof(peer_pidfd)) {
+        (void)host_close(peer_pidfd);
+        return -EPROTO;
+    }
+    struct pollfd peer_identity = {.fd = peer_pidfd, .events = POLLIN};
+    ready = (int)syscall(SYS_poll, &peer_identity, 1, 0);
+    status = ready < 0 ? -errno : ready &&
+        (peer_identity.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) ? -ESRCH : 0;
+    (void)host_close(peer_pidfd);
+    return status;
+}
+
+static int owner_admission_receive_hello(struct sb_owner *owner)
+{
+    unsigned char bytes[sizeof(struct ker_ff_owner_admission_hello) + 1] = {0};
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 8)] = {0};
+    struct iovec iov = {.iov_base = bytes, .iov_len = sizeof(bytes)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t amount = syscall(SYS_recvmsg, owner->admission_peer_fd, &message,
+        MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    if (amount < 0) return errno == EAGAIN || errno == EWOULDBLOCK ||
+        errno == EINTR ? 0 : -errno;
+    struct ucred credentials = {0};
+    unsigned credential_count = 0;
+    bool malformed = !amount || !!(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC));
+    for (struct cmsghdr *control_message = CMSG_FIRSTHDR(&message);
+         control_message; control_message = CMSG_NXTHDR(&message, control_message)) {
+        if (control_message->cmsg_level != SOL_SOCKET) {
+            malformed = true;
+            continue;
+        }
+        if (control_message->cmsg_type == SCM_CREDENTIALS) {
+            if (control_message->cmsg_len != CMSG_LEN(sizeof(credentials)) ||
+                ++credential_count != 1) {
+                malformed = true;
+                continue;
+            }
+            memcpy(&credentials, CMSG_DATA(control_message), sizeof(credentials));
+            continue;
+        }
+        if (control_message->cmsg_type == SCM_RIGHTS &&
+            control_message->cmsg_len >= CMSG_LEN(0)) {
+            size_t bytes_length = control_message->cmsg_len - CMSG_LEN(0);
+            if (bytes_length % sizeof(int)) malformed = true;
+            for (size_t offset = 0; offset + sizeof(int) <= bytes_length;
+                 offset += sizeof(int)) {
+                int received_fd = -1;
+                memcpy(&received_fd, (unsigned char *)CMSG_DATA(control_message) + offset,
+                    sizeof(received_fd));
+                if (host_close(received_fd)) {
+                    malformed = true;
+                } else {
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+                    char trace[96];
+                    int trace_length = snprintf(trace, sizeof(trace),
+                        "C16_HELLO_RIGHTS_CLOSED fd=%d\n", received_fd);
+                    if (trace_length > 0 && (size_t)trace_length < sizeof(trace))
+                        (void)syscall(SYS_write, STDOUT_FILENO, trace,
+                            (size_t)trace_length);
+#endif
+                }
+            }
+            malformed = true;
+            continue;
+        }
+        malformed = true;
+    }
+    if (malformed || credential_count != 1 ||
+        credentials.pid != owner->pid || credentials.uid != owner->uid ||
+        credentials.gid != owner->gid || amount != sizeof(struct ker_ff_owner_admission_hello))
+        return -EPROTO;
+    struct ker_ff_owner_admission_hello hello = {0};
+    memcpy(&hello, bytes, sizeof(hello));
+    if (hello.magic != KER_FF_OWNER_ADMISSION_HELLO_MAGIC ||
+        hello.version != KER_FF_OWNER_ADMISSION_HELLO_VERSION ||
+        hello.length != sizeof(hello) ||
+        hello.registration_id != owner->admission_registration_id || hello.reserved)
+        return -EACCES;
+    int status = owner_admission_peer_valid(owner, owner->admission_peer_fd);
+    if (status) return status;
+    struct ker_ff_admission_task_config config = {
+        .owner_mark = owner->mark,
+        .registration_id = owner->admission_registration_id,
+        .actor_pid = owner->pid,
+        .actor_uid = owner->uid,
+        .actor_gid = owner->gid,
+        .actor_start_time = owner->start_time,
+        .actor_pidfd = owner->pidfd,
+        .peer_fd = owner->admission_peer_fd};
+    status = ker_posix_ff_admission_task_start(&config, &owner->admission_task);
+    if (status) return status;
+    (void)host_close(owner->admission_peer_fd);
+    owner->admission_peer_fd = -1;
+    owner->admission_attached = true;
+    return 1;
+}
+
+static void pump_owner_admission_endpoints(struct ker_socket_broker_server *server)
+{
+    for (size_t i = 0; i < KER_SB_CLIENTS; ++i) {
+        struct sb_owner *owner = &server->owners[i];
+        if (!owner->live || !owner->admission_prepared) continue;
+        if (owner->admission_task) {
+            uint64_t current_lease = 0;
+            int current_state = ker_posix_ff_admission_task_poll(
+                owner->admission_task, &current_lease);
+            if (current_state == KER_FF_ADMISSION_TASK_TERMINAL ||
+                (current_state < 0 && current_state != -EINPROGRESS)) {
+                (void)ker_posix_ff_admission_task_release(owner->admission_task);
+                owner->admission_task = NULL;
+                owner->admission_ready = false;
+                owner->admission_failed = true;
+                owner->admission_listener_native_fd = -1;
+                continue;
+            }
+            if (current_state == KER_FF_ADMISSION_TASK_STOPPING) continue;
+            if (owner->admission_ready) continue;
+        } else if (owner->admission_ready) {
+            continue;
+        }
+        if (owner->admission_failed) {
+            if (owner->admission_task) {
+                uint64_t ignored_lease = 0;
+                int state = ker_posix_ff_admission_task_poll(
+                    owner->admission_task, &ignored_lease);
+                if (state != KER_FF_ADMISSION_TASK_STARTING &&
+                    state != KER_FF_ADMISSION_TASK_READY &&
+                    state != KER_FF_ADMISSION_TASK_STOPPING) {
+                    (void)ker_posix_ff_admission_task_release(owner->admission_task);
+                    owner->admission_task = NULL;
+                }
+            }
+            continue;
+        }
+        uint64_t now = host_monotonic_ns();
+        if (!now || now >= owner->admission_deadline_ns) {
+            owner_admission_endpoint_close(owner);
+            owner->admission_failed = true;
+            owner->admission_attached = false;
+            continue;
+        }
+        if (owner->admission_listener_fd >= 0 && owner->admission_peer_fd < 0) {
+            int fd = (int)syscall(SYS_accept4, owner->admission_listener_fd,
+                NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if (fd >= 0) {
+                int pass_credentials = 1;
+                if (owner_admission_peer_valid(owner, fd) ||
+                    syscall(SYS_setsockopt, fd, SOL_SOCKET, SO_PASSCRED,
+                        &pass_credentials, sizeof(pass_credentials)))
+                    (void)host_close(fd);
+                else
+                    owner->admission_peer_fd = fd;
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                owner_admission_endpoint_close(owner);
+                owner->admission_failed = true;
+            }
+        }
+        if (owner->admission_peer_fd >= 0 && !owner->admission_attached) {
+            int status = owner_admission_receive_hello(owner);
+            if (status < 0) {
+                owner_admission_endpoint_close(owner);
+                owner->admission_failed = true;
+                owner->admission_attached = false;
+            }
+        }
+        if (owner->admission_attached && owner->admission_task) {
+            uint64_t lease = 0;
+            int task_status = ker_posix_ff_admission_task_poll(
+                owner->admission_task, &lease);
+            if (task_status == KER_FF_ADMISSION_TASK_READY && lease) {
+                owner->admission_ready = true;
+            } else if (task_status < 0) {
+                owner_admission_endpoint_close(owner);
+                owner->admission_failed = true;
+                (void)ker_posix_ff_admission_task_release(owner->admission_task);
+                owner->admission_task = NULL;
+            }
+        }
+    }
+}
+
+/* READY is written by the independent admission worker immediately after its
+ * queue starts. A client can issue its first socket RPC before this broker
+ * pump has copied the worker state into the cached flag, so refresh the task
+ * state at the RPC boundary as well. */
+static int owner_admission_ready_status(struct sb_owner *owner)
+{
+    if (!owner || !owner->admission_prepared) return 1;
+    if (owner->admission_failed) return -ETIMEDOUT;
+    if (owner->admission_ready) return 1;
+    if (!owner->admission_task) return 0;
+    uint64_t lease = 0;
+    int state = ker_posix_ff_admission_task_poll(owner->admission_task, &lease);
+    if (state == KER_FF_ADMISSION_TASK_READY && lease) {
+        owner->admission_ready = true;
+        return 1;
+    }
+    if (state == KER_FF_ADMISSION_TASK_TERMINAL ||
+        (state < 0 && state != -EINPROGRESS)) {
+        owner->admission_failed = true;
+        return -ETIMEDOUT;
+    }
     return 0;
 }
 
@@ -938,7 +1364,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
     if (expected_rights && request->operation != KER_SB_EPOLL_CTL &&
         request->operation != KER_SB_FF_OWNER_SOCKET &&
         request->operation != KER_SB_FF_OWNER_MATCH &&
-        request->operation != KER_SB_FF_OWNER_PAYLOAD) {
+        request->operation != KER_SB_FF_OWNER_PAYLOAD &&
+        request->operation != KER_SB_FF_OWNER_ADMISSION_PREPARE) {
         struct sb_object *object;
         enum ker_socket_broker_kind expected_kind = KER_SOCKET_BROKER_SOCKET;
         if (request->operation == KER_SB_EPOLL_WAIT) expected_kind = KER_SOCKET_BROKER_EPOLL;
@@ -984,6 +1411,14 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
     }
+    case KER_SB_FF_OWNER_ADMISSION_PREPARE: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        struct ker_sb_ff_owner_admission_prepare response = {0};
+        status = owner_admission_prepare(server, client, fds[0], &response);
+        if (status) return status;
+        memcpy(output, &response, sizeof(response));
+        *output_length = sizeof(response); *result = 0; return 0;
+    }
     case KER_SB_FF_OWNER_SOCKET: {
         if (input_length != sizeof(struct ker_sb_socket_args) || fd_count != 1)
             return -EPROTO;
@@ -993,6 +1428,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (status) return status;
         if (!owner_object || (owner_object->rights & KER_SOCKET_BROKER_CONTROL) == 0)
             return -EACCES;
+        if (owner->admission_prepared) {
+            int ready = owner_admission_ready_status(owner);
+            if (ready <= 0) return ready < 0 ? ready : -EAGAIN;
+        }
+        /* Sticky history prevents close-then-attach from escaping this
+         * one-listener admission profile. Set before any socket side effect. */
+        owner->owned_socket_history = true;
         struct ker_sb_socket_args args;
         memcpy(&args, input, sizeof(args));
         int base_type = args.type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
@@ -1110,6 +1552,10 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (input_length) return -EPROTO;
         struct sb_object *object = lookup_cap(server, fds[0]);
         if (!object) return -EBADF;
+        if (object->owner_token) {
+            struct sb_owner *owner = owner_by_token(server, object->owner_token);
+            if (owner && owner->admission_prepared) return -EOPNOTSUPP;
+        }
         if (object->kind == KER_SOCKET_BROKER_REUSEPORT_GROUP) return -EOPNOTSUPP;
         if (object->kind == KER_SOCKET_BROKER_MEMBER_CENSUS) return -EOPNOTSUPP;
 
@@ -1281,6 +1727,12 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct ker_sb_integer args; memcpy(&args, input, sizeof(args));
         struct sb_object *object = lookup_cap(server, fds[0]);
         if (!object) return -EBADF;
+        if (object->owner_token) {
+            struct sb_owner *owner = owner_by_token(server, object->owner_token);
+            if (!owner) return -ESTALE;
+            int ready = owner_admission_ready_status(owner);
+            if (ready <= 0) return ready < 0 ? ready : -EAGAIN;
+        }
         status = managed_member_status(object, request->operation);
         if (status) return status;
         struct sockaddr_storage local = {0}; socklen_t local_length = sizeof(local);
@@ -1296,7 +1748,24 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             if (socket_reuseport_enabled(object->native_fd, &reuseport)) return -errno;
             if (reuseport && any_live_group(server)) return -EOPNOTSUPP;
         }
+        bool admission_listener = false;
+        struct sb_owner *listen_owner = object->owner_token ?
+            owner_by_token(server, object->owner_token) : NULL;
+        if (listen_owner && listen_owner->admission_prepared) {
+            status = ker_posix_ff_admission_task_set_listener(
+                listen_owner->admission_task, object->native_fd);
+            if (status) return status;
+            admission_listener = true;
+        }
         int call_result = listen(object->native_fd, args.value);
+        if (call_result < 0 && admission_listener) {
+            (void)ker_posix_ff_admission_task_listener_closed(
+                listen_owner->admission_task, object->native_fd);
+            listen_owner->admission_listener_native_fd = -1;
+            listen_owner->admission_failed = true;
+        } else if (call_result == 0 && admission_listener) {
+            listen_owner->admission_listener_native_fd = object->native_fd;
+        }
         *result = call_result < 0 ? -errno : call_result; return 0;
     }
     case KER_SB_ACCEPT4: {
@@ -1382,6 +1851,14 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (!object) return -EBADF;
         status = managed_member_status(object, request->operation);
         if (status) return status;
+        /* The admission owner validates TCP_FASTOPEN while registering its
+         * listener. Do not let a later socket-option RPC re-enable TFO after
+         * that one-time check; keep generic, unowned broker sockets unchanged. */
+        if (args.level == IPPROTO_TCP && args.option == TCP_FASTOPEN &&
+            object->owner_token) {
+            struct sb_owner *owner = owner_by_token(server, object->owner_token);
+            if (owner && owner->admission_prepared) return -EOPNOTSUPP;
+        }
         if (!socket_option_supported(args.level, args.option, true)) return -EOPNOTSUPP;
         if (args.level == SOL_SOCKET && args.option == SO_LINGER &&
             !socket_linger_is_nonblocking(input + sizeof(args), args.length)) return -EOPNOTSUPP;
@@ -1699,14 +2176,32 @@ static void reap_dead(struct ker_socket_broker_server *server)
             continue;
         bool referenced = false;
         for (size_t j = 0; owner->token && j < KER_SB_OBJECTS; ++j)
-            if (server->objects[j].live && server->objects[j].kind == KER_SOCKET_BROKER_FF_OWNER &&
+            if (server->objects[j].live &&
                 server->objects[j].owner_token == owner->token) referenced = true;
         for (size_t j = 0; owner->token && j < KER_SB_CENSUS_JOBS; ++j)
             if (server->census_jobs[j].live && server->census_jobs[j].owner_token == owner->token)
                 referenced = true;
         if (!referenced) {
+            owner_admission_endpoint_close(owner);
+            if (owner->admission_task) {
+                uint64_t ignored_lease = 0;
+                int state = ker_posix_ff_admission_task_poll(
+                    owner->admission_task, &ignored_lease);
+                if (state == KER_FF_ADMISSION_TASK_STARTING ||
+                    state == KER_FF_ADMISSION_TASK_READY ||
+                    state == KER_FF_ADMISSION_TASK_STOPPING) {
+                    referenced = true;
+                } else {
+                    (void)ker_posix_ff_admission_task_release(owner->admission_task);
+                    owner->admission_task = NULL;
+                }
+            }
+        }
+        if (!referenced) {
             (void)host_close(owner->pidfd);
-            *owner = (struct sb_owner){.pidfd = -1};
+            *owner = (struct sb_owner){.pidfd = -1,
+                .admission_listener_fd = -1, .admission_peer_fd = -1,
+                .admission_listener_native_fd = -1};
         }
     }
 }
@@ -1728,8 +2223,16 @@ static int broker_pump(void *argument)
         else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) close_client(server, client);
     }
     reap_dead(server);
+    pump_owner_admission_endpoints(server);
     finish_member_census_jobs(server);
-    if (server->failure || (server->stop_when_empty && !object_count(server) && !client_count(server))) {
+    bool should_stop = server->failure || (server->stop_when_empty &&
+        !object_count(server) && !client_count(server));
+    if (should_stop && admission_tasks_stopping(server)) {
+        struct timespec task_pause = {.tv_nsec = 1000000};
+        (void)syscall(SYS_nanosleep, &task_pause, NULL);
+        return 0;
+    }
+    if (should_stop) {
         for (size_t i = 0; i < KER_SB_CLIENTS; ++i) close_client(server, &server->clients[i]);
         for (size_t i = 0; i < KER_SB_OBJECTS; ++i) close_object(server, &server->objects[i]);
         ker_posix_stop_run();
@@ -1758,6 +2261,9 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
     for (size_t i = 0; i < KER_SB_CLIENTS; ++i) {
         server->clients[i] = (struct sb_client){.fd = -1, .pidfd = -1, .census_job = -1};
         server->owners[i].pidfd = -1;
+        server->owners[i].admission_listener_fd = -1;
+        server->owners[i].admission_peer_fd = -1;
+        server->owners[i].admission_listener_native_fd = -1;
     }
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i) server->objects[i] = (struct sb_object){.capability_read_fd = -1, .native_fd = -1};
     struct stat existing;
@@ -1826,8 +2332,16 @@ void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server)
         job->live = false;
     }
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i) close_object(server, &server->objects[i]);
-    for (size_t i = 0; i < KER_SB_CLIENTS; ++i)
+    for (size_t i = 0; i < KER_SB_CLIENTS; ++i) {
+        owner_admission_endpoint_close(&server->owners[i]);
+        if (server->owners[i].admission_task) {
+            int status = ker_posix_ff_admission_task_release(
+                server->owners[i].admission_task);
+            if (status) abort();
+            server->owners[i].admission_task = NULL;
+        }
         (void)host_close(server->owners[i].pidfd);
+    }
     (void)host_close(server->listener);
     if (server->path_bound) {
         struct stat identity;

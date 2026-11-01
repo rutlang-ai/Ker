@@ -354,8 +354,23 @@ ff_run(loop_func_t loop, void *arg)
         abort();
     }
     runtime_stop = 0;
-    while (!runtime_stop)
+    if (ker_sb_preload_owner_loop_enter() != 0) abort();
+    while (!runtime_stop) {
+        int pump_status = ker_sb_preload_owner_pump();
+        if (pump_status) {
+            runtime_trace("ff_owner_pump failure stage=before-loop errno=%d\n",
+                pump_status < 0 ? -pump_status : EPROTO);
+            abort();
+        }
         (void)loop(arg);
+        pump_status = ker_sb_preload_owner_pump();
+        if (pump_status) {
+            runtime_trace("ff_owner_pump failure stage=after-loop errno=%d\n",
+                pump_status < 0 ? -pump_status : EPROTO);
+            abort();
+        }
+    }
+    ker_sb_preload_owner_loop_leave();
 }
 
 void ff_stop_run(void) { runtime_stop = 1; }

@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -601,7 +602,14 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
             int got = ker_socket_client_epoll_wait(client, pins.broker_fd, events,
                 remote_budget);
             int error = errno; ker_sb_preload_unlock();
-            if (got < 0) { saved_errno = error; goto finished; }
+            if (got < 0) {
+                char message[96];
+                int length = snprintf(message, sizeof(message),
+                    "ker composite remote epoll wait errno=%d\n", error);
+                if (length > 0) (void)syscall(SYS_write, STDERR_FILENO,
+                    message, (size_t)length);
+                saved_errno = error; goto finished;
+            }
             count += got;
         }
         if (!remote_first) {
@@ -620,7 +628,14 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
             int got = ker_socket_client_epoll_wait(client, pins.broker_fd,
                 events + count, room);
             int error = errno; ker_sb_preload_unlock();
-            if (got < 0) { saved_errno = error; goto finished; }
+            if (got < 0) {
+                char message[96];
+                int length = snprintf(message, sizeof(message),
+                    "ker composite remote epoll wait errno=%d\n", error);
+                if (length > 0) (void)syscall(SYS_write, STDERR_FILENO,
+                    message, (size_t)length);
+                saved_errno = error; goto finished;
+            }
             count += got;
         }
         if (remote_first && count < maximum) {
@@ -628,6 +643,18 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
                 maximum - count, 0, mask);
             if (got < 0) { saved_errno = errno; goto finished; }
             count += got;
+        }
+        /* Admission map operations belong to this FF owner thread. Service
+         * them on every pass, including sustained readiness, after observing
+         * readiness so a slow bounded callback cannot consume a later event
+         * beyond the caller's absolute deadline. The callback is nonblocking
+         * and runs without the preload descriptor lock. */
+        int pump_status = ker_sb_preload_owner_pump();
+        if (pump_status) {
+            if (count) { result = count; goto finished; }
+            saved_errno = pump_status < 0 && pump_status >= -4095 ?
+                -pump_status : EPROTO;
+            goto finished;
         }
         if (count || timeout == 0) { result = count; goto finished; }
         int64_t now = monotonic_milliseconds();

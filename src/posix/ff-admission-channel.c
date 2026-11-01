@@ -115,7 +115,8 @@ static int peer_identity(struct ker_ff_admission_channel *channel)
 	int result = process_start_time(channel->peer_pid, &start_time);
 	if (result) return result;
 	if (start_time != channel->peer_start_time) return -ESTALE;
-	if (stat(path, &executable) != 0) return -errno;
+	if (syscall(SYS_newfstatat, AT_FDCWD, path, &executable, 0) != 0)
+		return -errno;
 	if (executable.st_dev != channel->peer_exe_device ||
 	    executable.st_ino != channel->peer_exe_inode) return -ESTALE;
 	return 0;
@@ -145,7 +146,7 @@ static int credentials_match(struct ker_ff_admission_channel *channel,
 				int received_fd;
 				memcpy(&received_fd, (unsigned char *)CMSG_DATA(control) + offset,
 				       sizeof(received_fd));
-				(void)close(received_fd);
+				(void)syscall(SYS_close, received_fd);
 			}
 			continue;
 		}
@@ -168,7 +169,8 @@ static int send_wire(struct ker_ff_admission_channel *channel,
 {
 	struct iovec vector = {.iov_base = (void *)wire, .iov_len = sizeof(*wire)};
 	struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1};
-	ssize_t sent = sendmsg(channel->fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+	ssize_t sent = syscall(SYS_sendmsg, channel->fd, &message,
+		MSG_DONTWAIT | MSG_NOSIGNAL);
 	if (sent < 0) return -errno;
 	return (size_t)sent == sizeof(*wire) ? 0 : -EIO;
 }
@@ -184,7 +186,8 @@ static int receive_wire(struct ker_ff_admission_channel *channel,
 		.msg_iov = &vector,
 		.msg_iovlen = 1,
 	};
-	ssize_t received = recvmsg(channel->fd, &message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+	ssize_t received = syscall(SYS_recvmsg, channel->fd, &message,
+		MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
 	if (received < 0) return -errno;
 	int result = credentials_match(channel, &message);
 	if (received == 0) return -ECONNRESET;
@@ -226,10 +229,73 @@ static void response_for_command(struct ker_ff_admission_channel *channel,
 	channel->response_pending = 1;
 }
 
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+static int test_hold_finalized_response(struct ker_ff_admission_channel *channel)
+{
+	static int consumed;
+	const char *path = getenv("KER_C16_TEST_HOLD_FINALIZED_FIFO");
+	if (consumed || !path || !*path) return 0;
+	consumed = 1;
+	/* FINALIZED's wire result is intentionally zeroed. Inspect the retained
+	 * owner-side transaction state here to prove the test holds a settled,
+	 * newly-created map entry rather than an unprepared request. */
+	if (channel->current.status || channel->current.allowed != 1 ||
+	    channel->current.created != 1 || channel->owner_prepared)
+		return -EPROTO;
+	static const char marker[] =
+		"C16_FINALIZED_REPLY_HELD owner_state=settled allowed=1 created=1 map_retained=1\n";
+	(void)syscall(SYS_write, STDOUT_FILENO, marker, sizeof(marker) - 1);
+	int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+	if (fd < 0) return -errno;
+	char release;
+	ssize_t count;
+	do { count = syscall(SYS_read, fd, &release, sizeof(release)); }
+	while (count < 0 && errno == EINTR);
+	int error = count == 1 && release == 'R' ? 0 :
+		count < 0 ? -errno : -ECONNRESET;
+	(void)syscall(SYS_close, fd);
+	return error;
+}
+
+static int test_hold_prepared_response(struct ker_ff_admission_channel *channel)
+{
+	static int consumed;
+	const char *path = getenv("KER_C16_TEST_HOLD_PREPARED_FIFO");
+	if (consumed || !path || !*path) return 0;
+	consumed = 1;
+	if (channel->current.status || channel->current.allowed != 1 ||
+	    channel->current.created != 1 || !channel->owner_prepared)
+		return -EPROTO;
+	static const char marker[] =
+		"C16_PREPARED_REPLY_HELD owner_prepared=1 created=1 reservation=retained\n";
+	(void)syscall(SYS_write, STDOUT_FILENO, marker, sizeof(marker) - 1);
+	int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+	if (fd < 0) return -errno;
+	char release;
+	ssize_t count;
+	do { count = syscall(SYS_read, fd, &release, sizeof(release)); }
+	while (count < 0 && errno == EINTR);
+	int error = count == 1 && release == 'R' ? 0 :
+		count < 0 ? -errno : -ECONNRESET;
+	(void)syscall(SYS_close, fd);
+	return error;
+}
+#endif
+
 static int send_pending_response(struct ker_ff_admission_channel *channel)
 {
 	int result;
 	if (!channel->response_pending) return 0;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+	if (channel->response.command == KER_FF_ADMISSION_FINALIZED) {
+		int hold = test_hold_finalized_response(channel);
+		if (hold) return hold;
+	}
+	if (channel->response.command == KER_FF_ADMISSION_PREPARED) {
+		int hold = test_hold_prepared_response(channel);
+		if (hold) return hold;
+	}
+#endif
 #ifdef KER_C15_TEST_DELAY_PREPARED_REPLY
 	if (channel->response.command == KER_FF_ADMISSION_PREPARED)
 		ker_c15_test_hold_prepared_reply(channel->owner_prepared,
@@ -246,12 +312,15 @@ int ker_ff_admission_channel_pair(int endpoints[2])
 	int passcred = 1;
 	if (!endpoints) return -EINVAL;
 	endpoints[0] = endpoints[1] = -1;
-	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK,
-		0, endpoints) != 0) return -errno;
-	if (setsockopt(endpoints[0], SOL_SOCKET, SO_PASSCRED, &passcred, sizeof(passcred)) != 0 ||
-	    setsockopt(endpoints[1], SOL_SOCKET, SO_PASSCRED, &passcred, sizeof(passcred)) != 0) {
+	if (syscall(SYS_socketpair, AF_UNIX,
+		SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, endpoints) != 0)
+		return -errno;
+	if (syscall(SYS_setsockopt, endpoints[0], SOL_SOCKET, SO_PASSCRED,
+		&passcred, sizeof(passcred)) != 0 ||
+	    syscall(SYS_setsockopt, endpoints[1], SOL_SOCKET, SO_PASSCRED,
+		&passcred, sizeof(passcred)) != 0) {
 		int error = errno;
-		close(endpoints[0]); close(endpoints[1]);
+		syscall(SYS_close, endpoints[0]); syscall(SYS_close, endpoints[1]);
 		endpoints[0] = endpoints[1] = -1;
 		return -error;
 	}
@@ -273,20 +342,21 @@ int ker_ff_admission_channel_open(int fd, pid_t expected_peer,
 	if (fd < 0 || expected_peer <= 0 || !lease || !output) return -EINVAL;
 	*output = NULL;
 	length = sizeof(type);
-	if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0 ||
+	if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0 ||
 	    type != SOCK_SEQPACKET || length != sizeof(type)) return -EPROTO;
 	length = sizeof(passcred);
-	if (getsockopt(fd, SOL_SOCKET, SO_PASSCRED, &passcred, &length) != 0 ||
+	if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_PASSCRED, &passcred, &length) != 0 ||
 	    !passcred || length != sizeof(passcred)) return -EPROTO;
 	int pidfd = (int)syscall(SYS_pidfd_open, expected_peer, 0);
 	if (pidfd < 0) return -errno;
 	result = process_start_time(expected_peer, &start_time);
 	int path_length = snprintf(path, sizeof(path), "/proc/%ld/exe", (long)expected_peer);
 	if (!result && (path_length <= 0 || (size_t)path_length >= sizeof(path))) result = -EOVERFLOW;
-	if (!result && stat(path, &executable) != 0) result = -errno;
-	if (result) { close(pidfd); return result; }
+	if (!result && syscall(SYS_newfstatat, AT_FDCWD, path, &executable, 0) != 0)
+		result = -errno;
+	if (result) { (void)syscall(SYS_close, pidfd); return result; }
 	channel = calloc(1, sizeof(*channel));
-	if (!channel) { close(pidfd); return -ENOMEM; }
+	if (!channel) { (void)syscall(SYS_close, pidfd); return -ENOMEM; }
 	channel->fd = fd;
 	channel->peer_pidfd = pidfd;
 	channel->peer_pid = expected_peer;
@@ -303,8 +373,8 @@ int ker_ff_admission_channel_open(int fd, pid_t expected_peer,
 void ker_ff_admission_channel_close(struct ker_ff_admission_channel *channel)
 {
 	if (!channel) return;
-	if (channel->fd >= 0) close(channel->fd);
-	if (channel->peer_pidfd >= 0) close(channel->peer_pidfd);
+	if (channel->fd >= 0) (void)syscall(SYS_close, channel->fd);
+	if (channel->peer_pidfd >= 0) (void)syscall(SYS_close, channel->peer_pidfd);
 	free(channel);
 }
 
@@ -392,6 +462,8 @@ int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 	if (wire.command < KER_FF_ADMISSION_RESULT ||
 	    wire.command > KER_FF_ADMISSION_FINALIZED || wire.deadline_ns ||
 	    wire.allowed > 1 || wire.created > 1 || (wire.created && !wire.allowed) ||
+	    (wire.command != KER_FF_ADMISSION_RESULT &&
+	     (wire.allowed || wire.created)) ||
 	    wire.status > 0 || wire.status < -4095 ||
 	    (wire.status && (wire.allowed || wire.created)) ||
 	    memcmp(&wire.key, &(struct ker_ff_admission_key){0}, sizeof(wire.key)) ||

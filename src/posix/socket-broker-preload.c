@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "socket-broker-preload-internal.h"
+#include "ff-owner-admission-control.h"
 #include "lkl-overlay/arch/lkl/include/asm/ker-host-usercopy.h"
 #include <errno.h>
 #include <dlfcn.h>
@@ -9,6 +10,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +20,9 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/un.h>
+#include <poll.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Keep the implementation addressable when an executable (notably the
@@ -77,6 +82,409 @@ static int ff_owner_capability = -1;
 static pid_t ff_owner_pid;
 static bool ff_owner_context_started;
 static bool unowned_network_activity;
+static _Thread_local ker_sb_preload_owner_pump_fn owner_pump_callback;
+static _Thread_local void *owner_pump_context;
+static _Thread_local unsigned owner_pump_depth;
+static _Thread_local int owner_pump_failure;
+static _Thread_local unsigned owner_loop_depth;
+struct ff_owner_admission_client_state {
+    struct ker_ff_admission_channel *channel;
+    struct ker_ff_admission_map_ops ops;
+    int fd;
+};
+static _Thread_local struct ff_owner_admission_client_state owner_admission_state;
+
+static int ff_owner_admission_pump(void *context)
+{
+    struct ff_owner_admission_client_state *state = context;
+    if (!state || !state->channel) return -ENOTCONN;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    static _Thread_local bool test_delay_consumed;
+    const char *delay_text = getenv("KER_C16_TEST_PUMP_DELAY_US");
+    if (!test_delay_consumed && delay_text && *delay_text) {
+        test_delay_consumed = true;
+        char *end = NULL;
+        errno = 0;
+        unsigned long delay_us = strtoul(delay_text, &end, 10);
+        if (!errno && end != delay_text && !*end && delay_us > 0 &&
+            delay_us <= 250000) {
+            struct timespec pause = {
+                .tv_sec = (time_t)(delay_us / 1000000UL),
+                .tv_nsec = (long)(delay_us % 1000000UL) * 1000L};
+            while (nanosleep(&pause, &pause) && errno == EINTR) { }
+        }
+    }
+#endif
+    int result = ker_ff_admission_channel_owner_step(state->channel, &state->ops);
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    static _Thread_local bool test_failure_consumed;
+    const char *fail_after_step = getenv("KER_C16_TEST_PUMP_FAIL_AFTER_STEP");
+    if (!test_failure_consumed && fail_after_step &&
+        !strcmp(fail_after_step, "1")) {
+        test_failure_consumed = true;
+        (void)unsetenv("KER_C16_TEST_PUMP_FAIL_AFTER_STEP");
+        return -ECONNRESET;
+    }
+#endif
+    return result == -EAGAIN || result == -EWOULDBLOCK ? 0 : result;
+}
+
+static uint64_t owner_admission_now_ns(void)
+{
+    struct timespec now = {0};
+    if (syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &now) || now.tv_sec < 0 ||
+        now.tv_nsec < 0 || now.tv_nsec >= 1000000000L ||
+        (uint64_t)now.tv_sec > (UINT64_MAX - (uint64_t)now.tv_nsec) /
+            UINT64_C(1000000000)) return 0;
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+        (uint64_t)now.tv_nsec;
+}
+
+static int owner_admission_poll_fd(int fd, short events, uint64_t deadline)
+{
+    for (;;) {
+        uint64_t now = owner_admission_now_ns();
+        if (!now) return -EIO;
+        if (now >= deadline) return -ETIMEDOUT;
+        uint64_t left = deadline - now;
+        int timeout = left / UINT64_C(1000000) > INT_MAX ? INT_MAX :
+            (int)((left + UINT64_C(999999)) / UINT64_C(1000000));
+        struct pollfd pfd = {.fd = fd, .events = events};
+        int result = (int)syscall(SYS_poll, &pfd, 1, timeout);
+        if (result < 0 && errno == EINTR) continue;
+        if (result < 0) return -errno;
+        if (!result) continue;
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return -ECONNRESET;
+        return (pfd.revents & events) ? 0 : -EIO;
+    }
+}
+
+static int owner_admission_ready_reply(int fd, uint64_t registration_id,
+    pid_t broker_pid, uid_t broker_uid, gid_t broker_gid,
+    struct ker_ff_owner_admission_hello_reply *reply)
+{
+    uint64_t now = owner_admission_now_ns();
+    if (!now || now > UINT64_MAX - UINT64_C(5000000000)) return -EOVERFLOW;
+    int status = owner_admission_poll_fd(fd, POLLIN,
+        now + UINT64_C(5000000000));
+    if (status) return status;
+    unsigned char bytes[sizeof(*reply) + 1] = {0};
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 8)] = {0};
+    struct iovec iov = {.iov_base = bytes, .iov_len = sizeof(bytes)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t amount = syscall(SYS_recvmsg, fd, &message,
+        MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    if (amount < 0) return -errno;
+    struct ucred credentials = {0};
+    unsigned credential_count = 0;
+    bool malformed = !amount ||
+        !!(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC));
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message); cmsg;
+         cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level == SOL_SOCKET &&
+            cmsg->cmsg_type == SCM_CREDENTIALS &&
+            cmsg->cmsg_len == CMSG_LEN(sizeof(credentials)) &&
+            ++credential_count == 1) {
+            memcpy(&credentials, CMSG_DATA(cmsg), sizeof(credentials));
+            continue;
+        }
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS &&
+            cmsg->cmsg_len >= CMSG_LEN(0)) {
+            size_t fd_bytes = cmsg->cmsg_len - CMSG_LEN(0);
+            if (fd_bytes % sizeof(int)) malformed = true;
+            for (size_t offset = 0; offset + sizeof(int) <= fd_bytes;
+                 offset += sizeof(int)) {
+                int received_fd = -1;
+                memcpy(&received_fd, (unsigned char *)CMSG_DATA(cmsg) + offset,
+                    sizeof(received_fd));
+                (void)syscall(SYS_close, received_fd);
+            }
+        }
+        malformed = true;
+    }
+    if (malformed || credential_count != 1 || amount != sizeof(*reply) ||
+        credentials.pid != broker_pid || credentials.uid != broker_uid ||
+        credentials.gid != broker_gid) return -EPROTO;
+    memcpy(reply, bytes, sizeof(*reply));
+    if (reply->magic != KER_FF_OWNER_ADMISSION_HELLO_MAGIC ||
+        reply->version != KER_FF_OWNER_ADMISSION_HELLO_VERSION ||
+        reply->length != sizeof(*reply) ||
+        reply->registration_id != registration_id || reply->reserved)
+        return -EPROTO;
+    if (reply->status) {
+        if (reply->status > 0 || reply->status < -4095) return -EPROTO;
+        return reply->status;
+    }
+    return reply->queue_lease ? 0 : -EPROTO;
+}
+
+static void owner_admission_trace_failure(const char *stage, int error)
+{
+    char message[160];
+    int length = snprintf(message, sizeof(message),
+        "ker admission attach failed stage=%s errno=%d\n", stage,
+        error ? error : EPROTO);
+    if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
+        (size_t)length);
+}
+
+int ker_sb_preload_ff_owner_admission_attach(
+    const struct ker_ff_admission_map_ops *ops)
+{
+    const char *stage = "arguments";
+    struct ker_ff_owner_admission_registration registration = {0};
+    struct ker_ff_owner_admission_hello hello = {
+        .magic = KER_FF_OWNER_ADMISSION_HELLO_MAGIC,
+        .version = KER_FF_OWNER_ADMISSION_HELLO_VERSION,
+        .length = sizeof(hello)};
+    struct ker_ff_owner_admission_hello_reply reply = {0};
+    struct ker_ff_admission_channel *channel = NULL;
+    struct ucred broker = {0};
+    int fd = -1, passcred = 1, error = 0;
+    socklen_t credential_length;
+    stage = "owner-loop context";
+    if (!owner_loop_depth || owner_pump_depth) {
+        owner_admission_trace_failure(stage, EPERM);
+        errno = EPERM;
+        return -1;
+    }
+    if (!ops || !ops->active || !ops->admit || !ops->revoke) {
+        owner_admission_trace_failure(stage, EINVAL);
+        errno = EINVAL;
+        return -1;
+    }
+    int map_active = ops->active(ops->context);
+    stage = "map active";
+    if (map_active <= 0) {
+        owner_admission_trace_failure(stage,
+            map_active < 0 && map_active >= -4095 ? -map_active : ENOTCONN);
+        errno = map_active < 0 && map_active >= -4095 ? -map_active : ENOTCONN;
+        return -1;
+    }
+    ker_sb_preload_lock();
+    stage = "owner descriptor preflight";
+    if (!ker_sb_preload_ff_owner_active_locked() || owner_pump_callback ||
+        owner_admission_state.channel ||
+        ker_sb_preload_network_registry_empty_locked() != 0) {
+        error = errno ? errno : EBUSY;
+        owner_admission_trace_failure(stage, error);
+        ker_sb_preload_unlock();
+        errno = error;
+        return -1;
+    }
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int owner_cap = ker_sb_preload_ff_owner_capability_locked();
+    if (!client || owner_cap < 0 || client->session_fd < 0) {
+        error = errno ? errno : ENOTCONN;
+        owner_admission_trace_failure(stage, error);
+        ker_sb_preload_unlock();
+        errno = error;
+        return -1;
+    }
+    credential_length = sizeof(broker);
+    stage = "broker peer credentials";
+    if (syscall(SYS_getsockopt, client->session_fd, SOL_SOCKET, SO_PEERCRED,
+            &broker, &credential_length)) {
+        error = errno;
+        owner_admission_trace_failure(stage, error);
+        ker_sb_preload_unlock();
+        errno = error;
+        return -1;
+    }
+    if (credential_length != sizeof(broker)) {
+        error = EPROTO;
+        owner_admission_trace_failure(stage, error);
+        ker_sb_preload_unlock();
+        errno = error;
+        return -1;
+    }
+    stage = "broker prepare RPC";
+    if (ker_socket_client_ff_owner_admission_prepare(client, owner_cap,
+            &registration)) {
+        error = errno;
+        owner_admission_trace_failure(stage, error);
+        ker_sb_preload_unlock();
+        errno = error;
+        return -1;
+    }
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    if (getenv("KER_C16_TEST_PREPARE_ONCE")) {
+        struct ker_ff_owner_admission_registration duplicate;
+        memset(&duplicate, 0xa5, sizeof(duplicate));
+        struct ker_ff_owner_admission_registration untouched = duplicate;
+        errno = 0;
+        if (ker_socket_client_ff_owner_admission_prepare(client, owner_cap,
+                &duplicate) != -1 || errno != EALREADY ||
+            memcmp(&duplicate, &untouched, sizeof(duplicate))) {
+            error = errno ? errno : EPROTO;
+            owner_admission_trace_failure("one-use prepare", error);
+            ker_sb_preload_unlock();
+            errno = error;
+            return -1;
+        }
+    }
+#endif
+    ker_sb_preload_unlock();
+
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    if (getenv("KER_C16_TEST_PAUSE_AFTER_PREPARE")) {
+        char marker[KER_SOCKET_BROKER_PATH_MAX + 64];
+        int marker_length = snprintf(marker, sizeof(marker),
+            "C16_ATTACH_ENDPOINT path=%s\n", registration.endpoint_path);
+        if (marker_length > 0 && (size_t)marker_length < sizeof(marker))
+            (void)syscall(SYS_write, STDOUT_FILENO, marker,
+                (size_t)marker_length);
+        struct timespec pause = {.tv_nsec = 500000000};
+        while (nanosleep(&pause, &pause) && errno == EINTR) { }
+    }
+#endif
+
+    size_t path_length = strnlen(registration.endpoint_path,
+        sizeof(registration.endpoint_path));
+    stage = "endpoint path";
+    if (!path_length || path_length >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        error = ENAMETOOLONG;
+        goto failure;
+    }
+    fd = (int)syscall(SYS_socket, AF_UNIX,
+        SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    stage = "endpoint connect";
+    if (fd < 0) { error = errno; goto failure; }
+    if (syscall(SYS_setsockopt, fd, SOL_SOCKET, SO_PASSCRED,
+            &passcred, sizeof(passcred))) { error = errno; goto failure; }
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    memcpy(address.sun_path, registration.endpoint_path, path_length + 1);
+    if (syscall(SYS_connect, fd, &address,
+            (socklen_t)(offsetof(struct sockaddr_un, sun_path) + path_length + 1))) {
+        if (errno != EINPROGRESS && errno != EAGAIN) { error = errno; goto failure; }
+        uint64_t now = owner_admission_now_ns();
+        if (!now || now > UINT64_MAX - UINT64_C(5000000000)) {
+            error = EOVERFLOW; goto failure;
+        }
+        int waited = owner_admission_poll_fd(fd, POLLOUT,
+            now + UINT64_C(5000000000));
+        if (waited) { error = -waited; goto failure; }
+        int socket_error = 0;
+        socklen_t socket_error_length = sizeof(socket_error);
+        if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_ERROR,
+                &socket_error, &socket_error_length) ||
+            socket_error_length != sizeof(socket_error)) {
+            error = errno ? errno : EPROTO; goto failure;
+        }
+        if (socket_error) { error = socket_error; goto failure; }
+    }
+    struct ucred endpoint_peer = {0};
+    stage = "endpoint peer credentials";
+    socklen_t peer_length = sizeof(endpoint_peer);
+    if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_PEERCRED,
+            &endpoint_peer, &peer_length)) {
+        error = errno; goto failure;
+    }
+    if (peer_length != sizeof(endpoint_peer)) { error = EPROTO; goto failure; }
+    if (endpoint_peer.pid != broker.pid || endpoint_peer.uid != broker.uid ||
+        endpoint_peer.gid != broker.gid) { error = EACCES; goto failure; }
+    hello.registration_id = registration.registration_id;
+    stage = "HELLO send";
+    ssize_t sent;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    if (getenv("KER_C16_TEST_BAD_HELLO_RIGHTS")) {
+        int passed_fd = (int)syscall(SYS_openat, AT_FDCWD, "/dev/null",
+            O_RDONLY | O_CLOEXEC, 0);
+        if (passed_fd < 0) { error = errno; goto failure; }
+        char control[CMSG_SPACE(sizeof(int))] = {0};
+        struct iovec iov = {.iov_base = &hello, .iov_len = sizeof(hello)};
+        struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+            .msg_control = control, .msg_controllen = sizeof(control)};
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(passed_fd));
+        memcpy(CMSG_DATA(cmsg), &passed_fd, sizeof(passed_fd));
+        sent = syscall(SYS_sendmsg, fd, &message, MSG_NOSIGNAL);
+        (void)syscall(SYS_close, passed_fd);
+    } else
+#endif
+        sent = syscall(SYS_sendto, fd, &hello, sizeof(hello),
+            MSG_NOSIGNAL, NULL, 0);
+    if (sent != sizeof(hello)) {
+        error = sent < 0 ? errno : EIO; goto failure;
+    }
+    stage = "READY receive";
+    int ready = owner_admission_ready_reply(fd, registration.registration_id,
+        broker.pid, broker.uid, broker.gid, &reply);
+    if (ready) { error = -ready; goto failure; }
+    stage = "owner channel authentication";
+    {
+        int type = 0, passcred_state = 0;
+        socklen_t type_length = sizeof(type), passcred_length = sizeof(passcred_state);
+        if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &type_length) ||
+            syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_PASSCRED,
+                &passcred_state, &passcred_length) || type != SOCK_SEQPACKET ||
+            type_length != sizeof(type) || !passcred_state ||
+            passcred_length != sizeof(passcred_state)) {
+            char message[160];
+            int length = snprintf(message, sizeof(message),
+                "ker admission channel preflight type=%d/%u passcred=%d/%u errno=%d\n",
+                type, (unsigned)type_length, passcred_state,
+                (unsigned)passcred_length, errno);
+            if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
+                (size_t)length);
+        }
+    }
+    int channel_status = ker_ff_admission_channel_open(fd, broker.pid,
+        broker.uid, broker.gid, reply.queue_lease, &channel);
+    if (channel_status) {
+        error = channel_status < 0 && channel_status >= -4095 ?
+            -channel_status : EPROTO;
+        goto failure;
+    }
+    int channel_fd = fd;
+    stage = "private FD registration";
+    ker_sb_preload_lock();
+    if (!ker_sb_preload_ff_owner_active_locked() || owner_pump_callback ||
+        ker_sb_preload_track_private_fd_locked(channel_fd)) {
+        error = errno ? errno : ESTALE;
+    }
+    ker_sb_preload_unlock();
+    if (error) goto failure;
+    fd = -1; /* channel owns the endpoint */
+    ker_sb_preload_lock();
+    stage = "owner pump registration";
+    if (!ker_sb_preload_ff_owner_active_locked() || owner_pump_callback) {
+        error = ESTALE;
+    } else {
+        owner_admission_state.fd = channel_fd;
+        owner_admission_state.channel = channel;
+        owner_admission_state.ops = *ops;
+        if (ker_sb_preload_owner_pump_register(ff_owner_admission_pump,
+                &owner_admission_state))
+            error = errno;
+    }
+    ker_sb_preload_unlock();
+    if (error) goto failure;
+    channel = NULL;
+    return 0;
+
+failure:
+    owner_admission_trace_failure(stage, error);
+    if (channel) {
+        ker_sb_preload_lock();
+        ker_sb_preload_untrack_private_fd_locked(owner_admission_state.fd >= 0 ?
+            owner_admission_state.fd : fd);
+        ker_sb_preload_unlock();
+        ker_ff_admission_channel_close(channel);
+        memset(&owner_admission_state, 0, sizeof(owner_admission_state));
+        owner_admission_state.fd = -1;
+    } else if (fd >= 0) {
+        ker_sb_preload_lock();
+        ker_sb_preload_untrack_private_fd_locked(fd);
+        ker_sb_preload_unlock();
+    }
+    if (fd >= 0) (void)syscall(SYS_close, fd);
+    errno = error ? error : EPROTO;
+    return -1;
+}
 
 bool ker_sb_preload_ff_owner_active_locked(void)
 {
@@ -89,6 +497,70 @@ int ker_sb_preload_ff_owner_capability_locked(void)
 
 bool ker_sb_preload_ff_owner_managed(void)
 { return ff_owner_context_started; }
+
+int ker_sb_preload_owner_pump_register(ker_sb_preload_owner_pump_fn pump,
+    void *context)
+{
+    if (!pump || owner_pump_callback) { errno = EINVAL; return -1; }
+    ker_sb_preload_lock();
+    bool active = ker_sb_preload_ff_owner_active_locked();
+    ker_sb_preload_unlock();
+    if (!active) { errno = ENOTCONN; return -1; }
+    owner_pump_context = context;
+    owner_pump_callback = pump;
+    return 0;
+}
+
+void ker_sb_preload_owner_pump_unregister(void)
+{
+    owner_pump_callback = NULL;
+    owner_pump_context = NULL;
+}
+
+int ker_sb_preload_owner_pump(void)
+{
+    if (owner_pump_failure) return owner_pump_failure;
+    if (owner_pump_depth) return -EDEADLK;
+    if (!owner_pump_callback) return 0;
+    if (ff_owner_pid != getpid()) return -ESTALE;
+    ++owner_pump_depth;
+    int result = owner_pump_callback(owner_pump_context);
+    --owner_pump_depth;
+    if (result) {
+        char message[128];
+        int length = snprintf(message, sizeof(message),
+            "ker owner pump callback status=%d\n", result);
+        if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
+            (size_t)length);
+        owner_pump_failure = result < 0 && result >= -4095 ? result : -EPROTO;
+        return owner_pump_failure;
+    }
+    return 0;
+}
+
+int ker_sb_preload_owner_wait_check(void)
+{
+    if (owner_pump_depth) return -EDEADLK;
+    return owner_pump_failure;
+}
+
+bool ker_sb_preload_owner_pump_registered(void)
+{ return owner_pump_callback != NULL; }
+
+int ker_sb_preload_owner_loop_enter(void)
+{
+    if (owner_loop_depth == UINT_MAX) return -EOVERFLOW;
+    ++owner_loop_depth;
+    return 0;
+}
+
+void ker_sb_preload_owner_loop_leave(void)
+{
+    if (owner_loop_depth) --owner_loop_depth;
+}
+
+bool ker_sb_preload_owner_loop_active(void)
+{ return owner_loop_depth != 0; }
 
 void ker_sb_preload_note_unowned_network_locked(void)
 {
@@ -953,6 +1425,16 @@ int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event)
 static int epoll_wait_common(int epfd, struct epoll_event *user_events,
     int maximum, int timeout, const sigset_t *mask)
 {
+    int owner_wait_status = ker_sb_preload_owner_wait_check();
+    if (owner_wait_status) {
+        char message[128];
+        int length = snprintf(message, sizeof(message),
+            "ker owner wait guard status=%d\n", owner_wait_status);
+        if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
+            (size_t)length);
+        errno = -owner_wait_status;
+        return -1;
+    }
     if (!ker_sb_preload_runtime_ready())
         return ker_sb_preload_host_epoll_pwait(epfd, user_events, maximum, timeout, mask);
     sigset_t all_signals, old_mask;
@@ -972,6 +1454,16 @@ static int epoll_wait_common(int epfd, struct epoll_event *user_events,
     if (!composite) {
         ker_sb_preload_unlock();
         (void)pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
+        if (ker_sb_preload_owner_pump_registered()) {
+            char message[128];
+            int length = snprintf(message, sizeof(message),
+                "ker owner epoll wait lacks composite fd=%d max=%d timeout=%d\n",
+                epfd, maximum, timeout);
+            if (length > 0) (void)syscall(SYS_write, STDERR_FILENO, message,
+                (size_t)length);
+            errno = EOPNOTSUPP;
+            return -1;
+        }
         return ker_sb_preload_host_epoll_pwait(epfd, user_events, maximum, timeout, mask);
     }
     if (maximum <= 0 || maximum > 4096) {
