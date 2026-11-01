@@ -252,7 +252,7 @@ struct wait_pin_context { int host_fd; int broker_fd; bool active; };
 
 static void close_wait_pin_context(void *opaque)
 {
-    struct wait_pin_context *pins = opaque;
+    volatile struct wait_pin_context *pins = opaque;
     if (!pins->active) return;
     pins->active = false;
     close_wait_descriptors(pins->host_fd, pins->broker_fd);
@@ -404,12 +404,14 @@ static int64_t monotonic_milliseconds(void)
 int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
     int maximum, int timeout, const sigset_t *mask)
 {
-    int result = -1, saved_errno = 0;
-    struct wait_pin_context pins = {.host_fd = -1, .broker_fd = -1, .active = false};
-    bool pin_registered = false;
+    /* pthread cleanup may use setjmp; volatile preserves state across cancellation. */
+    volatile int result = -1, saved_errno = 0;
+    volatile struct wait_pin_context pins = {
+        .host_fd = -1, .broker_fd = -1, .active = false};
+    volatile bool pin_registered = false;
     int broker_fd = -1, first_remote = 0;
     int64_t start = -1, deadline = 0;
-    pthread_cleanup_push(close_wait_pin_context, &pins);
+    pthread_cleanup_push(close_wait_pin_context, (void *)&pins);
     ker_sb_preload_lock();
     if (ker_sb_preload_composite_epoll_locked(fd, &broker_fd) != 1) {
         if (!errno) errno = EBADF;
@@ -506,7 +508,7 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
         if (got) { result = got; goto finished; }
     }
 finished:
-    if (pins.active) close_wait_pin_context(&pins);
+    if (pins.active) close_wait_pin_context((void *)&pins);
     pthread_cleanup_pop(0);
     if (saved_errno) errno = saved_errno;
     return result;
