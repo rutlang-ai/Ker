@@ -129,6 +129,19 @@ table equivalence; the broader drain, lifecycle and blocked source inventory
 status are unchanged. The pinned [`ff_dup` implementation](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c#L2167-L2189)
 routes F-Stack descriptors through `sys_dup`.
 
+The SDK now has a deferred owner-aware fixed two-member IPv4 reuseport-group
+constructor. A coordinator reserves the tuple and delegates one index-scoped
+claim capability per member; two different authenticated FF owner processes
+must claim before the broker creates either listener. The listeners use each
+owner's existing immutable mark from creation. A worker can retrieve aliases
+only for its claimed member, while the coordinator retains group selector
+control and creates separate read-only member censuses. The native TAP test
+checks owner isolation, one-shot claim/publish behavior, sticky post-claim
+network-history rejection, selector changes and TCP exchanges accepted by
+both owner processes. This SDK leaf does not bind Nginx generation startup,
+worker dispatcher behavior, repeated generations or the graceful-reload FSM;
+the source inventory entry remains blocked.
+
 The opt-in runtime now provides `ff_socket_snd_pending` for ordinary
 ready-copy TCP sockets created through the authenticated FF owner context. Each
 process receives a distinct broker-owned mark bound to its host PID, process
