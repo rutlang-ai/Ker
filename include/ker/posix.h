@@ -8,6 +8,16 @@ extern "C" {
 /* These queries belong to the optional ker::posix component, initialized by
  * ker-run. The standard socket APIs are declared by the system POSIX headers. */
 KER_API uint64_t ker_posix_capabilities(void);
+enum ker_posix_descriptor_kind {
+    KER_POSIX_DESCRIPTOR_HOST = 0,
+    KER_POSIX_DESCRIPTOR_SOCKET = 1,
+    KER_POSIX_DESCRIPTOR_EPOLL = 2,
+    KER_POSIX_DESCRIPTOR_OTHER_NATIVE = 3
+};
+/* Report whether fd is a host descriptor or an exact descriptor-table kind
+ * owned by original Linux. Returns one enum value, or -1/errno for an invalid
+ * descriptor. Callers must serialize this query with close/dup operations. */
+KER_API int ker_posix_descriptor_kind(int fd);
 /* Process-lifetime string, or NULL while the native instance is inactive. */
 KER_API const char *ker_posix_kernel_release(void);
 /* Read the active original-Linux CLOCK_REALTIME. Either output may be NULL;

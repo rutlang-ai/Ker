@@ -52,6 +52,30 @@ target_link_options(ker-posix PRIVATE -Wl,--no-undefined
     "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+
+# The frontend client is deliberately independent of ker-posix. Opaque host
+# pipe write ends refer to socket capabilities owned by one broker process
+# that runs the original Linux instance.
+add_library(ker-socket-client STATIC src/posix/socket-broker-client.c)
+set_target_properties(ker-socket-client PROPERTIES EXPORT_NAME socket-client)
+target_include_directories(ker-socket-client PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+target_compile_features(ker-socket-client PUBLIC c_std_11)
+target_compile_options(ker-socket-client PRIVATE -Wall -Wextra -Werror)
+add_library(ker::socket-client ALIAS ker-socket-client)
+
+add_library(ker-socket-broker-server STATIC src/posix/socket-broker-server.c)
+set_target_properties(ker-socket-broker-server PROPERTIES EXPORT_NAME socket-broker-server)
+target_include_directories(ker-socket-broker-server PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+target_compile_features(ker-socket-broker-server PUBLIC c_std_11)
+target_compile_options(ker-socket-broker-server PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
+add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
 include(CheckStructHasMember)
 check_struct_has_member("struct statvfs" f_type "sys/statvfs.h" KER_STATVFS_HAS_TYPE LANGUAGE C)
 if(KER_STATVFS_HAS_TYPE)
@@ -171,6 +195,8 @@ if(KER_WITH_NATIVE_BOND)
 endif()
 install(TARGETS ker-posix EXPORT kerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS ker-socket-client ker-socket-broker-server EXPORT kerTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-io-worker ker-app
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -193,6 +219,24 @@ include("${PROJECT_SOURCE_DIR}/cmake/FStackHostReadiness.cmake")
 install(FILES "${ker_native_source}/COPYING" "${ker_native_source}/LICENSES/preferred/GPL-2.0"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux)
 if(BUILD_TESTING)
+    add_executable(ker-socket-broker-fixture tests/posix/socket-broker-broker.c)
+    target_link_libraries(ker-socket-broker-fixture PRIVATE ker-socket-broker-server)
+    add_dependencies(ker-socket-broker-fixture ker-app ker-io-worker)
+    target_compile_options(ker-socket-broker-fixture PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-client-test tests/posix/socket-broker-client.c)
+    target_include_directories(ker-socket-broker-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_link_libraries(ker-socket-broker-client-test PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-client-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME native-socket-broker-fork-exec
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-fork-exec PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker")
+
     add_executable(ker-session-peer-drain-retry-test tests/posix/session-peer-drain-retry.c)
     target_include_directories(ker-session-peer-drain-retry-test PRIVATE src/posix)
     target_compile_features(ker-session-peer-drain-retry-test PRIVATE c_std_11)
