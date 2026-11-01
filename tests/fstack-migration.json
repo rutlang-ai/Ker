@@ -3719,9 +3719,14 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_foreign_epoch_tx",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The resident generation-ring bank admits only one identity per generation across all epochs. A same-generation worker from a second master/epoch therefore cannot coexist in that bank; changing detach authorization alone cannot qualify the source foreign-epoch owner scenario. An isolated distinct-parent EAL investigation failed before detach and was not accepted as migration evidence. Epoch-isolated banks and their admission/cleanup proof remain required; this case stays blocked. See docs/fstack-peer-dispatch.md.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged p1_setup/p1_teardown/p1_drain_check helper set and test_p1_drain_foreign_epoch_tx assertion body run against the exact pinned original ff_drain_ring.c and original ff_reload/ff_reload_gendir runtime in a real DPDK primary EAL. Mode 3 proves the source epoch1/gen0 TX ring remains queued while the directory names epoch2/gen0 as hardware owner. A bounded same-process caller checks the original ff_no_hw_mode predicate, retains the exact mbuf before ownership, then selects epoch2/gen0 and passes the retained epoch1/q1/gen0 packet through the unchanged original TX drain to a real two-queue net_ring PMD; pointer, payload and pool recovery are exact. This does not qualify the secondary-only F-Stack main loop, real secondary/coexisting-master admission, the Ker resident bank, or full reload; see docs/fstack-peer-dispatch.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-drain-foreign-epoch",
+          "provenance_case": "fstack-drain-foreign-epoch"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_p1_drain_empty_qconf",

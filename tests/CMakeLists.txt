@@ -1413,6 +1413,26 @@ if(KER_WITH_DPDK)
     set_tests_properties(fstack-reload-directory-foundation fstack-reload-directory-primary-eal PROPERTIES TIMEOUT 30
         LABELS "fstack;fstack-reload;directory-foundation"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
+
+    # Compile the unchanged pinned drain-ring and reload runtime in one
+    # private caller fixture. It links reload dependencies, not ker::reload,
+    # whose production TU is already included by the fixture.
+    find_library(ker_drain_vdev_bus NAMES rte_bus_vdev HINTS ${DPDK_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
+    add_executable(ker-fstack-drain-source-test fstack-drain-source.c)
+    get_target_property(ker_reload_private_definitions ker-reload COMPILE_DEFINITIONS)
+    get_target_property(ker_reload_private_includes ker-reload INCLUDE_DIRECTORIES)
+    target_compile_definitions(ker-fstack-drain-source-test PRIVATE ${ker_reload_private_definitions})
+    target_include_directories(ker-fstack-drain-source-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/tests/fstack-drain-compat"
+        ${ker_reload_private_includes}
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-pools")
+    target_link_libraries(ker-fstack-drain-source-test PRIVATE ker::ipc
+        "${ker_reload_ring_pmd}" "${ker_drain_vdev_bus}")
+    target_compile_options(ker-fstack-drain-source-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME fstack-drain-foreign-epoch COMMAND ker-fstack-drain-source-test)
+    set_tests_properties(fstack-drain-foreign-epoch PROPERTIES TIMEOUT 30
+        LABELS "fstack;fstack-reload;fstack-newly-adapted"
+        ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
 
 if(KER_WITH_DPDK)
@@ -1437,3 +1457,6 @@ if(KER_WITH_DPDK)
         PROPERTIES TIMEOUT 30 LABELS "fstack;fstack-reload;fstack-newly-adapted"
         ENVIRONMENT "LD_LIBRARY_PATH=${ker_ipc_test_libraries}:$ENV{LD_LIBRARY_PATH}")
 endif()
+
+add_test(NAME fstack-drain-import COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fstack-drain-import.py")
+set_tests_properties(fstack-drain-import PROPERTIES TIMEOUT 15 LABELS provenance)
