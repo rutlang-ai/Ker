@@ -41,7 +41,8 @@ add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
     src/posix/posix-stdio.c
     src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
-    src/posix/member-census-diag.c src/posix/member-census-diag-parse.c)
+    src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
+    src/posix/tcp-payload-snapshot.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -196,6 +197,22 @@ target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_p
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
+    add_test(NAME native-linux-builder-wiring
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/unit/test_native_linux_builder_wiring.py")
+    set_tests_properties(native-linux-builder-wiring PROPERTIES
+        LABELS "native-linux;build-provenance")
+    add_executable(ker-tcp-payload-accounting-test
+        tests/posix/tcp-payload-accounting.c)
+    target_include_directories(ker-tcp-payload-accounting-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include"
+        "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include/uapi")
+    target_compile_features(ker-tcp-payload-accounting-test PRIVATE c_std_11)
+    target_compile_options(ker-tcp-payload-accounting-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME tcp-payload-accounting-intervals
+        COMMAND "$<TARGET_FILE:ker-tcp-payload-accounting-test>")
+    set_tests_properties(tcp-payload-accounting-intervals PROPERTIES
+        LABELS "native-tcp;payload-snapshot;accounting")
     add_executable(ker-tcp-observer-diag-parser-test
         tests/posix/tcp-observer-diag-parser.c src/posix/tcp-observer-diag-parse.c)
     target_include_directories(ker-tcp-observer-diag-parser-test PRIVATE
@@ -395,6 +412,8 @@ if(BUILD_TESTING)
         "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
     target_compile_features(ker-member-census-runtime-test PRIVATE c_std_11)
     target_compile_options(ker-member-census-runtime-test PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-member-census-runtime-test PRIVATE
+        KER_MEMBER_CENSUS_TEST_RUNTIME=1)
     get_target_property(ker_posix_sources ker-posix SOURCES)
     get_target_property(ker_posix_definitions ker-posix COMPILE_DEFINITIONS)
     get_target_property(ker_posix_options ker-posix COMPILE_OPTIONS)
@@ -415,13 +434,13 @@ if(BUILD_TESTING)
     target_include_directories(ker-posix-member-census-test-runtime SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_compile_definitions(ker-posix-member-census-test-runtime PRIVATE
-        ${ker_posix_definitions})
+        ${ker_posix_definitions} KER_MEMBER_CENSUS_TEST_RUNTIME=1)
     target_compile_features(ker-posix-member-census-test-runtime PRIVATE c_std_11)
     target_compile_options(ker-posix-member-census-test-runtime PRIVATE
         ${ker_posix_options} -Wall -Wextra -Werror)
     file(READ "${PROJECT_SOURCE_DIR}/src/posix/exports.map" ker_posix_test_export_map)
     string(REPLACE "local: *;"
-        "ker_member_census_test_clear_net_admin; ker_member_census_test_restore_capabilities; ker_member_census_test_runtime_map_counts; local: *;"
+        "ker_member_census_test_clear_net_admin; ker_member_census_test_restore_capabilities; ker_member_census_test_runtime_map_counts; ker_native_tcp_payload_snapshot_test_limit; local: *;"
         ker_posix_test_export_map "${ker_posix_test_export_map}")
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
         "${ker_posix_test_export_map}")

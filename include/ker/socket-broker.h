@@ -64,6 +64,13 @@ struct ker_socket_member_census_snapshot {
     uint64_t listener_cookie;
 };
 
+/* Original-Linux queued TCP payload sampled across one authenticated member
+ * mark. This is sequential socket observation, not a quiescence guarantee. */
+struct ker_socket_member_payload_snapshot {
+    uint64_t payload_bytes;
+    uint64_t sampled_sockets;
+};
+
 struct ker_socket_client {
     char path[KER_SOCKET_BROKER_PATH_MAX + 1];
     int session_fd;
@@ -189,6 +196,8 @@ int ker_socket_client_member_census_create(struct ker_socket_client *client,
     int group_cap, unsigned index);
 int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
     int census_cap, struct ker_socket_member_census_snapshot *snapshot);
+int ker_socket_client_member_payload_snapshot(struct ker_socket_client *client,
+    int census_cap, struct ker_socket_member_payload_snapshot *snapshot);
 
 #ifdef __cplusplus
 }

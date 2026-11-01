@@ -24,7 +24,8 @@ enum ker_sb_operation {
     KER_SB_TCP_OBSERVER_CREATE = 32,
     KER_SB_TCP_OBSERVER_SNAPSHOT = 33,
     KER_SB_MEMBER_CENSUS_CREATE = 40,
-    KER_SB_MEMBER_CENSUS_SNAPSHOT = 41
+    KER_SB_MEMBER_CENSUS_SNAPSHOT = 41,
+    KER_SB_MEMBER_PAYLOAD_SNAPSHOT = 42
 };
 
 struct ker_sb_header {
@@ -62,6 +63,10 @@ struct ker_sb_member_census_snapshot {
     uint64_t total;
     uint64_t state_counts[KER_SOCKET_BROKER_TCP_STATES];
     uint64_t listener_cookie;
+} __attribute__((packed));
+struct ker_sb_member_payload_snapshot {
+    uint64_t payload_bytes;
+    uint64_t sampled_sockets;
 } __attribute__((packed));
 #define KER_SB_MAX_REQUEST (KER_SOCKET_BROKER_IO_MAX + sizeof(struct ker_sb_io))
 
