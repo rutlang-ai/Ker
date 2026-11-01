@@ -37,6 +37,18 @@ foreach(artifact config library)
         message(FATAL_ERROR "Native Linux ${artifact} differs from the build proof; rerun tools/build-native-linux.py")
     endif()
 endforeach()
+file(STRINGS "${ker_native_kernel}/.config" ker_admission_lkl_profile
+    REGEX "^(CONFIG_SMP=y|CONFIG_PREEMPT_NONE=y|CONFIG_TINY_RCU=y|CONFIG_PREEMPT=y|CONFIG_PREEMPT_RT=y|CONFIG_PREEMPT_DYNAMIC=y|# CONFIG_SMP is not set|# CONFIG_PREEMPT_NONE is not set|# CONFIG_TINY_RCU is not set)$")
+if("CONFIG_SMP=y" IN_LIST ker_admission_lkl_profile OR
+   "CONFIG_PREEMPT=y" IN_LIST ker_admission_lkl_profile OR
+   "CONFIG_PREEMPT_RT=y" IN_LIST ker_admission_lkl_profile OR
+   "CONFIG_PREEMPT_DYNAMIC=y" IN_LIST ker_admission_lkl_profile OR
+   NOT "CONFIG_PREEMPT_NONE=y" IN_LIST ker_admission_lkl_profile OR
+   NOT "CONFIG_TINY_RCU=y" IN_LIST ker_admission_lkl_profile)
+    set(ker_ff_admission_window_serialized_lkl FALSE)
+else()
+    set(ker_ff_admission_window_serialized_lkl TRUE)
+endif()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
     src/posix/posix-stdio.c
@@ -55,6 +67,10 @@ target_include_directories(ker-posix PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(ker-posix PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+if(ker_ff_admission_window_serialized_lkl)
+    target_compile_definitions(ker-posix PRIVATE
+        KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL=1)
+endif()
 if(BUILD_TESTING)
     target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1)
 endif()

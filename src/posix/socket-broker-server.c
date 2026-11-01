@@ -77,6 +77,9 @@ struct sb_owner {
     int admission_peer_fd;
     bool admission_prepared;
     bool admission_attached;
+    /* Sticky after the first task READY. `admission_ready` is per-window and
+     * may clear during RETIRE/REARM; the initial attach deadline is one-shot. */
+    bool admission_initial_ready;
     bool admission_ready;
     bool admission_failed;
     struct ker_ff_admission_task *admission_task;
@@ -264,6 +267,9 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_MEMBER_PAYLOAD_SNAPSHOT: return KER_SOCKET_BROKER_READ;
     case KER_SB_FF_OWNER_SOCKET: return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_ADMISSION_PREPARE: return KER_SOCKET_BROKER_CONTROL;
+    case KER_SB_FF_OWNER_ADMISSION_RETIRE:
+    case KER_SB_FF_OWNER_ADMISSION_REARM:
+    case KER_SB_FF_OWNER_ADMISSION_STATUS: return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_MATCH: case KER_SB_FF_OWNER_PAYLOAD:
     case KER_SB_FF_OWNER_REQUESTS:
         return KER_SOCKET_BROKER_READ;
@@ -855,6 +861,22 @@ static void pump_owner_admission_endpoints(struct ker_socket_broker_server *serv
                 continue;
             }
             if (current_state == KER_FF_ADMISSION_TASK_STOPPING) continue;
+            if (current_state == KER_FF_ADMISSION_TASK_QUARANTINED) {
+                owner->admission_ready = false;
+                owner->admission_failed = true;
+            } else if (current_state == KER_FF_ADMISSION_TASK_READY && current_lease) {
+                owner->admission_initial_ready = true;
+                owner->admission_ready = true;
+                continue;
+            } else if (owner->admission_initial_ready &&
+                (current_state == KER_FF_ADMISSION_TASK_RETIRING ||
+                 current_state == KER_FF_ADMISSION_TASK_RETIRED ||
+                 current_state == KER_FF_ADMISSION_TASK_REARMING)) {
+                /* This is an established owner in a deliberate window gap.
+                 * Do not reapply the initial HELLO/READY deadline. */
+                owner->admission_ready = false;
+                continue;
+            }
             if (owner->admission_ready) continue;
         } else if (owner->admission_ready) {
             continue;
@@ -928,19 +950,66 @@ static int owner_admission_ready_status(struct sb_owner *owner)
 {
     if (!owner || !owner->admission_prepared) return 1;
     if (owner->admission_failed) return -ETIMEDOUT;
-    if (owner->admission_ready) return 1;
     if (!owner->admission_task) return 0;
     uint64_t lease = 0;
     int state = ker_posix_ff_admission_task_poll(owner->admission_task, &lease);
     if (state == KER_FF_ADMISSION_TASK_READY && lease) {
+        owner->admission_initial_ready = true;
         owner->admission_ready = true;
         return 1;
+    }
+    if (state == KER_FF_ADMISSION_TASK_RETIRING ||
+        state == KER_FF_ADMISSION_TASK_RETIRED ||
+        state == KER_FF_ADMISSION_TASK_REARMING) {
+        owner->admission_ready = false;
+        return -EAGAIN;
+    }
+    if (state == KER_FF_ADMISSION_TASK_QUARANTINED) {
+        owner->admission_failed = true;
+        owner->admission_ready = false;
+        return -EIO;
     }
     if (state == KER_FF_ADMISSION_TASK_TERMINAL ||
         (state < 0 && state != -EINPROGRESS)) {
         owner->admission_failed = true;
         return -ETIMEDOUT;
     }
+    return 0;
+}
+
+static int owner_admission_window_action(struct ker_socket_broker_server *server,
+    struct sb_client *client, int owner_cap, uint16_t operation,
+    struct ker_sb_ff_owner_admission_window *response)
+{
+    struct sb_object *object = lookup_cap(server, owner_cap);
+    struct sb_owner *owner = NULL;
+    int status = owner_require_actor(server, client, object, &owner);
+    if (status) return status;
+    if (!(object->rights & KER_SOCKET_BROKER_CONTROL)) return -EACCES;
+    if (!owner->admission_prepared || !owner->admission_attached ||
+        !owner->admission_task || owner->admission_failed)
+        return -ENOTCONN;
+    if (operation == KER_SB_FF_OWNER_ADMISSION_RETIRE)
+        status = ker_posix_ff_admission_task_window_action(
+		    owner->admission_task, KER_FF_ADMISSION_WINDOW_RETIRE, -1);
+    else if (operation == KER_SB_FF_OWNER_ADMISSION_REARM) {
+        if (owner->admission_listener_native_fd < 0) return -ENOTCONN;
+        status = ker_posix_ff_admission_task_window_action(
+		    owner->admission_task, KER_FF_ADMISSION_WINDOW_REARM,
+		    owner->admission_listener_native_fd);
+    } else if (operation != KER_SB_FF_OWNER_ADMISSION_STATUS) {
+        return -EOPNOTSUPP;
+    }
+    if (status) return status;
+    uint32_t state = 0;
+    uint64_t lease = 0, epoch = 0;
+    int task_status = 0;
+    status = ker_posix_ff_admission_task_poll_window(owner->admission_task,
+        &state, &lease, &epoch, &task_status);
+    if (status) return status;
+    *response = (struct ker_sb_ff_owner_admission_window){
+        .state = state, .reserved = 0, .queue_lease = lease, .epoch = epoch,
+        .status = task_status, .reserved2 = 0};
     return 0;
 }
 
@@ -1365,6 +1434,9 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         request->operation != KER_SB_FF_OWNER_SOCKET &&
         request->operation != KER_SB_FF_OWNER_MATCH &&
         request->operation != KER_SB_FF_OWNER_PAYLOAD &&
+        request->operation != KER_SB_FF_OWNER_ADMISSION_RETIRE &&
+        request->operation != KER_SB_FF_OWNER_ADMISSION_REARM &&
+        request->operation != KER_SB_FF_OWNER_ADMISSION_STATUS &&
         request->operation != KER_SB_FF_OWNER_ADMISSION_PREPARE) {
         struct sb_object *object;
         enum ker_socket_broker_kind expected_kind = KER_SOCKET_BROKER_SOCKET;
@@ -1415,6 +1487,17 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (input_length || fd_count != 1) return -EPROTO;
         struct ker_sb_ff_owner_admission_prepare response = {0};
         status = owner_admission_prepare(server, client, fds[0], &response);
+        if (status) return status;
+        memcpy(output, &response, sizeof(response));
+        *output_length = sizeof(response); *result = 0; return 0;
+    }
+    case KER_SB_FF_OWNER_ADMISSION_RETIRE:
+    case KER_SB_FF_OWNER_ADMISSION_REARM:
+    case KER_SB_FF_OWNER_ADMISSION_STATUS: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        struct ker_sb_ff_owner_admission_window response = {0};
+        status = owner_admission_window_action(server, client, fds[0],
+            request->operation, &response);
         if (status) return status;
         memcpy(output, &response, sizeof(response));
         *output_length = sizeof(response); *result = 0; return 0;

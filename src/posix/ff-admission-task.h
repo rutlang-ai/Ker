@@ -10,7 +10,15 @@ enum ker_ff_admission_task_status {
 	KER_FF_ADMISSION_TASK_STARTING = 0,
 	KER_FF_ADMISSION_TASK_READY = 1,
 	KER_FF_ADMISSION_TASK_STOPPING = 2,
-	KER_FF_ADMISSION_TASK_TERMINAL = 3
+	KER_FF_ADMISSION_TASK_TERMINAL = 3,
+	KER_FF_ADMISSION_TASK_RETIRING = 4,
+	KER_FF_ADMISSION_TASK_RETIRED = 5,
+	KER_FF_ADMISSION_TASK_REARMING = 6,
+	KER_FF_ADMISSION_TASK_QUARANTINED = 7
+};
+enum ker_ff_admission_task_window_action {
+	KER_FF_ADMISSION_WINDOW_RETIRE = 1,
+	KER_FF_ADMISSION_WINDOW_REARM = 2
 };
 
 struct ker_ff_admission_task_config {
@@ -31,6 +39,11 @@ int ker_posix_ff_admission_task_start(
 	struct ker_ff_admission_task **task);
 int ker_posix_ff_admission_task_poll(struct ker_ff_admission_task *task,
 	uint64_t *queue_lease);
+int ker_posix_ff_admission_task_poll_window(
+	struct ker_ff_admission_task *task, uint32_t *state,
+	uint64_t *queue_lease, uint64_t *epoch, int *task_status);
+int ker_posix_ff_admission_task_window_action(
+	struct ker_ff_admission_task *task, uint32_t action, int listener_fd);
 int ker_posix_ff_admission_task_set_listener(
 	struct ker_ff_admission_task *task, int listener_fd);
 int ker_posix_ff_admission_task_listener_closed(
