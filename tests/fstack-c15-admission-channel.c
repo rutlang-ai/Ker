@@ -42,6 +42,29 @@ static int map_revoke(const struct ker_ff_admission_key *key, void *context)
 	return ff_flow_map_revoke(&original);
 }
 
+struct disconnect_sync {
+	int entered_fd;
+	int release_fd;
+	int block_admit;
+};
+
+static struct ker_ff_admission_result receive_result(
+	struct ker_ff_admission_channel *channel, uint16_t expected);
+
+static int synchronized_admit(const struct ker_ff_admission_key *key, int *created,
+			      void *opaque)
+{
+	struct disconnect_sync *sync = opaque;
+	int status = map_admit(key, created, NULL);
+	if (sync->block_admit && key->source_port == htons(42009)) {
+		char marker = 'A';
+		if (write(sync->entered_fd, &marker, 1) != 1 ||
+		    read(sync->release_fd, &marker, 1) != 1 || marker != 'R')
+			return -EIO;
+	}
+	return status;
+}
+
 static struct ker_ff_admission_key make_key(uint16_t port)
 {
 	struct ker_ff_admission_key key = {0};
@@ -65,6 +88,114 @@ static uint64_t monotonic_ns(void)
 	struct timespec now;
 	CHECK(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
 	return (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
+}
+
+static void disconnect_owner_child(int endpoint, pid_t controller_pid, int ready_fd,
+				   int entered_fd, int release_fd, int mode)
+{
+	struct ker_ff_admission_channel *channel = NULL;
+	struct ker_ff_admission_key key = make_key(42009);
+	struct disconnect_sync sync = {
+		.entered_fd = entered_fd, .release_fd = release_fd,
+		.block_admit = mode != 2};
+	struct ker_ff_admission_map_ops ops = {
+		.active = map_active, .admit = synchronized_admit,
+		.revoke = map_revoke, .context = &sync};
+	size_t state_size = ker_reload_state_size();
+	void *state = calloc(1, state_size);
+	CHECK(state != NULL);
+	CHECK(!ker_reload_state_init(state, state_size, 0));
+	CHECK(!ker_reload_bind_state(state, state_size, 1, 0));
+	ff_flow_map_open();
+	CHECK(ff_flow_map_active() && ff_reload_state_attached());
+	if (mode == 1) {
+		int created = 0;
+		struct ff_flow_key original;
+		memcpy(&original, &key, sizeof(original));
+		CHECK(ff_flow_map_admit(&original, &created) == 1 && created == 1);
+	}
+	CHECK(!ker_ff_admission_channel_open(endpoint, controller_pid, getuid(), getgid(),
+		UINT64_C(0x8877665544332211), &channel));
+	char marker = 'R';
+	CHECK(write(ready_fd, &marker, 1) == 1);
+	(void)close(ready_fd);
+	int result;
+	do {
+		result = ker_ff_admission_channel_owner_step(channel, &ops);
+		if (result == -EAGAIN || result == -EWOULDBLOCK) {
+			const struct timespec pause = {.tv_nsec = 1000000};
+			nanosleep(&pause, NULL);
+		}
+	} while (result == -EAGAIN || result == -EWOULDBLOCK || result == 0);
+	CHECK(result == (mode == 2 ? -ECONNRESET : -EPIPE));
+	struct ff_flow_key original;
+	memcpy(&original, &key, sizeof(original));
+	uint64_t inserted = 0, duplicates = 0, full = 0, grown = 0, revoked = 0;
+	uint32_t capacity = 0;
+	ff_flow_map_stats2(&inserted, &duplicates, &full, &grown, NULL, NULL,
+		&capacity, &revoked);
+	CHECK(ff_flow_map_lookup(&original) == (mode == 0 ? 0 : 1));
+	CHECK(revoked == (mode == 0 ? 1U : 0U));
+	ker_ff_admission_channel_close(channel);
+	ff_flow_map_close();
+	ker_reload_unbind_state();
+	free(state);
+	_exit(0);
+}
+
+static void initial_result_disconnect_case(int mode)
+{
+	int endpoints[2], ready_pipe[2], entered_pipe[2], release_pipe[2];
+	const uint64_t lease = UINT64_C(0x8877665544332211);
+	CHECK(!ker_ff_admission_channel_pair(endpoints));
+	CHECK(pipe2(ready_pipe, O_CLOEXEC) == 0);
+	CHECK(pipe2(entered_pipe, O_CLOEXEC) == 0);
+	CHECK(pipe2(release_pipe, O_CLOEXEC) == 0);
+	pid_t controller_pid = getpid();
+	pid_t owner = fork();
+	CHECK(owner >= 0);
+	if (owner == 0) {
+		(void)close(endpoints[0]);
+		(void)close(ready_pipe[0]);
+		(void)close(entered_pipe[0]);
+		(void)close(release_pipe[1]);
+		disconnect_owner_child(endpoints[1], controller_pid, ready_pipe[1],
+			entered_pipe[1], release_pipe[0], mode);
+		_exit(1);
+	}
+	(void)close(endpoints[1]);
+	(void)close(ready_pipe[1]);
+	(void)close(entered_pipe[1]);
+	(void)close(release_pipe[0]);
+	struct ker_ff_admission_channel *channel = NULL;
+	CHECK(!ker_ff_admission_channel_open(endpoints[0], owner, getuid(), getgid(),
+		lease, &channel));
+	char marker;
+	CHECK(read(ready_pipe[0], &marker, 1) == 1 && marker == 'R');
+	(void)close(ready_pipe[0]);
+	struct ker_ff_admission_request request = {
+		.lease = lease, .command_id = 1, .deadline_ns = deadline_after_250ms(),
+		.packet_id = 0x4209, .key = make_key(42009)};
+	CHECK(!ker_ff_admission_channel_send_admit(channel, &request));
+	if (mode == 2) {
+		struct ker_ff_admission_result result = receive_result(channel, KER_FF_ADMISSION_RESULT);
+		CHECK(result.status == 0 && result.allowed == 1 && result.created == 1);
+		CHECK(!ker_ff_admission_channel_send_control(channel,
+			KER_FF_ADMISSION_PREPARE_ACCEPT, 1, request.packet_id));
+		result = receive_result(channel, KER_FF_ADMISSION_PREPARED);
+		CHECK(result.status == 0);
+		ker_ff_admission_channel_close(channel);
+	} else {
+		CHECK(read(entered_pipe[0], &marker, 1) == 1 && marker == 'A');
+		ker_ff_admission_channel_close(channel);
+		marker = 'R';
+		CHECK(write(release_pipe[1], &marker, 1) == 1);
+	}
+	(void)close(entered_pipe[0]);
+	(void)close(release_pipe[1]);
+	int wait_status = 0;
+	CHECK(waitpid(owner, &wait_status, 0) == owner && WIFEXITED(wait_status) &&
+		WEXITSTATUS(wait_status) == 0);
 }
 
 static void wait_until_deadline(uint64_t deadline)
@@ -286,6 +417,9 @@ int main(void)
 	struct ker_ff_admission_key duplicate_expired = make_key(42007);
 	credential_rejection_case();
 	ancillary_rejection_case();
+	initial_result_disconnect_case(0);
+	initial_result_disconnect_case(1);
+	initial_result_disconnect_case(2);
 	CHECK(!ker_ff_admission_channel_pair(endpoints));
 	CHECK(pipe2(ready_pipe, O_CLOEXEC) == 0);
 	pid_t controller = getpid();
@@ -416,6 +550,6 @@ int main(void)
 	int wait_status = 0;
 	CHECK(waitpid(owner, &wait_status, 0) == owner && WIFEXITED(wait_status) &&
 	      WEXITSTATUS(wait_status) == 0);
-	puts("PASS: credentialed cross-process owner commands execute original map on one owner thread; prepared reservation retained, cancel/expired/dead-controller paths avoid unaccepted entries");
+	puts("PASS: credentialed owner commands preserve prepared reservations, roll back an unprepared admission when the initial RESULT send disconnects, and retain created=0 and PREPARED entries");
 	return 0;
 }
