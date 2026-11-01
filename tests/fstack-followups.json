@@ -130,7 +130,7 @@
       "id": "kni-exception-bridge",
       "title": "Define a supported host exception bridge and KNI policy adaptation",
       "disposition": "adaptation-needed",
-      "reason": "Actual original-DPDK classification, host/native Linux service routing, console/general admission and invalid-process rejection now also have real per-port RX lcore ownership. Original EAL main membership in the port list is accepted/rejected before app entry as required by the two source fixtures; both selected cores genuinely poll disjoint PMD queues and preserve owned handoff/cleanup. The four remaining source contracts use future-generation/non-owner/inject-ring state and are not proved by same-generation EAL lcores. Static port ownership still lacks fragment reassembly/flow ownership, deeper/opaque encapsulations, full multicast/generation fanout and automatic cross-stack ephemeral discovery; explicit fragment drops are not migration completion. The two named statistics/table-slot OOM assertions are now separately qualified through an actual ordinary EAL primary, exact original functions, real fatal subprocesses and bidirectional TAP/kernel-vhost virtio-user consumers. This does not qualify the remaining four primary_slim/future-owner/nonowner contracts.",
+      "reason": "Actual original-DPDK classification, host/native Linux service routing, console/general admission and invalid-process rejection now also have real per-port RX lcore ownership. Original EAL main membership in the port list is accepted/rejected before app entry as required by the two source fixtures; both selected cores genuinely poll disjoint PMD queues and preserve owned handoff/cleanup. The short-TX and full-ring source contracts still require their own exact packet-acceptance and queue-capacity evidence; owner activation and nonowner selection now have separate scoped mappings. Static port ownership still lacks fragment reassembly/flow ownership, deeper/opaque encapsulations, full multicast/generation fanout and automatic cross-stack ephemeral discovery; explicit fragment drops are not migration completion. The two named statistics/table-slot OOM assertions are now separately qualified through an actual ordinary EAL primary, exact original functions, real fatal subprocesses and bidirectional TAP/kernel-vhost virtio-user consumers. This does not qualify short-TX/full-ring behavior or cross-process primary_slim ownership.",
       "evidence": [
         "src/posix/packet-device.c",
         "tests/upstream/fstack/tests/unit/test_ff_dpdk_kni.c",
@@ -153,7 +153,10 @@
         "examples/kni-host-bridge.c",
         "examples/kni-bridge-policy.c",
         "tests/fstack-kni-allocation.c",
-        "tests/posix/fstack-kni-allocation.py"
+        "tests/posix/fstack-kni-allocation.py",
+        "docs/fstack-kni-ownership.md",
+        "tests/fstack-kni-owner.c",
+        "tests/posix/fstack-kni-owner-source.py"
       ],
       "acceptance": [
         "Choose an actual supported DPDK/Linux exception device and explicit packet ownership boundary; do not add successful no-op KNI stubs.",
@@ -162,10 +165,8 @@
         "Resolve fragment/encapsulation and automatic local-port ownership with original Linux facilities, or keep an explicit unsupported boundary. Do not build Ker-owned reassembly or connection tracking merely to steer packets."
       ],
       "cases": [
-        "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
         "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
-        "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
-        "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner"
+        "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring"
       ],
       "issue": "https://github.com/rutlang-ai/Ker/issues/219"
     },

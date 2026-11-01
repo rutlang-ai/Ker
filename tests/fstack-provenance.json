@@ -4489,6 +4489,30 @@
         "native-fstack-kni-allocation-bypass-control"
       ],
       "adaptation": "Complete unchanged source assertions exercise the original named kni:stat_lcore slot allocation failure through the actual EAL primary caller. The original fatal path is also verified in a subprocess; original TAP/kernel-vhost virtio-user transfers, live statistics, installed consumer and full pool reclamation establish a working positive boundary. This qualifies the allocation contract only, not primary_slim future-owner, secondary/reload ownership or FreeBSD KNI ABI; see docs/fstack-kni-allocation.md. Five close/recreate assertion cycles use real rte_zmalloc forwarding except the exact named fault. Fatal interception is test-only; separate processes forward actual rte_exit(1)/rte_panic(SIGABRT). Bypassing the table fault fails the unchanged fatal expectation. No transport parser is imported; experimental Ethernet frames retain exact bytes in both directions. Original function bodies, stats layout and source test bodies remain byte-identical and SHA256 audited."
+    },
+    "fstack-kni-future-owner": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_p1_future_kni_owner",
+      "ker_ctests": [
+        "fstack-kni-owner-original-import",
+        "fstack-kni-owner-source",
+        "native-fstack-kni-host-consumer",
+        "native-fstack-kni-host-installed-consumer",
+        "native-fstack-kni-owner-bypass-control"
+      ],
+      "adaptation": "Complete unchanged `p1_cold_*` helpers and `test_p1_future_kni_owner` body run against the original KNI implementation. The source fixture confines its EAL process-type wrapper to the fixture, binds the source-shaped original reload block through `ker::reload`, and delegates owner matching to pinned `ff_reload_kni_owner_match`. It verifies pending owner statistics before activation, no hotplug, both original named ring lookups, no preactivation TX, exact3-packet PMD callback, counters and full pool recovery. A real EAL primary caller binds selected generation1/active0, observes one exact packet queued in the original KNI RX ring, proves no TAP-to-host TX before reload activation, then executes the original `ff_kni_inject_process` through actual TAP/kernel-vhost virtio-user PMDs. Generation and proc identity mismatches are denied then restored. The installed caller passes. The caller-gate bypass control proves the pending queued frame escapes before activation. This is same-process caller integration, not true-secondary or cross-master reload. Original `ff_kni_inject_process` bytes are hash-audited; source helpers and assertions are compared byte-for-byte to the pinned snapshot. See docs/fstack-kni-ownership.md."
+    },
+    "fstack-kni-nonowner": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_p1_kni_nonowner",
+      "ker_ctests": [
+        "fstack-kni-owner-original-import",
+        "fstack-kni-owner-source",
+        "native-fstack-kni-host-consumer",
+        "native-fstack-kni-host-installed-consumer",
+        "native-fstack-kni-owner-bypass-control"
+      ],
+      "adaptation": "Complete unchanged `p1_cold_*` helpers and `test_p1_kni_nonowner` body run through the source-fixture EAL process-type wrapper and actual bound Ker reload runtime. Changing the original caller proc_id to2 leaves KNI statistics null, makes no hotplug request, and resolves both shared original ring pointers. The actual active-generation1 caller separately checks proc_id2 is denied even while the original generation predicate matches, then restores proc_id1 and ownership. This qualifies bounded same-process caller selection, not genuine multiprocess secondary or cross-master directory behavior. Source helper/test bytes are checked against the pinned snapshot. See docs/fstack-kni-ownership.md."
     }
   }
 }

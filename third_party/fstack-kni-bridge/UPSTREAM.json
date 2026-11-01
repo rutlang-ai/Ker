@@ -16,7 +16,8 @@
     "ff_kni_init",
     "ff_kni_alloc",
     "ff_kni_process",
+    "ff_kni_inject_process",
     "ff_kni_enqueue"
   ],
-  "mode": "Unchanged allocation and packet-memory/PMD forwarding excerpts. Caller-only actual primary EAL, original TAP and kernel-vhost virtio-user; no FreeBSD stack, future-generation or KNI ABI emulation."
+  "mode": "Unchanged allocation and packet-memory/PMD forwarding excerpts, including original inject-burst. Caller-owned original EAL with explicit Ker reload owner adapter; no FreeBSD stack or KNI ABI emulation."
 }

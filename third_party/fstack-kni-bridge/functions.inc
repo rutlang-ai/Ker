@@ -302,6 +302,25 @@ ff_kni_process(uint16_t port_id, uint16_t queue_id,
     kni_process_rx(port_id, queue_id, pkts_burst, count);
 }
 
+void
+ff_kni_inject_process(uint16_t port_id, uint16_t queue_id,
+    struct rte_mbuf **pkts_burst, unsigned count)
+{
+    uint16_t nb_rx = rte_ring_dequeue_burst(kni_inject_rp[port_id],
+        (void **)pkts_burst, count, NULL);
+    if (nb_rx == 0)
+        return;
+
+    uint16_t nb_tx = rte_eth_tx_burst(port_id, queue_id, pkts_burst, nb_rx);
+    if (nb_tx < nb_rx) {
+        uint16_t i;
+        for (i = nb_tx; i < nb_rx; ++i)
+            rte_pktmbuf_free(pkts_burst[i]);
+        kni_stat[port_id]->tx_dropped += (nb_rx - nb_tx);
+    }
+    kni_stat[port_id]->tx_packets += nb_tx;
+}
+
 int
 ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
 {
