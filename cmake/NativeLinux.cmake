@@ -379,6 +379,21 @@ if(BUILD_TESTING)
         tests/posix/socket-broker-inherited-group-client.c)
     target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
     target_compile_options(ker-socket-broker-inherited-group-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-generation-fixture
+        tests/posix/socket-broker-generation-broker.c)
+    target_link_libraries(ker-socket-broker-generation-fixture PRIVATE ker-socket-broker-server)
+    add_dependencies(ker-socket-broker-generation-fixture ker-app ker-io-worker)
+    target_compile_options(ker-socket-broker-generation-fixture PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-generation-worker
+        tests/posix/socket-broker-generation-worker.c)
+    target_link_libraries(ker-socket-broker-generation-worker PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-generation-worker PRIVATE -Wall -Wextra -Werror)
+    add_library(ker-socket-broker-generation-controller SHARED
+        tests/posix/socket-broker-generation-controller.c)
+    set_target_properties(ker-socket-broker-generation-controller PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+    target_link_libraries(ker-socket-broker-generation-controller PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-generation-controller PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-tcp-observer-client-test tests/posix/tcp-observer-client.c)
     target_include_directories(ker-tcp-observer-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_compile_definitions(ker-tcp-observer-client-test PRIVATE
@@ -447,6 +462,18 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-reuseport-group PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;cbpf")
+    add_test(NAME native-socket-broker-generation-handoff
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --generation-broker "$<TARGET_FILE:ker-socket-broker-generation-fixture>"
+            --generation-worker "$<TARGET_FILE:ker-socket-broker-generation-worker>"
+            --generation-controller "$<TARGET_FILE:ker-socket-broker-generation-controller>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-generation-handoff PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;generation-handoff")
     add_test(NAME native-tcp-socket-observer
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"

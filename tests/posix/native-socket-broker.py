@@ -205,7 +205,554 @@ def run_reuseport_group_client(args, rpc_path, broker, capability):
     except BaseException:
         if client.poll() is None:
             client.kill(); client.wait()
+
+
+GENERATION_MESSAGE = struct.Struct('=IIIIQ')
+GENERATION_REQUEST_MAGIC = 0x4b455257
+GENERATION_RESPONSE_MAGIC = 0x4b455252
+
+
+class TcpObserverSnapshot(ctypes.Structure):
+    _fields_ = [('cookie', ctypes.c_uint64), ('receive_queue', ctypes.c_uint32),
+        ('send_queue', ctypes.c_uint32), ('state', ctypes.c_uint8), ('present', ctypes.c_uint8)]
+
+
+def load_generation_controller(path, rpc_path):
+    # The supervisor owns this single SDK context; rpc_lock serializes every
+    # call even while the external traffic thread probes the listener.
+    library = ctypes.CDLL(str(path), use_errno=True)
+    library.ker_test_generation_controller_open.argtypes = [ctypes.c_char_p]
+    library.ker_test_generation_controller_open.restype = ctypes.c_void_p
+    library.ker_test_generation_controller_close.argtypes = [ctypes.c_void_p]
+    library.ker_test_generation_controller_close.restype = None
+    library.ker_test_generation_member.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint]
+    library.ker_test_generation_member.restype = ctypes.c_int
+    library.ker_test_generation_select.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint]
+    library.ker_test_generation_select.restype = ctypes.c_int
+    library.ker_test_generation_describe.argtypes = [ctypes.c_void_p, ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+    library.ker_test_generation_describe.restype = ctypes.c_int
+    library.ker_test_generation_observe.argtypes = [ctypes.c_void_p, ctypes.c_int,
+        ctypes.POINTER(TcpObserverSnapshot)]
+    library.ker_test_generation_observe.restype = ctypes.c_int
+    context = library.ker_test_generation_controller_open(os.fsencode(rpc_path))
+    require(context, f'generation supervisor could not open authenticated SDK context: {ctypes.get_errno()}')
+    return library, context, threading.Lock()
+
+
+def controller_call(result, operation):
+    if result < 0:
+        code = ctypes.get_errno()
+        raise RuntimeError(f'{operation} failed with errno {code}: {os.strerror(code)}')
+    return result
+
+
+def generation_pack(kind, generation=0, worker=0, process_id=0, nonce=0):
+    return GENERATION_MESSAGE.pack(kind, generation, worker, process_id, nonce)
+
+
+def generation_receive(control, timeout=3):
+    poller = select.poll()
+    poller.register(control, select.POLLIN | select.POLLHUP | select.POLLERR)
+    if not poller.poll(int(timeout * 1000)):
+        raise RuntimeError('timed out waiting for generation worker control message')
+    data, ancillary, flags, _ = control.recvmsg(GENERATION_MESSAGE.size,
+        socket.CMSG_SPACE(16 * array.array('i').itemsize), socket.MSG_CMSG_CLOEXEC)
+    rights = []
+    malformed_ancillary = False
+    for level, kind, payload in ancillary:
+        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+            values = array.array('i')
+            if len(payload) % values.itemsize:
+                malformed_ancillary = True
+            values.frombytes(payload[:len(payload) - len(payload) % values.itemsize])
+            rights.extend(values.tolist())
+        else:
+            malformed_ancillary = True
+    if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(data) != GENERATION_MESSAGE.size or malformed_ancillary:
+        for fd in rights: os.close(fd)
+        raise RuntimeError('generation worker control message was malformed or truncated')
+    message = GENERATION_MESSAGE.unpack(data)
+    if message[0] == 2:
+        if len(rights) != 1:
+            for fd in rights: os.close(fd)
+            raise RuntimeError(f'accepted stream must transfer exactly one metadata observer: {rights!r}')
+    else:
+        if rights:
+            for fd in rights: os.close(fd)
+            raise RuntimeError(f'non-accept worker message carried descriptors: {rights!r}')
+    return message, rights
+
+
+def spawn_generation_worker(args, rpc_path, generation, worker_index, member_fd, paused):
+    parent_control, child_control = socket.socketpair(socket.AF_UNIX,
+        socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+    process = None
+    try:
+        process = subprocess.Popen([str(args.generation_worker), str(rpc_path), str(member_fd),
+            str(child_control.fileno()), str(generation), str(worker_index), str(int(paused))],
+            pass_fds=(member_fd, child_control.fileno()), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    except BaseException:
+        parent_control.close()
         raise
+    finally:
+        os.close(member_fd)
+        child_control.close()
+    try:
+        message, rights = generation_receive(parent_control, 15)
+        if (message[0] != 1 or message[1] != generation or message[2] != worker_index or
+                message[3] != process.pid or rights):
+            for fd in rights: os.close(fd)
+            raise RuntimeError(f'generation worker readiness identity differs: {message!r}')
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        parent_control.close()
+        raise
+    return {'generation': generation, 'worker': worker_index, 'process': process,
+        'control': parent_control, 'pid': process.pid, 'pending': {},
+        'seen_nonces': set(), 'command_nonce': 0, 'control_lock': threading.Lock()}
+
+
+def generation_command(worker, kind):
+    with worker['control_lock']:
+        worker['command_nonce'] += 1
+        nonce = worker['command_nonce']
+        worker['control'].sendall(generation_pack(kind, worker['generation'], worker['worker'],
+            worker['pid'], nonce))
+        while True:
+            message, rights = generation_receive(worker['control'], 3)
+            if message[0] == 2:
+                if (message[1] != worker['generation'] or message[2] != worker['worker'] or
+                        message[3] != worker['pid'] or message[4] in worker['seen_nonces']):
+                    for fd in rights: os.close(fd)
+                    raise RuntimeError(f'worker accept event identity/nonce invalid: {message!r}')
+                worker['seen_nonces'].add(message[4])
+                worker['pending'][message[4]] = rights[0]
+                continue
+            require(message == (4, worker['generation'], worker['worker'], worker['pid'], nonce),
+                f'worker did not acknowledge applied control command: {message!r}')
+            return
+
+
+def generation_observer_for(worker, nonce):
+    with worker['control_lock']:
+        pending = worker['pending']
+        while nonce not in pending:
+            message, rights = generation_receive(worker['control'], 3)
+            if (message[0] != 2 or message[1] != worker['generation'] or
+                    message[2] != worker['worker'] or message[3] != worker['pid'] or
+                    message[4] in worker['seen_nonces']):
+                for fd in rights: os.close(fd)
+                raise RuntimeError(f'accepted stream worker identity/nonce invalid: {message!r}')
+            worker['seen_nonces'].add(message[4])
+            pending[message[4]] = rights[0]
+        return pending.pop(nonce)
+
+
+def generation_tcp_request(controls, nonce, commit_state=None, commit_lock=None, keep_observer=True):
+    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+    connection.setblocking(False)
+    started_at = time.monotonic()
+    counted_pre_commit = False
+    observer = -1
+    success = False
+    try:
+        if commit_state is None:
+            initiated_after_commit = None
+            connect_result = connection.connect_ex(('198.18.0.2', 4097))
+        else:
+            with commit_lock:
+                initiated_after_commit = commit_state['selected']
+                if not initiated_after_commit:
+                    commit_state['pre_inflight'] += 1
+                    counted_pre_commit = True
+                connect_result = connection.connect_ex(('198.18.0.2', 4097))
+        if connect_result not in (0, errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK):
+            raise OSError(connect_result, os.strerror(connect_result))
+        poller = select.poll()
+        poller.register(connection, select.POLLOUT | select.POLLERR | select.POLLHUP)
+        remaining = 2 - (time.monotonic() - started_at)
+        if remaining <= 0 or not poller.poll(max(1, int(remaining * 1000))):
+            raise TimeoutError('connect exceeded the two-second response deadline')
+        connect_error = connection.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+        if connect_error:
+            raise OSError(connect_error, os.strerror(connect_error))
+        remaining = 2 - (time.monotonic() - started_at)
+        if remaining <= 0: raise TimeoutError('connect exceeded the two-second response deadline')
+        connection.settimeout(remaining)
+        connection.sendall(struct.pack('!IQ', GENERATION_REQUEST_MAGIC, nonce))
+        response = struct.unpack('!IIIIQ', recv_exact(connection, 24))
+        require(time.monotonic() - started_at <= 2,
+            f'nonce {nonce} response exceeded its two-second deadline')
+        require(response[0] == GENERATION_RESPONSE_MAGIC and response[4] == nonce,
+            f'generation worker response identity differs: {response!r}')
+        generation, worker_index, process_id = response[1:4]
+        key = (generation, worker_index)
+        require(key in controls, f'connection reached unknown worker generation/identity: {response!r}')
+        if initiated_after_commit and generation != 1:
+            raise RuntimeError(f'post-selector connection reached old generation: {response!r}')
+        worker = controls[key]
+        require(process_id == worker['pid'], f'response PID differs from authenticated worker: {response!r}')
+        observer = generation_observer_for(worker, nonce)
+        snapshot = TcpObserverSnapshot()
+        with controls['rpc_lock']:
+            result = controls['controller'].ker_test_generation_observe(
+                controls['context'], observer, ctypes.byref(snapshot))
+        controller_call(result, 'observer snapshot')
+        require(snapshot.present and snapshot.cookie != 0,
+            f'worker transferred a non-live metadata observer: {response!r} '
+            f'snapshot={snapshot.cookie, snapshot.present}')
+        if keep_observer:
+            controls['observers'].append((observer, snapshot.cookie, nonce))
+            observer = -1
+        success = True
+        return connection, response, initiated_after_commit
+    except BaseException as error:
+        raise RuntimeError(f'nonce {nonce} connect/response failed: {error}') from error
+    finally:
+        if observer >= 0: os.close(observer)
+        if not success: connection.close()
+        if counted_pre_commit:
+            with commit_lock:
+                commit_state['pre_inflight'] -= 1
+
+
+def generation_stream_payload(nonce, phase, sequence):
+    return bytes(((index * 37 + nonce * 11 + phase * 53 + sequence * 97) & 0xff)
+        for index in range(257))
+
+
+def pump_generation_stream(connection, nonce, commit_state, transition_lock, stop,
+    counts, errors, first_frame):
+    sequence = 0
+    try:
+        while not stop.is_set():
+            with transition_lock:
+                phase = int(commit_state['selected'])
+                payload = generation_stream_payload(nonce, phase, sequence)
+            connection.sendall(payload)
+            require(recv_exact(connection, len(payload)) == payload,
+                f'generation {phase} stream payload mismatch for nonce {nonce} sequence {sequence}')
+            counts[phase] += 1
+            first_frame.set()
+            sequence += 1
+            time.sleep(0.005)
+    except BaseException as error:
+        errors.append(error)
+
+
+def reap_generation_worker(worker, timeout=5):
+    message, rights = generation_receive(worker['control'], timeout)
+    if message != (3, worker['generation'], worker['worker'], worker['pid'], 0) or rights:
+        for fd in rights: os.close(fd)
+        raise RuntimeError(f'worker did not report clean retirement: {message!r}')
+    result = worker['process'].wait(timeout=timeout)
+    output = worker['process'].stderr.read()
+    require(result == 0, f'worker failed during clean retirement: {output!r}')
+    worker['control'].close()
+
+
+def run_generation_handoff(args, rpc_path, broker, group_fd, root):
+    library = None
+    context = None
+    rpc_lock = threading.Lock()
+    controls = {'controller': None, 'context': None, 'rpc_lock': rpc_lock, 'observers': []}
+    workers = {}
+    streams = []
+    traffic_results = []
+    traffic_errors = []
+    traffic = None
+    traffic_stop = threading.Event()
+    stream_pumps = []
+    stream_pump_errors = []
+    transition_lock = threading.Lock()
+    commit_state = {'selected': False, 'pre_inflight': 0}
+    controller_closed = False
+    stage = 'initialize generation controller'
+    try:
+        for artifact in (args.generation_worker, args.generation_controller):
+            dependencies = subprocess.run(['ldd', str(artifact.resolve())],
+                text=True, capture_output=True, check=True).stdout
+            require('ker-posix' not in dependencies and 'liblkl' not in dependencies.lower(),
+                f'generation SDK process unexpectedly links the in-process kernel: {artifact}: {dependencies}')
+        library, context, rpc_lock = load_generation_controller(args.generation_controller, rpc_path)
+        controls.update(controller=library, context=context, rpc_lock=rpc_lock)
+        stage = 'describe group control capability'
+        group_kind = ctypes.c_int(-1); group_flags = ctypes.c_int(-1)
+        with rpc_lock:
+            described = library.ker_test_generation_describe(context, group_fd,
+                ctypes.byref(group_kind), ctypes.byref(group_flags))
+        controller_call(described, 'describe supervisor group')
+        require(group_kind.value == 3 and group_flags.value == 0,
+            f'supervisor did not receive CONTROL group identity: {group_kind.value, group_flags.value}')
+
+        def start_worker(generation, index, paused, member_index=None):
+            if member_index is None: member_index = index
+            with rpc_lock:
+                member_fd = controller_call(library.ker_test_generation_member(
+                    context, group_fd, member_index), f'create worker member {member_index}')
+            worker = spawn_generation_worker(args, rpc_path, generation, index, member_fd, paused)
+            workers[(generation, index)] = worker
+            return worker
+
+        stage = 'start old workers'
+        old0 = start_worker(0, 0, False)
+        old1 = start_worker(0, 1, True, member_index=0)
+        nonce = 1
+        stage = 'accept deterministic old worker zero stream'
+        first, first_response, _ = generation_tcp_request(controls | workers, nonce, keep_observer=True)
+        require(first_response[1:4] == (0, 0, old0['pid']),
+            f'old member did not deterministically reach worker zero: {first_response!r}')
+        streams.append((first, nonce, old0))
+        stage = 'switch accept barrier to old worker one'
+        generation_command(old0, 10)
+        generation_command(old1, 11)
+        nonce += 1
+        second, second_response, _ = generation_tcp_request(controls | workers, nonce, keep_observer=True)
+        require(second_response[1:4] == (0, 1, old1['pid']),
+            f'old member did not deterministically reach worker one: {second_response!r}')
+        streams.append((second, nonce, old1))
+        generation_command(old0, 11)
+
+        stage = 'fill twelve retained old streams'
+        for _ in range(10):
+            nonce += 1
+            connection, response, _ = generation_tcp_request(controls | workers, nonce,
+                keep_observer=True)
+            require(response[1] == 0, f'pre-transition connection reached a non-old generation: {response!r}')
+            streams.append((connection, nonce, workers[(response[1], response[2])]))
+        require(len(streams) == 12, f'expected twelve retained old streams, got {len(streams)}')
+
+        stage = 'start replacement workers'
+        new0 = start_worker(1, 0, True, member_index=1)
+        new1 = start_worker(1, 1, True, member_index=1)
+        generation_command(new0, 11)
+        generation_command(new1, 11)
+
+        # Each old accepted stream continuously transfers nonce-specific data
+        # through the selector publication while worker accept loops retire.
+        stage = 'start active old-stream pumps'
+        for connection, stream_nonce, _ in streams:
+            counts = [0, 0]
+            first_frame = threading.Event()
+            pump = threading.Thread(target=pump_generation_stream,
+                args=(connection, stream_nonce, commit_state, transition_lock, traffic_stop,
+                    counts, stream_pump_errors, first_frame),
+                name=f'old-stream-{stream_nonce}')
+            pump.start()
+            stream_pumps.append((pump, counts, first_frame, stream_nonce))
+        for _, _, first_frame, stream_nonce in stream_pumps:
+            require(first_frame.wait(2), f'old stream {stream_nonce} sent no pre-selector payload')
+
+        # A no-retry external probe loop overlaps selector publication. The
+        # initiation lock defines which connect calls began after SELECT
+        # returned; only those are required to reach member one.
+        def fresh_probe_loop():
+            nonlocal nonce
+            try:
+                for _ in range(24):
+                    if traffic_stop.is_set(): break
+                    nonce += 1
+                    connection, response, initiated_after = generation_tcp_request(
+                        controls | workers, nonce, commit_state, transition_lock, keep_observer=False)
+                    require(initiated_after is None or not initiated_after or response[1] == 1,
+                        f'post-selector probe reached old generation: {response!r}')
+                    connection.close()
+                    traffic_results.append((nonce, response, initiated_after))
+                    time.sleep(0.025)
+            except BaseException as error:
+                traffic_errors.append(error)
+
+        stage = 'launch overlapping fresh probes'
+        traffic = threading.Thread(target=fresh_probe_loop, name='generation-fresh-probes')
+        traffic.start()
+        deadline = time.monotonic() + 3
+        while len(traffic_results) < 3 and time.monotonic() < deadline and not traffic_errors:
+            time.sleep(0.005)
+        require(not traffic_errors and len(traffic_results) >= 3,
+            f'fresh probes did not establish pre-transition traffic: {traffic_errors!r}')
+        stage = 'publish selector one'
+        with transition_lock:
+            with rpc_lock:
+                controller_call(library.ker_test_generation_select(context, group_fd, 1),
+                    'publish new reuseport member')
+            commit_state['selected'] = True
+        stage = 'drain pre-selector in-flight probes'
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with transition_lock:
+                remaining_pre = commit_state['pre_inflight']
+            if remaining_pre == 0: break
+            time.sleep(0.002)
+        require(remaining_pre == 0,
+            f'{remaining_pre} pre-selector connect(s) remained in flight before old accept retirement')
+        stage = 'retire old worker accept loops while streams stay active'
+        for worker in (old0, old1): generation_command(worker, 12)
+        require(old0['process'].poll() is None and old1['process'].poll() is None,
+            'old workers exited before their twelve accepted streams completed')
+        traffic.join(timeout=5)
+        require(not traffic.is_alive() and not traffic_errors,
+            f'continuous fresh probe thread failed: {traffic_errors!r}')
+        post_select = [item for item in traffic_results if item[2]]
+        pre_select = [item for item in traffic_results if not item[2]]
+        require(len(pre_select) >= 3 and len(post_select) >= 8,
+            f'probe coverage around selector was too small: pre={len(pre_select)} post={len(post_select)}')
+        require(all(result[1][1] == 1 for result in post_select),
+            'a fresh connection initiated after successful SELECT reached the old generation')
+
+        # Accept-only barriers prove both replacement workers actually serve
+        # connections while existing old-generation streams remain open.
+        stage = 'pause replacement worker one'
+        generation_command(new1, 10)
+        nonce += 1
+        stage = 'accept replacement worker zero stream'
+        new_worker0_stream, response0, _ = generation_tcp_request(controls | workers, nonce,
+            keep_observer=False)
+        require(response0[1:4] == (1, 0, new0['pid']),
+            f'new member did not reach worker zero while worker one was paused: {response0!r}')
+        new_worker0_stream.close()
+        stage = 'switch replacement accept barrier to worker one'
+        generation_command(new0, 10)
+        generation_command(new1, 11)
+        nonce += 1
+        stage = 'accept replacement worker one stream'
+        new_worker1_stream, response1, _ = generation_tcp_request(controls | workers, nonce,
+            keep_observer=False)
+        require(response1[1:4] == (1, 1, new1['pid']),
+            f'new member did not reach worker one while worker zero was paused: {response1!r}')
+        new_worker1_stream.close()
+        generation_command(new0, 11)
+
+        stage = 'verify old payload during selector handoff'
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            require(not stream_pump_errors, f'old stream pump failed: {stream_pump_errors!r}')
+            if all(counts[1] >= 2 for _, counts, _, _ in stream_pumps): break
+            time.sleep(0.005)
+        require(all(counts[1] >= 2 for _, counts, _, _ in stream_pumps),
+            f'not every old stream transferred payload after selector: '
+            f'{[(stream_nonce, counts) for _, counts, _, stream_nonce in stream_pumps]}')
+
+        stage = 'finish old streams after active payload transfer'
+        traffic_stop.set()
+        for pump, _, _, _ in stream_pumps: pump.join(timeout=3)
+        require(not any(pump.is_alive() for pump, _, _, _ in stream_pumps),
+            'old stream pump did not stop within its bounded I/O deadline')
+        require(not stream_pump_errors,
+            f'old stream payload echo failed: {stream_pump_errors!r}')
+        require(all(counts[0] > 0 and counts[1] > 0 for _, counts, _, _ in stream_pumps),
+            f'old streams lack confirmed payload on both sides of SELECT: '
+            f'{[(stream_nonce, counts) for _, counts, _, stream_nonce in stream_pumps]}')
+        for connection, stream_nonce, _ in streams:
+            connection.shutdown(socket.SHUT_WR)
+            require(connection.recv(1) == b'',
+                f'old stream {stream_nonce} did not reach normal peer EOF after echoed payload')
+            connection.close()
+        streams.clear()
+
+        stage = 'reap old workers after accepted stream completion'
+        reap_generation_worker(old0)
+        reap_generation_worker(old1)
+
+        stage = 'prove replacement generation after old worker exit'
+        nonce += 1
+        after_old_exit, after_old_exit_response, _ = generation_tcp_request(
+            controls | workers, nonce, keep_observer=False)
+        require(after_old_exit_response[1] == 1,
+            f'new generation stopped serving after old worker exit: {after_old_exit_response!r}')
+        after_old_exit.close()
+
+        # Metadata-only observer capabilities remain usable after the old
+        # worker descriptors close, without retaining any TCP descriptor.
+        stage = 'verify old metadata after worker teardown'
+        for observer, cookie, stream_nonce in controls['observers']:
+            deadline = time.monotonic() + 5
+            final = TcpObserverSnapshot()
+            while time.monotonic() < deadline:
+                with rpc_lock:
+                    result = library.ker_test_generation_observe(context, observer,
+                        ctypes.byref(final))
+                controller_call(result, f'final observer snapshot for nonce {stream_nonce}')
+                require(final.cookie == cookie,
+                    f'observer identity changed for nonce {stream_nonce}: {final.cookie} != {cookie}')
+                if not final.present or final.state == 6: break
+                time.sleep(0.01)
+            require(not final.present or final.state == 6,
+                f'original TCP state did not reach TIME_WAIT/absence for nonce {stream_nonce}: '
+                f'{final.present, final.state}')
+
+        stage = 'retire replacement workers last'
+        for worker in (new0, new1): generation_command(worker, 12)
+        reap_generation_worker(new0)
+        reap_generation_worker(new1)
+
+        stage = 'release observer and group capabilities'
+        for observer, _, _ in controls['observers']:
+            os.close(observer)
+        controls['observers'].clear()
+        os.close(group_fd)
+        group_fd = -1
+        library.ker_test_generation_controller_close(context)
+        controller_closed = True
+        try:
+            output, errors = broker.communicate(timeout=30)
+        except subprocess.TimeoutExpired as error:
+            broker.kill(); output, errors = broker.communicate(timeout=10)
+            raise RuntimeError(f'generation broker did not release group after worker exit: '
+                f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+        require(b'BROKER_DONE' in output and broker.returncode == 0,
+            f'generation broker did not finalize cleanly: {output!r} {errors.decode(errors="replace")}')
+        stats = json.loads((root / 'stats.json').read_text())
+        native = stats.get('native', {})
+        require(stats.get('outstanding') == 0 and stats.get('tx', 0) > 0 and
+            stats.get('rx', 0) > 0 and native.get('passive_opens', 0) >= 36,
+            f'original-Linux listener traffic or pool cleanup missing: {stats!r}')
+        minimum_pre = min(counts[0] for _, counts, _, _ in stream_pumps)
+        minimum_post = min(counts[1] for _, counts, _, _ in stream_pumps)
+        print(f'GENERATION_HANDOFF_OK old_streams=12 old_workers=2 new_workers=2 '
+            f'pre_select_probes={len(pre_select)} post_select_probes={len(post_select)} '
+            f'min_old_payload_echoes_pre={minimum_pre} min_old_payload_echoes_post={minimum_post} '
+            f'worker_pids={[worker["pid"] for worker in workers.values()]} '
+            f'original_passive_opens={native.get("passive_opens")} outstanding={stats.get("outstanding")}')
+    except BaseException as error:
+        raise RuntimeError(f'{error}; generation stage={stage}') from error
+    finally:
+        traffic_stop.set()
+        for connection, _, _ in streams:
+            try: connection.close()
+            except OSError: pass
+        for worker in workers.values():
+            if worker['process'].poll() is None:
+                try: worker['process'].kill()
+                except OSError: pass
+                worker['process'].wait()
+            try: worker['control'].close()
+            except OSError: pass
+        if traffic is not None and traffic.is_alive(): traffic.join(timeout=6)
+        for pump, _, _, _ in stream_pumps:
+            if pump.is_alive(): pump.join(timeout=3)
+        if ((traffic is not None and traffic.is_alive()) or
+                any(pump.is_alive() for pump, _, _, _ in stream_pumps)):
+            raise RuntimeError('generation traffic/pump threads did not stop before controller cleanup')
+        for observer, _, _ in controls['observers']:
+            try: os.close(observer)
+            except OSError: pass
+        controls['observers'].clear()
+        for worker in workers.values():
+            for pending_fd in worker['pending'].values():
+                try: os.close(pending_fd)
+                except OSError: pass
+            worker['pending'].clear()
+            if worker['process'].stderr:
+                worker['process'].stderr.close()
+        if group_fd >= 0:
+            try: os.close(group_fd)
+            except OSError: pass
+        if context is not None and not controller_closed:
+            library.ker_test_generation_controller_close(context)
 
 
 def send_host_socket_probe(connection):
@@ -779,7 +1326,12 @@ def inside(args):
             stats_path = root / 'stats.json'
             with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
                 bootstrap.bind(str(bootstrap_path)); os.chmod(bootstrap_path, 0o600); bootstrap.listen(1)
-                selected_broker = args.group_broker if args.reuseport_group_client else args.broker
+                if args.generation_worker:
+                    selected_broker = args.generation_broker
+                elif args.reuseport_group_client:
+                    selected_broker = args.group_broker
+                else:
+                    selected_broker = args.broker
                 command = [sys.executable, str(args.launcher), '--library', str(args.library),
                     '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
                     '--port', 'net_tap0', '--eal', eal, '--stats', str(stats_path), '--',
@@ -803,9 +1355,10 @@ def inside(args):
                     raise RuntimeError(f'broker did not connect bootstrap; exit={broker.returncode}; '
                         f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
                 with connection:
-                    cap_fds = receive_group_bootstrap(connection) if args.reuseport_group_client else receive_bootstrap(connection)
+                    cap_fds = receive_group_bootstrap(connection) if (
+                        args.reuseport_group_client or args.generation_worker) else receive_bootstrap(connection)
                     connection.settimeout(5)
-                    if not args.reuseport_group_client:
+                    if not args.reuseport_group_client and not args.generation_worker:
                         send_host_socket_probe(connection)
                 broker_line = read_line(broker.stdout, 15, broker)
                 require(broker_line == 'BROKER_READY', f'broker failed to enter its request loop: {broker_line}')
@@ -828,6 +1381,10 @@ def inside(args):
                         f'original-Linux reuseport traffic or cleanup evidence missing: {stats!r}')
                     print('PASS: broker-created two-member original-Linux reuseport cBPF group, selector transitions, '
                         'group/member lifetime and accepted-stream teardown')
+                    return 0
+                if args.generation_worker:
+                    group_fd = cap_fds.pop(0)
+                    run_generation_handoff(args, rpc_path, broker, group_fd, root)
                     return 0
                 if args.observer_client:
                     run_tcp_observer_frontend(args, rpc_path, broker, cap_fds, root)
@@ -1039,11 +1596,16 @@ def main():
     parser.add_argument('--group-broker', type=Path)
     parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--inherited-group-probe', type=Path)
+    parser.add_argument('--generation-broker', type=Path)
+    parser.add_argument('--generation-worker', type=Path)
+    parser.add_argument('--generation-controller', type=Path)
     args = parser.parse_args()
     if args.reuseport_group_client and (not args.inherited_group_probe or not args.preload_library):
         parser.error('reuseport group test requires inherited group probe and preload library')
     if args.observer_client and not args.preload_library:
         parser.error('TCP observer test requires the socket preload library for inherited capability validation')
+    if args.generation_worker and not (args.generation_broker and args.generation_controller):
+        parser.error('generation handoff test requires broker factory and SDK controller')
     if not args.inside:
         if args.nginx_binary:
             command = ['unshare', '-Un', '--keep-caps', f'--map-user={os.getuid()}',
@@ -1070,6 +1632,12 @@ def main():
             command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
         if args.inherited_group_probe:
             command += ['--inherited-group-probe', str(args.inherited_group_probe.resolve())]
+        if args.generation_broker:
+            command += ['--generation-broker', str(args.generation_broker.resolve())]
+        if args.generation_worker:
+            command += ['--generation-worker', str(args.generation_worker.resolve())]
+        if args.generation_controller:
+            command += ['--generation-controller', str(args.generation_controller.resolve())]
         return subprocess.run(command).returncode
     try:
         return inside(args)
