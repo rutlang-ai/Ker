@@ -205,6 +205,7 @@ def run_reuseport_group_client(args, rpc_path, broker, capability):
     except BaseException:
         if client.poll() is None:
             client.kill(); client.wait()
+        raise
 
 
 GENERATION_MESSAGE = struct.Struct('=IIIIQ')

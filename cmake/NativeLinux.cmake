@@ -462,6 +462,12 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-reuseport-group PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;cbpf")
+    add_test(NAME native-socket-broker-reuseport-failure-propagation
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/test_native_socket_broker_failure_propagation.py")
+    set_tests_properties(native-socket-broker-reuseport-failure-propagation PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;fstack;socket-broker;reuseport;failure-propagation"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME native-socket-broker-generation-handoff
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
