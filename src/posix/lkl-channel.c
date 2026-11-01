@@ -36,6 +36,7 @@
 #include <lkl_host.h>
 #include <sys/utsname.h>
 #include <ker/posix.h>
+#include "member-census-runtime.h"
 
 _Static_assert(sizeof(struct ker_packet_header) == sizeof(struct lkl_virtio_net_hdr_v1),
     "packet channel must match the imported virtio-net ABI");
@@ -320,6 +321,7 @@ __attribute__((constructor)) static void initialize(void)
 int ker_native_finalize(void)
 {
     if (!atomic_exchange_explicit(&ready, false, memory_order_acq_rel)) return 0;
+    ker_member_census_runtime_shutdown();
     int stdio_error = ker_native_stdio_shutdown();
     ker_fd_close_all();
     int drained = ker_native_drain(drain_timeout);

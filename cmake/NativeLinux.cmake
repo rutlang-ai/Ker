@@ -40,7 +40,8 @@ endforeach()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
     src/posix/posix-stdio.c
-    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c)
+    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
+    src/posix/member-census-diag.c src/posix/member-census-diag-parse.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 add_library(ker::posix ALIAS ker-posix)
@@ -204,6 +205,16 @@ if(BUILD_TESTING)
         COMMAND "$<TARGET_FILE:ker-tcp-observer-diag-parser-test>")
     set_tests_properties(tcp-observer-diag-parser-validation PROPERTIES
         LABELS "native-tcp;socket-broker;diag-parser")
+    add_executable(ker-member-census-diag-parser-test
+        tests/posix/member-census-diag-parser.c src/posix/member-census-diag-parse.c)
+    target_include_directories(ker-member-census-diag-parser-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_features(ker-member-census-diag-parser-test PRIVATE c_std_11)
+    target_compile_options(ker-member-census-diag-parser-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME member-census-diag-parser-validation
+        COMMAND "$<TARGET_FILE:ker-member-census-diag-parser-test>")
+    set_tests_properties(member-census-diag-parser-validation PROPERTIES
+        LABELS "native-tcp;socket-broker;diag-parser;census")
     add_executable(ker-tcp-observer-diag-layout-test
         tests/posix/tcp-observer-diag-layout.c)
     target_include_directories(ker-tcp-observer-diag-layout-test SYSTEM PRIVATE
@@ -375,6 +386,52 @@ if(BUILD_TESTING)
         tests/posix/socket-broker-reuseport-group-client.c)
     target_link_libraries(ker-socket-broker-reuseport-group-client PRIVATE ker-socket-client)
     target_compile_options(ker-socket-broker-reuseport-group-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-member-census-client
+        tests/posix/socket-broker-member-census-client.c)
+    target_link_libraries(ker-socket-broker-member-census-client PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-member-census-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-member-census-runtime-test tests/posix/member-census-runtime-test.c)
+    target_include_directories(ker-member-census-runtime-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_features(ker-member-census-runtime-test PRIVATE c_std_11)
+    target_compile_options(ker-member-census-runtime-test PRIVATE -Wall -Wextra -Werror)
+    get_target_property(ker_posix_sources ker-posix SOURCES)
+    get_target_property(ker_posix_definitions ker-posix COMPILE_DEFINITIONS)
+    get_target_property(ker_posix_options ker-posix COMPILE_OPTIONS)
+    get_target_property(ker_posix_include_directories ker-posix INCLUDE_DIRECTORIES)
+    if(NOT ker_posix_definitions OR ker_posix_definitions MATCHES "-NOTFOUND$")
+        set(ker_posix_definitions)
+    endif()
+    if(NOT ker_posix_options OR ker_posix_options MATCHES "-NOTFOUND$")
+        set(ker_posix_options)
+    endif()
+    if(NOT ker_posix_include_directories OR ker_posix_include_directories MATCHES "-NOTFOUND$")
+        set(ker_posix_include_directories)
+    endif()
+    add_library(ker-posix-member-census-test-runtime SHARED
+        ${ker_posix_sources} tests/posix/member-census-test-credentials.c)
+    target_include_directories(ker-posix-member-census-test-runtime PRIVATE
+        ${ker_posix_include_directories})
+    target_include_directories(ker-posix-member-census-test-runtime SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_compile_definitions(ker-posix-member-census-test-runtime PRIVATE
+        ${ker_posix_definitions})
+    target_compile_features(ker-posix-member-census-test-runtime PRIVATE c_std_11)
+    target_compile_options(ker-posix-member-census-test-runtime PRIVATE
+        ${ker_posix_options} -Wall -Wextra -Werror)
+    file(READ "${PROJECT_SOURCE_DIR}/src/posix/exports.map" ker_posix_test_export_map)
+    string(REPLACE "local: *;"
+        "ker_member_census_test_clear_net_admin; ker_member_census_test_restore_capabilities; ker_member_census_test_runtime_map_counts; local: *;"
+        ker_posix_test_export_map "${ker_posix_test_export_map}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
+        "${ker_posix_test_export_map}")
+    target_link_options(ker-posix-member-census-test-runtime PRIVATE -Wl,--no-undefined
+        "-Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map")
+    set_property(TARGET ker-posix-member-census-test-runtime APPEND PROPERTY LINK_DEPENDS
+        "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    target_link_libraries(ker-posix-member-census-test-runtime PRIVATE
+        "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_link_libraries(ker-member-census-runtime-test PRIVATE ker-posix-member-census-test-runtime)
     add_executable(ker-socket-broker-inherited-group-client
         tests/posix/socket-broker-inherited-group-client.c)
     target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
@@ -468,6 +525,28 @@ if(BUILD_TESTING)
     set_tests_properties(native-socket-broker-reuseport-failure-propagation PROPERTIES
         TIMEOUT 10 LABELS "native-tcp;fstack;socket-broker;reuseport;failure-propagation"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME native-socket-broker-member-census
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --group-broker "$<TARGET_FILE:ker-socket-broker-reuseport-group-fixture>"
+            --member-census-client "$<TARGET_FILE:ker-socket-broker-member-census-client>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-member-census PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;census")
+    add_test(NAME native-member-census-runtime
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --member-census-runtime-test "$<TARGET_FILE:ker-member-census-runtime-test>"
+            --member-census-test-library "$<TARGET_FILE:ker-posix-member-census-test-runtime>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-member-census-runtime PROPERTIES
+        TIMEOUT 120 LABELS "native-tcp;fstack;member-census;runtime")
     add_test(NAME native-socket-broker-generation-handoff
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"

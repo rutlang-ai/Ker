@@ -72,7 +72,7 @@ static int write_exact(struct ker_socket_client *client, int fd, const void *byt
 }
 
 static int exec_inherited_group_probe(const char *rpc_path, const char *helper,
-    const char *preload, int capability, bool duplicate)
+    const char *preload, int capability, bool duplicate, const char *kind)
 {
     int inherited = capability;
     if (duplicate) {
@@ -88,7 +88,7 @@ static int exec_inherited_group_probe(const char *rpc_path, const char *helper,
         snprintf(descriptor, sizeof(descriptor), "%d", inherited);
         if (setenv("KER_SOCKET_BROKER_PATH", rpc_path, 1) ||
             setenv("LD_PRELOAD", preload, 1)) _exit(120);
-        execl(helper, helper, rpc_path, descriptor, duplicate ? "0" : "1", (char *)NULL);
+        execl(helper, helper, rpc_path, descriptor, duplicate ? "0" : "1", kind, (char *)NULL);
         _exit(121);
     }
     int saved = errno;
@@ -101,6 +101,28 @@ static int exec_inherited_group_probe(const char *rpc_path, const char *helper,
     int status = 0;
     while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) { errno = ECHILD; return -1; }
+    return 0;
+}
+
+static int snapshot_live_member(struct ker_socket_client *client, int census,
+    int member, uint64_t expected_cookie)
+{
+    struct ker_socket_member_census_snapshot snapshot = {0};
+    int option = 0;
+    socklen_t option_length = sizeof(option);
+    uint64_t cookie = 0;
+    socklen_t cookie_length = sizeof(cookie);
+    if (ker_socket_client_getsockopt(client, member, SOL_SOCKET, SO_COOKIE,
+            &cookie, &cookie_length) || cookie_length != sizeof(cookie) ||
+        ker_socket_client_getsockopt(client, member, SOL_SOCKET, SO_ACCEPTCONN,
+            &option, &option_length) || option_length != sizeof(option) || !option ||
+        ker_socket_client_member_census_snapshot(client, census, &snapshot)) return -1;
+    if (snapshot.total != 1 ||
+        snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1 ||
+        snapshot.listener_cookie != expected_cookie || snapshot.listener_cookie != cookie) {
+        errno = EPROTO;
+        return -1;
+    }
     return 0;
 }
 
@@ -121,6 +143,87 @@ int main(int argc, char **argv)
     CHECK(ker_socket_client_reuseport_group_select(&client, denied_group, 0) == -1 && errno == EACCES);
     errno = 0;
     CHECK(ker_socket_client_reuseport_group_member(&client, denied_group, 0) == -1 && errno == EACCES);
+    errno = 0;
+    CHECK(ker_socket_client_member_census_create(&client, denied_group, 0) == -1 &&
+        errno == EACCES);
+    struct ker_socket_member_census_snapshot invalid_snapshot = {0};
+    errno = 0;
+    CHECK(ker_socket_client_member_census_snapshot(&client, denied_group,
+        &invalid_snapshot) == -1 && errno == ENOTSOCK);
+
+    /* Census capabilities contain immutable member metadata but retain no
+     * group/listener reference. Prove both live LISTEN rows, inherited opaque
+     * kind-5 exec behavior, and empty snapshots after the final group handles
+     * close while the census caps themselves remain open. */
+    struct sockaddr_in census_address = {.sin_family = AF_INET, .sin_port = htons(4099)};
+    CHECK(inet_pton(AF_INET, "198.18.0.2", &census_address.sin_addr) == 1);
+    int census_group = ker_socket_client_reuseport_group_create(&client, &census_address, 8);
+    CHECK(census_group >= 0);
+    int census_member0 = ker_socket_client_reuseport_group_member(&client, census_group, 0);
+    int census_member1 = ker_socket_client_reuseport_group_member(&client, census_group, 1);
+    CHECK(census_member0 >= 0 && census_member1 >= 0);
+    int census0 = ker_socket_client_member_census_create(&client, census_group, 0);
+    int census1 = ker_socket_client_member_census_create(&client, census_group, 1);
+    CHECK(census0 >= 0 && census1 >= 0);
+    CHECK(ker_socket_client_describe(&client, census0, &kind, &flags) == 0 &&
+        kind == KER_SOCKET_BROKER_MEMBER_CENSUS && flags == 0);
+    errno = 0;
+    CHECK(ker_socket_client_dup(&client, census0) == -1 && errno == EOPNOTSUPP);
+    errno = 0;
+    CHECK(ker_socket_client_reuseport_group_select(&client, census0, 0) == -1 &&
+        errno == ENOTSOCK);
+    errno = 0;
+    CHECK(ker_socket_client_member_census_create(&client, census_group, 2) == -1 &&
+        errno == EINVAL);
+    errno = 0;
+    CHECK(ker_socket_client_member_census_snapshot(&client, census_member0,
+        &invalid_snapshot) == -1 && errno == ENOTSOCK);
+    uint64_t census_cookie0 = 0, census_cookie1 = 0;
+    socklen_t census_cookie_length = sizeof(uint64_t);
+    CHECK(ker_socket_client_getsockopt(&client, census_member0, SOL_SOCKET, SO_COOKIE,
+        &census_cookie0, &census_cookie_length) == 0 && census_cookie_length == sizeof(uint64_t));
+    census_cookie_length = sizeof(uint64_t);
+    CHECK(ker_socket_client_getsockopt(&client, census_member1, SOL_SOCKET, SO_COOKIE,
+        &census_cookie1, &census_cookie_length) == 0 && census_cookie_length == sizeof(uint64_t));
+    CHECK(census_cookie0 && census_cookie1 && census_cookie0 != census_cookie1);
+    CHECK(snapshot_live_member(&client, census0, census_member0, census_cookie0) == 0);
+    CHECK(snapshot_live_member(&client, census1, census_member1, census_cookie1) == 0);
+    CHECK(snapshot_live_member(&client, census0, census_member0, census_cookie0) == 0);
+    CHECK(snapshot_live_member(&client, census1, census_member1, census_cookie1) == 0);
+    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], census0, false,
+        "census") == 0);
+    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], census1, true,
+        "census") == 0);
+    CHECK(close(census_member0) == 0 && close(census_member1) == 0 &&
+        close(census_group) == 0);
+    bool census_empty = false;
+    struct timespec census_pause = {.tv_sec = 0, .tv_nsec = 1000000};
+    for (unsigned attempt = 0; attempt < 5000; ++attempt) {
+        struct ker_socket_member_census_snapshot first_snapshot = {0};
+        struct ker_socket_member_census_snapshot second_snapshot = {0};
+        CHECK(ker_socket_client_member_census_snapshot(&client, census0,
+            &first_snapshot) == 0);
+        CHECK(ker_socket_client_member_census_snapshot(&client, census1,
+            &second_snapshot) == 0);
+        CHECK(first_snapshot.listener_cookie == census_cookie0 &&
+            second_snapshot.listener_cookie == census_cookie1);
+        CHECK((first_snapshot.total == 0 &&
+                first_snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 0) ||
+            (first_snapshot.total == 1 &&
+                first_snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1));
+        CHECK((second_snapshot.total == 0 &&
+                second_snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 0) ||
+            (second_snapshot.total == 1 &&
+                second_snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1));
+        if (first_snapshot.total == 0 && second_snapshot.total == 0) {
+            census_empty = true;
+            break;
+        }
+        (void)nanosleep(&census_pause, NULL);
+    }
+    CHECK(census_empty);
+    CHECK(close(census0) == 0 && close(census1) == 0);
+    puts("CENSUS_LIFETIME_OK"); fflush(stdout);
 
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4097)};
     CHECK(inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) == 1);
@@ -133,10 +236,10 @@ int main(int argc, char **argv)
     CHECK(close(prebound) == 0);
     int group = ker_socket_client_reuseport_group_create(&client, &address, 16);
     CHECK(group >= 0);
-    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], group, false) == 0);
+    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], group, false, "group") == 0);
     CHECK(ker_socket_client_describe(&client, group, &kind, &flags) == 0 &&
         kind == KER_SOCKET_BROKER_REUSEPORT_GROUP && flags == 0);
-    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], group, true) == 0);
+    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], group, true, "group") == 0);
     CHECK(ker_socket_client_describe(&client, group, &kind, &flags) == 0 &&
         kind == KER_SOCKET_BROKER_REUSEPORT_GROUP && flags == 0);
     errno = 0;
