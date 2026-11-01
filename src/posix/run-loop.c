@@ -2,6 +2,7 @@
 #include "run-loop.h"
 #include "lifecycle.h"
 #include "fd-table.h"
+#include "ff-admission-task.h"
 #include <ker/posix.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -92,6 +93,7 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
         pthread_mutex_lock(&lock);
     }
     pthread_mutex_unlock(&lock);
+    ker_ff_admission_task_runtime_shutdown();
     int result = ker_native_finalize();
     int workers = stop_workers();
     ker_run_control_close();

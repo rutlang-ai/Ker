@@ -115,7 +115,8 @@ static int peer_identity(struct ker_ff_admission_channel *channel)
 	int result = process_start_time(channel->peer_pid, &start_time);
 	if (result) return result;
 	if (start_time != channel->peer_start_time) return -ESTALE;
-	if (stat(path, &executable) != 0) return -errno;
+	if (syscall(SYS_newfstatat, AT_FDCWD, path, &executable, 0) != 0)
+		return -errno;
 	if (executable.st_dev != channel->peer_exe_device ||
 	    executable.st_ino != channel->peer_exe_inode) return -ESTALE;
 	return 0;
@@ -145,7 +146,7 @@ static int credentials_match(struct ker_ff_admission_channel *channel,
 				int received_fd;
 				memcpy(&received_fd, (unsigned char *)CMSG_DATA(control) + offset,
 				       sizeof(received_fd));
-				(void)close(received_fd);
+				(void)syscall(SYS_close, received_fd);
 			}
 			continue;
 		}
@@ -168,7 +169,8 @@ static int send_wire(struct ker_ff_admission_channel *channel,
 {
 	struct iovec vector = {.iov_base = (void *)wire, .iov_len = sizeof(*wire)};
 	struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1};
-	ssize_t sent = sendmsg(channel->fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+	ssize_t sent = syscall(SYS_sendmsg, channel->fd, &message,
+		MSG_DONTWAIT | MSG_NOSIGNAL);
 	if (sent < 0) return -errno;
 	return (size_t)sent == sizeof(*wire) ? 0 : -EIO;
 }
@@ -184,7 +186,8 @@ static int receive_wire(struct ker_ff_admission_channel *channel,
 		.msg_iov = &vector,
 		.msg_iovlen = 1,
 	};
-	ssize_t received = recvmsg(channel->fd, &message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+	ssize_t received = syscall(SYS_recvmsg, channel->fd, &message,
+		MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
 	if (received < 0) return -errno;
 	int result = credentials_match(channel, &message);
 	if (received == 0) return -ECONNRESET;
@@ -246,12 +249,15 @@ int ker_ff_admission_channel_pair(int endpoints[2])
 	int passcred = 1;
 	if (!endpoints) return -EINVAL;
 	endpoints[0] = endpoints[1] = -1;
-	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK,
-		0, endpoints) != 0) return -errno;
-	if (setsockopt(endpoints[0], SOL_SOCKET, SO_PASSCRED, &passcred, sizeof(passcred)) != 0 ||
-	    setsockopt(endpoints[1], SOL_SOCKET, SO_PASSCRED, &passcred, sizeof(passcred)) != 0) {
+	if (syscall(SYS_socketpair, AF_UNIX,
+		SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, endpoints) != 0)
+		return -errno;
+	if (syscall(SYS_setsockopt, endpoints[0], SOL_SOCKET, SO_PASSCRED,
+		&passcred, sizeof(passcred)) != 0 ||
+	    syscall(SYS_setsockopt, endpoints[1], SOL_SOCKET, SO_PASSCRED,
+		&passcred, sizeof(passcred)) != 0) {
 		int error = errno;
-		close(endpoints[0]); close(endpoints[1]);
+		syscall(SYS_close, endpoints[0]); syscall(SYS_close, endpoints[1]);
 		endpoints[0] = endpoints[1] = -1;
 		return -error;
 	}
@@ -273,20 +279,21 @@ int ker_ff_admission_channel_open(int fd, pid_t expected_peer,
 	if (fd < 0 || expected_peer <= 0 || !lease || !output) return -EINVAL;
 	*output = NULL;
 	length = sizeof(type);
-	if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0 ||
+	if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0 ||
 	    type != SOCK_SEQPACKET || length != sizeof(type)) return -EPROTO;
 	length = sizeof(passcred);
-	if (getsockopt(fd, SOL_SOCKET, SO_PASSCRED, &passcred, &length) != 0 ||
+	if (syscall(SYS_getsockopt, fd, SOL_SOCKET, SO_PASSCRED, &passcred, &length) != 0 ||
 	    !passcred || length != sizeof(passcred)) return -EPROTO;
 	int pidfd = (int)syscall(SYS_pidfd_open, expected_peer, 0);
 	if (pidfd < 0) return -errno;
 	result = process_start_time(expected_peer, &start_time);
 	int path_length = snprintf(path, sizeof(path), "/proc/%ld/exe", (long)expected_peer);
 	if (!result && (path_length <= 0 || (size_t)path_length >= sizeof(path))) result = -EOVERFLOW;
-	if (!result && stat(path, &executable) != 0) result = -errno;
-	if (result) { close(pidfd); return result; }
+	if (!result && syscall(SYS_newfstatat, AT_FDCWD, path, &executable, 0) != 0)
+		result = -errno;
+	if (result) { (void)syscall(SYS_close, pidfd); return result; }
 	channel = calloc(1, sizeof(*channel));
-	if (!channel) { close(pidfd); return -ENOMEM; }
+	if (!channel) { (void)syscall(SYS_close, pidfd); return -ENOMEM; }
 	channel->fd = fd;
 	channel->peer_pidfd = pidfd;
 	channel->peer_pid = expected_peer;
@@ -303,8 +310,8 @@ int ker_ff_admission_channel_open(int fd, pid_t expected_peer,
 void ker_ff_admission_channel_close(struct ker_ff_admission_channel *channel)
 {
 	if (!channel) return;
-	if (channel->fd >= 0) close(channel->fd);
-	if (channel->peer_pidfd >= 0) close(channel->peer_pidfd);
+	if (channel->fd >= 0) (void)syscall(SYS_close, channel->fd);
+	if (channel->peer_pidfd >= 0) (void)syscall(SYS_close, channel->peer_pidfd);
 	free(channel);
 }
 
@@ -392,6 +399,8 @@ int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 	if (wire.command < KER_FF_ADMISSION_RESULT ||
 	    wire.command > KER_FF_ADMISSION_FINALIZED || wire.deadline_ns ||
 	    wire.allowed > 1 || wire.created > 1 || (wire.created && !wire.allowed) ||
+	    (wire.command != KER_FF_ADMISSION_RESULT &&
+	     (wire.allowed || wire.created)) ||
 	    wire.status > 0 || wire.status < -4095 ||
 	    (wire.status && (wire.allowed || wire.created)) ||
 	    memcmp(&wire.key, &(struct ker_ff_admission_key){0}, sizeof(wire.key)) ||

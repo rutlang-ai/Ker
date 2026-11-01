@@ -15,9 +15,9 @@ The in-process `ker-posix` API still isolates its initialized kernel from
 post-init process creation. [`lkl-channel.c`](../src/posix/lkl-channel.c)
 registers an at-fork child handler that exits with status 125;
 [`posix-process.c`](../src/posix/posix-process.c) rejects `posix_spawn`,
-`system` and `popen` after initialization. A separate authenticated
+`system` and `popen` after initialization. The separate authenticated
 [native socket broker](native-socket-broker.md) and its
-[POSIX caller adapter](native-socket-preload.md) now transfer selected original
+[POSIX caller adapter](native-socket-preload.md) support selected original
 Linux TCP socket/epoll capabilities across frontend fork/exec. The verified
 no-FF Nginx lifecycle exercises that bounded caller path. It does not initialize
 the F-Stack Nginx module or provide its full application runtime.
@@ -68,6 +68,19 @@ tests keep the listener live through zero. This is not the original shell's
 complete census, fault or lifecycle matrix and does not change the blocked
 inventory entry.
 
+The private C16 fixture attaches one authenticated FF owner and one IPv4
+listener to an independently running original-Linux broker. It arms the
+broker's marked NFQUEUE admission task before `listen`, pumps the unchanged
+flow-map callback on the FF event-loop owner thread, holds real TAP SYN-ACKs
+until a map verdict, and rejects a real full-map request through the original
+kernel. Its cases include exact owner request revocation, a stopped owner with
+independent broker progress and deadline enforcement, duplicate SYNs,
+authenticated endpoint rejection, and owner/listener cleanup. Errors remain
+quarantined and fail-closed; this fixture does not prove healthy recovery.
+It does not bind the production Nginx dispatcher or generation FSM, and does
+not enable public `graceful_reload=1`; all six C16 controls are narrower than
+the original shell matrix and leave this source entry blocked.
+
 The bounded FF runtime now implements `ff_socket_drain_count` over authenticated
 broker capabilities registered in the current process. It counts application
 FD aliases individually and queries live `SO_ACCEPTCONN`, so an inherited
@@ -107,10 +120,12 @@ survives session reconnect and `exec`; owner marks remain stable for the live
 process. The same-process native broker is within the trusted boundary. The
 check does not defend against privileged code with direct access to sockets in
 the same LKL instance and the ability to set their marks. The
-profile excludes sendfile and
-does not enable graceful reload. It still requires generation admission
-quiescence and the original F-Stack FSM before a zero result can drive a
-promotion decision; the source inventory entry remains blocked.
+profile excludes sendfile and does not enable graceful reload. The private
+C16 fixture exercises one bounded admission window but is not production Nginx
+generation binding. The source still requires end-to-end generation admission,
+dispatcher/FSM integration, healthy recovery, the remaining fault matrix and
+cleanup before a zero result can drive promotion; the source inventory entry
+remains blocked.
 
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
@@ -124,10 +139,11 @@ runtime limits, not missing test-host setup.
 
 Keep packet and connection behavior in the one authoritative original Linux
 kernel socket runtime already used by the broker. The remaining adapter work
-must connect the FF-enabled Nginx caller to that runtime, restore its executable
-FD offset at the right boundaries, and provide real caller-side FF lifecycle,
-event and drain behavior. The real Nginx caller must run its signal-driven FSM
-while workers change. Qualification must observe actual FSM transitions,
+must bind the production FF-enabled Nginx caller to broker-owned admission and
+generation services, restore its executable FD offset at the right boundaries,
+and provide real caller-side FF lifecycle, event and drain behavior. The real
+Nginx caller must run its signal-driven FSM while workers change. Qualification
+must observe actual FSM transitions,
 Nginx/runtime logs, counters, live connection results and cleanup side effects,
 rather than fabricated oracle text or a raw-record queue substitute.
 
