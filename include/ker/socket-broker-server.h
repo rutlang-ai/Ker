@@ -29,7 +29,10 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
  * callers must quiesce concurrent use during transfer.
  * Host descriptors, descriptor-table kinds other than the
  * requested socket/epoll kind, and non-INET/non-stream/non-datagram sockets
- * are rejected. rights is a server-enforced mask.
+ * are rejected. Sockets with enabled nonzero SO_LINGER are rejected because
+ * their final close could block the broker loop. The trusted caller must not
+ * mutate the shared open-file description through an outside alias while it
+ * is adopted. rights is a server-enforced mask.
  * The returned descriptor is an opaque host pipe write-end reference. */
 int ker_socket_broker_server_adopt(struct ker_socket_broker_server *server,
     int native_fd, enum ker_socket_broker_kind kind, uint32_t rights);

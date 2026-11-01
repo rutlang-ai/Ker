@@ -181,6 +181,42 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
     CHECK(ker_socket_client_getsockopt(&client, listener, SOL_SOCKET, SO_TYPE,
         &option_value, &option_length) == 0);
     CHECK(option_length == sizeof(option_value) && option_value == SOCK_STREAM);
+    struct linger saved_linger = {0}, requested_linger = {.l_onoff = 1, .l_linger = 0};
+    socklen_t linger_length = sizeof(saved_linger);
+    CHECK(ker_socket_client_getsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &saved_linger, &linger_length) == 0);
+    CHECK(saved_linger.l_onoff == 0);
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &requested_linger, sizeof(requested_linger)) == 0);
+    linger_length = sizeof(saved_linger);
+    CHECK(ker_socket_client_getsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &saved_linger, &linger_length) == 0);
+    CHECK(saved_linger.l_onoff == 1 && saved_linger.l_linger == 0);
+    requested_linger.l_onoff = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &requested_linger, sizeof(requested_linger)) == 0);
+    requested_linger.l_onoff = 1; requested_linger.l_linger = 30;
+    errno = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &requested_linger, sizeof(requested_linger)) == -1 && errno == EOPNOTSUPP);
+    requested_linger.l_linger = -1;
+    errno = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &requested_linger, sizeof(requested_linger)) == -1 && errno == EOPNOTSUPP);
+    struct { struct linger value; unsigned char canary[8]; } oversized_linger = {
+        .value = {.l_onoff = 1, .l_linger = 30}, .canary = {1, 2, 3, 4, 5, 6, 7, 8}};
+    errno = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &oversized_linger, sizeof(oversized_linger)) == -1 && errno == EOPNOTSUPP);
+    oversized_linger.value.l_linger = -1;
+    errno = 0;
+    CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &oversized_linger, sizeof(oversized_linger)) == -1 && errno == EOPNOTSUPP);
+    CHECK(oversized_linger.canary[0] == 1 && oversized_linger.canary[7] == 8);
+    linger_length = sizeof(saved_linger);
+    CHECK(ker_socket_client_getsockopt(&client, listener, SOL_SOCKET, SO_LINGER,
+        &saved_linger, &linger_length) == 0);
+    CHECK(saved_linger.l_onoff == 0 && saved_linger.l_linger == 0);
     option_value = 1;
     CHECK(ker_socket_client_setsockopt(&client, listener, SOL_SOCKET, SO_KEEPALIVE,
         &option_value, sizeof(option_value)) == 0);

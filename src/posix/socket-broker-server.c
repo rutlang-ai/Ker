@@ -108,6 +108,15 @@ static bool socket_option_supported(int level, int option, bool setting)
     return false;
 }
 
+static bool socket_linger_is_nonblocking(const void *value, uint32_t length)
+{
+    /* Original Linux consumes the structure prefix when optlen is larger. */
+    if (length < sizeof(struct linger)) return true;
+    struct linger linger_value;
+    memcpy(&linger_value, value, sizeof(linger_value));
+    return !linger_value.l_onoff || linger_value.l_linger == 0;
+}
+
 static uint32_t required_right(uint16_t operation)
 {
     switch (operation) {
@@ -216,6 +225,12 @@ int ker_socket_broker_server_adopt(struct ker_socket_broker_server *server,
             length != sizeof(type) || (type != SOCK_STREAM && type != SOCK_DGRAM)) {
             return fail(EPROTONOSUPPORT);
         }
+        struct linger linger_value = {0};
+        length = sizeof(linger_value);
+        if (getsockopt(native_fd, SOL_SOCKET, SO_LINGER, &linger_value, &length)) return -1;
+        if (length != sizeof(linger_value)) return fail(EPROTO);
+        if (linger_value.l_onoff && linger_value.l_linger != 0)
+            return fail(EOPNOTSUPP);
         original_flags = fcntl(native_fd, F_GETFL);
         if (original_flags < 0) return -1;
         if (!(original_flags & O_NONBLOCK) && fcntl(native_fd, F_SETFL, original_flags | O_NONBLOCK) < 0) {
@@ -479,6 +494,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct ker_sb_option args; memcpy(&args, input, sizeof(args));
         if (args.length != input_length - sizeof(args)) return -EPROTO;
         if (!socket_option_supported(args.level, args.option, true)) return -EOPNOTSUPP;
+        if (args.level == SOL_SOCKET && args.option == SO_LINGER &&
+            !socket_linger_is_nonblocking(input + sizeof(args), args.length)) return -EOPNOTSUPP;
         int call_result = setsockopt(lookup_cap(server, fds[0])->native_fd,
             args.level, args.option, input + sizeof(args), args.length);
         *result = call_result < 0 ? -errno : call_result; return 0;

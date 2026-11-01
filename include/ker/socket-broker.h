@@ -68,7 +68,8 @@ int ker_socket_client_getpeername(struct ker_socket_client *client, int cap_fd,
 /* Socket options are restricted to flat, explicitly supported values:
  * SOL_SOCKET REUSEADDR, REUSEPORT, KEEPALIVE, RCVBUF, SNDBUF, RCVLOWAT,
  * SNDLOWAT, LINGER, RCVTIMEO and SNDTIMEO for set/get; TYPE, ERROR, DOMAIN,
- * PROTOCOL and ACCEPTCONN for get only; TCP NODELAY, CORK, DEFER_ACCEPT,
+ * PROTOCOL and ACCEPTCONN for get only; SO_LINGER accepts only disabled linger
+ * or enabled linger with zero duration; TCP NODELAY, CORK, DEFER_ACCEPT,
  * KEEPIDLE, KEEPINTVL, KEEPCNT and FASTOPEN; and IPv6 V6ONLY. Unknown and
  * pointer- or descriptor-bearing options return EOPNOTSUPP before reaching
  * original Linux. Allowed flat options retain original Linux validation. */

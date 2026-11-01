@@ -30,7 +30,10 @@ Both directions also support `IPPROTO_TCP` `TCP_NODELAY`, `TCP_CORK`,
 whose values contain pointers or descriptor numbers (including packet-filter
 programs and reuse-port BPF descriptors) return `EOPNOTSUPP` before original
 Linux is called. For supported options, original Linux still validates the
-value length and contents.
+value length and contents. `SO_LINGER` is restricted to disabled mode or
+enabled mode with zero duration; enabled nonzero durations return
+`EOPNOTSUPP` before changing original Linux state because the broker's final
+descriptor close must not block its request loop.
 
 ## Capability and session lifetime
 
@@ -63,7 +66,10 @@ the distinct epoll-registration behavior of native POSIX `dup()`.
 The broker caller must quiesce socket users while adopting descriptors and
 before the `ker_posix_run()` loop stops. Adoption requires an exact Ker
 descriptor-table socket or epoll kind; host descriptors are rejected. Socket
-adoption accepts only INET stream/datagram descriptors. Capabilities are
+adoption accepts only INET stream/datagram descriptors with nonblocking close
+behavior; an existing socket with enabled nonzero `SO_LINGER` is rejected.
+Because socket options apply to a shared open file description, the trusted
+caller must not mutate an adopted socket through an outside alias. Capabilities are
 transferred by the trusted caller; this API does not implement an application
 supervisor, daemonization, generic file descriptor forwarding, or a complete
 POSIX compatibility layer.

@@ -2,6 +2,7 @@
 #include <ker/socket-broker-server.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/epoll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,23 @@ int main(int argc, char **argv)
     CHECK(ker_socket_broker_server_adopt(server, host_epoll, KER_SOCKET_BROKER_EPOLL,
         KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_WAIT) == -1 && errno == EBADF);
     (void)syscall(SYS_close, host_epoll);
+    int linger_probe = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(linger_probe >= 0);
+    struct linger blocking_linger = {.l_onoff = 1, .l_linger = 3};
+    CHECK(setsockopt(linger_probe, SOL_SOCKET, SO_LINGER,
+        &blocking_linger, sizeof(blocking_linger)) == 0);
+    int probe_flags = fcntl(linger_probe, F_GETFL);
+    CHECK(probe_flags >= 0 && !(probe_flags & O_NONBLOCK));
+    errno = 0;
+    CHECK(ker_socket_broker_server_adopt(server, linger_probe, KER_SOCKET_BROKER_SOCKET,
+        KER_SOCKET_BROKER_ALL) == -1 && errno == EOPNOTSUPP);
+    struct linger observed_linger = {0};
+    socklen_t linger_length = sizeof(observed_linger);
+    CHECK(getsockopt(linger_probe, SOL_SOCKET, SO_LINGER,
+        &observed_linger, &linger_length) == 0);
+    CHECK(observed_linger.l_onoff == 1 && observed_linger.l_linger == 3);
+    CHECK(fcntl(linger_probe, F_GETFL) == probe_flags);
+    CHECK(close(linger_probe) == 0);
     int listener = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     CHECK(listener >= 0);
     int one = 1;
