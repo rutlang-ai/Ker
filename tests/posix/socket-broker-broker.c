@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <sys/epoll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,7 @@
 struct bootstrap_record { uint32_t magic; uint16_t version; uint16_t count; };
 
 static int send_capabilities(struct ker_socket_broker_server *server, const char *path,
-    int listener, int epoll)
+    int listener, int epoll, int restricted_listener)
 {
     int fd = (int)syscall(SYS_socket, AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
@@ -28,16 +29,18 @@ static int send_capabilities(struct ker_socket_broker_server *server, const char
     if (!length || length > sizeof(address.sun_path) - 1) { (void)syscall(SYS_close, fd); errno = ENAMETOOLONG; return -1; }
     memcpy(address.sun_path, path, length + 1);
     if (syscall(SYS_connect, fd, &address, sizeof(address))) { int e = errno; (void)syscall(SYS_close, fd); errno = e; return -1; }
-    struct bootstrap_record record = {.magic = UINT32_C(0x4b534243), .version = 1, .count = 2};
-    int fds[2] = {listener, epoll};
+    struct bootstrap_record record = {.magic = UINT32_C(0x4b534243), .version = 1,
+        .count = restricted_listener >= 0 ? 3 : 2};
+    int fds[3] = {listener, epoll, restricted_listener};
+    size_t fd_bytes = (size_t)record.count * sizeof(int);
     char control[CMSG_SPACE(sizeof(fds))] = {0};
     struct iovec iov = {.iov_base = &record, .iov_len = sizeof(record)};
     struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
         .msg_control = control, .msg_controllen = sizeof(control)};
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
     cmsg->cmsg_level = SOL_SOCKET; cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(fds));
-    memcpy(CMSG_DATA(cmsg), fds, sizeof(fds));
+    cmsg->cmsg_len = CMSG_LEN(fd_bytes);
+    memcpy(CMSG_DATA(cmsg), fds, fd_bytes);
     ssize_t sent = syscall(SYS_sendmsg, fd, &message, MSG_NOSIGNAL);
     if (sent != sizeof(record)) {
         int error = sent < 0 ? errno : EIO;
@@ -78,7 +81,10 @@ static int send_capabilities(struct ker_socket_broker_server *server, const char
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) { fprintf(stderr, "usage: broker <rpc-path> <bootstrap-path>\n"); return 2; }
+    if ((argc != 3 && argc != 4) || (argc == 4 && strcmp(argv[3], "observer"))) {
+        fprintf(stderr, "usage: broker <rpc-path> <bootstrap-path> [observer]\n"); return 2;
+    }
+    bool observer_mode = argc == 4;
     struct ker_socket_broker_server *server = ker_socket_broker_server_create(argv[1]);
     CHECK(server != NULL);
     int host_epoll = (int)syscall(SYS_epoll_create1, EPOLL_CLOEXEC);
@@ -125,9 +131,18 @@ int main(int argc, char **argv)
     int epoll_cap = ker_socket_broker_server_adopt(server, epoll,
         KER_SOCKET_BROKER_EPOLL, KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_WAIT);
     CHECK(epoll_cap >= 0);
-    CHECK(send_capabilities(server, argv[2], listener_cap, epoll_cap) == 0);
+    int restricted_cap = -1;
+    if (observer_mode) {
+        int restricted_listener = fcntl(listener, F_DUPFD_CLOEXEC, 0);
+        CHECK(restricted_listener >= 0);
+        restricted_cap = ker_socket_broker_server_adopt(server, restricted_listener,
+            KER_SOCKET_BROKER_SOCKET, KER_SOCKET_BROKER_READ | KER_SOCKET_BROKER_NAME);
+        CHECK(restricted_cap >= 0);
+    }
+    CHECK(send_capabilities(server, argv[2], listener_cap, epoll_cap, restricted_cap) == 0);
     (void)syscall(SYS_close, listener_cap);
     (void)syscall(SYS_close, epoll_cap);
+    if (restricted_cap >= 0) (void)syscall(SYS_close, restricted_cap);
     puts("BROKER_READY"); fflush(stdout);
     int result = ker_socket_broker_server_run(server, 1);
     if (result) perror("ker_socket_broker_server_run");

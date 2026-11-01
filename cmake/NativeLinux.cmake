@@ -163,12 +163,13 @@ set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
 set(KER_FSTACK_NGINX_BINARY "" CACHE FILEPATH
     "Pinned --with-ff_module nginx executable for the bounded Ker runtime profile")
 
-add_library(ker-socket-broker-server STATIC src/posix/socket-broker-server.c)
+add_library(ker-socket-broker-server STATIC
+    src/posix/socket-broker-server.c src/posix/tcp-observer-diag-parse.c)
 set_target_properties(ker-socket-broker-server PROPERTIES EXPORT_NAME socket-broker-server)
 target_include_directories(ker-socket-broker-server PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-    PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_include_directories(ker-socket-broker-server PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
 target_compile_features(ker-socket-broker-server PUBLIC c_std_11)
 target_compile_options(ker-socket-broker-server PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
@@ -194,6 +195,30 @@ target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_p
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
+    add_executable(ker-tcp-observer-diag-parser-test
+        tests/posix/tcp-observer-diag-parser.c src/posix/tcp-observer-diag-parse.c)
+    target_include_directories(ker-tcp-observer-diag-parser-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_options(ker-tcp-observer-diag-parser-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME tcp-observer-diag-parser-validation
+        COMMAND "$<TARGET_FILE:ker-tcp-observer-diag-parser-test>")
+    set_tests_properties(tcp-observer-diag-parser-validation PROPERTIES
+        LABELS "native-tcp;socket-broker;diag-parser")
+    add_executable(ker-tcp-observer-diag-layout-test
+        tests/posix/tcp-observer-diag-layout.c)
+    target_include_directories(ker-tcp-observer-diag-layout-test SYSTEM PRIVATE
+        "${ker_native_source}/include/uapi" "${ker_native_source}/include"
+        "${ker_native_kernel}/arch/lkl/include/generated/uapi"
+        "${ker_native_source}/arch/lkl/include/uapi" "${ker_native_source}/arch/lkl/include")
+    target_compile_definitions(ker-tcp-observer-diag-layout-test PRIVATE __KERNEL__)
+    target_include_directories(ker-tcp-observer-diag-layout-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix" "${PROJECT_SOURCE_DIR}/include")
+    target_compile_options(ker-tcp-observer-diag-layout-test PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME tcp-observer-diag-pinned-layout
+        COMMAND "$<TARGET_FILE:ker-tcp-observer-diag-layout-test>")
+    set_tests_properties(tcp-observer-diag-pinned-layout PROPERTIES
+        LABELS "native-tcp;socket-broker;diag-layout")
+
     # Resolve fixture EAL drivers from the configured DPDK installation rather
     # than assuming a developer prefix or PMD ABI-versioned filename.
     get_filename_component(ker_session_pkgconfig_dir "${KER_DPDK_PKGCONFIG_DIR}" REALPATH)
@@ -354,6 +379,12 @@ if(BUILD_TESTING)
         tests/posix/socket-broker-inherited-group-client.c)
     target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
     target_compile_options(ker-socket-broker-inherited-group-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-tcp-observer-client-test tests/posix/tcp-observer-client.c)
+    target_include_directories(ker-tcp-observer-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_definitions(ker-tcp-observer-client-test PRIVATE
+        KER_TCP_OBSERVER_PRIVATE_TEST=1)
+    target_link_libraries(ker-tcp-observer-client-test PRIVATE ker-socket-client)
+    target_compile_options(ker-tcp-observer-client-test PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-socket-broker-preload-client-test
         tests/posix/socket-broker-preload-client.c)
     target_compile_features(ker-socket-broker-preload-client-test PRIVATE c_std_11)
@@ -416,6 +447,17 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-reuseport-group PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;cbpf")
+    add_test(NAME native-tcp-socket-observer
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --observer-client "$<TARGET_FILE:ker-tcp-observer-client-test>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-tcp-socket-observer PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;tcp-observer")
     add_test(NAME native-socket-broker-posix-preload
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"

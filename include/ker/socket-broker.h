@@ -22,7 +22,16 @@ extern "C" {
 enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_SOCKET = 1,
     KER_SOCKET_BROKER_EPOLL = 2,
-    KER_SOCKET_BROKER_REUSEPORT_GROUP = 3
+    KER_SOCKET_BROKER_REUSEPORT_GROUP = 3,
+    KER_SOCKET_BROKER_TCP_OBSERVER = 4
+};
+
+struct ker_socket_tcp_observer_snapshot {
+    uint64_t cookie;
+    uint32_t receive_queue;
+    uint32_t send_queue;
+    uint8_t state;
+    uint8_t present;
 };
 
 struct ker_socket_client {
@@ -77,7 +86,8 @@ int ker_socket_client_getpeername(struct ker_socket_client *client, int cap_fd,
 /* Socket options are restricted to flat, explicitly supported values:
  * SOL_SOCKET REUSEADDR, REUSEPORT, KEEPALIVE, RCVBUF, SNDBUF, RCVLOWAT,
  * SNDLOWAT, LINGER, RCVTIMEO and SNDTIMEO for set/get; TYPE, ERROR, DOMAIN,
- * PROTOCOL and ACCEPTCONN for get only; SO_LINGER accepts only disabled linger
+ * PROTOCOL, ACCEPTCONN and SO_COOKIE for get only (SO_COOKIE requires an exact
+ * uint64_t value); SO_LINGER accepts only disabled linger
  * or enabled linger with zero duration; TCP NODELAY, CORK, DEFER_ACCEPT,
  * KEEPIDLE, KEEPINTVL, KEEPCNT and FASTOPEN; and IPv6 V6ONLY. Unknown and
  * pointer- or descriptor-bearing options return EOPNOTSUPP before reaching
@@ -86,6 +96,14 @@ int ker_socket_client_setsockopt(struct ker_socket_client *client, int cap_fd,
     int level, int option, const void *value, socklen_t length);
 int ker_socket_client_getsockopt(struct ker_socket_client *client, int cap_fd,
     int level, int option, void *value, socklen_t *length);
+
+/* A TCP observer is a read-only metadata capability for one connected IPv4
+ * TCP socket. It retains neither the socket descriptor nor its open-file
+ * description. Snapshot fields come from original Linux INET_DIAG. */
+int ker_socket_client_tcp_observer_create(struct ker_socket_client *client,
+    int socket_cap);
+int ker_socket_client_tcp_observer_snapshot(struct ker_socket_client *client,
+    int observer_cap, struct ker_socket_tcp_observer_snapshot *snapshot);
 
 int ker_socket_client_epoll_create1(struct ker_socket_client *client, int flags);
 int ker_socket_client_epoll_ctl(struct ker_socket_client *client, int epoll_cap,

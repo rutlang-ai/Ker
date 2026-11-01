@@ -23,7 +23,8 @@ Socket-option RPCs accept only explicitly supported flat values. Both
 `getsockopt` and `setsockopt` support `SOL_SOCKET` `SO_REUSEADDR`,
 `SO_REUSEPORT`, `SO_KEEPALIVE`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_RCVLOWAT`,
 `SO_SNDLOWAT`, `SO_LINGER`, `SO_RCVTIMEO`, and `SO_SNDTIMEO`; get-only options
-are `SO_TYPE`, `SO_ERROR`, `SO_DOMAIN`, `SO_PROTOCOL`, and `SO_ACCEPTCONN`.
+are `SO_TYPE`, `SO_ERROR`, `SO_DOMAIN`, `SO_PROTOCOL`, `SO_ACCEPTCONN`, and
+`SO_COOKIE`. `SO_COOKIE` requires an exact `uint64_t` buffer and cannot be set.
 Both directions also support `IPPROTO_TCP` `TCP_NODELAY`, `TCP_CORK`,
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT`,
 `TCP_FASTOPEN`, and `IPPROTO_IPV6` `IPV6_V6ONLY`. Unknown options and options
@@ -123,6 +124,32 @@ connection is refused after all group/member capabilities close, while the
 accepted stream completes and original-Linux buffer accounting returns to
 zero. The test does not claim IPv6 group selection, arbitrary BPF programs,
 Nginx/F-Stack lifecycle behavior, or Ker-owned TCP behavior.
+## TCP observer
+
+Protocol version 2 adds a typed, read-only TCP observer capability through
+`ker_socket_client_tcp_observer_create()` and
+`ker_socket_client_tcp_observer_snapshot()`. Creation requires both `NAME` and
+`OPTION` rights on a socket capability, then accepts only a connected IPv4
+`SOCK_STREAM` using `IPPROTO_TCP`. It records the original Linux `SO_COOKIE`
+and local/peer IPv4 tuple. The returned observer has `READ` rights, describes
+as kind 4 with zero status flags, and cannot be duplicated through the SDK.
+Ordinary host `dup()` still only adds another reference to that observer pipe.
+
+An observer stores metadata only. It holds no TCP descriptor, open-file
+description, or group reference, so closing the final TCP capability follows
+the socket's ordinary Linux close and FIN behavior while the observer remains
+available. Each snapshot opens a temporary broker-owned original-Linux
+`NETLINK_SOCK_DIAG` socket and sends one non-dump `SOCK_DIAG_BY_FAMILY`
+request keyed by that stored cookie and tuple. The returned `state`, receive
+queue, and send queue are instantaneous `inet_diag_msg` values. This operation
+does not modify the socket or count generations, SYN-received requests, or all
+TCP connections.
+
+A validated exact kernel `NLMSG_ERROR` with `-ENOENT` reports `present=0`.
+Cookie mismatch (`ESTALE`), unavailable netlink results, truncation, and
+malformed replies remain errors; none is treated as an empty census. This
+initial observer surface is limited to connected IPv4 TCP sockets and is not a
+per-generation or full-table F-Stack graceful-reload census.
 
 ## Scope
 

@@ -240,7 +240,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
     bool requires_cap = operation == KER_SB_SOCKET || operation == KER_SB_ACCEPT4 ||
         operation == KER_SB_EPOLL_CREATE1 || operation == KER_SB_DUP ||
         operation == KER_SB_REUSEPORT_GROUP_CREATE ||
-        operation == KER_SB_REUSEPORT_GROUP_MEMBER;
+        operation == KER_SB_REUSEPORT_GROUP_MEMBER ||
+        operation == KER_SB_TCP_OBSERVER_CREATE;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -248,7 +249,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_EPOLL_CTL || operation == KER_SB_DESCRIBE ||
         operation == KER_SB_GETFL || operation == KER_SB_SETFL ||
         operation == KER_SB_FIONBIO || operation == KER_SB_FIONREAD;
-    requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT;
+    requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT ||
+        operation == KER_SB_TCP_OBSERVER_SNAPSHOT;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -454,10 +456,41 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
     if (result < 0) return -1;
     if (received != sizeof(output) || output.flags < 0 ||
         (output.kind != KER_SOCKET_BROKER_SOCKET && output.kind != KER_SOCKET_BROKER_EPOLL &&
-         output.kind != KER_SOCKET_BROKER_REUSEPORT_GROUP))
+         output.kind != KER_SOCKET_BROKER_REUSEPORT_GROUP &&
+         output.kind != KER_SOCKET_BROKER_TCP_OBSERVER))
         return fail(EPROTO);
     *kind = (enum ker_socket_broker_kind)output.kind;
     *status_flags = output.flags;
+    return 0;
+}
+
+int ker_socket_client_tcp_observer_create(struct ker_socket_client *client,
+    int socket_cap)
+{
+    int observer_cap = -1;
+    if (socket_call(client, socket_cap, KER_SB_TCP_OBSERVER_CREATE, NULL, 0,
+            NULL, 0, &observer_cap, NULL) < 0) return -1;
+    return observer_cap;
+}
+
+int ker_socket_client_tcp_observer_snapshot(struct ker_socket_client *client,
+    int observer_cap, struct ker_socket_tcp_observer_snapshot *snapshot)
+{
+    if (!snapshot) return fail(EINVAL);
+    struct ker_sb_tcp_observer_snapshot wire = {0};
+    int received = 0;
+    if (socket_call(client, observer_cap, KER_SB_TCP_OBSERVER_SNAPSHOT, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire) || wire.reserved[0] || wire.reserved[1] ||
+        !wire.cookie || wire.present > 1 ||
+        (wire.present && (!wire.state || wire.state > 13)) ||
+        (!wire.present && (wire.state || wire.receive_queue || wire.send_queue)))
+        return fail(EPROTO);
+    snapshot->cookie = wire.cookie;
+    snapshot->present = wire.present;
+    snapshot->state = wire.state;
+    snapshot->receive_queue = wire.receive_queue;
+    snapshot->send_queue = wire.send_queue;
     return 0;
 }
 
