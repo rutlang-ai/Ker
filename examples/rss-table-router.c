@@ -63,19 +63,12 @@ static uint32_t independent_hash_key(const uint8_t *key, unsigned key_length,
     }
     return result;
 }
-static int advisory_apply4(uint8_t *packet, uint16_t *queue)
+static int advisory_classify4(const uint8_t *packet, uint16_t *queue)
 {
     uint32_t remote, local;
     uint16_t remote_port, local_port;
     memcpy(&remote, packet + 12, 4); memcpy(&local, packet + 16, 4);
     memcpy(&remote_port, packet + 20, 2); memcpy(&local_port, packet + 22, 2);
-    uint16_t candidate = ntohs(local_port);
-    int result = example_rss_advisory_suggest4(remote, local, remote_port,
-        &candidate, 10000, 65535);
-    if (result == 0) {
-        local_port = htons(candidate);
-        memcpy(packet + 22, &local_port, 2);
-    }
     size_t key_length;
     const uint8_t *key = example_rss_advisory_key(&key_length);
     CHECK(key && key_length == 40);
@@ -86,19 +79,12 @@ static int advisory_apply4(uint8_t *packet, uint16_t *queue)
     CHECK(original_owner == (oracle_queue == example_rss_advisory_own_queue()));
     *queue = (uint16_t)(original_owner ? example_rss_advisory_own_queue() :
         (example_rss_advisory_own_queue() + 1) % example_rss_advisory_queue_count());
-    return result;
+    return 0;
 }
-static int advisory_apply6(uint8_t *packet, uint16_t *queue)
+static int advisory_classify6(const uint8_t *packet, uint16_t *queue)
 {
     uint16_t remote_port, local_port;
     memcpy(&remote_port, packet + 40, 2); memcpy(&local_port, packet + 42, 2);
-    uint16_t candidate = ntohs(local_port);
-    int result = example_rss_advisory_suggest6(packet + 8, packet + 24, remote_port,
-        &candidate, 10000, 65535);
-    if (result == 0) {
-        local_port = htons(candidate);
-        memcpy(packet + 42, &local_port, 2);
-    }
     size_t key_length;
     const uint8_t *key = example_rss_advisory_key(&key_length);
     CHECK(key && key_length == 40);
@@ -110,6 +96,40 @@ static int advisory_apply6(uint8_t *packet, uint16_t *queue)
     CHECK(original_owner == (oracle_queue == example_rss_advisory_own_queue()));
     *queue = (uint16_t)(original_owner ? example_rss_advisory_own_queue() :
         (example_rss_advisory_own_queue() + 1) % example_rss_advisory_queue_count());
+    return 0;
+}
+static int advisory_apply4(uint8_t *packet, uint16_t *queue)
+{
+    uint32_t remote, local;
+    uint16_t remote_port, local_port;
+    memcpy(&remote, packet + 12, 4); memcpy(&local, packet + 16, 4);
+    memcpy(&remote_port, packet + 20, 2); memcpy(&local_port, packet + 22, 2);
+    uint16_t candidate = ntohs(local_port);
+    int result = example_rss_advisory_suggest4(remote, local, remote_port,
+        &candidate, 10000, 65535);
+    if (result == 0) {
+        uint32_t candidate_value = candidate;
+        CHECK(candidate_value >= 10000 && candidate_value <= UINT16_MAX);
+        local_port = htons(candidate);
+        memcpy(packet + 22, &local_port, 2);
+    }
+    CHECK(advisory_classify4(packet, queue) == 0);
+    return result;
+}
+static int advisory_apply6(uint8_t *packet, uint16_t *queue)
+{
+    uint16_t remote_port, local_port;
+    memcpy(&remote_port, packet + 40, 2); memcpy(&local_port, packet + 42, 2);
+    uint16_t candidate = ntohs(local_port);
+    int result = example_rss_advisory_suggest6(packet + 8, packet + 24, remote_port,
+        &candidate, 10000, 65535);
+    if (result == 0) {
+        uint32_t candidate_value = candidate;
+        CHECK(candidate_value >= 10000 && candidate_value <= UINT16_MAX);
+        local_port = htons(candidate);
+        memcpy(packet + 42, &local_port, 2);
+    }
+    CHECK(advisory_classify6(packet, queue) == 0);
     return result;
 }
 static void send_advisory_record(struct rte_mempool *pool, const uint16_t ports[2],
@@ -158,14 +178,56 @@ static void advisory_consumer(struct rte_mempool *pool)
     CHECK(inet_pton(AF_INET, "198.51.100.2", &local4) == 1);
     CHECK(inet_pton(AF_INET6, "2001:db8::1", remote6) == 1);
     CHECK(inet_pton(AF_INET6, "2001:db8::2", local6) == 1);
+
+    /* Ready-context range controls must reach the original guards, not the
+     * earlier unready or thash_adjust-disabled exits. Errors preserve the
+     * full synthetic reply bytes; the original predicate still routes them.
+     * A valid successor candidate is then independently checked and sent. */
+    CHECK(example_rss_advisory_enable(1, 1) == 0);
+    uint16_t remote_port = htons(53), local_port = htons(23456), candidate, queue;
+    uint8_t guard4[28] = {0}, saved4[28];
+    guard4[0] = 0x45; guard4[9] = 17;
+    memcpy(guard4 + 12, &remote4, 4); memcpy(guard4 + 16, &local4, 4);
+    memcpy(guard4 + 20, &remote_port, 2); memcpy(guard4 + 22, &local_port, 2);
+    memcpy(saved4, guard4, sizeof(guard4));
+    candidate = ntohs(local_port);
+    CHECK(example_rss_advisory_suggest4(remote4, local4, remote_port,
+        &candidate, 60000, 1024) == -1 && candidate == ntohs(local_port));
+    CHECK(!memcmp(guard4, saved4, sizeof(guard4)));
+    candidate = ntohs(local_port);
+    CHECK(example_rss_advisory_suggest4(remote4, local4, remote_port,
+        &candidate, 1024, 1025) == -1 && candidate == ntohs(local_port));
+    CHECK(!memcmp(guard4, saved4, sizeof(guard4)));
+    CHECK(advisory_classify4(guard4, &queue) == 0);
+    send_advisory_record(pool, ports, outputs, guard4, sizeof(guard4), queue);
+    CHECK(advisory_apply4(guard4, &queue) == 0 && queue == 1);
+    send_advisory_record(pool, ports, outputs, guard4, sizeof(guard4), queue);
+
+    uint8_t guard6[48] = {0}, saved6[48];
+    guard6[0] = 0x60; guard6[6] = 17;
+    memcpy(guard6 + 8, remote6, 16); memcpy(guard6 + 24, local6, 16);
+    memcpy(guard6 + 40, &remote_port, 2); memcpy(guard6 + 42, &local_port, 2);
+    memcpy(saved6, guard6, sizeof(guard6));
+    candidate = ntohs(local_port);
+    CHECK(example_rss_advisory_suggest6(remote6, local6, remote_port,
+        &candidate, 60000, 1024) == -1 && candidate == ntohs(local_port));
+    CHECK(!memcmp(guard6, saved6, sizeof(guard6)));
+    candidate = ntohs(local_port);
+    CHECK(example_rss_advisory_suggest6(remote6, local6, remote_port,
+        &candidate, 1024, 1025) == -1 && candidate == ntohs(local_port));
+    CHECK(!memcmp(guard6, saved6, sizeof(guard6)));
+    CHECK(advisory_classify6(guard6, &queue) == 0);
+    send_advisory_record(pool, ports, outputs, guard6, sizeof(guard6), queue);
+    CHECK(advisory_apply6(guard6, &queue) == 0 && queue == 1);
+    send_advisory_record(pool, ports, outputs, guard6, sizeof(guard6), queue);
+
     for (unsigned i = 0; i < 200; ++i) {
         uint8_t ipv4[28] = {0};
         ipv4[0] = 0x45; ipv4[9] = 17;
         memcpy(ipv4 + 12, &remote4, 4); memcpy(ipv4 + 16, &local4, 4);
-        uint16_t remote_port = htons((uint16_t)(53 + i));
+        remote_port = htons((uint16_t)(53 + i));
         uint16_t local_port = htons((uint16_t)(20000 + i));
         memcpy(ipv4 + 20, &remote_port, 2); memcpy(ipv4 + 22, &local_port, 2);
-        uint16_t queue;
         int adjusted = advisory_apply4(ipv4, &queue);
         CHECK(adjusted == 0 || adjusted == -1);
         if (adjusted == 0) { ++success4; CHECK(queue == 1); }
@@ -188,10 +250,10 @@ static void advisory_consumer(struct rte_mempool *pool)
     uint8_t fallback4[28] = {0}, expected4[28];
     fallback4[0] = 0x45; fallback4[9] = 17;
     memcpy(fallback4 + 12, &remote4, 4); memcpy(fallback4 + 16, &local4, 4);
-    uint16_t remote_port = htons(53), local_port = htons(23456);
+    remote_port = htons(53); local_port = htons(23456);
     memcpy(fallback4 + 20, &remote_port, 2); memcpy(fallback4 + 22, &local_port, 2);
     memcpy(expected4, fallback4, sizeof(fallback4));
-    uint16_t candidate = ntohs(local_port), queue;
+    candidate = ntohs(local_port);
     CHECK(example_rss_advisory_suggest4(remote4, local4, remote_port, &candidate,
         10000, 65535) == -1 && candidate == ntohs(local_port));
     int declined = advisory_apply4(fallback4, &queue);

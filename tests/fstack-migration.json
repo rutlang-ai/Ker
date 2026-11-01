@@ -3139,23 +3139,62 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_null",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source rejects NULL softc or output pointer with -1 before dereference. Guarding a different RSS control API does not implement this source-port-selection consumer. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged NULL softc/output assertions execute against the original helpers with a null-safe caller softc adapter. The source ID is tested in the BSS profile; ready-context range/single-queue controls are reported separately and do not overstate this null guard. See docs/fstack-rss-adjust-guards.md; this does not integrate Linux source-port allocation or claim hardware RSS.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport-null"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport-null"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport-null"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_degraded",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "With BSS RETA size0, context initialization succeeds but leaves ports unready; adjustment declines -1 for native/software fallback. This is degraded readiness, not working reverse calculation. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source assertions execute with BSS RETA size zero: original context init returns0 but leaves adjustment unready, and adjustment declines. This retains the degraded source profile; it does not prove a usable device context. See docs/fstack-rss-adjust-guards.md; this does not integrate Linux source-port allocation or claim hardware RSS.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport-degraded"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport-degraded"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport-degraded"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_single_queue",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source sets one queue but the earlier unready-context guard already returns -1 in this unit environment. It does not isolate the one-queue branch or prove traffic landing. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged assertion executes in the BSS/unready profile. A separate real-ready control explicitly enables adjustment and uses one queue to reach the later single-queue guard with unchanged output. See docs/fstack-rss-adjust-guards.md; this does not integrate Linux source-port allocation or claim hardware RSS.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport-single-queue"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport-single-queue"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport-single-queue"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_equivalence_hitrate",
@@ -3208,9 +3247,22 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_guard",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source IPv6 adjustment rejects NULL softc/output and declines after initialization with RETA0/unready context. Neither disabled device RSS nor zero packet counters proves these guards. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged IPv6 NULL softc/output and degraded readiness assertions execute. NULL conversion is safe before the original guard. This remains an original BSS profile, not a ready IPv6 range test. See docs/fstack-rss-adjust-guards.md; this does not integrate Linux source-port allocation or claim hardware RSS.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport6-guard"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport6-guard"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport6-guard"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash6_equivalence_hitrate",
@@ -3322,16 +3374,42 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_range_params",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source IPv4 adjustment declines for an inverted range and a two-port sub-RETA range, but RETA0/unready context may reject earlier. The unit does not independently reach ready-context range validation. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source assertions execute in BSS/unready state. A separate ready-context check explicitly enables adjustment and reaches both inverted-range and too-small-range declines with output unchanged; following valid IPv4 advisory records route through real net_ring. See docs/fstack-rss-adjust-guards.md; this does not integrate Linux source-port allocation or claim hardware RSS.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport-range"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport-range"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport-range"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_range_params",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source IPv6 adjustment similarly declines inverted and too-small ranges with the earlier unready guard active. Original Linux range checks alone do not qualify reverse-hash candidate selection. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source assertions execute in BSS/unready state. A separate ready-context check explicitly enables adjustment and reaches both inverted-range and too-small-range declines with output unchanged; following valid IPv6 advisory records route through real net_ring. See docs/fstack-rss-adjust-guards.md; this does not integrate Linux source-port allocation or claim hardware RSS.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport6-range"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport6-range"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport6-range"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_dpdk_register_if_returns_ctx",

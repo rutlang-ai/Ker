@@ -4567,6 +4567,78 @@
         "test_ff_rss_thash_ctx_init_thash_adjust_off"
       ],
       "adaptation": "The complete unchanged source body is byte-audited and executed in BSS/unready and real-ready profiles. With FF_RSS_DIAG disabled, original ff_rss_thash_ctx_init contains no thash_adjust branch and only returns0; that result is not context readiness. Readiness comes from the separate original build-key/context helpers. The real caller and DPDK/net_ring verification is recorded with the companion disabled adjustment cases. See docs/fstack-rss-adjust-disabled.md."
+    },
+    "fstack-rss-adjust-sport-null": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_null"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The complete unchanged IPv4 NULL softc and NULL output assertions are hash-audited and executed. The source fixture safely handles NULL before the original helper guard. Its BSS profile preserves the original unit setup; ready branch controls are separately qualified. No Linux allocator or hardware RSS claim. See docs/fstack-rss-adjust-guards.md."
+    },
+    "fstack-rss-adjust-sport-degraded": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_degraded"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The unchanged complete source body is hash-audited and run with original BSS RETA size0. Original context initialization returns0 while readiness remains false; the adjust helper declines. This is source degraded-readiness behavior, not usable context evidence. See docs/fstack-rss-adjust-guards.md."
+    },
+    "fstack-rss-adjust-sport-single-queue": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_single_queue"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The unchanged source body runs in the original BSS/unready profile. A separate ready-context fixture explicitly sets thash_adjust=1, confirms v4 context readiness and configures one queue before calling the original helper; it declines at the later single-queue guard without changing the output sentinel. Real caller valid-record recovery is exercised via net_ring. See docs/fstack-rss-adjust-guards.md."
+    },
+    "fstack-rss-adjust-sport6-guard": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_guard"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The unchanged complete IPv6 source body is audited and executed. It checks NULL softc/output and the original BSS/unready decline. NULL softc conversion is safe before the original guard. This does not claim ready-context IPv6 guard behavior. See docs/fstack-rss-adjust-guards.md."
+    },
+    "fstack-rss-adjust-sport-range": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_range_params"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The unchanged complete source range assertions execute in BSS/unready state. A separate ready-context fixture explicitly sets thash_adjust=1 and multiple queues, verifies the v4 context is ready, then checks inverted and sub-RETA ranges decline with output sentinel unchanged. Real caller follows with a valid tuple sent through the original software predicate and net_ring. See docs/fstack-rss-adjust-guards.md."
+    },
+    "fstack-rss-adjust-sport6-range": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_range_params"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The unchanged complete source range assertions execute in BSS/unready state. A separate ready-context fixture explicitly sets thash_adjust=1 and multiple queues, verifies the v6 context is ready, then checks inverted and sub-RETA ranges decline with output sentinel unchanged. Real caller follows with a valid tuple sent through the original software predicate and net_ring. See docs/fstack-rss-adjust-guards.md."
     }
   }
 }

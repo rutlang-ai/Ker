@@ -6,7 +6,13 @@
   "cases": [
     "test_ff_rss_adjust_sport_thash_adjust_off",
     "test_ff_rss_adjust_sport6_thash_adjust_off",
-    "test_ff_rss_thash_ctx_init_thash_adjust_off"
+    "test_ff_rss_thash_ctx_init_thash_adjust_off",
+    "test_ff_rss_adjust_sport_null",
+    "test_ff_rss_adjust_sport_degraded",
+    "test_ff_rss_adjust_sport_single_queue",
+    "test_ff_rss_adjust_sport6_guard",
+    "test_ff_rss_adjust_sport_range_params",
+    "test_ff_rss_adjust_sport6_range_params"
   ],
   "helpers": "../fstack-rss-source-helpers.inc"
 }

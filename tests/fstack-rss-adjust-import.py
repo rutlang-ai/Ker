@@ -41,4 +41,4 @@ for name in test_manifest['cases']:
     source_parts.append(test_source[start:end])
 assert (root / 'tests/fstack-rss-adjust-source.inc').read_text() == '\n\n'.join(source_parts) + '\n'
 runpy.run_path(str(root / 'tests/fstack-rss-table-import.py'), run_name='__main__')
-print('PASS: original RSS adjustment functions, state, three source cases, and shared helpers audited')
+print(f"PASS: original RSS adjustment functions, state, {len(test_manifest['cases'])} source cases, and shared helpers audited")
