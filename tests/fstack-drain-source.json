@@ -1,0 +1,11 @@
+{
+  "source_file": "tests/upstream/fstack/tests/unit/test_ff_dpdk_if.c",
+  "source_sha256": "785ca7c734b1ec783a3b31b3e7b4d01cebf2f78393d2e09c20e958dbf0bbedfe",
+  "fixture_declarations": "p1_saved_cfg through p1_port_id",
+  "helpers": [
+    "p1_teardown",
+    "p1_setup",
+    "p1_drain_check",
+    "test_p1_drain_foreign_epoch_tx"
+  ]
+}

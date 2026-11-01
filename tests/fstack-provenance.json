@@ -4698,6 +4698,16 @@
         "fstack-rss-adjust-caller"
       ],
       "adaptation": "The complete unchanged100-iteration IPv6 source body and RD_RECHECK_N=100 are byte-audited and executed in BSS/unready state; the loop asserts zero calls and its retained direct predicate check proves the original wrapper. A test-only library maps only the original adjustment helper call site to unchanged source counting wrappers. Real-ready controls observe positive helper call counts when recheck is enabled, and independently verify each accepted candidate against the published key/RETA and original predicate. The real caller exercises both flags over net_ring records. No performance, Linux allocator, or hardware RSS equivalence is claimed; see docs/fstack-rss-adjust-recheck.md."
+    },
+    "fstack-drain-foreign-epoch": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_p1_drain_foreign_epoch_tx"
+      ],
+      "ker_ctests": [
+        "fstack-drain-foreign-epoch"
+      ],
+      "adaptation": "The unchanged p1 fixture declarations, p1_setup/p1_teardown/p1_drain_check helpers and test_p1_drain_foreign_epoch_tx body are byte-audited and executed against imported original lib/ff_drain_ring.c plus original ff_reload.c/ff_reload_gendir.c in a real DPDK primary EAL. Its exact mode-3 assertion retains TX q1/gen0 while a foreign epoch owns hardware. A bounded same-process primary caller then sets real source-shaped live directory records for epoch1/gen0 and epoch2/gen0, verifies the original no-hardware-owner predicate rejects TX before ownership, and delivers the retained packet only after epoch2/gen0 becomes selected owner. The unchanged original TX drain writes the exact mbuf pointer/payload to queue1 of a real two-queue net_ring PMD, and source teardown restores the 64-object pool. This is not a genuine secondary or coexisting-master admission test, does not qualify the secondary-only F-Stack main loop or Ker resident admission, and does not claim full reload."
     }
   }
 }

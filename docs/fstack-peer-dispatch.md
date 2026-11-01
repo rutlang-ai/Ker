@@ -82,16 +82,27 @@ This batch is stacked on PR389. Only this source case changes status:
 cases incomplete. The106-file/433-case audit and21 catalog regression/mutation
 tests pass. Issue218 retains all other incomplete generation contracts.
 
-## Foreign-epoch cleanup remains separate
+## Foreign-epoch drain source case
 
-`test_p1_drain_foreign_epoch_tx` remains blocked. The resident generation-ring
-bank currently admits only one identity per generation, across epochs. A
-same-generation worker from a distinct master/epoch therefore cannot coexist
-in that bank. An isolated distinct-parent EAL investigation failed before
-ARM; it was not qualification evidence. The attempted detach-only permission
-change was reverted. Epoch-isolated banks and admission/cleanup proofs are
-required before revisiting this source case; relaxing authorization alone is
-insufficient. The current batch changes no resident detach authorization.
+The complete unchanged `test_p1_drain_foreign_epoch_tx` helper/assertion set
+now runs against the exact pinned `ff_drain_ring.c` implementation and the
+original reload/generation-directory runtime. Its mode-3 profile leaves the
+epoch-1/generation-0 TX ring queued while the directory names epoch-2/generation-0
+as hardware owner. A bounded same-process caller checks the original
+`ff_no_hw_mode()` ownership predicate, confirms that the packet remains queued
+before ownership, then makes epoch 2 the selected owner. The unchanged original
+`ff_drain_ring_tx_drain()` sends the exact retained mbuf and bytes through queue
+1 of a real two-queue `net_ring` PMD; source teardown restores all 64 pool
+objects. The original `ff_drain_ring_unregist()` is detach-only: named rings
+and pointer arrays persist until EAL/process cleanup. The test cleans its PMD
+endpoint and pool without claiming manual drain-bank destruction.
+
+This qualifies the source ring cleanup behavior and a trusted same-process
+primary caller. It does not execute the secondary-only F-Stack main loop,
+authenticate two coexisting masters, adapt the Ker resident's one-identity-per-
+generation bank, or qualify full reload. Epoch-isolated resident admission and
+cleanup remain open; changing detach authorization alone is insufficient.
+See [source and reproduction](fstack-drain-foreign-epoch.md).
 
 ## Reproduce
 
