@@ -135,6 +135,34 @@ def captured_syns(capture, source_ports):
     return matches
 
 
+def captured_tcp_events(capture, source_ports, destination_ports):
+    """Drain ingress frames without losing SYNACKs while looking for SYNs."""
+    syns = []
+    synacks = []
+    while True:
+        try:
+            packet = capture.recv(65535)
+        except TimeoutError:
+            break
+        if len(packet) < 14 + 20 + 20 or packet[12:14] != b'\x08\x00':
+            continue
+        ip_offset = 14
+        if packet[ip_offset + 9] != socket.IPPROTO_TCP:
+            continue
+        tcp_offset = ip_offset + (packet[ip_offset] & 0xf) * 4
+        if len(packet) < tcp_offset + 20:
+            continue
+        source_port, destination_port = struct.unpack_from('!HH', packet, tcp_offset)
+        flags = packet[tcp_offset + 13]
+        if (source_port in source_ports and destination_port == 8080 and
+            flags & 0x12 == 0x02):
+            syns.append(source_port)
+        if (source_port == 8080 and destination_port in destination_ports and
+            flags & 0x12 == 0x12):
+            synacks.append(destination_port)
+    return syns, synacks
+
+
 def drain_process_lines(process):
     recent = getattr(process, '_ker_recent_lines', [])
     pending = getattr(process, '_ker_line_buffer', bytearray())
@@ -470,22 +498,29 @@ def inside(args):
                 require(pending in (errno.EINPROGRESS, errno.EALREADY),
                     f'follow-up SYN did not remain pending: {pending}')
                 captured = set()
+                observed_synacks = []
                 deadline = time.monotonic() + 2
                 while time.monotonic() < deadline and 12005 not in captured:
-                    captured.update(captured_syns(capture, {12005}))
+                    syns, synacks = captured_tcp_events(capture,
+                        {12004, 12005}, {12004, 12005})
+                    captured.update(syns)
+                    observed_synacks.extend(synacks)
                     if 12005 not in captured:
                         time.sleep(0.01)
                 require(12005 in captured,
                     'follow-up SYN never reached the original-Linux TAP ingress')
                 time.sleep(0.35)
+                _, synacks = captured_tcp_events(capture, {12004, 12005},
+                    {12004, 12005})
+                observed_synacks.extend(synacks)
                 lines = drain_process_lines(broker)
                 reused = [line for line in lines if 'remote_port=12005' in line and
                     ('identity-ready' in line or 'request-revoked' in line)]
                 require(not reused,
                     f'quarantined admission worker reused the stale channel: {reused!r}')
-                synacks = captured_synacks(capture, {12005})
-                require(not synacks,
-                    f'quarantined admission worker emitted a follow-up SYNACK: {synacks!r}')
+                require(not observed_synacks,
+                    f'quarantined admission worker emitted a SYNACK during either '
+                    f'the prepared or follow-up request: {observed_synacks!r}')
 
                 with open(cancel_fifo, 'wb', buffering=0) as gate:
                     gate.write(b'R')
