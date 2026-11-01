@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
@@ -151,7 +152,7 @@ static int rpc(struct ker_socket_client *client, uint16_t operation,
     void *reply_payload, size_t reply_capacity, size_t expected_reply_fds,
     int *reply_fds, int64_t *result, size_t *actual_reply_length)
 {
-    if (!client || payload_length > KER_SOCKET_BROKER_IO_MAX ||
+    if (!client || payload_length > KER_SB_MAX_REQUEST ||
         reply_capacity > KER_SOCKET_BROKER_IO_MAX || fd_count > KER_SB_MAX_RIGHTS ||
         (expected_reply_fds != SIZE_MAX && expected_reply_fds > KER_SB_MAX_RIGHTS)) return fail(EINVAL);
     if (connect_session(client)) return -1;
@@ -237,12 +238,14 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         return fail(EPROTO);
     }
     bool requires_cap = operation == KER_SB_SOCKET || operation == KER_SB_ACCEPT4 ||
-        operation == KER_SB_EPOLL_CREATE1;
+        operation == KER_SB_EPOLL_CREATE1 || operation == KER_SB_DUP;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
         operation == KER_SB_SETSOCKOPT || operation == KER_SB_GETSOCKOPT ||
-        operation == KER_SB_EPOLL_CTL;
+        operation == KER_SB_EPOLL_CTL || operation == KER_SB_DESCRIBE ||
+        operation == KER_SB_GETFL || operation == KER_SB_SETFL ||
+        operation == KER_SB_FIONBIO || operation == KER_SB_FIONREAD;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -432,4 +435,116 @@ int ker_socket_client_epoll_wait(struct ker_socket_client *client, int epoll_cap
         output.count > (uint32_t)maxevents || result != (int)output.count) return fail(EPROTO);
     memcpy(events, output.events, output.count * sizeof(*events));
     return result;
+}
+
+int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
+    enum ker_socket_broker_kind *kind, int *status_flags)
+{
+    if (!kind || !status_flags) return fail(EINVAL);
+    struct ker_sb_describe output = {0};
+    int received = 0;
+    int result = socket_call(client, cap_fd, KER_SB_DESCRIBE, NULL, 0,
+        &output, sizeof(output), NULL, &received);
+    if (result < 0) return -1;
+    if (received != sizeof(output) || output.flags < 0 ||
+        (output.kind != KER_SOCKET_BROKER_SOCKET && output.kind != KER_SOCKET_BROKER_EPOLL))
+        return fail(EPROTO);
+    *kind = (enum ker_socket_broker_kind)output.kind;
+    *status_flags = output.flags;
+    return 0;
+}
+
+int ker_socket_client_dup(struct ker_socket_client *client, int cap_fd)
+{
+    int duplicate = -1;
+    if (socket_call(client, cap_fd, KER_SB_DUP, NULL, 0, NULL, 0,
+            &duplicate, NULL) < 0) return -1;
+    if (fcntl(duplicate, F_SETFD, 0) < 0) {
+        int error = errno;
+        (void)syscall(SYS_close, duplicate);
+        return fail(error);
+    }
+    return duplicate;
+}
+
+int ker_socket_client_getfl(struct ker_socket_client *client, int cap_fd)
+{
+    struct ker_sb_integer output = {0};
+    int received = 0;
+    int result = socket_call(client, cap_fd, KER_SB_GETFL, NULL, 0,
+        &output, sizeof(output), NULL, &received);
+    if (result < 0) return -1;
+    if (received != sizeof(output) || output.value < 0) return fail(EPROTO);
+    return output.value;
+}
+
+int ker_socket_client_setfl(struct ker_socket_client *client, int cap_fd, int flags)
+{
+    struct ker_sb_integer input = {.value = flags};
+    return socket_call(client, cap_fd, KER_SB_SETFL, &input, sizeof(input), NULL, 0, NULL, NULL);
+}
+
+int ker_socket_client_ioctl(struct ker_socket_client *client, int cap_fd,
+    unsigned long request, void *argument)
+{
+    if (request == FIONBIO) {
+        if (!argument) return fail(EFAULT);
+        int enabled = *(int *)argument;
+        struct ker_sb_integer input = {.value = enabled};
+        return socket_call(client, cap_fd, KER_SB_FIONBIO, &input, sizeof(input), NULL, 0, NULL, NULL);
+    }
+    if (request == FIONREAD) {
+        if (!argument) return fail(EFAULT);
+        struct ker_sb_integer output = {0};
+        int received = 0;
+        int result = socket_call(client, cap_fd, KER_SB_FIONREAD, NULL, 0,
+            &output, sizeof(output), NULL, &received);
+        if (result < 0) return -1;
+        if (received != sizeof(output) || output.value < 0) return fail(EPROTO);
+        *(int *)argument = output.value;
+        return 0;
+    }
+    return fail(EOPNOTSUPP);
+}
+
+int ker_socket_client_fionbio(struct ker_socket_client *client, int cap_fd, int enabled)
+{
+    return ker_socket_client_ioctl(client, cap_fd, FIONBIO, &enabled);
+}
+
+int ker_socket_client_fionread(struct ker_socket_client *client, int cap_fd, int *available)
+{
+    return ker_socket_client_ioctl(client, cap_fd, FIONREAD, available);
+}
+
+ssize_t ker_socket_client_send(struct ker_socket_client *client, int cap_fd,
+    const void *buffer, size_t length, int flags)
+{
+    if ((!buffer && length) || length > KER_SOCKET_BROKER_IO_MAX)
+        return fail(EINVAL);
+    unsigned char payload[KER_SB_MAX_REQUEST];
+    struct ker_sb_io input = {.flags = flags, .length = (uint32_t)length};
+    memcpy(payload, &input, sizeof(input));
+    if (length) memcpy(payload + sizeof(input), buffer, length);
+    int rights[1] = {cap_fd};
+    int64_t result = 0;
+    if (rpc(client, KER_SB_SEND, payload, sizeof(input) + length,
+            rights, 1, NULL, 0, 0, NULL, &result, NULL)) return -1;
+    if (result < 0) return fail(result >= -4095 ? (int)-result : EPROTO);
+    return (size_t)result <= length ? (ssize_t)result : fail(EPROTO);
+}
+
+ssize_t ker_socket_client_recv(struct ker_socket_client *client, int cap_fd,
+    void *buffer, size_t length, int flags)
+{
+    if ((!buffer && length) || length > KER_SOCKET_BROKER_IO_MAX) return fail(EINVAL);
+    struct ker_sb_io input = {.flags = flags, .length = (uint32_t)length};
+    int rights[1] = {cap_fd};
+    int64_t result = 0;
+    size_t received = 0;
+    if (rpc(client, KER_SB_RECV, &input, sizeof(input), rights, 1,
+            buffer, length, 0, NULL, &result, &received)) return -1;
+    if (result < 0) return fail(result >= -4095 ? (int)-result : EPROTO);
+    if ((uint64_t)result != received || received > length) return fail(EPROTO);
+    return (ssize_t)result;
 }

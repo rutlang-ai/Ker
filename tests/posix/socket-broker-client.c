@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <poll.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -42,6 +43,25 @@ static int wait_event(struct ker_socket_client *client, int epoll_cap, uint64_t 
     }
     errno = ETIMEDOUT;
     return -1;
+}
+
+static int wait_event_pair(struct ker_socket_client *client, int epoll_cap,
+    uint64_t first, uint64_t second)
+{
+    struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+    int saw_first = 0, saw_second = 0;
+    for (unsigned i = 0; i < 10000 && (!saw_first || !saw_second); ++i) {
+        struct epoll_event events[4];
+        int count = ker_socket_client_epoll_wait(client, epoll_cap, events, 4);
+        if (count < 0) return -1;
+        for (int j = 0; j < count; ++j) {
+            saw_first |= events[j].data.u64 == first;
+            saw_second |= events[j].data.u64 == second;
+        }
+        if (!saw_first || !saw_second) (void)syscall(SYS_nanosleep, &pause, NULL);
+    }
+    if (!saw_first || !saw_second) { errno = ETIMEDOUT; return -1; }
+    return 0;
 }
 
 static int read_until_eof(struct ker_socket_client *client, int cap)
@@ -131,7 +151,7 @@ static int child_mode(const char *path, int listener, int epoll, int accepted)
     struct ker_socket_client client;
     CHECK(ker_socket_client_open(&client, path) == 0);
     puts("CHILD_READY"); fflush(stdout);
-    CHECK(wait_event(&client, epoll, UINT64_C(0x1234)) == 0);
+    CHECK(wait_event(&client, epoll, UINT64_C(0x5678)) == 0);
     char first[4097] = {0}, expected[4097];
     fill_payload(expected, sizeof(expected));
     CHECK(read_exact(&client, accepted, first, sizeof(first)) == 0);
@@ -257,9 +277,17 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
     CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, wrong) == 0);
     errno = 0;
     CHECK(ker_socket_client_accept4(&client, wrong[0], NULL, NULL, SOCK_CLOEXEC) == -1 && errno == EBADF);
+    enum ker_socket_broker_kind described_kind;
+    int described_flags = 0;
+    errno = 0;
+    CHECK(ker_socket_client_describe(&client, wrong[0], &described_kind,
+        &described_flags) == -1 && errno == EBADF);
     close(wrong[0]); close(wrong[1]);
     int pipe_fds[2];
     CHECK(pipe2(pipe_fds, O_NONBLOCK | O_CLOEXEC) == 0);
+    errno = 0;
+    CHECK(ker_socket_client_describe(&client, pipe_fds[0], &described_kind,
+        &described_flags) == -1 && errno == EBADF);
     errno = 0;
     CHECK(ker_socket_client_accept4(&client, pipe_fds[0], NULL, NULL, SOCK_CLOEXEC) == -1 && errno == EBADF);
     errno = 0;
@@ -288,13 +316,67 @@ static int parent_mode(const char *self, const char *path, int listener, int epo
     CHECK(accepted >= 0);
     struct epoll_event event = {.events = EPOLLIN, .data.u64 = UINT64_C(0x1234)};
     CHECK(ker_socket_client_epoll_ctl(&client, epoll, EPOLL_CTL_ADD, accepted, &event) == 0);
+    int accepted_alias = ker_socket_client_dup(&client, accepted);
+    CHECK(accepted_alias >= 0);
+    CHECK((fcntl(accepted_alias, F_GETFD) & FD_CLOEXEC) == 0);
+    CHECK(ker_socket_client_describe(&client, accepted_alias, &described_kind,
+        &described_flags) == 0);
+    CHECK(described_kind == KER_SOCKET_BROKER_SOCKET && (described_flags & O_NONBLOCK));
+    CHECK(ker_socket_client_describe(&client, epoll, &described_kind, &described_flags) == 0);
+    CHECK(described_kind == KER_SOCKET_BROKER_EPOLL);
+    int native_flags = ker_socket_client_getfl(&client, accepted_alias);
+    CHECK(native_flags >= 0 && (native_flags & O_NONBLOCK));
+    CHECK(ker_socket_client_setfl(&client, accepted_alias, native_flags | O_NONBLOCK) == 0);
+    errno = 0;
+    CHECK(ker_socket_client_setfl(&client, accepted_alias, native_flags & ~O_NONBLOCK) == -1 &&
+        errno == EOPNOTSUPP);
+    errno = 0;
+    CHECK(ker_socket_client_setfl(&client, accepted_alias, native_flags | O_APPEND) == -1 &&
+        errno == EOPNOTSUPP);
+    CHECK(ker_socket_client_getfl(&client, accepted_alias) & O_NONBLOCK);
+    CHECK(ker_socket_client_fionbio(&client, accepted_alias, 1) == 0);
+    errno = 0;
+    CHECK(ker_socket_client_fionbio(&client, accepted_alias, 0) == -1 && errno == EOPNOTSUPP);
+    errno = 0;
+    CHECK(ker_socket_client_ioctl(&client, accepted_alias, TIOCGWINSZ, &native_flags) == -1 &&
+        errno == EOPNOTSUPP);
+    int keepalive = 1;
+    CHECK(ker_socket_client_setsockopt(&client, accepted_alias, SOL_SOCKET, SO_KEEPALIVE,
+        &keepalive, sizeof(keepalive)) == 0);
+    keepalive = 0; option_length = sizeof(keepalive);
+    CHECK(ker_socket_client_getsockopt(&client, accepted, SOL_SOCKET, SO_KEEPALIVE,
+        &keepalive, &option_length) == 0 && keepalive == 1);
+    event.data.u64 = UINT64_C(0x5678);
+    CHECK(ker_socket_client_epoll_ctl(&client, epoll, EPOLL_CTL_ADD, accepted_alias, &event) == 0);
     puts("PRE_FORK_WAIT"); fflush(stdout);
-    CHECK(wait_event(&client, epoll, UINT64_C(0x1234)) == 0);
-    char before[11] = {0};
-    CHECK(read_exact(&client, accepted, before, sizeof(before)) == 0);
+    CHECK(wait_event_pair(&client, epoll, UINT64_C(0x1234), UINT64_C(0x5678)) == 0);
+    char before[11] = {0}, peeked[11] = {0};
+    CHECK(ker_socket_client_recv(&client, accepted_alias, peeked, sizeof(peeked),
+        MSG_PEEK | MSG_DONTWAIT) == sizeof(peeked));
+    CHECK(!memcmp(peeked, "BEFORE-FORK", sizeof(peeked)));
+    int available = 0;
+    CHECK(ker_socket_client_fionread(&client, accepted_alias, &available) == 0 &&
+        available == (int)sizeof(before));
+    errno = 0;
+    CHECK(ker_socket_client_send(&client, accepted_alias, "x", 1, MSG_OOB) == -1 &&
+        errno == EOPNOTSUPP);
+    errno = 0;
+    CHECK(ker_socket_client_recv(&client, accepted_alias, peeked, sizeof(peeked),
+        MSG_WAITALL) == -1 && errno == EOPNOTSUPP);
+    CHECK(ker_socket_client_recv(&client, accepted_alias, before, sizeof(before), 0) == sizeof(before));
     CHECK(!memcmp(before, "BEFORE-FORK", sizeof(before)));
-    CHECK(ker_socket_client_write(&client, accepted, "PRE-FORK-OK", 11) == 11);
+    CHECK(ker_socket_client_send(&client, accepted_alias, "PRE-", 4,
+        MSG_DONTWAIT | MSG_MORE) == 4);
+    CHECK(ker_socket_client_send(&client, accepted_alias, "FORK-OK", 7,
+        MSG_NOSIGNAL) == 7);
     puts("PRE_FORK_OK"); fflush(stdout);
+    char maximum_send[KER_SOCKET_BROKER_IO_MAX];
+    fill_payload(maximum_send, sizeof(maximum_send));
+    CHECK(ker_socket_client_send(&client, accepted_alias, maximum_send,
+        sizeof(maximum_send), MSG_DONTWAIT | MSG_NOSIGNAL) == sizeof(maximum_send));
+    puts("MAX_SEND_OK"); fflush(stdout);
+    CHECK(close(accepted) == 0);
+    accepted = accepted_alias;
     for (int fd = 0; fd < 3; ++fd) {
         int value = fd == 0 ? listener : fd == 1 ? epoll : accepted;
         int flags = fcntl(value, F_GETFD);

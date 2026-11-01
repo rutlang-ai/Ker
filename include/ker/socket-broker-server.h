@@ -1,5 +1,6 @@
 #ifndef KER_SOCKET_BROKER_SERVER_H
 #define KER_SOCKET_BROKER_SERVER_H
+#include <ker/socket-broker.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -7,7 +8,6 @@ extern "C" {
 #endif
 
 struct ker_socket_broker_server;
-enum ker_socket_broker_kind { KER_SOCKET_BROKER_SOCKET = 1, KER_SOCKET_BROKER_EPOLL = 2 };
 enum ker_socket_broker_rights {
     KER_SOCKET_BROKER_READ = 1u << 0,
     KER_SOCKET_BROKER_WRITE = 1u << 1,

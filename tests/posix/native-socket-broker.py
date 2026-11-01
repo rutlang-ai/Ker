@@ -171,6 +171,7 @@ def inside(args):
                 parent_exit = False
                 child_ready = False
                 pre_fork_done = False
+                maximum_send_done = False
                 preexec_reconnected = False
                 preexec_error = None
                 observed = []
@@ -194,7 +195,13 @@ def inside(args):
                         pre_fork_done = True
                     elif line == 'PRE_FORK_OK':
                         require(pre_fork_done, 'pre-fork response arrived before host transfer')
+                    elif line == 'MAX_SEND_OK':
+                        maximum_payload = bytes((index * 31 + 7) & 0xff for index in range(4096))
+                        require(recv_exact(first_peer, len(maximum_payload)) == maximum_payload,
+                            '4096-byte maximum SEND payload differs')
+                        maximum_send_done = True
                 require(pre_fork_done, 'accepted stream was not active before fork/exec')
+                require(maximum_send_done, 'client did not exercise the full documented SEND payload size')
                 deadline = time.monotonic() + 15
                 while not preexec_reconnected and preexec_error is None and time.monotonic() < deadline:
                     line = read_line(client_process.stdout, max(0.1, deadline - time.monotonic()), client_process)
