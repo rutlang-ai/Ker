@@ -25,6 +25,16 @@ int ker_sb_preload_network_fd_locked(int app_fd, int *broker_fd);
 int ker_sb_preload_register_network_locked(int app_fd);
 void ker_sb_preload_remove_network_locked(int app_fd);
 int ker_sb_preload_socket_drain_count(void);
+int ker_sb_preload_ff_owner_begin(void);
+bool ker_sb_preload_ff_owner_active_locked(void);
+int ker_sb_preload_ff_owner_capability_locked(void);
+bool ker_sb_preload_ff_owner_managed(void);
+int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol);
+int ker_sb_preload_ff_owner_payload(struct ker_socket_member_payload_snapshot *snapshot);
+int ker_sb_preload_ff_owner_matches_locked(int owner_cap,
+    struct ker_socket_client *client);
+int ker_sb_preload_network_registry_empty_locked(void);
+void ker_sb_preload_note_unowned_network_locked(void);
 
 /* Composite epoll app descriptors are real host epoll fds. */
 int ker_sb_preload_epoll_fd_locked(int app_fd, int *broker_epoll_fd);

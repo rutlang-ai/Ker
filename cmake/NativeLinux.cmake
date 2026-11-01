@@ -642,6 +642,17 @@ if(BUILD_TESTING)
             -Wall -Wextra -Werror)
         target_link_options(ker-fstack-nginx-runtime-socket-client-test PRIVATE
             -Wl,--export-dynamic)
+        add_executable(ker-fstack-owner-payload-client-test
+            tests/posix/fstack-owner-payload-client.c)
+        target_include_directories(ker-fstack-owner-payload-client-test PRIVATE
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+        target_link_libraries(ker-fstack-owner-payload-client-test PRIVATE
+            ker-fstack-nginx-runtime)
+        target_compile_options(ker-fstack-owner-payload-client-test PRIVATE
+            -Wall -Wextra -Werror)
+        target_link_options(ker-fstack-owner-payload-client-test PRIVATE
+            -Wl,--export-dynamic)
     endif()
     add_test(NAME native-socket-broker-fork-exec
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
@@ -750,6 +761,18 @@ if(BUILD_TESTING)
                 --dpdk-plugin-dir "${ker_session_pmd_dir}")
         set_tests_properties(native-fstack-nginx-runtime-drain-count PROPERTIES
             TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;fstack-nginx-runtime")
+        add_test(NAME native-fstack-process-payload-owner
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                --ff-owner-payload-client "$<TARGET_FILE:ker-fstack-owner-payload-client-test>"
+                --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}")
+        set_tests_properties(native-fstack-process-payload-owner PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;ff-owner;payload-snapshot")
     endif()
     add_test(NAME native-fstack-socket-drain-count-failure
         COMMAND "${Python3_EXECUTABLE}"

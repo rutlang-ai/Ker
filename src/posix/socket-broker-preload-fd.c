@@ -295,6 +295,71 @@ int ker_sb_preload_register_network_locked(int app_fd)
     }
     network_fds[slot] = (struct network_entry){.app_fd = app_fd,
         .private_fd = private_fd, .identity = identity};
+    bool owned = false;
+    if (ker_sb_preload_ff_owner_active_locked()) {
+        struct ker_socket_client *client = ker_sb_preload_client_locked();
+        int owner_cap = ker_sb_preload_ff_owner_capability_locked();
+        int matches = client && owner_cap >= 0 ?
+            ker_socket_client_ff_owner_match(client, owner_cap, private_fd) : -1;
+        if (matches < 0) {
+            int error = errno;
+            ker_sb_preload_remove_network_locked(app_fd);
+            errno = error;
+            return -1;
+        }
+        owned = matches == 1;
+    }
+    if (!owned)
+        ker_sb_preload_note_unowned_network_locked();
+    return 0;
+}
+
+int ker_sb_preload_network_registry_empty_locked(void)
+{
+    bool found = false;
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        if (network_fds[i].app_fd < 0) continue;
+        struct fd_identity current;
+        if (descriptor_identity(network_fds[i].app_fd, &current)) {
+            if (errno == EBADF) {
+                ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+                continue;
+            }
+            return -1;
+        }
+        if (current.device != network_fds[i].identity.device ||
+            current.inode != network_fds[i].identity.inode) {
+            ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+            continue;
+        }
+        found = true;
+    }
+    if (found) { errno = EBUSY; return -1; }
+    return 0;
+}
+
+int ker_sb_preload_ff_owner_matches_locked(int owner_cap,
+    struct ker_socket_client *client)
+{
+    if (owner_cap < 0 || !client) { errno = ENOTCONN; return -1; }
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        if (network_fds[i].app_fd < 0) continue;
+        struct fd_identity current;
+        if (descriptor_identity(network_fds[i].app_fd, &current)) {
+            if (errno != EBADF) return -1;
+            ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+            continue;
+        }
+        if (current.device != network_fds[i].identity.device ||
+            current.inode != network_fds[i].identity.inode) {
+            ker_sb_preload_remove_network_locked(network_fds[i].app_fd);
+            continue;
+        }
+        int matches = ker_socket_client_ff_owner_match(client, owner_cap,
+            network_fds[i].private_fd);
+        if (matches < 0) return -1;
+        if (!matches) { errno = EXDEV; return -1; }
+    }
     return 0;
 }
 
@@ -774,6 +839,10 @@ static int initialize_inherited_capabilities(void)
             /* Observer capabilities carry metadata authority only. Preserve
              * the inherited host descriptor without treating it as a socket
              * or retaining any TCP descriptor in the preload map. */
+            continue;
+        } else if (kind == KER_SOCKET_BROKER_FF_OWNER && status_flags == 0) {
+            /* Owner contexts are private control capabilities. They are
+             * intentionally never entered in the application socket map. */
             continue;
         } else {
             (void)status_flags; ker_sb_preload_unlock(); errno = EPROTO; return -1;
