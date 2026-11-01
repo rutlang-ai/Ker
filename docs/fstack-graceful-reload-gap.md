@@ -32,6 +32,26 @@ secondary-worker initialization; multiworker `reuseport` clone ownership
 remains unsupported. The profile does not implement generation reload or
 census behavior.
 
+The `native-socket-broker-generation-handoff` caller test exercises the
+broker's fixed two-member original-Linux reuseport selector with two old and
+two replacement SDK workers. It holds twelve old TCP streams open, verifies
+nonce-specific payloads before and after selector change, and overlaps fresh
+no-retry connections with the change. Every connection initiated after the
+successful selector operation must identify a replacement worker. Accept-only
+barriers prove both workers in each generation serve a connection. After the
+selector changes and tracked pre-selector connection attempts finish, the old
+workers stop accepting, remain alive while their streams transfer payload,
+and exit after those streams half-close. Among broker capabilities, the
+supervisor retains the group control capability and metadata-only TCP
+observers; the broker owns the base listeners, and workers own accepted socket
+capabilities. Observer snapshots verify the original Linux socket identity
+reaches TIME_WAIT or absence after worker teardown.
+
+This is a bounded process and selector handoff primitive test. It does not run
+the F-Stack nginx executable or its generation FSM, does not implement its
+drain/census hooks, and does not establish full SYN/orphan census or a
+zero-TCP-state claim. It does not change the blocked source inventory entry.
+
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
 drain, worker readiness and pidfd retirement. It explicitly does not establish
