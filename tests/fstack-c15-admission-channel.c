@@ -230,7 +230,6 @@ static void ancillary_rejection_case(void)
 	CHECK(sender >= 0);
 	if (sender == 0) {
 		(void)close(endpoints[0]);
-		(void)close(pipe_fds[0]);
 		char payload = 'x';
 		char control[CMSG_SPACE(sizeof(int))] = {0};
 		struct iovec vector = {.iov_base = &payload, .iov_len = sizeof(payload)};
@@ -245,12 +244,16 @@ static void ancillary_rejection_case(void)
 		memcpy(CMSG_DATA(header), &pipe_fds[1], sizeof(int));
 		CHECK(sendmsg(endpoints[1], &message, MSG_NOSIGNAL) == 1);
 		(void)close(pipe_fds[1]);
+		/* Keep the authenticated peer alive until the parent has opened the
+		 * channel and rejected the queued SCM_RIGHTS message. */
+		char release;
+		CHECK(read(pipe_fds[0], &release, 1) == 1 && release == 'R');
+		(void)close(pipe_fds[0]);
 		(void)close(endpoints[1]);
 		_exit(0);
 	}
 	(void)close(endpoints[1]);
 	(void)close(pipe_fds[0]);
-	(void)close(pipe_fds[1]);
 	struct ker_ff_admission_channel *channel = NULL;
 	CHECK(!ker_ff_admission_channel_open(endpoints[0], sender, getuid(), getgid(),
 		lease, &channel));
@@ -263,8 +266,12 @@ static void ancillary_rejection_case(void)
 		struct timespec pause = {.tv_nsec = 1000000};
 		nanosleep(&pause, NULL);
 	}
+	size_t after = open_fd_count();
+	char release = 'R';
+	CHECK(write(pipe_fds[1], &release, 1) == 1);
+	(void)close(pipe_fds[1]);
 	CHECK(status == -EPROTO);
-	CHECK(open_fd_count() == before);
+	CHECK(after == before);
 	ker_ff_admission_channel_close(channel);
 	int child_status = 0;
 	CHECK(waitpid(sender, &child_status, 0) == sender && WIFEXITED(child_status) &&
