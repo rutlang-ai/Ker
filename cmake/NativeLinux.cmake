@@ -350,6 +350,10 @@ if(BUILD_TESTING)
         tests/posix/socket-broker-reuseport-group-client.c)
     target_link_libraries(ker-socket-broker-reuseport-group-client PRIVATE ker-socket-client)
     target_compile_options(ker-socket-broker-reuseport-group-client PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-inherited-group-client
+        tests/posix/socket-broker-inherited-group-client.c)
+    target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-inherited-group-client PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-socket-broker-preload-client-test
         tests/posix/socket-broker-preload-client.c)
     target_compile_features(ker-socket-broker-preload-client-test PRIVATE c_std_11)
@@ -407,6 +411,8 @@ if(BUILD_TESTING)
             --client "$<TARGET_FILE:ker-socket-broker-client-test>"
             --group-broker "$<TARGET_FILE:ker-socket-broker-reuseport-group-fixture>"
             --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+            --inherited-group-probe "$<TARGET_FILE:ker-socket-broker-inherited-group-client>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-reuseport-group PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;cbpf")

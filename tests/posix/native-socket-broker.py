@@ -131,7 +131,8 @@ def receive_group_bootstrap(connection):
 
 
 def run_reuseport_group_client(args, rpc_path, broker, capability):
-    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability)],
+    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+        str(args.inherited_group_probe), str(args.preload_library)],
         pass_fds=(capability,), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     os.close(capability)
@@ -954,7 +955,10 @@ def main():
     parser.add_argument('--fstack-runtime', type=Path)
     parser.add_argument('--group-broker', type=Path)
     parser.add_argument('--reuseport-group-client', type=Path)
+    parser.add_argument('--inherited-group-probe', type=Path)
     args = parser.parse_args()
+    if args.reuseport_group_client and (not args.inherited_group_probe or not args.preload_library):
+        parser.error('reuseport group test requires inherited group probe and preload library')
     if not args.inside:
         if args.nginx_binary:
             command = ['unshare', '-Un', '--keep-caps', f'--map-user={os.getuid()}',
@@ -977,6 +981,8 @@ def main():
             command += ['--group-broker', str(args.group_broker.resolve())]
         if args.reuseport_group_client:
             command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
+        if args.inherited_group_probe:
+            command += ['--inherited-group-probe', str(args.inherited_group_probe.resolve())]
         return subprocess.run(command).returncode
     try:
         return inside(args)

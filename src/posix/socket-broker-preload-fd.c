@@ -694,6 +694,11 @@ static int initialize_inherited_capabilities(void)
             if (ker_sb_preload_register_inherited_epoll_locked(fd)) {
                 int error = errno; ker_sb_preload_unlock(); errno = error; return -1;
             }
+        } else if (kind == KER_SOCKET_BROKER_REUSEPORT_GROUP && status_flags == 0) {
+            /* A group is an opaque control capability, not an application
+             * socket or composite epoll descriptor. Preserve it across exec
+             * without adding it to either preload descriptor map. */
+            continue;
         } else {
             (void)status_flags; ker_sb_preload_unlock(); errno = EPROTO; return -1;
         }

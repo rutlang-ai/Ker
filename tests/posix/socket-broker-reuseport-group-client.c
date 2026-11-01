@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <linux/filter.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -69,9 +71,42 @@ static int write_exact(struct ker_socket_client *client, int fd, const void *byt
     return 0;
 }
 
+static int exec_inherited_group_probe(const char *rpc_path, const char *helper,
+    const char *preload, int capability, bool duplicate)
+{
+    int inherited = capability;
+    if (duplicate) {
+        inherited = dup(capability);
+        if (inherited < 0) return -1;
+    } else {
+        int flags = fcntl(inherited, F_GETFD);
+        if (flags < 0 || fcntl(inherited, F_SETFD, flags & ~FD_CLOEXEC)) return -1;
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        char descriptor[32];
+        snprintf(descriptor, sizeof(descriptor), "%d", inherited);
+        if (setenv("KER_SOCKET_BROKER_PATH", rpc_path, 1) ||
+            setenv("LD_PRELOAD", preload, 1)) _exit(120);
+        execl(helper, helper, rpc_path, descriptor, duplicate ? "0" : "1", (char *)NULL);
+        _exit(121);
+    }
+    int saved = errno;
+    if (duplicate) (void)close(inherited);
+    else {
+        int flags = fcntl(inherited, F_GETFD);
+        if (flags >= 0) (void)fcntl(inherited, F_SETFD, flags | FD_CLOEXEC);
+    }
+    if (child < 0) { errno = saved; return -1; }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) { errno = ECHILD; return -1; }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 3) { fprintf(stderr, "usage: client <rpc-path> <read-only-group-cap>\n"); return 2; }
+    if (argc != 5) { fprintf(stderr, "usage: client <rpc-path> <read-only-group-cap> <inherited-probe> <preload-library>\n"); return 2; }
     char *end = NULL; long parsed = strtol(argv[2], &end, 10);
     if (!argv[2][0] || !end || *end || parsed < 0 || parsed > INT32_MAX) return 2;
     int denied_group = (int)parsed;
@@ -98,6 +133,12 @@ int main(int argc, char **argv)
     CHECK(close(prebound) == 0);
     int group = ker_socket_client_reuseport_group_create(&client, &address, 16);
     CHECK(group >= 0);
+    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], group, false) == 0);
+    CHECK(ker_socket_client_describe(&client, group, &kind, &flags) == 0 &&
+        kind == KER_SOCKET_BROKER_REUSEPORT_GROUP && flags == 0);
+    CHECK(exec_inherited_group_probe(argv[1], argv[3], argv[4], group, true) == 0);
+    CHECK(ker_socket_client_describe(&client, group, &kind, &flags) == 0 &&
+        kind == KER_SOCKET_BROKER_REUSEPORT_GROUP && flags == 0);
     errno = 0;
     CHECK(ker_socket_client_reuseport_group_create(&client, &address, 16) == -1 && errno == EADDRINUSE);
     int descriptor_flags = fcntl(group, F_GETFD);
