@@ -42,6 +42,7 @@ add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.
     src/posix/posix-stdio.c
     src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
     src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
+    src/posix/ff-owner-requests-diag.c src/posix/ff-owner-requests-parse.c
     src/posix/tcp-payload-snapshot.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
@@ -772,7 +773,7 @@ if(BUILD_TESTING)
                 --preload-library "$<TARGET_FILE:ker-socket-preload>"
                 --dpdk-plugin-dir "${ker_session_pmd_dir}")
         set_tests_properties(native-fstack-process-payload-owner PROPERTIES
-            TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;ff-owner;payload-snapshot")
+            TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;ff-owner;payload-snapshot;syncache-count")
     endif()
     add_test(NAME native-fstack-socket-drain-count-failure
         COMMAND "${Python3_EXECUTABLE}"
@@ -2381,4 +2382,9 @@ if(BUILD_TESTING)
             --pmd-root "${ker_offload_library_root}" --profile clock)
     set_tests_properties(native-fstack-realtime-startup-fatal
         PROPERTIES TIMEOUT 90 LABELS "native-tcp;fstack;fstack-newly-adapted")
+endif()
+
+include(cmake/FStackOwnerRequestsTests.cmake)
+if(BUILD_TESTING)
+    ker_add_ff_owner_requests_tests()
 endif()

@@ -165,6 +165,27 @@ int ker_sb_preload_ff_owner_payload(struct ker_socket_member_payload_snapshot *s
     return result;
 }
 
+int ker_sb_preload_ff_owner_requests(uint64_t *request_count)
+{
+    if (!request_count) { errno = EINVAL; return -1; }
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    if (!ker_sb_preload_ff_owner_active_locked()) {
+        int error = ff_owner_context_started ? EOPNOTSUPP : ENOTCONN;
+        ker_sb_preload_unlock(); errno = error; return -1;
+    }
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int result = -1;
+    if (unowned_network_activity) errno = EOPNOTSUPP;
+    else if (client && !ker_sb_preload_ff_owner_matches_locked(ff_owner_capability, client))
+        result = ker_socket_client_ff_owner_requests(client, ff_owner_capability,
+            request_count);
+    int saved = errno;
+    ker_sb_preload_unlock();
+    errno = saved;
+    return result;
+}
+
 int ker_sb_preload_ff_dispatch_begin(int fd)
 {
     if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }

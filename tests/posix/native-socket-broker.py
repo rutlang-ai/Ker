@@ -522,6 +522,7 @@ def run_ff_owner_payload_probe(args, rpc_path, capabilities):
     peers = []
     processes = []
     capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    inbound_capture = None
     table_created = False
     try:
         for port in ports:
@@ -550,11 +551,18 @@ def run_ff_owner_payload_probe(args, rpc_path, capabilities):
             b'OWNER_BEGIN_REFUSED_AFTER_LEGACY_HISTORY\n' in legacy.stdout,
             f'owner begin accepted closed legacy socket history: rc={legacy.returncode}; '
             f'stdout={legacy.stdout!r}; stderr={legacy.stderr!r}')
+        missing_owner = subprocess.run([str(args.ff_owner_payload_client),
+            '--syncache-without-owner'], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=environment, timeout=10)
+        require(missing_owner.returncode == -signal.SIGABRT and
+            b'ker fstack request-sock snapshot failed:' in missing_owner.stderr,
+            f'syncache count succeeded without an authenticated owner: '
+            f'rc={missing_owner.returncode}; stderr={missing_owner.stderr!r}')
         foreign = subprocess.run([str(args.ff_owner_payload_client), '--foreign-history'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=20)
         require(foreign.returncode == -signal.SIGABRT and
-            b'ker fstack payload snapshot failed:' in foreign.stderr,
-            f'owner pending gate accepted closed generic socket history: '
+            b'ker fstack request-sock snapshot failed:' in foreign.stderr,
+            f'owner request gate accepted closed generic socket history: '
             f'rc={foreign.returncode}; stdout={foreign.stdout!r}; stderr={foreign.stderr!r}')
         exec_history = subprocess.run([str(args.ff_owner_payload_client),
             '--foreign-history-exec'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -579,6 +587,7 @@ def run_ff_owner_payload_probe(args, rpc_path, capabilities):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=environment, bufsize=0)
         processes.append(legacy_process)
+        owner_listener_ports = []
         for port in ports:
             listeners[ports.index(port)].settimeout(1)
             deadline = time.monotonic() + 20
@@ -598,6 +607,10 @@ def run_ff_owner_payload_probe(args, rpc_path, capabilities):
                         raise RuntimeError('FF owner process did not connect within 20 seconds')
             peer.settimeout(10); peers.append(peer)
         for process in processes[:2]:
+            listener_line = read_line(process.stdout, 30, process)
+            require(listener_line.startswith('OWNER_LISTENER '),
+                f'FF owner did not publish its marked listener: {listener_line!r}')
+            owner_listener_ports.append(int(listener_line.split()[1]))
             require(read_line(process.stdout, 30, process) == 'OWNER_READY',
                 'FF owner client did not close its last application descriptor')
         require(read_line(exec_process.stdout, 30, exec_process) == 'OWNER_EXEC_READY',
@@ -608,6 +621,98 @@ def run_ff_owner_payload_probe(args, rpc_path, capabilities):
         require(read_line(legacy_process.stdout, 20, legacy_process) ==
             'OWNER_REBEGIN_REFUSED_AFTER_EXEC_HISTORY',
             'owner re-begin did not reject legacy payload history after exec')
+        for process in processes[:3]:
+            process.stdin.write(b'Q'); process.stdin.flush()
+        request_counts = []
+        for process in processes[:3]:
+            line = read_line(process.stdout, 15, process)
+            require(line.startswith('OWNER_REQUESTS '),
+                f'unexpected FF owner request-count response: {line!r}')
+            request_counts.append(int(line.split()[1]))
+        require(request_counts == [0, 0, 0],
+            f'authenticated FF owner request counts were not empty before inbound SYNs: {request_counts!r}')
+        owner_listener_port = owner_listener_ports[0]
+        census_nft('add', 'rule', 'inet', table, 'output', 'oifname', 'kerhost',
+            'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'dport', str(owner_listener_port), 'tcp', 'flags', '&',
+            '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        link = subprocess.run(['ip', '-o', 'link', 'show', 'kerhost'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        require(link.returncode == 0, f'could not read host veth identity: {link.stderr}')
+        host_mac = bytes.fromhex(re.search(r'link/ether ([0-9a-f:]+)', link.stdout)
+            .group(1).replace(':', ''))
+        host_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        host_client.settimeout(10)
+        inbound_capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        inbound_capture.bind(('kerhost', 0)); inbound_capture.settimeout(0.25)
+        connect_errors = []
+        def connect_owner_listener():
+            try: host_client.connect(('198.18.0.2', owner_listener_port))
+            except BaseException as error: connect_errors.append(error)
+        connect_thread = threading.Thread(target=connect_owner_listener, daemon=True)
+        connect_thread.start()
+        inbound_syn = inbound_synack = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and inbound_synack is None:
+            try: frame, _ = inbound_capture.recvfrom(65535)
+            except TimeoutError: continue
+            item = ipv4_tcp_frame(frame)
+            if not item: continue
+            if item['src'] == '198.18.0.1' and item['dst'] == '198.18.0.2' and \
+                    item['dport'] == owner_listener_port and item['flags'] & 0x02:
+                inbound_syn = item
+            if item['src'] == '198.18.0.2' and item['dst'] == '198.18.0.1' and \
+                    item['sport'] == owner_listener_port and item['flags'] & 0x12 == 0x12:
+                inbound_synack = item
+        require(inbound_syn is not None and inbound_synack is not None,
+            f'owner listener did not exchange wire SYN/SYN-ACK: syn={inbound_syn!r} '
+            f'synack={inbound_synack!r}; errors={connect_errors!r}')
+        rule_text = census_nft('-a', 'list', 'chain', 'inet', table, 'output')
+        rule_line = next((line for line in rule_text.splitlines()
+            if f'tcp dport {owner_listener_port}' in line), None)
+        require(rule_line is not None and
+            (counter := re.search(r'counter packets (\d+)', rule_line)) is not None and
+            int(counter.group(1)) > 0,
+            f'host ACK suppression did not drop the owner handshake ACK: {rule_text!r}')
+        query = processes[0]
+        query.stdin.write(b'Q'); query.stdin.flush()
+        request_line = read_line(query.stdout, 15, query)
+        require(request_line == 'OWNER_REQUESTS 1',
+            f'authenticated owner did not report its real marked request_sock: {request_line!r}')
+        isolated_counts = []
+        for process in processes[1:3]:
+            process.stdin.write(b'Q'); process.stdin.flush()
+            line = read_line(process.stdout, 15, process)
+            require(line.startswith('OWNER_REQUESTS '),
+                f'unexpected other-owner request response: {line!r}')
+            isolated_counts.append(int(line.split()[1]))
+        require(isolated_counts == [0, 0],
+            f'one owner request leaked into other process counts: {isolated_counts!r}')
+        ack_socket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        ack_socket.bind(('kerhost', 0))
+        ack_socket.send(inject_tcp_ack(inbound_syn, inbound_synack,
+            (inbound_synack['seq'] + 1) & 0xffffffff))
+        handle = re.search(r'# handle (\d+)$', rule_line)
+        require(handle is not None, f'could not identify temporary ACK rule: {rule_line!r}')
+        census_nft('delete', 'rule', 'inet', table, 'output', 'handle', handle.group(1))
+        inbound_capture.close()
+        connect_thread.join(5)
+        require(not connect_thread.is_alive() and not connect_errors,
+            f'host connect did not complete after raw ACK: {connect_errors!r}')
+        request_line = None
+        for _ in range(100):
+            query.stdin.write(b'Q'); query.stdin.flush()
+            request_line = read_line(query.stdout, 15, query)
+            if request_line == 'OWNER_REQUESTS 0': break
+            require(request_line == 'OWNER_REQUESTS 1',
+                f'authenticated owner returned an invalid post-ACK count: {request_line!r}')
+            time.sleep(0.01)
+        require(request_line == 'OWNER_REQUESTS 0',
+            f'authenticated owner request count did not clear after ACK: {request_line!r}')
+        query.stdin.write(b'A'); query.stdin.flush()
+        require(read_line(query.stdout, 15, query) == 'OWNER_ACCEPTED',
+            'FF owner did not accept the completed handshake')
+        ack_socket.close(); host_client.close()
         for fd in capabilities:
             os.close(fd)
         capabilities.clear()
@@ -725,10 +830,14 @@ def run_ff_owner_payload_probe(args, rpc_path, capabilities):
             output, errors = process.communicate(timeout=20)
             require(process.returncode == 0 and b'OWNER_DONE\n' in output,
                 f'FF owner process failed: rc={process.returncode}; stdout={output!r}; stderr={errors!r}')
-        print(f'C12_FF_OWNER_PAYLOAD_OK owner_pids={[p.pid for p in processes]} '
+        print(f'C13_FF_SYNCACHE_COUNT_OK owner_listener={owner_listener_port} '
+            f'wire_count=1->0 isolated={isolated_counts!r} '
+            f'C12_FF_OWNER_PAYLOAD_OK owner_pids={[p.pid for p in processes]} '
             f'partial_ack=137 exec_rebegin=true snapshots={values!r} descriptorless=true '
             f'ack_drop_packets={[item[0] for item in counters]}')
     finally:
+        if inbound_capture is not None:
+            inbound_capture.close()
         for process in processes:
             if process.poll() is None:
                 process.kill(); process.wait()

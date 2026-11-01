@@ -105,9 +105,13 @@ walks the whole process fd table, counts each IPv4/IPv6 socket alias including
 UDP, and excludes sockets whose live `SO_ACCEPTCONN` is set. Ker's adapter only
 counts authenticated broker capabilities registered in this process; direct
 FF/POSIX UDP creation and raw, unregistered fd bypasses remain unsupported.
-Reload state remains unsupported. Flow-map, dispatcher, and syncache hooks
-abort with an explicit diagnostic if reached. The runtime supplies a bounded
-`ff_socket_snd_pending` adapter for ordinary ready-copy TCP sockets created
+Reload state remains unsupported. `ff_syncache_count()` now queries the
+authenticated process owner's original-Linux request sockets through bounded
+sequential IPv4/IPv6 INET_DIAG dumps. It is a non-atomic request_sock profile,
+not a complete F-Stack syncache equivalence: full `SYN_RECV` sockets and
+stateless syncookies are excluded. Flow-map, dispatcher, and generation FSM
+hooks still abort with an explicit diagnostic if reached. The runtime supplies
+a bounded `ff_socket_snd_pending` adapter for ordinary ready-copy TCP sockets created
 through its authenticated per-process FF owner context. The broker binds a
 unique owner mark to the caller's authenticated PID, process start time, and
 pidfd; duplicated sockets retain that owner and accepted sockets inherit it.
