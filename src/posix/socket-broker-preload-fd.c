@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -406,25 +407,36 @@ int ker_sb_preload_duplicate_network_locked(int fd, int minimum, bool cloexec)
         if (!errno) errno = EBADF;
         return -1;
     }
+    if (minimum < 0) { errno = EINVAL; return -1; }
+    struct rlimit descriptor_limit;
+    if (getrlimit(RLIMIT_NOFILE, &descriptor_limit) < 0) return -1;
+    if ((rlim_t)minimum >= descriptor_limit.rlim_cur) { errno = EINVAL; return -1; }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
     if (!client) return -1;
     int duplicate = ker_socket_client_dup(client, broker_fd);
     if (duplicate < 0) return -1;
-    int target = (int)syscall(SYS_fcntl, duplicate,
-        cloexec ? F_DUPFD_CLOEXEC : F_DUPFD, minimum);
-    int error = errno;
-    if (target < 0) { (void)syscall(SYS_close, duplicate); errno = error; return -1; }
-    if (target != duplicate) (void)syscall(SYS_close, duplicate);
-    if (ker_sb_preload_register_network_locked(target)) {
-        error = errno; (void)syscall(SYS_close, target); errno = error; return -1;
+    int target = duplicate;
+    if (duplicate < minimum) {
+        target = (int)syscall(SYS_fcntl, duplicate,
+            cloexec ? F_DUPFD_CLOEXEC : F_DUPFD, minimum);
+        int error = errno;
+        (void)syscall(SYS_close, duplicate);
+        if (target < 0) { errno = error; return -1; }
     }
-    if (!cloexec) {
-        int descriptor_flags = (int)syscall(SYS_fcntl, target, F_GETFD);
-        if (descriptor_flags < 0 || syscall(SYS_fcntl, target, F_SETFD,
-                descriptor_flags & ~FD_CLOEXEC) < 0) {
-            error = errno; ker_sb_preload_remove_network_locked(target);
-            (void)syscall(SYS_close, target); errno = error; return -1;
-        }
+    if (ker_sb_preload_register_network_locked(target)) {
+        int error = errno;
+        (void)syscall(SYS_close, target);
+        errno = error;
+        return -1;
+    }
+    int descriptor_flags = (int)syscall(SYS_fcntl, target, F_GETFD);
+    if (descriptor_flags < 0 || syscall(SYS_fcntl, target, F_SETFD,
+            cloexec ? descriptor_flags | FD_CLOEXEC : descriptor_flags & ~FD_CLOEXEC) < 0) {
+        int error = errno;
+        ker_sb_preload_remove_network_locked(target);
+        (void)syscall(SYS_close, target);
+        errno = error;
+        return -1;
     }
     return target;
 }
