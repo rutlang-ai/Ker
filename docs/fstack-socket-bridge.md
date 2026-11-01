@@ -39,7 +39,9 @@ those POSIX symbols to fail if reached. It uses the FF ABI against a
 TAP-backed original-Linux TCP connection and an external host peer, verifies
 the exact 4097-byte stream, descriptor duplication and final close, option and
 FIONREAD calls, unsupported-call errors, and faulting user pointers. It also
-checks original-Linux/DPDK traffic and complete pool cleanup. This qualifies
-the leaf socket caller boundary only; it does not qualify the F-Stack Nginx
-module, nginx FD offset handling, FF runtime initialization, reload behavior,
-or the graceful-reload integration matrix.
+checks original-Linux/DPDK traffic and complete pool cleanup. The opt-in
+[`ker-fstack-nginx-runtime` profile](fstack-nginx-runtime.md) layers detached
+`graceful_reload=0` initialization and the executable FD-offset adapter over
+this bridge for one pinned Nginx worker. That separate bounded profile
+demonstrates real Nginx lifecycle behavior; this leaf bridge test alone does
+not qualify the FF runtime or the graceful-reload integration matrix.

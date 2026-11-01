@@ -101,8 +101,67 @@ target_compile_features(ker-fstack-socket-bridge PUBLIC c_std_11)
 target_compile_options(ker-fstack-socket-bridge PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ker-fstack-socket-bridge PRIVATE ker-socket-preload)
 add_library(ker::fstack-socket-bridge ALIAS ker-fstack-socket-bridge)
+
+option(KER_BUILD_FSTACK_NGINX_RUNTIME
+    "Build the bounded libfstack compatibility runtime for the pinned nginx caller profile" OFF)
+if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+    # This opt-in DSO exports the subset of the original F-Stack runtime needed
+    # by the pinned nginx caller profile. It uses the exact detached reload
+    # helpers and the C1 socket bridge; it does not initialize EAL/LKL or claim
+    # the graceful-reload data plane.
+    add_library(ker-fstack-nginx-runtime SHARED
+        src/posix/fstack-nginx-runtime.c
+        src/posix/fstack-socket-bridge.c
+        third_party/fstack-reload/ff_reload.c)
+    set_target_properties(ker-fstack-nginx-runtime PROPERTIES
+        OUTPUT_NAME fstack
+        INSTALL_RPATH "$ORIGIN")
+    target_include_directories(ker-fstack-nginx-runtime PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
+    target_include_directories(ker-fstack-nginx-runtime SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
+    target_compile_features(ker-fstack-nginx-runtime PRIVATE c_std_11)
+    target_compile_options(ker-fstack-nginx-runtime PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-fstack-nginx-runtime PRIVATE KER_FSTACK_NGINX_RUNTIME=1)
+    target_link_options(ker-fstack-nginx-runtime PRIVATE -Wl,--no-undefined)
+    set_target_properties(ker-ini PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_link_libraries(ker-fstack-nginx-runtime PRIVATE
+        ker-ini ker-socket-preload ker-socket-client Threads::Threads ${CMAKE_DL_LIBS})
+    install(TARGETS ker-fstack-nginx-runtime
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        COMPONENT fstack-nginx-runtime)
+    install(TARGETS ker-ini
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
+    install(FILES third_party/fstack-reload/LICENSE third_party/fstack-reload/UPSTREAM.json
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-nginx-runtime
+        COMPONENT fstack-nginx-runtime)
+    install(FILES third_party/inih/LICENSE third_party/inih/UPSTREAM.json
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-nginx-runtime/inih
+        COMPONENT fstack-nginx-runtime)
+    install(FILES docs/fstack-nginx-runtime.md
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-nginx-runtime
+        COMPONENT fstack-nginx-runtime)
+    if(BUILD_TESTING)
+        add_executable(ker-fstack-nginx-runtime-profile-test
+            tests/posix/fstack-nginx-runtime-profile.c)
+        target_compile_features(ker-fstack-nginx-runtime-profile-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-nginx-runtime-profile-test PRIVATE -Wall -Wextra -Werror)
+        target_link_options(ker-fstack-nginx-runtime-profile-test PRIVATE -Wl,--export-dynamic)
+        target_link_libraries(ker-fstack-nginx-runtime-profile-test PRIVATE ker-fstack-nginx-runtime)
+        add_test(NAME fstack-nginx-runtime-profile-boundaries
+            COMMAND ker-fstack-nginx-runtime-profile-test)
+    endif()
+endif()
 set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
     "Pinned no-FF nginx executable for the native socket-preload lifecycle prerequisite")
+set(KER_FSTACK_NGINX_BINARY "" CACHE FILEPATH
+    "Pinned --with-ff_module nginx executable for the bounded Ker runtime profile")
 
 add_library(ker-socket-broker-server STATIC src/posix/socket-broker-server.c)
 set_target_properties(ker-socket-broker-server PROPERTIES EXPORT_NAME socket-broker-server)
@@ -236,7 +295,8 @@ install(TARGETS ker-posix EXPORT kerTargets
 install(TARGETS ker-socket-client ker-socket-broker-server EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-socket-preload EXPORT kerTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    COMPONENT fstack-nginx-runtime)
 install(TARGETS ker-fstack-socket-bridge EXPORT kerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES
@@ -367,6 +427,23 @@ if(BUILD_TESTING)
                 --dpdk-plugin-dir "${ker_session_pmd_dir}")
         set_tests_properties(native-nginx-socket-preload-lifecycle PROPERTIES
             TIMEOUT 300 LABELS "native-tcp;fstack;socket-broker;preload;nginx-prerequisite")
+    endif()
+    if(KER_BUILD_FSTACK_NGINX_RUNTIME AND KER_FSTACK_NGINX_BINARY)
+        if(NOT EXISTS "${KER_FSTACK_NGINX_BINARY}")
+            message(FATAL_ERROR "KER_FSTACK_NGINX_BINARY does not exist")
+        endif()
+        add_test(NAME native-nginx-fstack-runtime-lifecycle
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}")
+        set_tests_properties(native-nginx-fstack-runtime-lifecycle PROPERTIES
+            TIMEOUT 420 LABELS "native-tcp;fstack;socket-broker;nginx;runtime-profile")
     endif()
 
     add_executable(ker-session-peer-drain-retry-test tests/posix/session-peer-drain-retry.c)

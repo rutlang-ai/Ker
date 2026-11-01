@@ -24,10 +24,13 @@ the F-Stack Nginx module or provide its full application runtime.
 
 Ker's [`ker::fstack-socket-bridge` leaf adapter](fstack-socket-bridge.md) can
 route selected unchanged `ff_api.h` TCP socket calls through the original-Linux
-broker. It does not initialize or run the FF application runtime, configure
-Nginx's lifecycle, integrate its executable FD offset, or implement
-reload/census operations. The leaf adapter and no-FF Nginx lifecycle are
-implemented prerequisites; the FF-enabled service path remains unqualified.
+broker. The opt-in [bounded FF-enabled Nginx runtime profile](fstack-nginx-runtime.md)
+now binds those leaves to the pinned executable's detached `graceful_reload=0`
+caller path, restores its FF fd offset, and demonstrates a one-worker
+HUP/USR2/WINCH lifecycle over original Linux TCP. It explicitly rejects
+secondary-worker initialization; multiworker `reuseport` clone ownership
+remains unsupported. The profile does not implement generation reload or
+census behavior.
 
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
@@ -58,7 +61,8 @@ Do not treat that alias as the full matrix, and do not count `LIMITED` or `SKIP`
 original result artifacts and distinguish failed or skipped profiles from
 passes.
 
-Until the FF-enabled service and its original runtime counters, drain behavior,
-fault cases and cleanup are exercised end to end, the source entry remains
-`blocked`. Neither an F-Stack-only run, the pure Nginx FSM tests, the no-FF
-Nginx lifecycle, nor the single-process caller controller completes it.
+Until the FF generation-reload service, its original runtime counters, drain
+behavior, fault cases and cleanup are exercised end to end, the source entry
+remains `blocked`. Neither an F-Stack-only run, pure Nginx FSM tests, the no-FF
+Nginx lifecycle, the bounded graceful-off Nginx profile, nor the single-process
+caller controller completes it.
