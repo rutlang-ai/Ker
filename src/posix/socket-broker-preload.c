@@ -20,10 +20,81 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+/* Keep the implementation addressable when an executable (notably the
+ * original F-Stack Nginx module) defines these POSIX symbols itself. Public
+ * preload aliases are emitted at the end of this file. */
+#define socket ker_sb_posix_socket
+#define bind ker_sb_posix_bind
+#define connect ker_sb_posix_connect
+#define listen ker_sb_posix_listen
+#define accept4 ker_sb_posix_accept4
+#define accept ker_sb_posix_accept
+#define close ker_sb_posix_close
+#define shutdown ker_sb_posix_shutdown
+#define getsockname ker_sb_posix_getsockname
+#define getpeername ker_sb_posix_getpeername
+#define setsockopt ker_sb_posix_setsockopt
+#define getsockopt ker_sb_posix_getsockopt
+#define read ker_sb_posix_read
+#define write ker_sb_posix_write
+#define send ker_sb_posix_send
+#define recv ker_sb_posix_recv
+#define sendto ker_sb_posix_sendto
+#define recvfrom ker_sb_posix_recvfrom
+#define sendmsg ker_sb_posix_sendmsg
+#define recvmsg ker_sb_posix_recvmsg
+#define readv ker_sb_posix_readv
+#define writev ker_sb_posix_writev
+#define epoll_create1 ker_sb_posix_epoll_create1
+#define epoll_create ker_sb_posix_epoll_create
+#define epoll_ctl ker_sb_posix_epoll_ctl
+#define epoll_wait ker_sb_posix_epoll_wait
+#define epoll_pwait ker_sb_posix_epoll_pwait
+#define dup ker_sb_posix_dup
+#define dup2 ker_sb_posix_dup2
+#define dup3 ker_sb_posix_dup3
+#define fcntl ker_sb_posix_fcntl
+#define ioctl ker_sb_posix_ioctl
+#define execve ker_sb_posix_execve
+#define execv ker_sb_posix_execv
+#define execl ker_sb_posix_execl
+#define execlp ker_sb_posix_execlp
+#define execle ker_sb_posix_execle
+#define execvp ker_sb_posix_execvp
+#define execvpe ker_sb_posix_execvpe
+#define fexecve ker_sb_posix_fexecve
+#define execveat ker_sb_posix_execveat
+#define sendfile ker_sb_posix_sendfile
+#define sendfile64 ker_sb_posix_sendfile64
+
 #define KER_SB_MAX_IOV 64
 #define KER_SB_IO_MAX 4096
 
 extern char **environ;
+static _Thread_local unsigned ff_dispatch_depth;
+static _Thread_local int ff_dispatch_fds[16];
+
+int ker_sb_preload_ff_dispatch_begin(int fd)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    if (ff_dispatch_depth >= sizeof(ff_dispatch_fds) / sizeof(ff_dispatch_fds[0])) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    ff_dispatch_fds[ff_dispatch_depth++] = fd;
+    return 0;
+}
+void ker_sb_preload_ff_dispatch_end(void)
+{ if (ff_dispatch_depth) --ff_dispatch_depth; }
+static bool ff_dispatch_active(int fd)
+{ return ff_dispatch_depth && ff_dispatch_fds[ff_dispatch_depth - 1] == fd; }
+static int ff_reject_host_fd(int fd)
+{
+    if (!ff_dispatch_active(fd)) return 0;
+    if (syscall(SYS_fcntl, fd, F_GETFD) < 0) { errno = EBADF; return -1; }
+    errno = EOPNOTSUPP;
+    return -1;
+}
 
 struct host_libc_functions {
     int (*socket)(int, int, int);
@@ -286,6 +357,7 @@ int bind(int fd, const struct sockaddr *address, socklen_t length)
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : (int)syscall(SYS_bind, fd, address, length);
     }
     if (length > sizeof(struct sockaddr_storage)) {
@@ -306,6 +378,7 @@ int connect(int fd, const struct sockaddr *address, socklen_t length)
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : host_connect(fd, address, length);
     }
     if (length > sizeof(struct sockaddr_storage)) {
@@ -327,6 +400,7 @@ int listen(int fd, int backlog)
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : (int)syscall(SYS_listen, fd, backlog);
     }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
@@ -341,6 +415,7 @@ int accept4(int fd, struct sockaddr *address, socklen_t *length, int flags)
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
 #ifdef SYS_accept4
         return native < 0 ? -1 : host_accept4(fd, address, length, flags);
 #else
@@ -382,9 +457,19 @@ int close(int fd)
 {
     if (!ker_sb_preload_runtime_ready()) return host_close(fd);
     ker_sb_preload_lock();
+    if (ff_dispatch_active(fd)) {
+        int cap = -1;
+        int socket = ker_sb_preload_network_fd_locked(fd, &cap);
+        if (socket != 1) {
+            ker_sb_preload_unlock();
+            if (socket == 0) return ff_reject_host_fd(fd);
+            return -1;
+        }
+    }
     int native = ker_sb_preload_any_native_locked(fd);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : host_close(fd);
     }
     int result = ker_sb_preload_close_locked(fd);
@@ -399,6 +484,7 @@ int shutdown(int fd, int how)
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : (int)syscall(SYS_shutdown, fd, how);
     }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
@@ -417,6 +503,7 @@ static int name_query(int fd, struct sockaddr *address, socklen_t *length,
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         long syscall_number = peer ? SYS_getpeername : SYS_getsockname;
         return native < 0 ? -1 : (int)syscall(syscall_number, fd, address, length);
     }
@@ -450,6 +537,7 @@ int setsockopt(int fd, int level, int option, const void *value, socklen_t lengt
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : (int)syscall(SYS_setsockopt, fd, level, option, value, length);
     }
     if (length > KER_SB_IO_MAX) { ker_sb_preload_unlock(); errno = EINVAL; return -1; }
@@ -469,6 +557,7 @@ int getsockopt(int fd, int level, int option, void *value, socklen_t *length)
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : (int)syscall(SYS_getsockopt, fd, level, option, value, length);
     }
     if (!length) { ker_sb_preload_unlock(); errno = EFAULT; return -1; }
@@ -489,15 +578,17 @@ static ssize_t native_io(int fd, void *buffer, size_t length, bool writing,
     bool *broker_native)
 {
     if (broker_native) *broker_native = false;
-    if (!ker_sb_preload_runtime_ready())
+    if (!ker_sb_preload_runtime_ready()) {
+        if (ff_reject_host_fd(fd)) return -1;
         return writing ? host_write(fd, buffer, length) : host_read(fd, buffer, length);
-    if (!descriptor_may_be_broker_capability(fd))
-        return writing ? host_write(fd, buffer, length) :
-            host_read(fd, buffer, length);
+    }
+    if (!ff_dispatch_active(fd) && !descriptor_may_be_broker_capability(fd))
+        return writing ? host_write(fd, buffer, length) : host_read(fd, buffer, length);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : writing ? host_write(fd, buffer, length) :
             host_read(fd, buffer, length);
     }
@@ -532,6 +623,7 @@ ssize_t send(int fd, const void *buffer, size_t length, int flags)
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : host_send(fd, buffer, length, flags);
     }
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
@@ -554,6 +646,7 @@ ssize_t recv(int fd, void *buffer, size_t length, int flags)
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : host_recv(fd, buffer, length, flags);
     }
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
@@ -625,6 +718,7 @@ static ssize_t vector_io(int fd, const struct iovec *user_iov, int count, bool w
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : writing ? host_writev(fd, user_iov, count) :
             host_readv(fd, user_iov, count);
     }
@@ -885,6 +979,9 @@ int fcntl(int fd, int command, ...)
         int epoll_cap = -1;
         int composite = ker_sb_preload_composite_epoll_locked(fd, &epoll_cap);
         if (composite < 0) { ker_sb_preload_unlock(); return -1; }
+        if (ff_dispatch_active(fd)) {
+            ker_sb_preload_unlock(); return ff_reject_host_fd(fd);
+        }
         if (composite && (command == F_DUPFD || command == F_DUPFD_CLOEXEC)) {
             int result = ker_sb_preload_epoll_duplicate_locked(fd, (int)argument,
                 command == F_DUPFD_CLOEXEC);
@@ -919,8 +1016,6 @@ int fcntl(int fd, int command, ...)
     ker_sb_preload_unlock(); return result;
 }
 
-extern __typeof(fcntl) fcntl64 __attribute__((alias("fcntl")));
-
 int ioctl(int fd, unsigned long request, ...)
 {
     va_list ap; va_start(ap, request); void *user_argument = va_arg(ap, void *); va_end(ap);
@@ -930,6 +1025,7 @@ int ioctl(int fd, unsigned long request, ...)
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
+        if (native == 0 && ff_reject_host_fd(fd)) return -1;
         return native < 0 ? -1 : (int)syscall(SYS_ioctl, fd, request, user_argument);
     }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
@@ -1145,3 +1241,98 @@ ssize_t sendfile64(int out_fd, int in_fd, off64_t *offset, size_t count)
 {
     return sendfile(out_fd, in_fd, (off_t *)offset, count);
 }
+
+/* POSIX aliases for LD_PRELOAD users. The bridge links against the namespaced
+ * symbols above, so executable-defined functions cannot intercept its calls. */
+#undef socket
+#undef bind
+#undef connect
+#undef listen
+#undef accept4
+#undef accept
+#undef close
+#undef shutdown
+#undef getsockname
+#undef getpeername
+#undef setsockopt
+#undef getsockopt
+#undef read
+#undef write
+#undef send
+#undef recv
+#undef sendto
+#undef recvfrom
+#undef sendmsg
+#undef recvmsg
+#undef readv
+#undef writev
+#undef epoll_create1
+#undef epoll_create
+#undef epoll_ctl
+#undef epoll_wait
+#undef epoll_pwait
+#undef dup
+#undef dup2
+#undef dup3
+#undef fcntl
+#undef ioctl
+#undef execve
+#undef execv
+#undef execl
+#undef execlp
+#undef execle
+#undef execvp
+#undef execvpe
+#undef fexecve
+#undef execveat
+#undef sendfile
+#undef sendfile64
+
+#define KER_SB_PUBLIC_ALIAS(public_name, implementation_name) \
+    extern __typeof(implementation_name) public_name \
+        __attribute__((alias(#implementation_name)))
+KER_SB_PUBLIC_ALIAS(socket, ker_sb_posix_socket);
+KER_SB_PUBLIC_ALIAS(bind, ker_sb_posix_bind);
+KER_SB_PUBLIC_ALIAS(connect, ker_sb_posix_connect);
+KER_SB_PUBLIC_ALIAS(listen, ker_sb_posix_listen);
+KER_SB_PUBLIC_ALIAS(accept4, ker_sb_posix_accept4);
+KER_SB_PUBLIC_ALIAS(accept, ker_sb_posix_accept);
+KER_SB_PUBLIC_ALIAS(close, ker_sb_posix_close);
+KER_SB_PUBLIC_ALIAS(shutdown, ker_sb_posix_shutdown);
+KER_SB_PUBLIC_ALIAS(getsockname, ker_sb_posix_getsockname);
+KER_SB_PUBLIC_ALIAS(getpeername, ker_sb_posix_getpeername);
+KER_SB_PUBLIC_ALIAS(setsockopt, ker_sb_posix_setsockopt);
+KER_SB_PUBLIC_ALIAS(getsockopt, ker_sb_posix_getsockopt);
+KER_SB_PUBLIC_ALIAS(read, ker_sb_posix_read);
+KER_SB_PUBLIC_ALIAS(write, ker_sb_posix_write);
+KER_SB_PUBLIC_ALIAS(send, ker_sb_posix_send);
+KER_SB_PUBLIC_ALIAS(recv, ker_sb_posix_recv);
+KER_SB_PUBLIC_ALIAS(sendto, ker_sb_posix_sendto);
+KER_SB_PUBLIC_ALIAS(recvfrom, ker_sb_posix_recvfrom);
+KER_SB_PUBLIC_ALIAS(sendmsg, ker_sb_posix_sendmsg);
+KER_SB_PUBLIC_ALIAS(recvmsg, ker_sb_posix_recvmsg);
+KER_SB_PUBLIC_ALIAS(readv, ker_sb_posix_readv);
+KER_SB_PUBLIC_ALIAS(writev, ker_sb_posix_writev);
+KER_SB_PUBLIC_ALIAS(epoll_create1, ker_sb_posix_epoll_create1);
+KER_SB_PUBLIC_ALIAS(epoll_create, ker_sb_posix_epoll_create);
+KER_SB_PUBLIC_ALIAS(epoll_ctl, ker_sb_posix_epoll_ctl);
+KER_SB_PUBLIC_ALIAS(epoll_wait, ker_sb_posix_epoll_wait);
+KER_SB_PUBLIC_ALIAS(epoll_pwait, ker_sb_posix_epoll_pwait);
+KER_SB_PUBLIC_ALIAS(dup, ker_sb_posix_dup);
+KER_SB_PUBLIC_ALIAS(dup2, ker_sb_posix_dup2);
+KER_SB_PUBLIC_ALIAS(dup3, ker_sb_posix_dup3);
+KER_SB_PUBLIC_ALIAS(fcntl, ker_sb_posix_fcntl);
+KER_SB_PUBLIC_ALIAS(fcntl64, ker_sb_posix_fcntl);
+KER_SB_PUBLIC_ALIAS(ioctl, ker_sb_posix_ioctl);
+KER_SB_PUBLIC_ALIAS(execve, ker_sb_posix_execve);
+KER_SB_PUBLIC_ALIAS(execv, ker_sb_posix_execv);
+KER_SB_PUBLIC_ALIAS(execl, ker_sb_posix_execl);
+KER_SB_PUBLIC_ALIAS(execlp, ker_sb_posix_execlp);
+KER_SB_PUBLIC_ALIAS(execle, ker_sb_posix_execle);
+KER_SB_PUBLIC_ALIAS(execvp, ker_sb_posix_execvp);
+KER_SB_PUBLIC_ALIAS(execvpe, ker_sb_posix_execvpe);
+KER_SB_PUBLIC_ALIAS(fexecve, ker_sb_posix_fexecve);
+KER_SB_PUBLIC_ALIAS(execveat, ker_sb_posix_execveat);
+KER_SB_PUBLIC_ALIAS(sendfile, ker_sb_posix_sendfile);
+KER_SB_PUBLIC_ALIAS(sendfile64, ker_sb_posix_sendfile64);
+#undef KER_SB_PUBLIC_ALIAS

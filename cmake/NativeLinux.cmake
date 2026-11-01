@@ -83,6 +83,24 @@ target_compile_features(ker-socket-preload PRIVATE c_std_11)
 target_compile_options(ker-socket-preload PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ker-socket-preload PRIVATE ker-socket-client Threads::Threads ${CMAKE_DL_LIBS})
 add_library(ker::socket-preload ALIAS ker-socket-preload)
+
+# Namespaced bridge for callers built against the original F-Stack socket ABI.
+# It deliberately implements only the leaf socket calls backed by the broker;
+# F-Stack startup, event, and reload APIs remain outside this target.
+add_library(ker-fstack-socket-bridge SHARED src/posix/fstack-socket-bridge.c)
+set_target_properties(ker-fstack-socket-bridge PROPERTIES
+    EXPORT_NAME fstack-socket-bridge
+    INSTALL_RPATH "$ORIGIN")
+target_include_directories(ker-fstack-socket-bridge
+    PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/ker/fstack>
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
+target_compile_features(ker-fstack-socket-bridge PUBLIC c_std_11)
+target_compile_options(ker-fstack-socket-bridge PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ker-fstack-socket-bridge PRIVATE ker-socket-preload)
+add_library(ker::fstack-socket-bridge ALIAS ker-fstack-socket-bridge)
 set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
     "Pinned no-FF nginx executable for the native socket-preload lifecycle prerequisite")
 
@@ -219,6 +237,20 @@ install(TARGETS ker-socket-client ker-socket-broker-server EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-socket-preload EXPORT kerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS ker-fstack-socket-bridge EXPORT kerTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES
+    third_party/fstack-address-policy/ff_api.h
+    third_party/fstack-address-policy/ff_event.h
+    third_party/fstack-address-policy/ff_errno.h
+    third_party/fstack-flow-map/ff_flow_map.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/ker/fstack)
+install(FILES third_party/fstack-address-policy/LICENSE
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-socket-bridge)
+install(FILES third_party/fstack-address-policy/UPSTREAM.json
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-socket-bridge)
+install(FILES third_party/fstack-flow-map/LICENSE third_party/fstack-flow-map/UPSTREAM.json
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-flow-map)
 install(TARGETS ker-io-worker ker-app
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -284,6 +316,11 @@ if(BUILD_TESTING)
             "$<TARGET_FILE:ker-preload-needed-driver>")
     set_tests_properties(native-socket-preload-needed-bootstrap PROPERTIES
         TIMEOUT 10 LABELS "native-tcp;socket-broker;preload;loader")
+    add_executable(ker-fstack-socket-bridge-client-test
+        tests/posix/fstack-socket-bridge-client.c)
+    target_link_libraries(ker-fstack-socket-bridge-client-test PRIVATE ker::fstack-socket-bridge)
+    target_compile_options(ker-fstack-socket-bridge-client-test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(ker-fstack-socket-bridge-client-test PRIVATE -Wl,--export-dynamic)
     add_test(NAME native-socket-broker-fork-exec
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
@@ -304,6 +341,17 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-posix-preload PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;preload")
+    add_test(NAME native-fstack-socket-leaf-bridge
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --fstack-client "$<TARGET_FILE:ker-fstack-socket-bridge-client-test>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-fstack-socket-leaf-bridge PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;fstack-abi")
     if(KER_NO_FF_NGINX_BINARY)
         if(NOT EXISTS "${KER_NO_FF_NGINX_BINARY}")
             message(FATAL_ERROR "KER_NO_FF_NGINX_BINARY does not exist")

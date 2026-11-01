@@ -201,6 +201,49 @@ def run_preloaded_frontend(args, rpc_path, broker, capabilities):
         raise
 
 
+def run_fstack_bridge_frontend(args, rpc_path, capabilities):
+    environment = os.environ | {
+        'LD_PRELOAD': str(args.preload_library.resolve()),
+        'KER_SOCKET_BROKER_PATH': str(rpc_path),
+        'PYTHONDONTWRITEBYTECODE': '1',
+    }
+    host_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+    host_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    host_listener.bind(('198.18.0.1', 4097)); host_listener.listen(1); host_listener.settimeout(15)
+    frontend = subprocess.Popen([str(args.fstack_client)], pass_fds=tuple(capabilities),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=environment, bufsize=0)
+    for fd in capabilities:
+        os.close(fd)
+    capabilities.clear()
+    peer = None
+    try:
+        require(read_line(frontend.stdout, 20, frontend) == 'FF_CONNECTING',
+            'FF leaf caller did not enter the original-Linux connect path')
+        peer, _ = host_listener.accept()
+        peer.settimeout(10)
+        require(read_line(frontend.stdout, 20, frontend) == 'FF_CONNECTED',
+            'FF leaf caller did not finish the original-Linux connection')
+        payload = bytes((index * 31 + 17) & 0xff for index in range(4097))
+        peer.sendall(payload)
+        require(recv_exact(peer, len(payload)) == payload,
+            'FF leaf caller did not echo the exact original-Linux stream')
+        require(peer.recv(1) == b'', 'FF leaf stream had unexpected trailing bytes')
+        output, errors = frontend.communicate(timeout=20)
+        require(frontend.returncode == 0,
+            f'FF leaf caller failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+        require(output == b'FF_STREAM_OK\n',
+            f'FF leaf caller did not confirm final descriptor/pool checks: {output!r}')
+    except BaseException:
+        if frontend.poll() is None:
+            frontend.kill(); frontend.wait()
+        raise
+    finally:
+        if peer is not None:
+            peer.close()
+        host_listener.close()
+
+
 def wait_for_path(path, timeout, description):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -452,7 +495,10 @@ def inside(args):
                     '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
                     '--port', 'net_tap0', '--eal', eal, '--stats', str(stats_path), '--',
                     str(args.broker), str(rpc_path), str(bootstrap_path)]
-                environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1'}
+                environment = os.environ | {
+                    'PYTHONDONTWRITEBYTECODE': '1',
+                    'RUNTIME_DIRECTORY': str(root),
+                }
                 broker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0,
                     start_new_session=True)
@@ -489,6 +535,26 @@ def inside(args):
                         f'original-Linux TCP/DPDK traffic or cleanup evidence missing: {stats!r}')
                     print(f'NGINX_ORIGINAL_LINUX_STATS tx={stats.get("tx")} rx={stats.get("rx")} '
                         f'passive_opens={native.get("passive_opens")} outstanding={stats.get("outstanding")}')
+                    return 0
+
+                if args.fstack_client:
+                    run_fstack_bridge_frontend(args, rpc_path, cap_fds)
+                    try:
+                        output, errors = broker.communicate(timeout=30)
+                    except subprocess.TimeoutExpired as error:
+                        broker.kill(); output, errors = broker.communicate(timeout=10)
+                        raise RuntimeError(f'broker did not stop after FF bridge closed capabilities: '
+                            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+                    require(broker.returncode == 0 and b'BROKER_DONE' in output,
+                        f'broker did not finalize FF leaf sockets: {output!r} {errors.decode(errors="replace")}')
+                    stats = json.loads(stats_path.read_text())
+                    native = stats.get('native', {})
+                    require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
+                        stats.get('outstanding') == 0 and native.get('active_opens', 0) >= 1,
+                        f'original-Linux TCP/DPDK traffic or cleanup evidence missing: {stats!r}')
+                    print('PASS: selected original F-Stack leaf APIs used namespaced preload entry points, '
+                        'preserved a 4097-byte external TCP stream, rejected unsupported leaves, and '
+                        'released the original-Linux socket')
                     return 0
 
                 if args.preload_client:
@@ -650,6 +716,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--preload-client', type=Path)
+    parser.add_argument('--fstack-client', type=Path)
     parser.add_argument('--preload-library', type=Path)
     parser.add_argument('--nginx-binary', type=Path)
     args = parser.parse_args()
@@ -663,6 +730,8 @@ def main():
             command += ['--' + name, str(getattr(args, name.replace('-', '_')).resolve())]
         if args.preload_client:
             command += ['--preload-client', str(args.preload_client.resolve())]
+        if args.fstack_client:
+            command += ['--fstack-client', str(args.fstack_client.resolve())]
         if args.preload_library:
             command += ['--preload-library', str(args.preload_library.resolve())]
         if args.nginx_binary:
