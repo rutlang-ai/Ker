@@ -38,8 +38,8 @@ for name in ('test_toeplitz', 'test_expected_rss_check', 'test_expected_rss_chec
     assert match, name
     end = test_source.index('\n}', match.start()) + 2
     expected.append(test_source[match.start():end])
-for name in ('TEST_RSS_PORT', 'TEST_RSS_NBQ', 'TEST_RSS_QID', 'TEST_RSS_RETA', 'TEST_RSS_FIRST', 'TEST_RSS_LAST'):
+for name in ('TEST_RSS_PORT', 'TEST_RSS_NBQ', 'TEST_RSS_QID', 'TEST_RSS_RETA', 'TEST_RSS_FIRST', 'TEST_RSS_LAST', 'RD_RECHECK_N'):
     expected.insert(0, next(line for line in test_source.splitlines() if line.startswith('#define ' + name + ' ')))
-expected.insert(6, 'static struct ff_rss_check_cfg g_rss_cfg;\nstatic struct ff_dpdk_if_context g_test_ctx;')
+expected.insert(7, 'static struct ff_rss_check_cfg g_rss_cfg;\nstatic struct ff_dpdk_if_context g_test_ctx;')
 assert (root / 'tests/fstack-rss-source-helpers.inc').read_text() == '\n\n'.join(expected) + '\n'
 print('complete original RSS helper declarations/functions verified')

@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 355 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 359 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 1 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 7 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 3 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为355 scenario-adapted、1 partial、7 blocked，共8项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为359 scenario-adapted、1 partial、3 blocked，共4项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -55,9 +55,9 @@ promiscuous 的运行子集。默认省略保留 PMD 状态，明确区别于 F-
 
 下面的 issue 表与当前机器清单同步；后续各批次记录保留其历史计数，当前总数以上表为准。
 
-持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共78项记录在
-[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：8项行为未完成
-（1 partial + 7 blocked），另有15项架构专用和55项上游工具链自测。
+持续迁移以固定版本的 433 项源案例为准。未完整适配及排除边界共74项记录在
+[后续清单](../tests/fstack-followups.json) 中关联一个具体 issue：4项行为未完成
+（1 partial + 3 blocked），另有15项架构专用和55项上游工具链自测。
 **建单不是迁移通过，也不会解除 `--require-complete` 的失败。**
 
 后续清单将案例分为需要适配器实现、合同差异待决策、架构专用和上游工具链专用。
@@ -69,7 +69,7 @@ API，或改写原版 Linux 协议实现。不适合直接移植的案例保留�
 | 工作组 | 源案例数 | 处置类别 | issue |
 |---|---:|---|---|
 | Design generation-aware reload, IPC and drain ownership | 3 | adaptation-needed | [#218](https://github.com/rutlang-ai/Ker/issues/218) |
-| Qualify RSS steering and queue-aware source-port contracts | 5 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
+| Qualify RSS steering and queue-aware source-port contracts | 1 | adaptation-needed | [#220](https://github.com/rutlang-ai/Ker/issues/220) |
 | Resolve FreeBSD thread context and join-result assertions | 3 | architecture-specific | [#231](https://github.com/rutlang-ai/Ker/issues/231) |
 | Record nonportable callout, kqueue, mbuf and page-array build assertions | 12 | architecture-specific | [#232](https://github.com/rutlang-ai/Ker/issues/232) |
 | Disposition upstream reload-tool self-tests and CMocka smoke cases | 55 | harness-only | [#233](https://github.com/rutlang-ai/Ker/issues/233) |
@@ -2443,6 +2443,21 @@ inverted/sub-RETA guards are exercised. Declines preserve caller output; valid
 IPv4/IPv6 synthetic reply records then route by the original software predicate
 through real `net_ring`, with the independent published-key oracle. This adds no
 Linux socket allocator or TCP source-port behavior. See [scope and
-reproduction](fstack-rss-adjust-guards.md). The current catalog is355
-scenario-adapted,1 partial,7 blocked; eight behavioral contracts remain
+reproduction](fstack-rss-adjust-guards.md). The current catalog is359
+scenario-adapted,1 partial,3 blocked; four behavioral contracts remain
 unfinished.
+
+
+### RSS ready recheck source cases
+
+The four complete unchanged recheck source functions and their literal100-loop
+constant now execute in the BSS/unready source profile. A separate primary
+ready-context fixture enables adjustment and observes the original helper's
+actual own-queue call boundary through exact upstream counting wrappers: zero
+calls with recheck off and64 per64 accepted calls with recheck on for IPv4 and
+IPv6. Every candidate is independently verified using the published key and
+RETA, then checked by the original predicate. The real net_ring caller exercises
+both modes and exact packet recovery. This adds no timing claim or Linux socket
+allocation path. See [scope and reproduction](fstack-rss-adjust-recheck.md). The
+current catalog is359 scenario-adapted,1 partial,3 blocked; four behavioral
+contracts remain unfinished.

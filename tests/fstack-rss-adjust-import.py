@@ -40,5 +40,10 @@ for name in test_manifest['cases']:
     end = test_source.index('\n}', start) + 2
     source_parts.append(test_source[start:end])
 assert (root / 'tests/fstack-rss-adjust-source.inc').read_text() == '\n\n'.join(source_parts) + '\n'
+wrapper_start = test_source.index('extern int __real_ff_rss_check(')
+wrapper_fn = test_source.index('int\n__wrap_ff_rss_check(', wrapper_start)
+wrapper6_fn = test_source.index('int\n__wrap_ff_rss_check6(', wrapper_fn)
+wrapper6_end = test_source.index('\n}', wrapper6_fn) + 2
+assert (root / 'tests' / test_manifest['wrappers']).read_text() == test_source[wrapper_start:wrapper6_end] + '\n'
 runpy.run_path(str(root / 'tests/fstack-rss-table-import.py'), run_name='__main__')
 print(f"PASS: original RSS adjustment functions, state, {len(test_manifest['cases'])} source cases, and shared helpers audited")

@@ -75,7 +75,21 @@ static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 #include "rss-functions.inc"
 static uint32_t example_rss_random32(void) { return (uint32_t)rte_rand(); }
 #define ff_arc4random example_rss_random32
+#ifdef EXAMPLE_RSS_TEST_RECHECK_WRAP
+extern int __wrap_ff_rss_check(void *, uint32_t, uint32_t, uint16_t, uint16_t);
+extern int __wrap_ff_rss_check6(void *, const uint8_t *, const uint8_t *, uint16_t, uint16_t);
+#undef ff_rss_check
+#undef ff_rss_check6
+#define ff_rss_check __wrap_ff_rss_check
+#define ff_rss_check6 __wrap_ff_rss_check6
+#endif
 #include "../third_party/fstack-rss-adjust/rss-adjust-functions.inc"
+#ifdef EXAMPLE_RSS_TEST_RECHECK_WRAP
+#undef ff_rss_check
+#undef ff_rss_check6
+#define ff_rss_check example_rss_check
+#define ff_rss_check6 example_rss_check6
+#endif
 #undef ff_arc4random
 #pragma GCC diagnostic pop
 

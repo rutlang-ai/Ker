@@ -14,12 +14,26 @@ target_link_libraries(ker-rss-table-router PRIVATE ker-example-rss-table "${ker_
 target_compile_options(ker-rss-table-router PRIVATE -Wall -Wextra -Werror)
 set_target_properties(ker-rss-table-router PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
 if(BUILD_TESTING)
+    # Private copy with the original adjustment helper's predicate call site
+    # redirected to the unchanged upstream counting wrappers. Production stays
+    # linked to ker-example-rss-table without test instrumentation.
+    add_library(ker-example-rss-table-test STATIC
+        "${PROJECT_SOURCE_DIR}/examples/rss-table-policy.c")
+    target_include_directories(ker-example-rss-table-test PUBLIC
+        "${PROJECT_SOURCE_DIR}/examples" "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-pools"
+        PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-rss-table")
+    target_link_libraries(ker-example-rss-table-test PUBLIC ker::packet_dispatcher)
+    target_compile_definitions(ker-example-rss-table-test PRIVATE EXAMPLE_RSS_TEST_RECHECK_WRAP)
+    target_compile_options(ker-example-rss-table-test PRIVATE -fwrapv)
+    set_target_properties(ker-example-rss-table-test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
     add_executable(ker-fstack-rss-adjust-source-test
         "${PROJECT_SOURCE_DIR}/tests/fstack-rss-adjust.c")
     target_include_directories(ker-fstack-rss-adjust-source-test PRIVATE
         "${PROJECT_SOURCE_DIR}/tests" "${PROJECT_SOURCE_DIR}/examples"
         "${PROJECT_SOURCE_DIR}/third_party/fstack-pools")
-    target_link_libraries(ker-fstack-rss-adjust-source-test PRIVATE ker-example-rss-table)
+    target_link_libraries(ker-fstack-rss-adjust-source-test PRIVATE ker-example-rss-table-test)
     target_compile_options(ker-fstack-rss-adjust-source-test PRIVATE -Wall -Wextra -Werror -fwrapv)
     set_target_properties(ker-fstack-rss-adjust-source-test PROPERTIES
         C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)

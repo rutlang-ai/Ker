@@ -3279,30 +3279,82 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source makes100 IPv4 adjustments with recheck=0, all declining at the unready-context guard, and asserts zero wrapped own-queue checks. The recheck branch is not reached. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged100-iteration IPv4 source body executes in the BSS/unready profile and asserts zero wrapped predicate calls. A separate genuine-ready fixture enables adjustment and confirms its original helper makes zero calls with recheck disabled; every accepted tuple matches both independent Toeplitz from the published key and the original predicate. Real caller also sends both recheck modes through net_ring. No timing or source-port allocation equivalence is claimed; see docs/fstack-rss-adjust-recheck.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport-recheck-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport-recheck-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport-recheck-off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_recheck_on",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source makes100 IPv4 adjustments with recheck=1 but the unready-context guard still prevents rechecks; zero wrapper calls plus a direct predicate-call sanity check are asserted. It does not demonstrate enabled runtime rechecking. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged100-iteration IPv4 source body executes in the BSS/unready profile and asserts zero adjustment-loop calls, then its retained direct predicate sanity call proves the wrapper. A separate ready profile enables adjustment and confirms original helper call-boundary counts are positive with recheck enabled; accepted tuples match the published-key Toeplitz oracle and original predicate. Real caller also sends both recheck modes through net_ring. No timing or source-port allocation equivalence is claimed; see docs/fstack-rss-adjust-recheck.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport-recheck-on"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport-recheck-on"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport-recheck-on"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source makes100 IPv6 adjustments with recheck=0; RETA0/unready initialization causes -1 and no wrapped predicate calls. No ready recheck branch is exercised. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged100-iteration IPv6 source body executes in the BSS/unready profile and asserts zero wrapped predicate calls. A separate genuine-ready fixture enables adjustment and confirms its original helper makes zero calls with recheck disabled; every accepted tuple matches both independent Toeplitz from the published key and the original predicate. Real caller also sends both recheck modes through net_ring. No timing or source-port allocation equivalence is claimed; see docs/fstack-rss-adjust-recheck.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport6-recheck-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport6-recheck-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport6-recheck-off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_recheck_on",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source makes100 IPv6 adjustments with recheck=1; all still decline before rechecking. A direct predicate call checks wrapper wiring, not the ready adjustment branch. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged100-iteration IPv6 source body executes in the BSS/unready profile and asserts zero adjustment-loop calls, then its retained direct predicate sanity call proves the wrapper. A separate ready profile enables adjustment and confirms original helper call-boundary counts are positive with recheck enabled; accepted tuples match the published-key Toeplitz oracle and original predicate. Real caller also sends both recheck modes through net_ring. No timing or source-port allocation equivalence is claimed; see docs/fstack-rss-adjust-recheck.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport6-recheck-on"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport6-recheck-on"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport6-recheck-on"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_microbench",

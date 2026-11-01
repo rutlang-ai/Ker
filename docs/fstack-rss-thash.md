@@ -59,7 +59,7 @@ and byte provenance. The catalog audit retains106 pinned files and433 cases;
 its21 mutation/regression tests pass. At this qualification checkpoint the
 catalog changed270/12/81 to272/12/79 (adapted/partial/blocked), leaving91
 behavioral cases incomplete. The later advisory tranches reduce
-issue220 to5 cases, all blocked; see the current [RSS contract
+issue220 to1 case, the unready microbenchmark; see the current [RSS contract
 matrix](fstack-rss-contracts.md).
 
 This is dependency arithmetic qualification. No physical PMD RX queue, actual

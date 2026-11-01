@@ -41,8 +41,8 @@ This qualification does not alter Linux socket source ports, implement a
 TCP/UDP allocator or port scan, exercise original Linux collision semantics,
 test a secondary EAL process, observe physical NIC RSS queue landing, or claim
 F-Stack PCB integration. Ker leaves automatic socket-port selection with
-original Linux. The broader table, ready guard/range, recheck and hardware RSS
-contracts remain tracked under issue #220.
+original Linux. The broader table, guard/range, microbenchmark and hardware RSS contracts
+remain tracked under issue #220.
 
 Run the focused checks from a configured build with DPDK available:
 
