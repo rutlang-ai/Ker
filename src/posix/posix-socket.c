@@ -22,6 +22,21 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
+
+int ker_posix_descriptor_kind(int fd)
+{
+    if (fd < 0) { errno = EBADF; return -1; }
+    struct ker_fd *entry = ker_fd_get(fd);
+    if (entry) {
+        int kind = KER_POSIX_DESCRIPTOR_OTHER_NATIVE;
+        if (entry->kind == KER_FD_SOCKET) kind = KER_POSIX_DESCRIPTOR_SOCKET;
+        else if (entry->kind == KER_FD_EPOLL) kind = KER_POSIX_DESCRIPTOR_EPOLL;
+        ker_fd_put(entry);
+        return kind;
+    }
+    if (syscall(SYS_fcntl, fd, F_GETFD) < 0) return -1;
+    return KER_POSIX_DESCRIPTOR_HOST;
+}
 #include <lkl.h>
 #include <lkl/linux/capability.h>
 
