@@ -69,5 +69,6 @@ ssize_t ker_sb_posix_readv(int fd, const struct iovec *vectors, int count);
 ssize_t ker_sb_posix_writev(int fd, const struct iovec *vectors, int count);
 int ker_sb_posix_fcntl(int fd, int command, ...);
 int ker_sb_posix_ioctl(int fd, unsigned long request, ...);
+int ker_sb_posix_epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event);
 
 #endif

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shlex
 import signal
@@ -289,8 +290,8 @@ def read_http_response(connection, expected_body=None, pause_before_body=0, on_b
     return content_length, digest.hexdigest()
 
 
-def request_static(address, port, path, pause_before_body=0):
-    connection = socket.create_connection((address, port), timeout=20)
+def request_static(address, port, path, pause_before_body=0, timeout=20):
+    connection = socket.create_connection((address, port), timeout=timeout)
     connection.sendall(f'GET {path} HTTP/1.1\r\nHost: ker.test\r\nConnection: close\r\n\r\n'.encode())
     try:
         return read_http_response(connection, pause_before_body=pause_before_body)
@@ -298,46 +299,90 @@ def request_static(address, port, path, pause_before_body=0):
         connection.close()
 
 
-def run_nginx_preloaded(args, rpc_path, capabilities, root):
+def wait_for_static(address, port, timeout=30):
+    deadline = time.monotonic() + timeout
+    last_error = None
+    attempts = 0
+    while time.monotonic() < deadline:
+        attempts += 1
+        try:
+            result = request_static(address, port, '/small.txt', timeout=2)
+            require(result[0] == len(b'preload-http-ok\n'),
+                f'small response length differs: {result}')
+            return result, attempts - 1
+        except (OSError, RuntimeError) as error:
+            last_error = repr(error)
+            time.sleep(0.05)
+    raise RuntimeError(f'no successful small HTTP response within {timeout}s: {last_error}')
+
+
+def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     binary = args.nginx_binary.resolve()
-    version = subprocess.run([str(binary), '-V'], capture_output=True, check=True)
-    require(b'--with-ff_module' not in version.stderr and b'--with-ff_module' not in version.stdout,
-        'the POSIX prerequisite must use the pinned no-FF nginx build')
+    fstack_profile = args.fstack_runtime is not None
+    selected_preload = str(args.preload_library.resolve())
+    if fstack_profile:
+        selected_preload = f'{args.fstack_runtime.resolve()}:{selected_preload}'
+    selected_runtime_env = os.environ | {
+        'LD_PRELOAD': selected_preload,
+        'KER_SOCKET_BROKER_PATH': str(rpc_path),
+    }
+    version = subprocess.run([str(binary), '-V'], capture_output=True, check=True,
+        env=selected_runtime_env)
+    has_ff_module = b'--with-ff_module' in version.stderr or b'--with-ff_module' in version.stdout
+    require(has_ff_module == fstack_profile,
+        'nginx build must match the selected no-FF or bounded FF runtime profile')
     prefix = root / 'nginx'; html = prefix / 'html'; logs = prefix / 'logs'
     html.mkdir(parents=True); logs.mkdir()
     large = bytes((index * 17 + 3) & 0xff for index in range(8 * 1024 * 1024))
     (html / 'large.bin').write_bytes(large)
     (html / 'small.txt').write_bytes(b'preload-http-ok\n')
     config = prefix / 'nginx.conf'
+    runtime_trace = prefix / 'fstack-runtime.trace'
+    fstack_config = prefix / 'fstack.ini'
+    if fstack_profile:
+        fstack_config.write_text(f'''[ker_socket_broker]
+version=1
+path={rpc_path}
+
+[dpdk]
+graceful_reload=0
+''')
+    runtime_config = (f'fstack_conf {fstack_config};\ntimer_resolution 1ms;\nenv KER_FSTACK_RUNTIME_TRACE;\n'
+        if fstack_profile else '')
+    sendfile = 'off' if fstack_profile else 'on'
+    reuseport = ' reuseport' if fstack_profile else ''
+    worker_count = 1 if fstack_profile else 2
     config.write_text(f'''daemon on;
 master_process on;
-worker_processes 2;
-pid {logs / 'nginx.pid'};
+worker_processes {worker_count};
+{runtime_config}pid {logs / 'nginx.pid'};
 error_log {logs / 'error.log'} notice;
 env LD_PRELOAD;
 env KER_SOCKET_BROKER_PATH;
 events {{ worker_connections 1024; use epoll; }}
 http {{
     access_log off;
-    sendfile on;
+    sendfile {sendfile};
     tcp_nopush off;
     keepalive_timeout 0;
     server {{
-        listen 198.18.0.2:4098;
+        listen 198.18.0.2:4098{reuseport};
         server_name ker.test;
         root {html};
     }}
 }}
 ''')
-    env = os.environ | {'LD_PRELOAD': str(args.preload_library.resolve()),
-        'KER_SOCKET_BROKER_PATH': str(rpc_path)}
+    env = selected_runtime_env.copy()
+    if fstack_profile:
+        env['KER_FSTACK_RUNTIME_TRACE'] = str(runtime_trace)
     command = [str(binary), '-p', str(prefix) + '/', '-c', str(config)]
     startup = subprocess.run(command, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
     require(startup.returncode == 0,
-        f'no-FF nginx did not daemonize cleanly: {startup.stderr.decode(errors="replace")}')
+        f'nginx did not daemonize cleanly: {startup.stderr.decode(errors="replace")}')
     pidfile = logs / 'nginx.pid'; oldbin = Path(str(pidfile) + '.oldbin')
     master = None; new_master = None
+    stage = 'startup'
     try:
         wait_for_path(pidfile, 20, 'initial nginx pidfile')
         master = int(pidfile.read_text().strip())
@@ -345,28 +390,40 @@ http {{
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             initial_workers = children_path.read_text().split() if children_path.exists() else []
-            if len(initial_workers) == 2: break
+            if len(initial_workers) == worker_count: break
             time.sleep(0.02)
-        require(len(initial_workers) == 2,
-            f'no-FF nginx did not start exactly two workers: {initial_workers!r}')
+        require(len(initial_workers) == worker_count,
+            f'nginx did not start exactly {worker_count} workers: {initial_workers!r}')
         deadline = time.monotonic() + 20
+        stage = 'initial HTTP request'
+        first_request_error = None
         while time.monotonic() < deadline:
             try:
                 response = request_static('198.18.0.2', 4098, '/small.txt')
                 require(response[0] == len(b'preload-http-ok\n'), f'small response length differs: {response}')
                 break
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError) as error:
+                first_request_error = repr(error)
                 time.sleep(0.05)
         else:
-            raise RuntimeError('nginx did not serve its first request through the preload broker')
-        for fd in capabilities:
-            os.close(fd)
-        capabilities.clear()
+            error_log = (logs / 'error.log').read_text() if (logs / 'error.log').exists() else '<missing>'
+            trace = runtime_trace.read_text() if runtime_trace.exists() else '<missing>'
+            raise RuntimeError('nginx did not serve its first request through the selected broker caller; '
+                f'last_request_error={first_request_error}; error_log={error_log!r}; runtime_trace={trace!r}')
+        require(len(capabilities) == 2,
+            f'broker bootstrap returned {len(capabilities)} capabilities, expected listener and epoll')
+        os.close(capabilities[0])
+        # Keep the bootstrap epoll capability only in the supervisor. The
+        # fixture broker exits when its last object closes; retaining this
+        # anchor lets a replacement FF worker reconnect after the old worker
+        # releases its own sockets. Nginx never inherits or registers it.
+        capabilities[:] = [capabilities[1]]
 
         # Hold twelve real TCP streams after body delivery starts, then HUP the
-        # master while each worker has a backpressured original-Linux sendfile.
+        # master while workers have backpressured original-Linux file responses.
         all_started = threading.Event(); start_count = 0; start_lock = threading.Lock()
         results = []; errors = []
+        transition_retries = {}
         def mark_started():
             nonlocal start_count
             with start_lock:
@@ -383,8 +440,13 @@ http {{
             except BaseException as error:
                 errors.append(error)
         threads = [threading.Thread(target=active_stream) for _ in range(12)]
+        stage = 'HUP active streams'
         for thread in threads: thread.start()
-        require(all_started.wait(20), f'only {start_count} of 12 streams received initial body bytes')
+        if not all_started.wait(20):
+            error_log = (logs / 'error.log').read_text() if (logs / 'error.log').exists() else '<missing>'
+            trace = runtime_trace.read_text() if runtime_trace.exists() else '<missing>'
+            raise RuntimeError(f'only {start_count} of 12 streams received initial body bytes; '
+                f'errors={errors!r}; error_log={error_log!r}; runtime_trace={trace!r}')
         os.kill(master, signal.SIGHUP)
         for thread in threads: thread.join(timeout=60)
         require(not any(thread.is_alive() for thread in threads), 'active nginx streams did not finish after HUP')
@@ -395,16 +457,22 @@ http {{
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             current_workers = children_path.read_text().split() if children_path.exists() else []
-            if len(current_workers) == 2 and not (set(initial_workers) & set(current_workers)):
+            if len(current_workers) == worker_count and not (set(initial_workers) & set(current_workers)):
                 break
             time.sleep(0.05)
-        require(len(current_workers) == 2 and not (set(initial_workers) & set(current_workers)),
-            f'HUP did not replace the two nginx workers: before={initial_workers!r} after={current_workers!r}')
-        small_length, _ = request_static('198.18.0.2', 4098, '/small.txt')
-        require(small_length == len(b'preload-http-ok\n'), 'fresh HTTP request failed after HUP')
+        require(len(current_workers) == worker_count and not (set(initial_workers) & set(current_workers)),
+            f'HUP did not replace the nginx workers: before={initial_workers!r} after={current_workers!r}')
+        stage = 'HTTP after HUP'
+        if fstack_profile:
+            _, transition_retries['hup'] = wait_for_static('198.18.0.2', 4098)
+        else:
+            response = request_static('198.18.0.2', 4098, '/small.txt')
+            require(response[0] == len(b'preload-http-ok\n'), 'fresh HTTP request failed after HUP')
 
-        # USR2 must exec the same no-FF image, publish a replacement master,
-        # and preserve the original-Linux listener descriptor across exec.
+        # USR2 must exec the same image and publish a replacement master. The
+        # no-FF caller inherits its listener across exec; the FF runtime profile
+        # opens the worker-owned listener after replacement-master startup.
+        stage = 'USR2 active stream'
         usr2_started = threading.Event(); usr2_result = []
         def usr2_stream():
             connection = socket.create_connection(('198.18.0.2', 4098), timeout=20)
@@ -433,9 +501,14 @@ http {{
         require(not usr2_thread.is_alive() and usr2_result and
             usr2_result[0] == (len(large), expected_digest),
             f'active stream did not survive USR2 handover: {usr2_result!r}')
-        post_usr2_length, _ = request_static('198.18.0.2', 4098, '/small.txt')
-        require(post_usr2_length == len(b'preload-http-ok\n'), 'new nginx master did not serve after USR2')
+        stage = 'HTTP after USR2'
+        if fstack_profile:
+            _, transition_retries['usr2'] = wait_for_static('198.18.0.2', 4098)
+        else:
+            response = request_static('198.18.0.2', 4098, '/small.txt')
+            require(response[0] == len(b'preload-http-ok\n'), 'new nginx master did not serve after USR2')
         os.kill(master, signal.SIGWINCH)
+        stage = 'WINCH retirement'
         deadline = time.monotonic() + 20
         old_children = []
         while time.monotonic() < deadline:
@@ -449,18 +522,62 @@ http {{
             'old nginx workers remained after WINCH: children=' +
             ' '.join(old_children) +
             '; error_log=' + (logs / 'error.log').read_text())
-        post_winch_length, _ = request_static('198.18.0.2', 4098, '/small.txt')
-        require(post_winch_length == len(b'preload-http-ok\n'),
-            'replacement nginx master stopped serving after old workers retired')
+        stage = 'HTTP after WINCH'
+        if fstack_profile:
+            _, transition_retries['winch'] = wait_for_static('198.18.0.2', 4098)
+        else:
+            response = request_static('198.18.0.2', 4098, '/small.txt')
+            require(response[0] == len(b'preload-http-ok\n'),
+                'replacement nginx master stopped serving after old workers retired')
         os.kill(master, signal.SIGQUIT); os.kill(new_master, signal.SIGQUIT)
         reap_frontend_child(master, 20)
         reap_frontend_child(new_master, 20)
-        print(f'NGINX_POSIX_PRELOAD_OK active_streams=12 body_bytes={len(large)} sha256={expected_digest} '
-            f'old_master={master} new_master={new_master} sendfile=on')
+        require(broker.poll() is None and rpc_path.exists(),
+            'supervisor epoll anchor did not keep the RPC broker alive after nginx retirement')
+        time.sleep(0.05)
+        require(broker.poll() is None and rpc_path.exists(),
+            'supervisor epoll anchor did not preserve the broker endpoint over its bounded lifetime check')
+        for fd in capabilities:
+            os.close(fd)
+        capabilities.clear()
+        if fstack_profile:
+            trace_lines = runtime_trace.read_text().splitlines()
+            init_lines = [line for line in trace_lines if line.startswith('ff_init ')]
+            leaf_lines = [line for line in trace_lines if line.startswith('ff_epoll_ctl ')
+                and 'target=ff ' in line and 'result=0' in line]
+            api_lines = [line for line in trace_lines if line.startswith('ff_leaf ')]
+            require(len(init_lines) >= 3 and all('graceful_reload=0 attached=0 active=0 target=0' in line
+                for line in init_lines), f'FF runtime did not retain the original detached graceful-off view: {init_lines!r}')
+            require(leaf_lines, 'Nginx did not register any offset FF descriptors through the runtime adapter')
+            for api in ('ff_socket', 'ff_bind', 'ff_listen', 'ff_accept', 'ff_recv', 'ff_writev'):
+                require(any(f'name={api} ' in line and 'first=success' in line for line in api_lines),
+                    f'Nginx did not reach a successful original FF leaf {api}: {api_lines!r}')
+            clear_masks = [int(match.group(1), 16) for line in trace_lines
+                if (match := re.search(r'ff_epoll_ctl .*events=(0x[0-9a-fA-F]+)', line))]
+            require(any(mask & 0x80000000 and not (mask & 0x20) for mask in clear_masks),
+                f'FF EV_CLEAR was not adapted to Linux EPOLLET: {clear_masks!r}')
+            print(f'NGINX_FSTACK_RUNTIME_OK workers={worker_count} active_streams=12 body_bytes={len(large)} sha256={expected_digest} '
+                f'ff_epoll_ctl_successes={len(leaf_lines)} ff_api_trace_events={len(api_lines)} init_calls={len(init_lines)} '
+                f'post_transition_retries={transition_retries} sendfile=off')
+        else:
+            print(f'NGINX_POSIX_PRELOAD_OK active_streams=12 body_bytes={len(large)} sha256={expected_digest} '
+                f'old_master={master} new_master={new_master} sendfile=on')
         return {'master': None}
-    except BaseException:
+    except BaseException as error:
         stop_frontend_children((master, new_master))
-        raise
+        for fd in capabilities:
+            try: os.close(fd)
+            except OSError: pass
+        capabilities.clear()
+        stats_path = root / 'stats.json'
+        deadline = time.monotonic() + 8
+        while not stats_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        stats = stats_path.read_text() if stats_path.exists() else '<not finalized>'
+        error_log = (logs / 'error.log').read_text() if (logs / 'error.log').exists() else '<missing>'
+        trace = runtime_trace.read_text() if runtime_trace.exists() else '<missing>'
+        raise RuntimeError(f'{error}; stage={stage}; error_log={error_log!r}; '
+            f'runtime_trace={trace!r}; broker_stats={stats}') from error
 
 
 def inside(args):
@@ -519,7 +636,7 @@ def inside(args):
                 require(broker_line == 'BROKER_READY', f'broker failed to enter its request loop: {broker_line}')
 
                 if args.nginx_binary:
-                    run_nginx_preloaded(args, rpc_path, cap_fds, root)
+                    run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
                     try:
                         output, errors = broker.communicate(timeout=40)
                     except subprocess.TimeoutExpired as error:
@@ -719,6 +836,7 @@ def main():
     parser.add_argument('--fstack-client', type=Path)
     parser.add_argument('--preload-library', type=Path)
     parser.add_argument('--nginx-binary', type=Path)
+    parser.add_argument('--fstack-runtime', type=Path)
     args = parser.parse_args()
     if not args.inside:
         if args.nginx_binary:
@@ -736,6 +854,8 @@ def main():
             command += ['--preload-library', str(args.preload_library.resolve())]
         if args.nginx_binary:
             command += ['--nginx-binary', str(args.nginx_binary.resolve())]
+        if args.fstack_runtime:
+            command += ['--fstack-runtime', str(args.fstack_runtime.resolve())]
         return subprocess.run(command).returncode
     try:
         return inside(args)

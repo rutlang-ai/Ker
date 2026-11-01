@@ -18,10 +18,18 @@ static int unsupported(void)
     return -1;
 }
 
+#ifdef KER_FSTACK_NGINX_RUNTIME
+extern void ker_fstack_runtime_trace_leaf(const char *name, int fd, long result);
+#define FF_TRACE(fd, result) ker_fstack_runtime_trace_leaf(__func__, (fd), (long)(result))
+#else
+#define FF_TRACE(fd, result) ((void)0)
+#endif
+
 #define FF_DISPATCH_RETURN(type, expression) do { \
     if (ker_sb_preload_ff_dispatch_begin(fd)) return (type)-1; \
     type result = (expression); \
     int saved_errno = errno; \
+    FF_TRACE(fd, result); \
     ker_sb_preload_ff_dispatch_end(); \
     errno = saved_errno; \
     return result; \
@@ -34,7 +42,9 @@ int ff_socket(int domain, int type, int protocol)
     int base = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (base != SOCK_STREAM || (protocol && protocol != IPPROTO_TCP))
         return unsupported();
-    return ker_sb_posix_socket(family, type, protocol);
+    int fd = ker_sb_posix_socket(family, type, protocol);
+    FF_TRACE(-1, fd);
+    return fd;
 }
 
 int ff_bind(int fd, const struct linux_sockaddr *address, socklen_t length)
