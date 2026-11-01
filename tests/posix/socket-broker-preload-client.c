@@ -604,6 +604,20 @@ static int common_checks(int listener, int inherited_epoll)
     CHECK(cancel_blocked_composite_epoll() == 0);
     CHECK(fork_closes_vanished_wait_pins(inherited_epoll) == 0);
 
+    int large_host_epoll = (int)syscall(SYS_epoll_create1, EPOLL_CLOEXEC);
+    CHECK(large_host_epoll >= 0);
+    struct epoll_event *large_events = calloc(5000, sizeof(*large_events));
+    CHECK(large_events != NULL);
+    CHECK(epoll_wait(large_host_epoll, large_events, 5000, 0) == 0);
+    sigset_t wait_mask; sigemptyset(&wait_mask);
+    CHECK(epoll_pwait(large_host_epoll, large_events, 5000, 0, &wait_mask) == 0);
+    errno = 0;
+    CHECK(epoll_wait(epoll_fd, large_events, 5000, 0) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(epoll_pwait(epoll_fd, large_events, 5000, 0, &wait_mask) == -1 && errno == EINVAL);
+    free(large_events);
+    CHECK(close(large_host_epoll) == 0);
+
     int epoll_alias = dup(epoll_fd); CHECK(epoll_alias >= 0);
     CHECK(close(epoll_alias) == 0);
     int inner_epoll = epoll_create1(EPOLL_CLOEXEC); CHECK(inner_epoll >= 0);

@@ -6,6 +6,7 @@
 #include <linux/limits.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,7 @@ struct epoll_entry {
 struct wait_pin_entry { int host_fd; int broker_fd; pid_t owner_tid; };
 
 static pthread_mutex_t preload_lock = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool preload_runtime_initialized = ATOMIC_VAR_INIT(false);
 static _Thread_local sigset_t preload_saved_signal_mask;
 static _Thread_local unsigned preload_lock_depth;
 static _Thread_local pid_t preload_fork_owner_tid;
@@ -41,6 +43,11 @@ static struct network_entry network_fds[PRELOAD_FD_SLOTS];
 static struct epoll_entry epoll_fds[PRELOAD_FD_SLOTS];
 static int private_fds[PRELOAD_PRIVATE_SLOTS];
 static struct wait_pin_entry wait_pins[PRELOAD_WAIT_SLOTS];
+
+int ker_sb_preload_runtime_ready(void)
+{
+    return atomic_load_explicit(&preload_runtime_initialized, memory_order_acquire);
+}
 
 struct linux_dirent64 {
     uint64_t inode;
@@ -719,4 +726,5 @@ __attribute__((constructor)) static void socket_broker_preload_initialize(void)
         (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
         _exit(127);
     }
+    atomic_store_explicit(&preload_runtime_initialized, true, memory_order_release);
 }

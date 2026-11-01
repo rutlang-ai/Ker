@@ -254,6 +254,21 @@ if(BUILD_TESTING)
     target_compile_features(ker-socket-broker-preload-client-test PRIVATE c_std_11)
     target_compile_options(ker-socket-broker-preload-client-test PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-socket-broker-preload-client-test PRIVATE Threads::Threads)
+    add_library(ker-preload-constructor-probe SHARED
+        tests/posix/preload-constructor-probe.c)
+    target_compile_options(ker-preload-constructor-probe PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-preload-constructor-probe PRIVATE ${CMAKE_DL_LIBS})
+    add_executable(ker-preload-constructor-driver
+        tests/posix/preload-constructor-driver.c)
+    target_compile_options(ker-preload-constructor-driver PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-preload-constructor-driver PRIVATE ker-preload-constructor-probe)
+    target_link_libraries(ker-preload-constructor-driver PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME native-socket-preload-constructor-bootstrap
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "LD_PRELOAD=$<TARGET_FILE:ker-socket-preload>"
+            "$<TARGET_FILE:ker-preload-constructor-driver>")
+    set_tests_properties(native-socket-preload-constructor-bootstrap PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;socket-broker;preload;constructor")
     add_test(NAME native-socket-broker-fork-exec
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"

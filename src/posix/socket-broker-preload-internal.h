@@ -10,6 +10,7 @@
 
 void ker_sb_preload_lock(void);
 void ker_sb_preload_unlock(void);
+int ker_sb_preload_runtime_ready(void);
 int ker_sb_preload_resolve_host_functions(void);
 int ker_sb_preload_host_epoll_pwait(int epfd, struct epoll_event *events,
     int maximum, int timeout, const sigset_t *mask);

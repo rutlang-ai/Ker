@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -25,6 +26,7 @@
 extern char **environ;
 
 struct host_libc_functions {
+    int (*socket)(int, int, int);
     int (*close)(int);
     ssize_t (*read)(int, void *, size_t);
     ssize_t (*write)(int, const void *, size_t);
@@ -47,6 +49,12 @@ struct host_libc_functions {
 };
 
 static struct host_libc_functions host_libc;
+static atomic_bool host_libc_initialized = ATOMIC_VAR_INIT(false);
+
+static bool host_libc_ready(void)
+{
+    return atomic_load_explicit(&host_libc_initialized, memory_order_acquire);
+}
 
 int ker_sb_preload_resolve_host_functions(void)
 {
@@ -54,6 +62,7 @@ int ker_sb_preload_resolve_host_functions(void)
     host_libc.member = (__typeof__(host_libc.member))dlsym(RTLD_NEXT, symbol); \
     if (!host_libc.member) { errno = ENOSYS; return -1; } \
 } while (0)
+    RESOLVE_HOST_FUNCTION(socket, "socket");
     RESOLVE_HOST_FUNCTION(close, "close");
     RESOLVE_HOST_FUNCTION(read, "read");
     RESOLVE_HOST_FUNCTION(write, "write");
@@ -72,13 +81,139 @@ int ker_sb_preload_resolve_host_functions(void)
     RESOLVE_HOST_FUNCTION(fcntl, "fcntl");
     RESOLVE_HOST_FUNCTION(sendfile, "sendfile");
 #undef RESOLVE_HOST_FUNCTION
+    atomic_store_explicit(&host_libc_initialized, true, memory_order_release);
     return 0;
+}
+
+static int host_socket(int domain, int type, int protocol)
+{
+    return host_libc_ready() ? host_libc.socket(domain, type, protocol) :
+        (int)syscall(SYS_socket, domain, type, protocol);
+}
+
+static int host_close(int fd)
+{
+    return host_libc_ready() ? host_libc.close(fd) : (int)syscall(SYS_close, fd);
+}
+
+static int host_connect(int fd, const struct sockaddr *address, socklen_t length)
+{
+    return host_libc_ready() ? host_libc.connect(fd, address, length) :
+        (int)syscall(SYS_connect, fd, address, length);
+}
+
+static int host_accept(int fd, struct sockaddr *address, socklen_t *length)
+{
+    return host_libc_ready() ? host_libc.accept(fd, address, length) :
+        (int)syscall(SYS_accept, fd, address, length);
+}
+
+static int host_accept4(int fd, struct sockaddr *address, socklen_t *length, int flags)
+{
+#ifdef SYS_accept4
+    if (host_libc_ready()) return host_libc.accept4(fd, address, length, flags);
+    if (!flags) return host_accept(fd, address, length);
+    return (int)syscall(SYS_accept4, fd, address, length, flags);
+#else
+    if (flags) { errno = EINVAL; return -1; }
+    return host_accept(fd, address, length);
+#endif
+}
+
+static ssize_t host_read(int fd, void *buffer, size_t length)
+{
+    return host_libc_ready() ? host_libc.read(fd, buffer, length) :
+        (ssize_t)syscall(SYS_read, fd, buffer, length);
+}
+
+static ssize_t host_write(int fd, const void *buffer, size_t length)
+{
+    return host_libc_ready() ? host_libc.write(fd, buffer, length) :
+        (ssize_t)syscall(SYS_write, fd, buffer, length);
+}
+
+static ssize_t host_readv(int fd, const struct iovec *vectors, int count)
+{
+    return host_libc_ready() ? host_libc.readv(fd, vectors, count) :
+        (ssize_t)syscall(SYS_readv, fd, vectors, count);
+}
+
+static ssize_t host_writev(int fd, const struct iovec *vectors, int count)
+{
+    return host_libc_ready() ? host_libc.writev(fd, vectors, count) :
+        (ssize_t)syscall(SYS_writev, fd, vectors, count);
+}
+
+static ssize_t host_send(int fd, const void *buffer, size_t length, int flags)
+{
+    return host_libc_ready() ? host_libc.send(fd, buffer, length, flags) :
+        (ssize_t)syscall(SYS_sendto, fd, buffer, length, flags, NULL, 0);
+}
+
+static ssize_t host_recv(int fd, void *buffer, size_t length, int flags)
+{
+    return host_libc_ready() ? host_libc.recv(fd, buffer, length, flags) :
+        (ssize_t)syscall(SYS_recvfrom, fd, buffer, length, flags, NULL, NULL);
+}
+
+static ssize_t host_sendto(int fd, const void *buffer, size_t length, int flags,
+    const struct sockaddr *address, socklen_t address_length)
+{
+    return host_libc_ready() ? host_libc.sendto(fd, buffer, length, flags, address,
+        address_length) : (ssize_t)syscall(SYS_sendto, fd, buffer, length, flags,
+        address, address_length);
+}
+
+static ssize_t host_recvfrom(int fd, void *buffer, size_t length, int flags,
+    struct sockaddr *address, socklen_t *address_length)
+{
+    return host_libc_ready() ? host_libc.recvfrom(fd, buffer, length, flags, address,
+        address_length) : (ssize_t)syscall(SYS_recvfrom, fd, buffer, length, flags,
+        address, address_length);
+}
+
+static ssize_t host_sendmsg(int fd, const struct msghdr *message, int flags)
+{
+    return host_libc_ready() ? host_libc.sendmsg(fd, message, flags) :
+        (ssize_t)syscall(SYS_sendmsg, fd, message, flags);
+}
+
+static ssize_t host_recvmsg(int fd, struct msghdr *message, int flags)
+{
+    return host_libc_ready() ? host_libc.recvmsg(fd, message, flags) :
+        (ssize_t)syscall(SYS_recvmsg, fd, message, flags);
+}
+
+static int host_fcntl_none(int fd, int command)
+{
+    return host_libc_ready() ? host_libc.fcntl(fd, command) :
+        (int)syscall(SYS_fcntl, fd, command);
+}
+
+static int host_fcntl_integer(int fd, int command, unsigned long argument)
+{
+    return host_libc_ready() ? host_libc.fcntl(fd, command, argument) :
+        (int)syscall(SYS_fcntl, fd, command, argument);
+}
+
+static int host_fcntl_pointer(int fd, int command, void *argument)
+{
+    return host_libc_ready() ? host_libc.fcntl(fd, command, argument) :
+        (int)syscall(SYS_fcntl, fd, command, argument);
+}
+
+static ssize_t host_sendfile(int output, int input, off_t *offset, size_t count)
+{
+    return host_libc_ready() ? host_libc.sendfile(output, input, offset, count) :
+        (ssize_t)syscall(SYS_sendfile, output, input, offset, count);
 }
 
 int ker_sb_preload_host_epoll_pwait(int epfd, struct epoll_event *events,
     int maximum, int timeout, const sigset_t *mask)
 {
-    return host_libc.epoll_pwait(epfd, events, maximum, timeout, mask);
+    return host_libc_ready() ? host_libc.epoll_pwait(epfd, events, maximum, timeout, mask) :
+        (int)syscall(SYS_epoll_pwait, epfd, events, maximum, timeout, mask,
+            sizeof(uint64_t));
 }
 
 static int copy_in(void *destination, const void *source, size_t length)
@@ -115,8 +250,12 @@ static int native_socket_fd(int fd, int *cap_fd)
 
 int socket(int domain, int type, int protocol)
 {
+    if (!ker_sb_preload_runtime_ready()) {
+        if (domain == AF_INET || domain == AF_INET6) { errno = ENOTCONN; return -1; }
+        return host_socket(domain, type, protocol);
+    }
     if (domain != AF_INET && domain != AF_INET6)
-        return (int)syscall(SYS_socket, domain, type, protocol);
+        return host_socket(domain, type, protocol);
     int base_type = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (base_type != SOCK_STREAM || (protocol != 0 && protocol != IPPROTO_TCP)) {
         errno = EOPNOTSUPP; return -1;
@@ -134,6 +273,8 @@ int socket(int domain, int type, int protocol)
 
 int bind(int fd, const struct sockaddr *address, socklen_t length)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_bind, fd, address, length);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
@@ -153,11 +294,12 @@ int bind(int fd, const struct sockaddr *address, socklen_t length)
 
 int connect(int fd, const struct sockaddr *address, socklen_t length)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_connect(fd, address, length);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : host_libc.connect(fd, address, length);
+        return native < 0 ? -1 : host_connect(fd, address, length);
     }
     if (length > sizeof(struct sockaddr_storage)) {
         ker_sb_preload_unlock(); errno = EINVAL; return -1;
@@ -172,6 +314,8 @@ int connect(int fd, const struct sockaddr *address, socklen_t length)
 
 int listen(int fd, int backlog)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_listen, fd, backlog);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
@@ -185,15 +329,16 @@ int listen(int fd, int backlog)
 
 int accept4(int fd, struct sockaddr *address, socklen_t *length, int flags)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_accept4(fd, address, length, flags);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
 #ifdef SYS_accept4
-        return native < 0 ? -1 : host_libc.accept4(fd, address, length, flags);
+        return native < 0 ? -1 : host_accept4(fd, address, length, flags);
 #else
         if (flags) { errno = EINVAL; return -1; }
-        return native < 0 ? -1 : host_libc.accept(fd, address, length);
+        return native < 0 ? -1 : host_accept(fd, address, length);
 #endif
     }
     struct sockaddr_storage local = {0};
@@ -228,11 +373,12 @@ int accept(int fd, struct sockaddr *address, socklen_t *length)
 
 int close(int fd)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_close(fd);
     ker_sb_preload_lock();
     int native = ker_sb_preload_any_native_locked(fd);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : host_libc.close(fd);
+        return native < 0 ? -1 : host_close(fd);
     }
     int result = ker_sb_preload_close_locked(fd);
     ker_sb_preload_unlock(); return result;
@@ -240,6 +386,8 @@ int close(int fd)
 
 int shutdown(int fd, int how)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_shutdown, fd, how);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
@@ -254,6 +402,10 @@ int shutdown(int fd, int how)
 static int name_query(int fd, struct sockaddr *address, socklen_t *length,
     bool peer)
 {
+    if (!ker_sb_preload_runtime_ready()) {
+        long number = peer ? SYS_getpeername : SYS_getsockname;
+        return (int)syscall(number, fd, address, length);
+    }
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
@@ -285,6 +437,8 @@ int getpeername(int fd, struct sockaddr *address, socklen_t *length)
 
 int setsockopt(int fd, int level, int option, const void *value, socklen_t length)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_setsockopt, fd, level, option, value, length);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
@@ -302,6 +456,8 @@ int setsockopt(int fd, int level, int option, const void *value, socklen_t lengt
 
 int getsockopt(int fd, int level, int option, void *value, socklen_t *length)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_getsockopt, fd, level, option, value, length);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
@@ -326,15 +482,17 @@ static ssize_t native_io(int fd, void *buffer, size_t length, bool writing,
     bool *broker_native)
 {
     if (broker_native) *broker_native = false;
+    if (!ker_sb_preload_runtime_ready())
+        return writing ? host_write(fd, buffer, length) : host_read(fd, buffer, length);
     if (!descriptor_may_be_broker_capability(fd))
-        return writing ? host_libc.write(fd, buffer, length) :
-            host_libc.read(fd, buffer, length);
+        return writing ? host_write(fd, buffer, length) :
+            host_read(fd, buffer, length);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : writing ? host_libc.write(fd, buffer, length) :
-            host_libc.read(fd, buffer, length);
+        return native < 0 ? -1 : writing ? host_write(fd, buffer, length) :
+            host_read(fd, buffer, length);
     }
     if (broker_native) *broker_native = true;
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
@@ -363,10 +521,11 @@ ssize_t write(int fd, const void *buffer, size_t length)
 
 ssize_t send(int fd, const void *buffer, size_t length, int flags)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_send(fd, buffer, length, flags);
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : host_libc.send(fd, buffer, length, flags);
+        return native < 0 ? -1 : host_send(fd, buffer, length, flags);
     }
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
     unsigned char local[KER_SB_IO_MAX];
@@ -384,10 +543,11 @@ ssize_t send(int fd, const void *buffer, size_t length, int flags)
 
 ssize_t recv(int fd, void *buffer, size_t length, int flags)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_recv(fd, buffer, length, flags);
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : host_libc.recv(fd, buffer, length, flags);
+        return native < 0 ? -1 : host_recv(fd, buffer, length, flags);
     }
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
     unsigned char local[KER_SB_IO_MAX];
@@ -400,6 +560,8 @@ ssize_t recv(int fd, void *buffer, size_t length, int flags)
 ssize_t sendto(int fd, const void *buffer, size_t length, int flags,
     const struct sockaddr *address, socklen_t address_length)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return host_sendto(fd, buffer, length, flags, address, address_length);
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
     ker_sb_preload_unlock();
@@ -408,12 +570,14 @@ ssize_t sendto(int fd, const void *buffer, size_t length, int flags,
         if (address || address_length) { errno = EOPNOTSUPP; return -1; }
         return send(fd, buffer, length, flags);
     }
-    return host_libc.sendto(fd, buffer, length, flags, address, address_length);
+    return host_sendto(fd, buffer, length, flags, address, address_length);
 }
 
 ssize_t recvfrom(int fd, void *buffer, size_t length, int flags,
     struct sockaddr *address, socklen_t *address_length)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return host_recvfrom(fd, buffer, length, flags, address, address_length);
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
     ker_sb_preload_unlock();
@@ -422,36 +586,40 @@ ssize_t recvfrom(int fd, void *buffer, size_t length, int flags,
         if (address || address_length) { errno = EOPNOTSUPP; return -1; }
         return recv(fd, buffer, length, flags);
     }
-    return host_libc.recvfrom(fd, buffer, length, flags, address, address_length);
+    return host_recvfrom(fd, buffer, length, flags, address, address_length);
 }
 
 ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_sendmsg(fd, message, flags);
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
     ker_sb_preload_unlock();
     if (native < 0) return -1;
     if (native) { errno = EOPNOTSUPP; return -1; }
-    return host_libc.sendmsg(fd, message, flags);
+    return host_sendmsg(fd, message, flags);
 }
 
 ssize_t recvmsg(int fd, struct msghdr *message, int flags)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_recvmsg(fd, message, flags);
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
     ker_sb_preload_unlock();
     if (native < 0) return -1;
     if (native) { errno = EOPNOTSUPP; return -1; }
-    return host_libc.recvmsg(fd, message, flags);
+    return host_recvmsg(fd, message, flags);
 }
 
 static ssize_t vector_io(int fd, const struct iovec *user_iov, int count, bool writing)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return writing ? host_writev(fd, user_iov, count) : host_readv(fd, user_iov, count);
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : writing ? host_libc.writev(fd, user_iov, count) :
-            host_libc.readv(fd, user_iov, count);
+        return native < 0 ? -1 : writing ? host_writev(fd, user_iov, count) :
+            host_readv(fd, user_iov, count);
     }
     if (count < 0 || count > KER_SB_MAX_IOV) { ker_sb_preload_unlock(); errno = EINVAL; return -1; }
     struct iovec vectors[KER_SB_MAX_IOV];
@@ -494,6 +662,7 @@ ssize_t writev(int fd, const struct iovec *vectors, int count)
 
 int epoll_create1(int flags)
 {
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
     ker_sb_preload_lock(); int result = ker_sb_preload_epoll_create_locked(flags);
     ker_sb_preload_unlock(); return result;
 }
@@ -506,6 +675,8 @@ int epoll_create(int size)
 
 int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_epoll_ctl, epfd, operation, fd, event);
     ker_sb_preload_lock();
     int epoll_cap = -1;
     int composite = ker_sb_preload_composite_epoll_locked(epfd, &epoll_cap);
@@ -547,8 +718,8 @@ int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event)
 static int epoll_wait_common(int epfd, struct epoll_event *user_events,
     int maximum, int timeout, const sigset_t *mask)
 {
-    if (maximum <= 0 || maximum > 4096) { errno = EINVAL; return -1; }
-    struct epoll_event local[4096];
+    if (!ker_sb_preload_runtime_ready())
+        return ker_sb_preload_host_epoll_pwait(epfd, user_events, maximum, timeout, mask);
     sigset_t all_signals, old_mask;
     sigfillset(&all_signals);
     int mask_error = pthread_sigmask(SIG_SETMASK, &all_signals, &old_mask);
@@ -566,8 +737,15 @@ static int epoll_wait_common(int epfd, struct epoll_event *user_events,
     if (!composite) {
         ker_sb_preload_unlock();
         (void)pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
-        return host_libc.epoll_pwait(epfd, user_events, maximum, timeout, mask);
+        return ker_sb_preload_host_epoll_pwait(epfd, user_events, maximum, timeout, mask);
     }
+    if (maximum <= 0 || maximum > 4096) {
+        ker_sb_preload_unlock();
+        (void)pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
+        errno = EINVAL;
+        return -1;
+    }
+    struct epoll_event local[4096];
     ker_sb_preload_unlock();
     const sigset_t *wait_mask = mask ? mask : &old_mask;
     int count = ker_sb_preload_epoll_wait_mixed_locked(epfd, local, maximum, timeout,
@@ -588,6 +766,7 @@ int epoll_pwait(int epfd, struct epoll_event *events, int maximum, int timeout,
 
 int dup(int old_fd)
 {
+    if (!ker_sb_preload_runtime_ready()) return (int)syscall(SYS_dup, old_fd);
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(old_fd, &cap);
     if (native < 0) { ker_sb_preload_unlock(); return -1; }
@@ -602,6 +781,8 @@ int dup(int old_fd)
 
 int dup2(int old_fd, int new_fd)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_dup2, old_fd, new_fd);
     if (old_fd == new_fd) return (int)syscall(SYS_dup2, old_fd, new_fd);
     ker_sb_preload_lock(); int cap = -1;
     int source = ker_sb_preload_network_fd_locked(old_fd, &cap);
@@ -619,6 +800,8 @@ int dup2(int old_fd, int new_fd)
 
 int dup3(int old_fd, int new_fd, int flags)
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_dup3, old_fd, new_fd, flags);
     if (old_fd == new_fd) { errno = EINVAL; return -1; }
     ker_sb_preload_lock(); int cap = -1;
     int source = ker_sb_preload_network_fd_locked(old_fd, &cap);
@@ -682,6 +865,12 @@ int fcntl(int fd, int command, ...)
             argument = va_arg(ap, unsigned long);
         va_end(ap);
     }
+    if (!ker_sb_preload_runtime_ready()) {
+        if (!fcntl_command_has_argument(command)) return host_fcntl_none(fd, command);
+        if (fcntl_command_argument_is_pointer(command))
+            return host_fcntl_pointer(fd, command, pointer_argument);
+        return host_fcntl_integer(fd, command, argument);
+    }
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
     if (native < 0) { ker_sb_preload_unlock(); return -1; }
@@ -698,10 +887,10 @@ int fcntl(int fd, int command, ...)
             ker_sb_preload_unlock(); errno = EOPNOTSUPP; return -1;
         }
         ker_sb_preload_unlock();
-        if (!fcntl_command_has_argument(command)) return host_libc.fcntl(fd, command);
+        if (!fcntl_command_has_argument(command)) return host_fcntl_none(fd, command);
         if (fcntl_command_argument_is_pointer(command))
-            return host_libc.fcntl(fd, command, pointer_argument);
-        return host_libc.fcntl(fd, command, argument);
+            return host_fcntl_pointer(fd, command, pointer_argument);
+        return host_fcntl_integer(fd, command, argument);
     }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
     int result = -1;
@@ -728,6 +917,8 @@ extern __typeof(fcntl) fcntl64 __attribute__((alias("fcntl")));
 int ioctl(int fd, unsigned long request, ...)
 {
     va_list ap; va_start(ap, request); void *user_argument = va_arg(ap, void *); va_end(ap);
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_ioctl, fd, request, user_argument);
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
     if (native <= 0) {
@@ -750,6 +941,7 @@ int ioctl(int fd, unsigned long request, ...)
 
 static int exec_guard(void)
 {
+    if (!ker_sb_preload_runtime_ready()) return 0;
     ker_sb_preload_lock();
     if (ker_sb_preload_has_exec_unsafe_epoll_locked()) {
         ker_sb_preload_unlock(); errno = EOPNOTSUPP; return -1;
@@ -760,6 +952,8 @@ static int exec_guard(void)
 
 int execve(const char *path, char *const argv[], char *const envp[])
 {
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_execve, path, argv, envp);
     if (exec_guard()) return -1;
     return (int)syscall(SYS_execve, path, argv, envp);
 }
@@ -867,6 +1061,8 @@ int fexecve(int fd, char *const argv[], char *const envp[])
 int execveat(int dirfd, const char *path, char *const argv[], char *const envp[], int flags)
 {
 #ifdef SYS_execveat
+    if (!ker_sb_preload_runtime_ready())
+        return (int)syscall(SYS_execveat, dirfd, path, argv, envp, flags);
     ker_sb_preload_lock();
     if (ker_sb_preload_has_exec_unsafe_epoll_locked()) {
         ker_sb_preload_unlock(); errno = EOPNOTSUPP; return -1;
@@ -881,12 +1077,12 @@ int execveat(int dirfd, const char *path, char *const argv[], char *const envp[]
 
 ssize_t sendfile(int out_fd, int in_fd, off_t *user_offset, size_t count)
 {
+    if (!ker_sb_preload_runtime_ready()) return host_sendfile(out_fd, in_fd, user_offset, count);
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(out_fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : host_libc.sendfile(out_fd, in_fd,
-            user_offset, count);
+        return native < 0 ? -1 : host_sendfile(out_fd, in_fd, user_offset, count);
     }
     off_t position;
     bool explicit_offset = user_offset != NULL;

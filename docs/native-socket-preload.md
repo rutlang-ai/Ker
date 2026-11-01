@@ -60,6 +60,16 @@ closes wait pins owned by vanished threads while retaining pins owned by the
 forking thread. Broker transport operations remain direct and are never
 replayed through host libc.
 
+Before the preload map is initialized, interposed host calls bypass the
+descriptor maps and broker RPC. While the next-libc table is being resolved,
+reentrant loader calls use raw host syscalls; this narrow bootstrap path does
+not provide cancellation points. Once the complete table is published, host
+calls use next-libc even while inherited-capability scanning is pending. The
+descriptor map is published only after initialization succeeds.
+INET socket creation through the preload fails with `ENOTCONN` during this
+period, so it cannot silently create a host TCP socket. Native capability use
+starts after the constructor completes.
+
 This is an explicit compatibility profile, not a transparent general-purpose
 POSIX backend. Native UDP, arbitrary socket families, arbitrary ioctl or
 fcntl commands, ancillary data, unsupported message flags, `select`/`poll`,
