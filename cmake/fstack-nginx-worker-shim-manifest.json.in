@@ -1,0 +1,13 @@
+{
+  "scope": "F-Stack Nginx graceful_reload=0; one worker unchanged or exactly two worker-owned TCP reuseport clones",
+  "fstackSourceRevision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "nginxBinarySha256": "@ker_fstack_nginx_binary_sha256@",
+  "nginxBinaryGnuBuildId": "0806707a980bac49a4874ecd4f0aa2419d5b9da2",
+  "generatedConfig": {
+    "ngx_auto_config.h": "4ed89a3d32aaf18365fdafdc3e2ea1a5185d1c3e0b99e8835c3083022f2d9e04",
+    "ngx_auto_headers.h": "59a24934cb2249013c5014394a2f752cf46fb6c43bc48e6fa8b23f3212ee804d",
+    "ngx_modules.c": "817dea55302110810c0cd9927761485f40d47f266e7eadf88f3ff7d8305d8d0e"
+  },
+  "sourceHeaders": "all Nginx src headers must match the clean pinned source revision",
+  "authorization": "cooperative same-process shim validation; not a security boundary"
+}
