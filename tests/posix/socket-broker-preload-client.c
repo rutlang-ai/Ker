@@ -1,10 +1,13 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +15,9 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/uio.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -84,6 +90,302 @@ static void *close_epoll_and_wake(void *opaque)
     uint64_t one = 1;
     args->write_result = (int)write(args->event_fd, &one, sizeof(one));
     return NULL;
+}
+
+enum blocking_host_operation { BLOCK_HOST_READ, BLOCK_HOST_READV, BLOCK_HOST_WRITE,
+    BLOCK_HOST_RECV, BLOCK_HOST_SEND, BLOCK_HOST_ACCEPT, BLOCK_HOST_EPOLL,
+    BLOCK_HOST_FCNTL, BLOCK_HOST_CONNECT };
+struct blocking_host_args {
+    int fd;
+    enum blocking_host_operation operation;
+    const struct sockaddr *address;
+    socklen_t address_length;
+};
+struct descriptor_counts { int eventpoll; int fifo_writers; };
+static int count_descriptor_kinds(struct descriptor_counts *counts);
+
+static void *blocking_host_operation(void *opaque)
+{
+    struct blocking_host_args *args = opaque;
+    char byte = 'C';
+    struct iovec vector = {.iov_base = &byte, .iov_len = sizeof(byte)};
+    struct epoll_event event;
+    unsigned char payload[4096]; memset(payload, 'S', sizeof(payload));
+    switch (args->operation) {
+    case BLOCK_HOST_READ: (void)read(args->fd, &byte, sizeof(byte)); break;
+    case BLOCK_HOST_READV: (void)readv(args->fd, &vector, 1); break;
+    case BLOCK_HOST_WRITE: (void)write(args->fd, payload, sizeof(payload)); break;
+    case BLOCK_HOST_RECV: (void)recv(args->fd, &byte, sizeof(byte), 0); break;
+    case BLOCK_HOST_SEND:
+        for (;;) if (send(args->fd, payload, sizeof(payload), 0) < 0) break;
+        break;
+    case BLOCK_HOST_ACCEPT: (void)accept4(args->fd, NULL, NULL, SOCK_CLOEXEC); break;
+    case BLOCK_HOST_EPOLL: (void)epoll_wait(args->fd, &event, 1, -1); break;
+    case BLOCK_HOST_FCNTL: {
+        struct flock lock = {.l_type = F_WRLCK, .l_whence = SEEK_SET,
+            .l_start = 0, .l_len = 0};
+        (void)fcntl(args->fd, F_SETLKW, &lock);
+        break;
+    }
+    case BLOCK_HOST_CONNECT:
+        (void)connect(args->fd, args->address, args->address_length);
+        break;
+    }
+    return NULL;
+}
+
+static int cancel_and_join(pthread_t thread)
+{
+    int error = pthread_cancel(thread);
+    if (error) { errno = error; return -1; }
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline)) return -1;
+    deadline.tv_sec += 3;
+    void *result = NULL;
+    error = pthread_timedjoin_np(thread, &result, &deadline);
+    if (error) { errno = error; return -1; }
+    if (result != PTHREAD_CANCELED) { errno = EPROTO; return -1; }
+    return 0;
+}
+
+static int cancel_blocked_read(enum blocking_host_operation operation)
+{
+    int pipe_fds[2]; CHECK(pipe2(pipe_fds, O_CLOEXEC) == 0);
+    struct blocking_host_args args = {.fd = pipe_fds[0], .operation = operation};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocking_host_operation, &args) == 0);
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 30000000};
+    (void)nanosleep(&delay, NULL);
+    CHECK(cancel_and_join(thread) == 0);
+    CHECK(close(pipe_fds[0]) == 0 && close(pipe_fds[1]) == 0);
+    return 0;
+}
+
+static int cancel_blocked_write(void)
+{
+    int pipe_fds[2]; CHECK(pipe2(pipe_fds, O_CLOEXEC | O_NONBLOCK) == 0);
+    char bytes[4096] = {0};
+    while (syscall(SYS_write, pipe_fds[1], bytes, sizeof(bytes)) > 0) { }
+    CHECK(errno == EAGAIN || errno == EWOULDBLOCK);
+    int flags = (int)syscall(SYS_fcntl, pipe_fds[1], F_GETFL);
+    CHECK(flags >= 0 && syscall(SYS_fcntl, pipe_fds[1], F_SETFL, flags & ~O_NONBLOCK) == 0);
+    struct blocking_host_args args = {.fd = pipe_fds[1], .operation = BLOCK_HOST_WRITE};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocking_host_operation, &args) == 0);
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 30000000};
+    (void)nanosleep(&delay, NULL);
+    CHECK(cancel_and_join(thread) == 0);
+    CHECK(close(pipe_fds[0]) == 0 && close(pipe_fds[1]) == 0);
+    return 0;
+}
+
+static int cancel_blocked_recv(enum blocking_host_operation operation)
+{
+    int sockets[2]; CHECK(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+    struct blocking_host_args args = {.fd = sockets[0], .operation = operation};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocking_host_operation, &args) == 0);
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 30000000};
+    (void)nanosleep(&delay, NULL);
+    CHECK(cancel_and_join(thread) == 0);
+    CHECK(close(sockets[0]) == 0 && close(sockets[1]) == 0);
+    return 0;
+}
+
+static int cancel_blocked_accept(void)
+{
+    int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(listener >= 0);
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    address.sun_path[0] = '\0';
+    int name_length = snprintf(address.sun_path + 1, sizeof(address.sun_path) - 1,
+        "ker-cancel-accept-%ld", (long)getpid());
+    CHECK(name_length > 0 && (size_t)name_length < sizeof(address.sun_path) - 1);
+    socklen_t address_length = (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
+        (size_t)name_length + 1);
+    CHECK(bind(listener, (struct sockaddr *)&address, address_length) == 0);
+    CHECK(listen(listener, 1) == 0);
+    struct blocking_host_args args = {.fd = listener, .operation = BLOCK_HOST_ACCEPT};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocking_host_operation, &args) == 0);
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 30000000};
+    (void)nanosleep(&delay, NULL);
+    CHECK(cancel_and_join(thread) == 0);
+    CHECK(close(listener) == 0);
+    return 0;
+}
+
+static int cancel_blocked_connect(void)
+{
+    int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(listener >= 0);
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    address.sun_path[0] = '\0';
+    int name_length = snprintf(address.sun_path + 1, sizeof(address.sun_path) - 1,
+        "ker-cancel-connect-%ld", (long)getpid());
+    CHECK(name_length > 0 && (size_t)name_length < sizeof(address.sun_path) - 1);
+    socklen_t address_length = (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
+        (size_t)name_length + 1);
+    CHECK(bind(listener, (struct sockaddr *)&address, address_length) == 0);
+    CHECK(listen(listener, 1) == 0);
+    int queued[2];
+    for (size_t i = 0; i < 2; ++i) {
+        queued[i] = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        CHECK(queued[i] >= 0 && connect(queued[i], (struct sockaddr *)&address,
+            address_length) == 0);
+    }
+    int blocked = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(blocked >= 0);
+    struct blocking_host_args args = {.fd = blocked, .operation = BLOCK_HOST_CONNECT,
+        .address = (const struct sockaddr *)&address, .address_length = address_length};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocking_host_operation, &args) == 0);
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 30000000};
+    (void)nanosleep(&delay, NULL);
+    CHECK(cancel_and_join(thread) == 0);
+    CHECK(close(blocked) == 0 && close(queued[0]) == 0 && close(queued[1]) == 0 &&
+        close(listener) == 0);
+    return 0;
+}
+
+static int cancel_blocked_fcntl(void)
+{
+    char path[] = "/tmp/ker-preload-lock-XXXXXX";
+    int file_fd = mkstemp(path); CHECK(file_fd >= 0);
+    CHECK(unlink(path) == 0);
+    int ready[2], release[2];
+    CHECK(pipe2(ready, O_CLOEXEC) == 0 && pipe2(release, O_CLOEXEC) == 0);
+    pid_t child = fork(); CHECK(child >= 0);
+    if (!child) {
+        (void)syscall(SYS_close, ready[0]); (void)syscall(SYS_close, release[1]);
+        struct flock lock = {.l_type = F_WRLCK, .l_whence = SEEK_SET,
+            .l_start = 0, .l_len = 0};
+        if (fcntl(file_fd, F_SETLKW, &lock)) _exit(111);
+        char marker = 'L';
+        if (syscall(SYS_write, ready[1], &marker, 1) != 1) _exit(112);
+        if (syscall(SYS_read, release[0], &marker, 1) != 1) _exit(113);
+        lock.l_type = F_UNLCK;
+        if (fcntl(file_fd, F_SETLK, &lock)) _exit(114);
+        _exit(0);
+    }
+    CHECK(close(ready[1]) == 0 && close(release[0]) == 0);
+    char marker = 0; CHECK(read(ready[0], &marker, 1) == 1 && marker == 'L');
+    struct blocking_host_args args = {.fd = file_fd, .operation = BLOCK_HOST_FCNTL};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocking_host_operation, &args) == 0);
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 30000000};
+    (void)nanosleep(&delay, NULL);
+    CHECK(cancel_and_join(thread) == 0);
+    marker = 'U'; CHECK(write(release[1], &marker, 1) == 1);
+    int status = 0; CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(close(ready[0]) == 0 && close(release[1]) == 0 && close(file_fd) == 0);
+    return 0;
+}
+
+static int cancel_blocked_composite_epoll(void)
+{
+    struct descriptor_counts before, after;
+    CHECK(count_descriptor_kinds(&before) == 0);
+    int epoll_fd = epoll_create1(EPOLL_CLOEXEC); CHECK(epoll_fd >= 0);
+    struct blocking_host_args args = {.fd = epoll_fd, .operation = BLOCK_HOST_EPOLL};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, blocking_host_operation, &args) == 0);
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 50000000};
+    (void)nanosleep(&delay, NULL);
+    CHECK(cancel_and_join(thread) == 0);
+    CHECK(close(epoll_fd) == 0);
+    CHECK(count_descriptor_kinds(&after) == 0);
+    CHECK(before.eventpoll == after.eventpoll && before.fifo_writers == after.fifo_writers);
+    return 0;
+}
+
+static int count_descriptor_kinds(struct descriptor_counts *counts)
+{
+    DIR *directory = opendir("/proc/self/fd");
+    if (!directory) return -1;
+    *counts = (struct descriptor_counts){0};
+    int directory_fd = dirfd(directory);
+    struct dirent *entry;
+    while ((entry = readdir(directory))) {
+        char *end = NULL; long value = strtol(entry->d_name, &end, 10);
+        if (!end || *end || value < 0 || value > INT32_MAX || value == directory_fd) continue;
+        char target[128];
+        ssize_t length = syscall(SYS_readlinkat, directory_fd, entry->d_name,
+            target, sizeof(target) - 1);
+        if (length > 0) {
+            target[length] = '\0';
+            if (!strcmp(target, "anon_inode:[eventpoll]")) ++counts->eventpoll;
+        }
+        int flags = (int)syscall(SYS_fcntl, (int)value, F_GETFL);
+        struct stat status = {0};
+        if (flags >= 0 && (flags & O_ACCMODE) == O_WRONLY &&
+            syscall(SYS_fstat, (int)value, &status) == 0 && S_ISFIFO(status.st_mode))
+            ++counts->fifo_writers;
+    }
+    return closedir(directory);
+}
+
+struct epoll_thread_args { int fd; volatile sig_atomic_t started; int result; };
+static void *wait_forever_in_epoll(void *opaque)
+{
+    struct epoll_thread_args *args = opaque;
+    struct epoll_event event;
+    args->started = 1;
+    args->result = epoll_wait(args->fd, &event, 1, -1);
+    return NULL;
+}
+
+static int fork_closes_vanished_wait_pins(int inherited_epoll)
+{
+    int epoll_fd = epoll_create1(EPOLL_CLOEXEC); CHECK(epoll_fd >= 0);
+    int event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); CHECK(event_fd >= 0);
+    struct epoll_event event = {.events = EPOLLIN, .data.u64 = UINT64_C(0x464f524b)};
+    CHECK(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd, &event) == 0);
+    struct descriptor_counts baseline;
+    CHECK(count_descriptor_kinds(&baseline) == 0);
+    struct epoll_thread_args waiter = {.fd = epoll_fd, .started = 0, .result = -2};
+    pthread_t thread; CHECK(pthread_create(&thread, NULL, wait_forever_in_epoll, &waiter) == 0);
+    for (unsigned i = 0; i < 200 && !waiter.started; ++i) {
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 1000000};
+        (void)nanosleep(&delay, NULL);
+    }
+    CHECK(waiter.started);
+    bool pin_ready = false;
+    for (unsigned i = 0; i < 200; ++i) {
+        struct descriptor_counts current;
+        CHECK(count_descriptor_kinds(&current) == 0);
+        if (current.eventpoll == baseline.eventpoll + 1) { pin_ready = true; break; }
+        struct timespec delay = {.tv_sec = 0, .tv_nsec = 1000000};
+        (void)nanosleep(&delay, NULL);
+    }
+    CHECK(pin_ready);
+    int report_pipe[2]; CHECK(pipe2(report_pipe, O_CLOEXEC) == 0);
+    pid_t child = fork(); CHECK(child >= 0);
+    if (!child) {
+        struct descriptor_counts report = {0};
+        int close_result = close(epoll_fd);
+        int count_result = count_descriptor_kinds(&report);
+        struct { int close_result; int count_result; struct descriptor_counts counts; } message = {
+            .close_result = close_result, .count_result = count_result, .counts = report};
+        (void)syscall(SYS_write, report_pipe[1], &message, sizeof(message));
+        _exit(0);
+    }
+    struct { int close_result; int count_result; struct descriptor_counts counts; } child_report;
+    size_t received = 0;
+    while (received < sizeof(child_report)) {
+        ssize_t amount = (ssize_t)syscall(SYS_read, report_pipe[0],
+            (char *)&child_report + received, sizeof(child_report) - received);
+        if (amount <= 0) break;
+        received += (size_t)amount;
+    }
+    CHECK(received == sizeof(child_report) && child_report.close_result == 0 &&
+        child_report.count_result == 0);
+    uint64_t one = 1; CHECK(write(event_fd, &one, sizeof(one)) == sizeof(one));
+    CHECK(pthread_join(thread, NULL) == 0 && waiter.result == 1);
+    CHECK(close(epoll_fd) == 0);
+    int status = 0; CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    struct descriptor_counts parent_counts;
+    CHECK(count_descriptor_kinds(&parent_counts) == 0);
+    CHECK(child_report.counts.eventpoll == parent_counts.eventpoll &&
+        child_report.counts.fifo_writers == parent_counts.fifo_writers);
+    CHECK(close(report_pipe[0]) == 0 && close(report_pipe[1]) == 0 && close(event_fd) == 0);
+    (void)inherited_epoll;
+    return 0;
 }
 
 static int parse_fd(const char *text)
@@ -290,6 +592,17 @@ static int common_checks(int listener, int inherited_epoll)
     CHECK(close(host_fifo[0]) == 0 && close(host_fifo[1]) == 0);
     errno = 0; CHECK(dup2(remote, 17) == -1 && errno == EOPNOTSUPP);
     CHECK(close(remote) == 0);
+
+    CHECK(cancel_blocked_read(BLOCK_HOST_READ) == 0);
+    CHECK(cancel_blocked_read(BLOCK_HOST_READV) == 0);
+    CHECK(cancel_blocked_write() == 0);
+    CHECK(cancel_blocked_recv(BLOCK_HOST_RECV) == 0);
+    CHECK(cancel_blocked_recv(BLOCK_HOST_SEND) == 0);
+    CHECK(cancel_blocked_accept() == 0);
+    CHECK(cancel_blocked_connect() == 0);
+    CHECK(cancel_blocked_fcntl() == 0);
+    CHECK(cancel_blocked_composite_epoll() == 0);
+    CHECK(fork_closes_vanished_wait_pins(inherited_epoll) == 0);
 
     int epoll_alias = dup(epoll_fd); CHECK(epoll_alias >= 0);
     CHECK(close(epoll_alias) == 0);

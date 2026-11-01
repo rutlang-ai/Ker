@@ -10,6 +10,9 @@
 
 void ker_sb_preload_lock(void);
 void ker_sb_preload_unlock(void);
+int ker_sb_preload_resolve_host_functions(void);
+int ker_sb_preload_host_epoll_pwait(int epfd, struct epoll_event *events,
+    int maximum, int timeout, const sigset_t *mask);
 struct ker_socket_client *ker_sb_preload_client_locked(void);
 
 /* Returns 1 for a registered/recovered network socket capability, 0 for a

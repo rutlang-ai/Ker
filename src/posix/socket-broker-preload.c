@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -22,6 +23,63 @@
 #define KER_SB_IO_MAX 4096
 
 extern char **environ;
+
+struct host_libc_functions {
+    int (*close)(int);
+    ssize_t (*read)(int, void *, size_t);
+    ssize_t (*write)(int, const void *, size_t);
+    ssize_t (*readv)(int, const struct iovec *, int);
+    ssize_t (*writev)(int, const struct iovec *, int);
+    int (*connect)(int, const struct sockaddr *, socklen_t);
+    int (*accept)(int, struct sockaddr *, socklen_t *);
+    int (*accept4)(int, struct sockaddr *, socklen_t *, int);
+    ssize_t (*send)(int, const void *, size_t, int);
+    ssize_t (*recv)(int, void *, size_t, int);
+    ssize_t (*sendto)(int, const void *, size_t, int,
+        const struct sockaddr *, socklen_t);
+    ssize_t (*recvfrom)(int, void *, size_t, int,
+        struct sockaddr *, socklen_t *);
+    ssize_t (*sendmsg)(int, const struct msghdr *, int);
+    ssize_t (*recvmsg)(int, struct msghdr *, int);
+    int (*epoll_pwait)(int, struct epoll_event *, int, int, const sigset_t *);
+    int (*fcntl)(int, int, ...);
+    ssize_t (*sendfile)(int, int, off_t *, size_t);
+};
+
+static struct host_libc_functions host_libc;
+
+int ker_sb_preload_resolve_host_functions(void)
+{
+#define RESOLVE_HOST_FUNCTION(member, symbol) do { \
+    host_libc.member = (__typeof__(host_libc.member))dlsym(RTLD_NEXT, symbol); \
+    if (!host_libc.member) { errno = ENOSYS; return -1; } \
+} while (0)
+    RESOLVE_HOST_FUNCTION(close, "close");
+    RESOLVE_HOST_FUNCTION(read, "read");
+    RESOLVE_HOST_FUNCTION(write, "write");
+    RESOLVE_HOST_FUNCTION(readv, "readv");
+    RESOLVE_HOST_FUNCTION(writev, "writev");
+    RESOLVE_HOST_FUNCTION(connect, "connect");
+    RESOLVE_HOST_FUNCTION(accept, "accept");
+    RESOLVE_HOST_FUNCTION(accept4, "accept4");
+    RESOLVE_HOST_FUNCTION(send, "send");
+    RESOLVE_HOST_FUNCTION(recv, "recv");
+    RESOLVE_HOST_FUNCTION(sendto, "sendto");
+    RESOLVE_HOST_FUNCTION(recvfrom, "recvfrom");
+    RESOLVE_HOST_FUNCTION(sendmsg, "sendmsg");
+    RESOLVE_HOST_FUNCTION(recvmsg, "recvmsg");
+    RESOLVE_HOST_FUNCTION(epoll_pwait, "epoll_pwait");
+    RESOLVE_HOST_FUNCTION(fcntl, "fcntl");
+    RESOLVE_HOST_FUNCTION(sendfile, "sendfile");
+#undef RESOLVE_HOST_FUNCTION
+    return 0;
+}
+
+int ker_sb_preload_host_epoll_pwait(int epfd, struct epoll_event *events,
+    int maximum, int timeout, const sigset_t *mask)
+{
+    return host_libc.epoll_pwait(epfd, events, maximum, timeout, mask);
+}
 
 static int copy_in(void *destination, const void *source, size_t length)
 {
@@ -99,7 +157,7 @@ int connect(int fd, const struct sockaddr *address, socklen_t length)
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : (int)syscall(SYS_connect, fd, address, length);
+        return native < 0 ? -1 : host_libc.connect(fd, address, length);
     }
     if (length > sizeof(struct sockaddr_storage)) {
         ker_sb_preload_unlock(); errno = EINVAL; return -1;
@@ -132,10 +190,10 @@ int accept4(int fd, struct sockaddr *address, socklen_t *length, int flags)
     if (native <= 0) {
         ker_sb_preload_unlock();
 #ifdef SYS_accept4
-        return native < 0 ? -1 : (int)syscall(SYS_accept4, fd, address, length, flags);
+        return native < 0 ? -1 : host_libc.accept4(fd, address, length, flags);
 #else
         if (flags) { errno = EINVAL; return -1; }
-        return native < 0 ? -1 : (int)syscall(SYS_accept, fd, address, length);
+        return native < 0 ? -1 : host_libc.accept(fd, address, length);
 #endif
     }
     struct sockaddr_storage local = {0};
@@ -174,7 +232,7 @@ int close(int fd)
     int native = ker_sb_preload_any_native_locked(fd);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : (int)syscall(SYS_close, fd);
+        return native < 0 ? -1 : host_libc.close(fd);
     }
     int result = ker_sb_preload_close_locked(fd);
     ker_sb_preload_unlock(); return result;
@@ -269,13 +327,14 @@ static ssize_t native_io(int fd, void *buffer, size_t length, bool writing,
 {
     if (broker_native) *broker_native = false;
     if (!descriptor_may_be_broker_capability(fd))
-        return (ssize_t)syscall(writing ? SYS_write : SYS_read, fd, buffer, length);
+        return writing ? host_libc.write(fd, buffer, length) :
+            host_libc.read(fd, buffer, length);
     ker_sb_preload_lock();
     int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : (ssize_t)syscall(writing ? SYS_write : SYS_read,
-            fd, buffer, length);
+        return native < 0 ? -1 : writing ? host_libc.write(fd, buffer, length) :
+            host_libc.read(fd, buffer, length);
     }
     if (broker_native) *broker_native = true;
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
@@ -307,7 +366,7 @@ ssize_t send(int fd, const void *buffer, size_t length, int flags)
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : (ssize_t)syscall(SYS_sendto, fd, buffer, length, flags, NULL, 0);
+        return native < 0 ? -1 : host_libc.send(fd, buffer, length, flags);
     }
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
     unsigned char local[KER_SB_IO_MAX];
@@ -328,7 +387,7 @@ ssize_t recv(int fd, void *buffer, size_t length, int flags)
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : (ssize_t)syscall(SYS_recvfrom, fd, buffer, length, flags, NULL, NULL);
+        return native < 0 ? -1 : host_libc.recv(fd, buffer, length, flags);
     }
     if (length > KER_SB_IO_MAX) length = KER_SB_IO_MAX;
     unsigned char local[KER_SB_IO_MAX];
@@ -349,7 +408,7 @@ ssize_t sendto(int fd, const void *buffer, size_t length, int flags,
         if (address || address_length) { errno = EOPNOTSUPP; return -1; }
         return send(fd, buffer, length, flags);
     }
-    return (ssize_t)syscall(SYS_sendto, fd, buffer, length, flags, address, address_length);
+    return host_libc.sendto(fd, buffer, length, flags, address, address_length);
 }
 
 ssize_t recvfrom(int fd, void *buffer, size_t length, int flags,
@@ -363,7 +422,7 @@ ssize_t recvfrom(int fd, void *buffer, size_t length, int flags,
         if (address || address_length) { errno = EOPNOTSUPP; return -1; }
         return recv(fd, buffer, length, flags);
     }
-    return (ssize_t)syscall(SYS_recvfrom, fd, buffer, length, flags, address, address_length);
+    return host_libc.recvfrom(fd, buffer, length, flags, address, address_length);
 }
 
 ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
@@ -373,7 +432,7 @@ ssize_t sendmsg(int fd, const struct msghdr *message, int flags)
     ker_sb_preload_unlock();
     if (native < 0) return -1;
     if (native) { errno = EOPNOTSUPP; return -1; }
-    return (ssize_t)syscall(SYS_sendmsg, fd, message, flags);
+    return host_libc.sendmsg(fd, message, flags);
 }
 
 ssize_t recvmsg(int fd, struct msghdr *message, int flags)
@@ -383,7 +442,7 @@ ssize_t recvmsg(int fd, struct msghdr *message, int flags)
     ker_sb_preload_unlock();
     if (native < 0) return -1;
     if (native) { errno = EOPNOTSUPP; return -1; }
-    return (ssize_t)syscall(SYS_recvmsg, fd, message, flags);
+    return host_libc.recvmsg(fd, message, flags);
 }
 
 static ssize_t vector_io(int fd, const struct iovec *user_iov, int count, bool writing)
@@ -391,8 +450,8 @@ static ssize_t vector_io(int fd, const struct iovec *user_iov, int count, bool w
     ker_sb_preload_lock(); int cap = -1, native = native_socket_fd(fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : (ssize_t)syscall(writing ? SYS_writev : SYS_readv,
-            fd, user_iov, count);
+        return native < 0 ? -1 : writing ? host_libc.writev(fd, user_iov, count) :
+            host_libc.readv(fd, user_iov, count);
     }
     if (count < 0 || count > KER_SB_MAX_IOV) { ker_sb_preload_unlock(); errno = EINVAL; return -1; }
     struct iovec vectors[KER_SB_MAX_IOV];
@@ -507,8 +566,7 @@ static int epoll_wait_common(int epfd, struct epoll_event *user_events,
     if (!composite) {
         ker_sb_preload_unlock();
         (void)pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
-        return (int)syscall(SYS_epoll_pwait, epfd, user_events, maximum,
-            timeout, mask, sizeof(uint64_t));
+        return host_libc.epoll_pwait(epfd, user_events, maximum, timeout, mask);
     }
     ker_sb_preload_unlock();
     const sigset_t *wait_mask = mask ? mask : &old_mask;
@@ -591,11 +649,38 @@ static bool fcntl_command_has_argument(int command)
     }
 }
 
+static bool fcntl_command_argument_is_pointer(int command)
+{
+    switch (command) {
+    case F_GETLK: case F_SETLK: case F_SETLKW:
+#ifdef F_OFD_GETLK
+    case F_OFD_GETLK: case F_OFD_SETLK: case F_OFD_SETLKW:
+#endif
+#ifdef F_GETOWN_EX
+    case F_GETOWN_EX: case F_SETOWN_EX:
+#endif
+#ifdef F_GET_RW_HINT
+    case F_GET_RW_HINT: case F_SET_RW_HINT:
+#endif
+#ifdef F_GET_FILE_RW_HINT
+    case F_GET_FILE_RW_HINT: case F_SET_FILE_RW_HINT:
+#endif
+        return true;
+    default: return false;
+    }
+}
+
 int fcntl(int fd, int command, ...)
 {
     unsigned long argument = 0;
+    void *pointer_argument = NULL;
     if (fcntl_command_has_argument(command)) {
-        va_list ap; va_start(ap, command); argument = va_arg(ap, unsigned long); va_end(ap);
+        va_list ap; va_start(ap, command);
+        if (fcntl_command_argument_is_pointer(command))
+            pointer_argument = va_arg(ap, void *);
+        else
+            argument = va_arg(ap, unsigned long);
+        va_end(ap);
     }
     ker_sb_preload_lock(); int cap = -1;
     int native = ker_sb_preload_network_fd_locked(fd, &cap);
@@ -613,9 +698,10 @@ int fcntl(int fd, int command, ...)
             ker_sb_preload_unlock(); errno = EOPNOTSUPP; return -1;
         }
         ker_sb_preload_unlock();
-        return fcntl_command_has_argument(command) ?
-            (int)syscall(SYS_fcntl, fd, command, argument) :
-            (int)syscall(SYS_fcntl, fd, command);
+        if (!fcntl_command_has_argument(command)) return host_libc.fcntl(fd, command);
+        if (fcntl_command_argument_is_pointer(command))
+            return host_libc.fcntl(fd, command, pointer_argument);
+        return host_libc.fcntl(fd, command, argument);
     }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
     int result = -1;
@@ -799,7 +885,7 @@ ssize_t sendfile(int out_fd, int in_fd, off_t *user_offset, size_t count)
     int native = ker_sb_preload_network_fd_locked(out_fd, &cap);
     if (native <= 0) {
         ker_sb_preload_unlock();
-        return native < 0 ? -1 : (ssize_t)syscall(SYS_sendfile, out_fd, in_fd,
+        return native < 0 ? -1 : host_libc.sendfile(out_fd, in_fd,
             user_offset, count);
     }
     off_t position;

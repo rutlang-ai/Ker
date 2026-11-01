@@ -50,6 +50,16 @@ guard, not a claim that every preload operation is async-signal-safe. Nested
 composite epoll registration is rejected with `EOPNOTSUPP`; registering only
 the host half would lose broker-side readiness.
 
+Host-side blocking fallbacks call the resolved next libc functions after
+releasing the descriptor-map lock. This preserves libc cancellation points for
+deferred cancellation of host close, reads, writes, socket operations, file
+locks, and epoll waits. Asynchronous cancellation is outside this profile. Mixed epoll
+waits register their temporary host and broker descriptors to the waiting
+thread and close them on return, error, or cancellation. After `fork`, the child
+closes wait pins owned by vanished threads while retaining pins owned by the
+forking thread. Broker transport operations remain direct and are never
+replayed through host libc.
+
 This is an explicit compatibility profile, not a transparent general-purpose
 POSIX backend. Native UDP, arbitrary socket families, arbitrary ioctl or
 fcntl commands, ancillary data, unsupported message flags, `select`/`poll`,

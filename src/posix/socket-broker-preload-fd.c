@@ -15,6 +15,7 @@
 
 #define PRELOAD_FD_SLOTS 4096
 #define PRELOAD_PRIVATE_SLOTS 8192
+#define PRELOAD_WAIT_SLOTS 4096
 
 struct fd_identity { dev_t device; ino_t inode; };
 struct network_entry {
@@ -28,15 +29,18 @@ struct epoll_entry {
     struct fd_identity identity;
     bool remote_first;
 };
+struct wait_pin_entry { int host_fd; int broker_fd; pid_t owner_tid; };
 
 static pthread_mutex_t preload_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local sigset_t preload_saved_signal_mask;
 static _Thread_local unsigned preload_lock_depth;
+static _Thread_local pid_t preload_fork_owner_tid;
 static struct ker_socket_client preload_client = {.session_fd = -1};
 static bool client_open;
 static struct network_entry network_fds[PRELOAD_FD_SLOTS];
 static struct epoll_entry epoll_fds[PRELOAD_FD_SLOTS];
 static int private_fds[PRELOAD_PRIVATE_SLOTS];
+static struct wait_pin_entry wait_pins[PRELOAD_WAIT_SLOTS];
 
 struct linux_dirent64 {
     uint64_t inode;
@@ -69,13 +73,26 @@ static _Noreturn void preload_lock_fatal(const char *message)
     _exit(127);
 }
 
+static void close_vanished_wait_pins_locked(pid_t owner_tid);
+
 static void fork_prepare(void)
 {
     ker_sb_preload_lock();
+    preload_fork_owner_tid = (pid_t)syscall(SYS_gettid);
 }
 
-static void fork_parent(void) { ker_sb_preload_unlock(); }
-static void fork_child(void) { ker_sb_preload_unlock(); }
+static void fork_parent(void)
+{
+    preload_fork_owner_tid = 0;
+    ker_sb_preload_unlock();
+}
+
+static void fork_child(void)
+{
+    close_vanished_wait_pins_locked(preload_fork_owner_tid);
+    preload_fork_owner_tid = 0;
+    ker_sb_preload_unlock();
+}
 
 static int ensure_client_locked(void)
 {
@@ -160,6 +177,47 @@ void ker_sb_preload_untrack_private_fd_locked(int fd)
         if (private_fds[i] == fd) { private_fds[i] = -1; return; }
 }
 
+static int track_wait_pin_locked(int host_fd, int broker_fd)
+{
+    for (size_t i = 0; i < PRELOAD_WAIT_SLOTS; ++i) {
+        if (wait_pins[i].host_fd < 0) {
+            wait_pins[i] = (struct wait_pin_entry){.host_fd = host_fd,
+                .broker_fd = broker_fd, .owner_tid = (pid_t)syscall(SYS_gettid)};
+            return 0;
+        }
+    }
+    errno = EMFILE;
+    return -1;
+}
+
+static void untrack_wait_pin_locked(int host_fd, int broker_fd)
+{
+    for (size_t i = 0; i < PRELOAD_WAIT_SLOTS; ++i) {
+        if (wait_pins[i].host_fd == host_fd && wait_pins[i].broker_fd == broker_fd) {
+            wait_pins[i] = (struct wait_pin_entry){.host_fd = -1, .broker_fd = -1};
+            return;
+        }
+    }
+}
+
+static void close_vanished_wait_pins_locked(pid_t owner_tid)
+{
+    pid_t child_tid = (pid_t)syscall(SYS_gettid);
+    for (size_t i = 0; i < PRELOAD_WAIT_SLOTS; ++i) {
+        struct wait_pin_entry *pin = &wait_pins[i];
+        if (pin->host_fd < 0) continue;
+        if (pin->owner_tid == owner_tid) {
+            pin->owner_tid = child_tid;
+            continue;
+        }
+        ker_sb_preload_untrack_private_fd_locked(pin->host_fd);
+        ker_sb_preload_untrack_private_fd_locked(pin->broker_fd);
+        (void)syscall(SYS_close, pin->host_fd);
+        (void)syscall(SYS_close, pin->broker_fd);
+        *pin = (struct wait_pin_entry){.host_fd = -1, .broker_fd = -1};
+    }
+}
+
 int ker_sb_preload_is_private_fd_locked(int fd)
 {
     if (client_open && preload_client.session_fd == fd) return 1;
@@ -171,6 +229,7 @@ int ker_sb_preload_is_private_fd_locked(int fd)
 static void close_wait_descriptors(int host_fd, int broker_fd)
 {
     ker_sb_preload_lock();
+    untrack_wait_pin_locked(host_fd, broker_fd);
     if (host_fd >= 0) {
         ker_sb_preload_untrack_private_fd_locked(host_fd);
         (void)syscall(SYS_close, host_fd);
@@ -180,6 +239,16 @@ static void close_wait_descriptors(int host_fd, int broker_fd)
         (void)syscall(SYS_close, broker_fd);
     }
     ker_sb_preload_unlock();
+}
+
+struct wait_pin_context { int host_fd; int broker_fd; bool active; };
+
+static void close_wait_pin_context(void *opaque)
+{
+    struct wait_pin_context *pins = opaque;
+    if (!pins->active) return;
+    pins->active = false;
+    close_wait_descriptors(pins->host_fd, pins->broker_fd);
 }
 
 void ker_sb_preload_remove_network_locked(int app_fd)
@@ -328,38 +397,52 @@ static int64_t monotonic_milliseconds(void)
 int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
     int maximum, int timeout, const sigset_t *mask)
 {
+    int result = -1, saved_errno = 0;
+    struct wait_pin_context pins = {.host_fd = -1, .broker_fd = -1, .active = false};
+    bool pin_registered = false;
+    int broker_fd = -1, first_remote = 0;
+    int64_t start = -1, deadline = 0;
+    pthread_cleanup_push(close_wait_pin_context, &pins);
     ker_sb_preload_lock();
-    int broker_fd = -1;
     if (ker_sb_preload_composite_epoll_locked(fd, &broker_fd) != 1) {
-        ker_sb_preload_unlock();
         if (!errno) errno = EBADF;
-        return -1;
-    }
-    int first_remote = ker_sb_preload_epoll_next_remote_first_locked(fd);
-    if (first_remote < 0) {
-        int error = errno;
+        saved_errno = errno;
         ker_sb_preload_unlock();
-        errno = error;
-        return -1;
+        goto finished;
     }
-    int host_wait_fd = (int)syscall(SYS_fcntl, fd, F_DUPFD_CLOEXEC, 0);
-    int broker_wait_fd = (int)syscall(SYS_fcntl, broker_fd, F_DUPFD_CLOEXEC, 0);
-    if (host_wait_fd >= 0 && ker_sb_preload_track_private_fd_locked(host_wait_fd)) {
-        (void)syscall(SYS_close, host_wait_fd); host_wait_fd = -1;
+    first_remote = ker_sb_preload_epoll_next_remote_first_locked(fd);
+    if (first_remote < 0) {
+        saved_errno = errno;
+        ker_sb_preload_unlock();
+        goto finished;
     }
-    if (broker_wait_fd >= 0 && ker_sb_preload_track_private_fd_locked(broker_wait_fd)) {
-        (void)syscall(SYS_close, broker_wait_fd); broker_wait_fd = -1;
+    pins.host_fd = (int)syscall(SYS_fcntl, fd, F_DUPFD_CLOEXEC, 0);
+    pins.broker_fd = (int)syscall(SYS_fcntl, broker_fd, F_DUPFD_CLOEXEC, 0);
+    if (pins.host_fd >= 0 && ker_sb_preload_track_private_fd_locked(pins.host_fd)) {
+        (void)syscall(SYS_close, pins.host_fd); pins.host_fd = -1;
+    }
+    if (pins.broker_fd >= 0 && ker_sb_preload_track_private_fd_locked(pins.broker_fd)) {
+        (void)syscall(SYS_close, pins.broker_fd); pins.broker_fd = -1;
+    }
+    pins.active = pins.host_fd >= 0 || pins.broker_fd >= 0;
+    if (pins.host_fd >= 0 && pins.broker_fd >= 0) {
+        if (track_wait_pin_locked(pins.host_fd, pins.broker_fd)) {
+            saved_errno = errno;
+        } else {
+            pin_registered = true;
+        }
+    } else {
+        saved_errno = errno;
     }
     ker_sb_preload_unlock();
-    if (host_wait_fd < 0 || broker_wait_fd < 0) {
-        int error = errno;
-        close_wait_descriptors(host_wait_fd, broker_wait_fd);
-        errno = error; return -1;
+    if (!pin_registered) {
+        if (!saved_errno) saved_errno = errno ? errno : EMFILE;
+        goto finished;
     }
-    if (maximum <= 0) { close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = EINVAL; return -1; }
-    int64_t start = monotonic_milliseconds();
-    if (start < 0) { int error = errno; close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = error; return -1; }
-    int64_t deadline = timeout < 0 ? INT64_MAX : start + timeout;
+    if (maximum <= 0) { saved_errno = EINVAL; goto finished; }
+    start = monotonic_milliseconds();
+    if (start < 0) { saved_errno = errno; goto finished; }
+    deadline = timeout < 0 ? INT64_MAX : start + timeout;
     for (;;) {
         int count = 0;
         int remote_first = first_remote;
@@ -370,55 +453,56 @@ int ker_sb_preload_epoll_wait_mixed_locked(int fd, struct epoll_event *events,
         if (remote_first) {
             ker_sb_preload_lock();
             struct ker_socket_client *client = ker_sb_preload_client_locked();
-            if (!client) { int error = errno; ker_sb_preload_unlock();
-                close_wait_descriptors(host_wait_fd, broker_wait_fd);
-                errno = error; return -1; }
-            int got = ker_socket_client_epoll_wait(client, broker_wait_fd, events,
+            if (!client) { saved_errno = errno; ker_sb_preload_unlock(); goto finished; }
+            int got = ker_socket_client_epoll_wait(client, pins.broker_fd, events,
                 remote_budget);
             int error = errno; ker_sb_preload_unlock();
-            if (got < 0) { close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = error; return -1; }
+            if (got < 0) { saved_errno = error; goto finished; }
             count += got;
         }
         if (!remote_first) {
-            int got = (int)syscall(SYS_epoll_pwait, host_wait_fd, events,
-                maximum, 0, mask, sizeof(uint64_t));
-            if (got < 0) { int error = errno; close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = error; return -1; }
+            int got = ker_sb_preload_host_epoll_pwait(pins.host_fd, events,
+                maximum, 0, mask);
+            if (got < 0) { saved_errno = errno; goto finished; }
             count += got;
         }
         if (!remote_first && count < maximum) {
             ker_sb_preload_lock();
             struct ker_socket_client *client = ker_sb_preload_client_locked();
-            if (!client) { int error = errno; ker_sb_preload_unlock();
-                close_wait_descriptors(host_wait_fd, broker_wait_fd);
-                errno = error; return -1; }
+            if (!client) { saved_errno = errno; ker_sb_preload_unlock(); goto finished; }
             int room = maximum - count;
             if (room > KER_SOCKET_BROKER_EVENTS_MAX)
                 room = KER_SOCKET_BROKER_EVENTS_MAX;
-            int got = ker_socket_client_epoll_wait(client, broker_wait_fd,
+            int got = ker_socket_client_epoll_wait(client, pins.broker_fd,
                 events + count, room);
             int error = errno; ker_sb_preload_unlock();
-            if (got < 0) { close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = error; return -1; }
+            if (got < 0) { saved_errno = error; goto finished; }
             count += got;
         }
         if (remote_first && count < maximum) {
-            int got = (int)syscall(SYS_epoll_pwait, host_wait_fd, events + count,
-                maximum - count, 0, mask, sizeof(uint64_t));
-            if (got < 0) { int error = errno; close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = error; return -1; }
+            int got = ker_sb_preload_host_epoll_pwait(pins.host_fd, events + count,
+                maximum - count, 0, mask);
+            if (got < 0) { saved_errno = errno; goto finished; }
             count += got;
         }
-        if (count || timeout == 0) { close_wait_descriptors(host_wait_fd, broker_wait_fd); return count; }
+        if (count || timeout == 0) { result = count; goto finished; }
         int64_t now = monotonic_milliseconds();
-        if (now < 0) { int error = errno; close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = error; return -1; }
-        if (now >= deadline) { close_wait_descriptors(host_wait_fd, broker_wait_fd); return 0; }
+        if (now < 0) { saved_errno = errno; goto finished; }
+        if (now >= deadline) { result = 0; goto finished; }
         int slice = deadline == INT64_MAX || deadline - now > 1 ? 1 :
             (int)(deadline - now);
         /* The host epoll is the bounded sleep point; remote readiness is
          * polled from its authoritative original-Linux epoll each millisecond. */
-        int got = (int)syscall(SYS_epoll_pwait, host_wait_fd, events, maximum,
-            slice, mask, sizeof(uint64_t));
-        if (got < 0) { int error = errno; close_wait_descriptors(host_wait_fd, broker_wait_fd); errno = error; return -1; }
-        if (got) { close_wait_descriptors(host_wait_fd, broker_wait_fd); return got; }
+        int got = ker_sb_preload_host_epoll_pwait(pins.host_fd, events, maximum,
+            slice, mask);
+        if (got < 0) { saved_errno = errno; goto finished; }
+        if (got) { result = got; goto finished; }
     }
+finished:
+    if (pins.active) close_wait_pin_context(&pins);
+    pthread_cleanup_pop(0);
+    if (saved_errno) errno = saved_errno;
+    return result;
 }
 
 static size_t find_epoll_slot(int fd)
@@ -611,6 +695,11 @@ static int initialize_inherited_capabilities(void)
 
 __attribute__((constructor)) static void socket_broker_preload_initialize(void)
 {
+    if (ker_sb_preload_resolve_host_functions()) {
+        static const char message[] = "ker socket preload: cannot resolve host libc calls\n";
+        (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
+        _exit(127);
+    }
     for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
         network_fds[i].app_fd = -1;
         network_fds[i].private_fd = -1;
@@ -618,6 +707,8 @@ __attribute__((constructor)) static void socket_broker_preload_initialize(void)
         epoll_fds[i].broker_fd = -1;
     }
     for (size_t i = 0; i < PRELOAD_PRIVATE_SLOTS; ++i) private_fds[i] = -1;
+    for (size_t i = 0; i < PRELOAD_WAIT_SLOTS; ++i)
+        wait_pins[i] = (struct wait_pin_entry){.host_fd = -1, .broker_fd = -1};
     if (pthread_atfork(fork_prepare, fork_parent, fork_child)) {
         static const char message[] = "ker socket preload: pthread_atfork registration failed\n";
         (void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
