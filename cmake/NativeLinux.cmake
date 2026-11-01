@@ -65,6 +65,26 @@ target_include_directories(ker-socket-client PUBLIC
 target_compile_features(ker-socket-client PUBLIC c_std_11)
 target_compile_options(ker-socket-client PRIVATE -Wall -Wextra -Werror)
 add_library(ker::socket-client ALIAS ker-socket-client)
+set_target_properties(ker-socket-client PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# POSIX caller interposition remains independent from ker-posix/LKL. It maps
+# ordinary application descriptors onto the explicit broker capability API.
+add_library(ker-socket-preload SHARED
+    src/posix/socket-broker-preload-fd.c
+    src/posix/socket-broker-preload.c)
+set_target_properties(ker-socket-preload PROPERTIES EXPORT_NAME socket-preload)
+target_include_directories(ker-socket-preload PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/posix"
+    "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include")
+target_include_directories(ker-socket-preload PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_compile_features(ker-socket-preload PRIVATE c_std_11)
+target_compile_options(ker-socket-preload PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ker-socket-preload PRIVATE ker-socket-client Threads::Threads ${CMAKE_DL_LIBS})
+add_library(ker::socket-preload ALIAS ker-socket-preload)
+set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
+    "Pinned no-FF nginx executable for the native socket-preload lifecycle prerequisite")
 
 add_library(ker-socket-broker-server STATIC src/posix/socket-broker-server.c)
 set_target_properties(ker-socket-broker-server PROPERTIES EXPORT_NAME socket-broker-server)
@@ -197,6 +217,8 @@ install(TARGETS ker-posix EXPORT kerTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-socket-client ker-socket-broker-server EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS ker-socket-preload EXPORT kerTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-io-worker ker-app
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -227,6 +249,11 @@ if(BUILD_TESTING)
     target_include_directories(ker-socket-broker-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_link_libraries(ker-socket-broker-client-test PRIVATE ker-socket-client)
     target_compile_options(ker-socket-broker-client-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-preload-client-test
+        tests/posix/socket-broker-preload-client.c)
+    target_compile_features(ker-socket-broker-preload-client-test PRIVATE c_std_11)
+    target_compile_options(ker-socket-broker-preload-client-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-socket-broker-preload-client-test PRIVATE Threads::Threads)
     add_test(NAME native-socket-broker-fork-exec
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
@@ -236,6 +263,33 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-fork-exec PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker")
+    add_test(NAME native-socket-broker-posix-preload
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --preload-client "$<TARGET_FILE:ker-socket-broker-preload-client-test>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-posix-preload PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;preload")
+    if(KER_NO_FF_NGINX_BINARY)
+        if(NOT EXISTS "${KER_NO_FF_NGINX_BINARY}")
+            message(FATAL_ERROR "KER_NO_FF_NGINX_BINARY does not exist")
+        endif()
+        add_test(NAME native-nginx-socket-preload-lifecycle
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                --nginx-binary "${KER_NO_FF_NGINX_BINARY}"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}")
+        set_tests_properties(native-nginx-socket-preload-lifecycle PROPERTIES
+            TIMEOUT 300 LABELS "native-tcp;fstack;socket-broker;preload;nginx-prerequisite")
+    endif()
 
     add_executable(ker-session-peer-drain-retry-test tests/posix/session-peer-drain-retry.c)
     target_include_directories(ker-session-peer-drain-retry-test PRIVATE src/posix)
