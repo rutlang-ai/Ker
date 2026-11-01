@@ -6,6 +6,7 @@
  * ker-socket-client and receive opaque host pipe write-end capabilities. */
 #include <stddef.h>
 #include <stdint.h>
+#include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -20,7 +21,8 @@ extern "C" {
 
 enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_SOCKET = 1,
-    KER_SOCKET_BROKER_EPOLL = 2
+    KER_SOCKET_BROKER_EPOLL = 2,
+    KER_SOCKET_BROKER_REUSEPORT_GROUP = 3
 };
 
 struct ker_socket_client {
@@ -94,10 +96,12 @@ int ker_socket_client_epoll_wait(struct ker_socket_client *client, int epoll_cap
     struct epoll_event *events, int maxevents);
 
 /* Descriptor inspection and duplication preserve original-Linux descriptor
- * and open-file-description semantics. DUP returns a new capability backed
- * by a distinct original descriptor. The returned host capability has
- * FD_CLOEXEC cleared, like POSIX dup(); the broker's private native duplicate
- * remains close-on-exec. */
+ * and open-file-description semantics. DESCRIBE also reports a typed
+ * REUSEPORT_GROUP capability with zero status flags. DUP returns a new
+ * capability backed by a distinct original descriptor for socket and epoll
+ * objects; group-capability DUP returns EOPNOTSUPP. The returned host
+ * capability has FD_CLOEXEC cleared, like POSIX dup(); the broker's private
+ * native duplicate remains close-on-exec. */
 int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
     enum ker_socket_broker_kind *kind, int *status_flags);
 int ker_socket_client_dup(struct ker_socket_client *client, int cap_fd);
@@ -115,6 +119,19 @@ ssize_t ker_socket_client_send(struct ker_socket_client *client, int cap_fd,
     const void *buffer, size_t length, int flags);
 ssize_t ker_socket_client_recv(struct ker_socket_client *client, int cap_fd,
     void *buffer, size_t length, int flags);
+
+/* A broker-created two-member IPv4 TCP SO_REUSEPORT group. The broker owns
+ * both original-Linux listener descriptors; a GROUP capability controls the
+ * selected member, while MEMBER capabilities refer to individual listeners.
+ * Group/member caps are opaque pipe capabilities. Host dup/SCM_RIGHTS creates
+ * another reference; SDK dup is intentionally unsupported for GROUP caps.
+ * Accepted sockets are ordinary independent socket capabilities. */
+int ker_socket_client_reuseport_group_create(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog);
+int ker_socket_client_reuseport_group_member(struct ker_socket_client *client,
+    int group_cap, unsigned index);
+int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
+    int group_cap, unsigned index);
 
 #ifdef __cplusplus
 }

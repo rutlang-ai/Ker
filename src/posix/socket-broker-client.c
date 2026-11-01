@@ -238,7 +238,9 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         return fail(EPROTO);
     }
     bool requires_cap = operation == KER_SB_SOCKET || operation == KER_SB_ACCEPT4 ||
-        operation == KER_SB_EPOLL_CREATE1 || operation == KER_SB_DUP;
+        operation == KER_SB_EPOLL_CREATE1 || operation == KER_SB_DUP ||
+        operation == KER_SB_REUSEPORT_GROUP_CREATE ||
+        operation == KER_SB_REUSEPORT_GROUP_MEMBER;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -246,6 +248,7 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_EPOLL_CTL || operation == KER_SB_DESCRIBE ||
         operation == KER_SB_GETFL || operation == KER_SB_SETFL ||
         operation == KER_SB_FIONBIO || operation == KER_SB_FIONREAD;
+    requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -450,7 +453,8 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
         &output, sizeof(output), NULL, &received);
     if (result < 0) return -1;
     if (received != sizeof(output) || output.flags < 0 ||
-        (output.kind != KER_SOCKET_BROKER_SOCKET && output.kind != KER_SOCKET_BROKER_EPOLL))
+        (output.kind != KER_SOCKET_BROKER_SOCKET && output.kind != KER_SOCKET_BROKER_EPOLL &&
+         output.kind != KER_SOCKET_BROKER_REUSEPORT_GROUP))
         return fail(EPROTO);
     *kind = (enum ker_socket_broker_kind)output.kind;
     *status_flags = output.flags;
@@ -550,4 +554,37 @@ ssize_t ker_socket_client_recv(struct ker_socket_client *client, int cap_fd,
     if (result < 0) return fail(result >= -4095 ? (int)-result : EPROTO);
     if ((uint64_t)result != received || received > length) return fail(EPROTO);
     return (ssize_t)result;
+}
+
+int ker_socket_client_reuseport_group_create(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog)
+{
+    if (!address || address->sin_family != AF_INET || !address->sin_port || backlog < 0)
+        return fail(EINVAL);
+    struct ker_sb_reuseport_group_create input = {.backlog = backlog};
+    memcpy(input.address, address, sizeof(*address));
+    int capability = -1;
+    if (socket_call(client, -1, KER_SB_REUSEPORT_GROUP_CREATE, &input, sizeof(input),
+            NULL, 0, &capability, NULL) < 0) return -1;
+    return capability;
+}
+
+int ker_socket_client_reuseport_group_member(struct ker_socket_client *client,
+    int group_cap, unsigned index)
+{
+    if (index > 1) return fail(EINVAL);
+    struct ker_sb_reuseport_group_member input = {.index = index};
+    int member = -1;
+    if (socket_call(client, group_cap, KER_SB_REUSEPORT_GROUP_MEMBER, &input,
+            sizeof(input), NULL, 0, &member, NULL) < 0) return -1;
+    return member;
+}
+
+int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
+    int group_cap, unsigned index)
+{
+    if (index > 1) return fail(EINVAL);
+    struct ker_sb_reuseport_group_member input = {.index = index};
+    return socket_call(client, group_cap, KER_SB_REUSEPORT_GROUP_SELECT,
+        &input, sizeof(input), NULL, 0, NULL, NULL);
 }

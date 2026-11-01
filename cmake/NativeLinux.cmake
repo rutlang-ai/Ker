@@ -341,6 +341,15 @@ if(BUILD_TESTING)
     target_include_directories(ker-socket-broker-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_link_libraries(ker-socket-broker-client-test PRIVATE ker-socket-client)
     target_compile_options(ker-socket-broker-client-test PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-reuseport-group-fixture
+        tests/posix/socket-broker-reuseport-group-broker.c)
+    target_link_libraries(ker-socket-broker-reuseport-group-fixture PRIVATE ker-socket-broker-server)
+    add_dependencies(ker-socket-broker-reuseport-group-fixture ker-app ker-io-worker)
+    target_compile_options(ker-socket-broker-reuseport-group-fixture PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-reuseport-group-client
+        tests/posix/socket-broker-reuseport-group-client.c)
+    target_link_libraries(ker-socket-broker-reuseport-group-client PRIVATE ker-socket-client)
+    target_compile_options(ker-socket-broker-reuseport-group-client PRIVATE -Wall -Wextra -Werror)
     add_executable(ker-socket-broker-preload-client-test
         tests/posix/socket-broker-preload-client.c)
     target_compile_features(ker-socket-broker-preload-client-test PRIVATE c_std_11)
@@ -390,6 +399,17 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-fork-exec PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker")
+    add_test(NAME native-socket-broker-reuseport-group
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --group-broker "$<TARGET_FILE:ker-socket-broker-reuseport-group-fixture>"
+            --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-reuseport-group PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;reuseport;cbpf")
     add_test(NAME native-socket-broker-posix-preload
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
