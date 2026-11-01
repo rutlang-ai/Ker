@@ -106,10 +106,51 @@ static void task_test_lifecycle_trace(const char *event)
 	if (length > 0 && (size_t)length < sizeof(line))
 		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
+static bool task_test_fail_retire_window(void)
+{
+	const char *value = getenv("KER_C17_TEST_FAIL_RETIRE_WINDOW");
+	return value && !strcmp(value, "1");
+}
+static void task_test_quarantine_barrier(void)
+{
+	const char *base = getenv("KER_C17_TEST_QUARANTINE_BARRIER");
+	if (!base || !*base) return;
+	char ready[512], temporary[512], release[512];
+	int ready_length = snprintf(ready, sizeof(ready), "%s.ready", base);
+	int temporary_length = snprintf(temporary, sizeof(temporary), "%s.tmp", base);
+	int release_length = snprintf(release, sizeof(release), "%s.release", base);
+	if (ready_length <= 0 || (size_t)ready_length >= sizeof(ready) ||
+	    temporary_length <= 0 || (size_t)temporary_length >= sizeof(temporary) ||
+	    release_length <= 0 || (size_t)release_length >= sizeof(release)) return;
+	int fd = (int)syscall(SYS_openat, AT_FDCWD, temporary,
+		O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	if (fd < 0) return;
+	static const char marker[] = "quarantine-published\n";
+	bool published = syscall(SYS_write, fd, marker, sizeof(marker) - 1) ==
+		(ssize_t)(sizeof(marker) - 1);
+	if (syscall(SYS_close, fd)) published = false;
+	if (!published || syscall(SYS_renameat, AT_FDCWD, temporary,
+		AT_FDCWD, ready)) {
+		(void)syscall(SYS_unlinkat, AT_FDCWD, temporary, 0);
+		return;
+	}
+	task_test_lifecycle_trace("quarantine-published");
+	uint64_t deadline = task_now_ns() + UINT64_C(5000000000);
+	for (;;) {
+		if (!syscall(SYS_access, release, F_OK)) break;
+		uint64_t now = task_now_ns();
+		if (!now || now >= deadline) break;
+		struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+	(void)syscall(SYS_unlinkat, AT_FDCWD, ready, 0);
+	task_test_lifecycle_trace("quarantine-barrier-finished");
+}
 #else
 #define task_test_trace(event, packet) ((void)0)
 #define task_test_window_status(event, status) ((void)0)
 #define task_test_lifecycle_trace(event) ((void)0)
+static void task_test_quarantine_barrier(void) { }
 #endif
 
 static uint64_t task_now_ns(void)
@@ -494,6 +535,9 @@ static int task_retire_window(struct ker_ff_admission_task *task,
 	if (task_should_stop(task)) return -ECANCELED;
 	status = ker_ff_admission_queue_disable_for_retire(queue);
 	if (status) return status;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+	if (task_test_fail_retire_window()) return -EIO;
+#endif
 	/* Drain notifications that entered the old queue before disable acquired
 	 * the LKL CPU. No new hook can enqueue after that point. */
 	for (unsigned drained = 0; drained < 128; ++drained) {
@@ -766,7 +810,9 @@ static void *task_worker(void *argument)
 	pthread_mutex_lock(&task->lock);
 	task->channel = NULL;
 	task->queue = NULL;
+	bool quarantined = task->window_state == WINDOW_QUARANTINED;
 	pthread_mutex_unlock(&task->lock);
+	if (quarantined) task_test_quarantine_barrier();
 	task_set_terminal(task, status == -ECANCELED ? 0 : status);
 	return NULL;
 

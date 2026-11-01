@@ -100,6 +100,7 @@ struct sb_owner {
     bool admission_initial_ready;
     bool admission_ready;
     bool admission_failed;
+    bool admission_release_busy_logged;
     struct ker_ff_admission_task *admission_task;
     int admission_listener_native_fd;
     uint64_t admission_registration_id;
@@ -179,6 +180,32 @@ static void owner_admission_endpoint_close(struct sb_owner *owner)
             AT_REMOVEDIR);
     owner->admission_path[0] = '\0';
     owner->admission_directory[0] = '\0';
+}
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+static void owner_admission_task_trace(const char *event, int status)
+{
+    char line[128];
+    int length = snprintf(line, sizeof(line),
+        "C17_TASK_RELEASE %s status=%d\n", event, status);
+    if (length > 0 && (size_t)length < sizeof(line))
+        (void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
+}
+#endif
+static int owner_admission_task_release(struct sb_owner *owner)
+{
+    if (!owner || !owner->admission_task) return -EINVAL;
+    int status = ker_posix_ff_admission_task_release(owner->admission_task);
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    if (status == -EBUSY && !owner->admission_release_busy_logged) {
+        owner_admission_task_trace("deferred", status);
+        owner->admission_release_busy_logged = true;
+    } else if (!status) {
+        owner_admission_task_trace("released", status);
+        owner->admission_release_busy_logged = false;
+    }
+#endif
+    if (!status) owner->admission_task = NULL;
+    return status;
 }
 static uint64_t host_monotonic_ns(void)
 {
@@ -383,8 +410,7 @@ static bool admission_tasks_stopping(struct ker_socket_broker_server *server)
             state == KER_FF_ADMISSION_TASK_STOPPING) {
             active = true;
         } else {
-            (void)ker_posix_ff_admission_task_release(owner->admission_task);
-            owner->admission_task = NULL;
+            if (owner_admission_task_release(owner)) active = true;
         }
     }
     return active;
@@ -901,11 +927,10 @@ static void pump_owner_admission_endpoints(struct ker_socket_broker_server *serv
                 owner->admission_task, &current_lease);
             if (current_state == KER_FF_ADMISSION_TASK_TERMINAL ||
                 (current_state < 0 && current_state != -EINPROGRESS)) {
-                (void)ker_posix_ff_admission_task_release(owner->admission_task);
-                owner->admission_task = NULL;
+                int release_status = owner_admission_task_release(owner);
                 owner->admission_ready = false;
                 owner->admission_failed = true;
-                owner->admission_listener_native_fd = -1;
+                if (!release_status) owner->admission_listener_native_fd = -1;
                 continue;
             }
             if (current_state == KER_FF_ADMISSION_TASK_STOPPING) continue;
@@ -937,8 +962,7 @@ static void pump_owner_admission_endpoints(struct ker_socket_broker_server *serv
                 if (state != KER_FF_ADMISSION_TASK_STARTING &&
                     state != KER_FF_ADMISSION_TASK_READY &&
                     state != KER_FF_ADMISSION_TASK_STOPPING) {
-                    (void)ker_posix_ff_admission_task_release(owner->admission_task);
-                    owner->admission_task = NULL;
+                    (void)owner_admission_task_release(owner);
                 }
             }
             continue;
@@ -983,8 +1007,8 @@ static void pump_owner_admission_endpoints(struct ker_socket_broker_server *serv
             } else if (task_status < 0) {
                 owner_admission_endpoint_close(owner);
                 owner->admission_failed = true;
-                (void)ker_posix_ff_admission_task_release(owner->admission_task);
-                owner->admission_task = NULL;
+                if (!owner_admission_task_release(owner))
+                    owner->admission_listener_native_fd = -1;
             }
         }
     }
@@ -2691,8 +2715,7 @@ static void reap_dead(struct ker_socket_broker_server *server)
                     state == KER_FF_ADMISSION_TASK_STOPPING) {
                     referenced = true;
                 } else {
-                    (void)ker_posix_ff_admission_task_release(owner->admission_task);
-                    owner->admission_task = NULL;
+                    if (owner_admission_task_release(owner)) referenced = true;
                 }
             }
         }

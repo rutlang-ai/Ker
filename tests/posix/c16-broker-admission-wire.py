@@ -314,6 +314,12 @@ def inside(args):
             str(args.broker), str(rpc_path), str(stop_path)]
         environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1',
             'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root)}
+        quarantine_barrier = root / 'quarantine'
+        if args.quarantine_release_race_only:
+            environment |= {
+                'KER_C17_TEST_FAIL_RETIRE_WINDOW': '1',
+                'KER_C17_TEST_QUARANTINE_BARRIER': str(quarantine_barrier),
+            }
         try:
             broker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -333,7 +339,7 @@ def inside(args):
                 os.mkfifo(cancel_fifo, 0o600)
                 app_env['KER_C16_TEST_HOLD_PREPARED_FIFO'] = str(cancel_fifo)
             if not args.pump_failure_only and not args.window_cycles_only and \
-                    not args.window_cancel_only:
+                    not args.window_cancel_only and not args.quarantine_release_race_only:
                 app_env |= {'KER_C16_TEST_PUMP_DELAY_US': '80000',
                     'KER_C16_TEST_RECURSIVE_WAIT': '1'}
             if args.window_cancel_only:
@@ -350,6 +356,8 @@ def inside(args):
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             if args.explicit_stop_live_listener_only:
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
+            if args.quarantine_release_race_only:
+                app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             app_argument = ('pump-failure' if args.pump_failure_only else
                 '1' if args.cancel_unsent_timeout_only else
                 '1' if args.finalized_timeout_only else
@@ -357,13 +365,84 @@ def inside(args):
                 'window-cancel' if args.window_cancel_only else
                 'owner-probe' if (args.registration_negative_only or
                     args.malformed_owner_hello_only or args.owner_death_only or
-                    args.listener_close_only or args.explicit_stop_live_listener_only) else '16')
+                    args.listener_close_only or args.explicit_stop_live_listener_only) else
+                'window-cancel' if args.quarantine_release_race_only else '16')
             flow_ports = (1132, 1354, 2031, 3027, 3769, 4125, 5963, 6537,
                 6708, 7356, 7512, 8925, 9382, 9604, 10735, 10970, 11392)
             peers = []
             app = subprocess.Popen([str(args.client), app_argument], stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 env=app_env, bufsize=1, preexec_fn=disable_core_dumps)
+            if args.quarantine_release_race_only:
+                first_endpoint_line = wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
+                first_endpoint = Path(first_endpoint_line.split('path=', 1)[1].strip())
+                wait_line(app, 'C16_APP_READY', 20)
+                os.kill(app.pid, signal.SIGWINCH)
+                wait_line(app, 'C17_RETIRE_BEGIN_ACK', 5)
+                barrier_ready = Path(str(quarantine_barrier) + '.ready')
+                deadline = time.monotonic() + 5
+                while not barrier_ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                require(barrier_ready.exists(),
+                    'task did not reach the bounded pre-terminal quarantine barrier')
+                deferred = wait_line(broker, 'C17_TASK_RELEASE deferred', 5)
+                require('status=-16' in deferred,
+                    f'broker did not observe EBUSY while quarantine was published: {deferred!r}')
+                release_path = Path(str(quarantine_barrier) + '.release')
+                release_path.write_text('release\n')
+                released = wait_line(broker, 'C17_TASK_RELEASE released', 5)
+                require('status=0' in released,
+                    f'broker did not release the terminal task after the barrier: {released!r}')
+                require(any('C16_ADMISSION listener-ref-put-at-task-release' in line
+                    for line in getattr(broker, '_ker_recent_lines', [])),
+                    'terminal task release did not drop the pinned listener reference')
+                first_output, first_errors = app.communicate(timeout=10)
+                first_failed_closed = app.returncode == 12 or (
+                    app.returncode == 3 and
+                    'ker owner pump callback status=-104' in first_errors)
+                require(first_failed_closed,
+                    f'first owner did not fail closed after forced retire failure: '
+                    f'rc={app.returncode}; stdout={first_output!r}; stderr={first_errors!r}')
+                deadline = time.monotonic() + 5
+                while first_endpoint.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                require(not first_endpoint.exists(),
+                    'failed owner endpoint was not reclaimed after task release')
+                fresh_owner_env = app_env | {'KER_C16_TEST_PAUSE_AFTER_PREPARE': '1'}
+                app = subprocess.Popen([str(args.client), 'owner-probe'],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, env=fresh_owner_env, bufsize=1,
+                    preexec_fn=disable_core_dumps)
+                try:
+                    endpoint_line = wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
+                except RuntimeError as error:
+                    raise RuntimeError(f'{error}; broker_recent='
+                        f'{getattr(broker, "_ker_recent_lines", [])!r}') from error
+                endpoint = Path(endpoint_line.split('path=', 1)[1].strip())
+                require('C16_APP_READY' in wait_line(app, 'C16_APP_READY', 10),
+                    'a fresh owner could not attach after quarantine task release')
+                os.kill(app.pid, signal.SIGUSR2)
+                app_output, app_errors = app.communicate(timeout=10)
+                require(app.returncode == 0 and 'C16_APP_DONE accepted=0' in app_output,
+                    f'fresh owner did not shut down cleanly: rc={app.returncode}; '
+                    f'stdout={app_output!r}; stderr={app_errors!r}')
+                deadline = time.monotonic() + 5
+                while endpoint.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                require(not endpoint.exists(),
+                    'fresh owner admission endpoint was not reclaimed at shutdown')
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                bout, berr = broker.communicate(timeout=35)
+                require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
+                    f'broker failed after quarantine task reclamation: rc={broker.returncode}; '
+                    f'stdout={bout!r}; stderr={berr!r}')
+                report = json.loads(stats.read_text())
+                require(report.get('outstanding') == 0,
+                    f'quarantine task/re-registration cleanup leaked I/O state: {report!r}')
+                print('C17_QUARANTINE_RELEASE_RETRY_PASS observed_ebusy=1 terminal_release=1 '
+                    'fresh_owner=ready pool=0')
+                return 0
             if args.registration_negative_only:
                 marker = wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
                 endpoint = Path(marker.split('path=', 1)[1].strip())
@@ -1046,6 +1125,7 @@ def main():
     parser.add_argument('--owner-death-only', action='store_true')
     parser.add_argument('--listener-close-only', action='store_true')
     parser.add_argument('--explicit-stop-live-listener-only', action='store_true')
+    parser.add_argument('--quarantine-release-race-only', action='store_true')
     parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
     parser.add_argument('--window-cycles-only', action='store_true')
@@ -1070,6 +1150,8 @@ def main():
         command.append('--listener-close-only')
     if args.explicit_stop_live_listener_only:
         command.append('--explicit-stop-live-listener-only')
+    if args.quarantine_release_race_only:
+        command.append('--quarantine-release-race-only')
     if args.finalized_timeout_only:
         command.append('--finalized-timeout-only')
     if args.cancel_unsent_timeout_only:
