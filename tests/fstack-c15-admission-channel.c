@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 #include "ff_config.h"
@@ -23,6 +24,12 @@ static int map_active(void *context)
 {
 	(void)context;
 	return ff_flow_map_active();
+}
+
+static int map_context_live(void *context)
+{
+	(void)context;
+	return ff_reload_state_attached() && ff_global_cfg.dpdk.graceful_reload;
 }
 
 static int map_admit(const struct ker_ff_admission_key *key, int *created,
@@ -409,6 +416,261 @@ static void ancillary_rejection_case(void)
 	      WEXITSTATUS(child_status) == 0);
 }
 
+struct window_test_context { unsigned retires; unsigned rearms; };
+
+struct test_admission_wire {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t command;
+	uint32_t length;
+	uint32_t flags;
+	uint64_t lease;
+	uint64_t command_id;
+	uint64_t deadline_ns;
+	uint32_t packet_id;
+	struct ker_ff_admission_key key;
+	int32_t status;
+	uint32_t allowed;
+	uint32_t created;
+	uint32_t reserved;
+} __attribute__((packed));
+
+_Static_assert(sizeof(struct test_admission_wire) == 100,
+	"private test wire ABI");
+
+static void inject_window_command(int fd, uint16_t command, uint64_t lease,
+	uint64_t command_id)
+{
+	struct test_admission_wire wire = {
+		.magic = UINT32_C(0x4b464151),
+		.version = KER_FF_ADMISSION_CHANNEL_VERSION,
+		.command = command, .length = sizeof(wire),
+		.lease = lease, .command_id = command_id};
+	CHECK(syscall(SYS_sendto, fd, &wire, sizeof(wire), MSG_NOSIGNAL, NULL, 0) ==
+		(ssize_t)sizeof(wire));
+}
+
+static struct test_admission_wire receive_window_reply(int fd, pid_t owner)
+{
+	struct test_admission_wire wire = {0};
+	char control[CMSG_SPACE(sizeof(struct ucred))] = {0};
+	struct iovec vector = {.iov_base = &wire, .iov_len = sizeof(wire)};
+	struct msghdr message = {.msg_control = control, .msg_controllen = sizeof(control),
+		.msg_iov = &vector, .msg_iovlen = 1};
+	uint64_t deadline = deadline_after_250ms() + UINT64_C(1000000000);
+	ssize_t received;
+	for (;;) {
+		received = syscall(SYS_recvmsg, fd, &message, MSG_CMSG_CLOEXEC);
+		if (received >= 0) break;
+		CHECK(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR);
+		CHECK(monotonic_ns() < deadline);
+		struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+	CHECK(received == sizeof(wire) && !(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)));
+	struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+	CHECK(header && header->cmsg_level == SOL_SOCKET &&
+		header->cmsg_type == SCM_CREDENTIALS &&
+		header->cmsg_len == CMSG_LEN(sizeof(struct ucred)));
+	struct ucred credentials;
+	memcpy(&credentials, CMSG_DATA(header), sizeof(credentials));
+	CHECK(credentials.pid == owner && credentials.uid == getuid() &&
+		credentials.gid == getgid());
+	return wire;
+}
+
+static int window_retire(void *argument)
+{
+	struct window_test_context *context = argument;
+	if (!ff_flow_map_active()) return -ESTALE;
+	ff_flow_map_close();
+	++context->retires;
+	return ff_flow_map_active() ? -EIO : 0;
+}
+
+static int window_rearm(void *argument)
+{
+	struct window_test_context *context = argument;
+	if (ff_flow_map_active()) return -EALREADY;
+	ff_flow_map_open();
+	++context->rearms;
+	return ff_flow_map_active() ? 0 : -ENOMEM;
+}
+
+static void window_owner_child(int endpoint, pid_t controller, int ready_fd,
+	uint64_t lease)
+{
+	struct ker_ff_admission_channel *channel = NULL;
+	size_t state_size = ker_reload_state_size();
+	void *state = calloc(1, state_size);
+	CHECK(state != NULL);
+	CHECK(!ker_reload_state_init(state, state_size, 0));
+	CHECK(!ker_reload_bind_state(state, state_size, 1, 0));
+	ff_global_cfg.dpdk.graceful_reload = 1;
+	ff_flow_map_open();
+	CHECK(ff_flow_map_active() && ff_reload_state_attached());
+	struct window_test_context context = {0};
+	struct ker_ff_admission_map_ops ops = {
+		.context_live = map_active, .active = map_active,
+		.admit = map_admit, .revoke = map_revoke,
+		.retire = window_retire, .rearm = window_rearm,
+		.context = &context};
+	CHECK(!ker_ff_admission_channel_open(endpoint, controller, getuid(), getgid(),
+		lease, &channel));
+	char byte = 'R';
+	CHECK(write(ready_fd, &byte, 1) == 1);
+	(void)close(ready_fd);
+	for (;;) {
+		int status = ker_ff_admission_channel_owner_step(channel, &ops);
+		if (status == -ECONNRESET) break;
+		CHECK(status == 0 || status == -EAGAIN || status == -EWOULDBLOCK);
+		struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+	CHECK(context.retires == 3 && context.rearms == 2 &&
+		!ff_flow_map_active());
+	ff_flow_map_close();
+	ker_reload_unbind_state();
+	free(state);
+	ker_ff_admission_channel_close(channel);
+	_exit(0);
+}
+
+static void inactive_map_owner_child(int endpoint, pid_t controller,
+	int ready_fd, uint64_t lease)
+{
+	struct ker_ff_admission_channel *channel = NULL;
+	size_t state_size = ker_reload_state_size();
+	void *state = calloc(1, state_size);
+	CHECK(state != NULL);
+	CHECK(!ker_reload_state_init(state, state_size, 0));
+	CHECK(!ker_reload_bind_state(state, state_size, 1, 0));
+	ff_global_cfg.dpdk.graceful_reload = 1;
+	CHECK(!ff_flow_map_active() && ff_reload_state_attached());
+	struct ker_ff_admission_map_ops ops = {
+		.context_live = map_context_live, .active = map_active,
+		.admit = map_admit, .revoke = map_revoke};
+	CHECK(!ker_ff_admission_channel_open(endpoint, controller, getuid(), getgid(),
+		lease, &channel));
+	char byte = 'R';
+	CHECK(write(ready_fd, &byte, 1) == 1);
+	(void)close(ready_fd);
+	for (;;) {
+		int status = ker_ff_admission_channel_owner_step(channel, &ops);
+		if (status == -ECONNRESET) break;
+		CHECK(status == 0 || status == -EAGAIN || status == -EWOULDBLOCK);
+		struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+	CHECK(!ff_flow_map_active());
+	ker_reload_unbind_state();
+	free(state);
+	ker_ff_admission_channel_close(channel);
+	_exit(0);
+}
+
+static void inactive_map_admission_case(void)
+{
+	const uint64_t lease = UINT64_C(0x2200000000000000);
+	int endpoints[2], ready_pipe[2];
+	CHECK(!ker_ff_admission_channel_pair(endpoints));
+	CHECK(pipe2(ready_pipe, O_CLOEXEC) == 0);
+	pid_t controller = getpid();
+	pid_t owner = fork();
+	CHECK(owner >= 0);
+	if (!owner) {
+		(void)close(endpoints[0]);
+		(void)close(ready_pipe[0]);
+		inactive_map_owner_child(endpoints[1], controller, ready_pipe[1], lease);
+		_exit(1);
+	}
+	(void)close(endpoints[1]);
+	(void)close(ready_pipe[1]);
+	struct ker_ff_admission_channel *channel = NULL;
+	CHECK(!ker_ff_admission_channel_open(endpoints[0], owner, getuid(), getgid(),
+		lease, &channel));
+	char byte;
+	CHECK(read(ready_pipe[0], &byte, 1) == 1 && byte == 'R');
+	(void)close(ready_pipe[0]);
+	struct ker_ff_admission_request request = {
+		.lease = lease, .command_id = 1, .deadline_ns = deadline_after_250ms(),
+		.packet_id = 0x7711, .key = make_key(43002)};
+	CHECK(!ker_ff_admission_channel_send_admit(channel, &request));
+	struct ker_ff_admission_result result = receive_result(channel,
+		KER_FF_ADMISSION_RESULT);
+	CHECK(result.status == 0 && result.allowed == 1 && result.created == 0);
+	CHECK(!ker_ff_admission_channel_send_control(channel,
+		KER_FF_ADMISSION_CANCEL, 1, request.packet_id));
+	result = receive_result(channel, KER_FF_ADMISSION_CANCELLED);
+	CHECK(result.status == 0);
+	ker_ff_admission_channel_close(channel);
+	int child_status = 0;
+	CHECK(waitpid(owner, &child_status, 0) == owner && WIFEXITED(child_status) &&
+		WEXITSTATUS(child_status) == 0);
+}
+
+static void window_command_validation_case(void)
+{
+	const uint64_t lease = UINT64_C(0x1100000000000000);
+	int endpoints[2], ready_pipe[2];
+	CHECK(!ker_ff_admission_channel_pair(endpoints));
+	CHECK(pipe2(ready_pipe, O_CLOEXEC) == 0);
+	pid_t controller = getpid();
+	pid_t owner = fork();
+	CHECK(owner >= 0);
+	if (!owner) {
+		(void)close(endpoints[0]);
+		(void)close(ready_pipe[0]);
+		window_owner_child(endpoints[1], controller, ready_pipe[1], lease);
+		_exit(1);
+	}
+	(void)close(endpoints[1]);
+	(void)close(ready_pipe[1]);
+	struct ker_ff_admission_channel *channel = NULL;
+	CHECK(!ker_ff_admission_channel_open(endpoints[0], owner, getuid(), getgid(),
+		lease, &channel));
+	char byte;
+	CHECK(read(ready_pipe[0], &byte, 1) == 1 && byte == 'R');
+	(void)close(ready_pipe[0]);
+	CHECK(!ker_ff_admission_channel_send_retire(channel, 1));
+	struct ker_ff_admission_result result = receive_result(channel,
+		KER_FF_ADMISSION_RETIRED);
+	CHECK(result.status == 0 && result.lease == lease && result.command_id == 1);
+	/* Authenticated but stale owner commands must be rejected without changing
+	 * the retired map/lease; the valid next command remains usable afterward. */
+	inject_window_command(endpoints[0], KER_FF_ADMISSION_REARM,
+		lease + 1, 1);
+	struct test_admission_wire rejected = receive_window_reply(endpoints[0], owner);
+	CHECK(rejected.magic == UINT32_C(0x4b464151) &&
+		rejected.command == KER_FF_ADMISSION_REARMED &&
+		rejected.lease == lease + 1 && rejected.command_id == 1 &&
+		rejected.status == -EPROTO && !rejected.allowed && !rejected.created);
+	CHECK(ker_ff_admission_channel_send_rearm(channel, lease - 1, 2) == -EINVAL);
+	CHECK(ker_ff_admission_channel_send_rearm(channel, lease + 1, 1) == -EINVAL);
+	CHECK(!ker_ff_admission_channel_send_rearm(channel, lease + 1, 2));
+	result = receive_result(channel, KER_FF_ADMISSION_REARMED);
+	CHECK(result.status == 0 && result.lease == lease + 1 && result.command_id == 2);
+	CHECK(!ker_ff_admission_channel_send_retire(channel, 3));
+	result = receive_result(channel, KER_FF_ADMISSION_RETIRED);
+	CHECK(result.status == 0 && result.lease == lease + 1 && result.command_id == 3);
+	inject_window_command(endpoints[0], KER_FF_ADMISSION_REARM, lease, 4);
+	rejected = receive_window_reply(endpoints[0], owner);
+	CHECK(rejected.command == KER_FF_ADMISSION_REARMED &&
+		rejected.lease == lease && rejected.command_id == 4 &&
+		rejected.status == -ESTALE && !rejected.allowed && !rejected.created);
+	CHECK(ker_ff_admission_channel_send_rearm(channel, lease + 2, 3) == -EINVAL);
+	CHECK(!ker_ff_admission_channel_send_rearm(channel, lease + 2, 4));
+	result = receive_result(channel, KER_FF_ADMISSION_REARMED);
+	CHECK(result.status == 0 && result.lease == lease + 2 && result.command_id == 4);
+	CHECK(!ker_ff_admission_channel_send_retire(channel, 5));
+	result = receive_result(channel, KER_FF_ADMISSION_RETIRED);
+	CHECK(result.status == 0 && result.lease == lease + 2 && result.command_id == 5);
+	ker_ff_admission_channel_close(channel);
+	int child_status = 0;
+	CHECK(waitpid(owner, &child_status, 0) == owner && WIFEXITED(child_status) &&
+		WEXITSTATUS(child_status) == 0);
+}
+
 int main(void)
 {
 	int endpoints[2], ready_pipe[2];
@@ -550,6 +812,8 @@ int main(void)
 	int wait_status = 0;
 	CHECK(waitpid(owner, &wait_status, 0) == owner && WIFEXITED(wait_status) &&
 	      WEXITSTATUS(wait_status) == 0);
-	puts("PASS: credentialed owner commands preserve prepared reservations, roll back an unprepared admission when the initial RESULT send disconnects, and retain created=0 and PREPARED entries");
+	window_command_validation_case();
+	inactive_map_admission_case();
+	puts("PASS: credentialed owner commands preserve prepared reservations, roll back an unprepared admission on initial RESULT disconnect, prove inactive-map allow/created=0, and reject stale window leases/command IDs");
 	return 0;
 }

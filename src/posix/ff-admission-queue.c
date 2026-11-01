@@ -43,6 +43,7 @@ struct ker_ff_admission_queue {
 	uint32_t mark;
 	uint32_t pending_id;
 	uint64_t lease;
+	int armed;
 	int pending;
 	int deferred_valid;
 	size_t deferred_length;
@@ -351,6 +352,7 @@ int ker_ff_admission_queue_start(uint32_t owner_mark,
 		goto failure;
 	queue->lease = control.lease;
 	if (!queue->lease) { result = -EPROTO; goto failure; }
+	queue->armed = 1;
 	*output = queue;
 	return 0;
 
@@ -588,8 +590,27 @@ int ker_ff_admission_queue_test_drop_wrong_id(
 int ker_ff_admission_queue_disarm_after_quiescence(
 	struct ker_ff_admission_queue *queue)
 {
-	if (!queue || queue->pending || queue->deferred_valid) return -EBUSY;
-	return set_kernel_mark(queue->mark, 0, &queue->lease);
+	if (!queue || !queue->armed || queue->pending || queue->deferred_valid)
+		return -EBUSY;
+	int status = set_kernel_mark(queue->mark, 0, &queue->lease);
+	if (!status) queue->armed = 0;
+	return status;
+}
+
+int ker_ff_admission_queue_disable_for_retire(
+	struct ker_ff_admission_queue *queue)
+{
+	if (!queue || !queue->armed || queue->pending) return -EBUSY;
+	int status = set_kernel_mark(queue->mark, 0, &queue->lease);
+	if (!status) queue->armed = 0;
+	return status;
+}
+
+int ker_ff_admission_queue_retire_drained(
+	const struct ker_ff_admission_queue *queue)
+{
+	if (!queue || queue->armed) return -EINVAL;
+	return queue->pending || queue->deferred_valid ? 0 : 1;
 }
 
 void ker_ff_admission_queue_close(struct ker_ff_admission_queue *queue)

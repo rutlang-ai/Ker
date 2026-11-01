@@ -56,6 +56,8 @@ struct ker_ff_admission_channel {
 	pthread_t owner_thread;
 	int owner_thread_bound;
 	int response_pending;
+	uint64_t test_prepared_delay_until_ns;
+	int test_prepared_delay_announced;
 	struct ker_ff_admission_wire response;
 	int owner_state;
 	int owner_prepared;
@@ -67,6 +69,8 @@ struct ker_ff_admission_channel {
 	int controller_state;
 	uint32_t controller_allowed;
 	uint32_t controller_created;
+	int owner_window_state; /* 1 active, 2 retired, 3 failed */
+	int controller_window_state; /* 1 active, 2 retired, 3 failed */
 };
 
 static int process_start_time(pid_t pid, uint64_t *start_time)
@@ -197,8 +201,13 @@ static int receive_wire(struct ker_ff_admission_channel *channel,
 	if (wire->magic != KER_FF_ADMISSION_CHANNEL_MAGIC ||
 	    wire->version != KER_FF_ADMISSION_CHANNEL_VERSION ||
 	    wire->length != sizeof(*wire) || wire->flags || wire->reserved ||
-	    wire->lease != channel->lease || !wire->command_id ||
+	    (wire->lease != channel->lease &&
+	     !(wire->command == KER_FF_ADMISSION_REARM &&
+	       channel->owner_window_state == 2)) || !wire->command_id ||
 	    (wire->command <= KER_FF_ADMISSION_CANCEL_UNSENT &&
+	     (wire->status || wire->allowed || wire->created)) ||
+	    ((wire->command == KER_FF_ADMISSION_RETIRE ||
+	      wire->command == KER_FF_ADMISSION_REARM) &&
 	     (wire->status || wire->allowed || wire->created)))
 		return -EPROTO;
 	return 1;
@@ -287,6 +296,39 @@ static int send_pending_response(struct ker_ff_admission_channel *channel)
 	int result;
 	if (!channel->response_pending) return 0;
 #ifdef KER_C16_ADMISSION_TEST_TRACE
+	/* Test-only asynchronous delay: keep the PREPARED response pending while
+	 * returning EAGAIN to the owner pump, so the outer FF loop can issue a
+	 * genuine concurrent RETIRE_BEGIN without blocking that owner thread. */
+	if (channel->response.command == KER_FF_ADMISSION_PREPARED) {
+		const char *text = getenv("KER_C17_TEST_DELAY_PREPARED_MS");
+		if (text && *text) {
+			char *end = NULL;
+			errno = 0;
+			unsigned long delay_ms = strtoul(text, &end, 10);
+			if (errno || end == text || *end || !delay_ms || delay_ms > 2000)
+				return -EINVAL;
+			struct timespec now;
+			if (clock_gettime(CLOCK_MONOTONIC, &now)) return -errno;
+			uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+				(uint64_t)now.tv_nsec;
+			if (!channel->test_prepared_delay_until_ns) {
+				if (now_ns > UINT64_MAX - delay_ms * UINT64_C(1000000))
+					return -EOVERFLOW;
+				channel->test_prepared_delay_until_ns = now_ns +
+					delay_ms * UINT64_C(1000000);
+			}
+			if (now_ns < channel->test_prepared_delay_until_ns) {
+				if (!channel->test_prepared_delay_announced) {
+					static const char marker[] =
+						"C17_PREPARED_REPLY_DELAYED owner_prepared=1 response_pending=1\n";
+					(void)syscall(SYS_write, STDOUT_FILENO, marker,
+						sizeof(marker) - 1);
+					channel->test_prepared_delay_announced = 1;
+				}
+				return -EAGAIN;
+			}
+		}
+	}
 	if (channel->response.command == KER_FF_ADMISSION_FINALIZED) {
 		int hold = test_hold_finalized_response(channel);
 		if (hold) return hold;
@@ -303,7 +345,11 @@ static int send_pending_response(struct ker_ff_admission_channel *channel)
 			channel->current.created);
 #endif
 	result = send_wire(channel, &channel->response);
-	if (result == 0) channel->response_pending = 0;
+	if (result == 0) {
+		channel->response_pending = 0;
+		channel->test_prepared_delay_until_ns = 0;
+		channel->test_prepared_delay_announced = 0;
+	}
 	return result;
 }
 
@@ -366,6 +412,8 @@ int ker_ff_admission_channel_open(int fd, pid_t expected_peer,
 	channel->peer_exe_device = executable.st_dev;
 	channel->peer_exe_inode = executable.st_ino;
 	channel->lease = lease;
+	channel->owner_window_state = 1;
+	channel->controller_window_state = 1;
 	*output = channel;
 	return 0;
 }
@@ -448,6 +496,50 @@ int ker_ff_admission_channel_send_control(struct ker_ff_admission_channel *chann
 	return result;
 }
 
+static int send_window_command(struct ker_ff_admission_channel *channel,
+	uint16_t command, uint64_t lease, uint64_t command_id)
+{
+	struct ker_ff_admission_wire wire = {0};
+	if (!channel || !command_id || channel->controller_state != 0 ||
+	    command_id <= channel->controller_last_command_id || !lease)
+		return -EINVAL;
+	if ((command == KER_FF_ADMISSION_RETIRE &&
+	     (channel->controller_window_state != 1 || lease != channel->lease)) ||
+	    (command == KER_FF_ADMISSION_REARM &&
+	     (channel->controller_window_state != 2 || lease <= channel->lease)) ||
+	    (command != KER_FF_ADMISSION_RETIRE &&
+	     command != KER_FF_ADMISSION_REARM)) return -EINVAL;
+	wire.magic = KER_FF_ADMISSION_CHANNEL_MAGIC;
+	wire.version = KER_FF_ADMISSION_CHANNEL_VERSION;
+	wire.command = command;
+	wire.length = sizeof(wire);
+	wire.lease = lease;
+	wire.command_id = command_id;
+	int status = send_wire(channel, &wire);
+	if (status) return status;
+	channel->controller_last_command_id = command_id;
+	channel->controller_command_id = command_id;
+	channel->controller_packet_id = 0;
+	channel->controller_state = command == KER_FF_ADMISSION_RETIRE ? 6 : 7;
+	if (command == KER_FF_ADMISSION_REARM) channel->lease = lease;
+	return 0;
+}
+
+int ker_ff_admission_channel_send_retire(
+	struct ker_ff_admission_channel *channel, uint64_t command_id)
+{
+	return channel ? send_window_command(channel, KER_FF_ADMISSION_RETIRE,
+		channel->lease, command_id) : -EINVAL;
+}
+
+int ker_ff_admission_channel_send_rearm(
+	struct ker_ff_admission_channel *channel, uint64_t new_lease,
+	uint64_t command_id)
+{
+	return send_window_command(channel, KER_FF_ADMISSION_REARM,
+		new_lease, command_id);
+}
+
 int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 				     struct ker_ff_admission_result *result)
 {
@@ -460,7 +552,7 @@ int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 		break;
 	}
 	if (wire.command < KER_FF_ADMISSION_RESULT ||
-	    wire.command > KER_FF_ADMISSION_FINALIZED || wire.deadline_ns ||
+	    wire.command > KER_FF_ADMISSION_REARMED || wire.deadline_ns ||
 	    wire.allowed > 1 || wire.created > 1 || (wire.created && !wire.allowed) ||
 	    (wire.command != KER_FF_ADMISSION_RESULT &&
 	     (wire.allowed || wire.created)) ||
@@ -470,6 +562,26 @@ int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 	    !channel->controller_state || wire.command_id != channel->controller_command_id ||
 	    wire.packet_id != channel->controller_packet_id)
 		return -EPROTO;
+	if (wire.command == KER_FF_ADMISSION_RETIRED) {
+		if (channel->controller_state != 6 || wire.lease != channel->lease)
+			return -EPROTO;
+		channel->controller_state = 0;
+		channel->controller_window_state = wire.status ? 3 : 2;
+	} else if (wire.command == KER_FF_ADMISSION_REARMED) {
+		if (channel->controller_state != 7 || wire.lease != channel->lease)
+			return -EPROTO;
+		channel->controller_state = 0;
+		channel->controller_window_state = wire.status ? 3 : 1;
+	} else if (channel->controller_state == 6 || channel->controller_state == 7) {
+		return -EPROTO;
+	}
+	if (wire.command == KER_FF_ADMISSION_RETIRED ||
+	    wire.command == KER_FF_ADMISSION_REARMED) {
+		*result = (struct ker_ff_admission_result){
+			.lease = wire.lease, .command_id = wire.command_id,
+			.packet_id = wire.packet_id, .status = wire.status};
+		return wire.command;
+	}
 	if (wire.command == KER_FF_ADMISSION_RESULT) {
 		if (channel->controller_state == 1) {
 			channel->controller_state = 2;
@@ -536,7 +648,8 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 	struct timespec now;
 	uint64_t now_ns;
 	int received;
-	if (!channel || !ops || !ops->active || !ops->admit || !ops->revoke)
+	if (!channel || !ops || (!ops->context_live && !ops->active) ||
+	    !ops->admit || !ops->revoke)
 		return -EINVAL;
 	if (!channel->owner_thread_bound) {
 		channel->owner_thread = pthread_self();
@@ -560,10 +673,49 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 		}
 		return received;
 	}
+	if (command.command == KER_FF_ADMISSION_RETIRE ||
+	    command.command == KER_FF_ADMISSION_REARM) {
+		int is_retire = command.command == KER_FF_ADMISSION_RETIRE;
+		int status = 0;
+		if (channel->owner_state || channel->owner_prepared ||
+		    command.command_id <= channel->owner_last_command_id ||
+		    command.packet_id || command.deadline_ns ||
+		    memcmp(&command.key, &(struct ker_ff_admission_key){0},
+			   sizeof(command.key))) {
+			status = -EPROTO;
+		} else if (is_retire) {
+			if (channel->owner_window_state != 1 ||
+			    command.lease != channel->lease || !ops->retire)
+				status = -ESTALE;
+			else
+				status = ops->retire(ops->context);
+			if (!status) channel->owner_window_state = 2;
+		} else {
+			if (channel->owner_window_state != 2 ||
+			    !command.lease || command.lease <= channel->lease || !ops->rearm)
+				status = -ESTALE;
+			else {
+				/* The gate already carries this fresh lease. Adopt it even on
+				 * open failure, then quarantine instead of accepting packets. */
+				channel->lease = command.lease;
+				status = ops->rearm(ops->context);
+				channel->owner_window_state = status ? 3 : 1;
+			}
+		}
+		if (!status) channel->owner_last_command_id = command.command_id;
+		response_for_command(channel, &command,
+			is_retire ? KER_FF_ADMISSION_RETIRED : KER_FF_ADMISSION_REARMED,
+			status);
+		return send_pending_response(channel);
+	}
 	if (command.command == KER_FF_ADMISSION_ADMIT) {
 		int created = 0, allowed = 0, status = 0;
 		struct ker_ff_admission_key key;
 		memcpy(&key, &command.key, sizeof(key));
+		if (channel->owner_window_state != 1) {
+			response_for_command(channel, &command, KER_FF_ADMISSION_RESULT, -ENOTCONN);
+			return send_pending_response(channel);
+		}
 		if (channel->owner_state) {
 			response_for_command(channel, &command, KER_FF_ADMISSION_RESULT, -EBUSY);
 			return send_pending_response(channel);
@@ -580,8 +732,9 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 			now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
 			if (now_ns >= command.deadline_ns) status = -ETIMEDOUT;
 			else {
-				int active = ops->active(ops->context);
-				if (active <= 0) status = active < 0 ? active : -ENOTCONN;
+				int live = ops->context_live ?
+					ops->context_live(ops->context) : ops->active(ops->context);
+				if (live <= 0) status = live < 0 ? live : -ENOTCONN;
 			}
 			if (!status) {
 				allowed = ops->admit(&key, &created, ops->context);

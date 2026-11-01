@@ -12,6 +12,8 @@
         ker_posix_ff_admission_task_set_listener;
         ker_posix_ff_admission_task_listener_closed;
         ker_posix_ff_admission_task_request_stop;
+        ker_posix_ff_admission_task_window_action;
+        ker_posix_ff_admission_task_poll_window;
         ker_posix_ff_admission_task_release;
         ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc; ker_posix_buffer_write;
         ker_posix_buffer_writer_create; ker_posix_buffer_writer_create_segmented; ker_posix_buffer_writer_segment; ker_posix_buffer_writer_append;
