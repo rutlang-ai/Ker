@@ -4009,9 +4009,18 @@
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_full_ring",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete unchanged source assertion fills the original capacity-15 KNI RX ring, rejects and frees the next mbuf, increments rx_dropped exactly once and retains every queued object. A real capacity-one net_ring PMD then drains the saved pointer/payload FIFO through unchanged ff_kni_process; enqueue resumes after one freed slot and the pool returns fully. This is source-fixture queue ownership/PMD evidence, not a genuine secondary or full reload. See docs/fstack-kni-full-ring.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-owner-original-import",
+          "provenance_case": "fstack-kni-future-full-ring"
+        },
+        {
+          "ctest": "fstack-kni-full-ring-source",
+          "provenance_case": "fstack-kni-future-full-ring"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner",

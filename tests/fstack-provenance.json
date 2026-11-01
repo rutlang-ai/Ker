@@ -4511,6 +4511,15 @@
       ],
       "adaptation": "The complete unchanged p1_cold_tx_check(1) helper and test_p1_future_kni_short_tx assertion run against the original KNI implementation and exact source IDs. The fixture requires tx_packets=1, dropped=2 and complete pool recovery. It then uses the unchanged ff_kni_inject_process with the real net_ring PMD and a bounded sink whose capacity is exactly one: the first of three distinct mbufs is accepted with exact pointer/FIFO/payload, the other two are released, and exact TX/drop deltas and pool census are checked. A fresh packet retry is accepted and reclaimed. This is a caller backpressure test using a source-fixture PMD, not an installed short-TX caller, true secondary, protocol behavior or full RX-ring qualification. Source implementation and test bytes are audited against the pinned snapshot. See docs/fstack-kni-short-tx.md."
     },
+    "fstack-kni-future-full-ring": {
+      "source_file": "tests/unit/test_ff_dpdk_kni.c",
+      "source_case": "test_p1_future_kni_full_ring",
+      "ker_ctests": [
+        "fstack-kni-owner-original-import",
+        "fstack-kni-full-ring-source"
+      ],
+      "adaptation": "The complete unchanged test_p1_future_kni_full_ring source body and p1_cold_init helper fill the actual capacity-15 original KNI RX ring, require the next original enqueue to return -1, require exactly one rx_dropped increment and check the exact retained-pool census. For payload seeding, the source fixture wraps its mbuf allocator to record distinct bytes/pointers before the unchanged overflow assertion; after that assertion it verifies every saved queued object survives in FIFO order. Original ff_kni_process drains through an actual capacity-one net_ring PMD one packet at a time, and exact pointer/payload, rx_packets/rx_dropped, pool recovery and enqueue resumption after freeing one slot are asserted. The source case and imported functions remain byte-audited. This is source-fixture queue/PMD evidence, not an installed caller, genuine secondary, cross-master ownership or complete graceful reload. See docs/fstack-kni-full-ring.md."
+    },
     "fstack-kni-nonowner": {
       "source_file": "tests/unit/test_ff_dpdk_kni.c",
       "source_case": "test_p1_kni_nonowner",

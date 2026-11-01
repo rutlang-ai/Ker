@@ -59,9 +59,14 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-kni-owner-source.py"
             --app "$<TARGET_FILE:ker-kni-owner-source-test>" --pmd-root "${ker_kni_source_pmd_root}"
             --profile short-tx)
+    add_test(NAME fstack-kni-full-ring-source
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/fstack-kni-owner-source.py"
+            --app "$<TARGET_FILE:ker-kni-owner-source-test>" --pmd-root "${ker_kni_source_pmd_root}"
+            --profile full-ring)
     set_tests_properties(fstack-kni-owner-original-import PROPERTIES LABELS "fstack;provenance")
     set_tests_properties(fstack-kni-owner-source PROPERTIES LABELS "fstack;fstack-newly-adapted" TIMEOUT 30)
-    set_tests_properties(fstack-kni-short-tx-source PROPERTIES LABELS "fstack;fstack-newly-adapted" TIMEOUT 30)
+    set_tests_properties(fstack-kni-short-tx-source fstack-kni-full-ring-source
+        PROPERTIES LABELS "fstack;fstack-newly-adapted" TIMEOUT 30)
 endif()
 # The native CI profile provisions namespaces, tun and /dev/vhost-net before
 # its full CTest graph. Other DPDK builds still compile the caller and harness.

@@ -26,6 +26,12 @@ static uint32_t fixture_epoch;
 static int fixture_generation;
 static struct rte_ring *sink_rx, *sink_tx;
 static uint16_t sink_port;
+static int seed_full_ring_packets;
+static unsigned full_ring_seed_count;
+static struct rte_mbuf *full_ring_seeded[16];
+static unsigned char full_ring_payloads[16][32];
+static struct rte_mbuf *source_pktmbuf_alloc(struct rte_mempool *pool);
+#define rte_pktmbuf_alloc source_pktmbuf_alloc
 
 static void init_eal(void)
 {
@@ -100,8 +106,27 @@ void ff_reload_master_complete(void)
 #pragma GCC diagnostic ignored "-Wunused-function" /* exact source cases land in the next stacked tranche */
 #include "fstack-kni-owner-source.inc"
 #pragma GCC diagnostic pop
+#undef rte_pktmbuf_alloc
+
+static struct rte_mbuf *source_pktmbuf_alloc(struct rte_mempool *pool)
+{
+    struct rte_mbuf *packet = rte_pktmbuf_alloc(pool);
+    if (seed_full_ring_packets && packet && p1_rx &&
+        rte_ring_count(p1_rx) < rte_ring_get_capacity(p1_rx)) {
+        CHECK(full_ring_seed_count < sizeof(full_ring_seeded) / sizeof(full_ring_seeded[0]));
+        unsigned index = full_ring_seed_count++;
+        unsigned char *bytes = (unsigned char *)rte_pktmbuf_append(packet,
+            sizeof(full_ring_payloads[index]));
+        CHECK(bytes);
+        full_ring_seeded[index] = packet;
+        for (unsigned j = 0; j < sizeof(full_ring_payloads[index]); ++j)
+            full_ring_payloads[index][j] = bytes[j] = (unsigned char)(0x31 + 13 * index + j);
+    }
+    return packet;
+}
 
 static void exercise_real_short_tx_sink(void);
+static void exercise_real_full_ring_drain(void);
 static void run_case(void (*test)(void **), int expected_limit, int exercise_sink)
 {
     void *state = NULL;
@@ -109,12 +134,16 @@ static void run_case(void (*test)(void **), int expected_limit, int exercise_sin
     CHECK(example_kni_prepare() == 0);
     CHECK(p1_cold_setup(&state) == 0);
     CHECK(ker_reload_kni_owner_matches() == 0);
+    seed_full_ring_packets = exercise_sink == 2;
+    full_ring_seed_count = 0;
     test(&state);
+    seed_full_ring_packets = 0;
     if (expected_limit >= 0) {
         CHECK(example_kni_reload_owner_matches() == 1);
         CHECK(p1_tx_calls == 1 && p1_tx_limit == (unsigned)expected_limit);
     }
-    if (exercise_sink) exercise_real_short_tx_sink();
+    if (exercise_sink == 1) exercise_real_short_tx_sink();
+    if (exercise_sink == 2) exercise_real_full_ring_drain();
     CHECK(p1_cold_teardown(&state) == 0);
     CHECK(ker_reload_kni_owner_matches() == -ENOTCONN);
 }
@@ -123,6 +152,61 @@ static void verify_payload(struct rte_mbuf *packet, const unsigned char expected
 {
     CHECK(packet && rte_pktmbuf_pkt_len(packet) == 32);
     CHECK(memcmp(rte_pktmbuf_mtod(packet, const void *), expected, 32) == 0);
+}
+static void exercise_real_full_ring_drain(void)
+{
+    struct rte_mbuf *burst[1], *received;
+    const unsigned capacity = rte_ring_get_capacity(p1_rx);
+    CHECK(capacity == 15 && full_ring_seed_count == capacity);
+    CHECK(rte_ring_count(p1_rx) == capacity && rte_ring_free_count(p1_rx) == 0);
+    CHECK(kni_stat[0]->rx_dropped == 1 && kni_stat[0]->rx_packets == 0);
+    CHECK(rte_mempool_avail_count(test_pool) == KNI_TEST_POOL_SZ - capacity);
+
+    /* The rejected allocation leaves every admitted object in source FIFO order. */
+    for (unsigned i = 0; i < capacity; ++i) {
+        CHECK(rte_ring_dequeue(p1_rx, (void **)&received) == 0 && received == full_ring_seeded[i]);
+        verify_payload(received, full_ring_payloads[i]);
+        CHECK(rte_ring_enqueue(p1_rx, received) == 0);
+    }
+    CHECK(rte_ring_count(p1_rx) == capacity && rte_ring_free_count(p1_rx) == 0);
+
+    /* The original KNI drain transmits through the real capacity-one net_ring PMD. */
+    rte_eth_fp_ops[0] = p1_saved_ops;
+    kni_stat[0]->port_id = sink_port;
+    CHECK(rte_ring_count(p1_rx) == capacity);
+    ff_kni_process(0, 0, burst, 1);
+    CHECK(kni_stat[0]->rx_packets == 1 && kni_stat[0]->rx_dropped == 1);
+    CHECK(rte_ring_dequeue(sink_tx, (void **)&received) == 0 &&
+        received == full_ring_seeded[0]);
+    verify_payload(received, full_ring_payloads[0]);
+    rte_pktmbuf_free(received);
+    CHECK(rte_mempool_avail_count(test_pool) == KNI_TEST_POOL_SZ - capacity + 1);
+    CHECK(rte_ring_free_count(p1_rx) == 1);
+
+    struct rte_mbuf *retry = rte_pktmbuf_alloc(test_pool);
+    CHECK(retry && full_ring_seed_count == capacity);
+    unsigned char *bytes = (unsigned char *)rte_pktmbuf_append(retry, sizeof(full_ring_payloads[capacity]));
+    CHECK(bytes);
+    full_ring_seeded[capacity] = retry;
+    for (unsigned j = 0; j < sizeof(full_ring_payloads[capacity]); ++j)
+        full_ring_payloads[capacity][j] = bytes[j] = (unsigned char)(0xe1 + j);
+    full_ring_seed_count++;
+    CHECK(ff_kni_enqueue(FILTER_ARP, 0, retry) == 0);
+    CHECK(rte_ring_count(p1_rx) == capacity && kni_stat[0]->rx_dropped == 1);
+
+    for (unsigned i = 1; i <= capacity; ++i) {
+        CHECK(rte_ring_count(p1_rx) == capacity - i + 1);
+        ff_kni_process(0, 0, burst, 1);
+        CHECK(kni_stat[0]->rx_packets == i + 1 && kni_stat[0]->rx_dropped == 1);
+        CHECK(rte_ring_dequeue(sink_tx, (void **)&received) == 0 &&
+            received == full_ring_seeded[i]);
+        verify_payload(received, full_ring_payloads[i]);
+        rte_pktmbuf_free(received);
+    }
+    CHECK(rte_ring_empty(p1_rx) && rte_ring_empty(sink_tx) &&
+        rte_mempool_avail_count(test_pool) == KNI_TEST_POOL_SZ);
+    CHECK(kni_stat[0]->rx_packets == capacity + 1 && kni_stat[0]->rx_dropped == 1 &&
+        kni_stat[0]->tx_packets == 0 && kni_stat[0]->tx_dropped == 0);
 }
 static void exercise_real_short_tx_sink(void)
 {
@@ -174,7 +258,8 @@ static void exercise_real_short_tx_sink(void)
 int main(int argc, char **argv)
 {
     const int short_tx = argc == 2 && !strcmp(argv[1], "short-tx");
-    CHECK(argc == 1 || short_tx);
+    const int full_ring = argc == 2 && !strcmp(argv[1], "full-ring");
+    CHECK(argc == 1 || short_tx || full_ring);
     init_eal();
     test_pool = rte_pktmbuf_pool_create("kni_owner_source_pool", KNI_TEST_POOL_SZ,
         0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
@@ -196,6 +281,8 @@ int main(int argc, char **argv)
 
     if (short_tx) {
         run_case(test_p1_future_kni_short_tx, 1, 1);
+    } else if (full_ring) {
+        run_case(test_p1_future_kni_full_ring, -1, 2);
     } else {
         run_case(test_p1_future_kni_owner, 3, 0);
         run_case(test_p1_kni_nonowner, -1, 0);
@@ -208,6 +295,7 @@ int main(int argc, char **argv)
     rte_mempool_free(test_pool);
     CHECK(rte_eal_cleanup() == 0);
     puts(short_tx ? "PASS: original KNI short-TX contract and real net_ring sink recovery" :
+        full_ring ? "PASS: original KNI full-ring contract and real net_ring FIFO drain" :
         "PASS: original KNI future owner activation and nonowner contracts");
     return 0;
 }
