@@ -85,6 +85,14 @@ if(BUILD_TESTING)
         TIMEOUT 180 LABELS "native-tcp;admission;original-linux;tap;wire"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
+    add_test(NAME native-c16-harness-wait-line-observer
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+            --wait-line-selftest)
+    set_tests_properties(native-c16-harness-wait-line-observer PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;admission;harness;observer"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
     # C16 separates the original-Linux broker process from the FF owner
     # process. The latter links the unchanged flow-map/reload sources and
     # talks to the broker through the opt-in owner capability.

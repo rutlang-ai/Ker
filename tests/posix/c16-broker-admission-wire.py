@@ -27,30 +27,102 @@ def require(condition, message):
 def wait_line(process, expected, timeout=30):
     deadline = time.monotonic() + timeout
     recent = getattr(process, '_ker_recent_lines', [])
+    pending = getattr(process, '_ker_line_buffer', bytearray())
+    eof = False
     while time.monotonic() < deadline:
-        if process.poll() is not None:
-            output, errors = process.communicate()
-            raise RuntimeError(f'process exited before {expected}: rc={process.returncode}; '
-                f'stdout={output!r}; stderr={errors!r}')
+        # A previous call can drain multiple records and return at the first
+        # match. Consume complete retained records before waiting on the fd.
+        while b'\n' in pending:
+            raw, _, remainder = pending.partition(b'\n')
+            pending = bytearray(remainder)
+            line = raw.decode(errors='replace')
+            recent.append(line)
+            del recent[:-16]
+            process._ker_recent_lines = recent
+            if expected in line:
+                process._ker_line_buffer = pending
+                return line + '\n'
         ready, _, _ = select.select([process.stdout], [], [], 0.05)
         if ready:
-            # Read the pipe fd directly: TextIOWrapper.readline() can prefetch
-            # several trace lines, making select() miss buffered follow-ups.
-            pending = getattr(process, '_ker_line_buffer', bytearray())
-            byte = os.read(process.stdout.fileno(), 1)
-            if not byte:
-                continue
-            pending.extend(byte)
-            process._ker_line_buffer = pending
-            if byte == b'\n':
+            # Drain bytes before checking process.poll(): a short-lived child
+            # can write its final complete marker and exit between iterations.
+            # TextIOWrapper.readline() may prefetch later records, so use the
+            # underlying fd and preserve partial lines across wait_line calls.
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                eof = True
+            else:
+                pending.extend(chunk)
+                while b'\n' in pending:
+                    raw, _, remainder = pending.partition(b'\n')
+                    pending = bytearray(remainder)
+                    line = raw.decode(errors='replace')
+                    recent.append(line)
+                    del recent[:-16]
+                    process._ker_recent_lines = recent
+                    if expected in line:
+                        process._ker_line_buffer = pending
+                        return line + '\n'
+        process._ker_line_buffer = pending
+        # poll() may report exit while more than one read chunk remains in the
+        # pipe. EOF, not process exit alone, proves there is no later marker.
+        if eof:
+            if pending:
                 line = pending.decode(errors='replace')
+                recent.append(line)
+                process._ker_recent_lines = recent[-16:]
                 process._ker_line_buffer = bytearray()
-                recent.append(line.rstrip())
-                del recent[:-16]
-                process._ker_recent_lines = recent
-                if expected in line:
-                    return line
+            output, errors = process.communicate()
+            raise RuntimeError(f'process exited before {expected}: rc={process.returncode}; '
+                f'recent={recent!r}; stdout={output!r}; stderr={errors!r}')
     raise RuntimeError(f'timed out waiting for {expected}; recent={recent!r}')
+
+
+def wait_line_selftest():
+    child = subprocess.Popen([sys.executable, '-c',
+        "import os; os.write(1, b'FIRST_MARKER complete\\nSECOND_MARKER complete\\n'); os._exit(0)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    child.wait(timeout=2)
+    require('FIRST_MARKER complete' in wait_line(child, 'FIRST_MARKER', 2),
+        'wait_line lost the first complete marker written immediately before exit')
+    require('SECOND_MARKER complete' in wait_line(child, 'SECOND_MARKER', 2),
+        'wait_line lost a retained later marker written before immediate exit')
+
+    large = subprocess.Popen([sys.executable, '-c',
+        "import os; os.write(1, b'x' * 5000 + b'\\nLARGE_FINAL_MARKER complete\\n'); os._exit(0)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    large.wait(timeout=2)
+    require('LARGE_FINAL_MARKER complete' in wait_line(large, 'LARGE_FINAL_MARKER', 2),
+        'wait_line stopped at process exit before draining a later pipe chunk')
+
+    missing = subprocess.Popen([sys.executable, '-c',
+        "import os; os.write(1, b'OTHER_MARKER\\n'); os._exit(0)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    missing.wait(timeout=2)
+    try:
+        wait_line(missing, 'MISSING_MARKER', 2)
+    except RuntimeError as error:
+        require('OTHER_MARKER' in str(error),
+            f'missing-marker exit omitted drained output: {error!r}')
+    else:
+        raise RuntimeError('wait_line accepted a marker that the child did not write')
+
+    partial = subprocess.Popen([sys.executable, '-c',
+        "import os; os.write(1, b'PARTIAL_MARK'); os._exit(0)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    partial.wait(timeout=2)
+    started = time.monotonic()
+    try:
+        wait_line(partial, 'PARTIAL_MARKER', 2)
+    except RuntimeError as error:
+        require('PARTIAL_MARK' in str(error),
+            f'partial-marker exit omitted its pending bytes: {error!r}')
+        require(time.monotonic() - started < 1,
+            'partial-marker exit was not diagnosed promptly')
+    else:
+        raise RuntimeError('wait_line accepted a partial marker without a newline')
+    print('C16_WAIT_LINE_OBSERVER_PASS final-markers=drained large-output=drained '
+        'missing-marker=rejected partial-marker=diagnosed')
 
 
 def run_progress_client(path, rpc_path):
@@ -690,6 +762,9 @@ def inside(args):
 
 
 def main():
+    if '--wait-line-selftest' in sys.argv:
+        wait_line_selftest()
+        return 0
     parser = argparse.ArgumentParser()
     parser.add_argument('--launcher', type=Path, required=True)
     parser.add_argument('--library', type=Path, required=True)
@@ -706,8 +781,12 @@ def main():
     parser.add_argument('--listener-close-only', action='store_true')
     parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
+    parser.add_argument('--wait-line-selftest', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
+    if args.wait_line_selftest:
+        wait_line_selftest()
+        return 0
     if args.inside:
         return inside(args)
     command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
