@@ -210,6 +210,8 @@ int ker_socket_client_ff_owner_match(struct ker_socket_client *client,
     int owner_cap, int socket_cap);
 int ker_socket_client_ff_owner_payload_snapshot(struct ker_socket_client *client,
     int owner_cap, struct ker_socket_member_payload_snapshot *snapshot);
+int ker_socket_client_ff_owner_requests(struct ker_socket_client *client,
+    int owner_cap, uint64_t *request_count);
 
 #ifdef __cplusplus
 }

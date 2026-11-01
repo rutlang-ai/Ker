@@ -60,9 +60,13 @@ queued native-to-host bytes and orderly EOF, and observes closing/TIME_WAIT
 rows after worker exit. A separate kind-4 observer provides the send-queue
 measurement; the kind-5 census result itself contains only raw state counts
 and listener identity. This validates the broker's bounded member-census
-primitive, not F-Stack per-process FD aliases, `so_snd`, syncache or source FSM
-counters. It is not the original shell's complete census, fault or lifecycle
-matrix and does not change the blocked inventory entry.
+primitive, not F-Stack per-process FD aliases, `so_snd`, or source FSM counters.
+A separate op-47 owner hook now reports a bounded original-Linux request_sock
+count for `ff_syncache_count`; it excludes full `SYN_RECV` sockets and
+stateless cookies, and does not establish full source-counter equivalence. The
+tests keep the listener live through zero. This is not the original shell's
+complete census, fault or lifecycle matrix and does not change the blocked
+inventory entry.
 
 The bounded FF runtime now implements `ff_socket_drain_count` over authenticated
 broker capabilities registered in the current process. It counts application
@@ -75,8 +79,10 @@ through the leaf bridge.
 This hook is not the pinned source's whole process FD-table walk: raw or
 unregistered descriptors are outside its view, and the public FF/POSIX socket
 creation adapters still reject UDP. The graceful-off caller profile does not
-invoke the generation FSM; syncache, flow-map, and dispatcher hooks remain
-unsupported. The source inventory entry remains blocked.
+invoke the generation FSM. The bounded authenticated `ff_syncache_count()`
+hook observes original-Linux request sockets only; flow-map, dispatcher, and
+generation FSM hooks remain unsupported. The source inventory entry remains
+blocked.
 
 The bounded FF bridge now supports `ff_dup` for registered TCP descriptors via
 the existing namespaced `F_DUPFD` adapter. Tests cover lowest-free slot reuse,

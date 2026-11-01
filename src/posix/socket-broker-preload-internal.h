@@ -31,6 +31,7 @@ int ker_sb_preload_ff_owner_capability_locked(void);
 bool ker_sb_preload_ff_owner_managed(void);
 int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol);
 int ker_sb_preload_ff_owner_payload(struct ker_socket_member_payload_snapshot *snapshot);
+int ker_sb_preload_ff_owner_requests(uint64_t *request_count);
 int ker_sb_preload_ff_owner_matches_locked(int owner_cap,
     struct ker_socket_client *client);
 int ker_sb_preload_network_registry_empty_locked(void);

@@ -1,9 +1,3 @@
-function(ker_enable_ff_owner_requests_adapter)
-    target_sources(ker-posix PRIVATE
-        "${PROJECT_SOURCE_DIR}/src/posix/ff-owner-requests-diag.c"
-        "${PROJECT_SOURCE_DIR}/src/posix/ff-owner-requests-parse.c")
-endfunction()
-
 function(ker_add_ff_owner_requests_tests)
 
     add_executable(ker-ff-owner-requests-parser-test

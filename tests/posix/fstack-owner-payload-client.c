@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 int ff_init(int argc, char * const argv[]);
+int ff_syncache_count(void);
 
 intptr_t ngx_max_sockets = 1024;
 int is_fstack_fd(int fd) { return fd >= ngx_max_sockets; }
@@ -83,20 +84,38 @@ static int write_payload(int fd, unsigned size, unsigned seed)
     return 0;
 }
 
-static int owner_snapshot_loop(void)
+static int owner_snapshot_loop(int listener)
 {
     for (;;) {
         char command = 0;
         ssize_t count = syscall(SYS_read, STDIN_FILENO, &command, 1);
         if (count != 1) return 2;
         if (command == 'E') break;
-        if (command != 'S') { errno = EPROTO; return 3; }
-        int pending = ff_socket_snd_pending();
+        if (command != 'S' && command != 'Q' && command != 'A') { errno = EPROTO; return 3; }
+        if (command == 'A') {
+            if (listener < 0) { errno = EOPNOTSUPP; return 3; }
+            int accepted = -1;
+            for (unsigned attempt = 0; attempt < 5000; ++attempt) {
+                accepted = ff_accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+                if (accepted >= 0) break;
+                if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) return 5;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            }
+            if (accepted < 0) { errno = ETIMEDOUT; return 5; }
+            if (ff_close(accepted)) return 5;
+            output("OWNER_ACCEPTED\n");
+            continue;
+        }
         char line[96];
-        int length = snprintf(line, sizeof(line), "OWNER_SNAPSHOT %d\n", pending);
+        int value = command == 'Q' ? ff_syncache_count() : ff_socket_snd_pending();
+        int length = snprintf(line, sizeof(line), command == 'Q' ?
+            "OWNER_REQUESTS %d\n" : "OWNER_SNAPSHOT %d\n", value);
         if (length <= 0 || (size_t)length >= sizeof(line)) return 4;
         output(line);
     }
+    if (listener >= 0 && ff_close(listener)) return 5;
+    if (listener >= 0 && ff_socket_drain_count() != 0) return 5;
     output("OWNER_DONE\n");
     return 0;
 }
@@ -104,6 +123,7 @@ static int owner_snapshot_loop(void)
 static int owner_payload_client(unsigned port, unsigned size, unsigned seed)
 {
     CHECK(initialize_runtime() == 0);
+    CHECK(ff_syncache_count() == 0);
     CHECK(ff_socket_snd_pending() == 0);
     int fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     CHECK(fd >= 0);
@@ -124,6 +144,7 @@ static int owner_payload_client(unsigned port, unsigned size, unsigned seed)
         struct timespec pause = {.tv_nsec = 1000000}; (void)nanosleep(&pause, NULL);
     }
     CHECK(connected);
+    CHECK(ff_syncache_count() == 0);
     CHECK(write_payload(fd, size, seed) == 0);
     pid_t child = fork();
     CHECK(child >= 0);
@@ -135,13 +156,40 @@ static int owner_payload_client(unsigned port, unsigned size, unsigned seed)
     int child_status = 0;
     CHECK(waitpid(child, &child_status, 0) == child &&
         WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGABRT);
+    child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)ff_syncache_count();
+        _exit(12);
+    }
+    CHECK(waitpid(child, &child_status, 0) == child &&
+        WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGABRT);
     int alias = ff_dup(fd);
     CHECK(alias >= 0 && ff_socket_drain_count() == 2);
     CHECK(ff_close(fd) == 0 && ff_socket_drain_count() == 1);
     CHECK(ff_shutdown(alias, SHUT_WR) == 0);
     CHECK(ff_close(alias) == 0 && ff_socket_drain_count() == 0);
+    int listener = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    CHECK(listener >= 0);
+    struct sockaddr_in listen_address = {.sin_family = AF_INET,
+        .sin_addr.s_addr = htonl(0xc6120002u)};
+    CHECK(ff_bind(listener, (const struct linux_sockaddr *)&listen_address,
+        sizeof(listen_address)) == 0);
+    CHECK(ff_listen(listener, 16) == 0);
+    struct linux_sockaddr bound = {0};
+    socklen_t bound_length = sizeof(bound);
+    CHECK(ff_getsockname(listener, &bound, &bound_length) == 0 &&
+        bound_length == sizeof(struct sockaddr_in));
+    unsigned listener_port = ntohs(((struct sockaddr_in *)&bound)->sin_port);
+    CHECK(listener_port != 0);
+    char listener_line[64];
+    int listener_length = snprintf(listener_line, sizeof(listener_line),
+        "OWNER_LISTENER %u\n", listener_port);
+    CHECK(listener_length > 0 && (size_t)listener_length < sizeof(listener_line));
+    output(listener_line);
+    CHECK(ff_syncache_count() == 0);
     output("OWNER_READY\n");
-    return owner_snapshot_loop();
+    return owner_snapshot_loop(listener);
 }
 
 static int owner_reexec_start(unsigned port, unsigned size, unsigned seed,
@@ -218,7 +266,7 @@ static int owner_reexec_snapshot(unsigned size, unsigned seed)
 {
     (void)size; (void)seed;
     CHECK(initialize_runtime() == 0);
-    return owner_snapshot_loop();
+    return owner_snapshot_loop(-1);
 }
 
 static int owner_history_probe(bool before_owner, const char *executable, bool exec_check)
@@ -241,12 +289,14 @@ static int owner_history_probe(bool before_owner, const char *executable, bool e
         execl(executable, executable, "--exec-rebegin-refused", (char *)NULL);
         return 12;
     }
-    (void)ff_socket_snd_pending();
+    (void)ff_syncache_count();
     return 5;
 }
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--syncache-without-owner") == 0)
+        return ff_syncache_count();
     if (argc == 2 && strcmp(argv[1], "--legacy-history") == 0)
         return owner_history_probe(true, NULL, false);
     if (argc == 2 && strcmp(argv[1], "--foreign-history") == 0)

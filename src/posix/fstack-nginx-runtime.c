@@ -465,4 +465,18 @@ void ff_regist_packet_dispatcher_context(dispatch_func_context_t callback)
 { (void)callback; unsupported_abort("ff_regist_packet_dispatcher_context"); }
 void ff_unregist_packet_dispatcher_context(void)
 { unsupported_abort("ff_unregist_packet_dispatcher_context"); }
-int ff_syncache_count(void) { unsupported_abort("ff_syncache_count"); }
+int ff_syncache_count(void)
+{
+    uint64_t count = 0;
+    if (ker_sb_preload_ff_owner_requests(&count) < 0 || count > INT_MAX) {
+        int error = count > INT_MAX ? EOVERFLOW : errno;
+        char message[160];
+        int length = snprintf(message, sizeof(message),
+            "ker fstack request-sock snapshot failed: errno=%d\n", error);
+        if (length > 0)
+            (void)syscall(SYS_write, STDERR_FILENO, message,
+                (size_t)length < sizeof(message) ? (size_t)length : sizeof(message));
+        abort();
+    }
+    return (int)count;
+}

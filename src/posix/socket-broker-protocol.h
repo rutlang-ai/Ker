@@ -29,7 +29,8 @@ enum ker_sb_operation {
     KER_SB_FF_OWNER_CREATE = 43,
     KER_SB_FF_OWNER_SOCKET = 44,
     KER_SB_FF_OWNER_MATCH = 45,
-    KER_SB_FF_OWNER_PAYLOAD = 46
+    KER_SB_FF_OWNER_PAYLOAD = 46,
+    KER_SB_FF_OWNER_REQUESTS = 47
 };
 
 struct ker_sb_header {
@@ -72,6 +73,7 @@ struct ker_sb_member_payload_snapshot {
     uint64_t payload_bytes;
     uint64_t sampled_sockets;
 } __attribute__((packed));
+struct ker_sb_ff_owner_requests { uint64_t request_count; } __attribute__((packed));
 #define KER_SB_MAX_REQUEST (KER_SOCKET_BROKER_IO_MAX + sizeof(struct ker_sb_io))
 
 #endif
