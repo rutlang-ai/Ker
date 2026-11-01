@@ -1,0 +1,15 @@
+{
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "repository": "https://github.com/F-Stack/f-stack",
+  "source": "lib/ff_dpdk_if.c",
+  "retained_source": "../fstack-pools/ff_dpdk_if.c",
+  "source_sha256": "6d8800e5ab069a4ede742ec1ec75dfa8fc08ef05999a7528dda8c95d519e3cbe",
+  "functions": [
+    "ff_rss_reta_log2",
+    "ff_rss_thash_build_key",
+    "ff_rss_thash_ctx_init",
+    "ff_rss_adjust_sport",
+    "ff_rss_adjust_sport6"
+  ],
+  "mode": "Literal reverse-hash helper excerpts and state/constants in a primary-only caller advisory. Default 40-byte RSS key remains in the separately audited rss-key.inc. No Linux socket allocator or transport protocol path."
+}

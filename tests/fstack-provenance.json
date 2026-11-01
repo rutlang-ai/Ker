@@ -4531,6 +4531,42 @@
         "native-fstack-kni-owner-bypass-control"
       ],
       "adaptation": "Complete unchanged `p1_cold_*` helpers and `test_p1_kni_nonowner` body run through the source-fixture EAL process-type wrapper and actual bound Ker reload runtime. Changing the original caller proc_id to2 leaves KNI statistics null, makes no hotplug request, and resolves both shared original ring pointers. The actual active-generation1 caller separately checks proc_id2 is denied even while the original generation predicate matches, then restores proc_id1 and ownership. This qualifies bounded same-process caller selection, not genuine multiprocess secondary or cross-master directory behavior. Source helper/test bytes are checked against the pinned snapshot. See docs/fstack-kni-ownership.md."
+    },
+    "fstack-rss-adjust-sport-thash-off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "source_case": [
+        "test_ff_rss_adjust_sport_thash_adjust_off"
+      ],
+      "adaptation": "The complete unchanged IPv4 disabled-adjustment source body and all shared helpers are byte-audited. It runs against source-default BSS/unready state and again after real primary DPDK thash contexts are ready with adjustment disabled. A caller-only synthetic UDP reply advisory uses the original helper, verifies the candidate independently from the published key/RETA, applies only a successful hint, and routes exact bytes through original net_ring. The real fallback run retains the original tuple bytes when disabled. No Linux socket allocator, TCP behavior, physical RSS or secondary EAL behavior is claimed. See docs/fstack-rss-adjust-disabled.md."
+    },
+    "fstack-rss-adjust-sport6-thash-off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "source_case": [
+        "test_ff_rss_adjust_sport6_thash_adjust_off"
+      ],
+      "adaptation": "The complete unchanged IPv6 disabled-adjustment source body and all shared helpers are byte-audited. It runs against source-default BSS/unready state and again after real primary DPDK thash contexts are ready with adjustment disabled. A caller-only synthetic UDP reply advisory uses the original helper, verifies the candidate independently from the published key/RETA, applies only a successful hint, and routes exact bytes through original net_ring. The real fallback run retains the original tuple bytes when disabled. No Linux socket allocator, TCP behavior, physical RSS or secondary EAL behavior is claimed. See docs/fstack-rss-adjust-disabled.md."
+    },
+    "fstack-rss-thash-ctx-init-thash-off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "source_case": [
+        "test_ff_rss_thash_ctx_init_thash_adjust_off"
+      ],
+      "adaptation": "The complete unchanged source body is byte-audited and executed in BSS/unready and real-ready profiles. With FF_RSS_DIAG disabled, original ff_rss_thash_ctx_init contains no thash_adjust branch and only returns0; that result is not context readiness. Readiness comes from the separate original build-key/context helpers. The real caller and DPDK/net_ring verification is recorded with the companion disabled adjustment cases. See docs/fstack-rss-adjust-disabled.md."
     }
   }
 }

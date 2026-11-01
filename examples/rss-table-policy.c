@@ -6,6 +6,9 @@
 #include <string.h>
 #include <strings.h>
 #include <rte_ring.h>
+#include <rte_malloc.h>
+#include <rte_random.h>
+#include <rte_thash.h>
 #include <ker/packet-dispatcher.h>
 #include "rss-table-policy.h"
 /* Declare before the original ff_memory.h inline accessor. */
@@ -64,19 +67,45 @@ static int rsskey_len = sizeof(default_rsskey_40bytes);
 static uint8_t *rsskey = default_rsskey_40bytes;
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 #include "rss-tables.inc"
+#include "../third_party/fstack-rss-adjust/rss-adjust-state.inc"
 #pragma GCC diagnostic push
 /* Keep the unchanged lookup's unused local visible without promoting it to
  * an error. Ker-owned adaptation code retains the project's strict flags. */
 #pragma GCC diagnostic warning "-Wunused-variable"
 #include "rss-functions.inc"
+static uint32_t example_rss_random32(void) { return (uint32_t)rte_rand(); }
+#define ff_arc4random example_rss_random32
+#include "../third_party/fstack-rss-adjust/rss-adjust-functions.inc"
+#undef ff_arc4random
 #pragma GCC diagnostic pop
 
 static struct ff_rss_check_cfg owned_rules;
+static struct ff_dpdk_if_context advisory_context;
+static void *advisory_softc;
+static int advisory_built;
 static int configured;
 void example_rss_reset(void)
 {
     example_rss_context_cleanup();
+    for (unsigned port = 0; port < RTE_MAX_ETHPORTS; ++port) {
+        if (rss_thash_ctx[port]) rte_thash_free_ctx(rss_thash_ctx[port]);
+        if (rss_thash6_ctx[port]) rte_thash_free_ctx(rss_thash6_ctx[port]);
+    }
+    if (rsskey != default_rsskey_40bytes) rte_free(rsskey);
+    rsskey = default_rsskey_40bytes;
+    rsskey_len = sizeof(default_rsskey_40bytes);
+    ff_rss_key_built = 0;
+    memset(rss_thash_ctx, 0, sizeof(rss_thash_ctx));
+    memset(rss_thash_sport_h, 0, sizeof(rss_thash_sport_h));
+    memset(rss_thash_ready, 0, sizeof(rss_thash_ready));
+    memset(rss_thash6_ctx, 0, sizeof(rss_thash6_ctx));
+    memset(rss_thash6_sport_h, 0, sizeof(rss_thash6_sport_h));
+    memset(rss_thash6_ready, 0, sizeof(rss_thash6_ready));
+    memset(&advisory_context, 0, sizeof(advisory_context));
+    advisory_softc = NULL;
+    advisory_built = 0;
     memset(&example_rss_configuration, 0, sizeof(example_rss_configuration));
+    memset(&owned_rules, 0, sizeof(owned_rules));
     memset(example_rss_lcores, 0, sizeof(example_rss_lcores));
     memset(rss_reta_size, 0, sizeof(rss_reta_size));
     memset(ff_rss_tbl, 0, sizeof(ff_rss_tbl));
@@ -146,4 +175,77 @@ int example_rss_route(struct rte_mbuf *packet, struct rte_ring *local, struct rt
     int destination = ker_packet_dispatch(packet, &length, own, queues);
     if (destination < 0 || destination >= queues || length != packet->data_len) return -EINVAL;
     return rte_ring_enqueue(destination == own ? local : other, packet) ? -ENOBUFS : 0;
+}
+
+int example_rss_advisory_configure(uint16_t queues, uint16_t own_queue, uint16_t reta_size)
+{
+    if (rte_eal_process_type() != RTE_PROC_PRIMARY) return -ENOTSUP;
+    example_rss_reset();
+    if (queues < 2 || own_queue >= queues || reta_size < 2 ||
+        (reta_size & (reta_size - 1))) return -EINVAL;
+    owned_rules.enable = 1;
+    owned_rules.thash_adjust = 1;
+    owned_rules.recheck = 1;
+    example_rss_configuration.dpdk.rss_check_cfgs = &owned_rules;
+    example_rss_lcores[0].nb_queue_list[0] = queues;
+    example_rss_lcores[0].tx_queue_id[0] = own_queue;
+    rss_reta_size[0] = reta_size;
+    if (example_rss_thash_build_key(0, reta_size) != 0) {
+        example_rss_reset(); return -EIO;
+    }
+    advisory_context.port_id = 0;
+    advisory_softc = example_rss_context_new(&advisory_context);
+    if (!advisory_softc) { example_rss_reset(); return -ENOMEM; }
+    advisory_built = 1;
+    return 0;
+}
+int example_rss_advisory_ready(int ipv6)
+{
+    if (!advisory_built || !advisory_softc) return 0;
+    return ipv6 ? (rss_thash6_ready[0] && rss_thash6_ctx[0] && rss_thash6_sport_h[0]) :
+        (rss_thash_ready[0] && rss_thash_ctx[0] && rss_thash_sport_h[0]);
+}
+int example_rss_advisory_enable(int enabled, int recheck)
+{
+    if (!advisory_built || (enabled != 0 && enabled != 1) ||
+        (recheck != 0 && recheck != 1)) return -ENOTCONN;
+    owned_rules.thash_adjust = enabled;
+    owned_rules.recheck = recheck;
+    example_rss_configuration.dpdk.rss_check_cfgs = &owned_rules;
+    return 0;
+}
+int example_rss_advisory_suggest4(uint32_t remote, uint32_t local, uint16_t remote_port,
+    uint16_t *candidate, uint16_t first, uint16_t last)
+{
+    if (!advisory_built || !candidate) return -ENOTCONN;
+    return example_rss_adjust_sport(advisory_softc, remote, local, remote_port,
+        candidate, first, last);
+}
+int example_rss_advisory_suggest6(const uint8_t remote[16], const uint8_t local[16],
+    uint16_t remote_port, uint16_t *candidate, uint16_t first, uint16_t last)
+{
+    if (!advisory_built || !candidate) return -ENOTCONN;
+    return example_rss_adjust_sport6(advisory_softc, remote, local, remote_port,
+        candidate, first, last);
+}
+const uint8_t *example_rss_advisory_key(size_t *length)
+{
+    if (length) *length = advisory_built ? (size_t)rsskey_len : 0;
+    return advisory_built ? rsskey : NULL;
+}
+uint16_t example_rss_advisory_reta_size(void) { return advisory_built ? rss_reta_size[0] : 0; }
+uint16_t example_rss_advisory_queue_count(void) { return advisory_built ? example_rss_lcores[0].nb_queue_list[0] : 0; }
+uint16_t example_rss_advisory_own_queue(void) { return advisory_built ? example_rss_lcores[0].tx_queue_id[0] : 0; }
+
+int example_rss_advisory_is_owner4(uint32_t remote, uint32_t local,
+    uint16_t remote_port, uint16_t local_port)
+{
+    if (!advisory_built || !advisory_softc) return -ENOTCONN;
+    return example_rss_check(advisory_softc, remote, local, remote_port, local_port);
+}
+int example_rss_advisory_is_owner6(const uint8_t remote[16], const uint8_t local[16],
+    uint16_t remote_port, uint16_t local_port)
+{
+    if (!advisory_built || !advisory_softc) return -ENOTCONN;
+    return example_rss_check6(advisory_softc, remote, local, remote_port, local_port);
 }

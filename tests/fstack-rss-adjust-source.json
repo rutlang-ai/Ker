@@ -1,0 +1,12 @@
+{
+  "revision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
+  "repository": "https://github.com/F-Stack/f-stack",
+  "source_file": "tests/unit/test_ff_dpdk_if.c",
+  "source_sha256": "785ca7c734b1ec783a3b31b3e7b4d01cebf2f78393d2e09c20e958dbf0bbedfe",
+  "cases": [
+    "test_ff_rss_adjust_sport_thash_adjust_off",
+    "test_ff_rss_adjust_sport6_thash_adjust_off",
+    "test_ff_rss_thash_ctx_init_thash_adjust_off"
+  ],
+  "helpers": "../fstack-rss-source-helpers.inc"
+}

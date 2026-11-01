@@ -3,9 +3,10 @@
 [Issue #220](https://github.com/rutlang-ai/Ker/issues/220) originally tracked31
 source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. Two standalone
 IPv4/IPv6 thash equivalence cases were qualified earlier. Three parsed-document
-contracts and12 software table/predicate contracts are now separately qualified
-in caller-side examples;14 optimization/runtime cases remain blocked. The
-matrix preserves the original assertion scope. None of these software
+contracts and 12 software table/predicate contracts are now separately qualified
+in caller-side examples, as are three disabled-adjustment source contracts. The
+11 remaining RSS guard/runtime cases remain blocked. The matrix preserves the
+original assertion scope. None of these software
 qualifications establishes a native allocation hook or observed hardware RSS.
 
 ## Three different kinds of evidence
@@ -34,7 +35,8 @@ ordinary C integer promotion. The fixed four-queue source cases compare the
 same low two bits; they do not isolate mask width or model a queried device RETA. Several adjustment guards run before the branches their
 names suggest. Their exact assertions are useful, but do not prove those later
 branches. The microbench calls `skip()` on unready context; it supplies no timing
-result on that path. When their EAL initialization succeeds, the IPv4/IPv6
+result on that path. Even after contexts are prepared, its unchanged helper resets
+`thash_adjust` to zero, so it skips before timing; it remains blocked. When their EAL initialization succeeds, the IPv4/IPv6
 equivalence tests create real DPDK thash contexts and require200/200 full-loop
 software landing at RETA128 and512. An EAL-init skip reaches neither the context
 creation nor those assertions and is not a pass. They report first-candidate
@@ -52,14 +54,14 @@ are consumers inside the F-Stack FreeBSD allocation path, not merely NIC RETA
 configuration routines. Calling standalone DPDK hash functions or pre-binding a
 port in a test cannot qualify this caller integration.
 
-Ker keeps automatic port selection and collisions in original Linux. Before
-implementing a source-port steering adaptation, identify an original Linux
-extension point with equivalent lifecycle, routing, conflict, range and
-fallback semantics. Document a concrete missing hook if none can express it;
-do not write a Ker TCP source-port/state machine or patch imported Linux merely
-because a unit helper can compute a port. Preserve kernel choices when the
-optimization is disabled or unavailable. RSS input steering and original Linux
-socket allocation are separate integration requirements.
+Ker keeps automatic port selection and collisions in original Linux. No Linux
+source-port allocation hook has been identified that delegates those decisions to
+RSS advisory logic. The new bounded caller example therefore applies original
+helpers only to application-generated synthetic UDP reply tuples; it does not
+change a Linux socket tuple, scan ports, or replace conflict/range/fallback
+semantics. Preserve kernel choices when an optimization is disabled or
+unavailable. RSS input steering and original Linux socket allocation remain
+separate integration requirements; see [the disabled-adjustment qualification](fstack-rss-adjust-disabled.md).
 
 ## Source assertion matrix
 
@@ -97,10 +99,10 @@ not turn Linux range validation into native RSS port steering.
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_on` | Source makes100 IPv4 adjustments with recheck=1 but the unready-context guard still prevents rechecks; zero wrapper calls plus a direct predicate-call sanity check are asserted. It does not demonstrate enabled runtime rechecking. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_off` | Source makes100 IPv6 adjustments with recheck=0; RETA0/unready initialization causes -1 and no wrapped predicate calls. No ready recheck branch is exercised. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_on` | Source makes100 IPv6 adjustments with recheck=1; all still decline before rechecking. A direct predicate call checks wrapper wiring, not the ready adjustment branch. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_microbench` | Source probes context readiness and calls skip() when RETA0 leaves adjustment unavailable. Only a ready context times10000 calls for each recheck mode and asserts off<on. A skipped run provides no performance result. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_thash_adjust_off` | With the source optimization disabled, IPv4 adjustment declines -1 so its original PCB caller can perform the fallback scan. Ker must preserve original Linux allocation rather than invent a TCP port scan. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_thash_adjust_off` | With thash_adjust=0, IPv6 adjustment declines -1 for the original PCB caller fallback. No Ker equivalent optimization lifecycle or caller is implemented. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_thash_ctx_init_thash_adjust_off` | Source initialization returns0 when optimization is disabled. This is a deliberate disabled-path result, not evidence that a usable reverse-hash context exists. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_microbench` | Source probes context readiness and calls skip() when RETA0 leaves adjustment unavailable. Its unchanged table helper leaves thash_adjust=0, so even if original contexts are prepared it declines before the10000-call timing loop. A skipped run provides no performance result. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_thash_adjust_off` | The unchanged assertion runs in BSS/unready and real-ready DPDK profiles; in both, the source body itself sets the flag to zero. A synthetic reply caller demonstrates successful advisory use and exact unchanged fallback records; Linux allocation remains untouched. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_thash_adjust_off` | The unchanged assertion runs in BSS/unready and real-ready DPDK profiles; in both, the source body itself sets the flag to zero. A synthetic reply caller demonstrates successful advisory use and exact unchanged fallback records; Linux allocation remains untouched. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_thash_ctx_init_thash_adjust_off` | The unchanged assertion runs in BSS and ready profiles. The source test sets the flag to zero; with `FF_RSS_DIAG` off `ff_rss_thash_ctx_init` has no adjustment branch and only returns0, which does not establish context readiness. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_range_params` | Source IPv4 adjustment declines for an inverted range and a two-port sub-RETA range, but RETA0/unready context may reject earlier. The unit does not independently reach ready-context range validation. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_range_params` | Source IPv6 adjustment similarly declines inverted and too-small ranges with the earlier unready guard active. Original Linux range checks alone do not qualify reverse-hash candidate selection. |
 ## Next implementation gates
@@ -114,9 +116,9 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is342 scenario-adapted,1 partial,20 blocked,
-15 architecture-specific and55 harness-only out of433. All21 blocked/partial
+The current catalog is349 scenario-adapted,1 partial,13 blocked,
+15 architecture-specific and55 harness-only out of433. All14 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
-production helper. This qualification does not satisfy the remaining table,
+production helper. This qualification does not satisfy the remaining guard/runtime, Linux
 source-port allocation or data-plane RSS gates above.
