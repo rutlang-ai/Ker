@@ -7,7 +7,11 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 _Static_assert(sizeof(struct linux_sockaddr) == sizeof(struct sockaddr),
     "F-Stack linux_sockaddr must retain the Linux sockaddr ABI");
@@ -64,6 +68,21 @@ int ff_accept(int fd, struct linux_sockaddr *address, socklen_t *length)
 
 int ff_close(int fd)
 { FF_DISPATCH_RETURN(int, ker_sb_posix_close(fd)); }
+
+int ff_socket_drain_count(void)
+{
+    int count = ker_sb_preload_socket_drain_count();
+    if (count < 0) {
+        char message[128];
+        int length = snprintf(message, sizeof(message),
+            "ker fstack socket census failed: errno=%d\n", errno);
+        if (length > 0)
+            (void)syscall(SYS_write, STDERR_FILENO, message,
+                (size_t)length < sizeof(message) ? (size_t)length : sizeof(message));
+        abort();
+    }
+    return count;
+}
 
 int ff_shutdown(int fd, int how)
 { FF_DISPATCH_RETURN(int, ker_sb_posix_shutdown(fd, how)); }

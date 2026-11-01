@@ -494,9 +494,23 @@ if(BUILD_TESTING)
         TIMEOUT 10 LABELS "native-tcp;socket-broker;preload;loader")
     add_executable(ker-fstack-socket-bridge-client-test
         tests/posix/fstack-socket-bridge-client.c)
-    target_link_libraries(ker-fstack-socket-bridge-client-test PRIVATE ker::fstack-socket-bridge)
+    target_link_libraries(ker-fstack-socket-bridge-client-test PRIVATE
+        ker::fstack-socket-bridge ker-socket-client)
     target_compile_options(ker-fstack-socket-bridge-client-test PRIVATE -Wall -Wextra -Werror)
     target_link_options(ker-fstack-socket-bridge-client-test PRIVATE -Wl,--export-dynamic)
+    if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+        add_executable(ker-fstack-nginx-runtime-socket-client-test
+            tests/posix/fstack-socket-bridge-client.c)
+        target_include_directories(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+        target_link_libraries(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            ker-fstack-nginx-runtime ker-socket-client)
+        target_compile_options(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            -Wall -Wextra -Werror)
+        target_link_options(ker-fstack-nginx-runtime-socket-client-test PRIVATE
+            -Wl,--export-dynamic)
+    endif()
     add_test(NAME native-socket-broker-fork-exec
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
@@ -592,6 +606,36 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-fstack-socket-leaf-bridge PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;fstack-abi")
+    if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+        add_test(NAME native-fstack-nginx-runtime-drain-count
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                --fstack-client "$<TARGET_FILE:ker-fstack-nginx-runtime-socket-client-test>"
+                --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}")
+        set_tests_properties(native-fstack-nginx-runtime-drain-count PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;fstack-nginx-runtime")
+    endif()
+    add_test(NAME native-fstack-socket-drain-count-failure
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/fstack-socket-drain-count-failure.py"
+            --client "$<TARGET_FILE:ker-fstack-socket-bridge-client-test>")
+    set_tests_properties(native-fstack-socket-drain-count-failure PROPERTIES
+        TIMEOUT 10 LABELS "fstack;socket-broker;fstack-abi;failure-boundary")
+    add_test(NAME native-fstack-socket-drain-count-broker-death
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+            --fstack-drain-failure-client "$<TARGET_FILE:ker-fstack-socket-bridge-client-test>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-fstack-socket-drain-count-broker-death PROPERTIES
+        TIMEOUT 60 LABELS "fstack;socket-broker;fstack-abi;failure-boundary")
     if(KER_NO_FF_NGINX_BINARY)
         if(NOT EXISTS "${KER_NO_FF_NGINX_BINARY}")
             message(FATAL_ERROR "KER_NO_FF_NGINX_BINARY does not exist")

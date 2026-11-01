@@ -24,6 +24,7 @@ struct ker_socket_client *ker_sb_preload_client_locked(void);
 int ker_sb_preload_network_fd_locked(int app_fd, int *broker_fd);
 int ker_sb_preload_register_network_locked(int app_fd);
 void ker_sb_preload_remove_network_locked(int app_fd);
+int ker_sb_preload_socket_drain_count(void);
 
 /* Composite epoll app descriptors are real host epoll fds. */
 int ker_sb_preload_epoll_fd_locked(int app_fd, int *broker_epoll_fd);

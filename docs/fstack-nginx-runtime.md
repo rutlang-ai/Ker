@@ -68,8 +68,22 @@ It rejects `FF_FAULT`, unsupported configuration keys, unreachable brokers,
 secondary roles, and nonzero process IDs. Nginx's `ff_global_cfg` retains its
 configuration filename after the caller frees its argument strings. Reload
 state remains genuinely detached and inactive; no synthetic generation block
-is installed. Unsupported flow-map, dispatcher, and drain/census hooks abort
-with an explicit diagnostic if reached.
+is installed. The FF `ff_socket_drain_count` hook counts registered application
+descriptor aliases by querying original Linux `SO_DOMAIN` and `SO_ACCEPTCONN`
+through their broker capabilities; live listeners are excluded. It returns a
+count only when every registered descriptor query succeeds, and aborts with an
+errno diagnostic on failure because the FF hook has no error result channel.
+This bounded adapter census covers registered INET/INET6 descriptors, including
+inherited broker UDP capabilities, while host sockets and private broker
+metadata are excluded. The public FF/POSIX socket-creation adapters still reject
+UDP; this does not claim complete equivalence with the pinned F-Stack process
+fd-table census. The pinned [`ff_socket_drain_count`](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/freebsd/kern/uipc_syscalls.c#L185)
+walks the whole process fd table, counts each IPv4/IPv6 socket alias including
+UDP, and excludes sockets whose live `SO_ACCEPTCONN` is set. Ker's adapter only
+counts authenticated broker capabilities registered in this process; direct
+FF/POSIX UDP creation and raw, unregistered fd bypasses remain unsupported.
+Reload state remains unsupported. Flow-map, dispatcher, syncache, and
+send-pending hooks abort with an explicit diagnostic if reached.
 
 The lifecycle profile uses one Nginx worker and `reuseport`. In this pinned
 FF-enabled caller, the unchanged worker startup opens every `reuseport` clone
