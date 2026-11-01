@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <ff_api.h>
+#include <ker/socket-broker.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -7,15 +8,20 @@
 #include <stdint.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t public_symbol_calls;
+intptr_t ngx_max_sockets = 1024;
+int is_fstack_fd(int fd) { return fd >= ngx_max_sockets; }
 
 int socket(int domain, int type, int protocol)
 { (void)domain; (void)type; (void)protocol; ++public_symbol_calls; errno = EDEADLK; return -1; }
@@ -64,11 +70,47 @@ static int write_exact(int fd, const unsigned char *bytes, size_t size)
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--broker-death-census") == 0) {
+        int fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        CHECK(fd >= 0 && ff_socket_drain_count() == 1);
+        output("DRAIN_FAILURE_READY\n");
+        char trigger = 0;
+        CHECK(syscall(SYS_read, STDIN_FILENO, &trigger, 1) == 1 && trigger == 'F');
+        pid_t child = fork();
+        CHECK(child >= 0);
+        if (child == 0) _exit(ff_socket_drain_count() < 0 ? 77 : 0);
+        int status = 0;
+        CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) &&
+            WTERMSIG(status) == SIGABRT);
+        output("DRAIN_FAILURE_OK\n");
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "--failure-census") == 0) {
+        (void)ff_socket_drain_count();
+        return 75;
+    }
+    if (argc == 3 && strcmp(argv[1], "--exec-census") == 0) {
+        CHECK(ff_socket_drain_count() == atoi(argv[2]));
+        return 0;
+    }
+    CHECK(argc == 2);
+    struct rlimit descriptor_limit;
+    CHECK(getrlimit(RLIMIT_NOFILE, &descriptor_limit) == 0);
+    if (descriptor_limit.rlim_cur <= (rlim_t)ngx_max_sockets) {
+        descriptor_limit.rlim_cur = (rlim_t)ngx_max_sockets + 128;
+        CHECK(descriptor_limit.rlim_cur <= descriptor_limit.rlim_max &&
+            setrlimit(RLIMIT_NOFILE, &descriptor_limit) == 0);
+    }
+    CHECK(ff_socket_drain_count() == 0);
     CHECK(ff_socket(AF_INET, SOCK_DGRAM, 0) == -1 && errno == EOPNOTSUPP);
     int host_socket = (int)syscall(SYS_socket, AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     CHECK(host_socket >= 0);
+    CHECK(ff_socket_drain_count() == 0);
+    int host_udp = (int)syscall(SYS_socket, AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    CHECK(host_udp >= 0 && ff_socket_drain_count() == 0);
+    CHECK(syscall(SYS_close, host_udp) == 0);
     struct sockaddr_in address = {.sin_family = AF_INET,
         .sin_port = htons(4097), .sin_addr.s_addr = htonl(0xc6120001u)};
     CHECK(ff_connect(host_socket, (const struct linux_sockaddr *)&address,
@@ -79,6 +121,9 @@ int main(void)
         errno == ENOTCONN);
     CHECK(ff_write(host_socket, "x", 1) == -1 && errno == EOPNOTSUPP);
     CHECK(syscall(SYS_close, host_socket) == 0);
+    int ipv6_socket = ff_socket(AF_INET6_LINUX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(ipv6_socket >= 0 && ff_socket_drain_count() == 1);
+    CHECK(ff_close(ipv6_socket) == 0 && ff_socket_drain_count() == 0);
     int pipe_fds[2];
     CHECK(syscall(SYS_pipe2, pipe_fds, O_CLOEXEC) == 0);
     CHECK(ff_write(pipe_fds[1], "x", 1) == -1 && errno == EOPNOTSUPP);
@@ -90,14 +135,43 @@ int main(void)
     char pipe_byte = 0;
     CHECK(syscall(SYS_read, pipe_fds[0], &pipe_byte, 1) == 1 && pipe_byte == 'p');
     CHECK(syscall(SYS_close, pipe_fds[0]) == 0 && syscall(SYS_close, pipe_fds[1]) == 0);
-    int composite_epoll = epoll_create1(EPOLL_CLOEXEC);
-    CHECK(composite_epoll >= 0);
-    CHECK(ff_close(composite_epoll) == -1 && errno == EOPNOTSUPP);
-    CHECK(fcntl(composite_epoll, F_GETFD) >= 0);
-    CHECK(close(composite_epoll) == 0);
-
+    int listener = ff_socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(listener >= 0 && ff_socket_drain_count() == 1);
+    struct sockaddr_in local = {.sin_family = AF_INET,
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    CHECK(ff_bind(listener, (const struct linux_sockaddr *)&local, sizeof(local)) == 0);
+    int signal_fds[2];
+    CHECK(syscall(SYS_pipe2, signal_fds, O_CLOEXEC) == 0);
+    pid_t listener_child = fork();
+    CHECK(listener_child >= 0);
+    if (listener_child == 0) {
+        (void)syscall(SYS_close, signal_fds[0]);
+        char ready = 'L';
+        if (ff_listen(listener, 4) != 0 ||
+            syscall(SYS_write, signal_fds[1], &ready, 1) != 1) _exit(72);
+        _exit(0);
+    }
+    CHECK(syscall(SYS_close, signal_fds[1]) == 0);
+    char listener_ready = 0;
+    CHECK(syscall(SYS_read, signal_fds[0], &listener_ready, 1) == 1 && listener_ready == 'L');
+    CHECK(syscall(SYS_close, signal_fds[0]) == 0);
+    int listener_status = 0;
+    CHECK(waitpid(listener_child, &listener_status, 0) == listener_child &&
+        WIFEXITED(listener_status) && WEXITSTATUS(listener_status) == 0);
+    CHECK(ff_socket_drain_count() == 0);
+    int listener_alias = ff_fcntl(listener, F_DUPFD, (int)ngx_max_sockets);
+    CHECK(listener_alias >= ngx_max_sockets && ff_socket_drain_count() == 0);
+    CHECK(ff_close(listener) == 0 && ff_socket_drain_count() == 0);
+    CHECK(ff_close(listener_alias) == 0 && ff_socket_drain_count() == 0);
+    int stale = ff_socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    CHECK(stale >= 0 && ff_socket_drain_count() == 1);
+    CHECK(syscall(SYS_close, stale) == 0);
+    int replacement = (int)syscall(SYS_socket, AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    CHECK(replacement >= 0 && replacement == stale && ff_socket_drain_count() == 0);
+    CHECK(syscall(SYS_close, replacement) == 0);
     int connection = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     CHECK(connection >= 0);
+    CHECK(ff_socket_drain_count() == 1);
     int enabled = 1;
     CHECK(ff_setsockopt(connection, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof(enabled)) == 0);
     output("FF_CONNECTING\n");
@@ -115,9 +189,39 @@ int main(void)
     }
     CHECK(connected);
     CHECK(peer_length == sizeof(address));
-    int alias = ff_fcntl(connection, F_DUPFD, 40);
-    CHECK(alias >= 40);
+    int alias = ff_fcntl(connection, F_DUPFD, (int)ngx_max_sockets);
+    CHECK(alias >= ngx_max_sockets);
+    CHECK(ff_socket_drain_count() == 2);
+    int duplicate = dup(alias);
+    CHECK(duplicate >= 0);
+    CHECK(ff_socket_drain_count() == 3);
+    CHECK(close(duplicate) == 0 && ff_socket_drain_count() == 2);
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) _exit(ff_socket_drain_count() == 2 ? 0 : 71);
+    int child_status = 0;
+    pid_t waited = waitpid(child, &child_status, 0);
+    if (waited != child || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+        dprintf(STDERR_FILENO, "fork/exec census child failed: wait=%ld status=%#x\n",
+            (long)waited, child_status);
+        return 1;
+    }
+    child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        if (fcntl(atoi(argv[1]), F_SETFD, FD_CLOEXEC) < 0) _exit(75);
+        execl("/proc/self/exe", "fstack-socket-bridge-client", "--exec-census", "1", NULL);
+        dprintf(STDERR_FILENO, "exec census child exec failed: errno=%d\n", errno);
+        _exit(73);
+    }
+    waited = waitpid(child, &child_status, 0);
+    if (waited != child || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+        dprintf(STDERR_FILENO, "fork/exec census child failed: wait=%ld status=%#x\n",
+            (long)waited, child_status);
+        return 1;
+    }
     CHECK(ff_close(connection) == 0);
+    CHECK(ff_socket_drain_count() == 1);
     CHECK(ff_fcntl(alias, F_GETFL) >= 0);
     socklen_t invalid_length = sizeof(peer);
     CHECK(ff_getpeername(alias, (struct linux_sockaddr *)(uintptr_t)1,
@@ -143,6 +247,31 @@ int main(void)
     CHECK(ff_shutdown(alias, SHUT_WR) == 0);
     CHECK(public_symbol_calls == 0);
     CHECK(ff_close(alias) == 0);
+    CHECK(ff_socket_drain_count() == 0);
+    const char *broker_path = getenv("KER_SOCKET_BROKER_PATH");
+    CHECK(broker_path && *broker_path);
+    struct ker_socket_client broker_client = {.session_fd = -1};
+    CHECK(ker_socket_client_open(&broker_client, broker_path) == 0);
+    int udp_capability = ker_socket_client_socket(&broker_client, AF_INET, SOCK_DGRAM, 0);
+    CHECK(udp_capability >= 0);
+    ker_socket_client_close(&broker_client);
+    child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        if (fcntl(atoi(argv[1]), F_SETFD, FD_CLOEXEC) < 0) _exit(76);
+        execl("/proc/self/exe", "fstack-socket-bridge-client", "--exec-census", "1", NULL);
+        dprintf(STDERR_FILENO, "UDP census child exec failed: errno=%d\n", errno);
+        _exit(74);
+    }
+    CHECK(waitpid(child, &child_status, 0) == child && WIFEXITED(child_status) &&
+        WEXITSTATUS(child_status) == 0);
+    CHECK(syscall(SYS_close, udp_capability) == 0);
+    CHECK(ff_socket_drain_count() == 0);
+    int composite_epoll = epoll_create1(EPOLL_CLOEXEC);
+    CHECK(composite_epoll >= 0);
+    CHECK(ff_close(composite_epoll) == -1 && errno == EOPNOTSUPP);
+    CHECK(fcntl(composite_epoll, F_GETFD) >= 0);
+    CHECK(close(composite_epoll) == 0);
     output("FF_STREAM_OK\n");
     return 0;
 }

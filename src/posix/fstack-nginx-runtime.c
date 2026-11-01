@@ -405,4 +405,3 @@ void ff_unregist_packet_dispatcher_context(void)
 { unsupported_abort("ff_unregist_packet_dispatcher_context"); }
 int ff_syncache_count(void) { unsupported_abort("ff_syncache_count"); }
 int ff_socket_snd_pending(void) { unsupported_abort("ff_socket_snd_pending"); }
-int ff_socket_drain_count(void) { unsupported_abort("ff_socket_drain_count"); }

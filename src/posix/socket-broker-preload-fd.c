@@ -314,6 +314,64 @@ int ker_sb_preload_network_fd_locked(int app_fd, int *broker_fd)
     return 0;
 }
 
+int ker_sb_preload_socket_drain_count(void)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    if (!client) {
+        int saved_errno = errno;
+        ker_sb_preload_unlock();
+        errno = saved_errno;
+        return -1;
+    }
+
+    int count = 0;
+    for (size_t i = 0; i < PRELOAD_FD_SLOTS; ++i) {
+        int app_fd = network_fds[i].app_fd;
+        if (app_fd < 0) continue;
+
+        struct fd_identity current;
+        if (descriptor_identity(app_fd, &current)) {
+            if (errno == EBADF) {
+                ker_sb_preload_remove_network_locked(app_fd);
+                continue;
+            }
+            goto error;
+        }
+        if (current.device != network_fds[i].identity.device ||
+            current.inode != network_fds[i].identity.inode) {
+            ker_sb_preload_remove_network_locked(app_fd);
+            continue;
+        }
+        int broker_fd = network_fds[i].private_fd;
+
+        int domain = -1;
+        socklen_t length = sizeof(domain);
+        if (ker_socket_client_getsockopt(client, broker_fd, SOL_SOCKET, SO_DOMAIN,
+                &domain, &length) < 0) goto error;
+        if (length != sizeof(domain)) { errno = EPROTO; goto error; }
+        if (domain != AF_INET && domain != AF_INET6) continue;
+
+        int accepting = 0;
+        length = sizeof(accepting);
+        if (ker_socket_client_getsockopt(client, broker_fd, SOL_SOCKET,
+                SO_ACCEPTCONN, &accepting, &length) < 0) goto error;
+        if (length != sizeof(accepting)) { errno = EPROTO; goto error; }
+        if (!accepting) ++count;
+    }
+    ker_sb_preload_unlock();
+    return count;
+
+error:
+    {
+        int saved_errno = errno;
+        ker_sb_preload_unlock();
+        errno = saved_errno;
+        return -1;
+    }
+}
+
 int ker_sb_preload_any_native_locked(int fd)
 {
     int broker_fd = -1;

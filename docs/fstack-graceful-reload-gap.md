@@ -64,6 +64,20 @@ primitive, not F-Stack per-process FD aliases, `so_snd`, syncache or source FSM
 counters. It is not the original shell's complete census, fault or lifecycle
 matrix and does not change the blocked inventory entry.
 
+The bounded FF runtime now implements `ff_socket_drain_count` over authenticated
+broker capabilities registered in the current process. It counts application
+FD aliases individually and queries live `SO_ACCEPTCONN`, so an inherited
+listener that starts listening after fork is excluded. The tests exercise
+broker-created UDP inherited through exec as well as registered TCP sockets,
+host descriptor exclusion, descriptor reuse pruning and live TCP traffic
+through both the leaf bridge and `libfstack.so`, plus fail-closed broker errors
+through the leaf bridge.
+This hook is not the pinned source's whole process FD-table walk: raw or
+unregistered descriptors are outside its view, and the public FF/POSIX socket
+creation adapters still reject UDP. The graceful-off caller profile does not
+invoke the generation FSM; syncache, send-pending, flow-map and dispatcher hooks
+remain unsupported. The source inventory entry remains blocked.
+
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
 drain, worker readiness and pidfd retirement. It explicitly does not establish

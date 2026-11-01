@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
 import select
 import shlex
 import signal
@@ -1112,15 +1113,19 @@ def run_preloaded_frontend(args, rpc_path, broker, capabilities):
 
 
 def run_fstack_bridge_frontend(args, rpc_path, capabilities):
+    preload = str(args.preload_library.resolve())
+    if args.fstack_runtime:
+        preload = str(args.fstack_runtime.resolve()) + ':' + preload
     environment = os.environ | {
-        'LD_PRELOAD': str(args.preload_library.resolve()),
+        'LD_PRELOAD': preload,
         'KER_SOCKET_BROKER_PATH': str(rpc_path),
         'PYTHONDONTWRITEBYTECODE': '1',
     }
     host_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
     host_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     host_listener.bind(('198.18.0.1', 4097)); host_listener.listen(1); host_listener.settimeout(15)
-    frontend = subprocess.Popen([str(args.fstack_client)], pass_fds=tuple(capabilities),
+    frontend = subprocess.Popen([str(args.fstack_client), str(capabilities[1])],
+        pass_fds=tuple(capabilities),
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=environment, bufsize=0)
     for fd in capabilities:
@@ -1152,6 +1157,47 @@ def run_fstack_bridge_frontend(args, rpc_path, capabilities):
         if peer is not None:
             peer.close()
         host_listener.close()
+
+
+def run_fstack_drain_failure_frontend(args, rpc_path, broker, capabilities):
+    environment = os.environ | {
+        'LD_PRELOAD': str(args.preload_library.resolve()),
+        'KER_SOCKET_BROKER_PATH': str(rpc_path),
+        'PYTHONDONTWRITEBYTECODE': '1',
+    }
+
+    def disable_core_dumps():
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+    frontend = subprocess.Popen([str(args.fstack_drain_failure_client),
+        '--broker-death-census'],
+        pass_fds=tuple(capabilities), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=environment, bufsize=0,
+        preexec_fn=disable_core_dumps)
+    for fd in capabilities:
+        os.close(fd)
+    capabilities.clear()
+    try:
+        require(read_line(frontend.stdout, 15, frontend) == 'DRAIN_FAILURE_READY',
+            'FF census client did not query a live broker before failure injection')
+        os.killpg(broker.pid, signal.SIGKILL)
+        broker_output, broker_errors = broker.communicate(timeout=10)
+        require(broker.returncode == -signal.SIGKILL,
+            f'isolated broker group did not die by SIGKILL: {broker.returncode}; '
+            f'stdout={broker_output!r}; stderr={broker_errors.decode(errors="replace")}')
+        frontend.stdin.write(b'F'); frontend.stdin.flush()
+        output, errors = frontend.communicate(timeout=10)
+        diagnostic = errors.decode(errors='replace')
+        require(frontend.returncode == 0 and output == b'DRAIN_FAILURE_OK\n',
+            f'FF census did not fail closed after broker death: returncode={frontend.returncode}; '
+            f'stdout={output!r}; stderr={diagnostic!r}')
+        require('ker fstack socket census failed: errno=' in diagnostic,
+            f'broker-death abort diagnostic missing: {diagnostic!r}')
+        print('PASS: a live registered socket census aborts on broker death')
+    except BaseException:
+        if frontend.poll() is None:
+            frontend.kill(); frontend.wait()
+        raise
 
 
 def wait_for_path(path, timeout, description):
@@ -1729,6 +1775,10 @@ def inside(args):
                         'released the original-Linux socket')
                     return 0
 
+                if args.fstack_drain_failure_client:
+                    run_fstack_drain_failure_frontend(args, rpc_path, broker, cap_fds)
+                    return 0
+
                 if args.preload_client:
                     run_preloaded_frontend(args, rpc_path, broker, cap_fds)
                     try:
@@ -1889,6 +1939,7 @@ def main():
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--preload-client', type=Path)
     parser.add_argument('--fstack-client', type=Path)
+    parser.add_argument('--fstack-drain-failure-client', type=Path)
     parser.add_argument('--observer-client', type=Path)
     parser.add_argument('--preload-library', type=Path)
     parser.add_argument('--nginx-binary', type=Path)
@@ -1907,6 +1958,8 @@ def main():
         parser.error('reuseport group test requires inherited group probe and preload library')
     if args.observer_client and not args.preload_library:
         parser.error('TCP observer test requires the socket preload library for inherited capability validation')
+    if args.fstack_drain_failure_client and not args.preload_library:
+        parser.error('F-Stack drain-count failure test requires the socket preload library')
     if args.generation_worker and not (args.generation_broker and args.generation_controller):
         parser.error('generation handoff test requires broker factory and SDK controller')
     if args.member_census_runtime_test and not args.member_census_test_library:
@@ -1923,6 +1976,9 @@ def main():
             command += ['--preload-client', str(args.preload_client.resolve())]
         if args.fstack_client:
             command += ['--fstack-client', str(args.fstack_client.resolve())]
+        if args.fstack_drain_failure_client:
+            command += ['--fstack-drain-failure-client',
+                str(args.fstack_drain_failure_client.resolve())]
         if args.observer_client:
             command += ['--observer-client', str(args.observer_client.resolve())]
         if args.preload_library:
