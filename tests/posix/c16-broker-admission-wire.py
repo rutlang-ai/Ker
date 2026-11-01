@@ -91,6 +91,13 @@ def wait_process_stopped(process, timeout=5):
     raise RuntimeError(f'owner did not stop at explicit-stop barrier: pid={process.pid}')
 
 
+def collect_output(process, timeout=None):
+    retained = bytes(getattr(process, '_ker_line_buffer', bytearray()))
+    process._ker_line_buffer = bytearray()
+    output, errors = process.communicate(timeout=timeout)
+    return retained.decode(errors='replace') + output, errors
+
+
 def wait_line_selftest():
     child = subprocess.Popen([sys.executable, '-c',
         "import os; os.write(1, b'FIRST_MARKER complete\\nSECOND_MARKER complete\\n'); os._exit(0)"],
@@ -100,6 +107,17 @@ def wait_line_selftest():
         'wait_line lost the first complete marker written immediately before exit')
     require('SECOND_MARKER complete' in wait_line(child, 'SECOND_MARKER', 2),
         'wait_line lost a retained later marker written before immediate exit')
+
+    buffered = subprocess.Popen([sys.executable, '-c',
+        "import os; os.write(1, b'FIRST_BUFFERED_MARKER\\nSECOND_BUFFERED_MARKER\\n'); os._exit(0)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    buffered.wait(timeout=2)
+    require('FIRST_BUFFERED_MARKER' in wait_line(buffered, 'FIRST_BUFFERED_MARKER', 2),
+        'wait_line missed the marker preceding buffered output collection')
+    collected, _ = collect_output(buffered, timeout=2)
+    require(collected == 'SECOND_BUFFERED_MARKER\n' and
+        buffered._ker_line_buffer == bytearray(),
+        f'output collection lost or duplicated wait_line-buffered bytes: {collected!r}')
 
     large = subprocess.Popen([sys.executable, '-c',
         "import os; os.write(1, b'x' * 5000 + b'\\nLARGE_FINAL_MARKER complete\\n'); os._exit(0)"],
@@ -457,7 +475,7 @@ def inside(args):
                 require(pre_finalize.strip() ==
                     'C16_ADMISSION listener-ref-put-before-native-finalize',
                     f'listener reference was not released before native finalization: {pre_finalize!r}')
-                bout, berr = broker.communicate(timeout=35)
+                bout, berr = collect_output(broker, timeout=35)
                 require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
                     f'broker failed while stopping with live admission listener: '
                     f'rc={broker.returncode}; stdout={bout!r}; stderr={berr!r}')
