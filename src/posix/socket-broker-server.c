@@ -7,6 +7,7 @@
 #include <linux/filter.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <linux/netlink.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -21,6 +22,7 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include "tcp-observer-diag-wire.h"
 
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
@@ -42,6 +44,11 @@ struct sb_object {
     int native_fd;
     int group_slot;
     uint8_t group_index;
+    uint64_t observer_cookie;
+    uint32_t observer_source;
+    uint32_t observer_destination;
+    uint16_t observer_source_port;
+    uint16_t observer_destination_port;
 };
 struct sb_client {
     int fd;
@@ -97,6 +104,10 @@ static bool socket_option_supported(int level, int option, bool setting)
         case SO_PROTOCOL:
         case SO_ACCEPTCONN:
             return !setting;
+#ifdef SO_COOKIE
+        case SO_COOKIE:
+            return !setting;
+#endif
         default:
             return false;
         }
@@ -131,6 +142,9 @@ static bool socket_linger_is_nonblocking(const void *value, uint32_t length)
 static uint32_t required_right(uint16_t operation)
 {
     switch (operation) {
+    case KER_SB_TCP_OBSERVER_CREATE:
+        return KER_SOCKET_BROKER_NAME | KER_SOCKET_BROKER_OPTION;
+    case KER_SB_TCP_OBSERVER_SNAPSHOT: return KER_SOCKET_BROKER_READ;
     case KER_SB_READ: return KER_SOCKET_BROKER_READ;
     case KER_SB_WRITE: return KER_SOCKET_BROKER_WRITE;
     case KER_SB_GETSOCKNAME: case KER_SB_GETPEERNAME: return KER_SOCKET_BROKER_NAME;
@@ -503,7 +517,7 @@ static int object_for_request(struct ker_socket_broker_server *server, int cap_f
     if (!object) return -EBADF;
     if (object->kind != kind) return -ENOTSOCK;
     uint32_t right = required_right(operation);
-    if (right && !(object->rights & right)) return -EACCES;
+    if (right && (object->rights & right) != right) return -EACCES;
     *out = object;
     return 0;
 }
@@ -518,6 +532,104 @@ static int managed_member_status(struct sb_object *object, int operation)
     default:
         return 0;
     }
+}
+
+static uint32_t diag_sequence;
+
+static int observer_query(const struct sb_object *object,
+    struct ker_sb_tcp_observer_snapshot *snapshot)
+{
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC,
+        KER_TCP_OBSERVER_NETLINK_PROTOCOL);
+    if (fd < 0) return -errno;
+    int status = 0;
+    struct sockaddr_nl kernel = {.nl_family = AF_NETLINK};
+    uint32_t sequence = ++diag_sequence;
+    if (!sequence) sequence = ++diag_sequence;
+    struct {
+        struct ker_nlmsghdr header;
+        struct ker_inet_diag_req_v2 request;
+    } __attribute__((packed)) request = {
+        .header = {.length = sizeof(request), .type = KER_TCP_OBSERVER_SOCK_DIAG_BY_FAMILY,
+            .flags = KER_TCP_OBSERVER_NLM_F_REQUEST, .sequence = sequence},
+        .request = {.family = AF_INET, .protocol = KER_TCP_OBSERVER_PROTOCOL_TCP,
+            .states = UINT32_MAX, .id = {.sport = object->observer_source_port,
+                .dport = object->observer_destination_port,
+                .src = {object->observer_source}, .dst = {object->observer_destination},
+                .cookie = {(uint32_t)object->observer_cookie,
+                    (uint32_t)(object->observer_cookie >> 32)}}}
+    };
+    ssize_t sent = sendto(fd, &request, sizeof(request), 0,
+        (void *)&kernel, sizeof(kernel));
+    if (sent < 0) { status = -errno; goto out; }
+    if (sent != (ssize_t)sizeof(request)) { status = -EIO; goto out; }
+
+    struct sockaddr_nl local = {0};
+    socklen_t local_length = sizeof(local);
+    if (getsockname(fd, (struct sockaddr *)&local, &local_length)) { status = -errno; goto out; }
+    if (local_length != sizeof(local) || local.nl_family != AF_NETLINK || !local.nl_pid) {
+        status = -EPROTO; goto out;
+    }
+    unsigned char response[1024] = {0};
+    struct sockaddr_nl sender = {0};
+    socklen_t sender_length = sizeof(sender);
+    ssize_t received = recvfrom(fd, response, sizeof(response),
+        MSG_DONTWAIT | MSG_TRUNC, (void *)&sender, &sender_length);
+    if (received < 0) { status = -errno; goto out; }
+    if (received > (ssize_t)sizeof(response) || received < (ssize_t)sizeof(struct ker_nlmsghdr) ||
+        sender_length < sizeof(sender) || sender.nl_family != AF_NETLINK ||
+        sender.nl_pid != 0 || sender.nl_groups != 0) { status = -EPROTO; goto out; }
+    status = ker_tcp_observer_parse_reply(response, (size_t)received,
+        sender.nl_pid, local.nl_pid, &request, sizeof(request), &request.request.id, snapshot);
+out:
+    (void)close(fd);
+    return status;
+}
+
+static int observer_create(struct ker_socket_broker_server *server,
+    struct sb_object *source, int *passed_fd)
+{
+    int domain = -1, type = -1, protocol = -1, accepting = -1;
+    socklen_t length = sizeof(int);
+    if (getsockopt(source->native_fd, SOL_SOCKET, SO_DOMAIN, &domain, &length)) return -errno;
+    if (length != sizeof(domain)) return -EPROTO;
+    if (domain != AF_INET) return -EAFNOSUPPORT;
+    length = sizeof(type);
+    if (getsockopt(source->native_fd, SOL_SOCKET, SO_TYPE, &type, &length)) return -errno;
+    if (length != sizeof(type)) return -EPROTO;
+    if (type != SOCK_STREAM) return -EPROTOTYPE;
+    length = sizeof(protocol);
+    if (getsockopt(source->native_fd, SOL_SOCKET, SO_PROTOCOL, &protocol, &length)) return -errno;
+    if (length != sizeof(protocol)) return -EPROTO;
+    if (protocol != IPPROTO_TCP) return -EPROTONOSUPPORT;
+    length = sizeof(accepting);
+    if (getsockopt(source->native_fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &length)) return -errno;
+    if (length != sizeof(accepting)) return -EPROTO;
+    if (accepting) return -EINVAL;
+    struct sockaddr_in local = {0}, peer = {0};
+    length = sizeof(local);
+    if (getsockname(source->native_fd, (struct sockaddr *)&local, &length)) return -errno;
+    if (length != sizeof(local) || local.sin_family != AF_INET) return -EPROTO;
+    length = sizeof(peer);
+    if (getpeername(source->native_fd, (struct sockaddr *)&peer, &length)) return -errno;
+    if (length != sizeof(peer) || peer.sin_family != AF_INET) return -ENOTCONN;
+    uint64_t cookie = 0;
+    length = sizeof(cookie);
+    if (getsockopt(source->native_fd, SOL_SOCKET, SO_COOKIE, &cookie, &length)) return -errno;
+    if (length != sizeof(cookie) || cookie == 0) return -EPROTO;
+    size_t observer_slot = KER_SB_OBJECTS;
+    int capability = make_capability(server, -1, KER_SOCKET_BROKER_TCP_OBSERVER,
+        KER_SOCKET_BROKER_READ, &observer_slot);
+    if (capability < 0) return -errno;
+    struct sb_object *observer = &server->objects[observer_slot];
+    observer->observer_cookie = cookie;
+    observer->observer_source = local.sin_addr.s_addr;
+    observer->observer_destination = peer.sin_addr.s_addr;
+    observer->observer_source_port = local.sin_port;
+    observer->observer_destination_port = peer.sin_port;
+    *passed_fd = capability;
+    return 0;
+
 }
 
 static int dispatch_request(struct ker_socket_broker_server *server,
@@ -538,6 +650,10 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         else if (request->operation == KER_SB_REUSEPORT_GROUP_MEMBER ||
             request->operation == KER_SB_REUSEPORT_GROUP_SELECT)
             expected_kind = KER_SOCKET_BROKER_REUSEPORT_GROUP;
+
+        else if (request->operation == KER_SB_TCP_OBSERVER_SNAPSHOT)
+            expected_kind = KER_SOCKET_BROKER_TCP_OBSERVER;
+
         else if (request->operation == KER_SB_DESCRIBE || request->operation == KER_SB_DUP ||
             request->operation == KER_SB_GETFL) expected_kind = 0;
         int status;
@@ -547,7 +663,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             if (!status && object->kind == KER_SOCKET_BROKER_REUSEPORT_GROUP &&
                 request->operation == KER_SB_DUP) return -EOPNOTSUPP;
             uint32_t right = required_right(request->operation);
-            if (!status && right && !(object->rights & right)) status = -EACCES;
+            if (!status && request->operation == KER_SB_DUP &&
+                object->kind == KER_SOCKET_BROKER_TCP_OBSERVER) status = -EOPNOTSUPP;
+            if (!status && right && (object->rights & right) != right) status = -EACCES;
+            if (!status && request->operation == KER_SB_TCP_OBSERVER_SNAPSHOT &&
+                object->kind != KER_SOCKET_BROKER_TCP_OBSERVER) status = -ENOTSOCK;
+            if (!status && request->operation == KER_SB_TCP_OBSERVER_CREATE &&
+                object->kind != KER_SOCKET_BROKER_SOCKET) status = -ENOTSOCK;
         } else {
             status = object_for_request(server, fds[0], request->operation, expected_kind, &object);
         }
@@ -606,7 +728,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct sb_object *object = lookup_cap(server, fds[0]);
         if (!object) return -EBADF;
         int flags = 0;
-        if (object->kind != KER_SOCKET_BROKER_REUSEPORT_GROUP) {
+        if (object->kind != KER_SOCKET_BROKER_REUSEPORT_GROUP &&
+            object->kind != KER_SOCKET_BROKER_TCP_OBSERVER) {
             flags = fcntl(object->native_fd, F_GETFL);
             if (flags < 0) return -errno;
         }
@@ -619,6 +742,9 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct sb_object *object = lookup_cap(server, fds[0]);
         if (!object) return -EBADF;
         if (object->kind == KER_SOCKET_BROKER_REUSEPORT_GROUP) return -EOPNOTSUPP;
+
+        if (object->kind == KER_SOCKET_BROKER_TCP_OBSERVER) return -EOPNOTSUPP;
+
         int native_fd = fcntl(object->native_fd, F_DUPFD_CLOEXEC, 0);
         if (native_fd < 0) return -errno;
         if (object->group_slot >= 0) {
@@ -855,6 +981,7 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (!socket_option_supported(args.level, args.option, true)) return -EOPNOTSUPP;
         if (args.level == SOL_SOCKET && args.option == SO_LINGER &&
             !socket_linger_is_nonblocking(input + sizeof(args), args.length)) return -EOPNOTSUPP;
+        if (args.level == SOL_SOCKET && args.option == SO_COOKIE) return -EOPNOTSUPP;
         int call_result = setsockopt(object->native_fd,
             args.level, args.option, input + sizeof(args), args.length);
         *result = call_result < 0 ? -errno : call_result; return 0;
@@ -864,13 +991,35 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct ker_sb_option args; memcpy(&args, input, sizeof(args));
         if (args.length > KER_SOCKET_BROKER_IO_MAX - sizeof(uint32_t)) return -EINVAL;
         if (!socket_option_supported(args.level, args.option, false)) return -EOPNOTSUPP;
+        if (args.level == SOL_SOCKET && args.option == SO_COOKIE &&
+            args.length != sizeof(uint64_t)) return -EINVAL;
         socklen_t length = args.length;
         int call_result = getsockopt(lookup_cap(server, fds[0])->native_fd,
             args.level, args.option, output + sizeof(uint32_t), &length);
         if (call_result < 0) return -errno;
         if (length > args.length) return -EOVERFLOW;
+        if (args.level == SOL_SOCKET && args.option == SO_COOKIE &&
+            length != sizeof(uint64_t)) return -EPROTO;
         uint32_t wire_length = length; memcpy(output, &wire_length, sizeof(wire_length));
         *output_length = sizeof(wire_length) + length; *result = 0; return 0;
+    }
+    case KER_SB_TCP_OBSERVER_CREATE: {
+        if (input_length) return -EPROTO;
+        struct sb_object *source = lookup_cap(server, fds[0]);
+        if (!source) return -EBADF;
+        status = observer_create(server, source, passed_fd);
+        if (status) return status;
+        *result = 1; return 0;
+    }
+    case KER_SB_TCP_OBSERVER_SNAPSHOT: {
+        if (input_length) return -EPROTO;
+        struct sb_object *observer = lookup_cap(server, fds[0]);
+        if (!observer) return -EBADF;
+        struct ker_sb_tcp_observer_snapshot snapshot = {0};
+        status = observer_query(observer, &snapshot);
+        if (status) return status;
+        memcpy(output, &snapshot, sizeof(snapshot));
+        *output_length = sizeof(snapshot); *result = 0; return 0;
     }
     default: return -EOPNOTSUPP;
     }

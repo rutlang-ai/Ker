@@ -95,20 +95,23 @@ def stop_frontend_children(pids):
 
 
 def receive_bootstrap(connection):
-    data, ancillary, flags, _ = connection.recvmsg(16, socket.CMSG_SPACE(2 * array.array('i').itemsize),
+    data, ancillary, flags, _ = connection.recvmsg(16, socket.CMSG_SPACE(3 * array.array('i').itemsize),
         socket.MSG_CMSG_CLOEXEC)
     require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC), 'bootstrap capability frame was truncated')
-    require(data == struct.pack('=IHH', 0x4b534243, 1, 2), f'bootstrap record differs: {data!r}')
+    require(len(data) == 8, f'bootstrap record length differs: {data!r}')
+    magic, version, count = struct.unpack('=IHH', data)
+    require(magic == 0x4b534243 and version == 1 and count in (2, 3),
+        f'bootstrap record differs: {data!r}')
     fds = []
     for level, kind, payload in ancillary:
         require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
             'bootstrap carried an unexpected ancillary record')
         values = array.array('i'); values.frombytes(payload[:len(payload) - len(payload) % values.itemsize])
         fds.extend(values.tolist())
-    if len(fds) != 2:
+    if len(fds) != count:
         for fd in fds:
             os.close(fd)
-        raise RuntimeError(f'bootstrap delivered {len(fds)} capabilities, expected exactly two')
+        raise RuntimeError(f'bootstrap delivered {len(fds)} capabilities, expected {count}')
     return fds
 
 
@@ -410,6 +413,74 @@ def wait_for_static(address, port, timeout=30):
     raise RuntimeError(f'no successful small HTTP response within {timeout}s: {last_error}')
 
 
+def run_tcp_observer_frontend(args, rpc_path, broker, cap_fds, root):
+    ack_read, ack_write = os.pipe()
+    client = None
+    peer = None
+    try:
+        client = subprocess.Popen([str(args.observer_client), str(rpc_path),
+            str(cap_fds[0]), str(cap_fds[1]), str(cap_fds[2]), str(ack_read)],
+            pass_fds=tuple(cap_fds) + (ack_read,), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        os.close(ack_read); ack_read = -1
+        for fd in cap_fds:
+            os.close(fd)
+        cap_fds.clear()
+        require(read_line(client.stdout, 15, client) == 'OBSERVER_WAIT_ACCEPT',
+            'observer client did not reach its original-Linux accept')
+        peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        peer.settimeout(20)
+        peer.connect(('198.18.0.2', 4097))
+        require(read_line(client.stdout, 15, client) == 'OBSERVER_ACCEPTED',
+            'observer client did not accept the connected IPv4 TCP stream')
+        inbound = bytes((index * 17 + 5) & 0xff for index in range(16384))
+        peer.sendall(inbound)
+        require(read_line(client.stdout, 20, client) == 'OBSERVER_RX_DRAINED',
+            'observer failed to report/drain original Linux receive queue')
+        line = read_line(client.stdout, 20, client)
+        require(line.startswith('OBSERVER_CAPS_CLOSED '),
+            f'observer did not close all TCP capabilities after real backpressure: {line}')
+        queued = int(line.split()[1])
+        require(queued > 0, 'observer backpressure accepted no TCP payload')
+        expected = bytes((index * 29 + 3) & 0xff for index in range(4096))
+        received = recv_exact(peer, queued)
+        require(received == (expected * ((queued + len(expected) - 1) // len(expected)))[:queued],
+            'queued original-Linux TCP payload changed while the observer held metadata only')
+        require(peer.recv(1) == b'', 'closing all TCP capability refs did not deliver normal FIN EOF')
+        peer.close(); peer = None
+        os.write(ack_write, b'A')
+        os.close(ack_write); ack_write = -1
+        final = read_line(client.stdout, 20, client)
+        require(final.startswith('OBSERVER_FINAL '),
+            f'observer did not return final TIME_WAIT/absence identity: {final}')
+        output, errors = client.communicate(timeout=20)
+        require(client.returncode == 0,
+            f'observer SDK consumer failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+        try:
+            output, errors = broker.communicate(timeout=30)
+        except subprocess.TimeoutExpired as error:
+            broker.kill(); output, errors = broker.communicate(timeout=10)
+            raise RuntimeError(f'broker did not release observer metadata after close: '
+                f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+        require(b'BROKER_DONE' in output and broker.returncode == 0,
+            f'broker did not finalize after observer close: {output!r}; {errors.decode(errors="replace")}')
+        stats = json.loads((root / 'stats.json').read_text())
+        require(stats.get('outstanding') == 0,
+            f'packet-buffer accounting did not return to zero: {stats!r}')
+        print(f'PASS: original INET_DIAG observer cookie={final.split("cookie=")[-1]} '
+            f'queued_bytes={queued}; real receive/send queues observed; TCP refs closed; pool=0')
+    finally:
+        if peer is not None:
+            peer.close()
+        for fd in (ack_read, ack_write):
+            if fd >= 0:
+                try: os.close(fd)
+                except OSError: pass
+        if client is not None and client.poll() is None:
+            client.kill(); client.wait()
+
+
 def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     binary = args.nginx_binary.resolve()
     fstack_profile = args.fstack_runtime is not None
@@ -707,6 +778,8 @@ def inside(args):
                     '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
                     '--port', 'net_tap0', '--eal', eal, '--stats', str(stats_path), '--',
                     str(selected_broker), str(rpc_path), str(bootstrap_path)]
+                if args.observer_client:
+                    command.append('observer')
                 environment = os.environ | {
                     'PYTHONDONTWRITEBYTECODE': '1',
                     'RUNTIME_DIRECTORY': str(root),
@@ -749,6 +822,9 @@ def inside(args):
                         f'original-Linux reuseport traffic or cleanup evidence missing: {stats!r}')
                     print('PASS: broker-created two-member original-Linux reuseport cBPF group, selector transitions, '
                         'group/member lifetime and accepted-stream teardown')
+                    return 0
+                if args.observer_client:
+                    run_tcp_observer_frontend(args, rpc_path, broker, cap_fds, root)
                     return 0
 
                 if args.nginx_binary:
@@ -950,6 +1026,7 @@ def main():
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--preload-client', type=Path)
     parser.add_argument('--fstack-client', type=Path)
+    parser.add_argument('--observer-client', type=Path)
     parser.add_argument('--preload-library', type=Path)
     parser.add_argument('--nginx-binary', type=Path)
     parser.add_argument('--fstack-runtime', type=Path)
@@ -971,6 +1048,8 @@ def main():
             command += ['--preload-client', str(args.preload_client.resolve())]
         if args.fstack_client:
             command += ['--fstack-client', str(args.fstack_client.resolve())]
+        if args.observer_client:
+            command += ['--observer-client', str(args.observer_client.resolve())]
         if args.preload_library:
             command += ['--preload-library', str(args.preload_library.resolve())]
         if args.nginx_binary:
