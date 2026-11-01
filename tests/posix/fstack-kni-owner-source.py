@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--pmd-root', type=Path, required=True)
-    parser.add_argument('--profile', choices=('owner', 'short-tx'), default='owner')
+    parser.add_argument('--profile', choices=('owner', 'short-tx', 'full-ring'), default='owner')
     args = parser.parse_args()
     modules = list(args.pmd_root.glob('dpdk/pmds-*/librte_net_ring.so'))
     if len(modules) != 1:
@@ -22,13 +22,15 @@ def main():
         env['LD_PRELOAD'] = str(modules[0])
         env['LD_LIBRARY_PATH'] = str(args.pmd_root) + ':' + env.get('LD_LIBRARY_PATH', '')
         command = [str(args.app.resolve())]
-        if args.profile == 'short-tx':
-            command.append('short-tx')
+        if args.profile != 'owner':
+            command.append(args.profile)
         result = subprocess.run(command, cwd=root, env=env,
                                 capture_output=True, text=True, timeout=30)
-        marker = ('PASS: original KNI short-TX contract and real net_ring sink recovery'
-                  if args.profile == 'short-tx' else
-                  'PASS: original KNI future owner activation and nonowner contracts')
+        marker = {
+            'owner': 'PASS: original KNI future owner activation and nonowner contracts',
+            'short-tx': 'PASS: original KNI short-TX contract and real net_ring sink recovery',
+            'full-ring': 'PASS: original KNI full-ring contract and real net_ring FIFO drain',
+        }[args.profile]
         if result.returncode or result.stdout.count(marker) != 1:
             raise RuntimeError('retained KNI ' + args.profile + ' assertions failed, exit=' +
                                str(result.returncode) + ':\n' + result.stdout + result.stderr)

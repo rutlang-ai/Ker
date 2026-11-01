@@ -21,7 +21,7 @@ and reclaimed with no extra drops.
 
 This is bounded caller TX backpressure through the real software PMD in the
 source fixture. It does not qualify an independently installed short-TX caller,
-a genuine EAL secondary, the full RX-ring source case, protocol behavior or
+a genuine EAL secondary, the separate full RX-ring source fixture, protocol behavior or
 physical NIC behavior. The separate owner activation and nonowner caller scope
 is documented in [KNI ownership](fstack-kni-ownership.md).
 
