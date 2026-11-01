@@ -80,10 +80,26 @@ static struct ker_ff_admission_result receive_result(
 {
 	struct ker_ff_admission_result result;
 	uint64_t deadline = deadline_after_250ms();
+	int saw_late_result = 0;
+	uint64_t late_command = 0;
+	uint32_t late_packet = 0;
 	for (;;) {
 		int status = ker_ff_admission_channel_receive(channel, &result);
-		if (status == expected) return result;
-		if (status == 0) continue;
+		if (status == expected) {
+			if (saw_late_result) {
+				CHECK(expected == KER_FF_ADMISSION_CANCELLED &&
+				      result.command_id == late_command && result.packet_id == late_packet);
+			}
+			return result;
+		}
+		if (status == KER_FF_ADMISSION_RESULT && expected == KER_FF_ADMISSION_CANCELLED) {
+			CHECK(!saw_late_result && result.lease != 0 && result.command_id != 0 &&
+			      result.packet_id != 0 && result.status <= 0 && result.status >= -4095);
+			late_command = result.command_id;
+			late_packet = result.packet_id;
+			saw_late_result = 1;
+			continue;
+		}
 		if (status != -EAGAIN && status != -EWOULDBLOCK)
 			fprintf(stderr, "channel receive expected=%u status=%d\n", expected, status);
 		CHECK(status == -EAGAIN || status == -EWOULDBLOCK);

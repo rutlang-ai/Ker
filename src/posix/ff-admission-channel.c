@@ -15,6 +15,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef KER_C15_TEST_DELAY_PREPARED_REPLY
+extern void ker_c15_test_hold_prepared_reply(int owner_prepared, int status,
+					     uint32_t allowed, uint32_t created);
+#endif
+
 #define KER_FF_ADMISSION_CHANNEL_MAGIC UINT32_C(0x4b464151)
 #define KER_FF_ADMISSION_MAX_MESSAGE 256U
 
@@ -225,6 +230,12 @@ static int send_pending_response(struct ker_ff_admission_channel *channel)
 {
 	int result;
 	if (!channel->response_pending) return 0;
+#ifdef KER_C15_TEST_DELAY_PREPARED_REPLY
+	if (channel->response.command == KER_FF_ADMISSION_PREPARED)
+		ker_c15_test_hold_prepared_reply(channel->owner_prepared,
+			channel->response.status, channel->current.allowed,
+			channel->current.created);
+#endif
 	result = send_wire(channel, &channel->response);
 	if (result == 0) channel->response_pending = 0;
 	return result;
@@ -387,17 +398,20 @@ int ker_ff_admission_channel_receive(struct ker_ff_admission_channel *channel,
 	    !channel->controller_state || wire.command_id != channel->controller_command_id ||
 	    wire.packet_id != channel->controller_packet_id)
 		return -EPROTO;
-	if (wire.command == KER_FF_ADMISSION_RESULT && channel->controller_state == 4)
-		return 0; /* Cancellation was sent before the validated result was consumed. */
 	if (wire.command == KER_FF_ADMISSION_RESULT) {
-		if (channel->controller_state != 1) return -EPROTO;
-		channel->controller_state = 2;
-		channel->controller_allowed = wire.allowed;
-		channel->controller_created = wire.created;
+		if (channel->controller_state == 1) {
+			channel->controller_state = 2;
+			channel->controller_allowed = wire.allowed;
+			channel->controller_created = wire.created;
+		} else if (channel->controller_state != 4) {
+			return -EPROTO;
+		}
 	} else if (wire.command == KER_FF_ADMISSION_PREPARED) {
-		if (channel->controller_state != 3) return -EPROTO;
+		if (channel->controller_state != 3 && channel->controller_state != 4)
+			return -EPROTO;
 	} else if (wire.command == KER_FF_ADMISSION_CANCELLED) {
-		if (channel->controller_state != 4) return -EPROTO;
+		if (channel->controller_state != 4)
+			return -EPROTO;
 		if (!wire.status) channel->controller_state = 0;
 	} else if (wire.command == KER_FF_ADMISSION_FINALIZED) {
 		if (channel->controller_state != 5 && channel->controller_state != 2)

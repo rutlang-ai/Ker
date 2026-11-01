@@ -15,11 +15,17 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "ff_config.h"
 #include "ff_flow_map.h"
+
+static const char *owner_state_path;
+static unsigned int hold_prepared_index;
+static unsigned int prepared_replies;
+static int write_state(const char *path, const char *value);
 
 
 /* This is a host-only fixture executable, started before ker-run. It owns the
@@ -40,6 +46,19 @@ static int admit(const struct ker_ff_admission_key *key, int *created,
 	(void)context;
 	memcpy(&original, key, sizeof(original));
 	return ff_flow_map_admit(&original, created);
+}
+
+void ker_c15_test_hold_prepared_reply(int owner_prepared, int status,
+				      uint32_t allowed, uint32_t created)
+{
+	if (!hold_prepared_index || ++prepared_replies != hold_prepared_index) return;
+	char state[128];
+	if (snprintf(state, sizeof(state),
+		"OWNER_PREPARED_HELD prepared=%d status=%d allowed=%u created=%u",
+		owner_prepared, status, allowed, created) >= (int)sizeof(state) || !owner_state_path ||
+	    write_state(owner_state_path, state))
+		_exit(2);
+	if (owner_prepared && status == 0) (void)raise(SIGSTOP);
 }
 
 static int map_revoke(const struct ker_ff_admission_key *key, void *context)
@@ -112,6 +131,15 @@ int main(int argc, char **argv)
 	if (snprintf(state_path, sizeof(state_path), "%s.state", prefix) >= (int)sizeof(state_path) ||
 	    snprintf(controller_path, sizeof(controller_path), "%s.controller", prefix) >= (int)sizeof(controller_path))
 		return 2;
+	owner_state_path = state_path;
+	const char *hold_index = getenv("KER_C15_HOLD_PREPARED_INDEX");
+	if (hold_index) {
+		errno = 0;
+		char *end = NULL;
+		unsigned long value = strtoul(hold_index, &end, 10);
+		if (errno || end == hold_index || *end || value == 0 || value > 17) return 2;
+		hold_prepared_index = (unsigned int)value;
+	}
 	struct stat parent;
 	char directory[PATH_MAX];
 	if (strlen(path) >= sizeof(directory)) return 2;

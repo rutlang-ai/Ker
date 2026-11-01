@@ -67,6 +67,8 @@ if(BUILD_TESTING)
     target_include_directories(ker-c15-admission-map-owner SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
     target_compile_features(ker-c15-admission-map-owner PRIVATE c_std_11)
     target_compile_options(ker-c15-admission-map-owner PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-c15-admission-map-owner PRIVATE
+        KER_C15_TEST_DELAY_PREPARED_REPLY=1)
     target_link_libraries(ker-c15-admission-map-owner PRIVATE
         ker::ipc PkgConfig::DPDK "${ker_controller_ring_pmd}" Threads::Threads)
 

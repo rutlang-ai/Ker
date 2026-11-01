@@ -66,6 +66,19 @@ def wait_state(prefix, expected, process, timeout=15):
         f'{path.read_text().strip() if path.exists() else "<missing>"}')
 
 
+def wait_process_stopped(process, timeout=5):
+    status_path = Path(f'/proc/{process.pid}/status')
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None or not status_path.exists():
+            raise RuntimeError(f'owner exited before test stop gate: pid={process.pid}')
+        for line in status_path.read_text().splitlines():
+            if line.startswith('State:') and line.split()[1] in ('T', 't'):
+                return
+        time.sleep(.005)
+    raise RuntimeError(f'owner did not stop at prepared response gate: pid={process.pid}')
+
+
 def wait_file(path, process, timeout=15):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -84,14 +97,18 @@ def wait_owner_identity(prefix, process, owner_prefix, owner):
     require(connecting.startswith('CONNECTING pid='),
         f'malformed controller identity bootstrap: {connecting!r}')
     identity_fields = dict(item.split('=', 1) for item in connecting.split()[1:])
-    Path(str(owner_prefix) + '.controller').write_text(
+    owner_controller = Path(str(owner_prefix) + '.controller')
+    controller_staging = owner_controller.with_suffix('.controller.tmp')
+    controller_staging.write_text(
         f"{identity_fields['pid']} {identity_fields['lease']}\n")
+    os.replace(controller_staging, owner_controller)
     try:
         wait_state(str(owner_prefix), 'OWNER_CONNECTED', owner)
     except RuntimeError as error:
         if owner.poll() is not None:
             out, err = owner.communicate()
-            raise RuntimeError(f'{error}; owner stdout={out!r}; stderr={err!r}') from error
+            raise RuntimeError(f'{error}; controller prefix={prefix}; identity={connecting!r}; '
+                f'owner prefix={owner_prefix}; owner stdout={out!r}; stderr={err!r}') from error
         owner_identity = Path(str(owner_prefix) + '.controller')
         identity_text = owner_identity.read_text().strip() if owner_identity.exists() else '<missing>'
         raise RuntimeError(f'{error}; controller prefix={prefix}; identity={connecting!r}; '
@@ -242,8 +259,10 @@ def run_probe(args, eal, root, native):
         run_unread_accept_ack_probe(args, eal, root, native)
         run_stopped_owner_timeout_probe(args, eal, root, native)
         run_prepared_accept_expiry_probe(args, eal, root, native)
+        run_prepared_accept_expiry_probe(args, eal, root, native, late_reply=True)
         run_duplicate_admission_probe(args, eal, root, native)
         run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared=True)
+        run_duplicate_admission_probe(args, eal, root, native, late_prepared_reply=True)
         print('C15_TAP_ADMISSION_OK original_lkl=true held_synack=true '
             'map_admit=real_ff_flow_map collision_flows=16 mapfull=17 '
             'exact_c14_revoke=true late_ack_rst=true host_handshake=true '
@@ -456,8 +475,8 @@ def run_stopped_owner_timeout_probe(args, eal, root, native):
         capture.close()
 
 
-def run_prepared_accept_expiry_probe(args, eal, root, native):
-    root = root / 'c15-prepared-accept-expiry'
+def run_prepared_accept_expiry_probe(args, eal, root, native, late_reply=False):
+    root = root / ('c15-late-prepared-reply' if late_reply else 'c15-prepared-accept-expiry')
     root.mkdir(mode=0o700)
     capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
     owner = process = peer = None
@@ -467,8 +486,12 @@ def run_prepared_accept_expiry_probe(args, eal, root, native):
     try:
         capture.bind(('kerhost', 0))
         capture.settimeout(.01)
+        owner_environment = os.environ.copy()
+        if late_reply:
+            owner_environment['KER_C15_HOLD_PREPARED_INDEX'] = '1'
         owner = subprocess.Popen([str(args.owner), str(owner_path), str(owner_prefix)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=owner_environment, text=True)
         wait_state(str(owner_prefix), 'OWNER_READY', owner)
         command = [sys.executable, str(args.launcher), '--library', str(args.library),
             '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
@@ -476,8 +499,11 @@ def run_prepared_accept_expiry_probe(args, eal, root, native):
             '--', str(args.client)]
         environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1',
             'RUNTIME_DIRECTORY': str(root), 'KER_C15_ADMISSION_CONTROL': str(prefix),
-            'KER_C15_OWNER_PATH': str(owner_path), 'KER_C15_OWNER_PID': str(owner.pid),
-            'KER_C15_EXPIRE_AFTER_PREPARED': '1'}
+            'KER_C15_OWNER_PATH': str(owner_path), 'KER_C15_OWNER_PID': str(owner.pid)}
+        if late_reply:
+            environment['KER_C15_LATE_PREPARED_INDEX'] = '1'
+        else:
+            environment['KER_C15_EXPIRE_AFTER_PREPARED'] = '1'
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, text=True)
         wait_owner_identity(prefix, process, owner_prefix, owner)
@@ -509,10 +535,20 @@ def run_prepared_accept_expiry_probe(args, eal, root, native):
         require(host_syn is not None and not synack_seen,
             'fresh flow was not held before the prepared-accept timeout')
         send_command(prefix, 'ADMIT')
-        expired = wait_state(prefix, 'EXPIRED_PREPARED index=1', process)
+        if late_reply:
+            owner_prepared = wait_state(str(owner_prefix), 'OWNER_PREPARED_HELD', owner)
+            require('prepared=1 status=0 allowed=1 created=1' in owner_prepared,
+                f'owner did not prepare the fresh map entry before delaying PREPARED: {owner_prepared!r}')
+            wait_state(prefix, 'CANCEL_UNSENT_SENT', process)
+            wait_process_stopped(owner)
+            os.kill(owner.pid, signal.SIGCONT)
+            expiration_state = 'EXPIRED_PREPARE_REPLY index=1'
+        else:
+            expiration_state = 'EXPIRED_PREPARED index=1'
+        expired = wait_state(prefix, expiration_state, process)
         require('accept_sent=0' in expired and 'request_revoked=1' in expired and
             'owner_cancelled=1' in expired and 'drop_sent=1' in expired,
-            f'prepared accept deadline did not prove unsent rollback: {expired!r}')
+            f'prepared accept timeout did not prove unsent rollback: {expired!r}')
         deadline = time.monotonic() + .08
         while time.monotonic() < deadline:
             try:
@@ -569,8 +605,13 @@ def run_prepared_accept_expiry_probe(args, eal, root, native):
         capture.close()
 
 
-def run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared=False):
-    root = root / ('c15-duplicate-expired' if expire_after_prepared else 'c15-duplicate')
+def run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared=False,
+				  late_prepared_reply=False):
+    if expire_after_prepared and late_prepared_reply:
+        raise ValueError('duplicate test modes are mutually exclusive')
+    directory = 'c15-duplicate-late-prepared' if late_prepared_reply else \
+        'c15-duplicate-expired' if expire_after_prepared else 'c15-duplicate'
+    root = root / directory
     root.mkdir(mode=0o700)
     table = f'ker_c15_dup_{os.getpid()}'
     capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
@@ -579,7 +620,7 @@ def run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared
     prefix = root / 'control'
     owner_prefix = root / 'owner'
     owner_path = root / 'owner.sock'
-    peer_port = 12004 if expire_after_prepared else 12002
+    peer_port = 12006 if late_prepared_reply else 12004 if expire_after_prepared else 12002
     try:
         capture.bind(('kerhost', 0))
         capture.settimeout(.01)
@@ -591,8 +632,12 @@ def run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared
             'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
             'tcp', 'dport', '8080', 'tcp', 'flags', '&',
             '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        owner_environment = os.environ.copy()
+        if late_prepared_reply:
+            owner_environment['KER_C15_HOLD_PREPARED_INDEX'] = '2'
         owner = subprocess.Popen([str(args.owner), str(owner_path), str(owner_prefix)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=owner_environment, text=True)
         wait_state(str(owner_prefix), 'OWNER_READY', owner)
         command = [sys.executable, str(args.launcher), '--library', str(args.library),
             '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
@@ -604,6 +649,8 @@ def run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared
             'KER_C15_DUPLICATE_MODE': '1'}
         if expire_after_prepared:
             environment['KER_C15_EXPIRE_AFTER_PREPARED'] = '2'
+        if late_prepared_reply:
+            environment['KER_C15_LATE_PREPARED_INDEX'] = '2'
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, text=True)
         wait_owner_identity(prefix, process, owner_prefix, owner)
@@ -701,6 +748,31 @@ def run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared
                     duplicate_synack_seen = True
             require(not duplicate_synack_seen,
                 'duplicate retransmission emitted SYN-ACK after definitely unsent NF_ACCEPT')
+        elif late_prepared_reply:
+            owner_prepared = wait_state(str(owner_prefix), 'OWNER_PREPARED_HELD', owner)
+            require('prepared=1 status=0 allowed=1 created=0' in owner_prepared,
+                f'owner did not prepare the duplicate map entry before delaying PREPARED: {owner_prepared!r}')
+            wait_state(prefix, 'CANCEL_UNSENT_SENT', process)
+            wait_process_stopped(owner)
+            os.kill(owner.pid, signal.SIGCONT)
+            expired = wait_state(prefix, 'EXPIRED_PREPARE_REPLY index=2', process)
+            require('accept_sent=0' in expired and 'request_revoked=1' in expired and
+                'owner_cancelled=1' in expired and 'drop_sent=1' in expired,
+                f'delayed duplicate PREPARED did not prove unsent cleanup: {expired!r}')
+            duplicate_synack_seen = False
+            deadline = time.monotonic() + .08
+            while time.monotonic() < deadline:
+                try:
+                    frame, _ = capture.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                packet = native.ipv4_tcp_frame(frame)
+                if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                        packet['sport'] == 8080 and packet['dport'] == peer_port and \
+                        packet['flags'] & 0x12 == 0x12:
+                    duplicate_synack_seen = True
+            require(not duplicate_synack_seen,
+                'duplicate SYN-ACK escaped after definitely unsent delayed PREPARED')
         else:
             wait_state(prefix, 'ADMITTED index=2 map_created=0', process)
             duplicate_synack = None

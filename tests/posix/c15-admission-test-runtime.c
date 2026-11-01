@@ -25,13 +25,27 @@
 
 static int host_write_file(const char *path, const char *value)
 {
-	long fd = syscall(SYS_openat, AT_FDCWD, path,
+	char temporary[PATH_MAX + 64];
+	int temporary_length = snprintf(temporary, sizeof(temporary), "%s.tmp.%ld", path,
+		(long)syscall(SYS_getpid));
+	if (temporary_length < 0 || (size_t)temporary_length >= sizeof(temporary))
+		return -ENAMETOOLONG;
+	long fd = syscall(SYS_openat, AT_FDCWD, temporary,
 		O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 	if (fd < 0) return -errno;
-	size_t length = strlen(value);
-	ssize_t written = syscall(SYS_write, (int)fd, value, length);
-	int result = written == (ssize_t)length ? 0 : -EIO;
+	size_t value_length = strlen(value);
+	size_t written = 0;
+	int result = 0;
+	while (written < value_length) {
+		ssize_t count = syscall(SYS_write, (int)fd, value + written, value_length - written);
+		if (count < 0 && errno == EINTR) continue;
+		if (count <= 0) { result = count < 0 ? -errno : -EIO; break; }
+		written += (size_t)count;
+	}
 	if (syscall(SYS_close, (int)fd) && !result) result = -errno;
+	if (!result && syscall(SYS_renameat, AT_FDCWD, temporary, AT_FDCWD, path))
+		result = -errno;
+	if (result) (void)syscall(SYS_unlinkat, AT_FDCWD, temporary, 0);
 	return result;
 }
 
@@ -124,6 +138,34 @@ static int receive_channel(struct ker_ff_admission_channel *channel,
 		int status = ker_ff_admission_channel_receive(channel, result);
 		if (status == expected) return result->status;
 		if (status < 0 && status != -EAGAIN && status != -EWOULDBLOCK) return status;
+		if (status >= 0) return -EPROTO;
+		if (monotonic_ns() >= deadline) return -ETIMEDOUT;
+		const struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+}
+
+static int receive_cancelled(struct ker_ff_admission_channel *channel,
+			     uint64_t deadline, int allow_late_result,
+			     int allow_late_prepared,
+			     struct ker_ff_admission_result *result)
+{
+	int saw_result = 0, saw_prepared = 0;
+	for (;;) {
+		int status = ker_ff_admission_channel_receive(channel, result);
+		if (status == KER_FF_ADMISSION_CANCELLED) return result->status;
+		if (status == KER_FF_ADMISSION_RESULT && allow_late_result && !saw_result) {
+			saw_result = 1;
+			continue;
+		}
+		if (status == KER_FF_ADMISSION_PREPARED && allow_late_prepared && !saw_prepared) {
+			if (result->allowed || result->created)
+				return -EPROTO;
+			saw_prepared = 1;
+			continue;
+		}
+		if (status >= 0) return -EPROTO;
+		if (status != -EAGAIN && status != -EWOULDBLOCK) return status;
 		if (monotonic_ns() >= deadline) return -ETIMEDOUT;
 		const struct timespec pause = {.tv_nsec = 1000000};
 		(void)nanosleep(&pause, NULL);
@@ -174,11 +216,16 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	const char *expire_after_prepared_env = getenv("KER_C15_EXPIRE_AFTER_PREPARED");
 	unsigned int expire_after_prepared_index = expire_after_prepared_env ?
 		(unsigned int)strtoul(expire_after_prepared_env, NULL, 10) : 0;
-	unsigned int packet_limit = expire_after_prepared_index ?
-		expire_after_prepared_index : duplicate_mode ? 2U : 17U;
+	const char *late_prepared_env = getenv("KER_C15_LATE_PREPARED_INDEX");
+	unsigned int late_prepared_index = late_prepared_env ?
+		(unsigned int)strtoul(late_prepared_env, NULL, 10) : 0;
+	unsigned int packet_limit = expire_after_prepared_index ? expire_after_prepared_index :
+		late_prepared_index ? late_prepared_index : duplicate_mode ? 2U : 17U;
 	int prepared_expiry_handled = 0;
 	int owner_timeout_handled = 0;
 	unsigned int current_index = 0;
+	int prepare_sent = 0;
+	uint32_t admitted_created = 0;
 	int listener_owned = 1, result = -EINVAL;
 	const char *failure_stage = "setup";
 	if (listener_fd < 0 || !prefix || !*prefix || !owner_path || !*owner_path)
@@ -206,8 +253,9 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	for (unsigned int index = 1; index <= ((unread_accept_ack || stopped_owner_timeout) ?
 	    1U : packet_limit); ++index) {
 		current_index = index;
-	uint32_t admitted_created = 0;
+		admitted_created = 0;
 		prepared = 0;
+		prepare_sent = 0;
 		accept_sent = 0;
 		uint64_t wait_deadline = monotonic_ns() + UINT64_C(10000000000);
 		int got_packet = 0;
@@ -274,6 +322,7 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 		}
 		if (result || map_full) {
 			int admission_error = result ? result : -ENOBUFS;
+			int late_result = result == -ETIMEDOUT;
 			if (ker_ff_admission_request_identity_revalidate(identity)) {
 				result = -ESTALE;
 				goto reject_packet;
@@ -282,9 +331,11 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 			if (revoke_result) { result = revoke_result; goto reject_packet; }
 			int cancel_status = ker_ff_admission_channel_send_control(channel,
 				KER_FF_ADMISSION_CANCEL, command_id, packet.id);
-			if (!cancel_status)
-				cancel_status = receive_channel(channel, KER_FF_ADMISSION_CANCELLED,
-					packet.deadline_ns, &response);
+			if (!cancel_status &&
+			    !(stopped_owner_timeout && admission_error == -ETIMEDOUT))
+				cancel_status = receive_cancelled(channel,
+					monotonic_ns() + UINT64_C(1000000000), late_result, 0,
+					&response);
 			int dropped = 0;
 			int drop_status = ker_ff_admission_queue_verdict(queue, packet.lease,
 				packet.deadline_ns, packet.id, 0, &dropped);
@@ -322,10 +373,15 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 			KER_FF_ADMISSION_PREPARE_ACCEPT, command_id, packet.id);
 		failure_stage = "owner-prepare-send";
 		if (result) goto reject_packet;
+		prepare_sent = 1;
 		failure_stage = "owner-prepare-result";
 		result = receive_channel(channel, KER_FF_ADMISSION_PREPARED,
 			packet.deadline_ns, &response);
-		if (result) goto reject_packet;
+		if (result) {
+			if (late_prepared_index == index && result == -ETIMEDOUT)
+				failure_stage = "prepare-reply-expired";
+			goto reject_packet;
+		}
 		prepared = 1;
 		result = ker_ff_admission_request_identity_revalidate(identity);
 		failure_stage = "listener-revalidate";
@@ -431,7 +487,7 @@ post_admission_packets:
 		result = -EPROTO;
 		goto out;
 	}
-	if (expire_after_prepared_index && !prepared_expiry_handled) {
+	if ((expire_after_prepared_index || late_prepared_index) && !prepared_expiry_handled) {
 		result = -EPROTO;
 		goto out;
 	}
@@ -476,7 +532,7 @@ reject_packet:
 	 * entry and send DROP with a separate cleanup deadline. */
 	int request_revoked = 0, owner_cancelled = 0, drop_sent = 0;
 	int cleanup_error = 0;
-	if (prepared && !accept_sent && channel) {
+	if ((prepared || prepare_sent) && !accept_sent && channel) {
 		if (identity) {
 			int identity_result = ker_ff_admission_request_identity_revalidate(identity);
 			if (!identity_result) {
@@ -489,8 +545,13 @@ reject_packet:
 		int cancel_result = ker_ff_admission_channel_send_control(channel,
 			KER_FF_ADMISSION_CANCEL_UNSENT, command_id, packet.id);
 		if (!cancel_result) {
-			cancel_result = receive_channel(channel, KER_FF_ADMISSION_CANCELLED,
-				monotonic_ns() + UINT64_C(1000000000), &response);
+			if (late_prepared_index == current_index &&
+			    host_write_file(state_path, "CANCEL_UNSENT_SENT"))
+				cancel_result = -EIO;
+			else
+				cancel_result = receive_cancelled(channel,
+					monotonic_ns() + UINT64_C(1000000000), 0, prepare_sent,
+					&response);
 			if (!cancel_result) owner_cancelled = 1;
 		}
 		if (!cleanup_error) cleanup_error = cancel_result;
@@ -501,15 +562,18 @@ reject_packet:
 		if (!cleanup_error && (drop_result || drop_sent != 1))
 			cleanup_error = drop_result ? drop_result : -EIO;
 	}
-	if (failure_stage && !strcmp(failure_stage, "accept-unsent-expired") &&
+	if (failure_stage && (!strcmp(failure_stage, "accept-unsent-expired") ||
+	    !strcmp(failure_stage, "prepare-reply-expired")) &&
 	    request_revoked && owner_cancelled && drop_sent == 1 && !cleanup_error) {
 		prepared = 0;
 		if (identity) ker_ff_admission_request_identity_close(identity);
 		identity = NULL;
 		prepared_expiry_handled = 1;
+		const char *expiration_state = !strcmp(failure_stage, "prepare-reply-expired") ?
+			"EXPIRED_PREPARE_REPLY" : "EXPIRED_PREPARED";
 		if (snprintf(state, sizeof(state),
-			"EXPIRED_PREPARED index=%u accept_sent=0 request_revoked=1 "
-			"owner_cancelled=1 drop_sent=1", current_index) >= (int)sizeof(state) ||
+			"%s index=%u accept_sent=0 request_revoked=1 owner_cancelled=1 drop_sent=1",
+			expiration_state, current_index) >= (int)sizeof(state) ||
 			host_write_file(state_path, state)) {
 			result = -EIO;
 			goto out;
