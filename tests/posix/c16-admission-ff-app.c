@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <signal.h>
@@ -94,6 +95,19 @@ static int map_revoke(const struct ker_ff_admission_key *key, void *context)
 	struct ff_flow_key original;
 	memcpy(&original, key, sizeof(original));
 	return ff_flow_map_revoke(&original);
+}
+
+static int admission_listener_rejects_fastopen(int fd)
+{
+	int enabled = 1;
+	errno = 0;
+	if (ff_setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN, &enabled,
+			sizeof(enabled)) != -1 || errno != EOPNOTSUPP) return -1;
+	int value = -1;
+	socklen_t length = sizeof(value);
+	if (ff_getsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN, &value, &length) ||
+	    length != sizeof(value) || value != 0) return -1;
+	return 0;
 }
 
 static int write_all(int fd, const void *buffer, size_t length)
@@ -273,6 +287,7 @@ static void setup_owner(void)
 	listener_fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
 		IPPROTO_TCP);
 	if (listener_fd < 0) goto fail;
+	if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
 	setup_stage = "FF listener bind";
 	struct sockaddr_in address = {.sin_family = AF_INET,
 		.sin_port = htons(8080)};
@@ -280,6 +295,10 @@ static void setup_owner(void)
 	if (ff_bind(listener_fd, (struct linux_sockaddr *)&address, sizeof(address))) goto fail;
 	setup_stage = "FF listener listen";
 	if (ff_listen(listener_fd, 128)) goto fail;
+	if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
+	static const char tfo_guard[] =
+		"C16_TFO_GUARD_PASS enabled=0 prebind=EOPNOTSUPP postlisten=EOPNOTSUPP\n";
+	(void)syscall(SYS_write, STDOUT_FILENO, tfo_guard, sizeof(tfo_guard) - 1);
 	setup_stage = "FF epoll creation";
 	epoll_fd = ker_sb_posix_epoll_create1(EPOLL_CLOEXEC);
 	if (epoll_fd < 0) goto fail;
@@ -300,9 +319,9 @@ static void setup_owner(void)
 		if (owner_wait_contract_checks()) goto fail;
 	}
 	const char *ready = product_smoke_mode ?
-		"C16_APP_READY product_smoke=1\n" : getenv("KER_C16_TEST_PREPARE_ONCE") ?
-		"C16_APP_READY pump_timeout=retained host_only=eopnotsupp one_use=ealready\n" :
-		"C16_APP_READY pump_timeout=retained host_only=eopnotsupp\n";
+		"C16_APP_READY product_smoke=1 tfo_guard=ok\n" : getenv("KER_C16_TEST_PREPARE_ONCE") ?
+		"C16_APP_READY pump_timeout=retained host_only=eopnotsupp one_use=ealready tfo_guard=ok\n" :
+		"C16_APP_READY pump_timeout=retained host_only=eopnotsupp tfo_guard=ok\n";
 	(void)syscall(SYS_write, STDOUT_FILENO, ready, strlen(ready));
 	return;
 fail:

@@ -305,8 +305,15 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 				KER_FF_ADMISSION_FINALIZED, packet->deadline_ns, &response, false);
 		}
 		/* A sent verdict with a lost/error ACK is uncertain. Keep the map
-		 * entry and fail the private profile rather than claiming healthy state. */
+		 * entry and quarantine this admission task rather than claiming healthy
+		 * state or starting another transaction on an unsettled owner channel. */
 		if (sent && status == 0 && response.status) status = response.status;
+		if (status) {
+			if (status == -ETIMEDOUT) task_test_trace("finalized-timeout", packet);
+			/* No later packet may reuse this owner channel/map transaction. */
+			task_test_trace("accepted-quarantine-map-retained", packet);
+			status = -EOWNERDEAD;
+		}
 		goto out;
 	}
 	if (!status) status = -EIO;

@@ -1851,6 +1851,14 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (!object) return -EBADF;
         status = managed_member_status(object, request->operation);
         if (status) return status;
+        /* The admission owner validates TCP_FASTOPEN while registering its
+         * listener. Do not let a later socket-option RPC re-enable TFO after
+         * that one-time check; keep generic, unowned broker sockets unchanged. */
+        if (args.level == IPPROTO_TCP && args.option == TCP_FASTOPEN &&
+            object->owner_token) {
+            struct sb_owner *owner = owner_by_token(server, object->owner_token);
+            if (owner && owner->admission_prepared) return -EOPNOTSUPP;
+        }
         if (!socket_option_supported(args.level, args.option, true)) return -EOPNOTSUPP;
         if (args.level == SOL_SOCKET && args.option == SO_LINGER &&
             !socket_linger_is_nonblocking(input + sizeof(args), args.length)) return -EOPNOTSUPP;

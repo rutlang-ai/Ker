@@ -26,6 +26,7 @@ def require(condition, message):
 
 def wait_line(process, expected, timeout=30):
     deadline = time.monotonic() + timeout
+    recent = getattr(process, '_ker_recent_lines', [])
     while time.monotonic() < deadline:
         if process.poll() is not None:
             output, errors = process.communicate()
@@ -33,12 +34,23 @@ def wait_line(process, expected, timeout=30):
                 f'stdout={output!r}; stderr={errors!r}')
         ready, _, _ = select.select([process.stdout], [], [], 0.05)
         if ready:
-            line = process.stdout.readline()
-            if not line:
+            # Read the pipe fd directly: TextIOWrapper.readline() can prefetch
+            # several trace lines, making select() miss buffered follow-ups.
+            pending = getattr(process, '_ker_line_buffer', bytearray())
+            byte = os.read(process.stdout.fileno(), 1)
+            if not byte:
                 continue
-            if expected in line:
-                return line
-    raise RuntimeError(f'timed out waiting for {expected}')
+            pending.extend(byte)
+            process._ker_line_buffer = pending
+            if byte == b'\n':
+                line = pending.decode(errors='replace')
+                process._ker_line_buffer = bytearray()
+                recent.append(line.rstrip())
+                del recent[:-16]
+                process._ker_recent_lines = recent
+                if expected in line:
+                    return line
+    raise RuntimeError(f'timed out waiting for {expected}; recent={recent!r}')
 
 
 def run_progress_client(path, rpc_path):
@@ -49,6 +61,15 @@ def run_progress_client(path, rpc_path):
         'history=EBUSY' in progress.stdout,
         f'unrelated broker RPC did not complete: rc={progress.returncode}; '
         f'stdout={progress.stdout!r}; stderr={progress.stderr!r}')
+
+
+def run_ordinary_tfo_client(path, rpc_path):
+    result = subprocess.run([str(path), str(rpc_path), 'ordinary-tfo'],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        timeout=10, env=os.environ | {'TMPDIR': os.environ.get('TMPDIR', '/dev/shm')})
+    require(result.returncode == 0 and 'C16_ORDINARY_TFO_OK enabled=1' in result.stdout,
+        f'ordinary broker TCP_FASTOPEN behavior changed: rc={result.returncode}; '
+        f'stdout={result.stdout!r}; stderr={result.stderr!r}')
 
 
 def require_zero_requests(line, label, inserted=None):
@@ -132,6 +153,10 @@ def inside(args):
                 'LD_PRELOAD': str(args.preload),
                 'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root),
             }
+            finalized_fifo = root / 'finalized.release'
+            if args.finalized_timeout_only:
+                os.mkfifo(finalized_fifo, 0o600)
+                app_env['KER_C16_TEST_HOLD_FINALIZED_FIFO'] = str(finalized_fifo)
             if not args.pump_failure_only:
                 app_env |= {'KER_C16_TEST_PUMP_DELAY_US': '80000',
                     'KER_C16_TEST_RECURSIVE_WAIT': '1'}
@@ -146,6 +171,7 @@ def inside(args):
             if args.listener_close_only:
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             app_argument = ('pump-failure' if args.pump_failure_only else
+                '1' if args.finalized_timeout_only else
                 'owner-probe' if (args.registration_negative_only or
                     args.malformed_owner_hello_only or args.owner_death_only or
                     args.listener_close_only) else '16')
@@ -290,6 +316,11 @@ def inside(args):
                 print('C16_LISTENER_CLOSE_CLEANUP_PASS owner_alive=1 '
                     'fail_closed=ECONNRESET endpoint_unlinked=1 pool=0')
                 return 0
+            if args.finalized_timeout_only:
+                tfo_guard = wait_line(app, 'C16_TFO_GUARD_PASS', 20)
+                require('prebind=EOPNOTSUPP' in tfo_guard and
+                    'postlisten=EOPNOTSUPP' in tfo_guard,
+                    f'admission-owned listener did not reject late TCP_FASTOPEN: {tfo_guard!r}')
             app_ready = wait_line(app, 'C16_APP_READY', 20)
             if args.pump_failure_only:
                 retained = wait_line(app, 'C16_PUMP_FAILURE_EVENT_RETAINED', 5)
@@ -310,8 +341,59 @@ def inside(args):
                     f'pump-failure quarantine leaked I/O pool objects: {report!r}')
                 print('C16_OWNER_PUMP_FAILURE_PASS observed=ET_ONESHOT_NEXT_WAIT=sticky_error pool=0')
                 return 0
+            if args.finalized_timeout_only:
+                run_ordinary_tfo_client(args.progress_client, rpc_path)
+                run_progress_client(args.progress_client, rpc_path)
+                first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                first.settimeout(5)
+                first.bind(('198.18.0.1', 12002))
+                first.connect(('198.18.0.2', 8080))
+                held = wait_line(app, 'C16_FINALIZED_REPLY_HELD', 5)
+                require('allowed=1 created=1 map_retained=1' in held,
+                    f'test did not hold a finalized fresh map entry: {held!r}')
+                finalized_timeout = wait_line(broker,
+                    'C16_ADMISSION finalized-timeout remote_port=12002', 5)
+                timeout_ns, packet_deadline_ns = trace_times(
+                    finalized_timeout, 'finalized-timeout', 12002)
+                require(timeout_ns >= packet_deadline_ns,
+                    f'FINALIZED wait did not expire after its packet deadline: '
+                    f'{finalized_timeout!r}')
+                quarantined = wait_line(broker,
+                    'C16_ADMISSION accepted-quarantine-map-retained remote_port=12002', 5)
+                require('accepted-quarantine-map-retained' in quarantined,
+                    f'accepted transaction map was not retained during quarantine: {quarantined!r}')
+                second = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                second.setblocking(False)
+                second.bind(('198.18.0.1', 12003))
+                pending = second.connect_ex(('198.18.0.2', 8080))
+                require(pending in (errno.EINPROGRESS, errno.EALREADY),
+                    f'follow-up request did not remain behind the quarantined gate: {pending}')
+                with open(finalized_fifo, 'wb', buffering=0) as gate:
+                    gate.write(b'R')
+                output, errors = app.communicate(timeout=8)
+                require(app.returncode == -signal.SIGABRT and
+                    'ker owner pump callback status=' in errors,
+                    f'owner did not fail closed after the delayed FINALIZED reply: '
+                    f'rc={app.returncode}; stdout={output!r}; stderr={errors!r}')
+                synacks = captured_synacks(capture, {12003})
+                require(not synacks,
+                    f'quarantined task admitted a later SYNACK: {synacks!r}')
+                first.close()
+                second.close()
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                bout, berr = broker.communicate(timeout=35)
+                require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
+                    f'broker failed after admission quarantine: rc={broker.returncode}; '
+                    f'stdout={bout!r}; stderr={berr!r}')
+                report = json.loads(stats.read_text())
+                require(report.get('outstanding') == 0,
+                    f'finalization quarantine leaked broker I/O state: {report!r}')
+                print('C16_FINALIZE_QUARANTINE_PASS accepted=1 map_retained=1 '
+                    'followup_synack=0 owner=fail_closed pool=0')
+                return 0
             require('pump_timeout=retained' in app_ready and
-                'host_only=eopnotsupp' in app_ready,
+                'host_only=eopnotsupp' in app_ready and 'tfo_guard=ok' in app_ready,
                 f'owner pump timeout/host-only checks did not pass: {app_ready!r}')
             try:
                 for index, source_port in enumerate(flow_ports[:16]):
@@ -471,6 +553,7 @@ def main():
     parser.add_argument('--malformed-owner-hello-only', action='store_true')
     parser.add_argument('--owner-death-only', action='store_true')
     parser.add_argument('--listener-close-only', action='store_true')
+    parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     if args.inside:
@@ -489,6 +572,8 @@ def main():
         command.append('--owner-death-only')
     if args.listener_close_only:
         command.append('--listener-close-only')
+    if args.finalized_timeout_only:
+        command.append('--finalized-timeout-only')
     return subprocess.run(command).returncode
 
 

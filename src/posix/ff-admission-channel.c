@@ -229,10 +229,45 @@ static void response_for_command(struct ker_ff_admission_channel *channel,
 	channel->response_pending = 1;
 }
 
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+static int test_hold_finalized_response(struct ker_ff_admission_channel *channel)
+{
+	static int consumed;
+	const char *path = getenv("KER_C16_TEST_HOLD_FINALIZED_FIFO");
+	if (consumed || !path || !*path) return 0;
+	consumed = 1;
+	/* FINALIZED's wire result is intentionally zeroed. Inspect the retained
+	 * owner-side transaction state here to prove the test holds a settled,
+	 * newly-created map entry rather than an unprepared request. */
+	if (channel->current.status || channel->current.allowed != 1 ||
+	    channel->current.created != 1 || channel->owner_prepared)
+		return -EPROTO;
+	static const char marker[] =
+		"C16_FINALIZED_REPLY_HELD owner_state=settled allowed=1 created=1 map_retained=1\n";
+	(void)syscall(SYS_write, STDOUT_FILENO, marker, sizeof(marker) - 1);
+	int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+	if (fd < 0) return -errno;
+	char release;
+	ssize_t count;
+	do { count = syscall(SYS_read, fd, &release, sizeof(release)); }
+	while (count < 0 && errno == EINTR);
+	int error = count == 1 && release == 'R' ? 0 :
+		count < 0 ? -errno : -ECONNRESET;
+	(void)syscall(SYS_close, fd);
+	return error;
+}
+#endif
+
 static int send_pending_response(struct ker_ff_admission_channel *channel)
 {
 	int result;
 	if (!channel->response_pending) return 0;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+	if (channel->response.command == KER_FF_ADMISSION_FINALIZED) {
+		int hold = test_hold_finalized_response(channel);
+		if (hold) return hold;
+	}
+#endif
 #ifdef KER_C15_TEST_DELAY_PREPARED_REPLY
 	if (channel->response.command == KER_FF_ADMISSION_PREPARED)
 		ker_c15_test_hold_prepared_reply(channel->owner_prepared,
