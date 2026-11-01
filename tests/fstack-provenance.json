@@ -4708,6 +4708,16 @@
         "fstack-drain-foreign-epoch"
       ],
       "adaptation": "The unchanged p1 fixture declarations, p1_setup/p1_teardown/p1_drain_check helpers and test_p1_drain_foreign_epoch_tx body are byte-audited and executed against imported original lib/ff_drain_ring.c plus original ff_reload.c/ff_reload_gendir.c in a real DPDK primary EAL. Its exact mode-3 assertion retains TX q1/gen0 while a foreign epoch owns hardware. A bounded same-process primary caller then sets real source-shaped live directory records for epoch1/gen0 and epoch2/gen0, verifies the original no-hardware-owner predicate rejects TX before ownership, and delivers the retained packet only after epoch2/gen0 becomes selected owner. The unchanged original TX drain writes the exact mbuf pointer/payload to queue1 of a real two-queue net_ring PMD, and source teardown restores the 64-object pool. This is not a genuine secondary or coexisting-master admission test, does not qualify the secondary-only F-Stack main loop or Ker resident admission, and does not claim full reload."
+    },
+    "fstack-drain-rx15-orphans": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_rx15_primary_purges_orphaned_rings"
+      ],
+      "ker_ctests": [
+        "fstack-drain-rx15-orphans"
+      ],
+      "adaptation": "The exact upstream RX-15 helpers and test body are byte-audited and execute against the pinned original drain-ring implementation and original reload/generation-directory runtime in a real primary EAL configured for one queue. The fixture forks and reaps a real child for dead-PID proof, looks up the named original rings, and exercises no-directory preservation, unattached live-user preservation, selective dead-consumer RX purge with live RX/TX retention, source-set purge-owner lock refusal, bounded slot-reset timeout, dead-marker retirement, fresh unregistered packet retention and whole-slot reset. The original source checks exact counts and restores all64 pool objects; the fixture then frees the source pool and exits EAL. Original drain pointer arrays and named rings persist for the EAL/process lifetime as upstream specifies. This uses the source test's PID-1 live-user stand-in and does not claim secondary EAL/cross-process visibility or authenticated resident admission. The separate foreign-epoch fixture proves original TX drain delivery to real net_ring."
     }
   }
 }

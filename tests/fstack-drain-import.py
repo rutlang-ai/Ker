@@ -44,6 +44,32 @@ for name in test_manifest['helpers']:
         raise AssertionError(f'unclosed source function: {name}')
 assert (root / 'tests/fstack-drain-source.inc').read_text() == '\n\n'.join(parts) + '\n'
 
+orphan_manifest = json.loads(
+    (root / 'tests/fstack-drain-orphans-source.json').read_text())
+orphan_path = root / orphan_manifest['source_file']
+orphan_source = orphan_path.read_text()
+assert hashlib.sha256(orphan_source.encode()).hexdigest() == orphan_manifest['source_sha256']
+orphan_parts = []
+for name in orphan_manifest['helpers']:
+    candidates = list(re.finditer(r'(?m)^static (?:uint32_t|void|int)\s+', orphan_source))
+    starts = [match.start() for match in candidates
+        if orphan_source.startswith(name + '(', match.end())]
+    assert len(starts) == 1, name
+    start = starts[0]
+    brace = orphan_source.index('{', start)
+    depth = 0
+    for index in range(brace, len(orphan_source)):
+        if orphan_source[index] == '{':
+            depth += 1
+        elif orphan_source[index] == '}':
+            depth -= 1
+            if depth == 0:
+                orphan_parts.append(orphan_source[start:index + 1])
+                break
+    else:
+        raise AssertionError(f'unclosed RX-15 source function: {name}')
+assert (root / 'tests/fstack-drain-orphans-source.inc').read_text() == '\n\n'.join(orphan_parts) + '\n'
+
 helper_manifest = json.loads((root / 'tests/fstack-drain-create-ring.json').read_text())
 helper_path = root / helper_manifest['source_file']
 helper_source = helper_path.read_text()
@@ -63,4 +89,4 @@ for index in range(brace, len(helper_source)):
 else:
     raise AssertionError('unclosed original create_ring helper')
 assert (root / 'tests/fstack-drain-create-ring.inc').read_text() == expected
-print('PASS: pinned drain-ring implementation, create_ring helper, and exact foreign-epoch source fixture audited')
+print('PASS: pinned drain-ring implementation, create_ring helper, and exact foreign-epoch/RX-15 source fixtures audited')
