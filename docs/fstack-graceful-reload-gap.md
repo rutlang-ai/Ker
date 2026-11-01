@@ -49,8 +49,20 @@ reaches TIME_WAIT or absence after worker teardown.
 
 This is a bounded process and selector handoff primitive test. It does not run
 the F-Stack nginx executable or its generation FSM, does not implement its
-drain/census hooks, and does not establish full SYN/orphan census or a
-zero-TCP-state claim. It does not change the blocked source inventory entry.
+drain/census hooks, and does not establish a zero-TCP-state claim. It does not
+change the blocked source inventory entry.
+
+The separate [`native-socket-broker-member-census` test](native-socket-broker.md)
+now samples raw original-Linux TCP states for two managed IPv4 reuseport
+members. It observes a real old-member `SYN_RECV` across selector change, then
+closes every native accepted descriptor while the host pauses reads, verifies
+queued native-to-host bytes and orderly EOF, and observes closing/TIME_WAIT
+rows after worker exit. A separate kind-4 observer provides the send-queue
+measurement; the kind-5 census result itself contains only raw state counts
+and listener identity. This validates the broker's bounded member-census
+primitive, not F-Stack per-process FD aliases, `so_snd`, syncache or source FSM
+counters. It is not the original shell's complete census, fault or lifecycle
+matrix and does not change the blocked inventory entry.
 
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
@@ -81,8 +93,9 @@ Do not treat that alias as the full matrix, and do not count `LIMITED` or `SKIP`
 original result artifacts and distinguish failed or skipped profiles from
 passes.
 
-Until the FF generation-reload service, its original runtime counters, drain
-behavior, fault cases and cleanup are exercised end to end, the source entry
+Until the FF generation-reload service, its per-process descriptor/census
+interfaces, original runtime counters, drain behavior, fault cases and cleanup
+are exercised end to end, the source entry
 remains `blocked`. Neither an F-Stack-only run, pure Nginx FSM tests, the no-FF
 Nginx lifecycle, the bounded graceful-off Nginx profile, nor the single-process
-caller controller completes it.
+caller controller or bounded two-member broker census completes it.

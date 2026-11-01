@@ -2,14 +2,56 @@
 #include <ker/socket-broker-server.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 struct bootstrap_record { uint32_t magic; uint16_t version; uint16_t count; };
+
+static int check_server_singleton_lease(const char *path)
+{
+    char probe_path[KER_SOCKET_BROKER_PATH_MAX + 1];
+    int length = snprintf(probe_path, sizeof(probe_path), "%s.lease-probe", path);
+    if (length < 0 || (size_t)length >= sizeof(probe_path)) { errno = ENAMETOOLONG; return -1; }
+
+    int blocker = (int)syscall(SYS_socket, AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if (blocker < 0) return -1;
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    memcpy(address.sun_path, path, strlen(path) + 1);
+    if (syscall(SYS_bind, blocker, &address, sizeof(address))) {
+        int error = errno; (void)syscall(SYS_close, blocker); errno = error; return -1;
+    }
+    errno = 0;
+    struct ker_socket_broker_server *failed = ker_socket_broker_server_create(path);
+    bool rolled_back = !failed && errno == EADDRINUSE;
+    (void)syscall(SYS_close, blocker);
+    (void)syscall(SYS_unlinkat, AT_FDCWD, path, 0);
+    if (!rolled_back) {
+        if (failed) ker_socket_broker_server_destroy(failed);
+        errno = EPROTO;
+        return -1;
+    }
+
+    struct ker_socket_broker_server *first = ker_socket_broker_server_create(probe_path);
+    if (!first) return -1;
+    errno = 0;
+    struct ker_socket_broker_server *second = ker_socket_broker_server_create(path);
+    struct stat identity;
+    bool excluded = !second && errno == EBUSY && lstat(path, &identity) < 0 && errno == ENOENT;
+    if (second) ker_socket_broker_server_destroy(second);
+    ker_socket_broker_server_destroy(first);
+    if (!excluded) { errno = EPROTO; return -1; }
+
+    struct ker_socket_broker_server *released = ker_socket_broker_server_create(path);
+    if (!released) return -1;
+    ker_socket_broker_server_destroy(released);
+    return 0;
+}
 
 static int send_group_capability(const char *path, int capability)
 {
@@ -43,6 +85,10 @@ static int send_group_capability(const char *path, int capability)
 int main(int argc, char **argv)
 {
     if (argc != 3) { fprintf(stderr, "usage: broker <rpc-path> <bootstrap-path>\n"); return 2; }
+    if (check_server_singleton_lease(argv[1])) {
+        perror("broker runtime singleton lease");
+        return 1;
+    }
     struct ker_socket_broker_server *server = ker_socket_broker_server_create(argv[1]);
     if (!server) { perror("create broker"); return 1; }
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4098)};

@@ -23,6 +23,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "tcp-observer-diag-wire.h"
+#include "member-census-diag-wire.h"
+#include "member-census-diag.h"
+#include "member-census-runtime.h"
 
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
@@ -32,6 +35,8 @@ struct sb_group {
     bool live;
     uint16_t port;
     int base_fd[2];
+    uint32_t member_mark[2];
+    uint64_t member_cookie[2];
     size_t handles;
 };
 struct sb_object {
@@ -49,6 +54,9 @@ struct sb_object {
     uint32_t observer_destination;
     uint16_t observer_source_port;
     uint16_t observer_destination_port;
+    uint32_t census_mark;
+    uint16_t census_local_port;
+    uint64_t census_listener_cookie;
 };
 struct sb_client {
     int fd;
@@ -56,6 +64,16 @@ struct sb_client {
     pid_t pid;
     struct ucred credential;
     uint64_t sequence;
+    int census_job;
+};
+
+#define KER_SB_CENSUS_JOBS 4
+struct sb_census_job {
+    bool live;
+    int client_slot;
+    int client_fd;
+    struct ker_sb_header request;
+    uint64_t ticket;
 };
 struct ker_socket_broker_server {
     int listener;
@@ -66,15 +84,26 @@ struct ker_socket_broker_server {
     bool running;
     bool stop_when_empty;
     int failure;
+    uint64_t runtime_lease;
+    bool runtime_lease_live;
     struct sb_object objects[KER_SB_OBJECTS];
     struct sb_group groups[KER_SB_OBJECTS];
     struct sb_client clients[KER_SB_CLIENTS];
+    struct sb_census_job census_jobs[KER_SB_CENSUS_JOBS];
 };
+
 
 static int host_close(int fd)
 {
     if (fd >= 0) return (int)syscall(SYS_close, fd);
     return 0;
+}
+static void release_runtime_lease(struct ker_socket_broker_server *server)
+{
+    if (server && server->runtime_lease_live) {
+        if (ker_member_census_server_release(server->runtime_lease)) abort();
+        server->runtime_lease_live = false;
+    }
 }
 static int host_getsockopt(int fd, int level, int option, void *value, socklen_t *length)
 { return (int)syscall(SYS_getsockopt, fd, level, option, value, length); }
@@ -158,15 +187,21 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_SEND: return KER_SOCKET_BROKER_WRITE;
     case KER_SB_REUSEPORT_GROUP_CREATE: case KER_SB_REUSEPORT_GROUP_MEMBER:
     case KER_SB_REUSEPORT_GROUP_SELECT: return KER_SOCKET_BROKER_CONTROL;
+    case KER_SB_MEMBER_CENSUS_CREATE: return KER_SOCKET_BROKER_CONTROL;
+    case KER_SB_MEMBER_CENSUS_SNAPSHOT: return KER_SOCKET_BROKER_READ;
     default: return 0;
     }
 }
 
-static void close_client(struct sb_client *client)
+static void close_client(struct ker_socket_broker_server *server, struct sb_client *client)
 {
+    if (client->census_job >= 0 && client->census_job < KER_SB_CENSUS_JOBS) {
+        struct sb_census_job *job = &server->census_jobs[client->census_job];
+        if (job->live) (void)ker_member_census_query_cancel(job->ticket);
+    }
     (void)host_close(client->fd);
     (void)host_close(client->pidfd);
-    *client = (struct sb_client){.fd = -1, .pidfd = -1};
+    *client = (struct sb_client){.fd = -1, .pidfd = -1, .census_job = -1};
 }
 
 static void close_object(struct ker_socket_broker_server *server, struct sb_object *object)
@@ -249,11 +284,57 @@ static int group_handle(struct ker_socket_broker_server *server, int group_slot,
     return capability;
 }
 
+static int member_census_capability(struct ker_socket_broker_server *server,
+    struct sb_object *group_object, unsigned index)
+{
+    if (!group_object || group_object->kind != KER_SOCKET_BROKER_REUSEPORT_GROUP ||
+        group_object->group_slot < 0 || index > 1) return fail(ENOTSOCK);
+    struct sb_group *group = &server->groups[group_object->group_slot];
+    if (!group->live || !group->member_mark[index] || !group->member_cookie[index])
+        return fail(EBADF);
+    size_t slot = KER_SB_OBJECTS;
+    int capability = make_capability(server, -1, KER_SOCKET_BROKER_MEMBER_CENSUS,
+        KER_SOCKET_BROKER_READ, &slot);
+    if (capability < 0) return -1;
+    /* Metadata only: deliberately keep group_slot=-1 and native_fd=-1 so
+     * census capabilities neither retain the listener group nor any TCP fd. */
+    struct sb_object *object = &server->objects[slot];
+    object->census_mark = group->member_mark[index];
+    object->census_local_port = group->port;
+    object->census_listener_cookie = group->member_cookie[index];
+    return capability;
+}
+
 static int reuseport_filter(int fd, unsigned index)
 {
     struct sock_filter instruction = BPF_STMT(BPF_RET | BPF_K, index);
     struct sock_fprog program = {.len = 1, .filter = &instruction};
     return setsockopt(fd, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &program, sizeof(program));
+}
+
+static int native_net_admin_present(void)
+{
+    return ker_member_census_diag_require_net_admin();
+}
+
+static int allocate_member_mark(uint32_t *mark)
+{
+    return ker_member_census_mark_allocate(mark);
+}
+
+static int set_member_mark(int fd, uint32_t mark)
+{
+    if (!mark) return fail(EINVAL);
+    return setsockopt(fd, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
+}
+
+static int socket_cookie(int fd, uint64_t *cookie)
+{
+    socklen_t length = sizeof(*cookie);
+    *cookie = 0;
+    if (getsockopt(fd, SOL_SOCKET, SO_COOKIE, cookie, &length)) return -1;
+    if (length != sizeof(*cookie) || !*cookie) return fail(EPROTO);
+    return 0;
 }
 
 static bool group_port_reserved(const struct ker_socket_broker_server *server, uint16_t port)
@@ -318,6 +399,8 @@ static int construct_reuseport_group(struct ker_socket_broker_server *server,
     if (!server || !address || server->listener < 0 ||
         address->sin_family != AF_INET || !address->sin_port || backlog < 0 ||
         !rights || (rights & ~KER_SOCKET_BROKER_ALL)) return fail(EINVAL);
+    int authority = native_net_admin_present();
+    if (authority < 0) return fail(-authority);
     uint16_t port = ntohs(address->sin_port);
     if (group_port_reserved(server, port)) return fail(EADDRINUSE);
     bool existing_binding = false;
@@ -327,22 +410,32 @@ static int construct_reuseport_group(struct ker_socket_broker_server *server,
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
         if (!server->groups[i].live) { slot = i; break; }
     if (slot == KER_SB_OBJECTS) return fail(EMFILE);
+    uint32_t marks[2] = {0};
+    int mark_status = allocate_member_mark(&marks[0]);
+    if (!mark_status) mark_status = allocate_member_mark(&marks[1]);
+    if (mark_status) return fail(-mark_status);
     int listener0 = -1, listener1 = -1;
     int one = 1;
     listener0 = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (listener0 < 0) goto error;
     if (setsockopt(listener0, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) ||
+        set_member_mark(listener0, marks[0]) ||
         bind(listener0, (const struct sockaddr *)address, sizeof(*address)) ||
         listen(listener0, backlog) || reuseport_filter(listener0, 0)) goto error;
+    uint64_t cookies[2] = {0};
+    if (socket_cookie(listener0, &cookies[0])) goto error;
     /* Selector zero is live before member one joins; traffic cannot target
      * an unpublished listener during group construction. */
     listener1 = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (listener1 < 0) goto error;
     if (setsockopt(listener1, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) ||
+        set_member_mark(listener1, marks[1]) ||
         bind(listener1, (const struct sockaddr *)address, sizeof(*address)) ||
         listen(listener1, backlog)) goto error;
+    if (socket_cookie(listener1, &cookies[1])) goto error;
     server->groups[slot] = (struct sb_group){.live = true, .port = port,
-        .base_fd = {listener0, listener1}, .handles = 0};
+        .base_fd = {listener0, listener1}, .member_mark = {marks[0], marks[1]},
+        .member_cookie = {cookies[0], cookies[1]}, .handles = 0};
     int capability = group_handle(server, (int)slot, -1,
         KER_SOCKET_BROKER_REUSEPORT_GROUP, rights, 0);
     if (capability < 0) {
@@ -650,10 +743,12 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         else if (request->operation == KER_SB_REUSEPORT_GROUP_MEMBER ||
             request->operation == KER_SB_REUSEPORT_GROUP_SELECT)
             expected_kind = KER_SOCKET_BROKER_REUSEPORT_GROUP;
-
+        else if (request->operation == KER_SB_MEMBER_CENSUS_CREATE)
+            expected_kind = KER_SOCKET_BROKER_REUSEPORT_GROUP;
+        else if (request->operation == KER_SB_MEMBER_CENSUS_SNAPSHOT)
+            expected_kind = KER_SOCKET_BROKER_MEMBER_CENSUS;
         else if (request->operation == KER_SB_TCP_OBSERVER_SNAPSHOT)
             expected_kind = KER_SOCKET_BROKER_TCP_OBSERVER;
-
         else if (request->operation == KER_SB_DESCRIBE || request->operation == KER_SB_DUP ||
             request->operation == KER_SB_GETFL) expected_kind = 0;
         int status;
@@ -661,6 +756,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             object = lookup_cap(server, fds[0]);
             status = object ? 0 : -EBADF;
             if (!status && object->kind == KER_SOCKET_BROKER_REUSEPORT_GROUP &&
+                request->operation == KER_SB_DUP) return -EOPNOTSUPP;
+            if (!status && object->kind == KER_SOCKET_BROKER_MEMBER_CENSUS &&
                 request->operation == KER_SB_DUP) return -EOPNOTSUPP;
             uint32_t right = required_right(request->operation);
             if (!status && request->operation == KER_SB_DUP &&
@@ -723,13 +820,26 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (reuseport_filter(group->base_fd[0], args.index)) return -errno;
         *result = 0; return 0;
     }
+    case KER_SB_MEMBER_CENSUS_CREATE: {
+        if (input_length != sizeof(struct ker_sb_member_census_create)) return -EPROTO;
+        struct ker_sb_member_census_create args;
+        memcpy(&args, input, sizeof(args));
+        if (args.index > 1) return -EINVAL;
+        struct sb_object *group_object = lookup_cap(server, fds[0]);
+        if (!group_object) return -EBADF;
+        int capability = member_census_capability(server, group_object, args.index);
+        if (capability < 0) return -errno;
+        *passed_fd = capability; *result = 1; return 0;
+    }
     case KER_SB_DESCRIBE: {
         if (input_length) return -EPROTO;
         struct sb_object *object = lookup_cap(server, fds[0]);
         if (!object) return -EBADF;
         int flags = 0;
         if (object->kind != KER_SOCKET_BROKER_REUSEPORT_GROUP &&
-            object->kind != KER_SOCKET_BROKER_TCP_OBSERVER) {
+            object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS &&
+            object->kind != KER_SOCKET_BROKER_TCP_OBSERVER &&
+            object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS) {
             flags = fcntl(object->native_fd, F_GETFL);
             if (flags < 0) return -errno;
         }
@@ -742,8 +852,11 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct sb_object *object = lookup_cap(server, fds[0]);
         if (!object) return -EBADF;
         if (object->kind == KER_SOCKET_BROKER_REUSEPORT_GROUP) return -EOPNOTSUPP;
+        if (object->kind == KER_SOCKET_BROKER_MEMBER_CENSUS) return -EOPNOTSUPP;
 
         if (object->kind == KER_SOCKET_BROKER_TCP_OBSERVER) return -EOPNOTSUPP;
+
+        if (object->kind == KER_SOCKET_BROKER_MEMBER_CENSUS) return -EOPNOTSUPP;
 
         int native_fd = fcntl(object->native_fd, F_DUPFD_CLOEXEC, 0);
         if (native_fd < 0) return -errno;
@@ -1021,6 +1134,10 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         memcpy(output, &snapshot, sizeof(snapshot));
         *output_length = sizeof(snapshot); *result = 0; return 0;
     }
+    case KER_SB_MEMBER_CENSUS_SNAPSHOT:
+        /* The broker pump starts these in a dedicated LKL query task and
+         * sends the response only after a complete validated NLMSG_DONE. */
+        return -EINPROGRESS;
     default: return -EOPNOTSUPP;
     }
 }
@@ -1032,6 +1149,67 @@ static size_t expected_rights(uint16_t operation)
     return operation == KER_SB_EPOLL_CTL ? 2 : 1;
 }
 
+static int start_member_census_job(struct ker_socket_broker_server *server,
+    struct sb_client *client, const struct ker_sb_header *request, int census_cap)
+{
+    struct sb_object *object = lookup_cap(server, census_cap);
+    if (!object) return -EBADF;
+    if (object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS || object->native_fd >= 0 ||
+        object->group_slot >= 0) return -ENOTSOCK;
+    if ((object->rights & KER_SOCKET_BROKER_READ) != KER_SOCKET_BROKER_READ) return -EACCES;
+    if (!object->census_mark || !object->census_local_port ||
+        !object->census_listener_cookie) return -EPROTO;
+    if (client->census_job >= 0) return -EBUSY;
+    size_t slot = KER_SB_CENSUS_JOBS;
+    for (size_t i = 0; i < KER_SB_CENSUS_JOBS; ++i)
+        if (!server->census_jobs[i].live) { slot = i; break; }
+    if (slot == KER_SB_CENSUS_JOBS) return -EAGAIN;
+    struct sb_census_job *job = &server->census_jobs[slot];
+    struct ker_member_census_identity identity = {
+        .mark = object->census_mark, .local_port = object->census_local_port,
+        .listener_cookie = object->census_listener_cookie};
+    uint64_t ticket = 0;
+    int submitted = ker_member_census_query_submit(&identity, &ticket);
+    if (submitted) return submitted;
+    *job = (struct sb_census_job){.live = true,
+        .client_slot = (int)(client - server->clients), .client_fd = client->fd,
+        .request = *request, .ticket = ticket};
+    client->census_job = (int)slot;
+    return 0;
+}
+
+static void finish_member_census_jobs(struct ker_socket_broker_server *server)
+{
+    for (size_t i = 0; i < KER_SB_CENSUS_JOBS; ++i) {
+        struct sb_census_job *job = &server->census_jobs[i];
+        if (!job->live) continue;
+        struct ker_socket_member_census_snapshot snapshot = {0};
+        int query_status = 0;
+        int ready = ker_member_census_query_poll(job->ticket, &query_status, &snapshot);
+        if (!ready) continue;
+        if (ready < 0) {
+            if (job->client_slot >= 0 && job->client_slot < KER_SB_CLIENTS) {
+                struct sb_client *client = &server->clients[job->client_slot];
+                if (client->fd == job->client_fd && client->census_job == (int)i)
+                    close_client(server, client);
+            }
+            job->live = false;
+            continue;
+        }
+        if (job->client_slot >= 0 && job->client_slot < KER_SB_CLIENTS) {
+            struct sb_client *client = &server->clients[job->client_slot];
+            if (client->fd == job->client_fd && client->census_job == (int)i) {
+                client->census_job = -1;
+                const void *output = query_status ? NULL : &snapshot;
+                size_t output_length = query_status ? 0 : sizeof(snapshot);
+                if (send_reply(client, &job->request, query_status, output,
+                        output_length, -1)) close_client(server, client);
+            }
+        }
+        job->live = false;
+    }
+}
+
 static void service_client(struct ker_socket_broker_server *server, struct sb_client *client)
 {
     struct ker_sb_header request = {0};
@@ -1040,25 +1218,44 @@ static void service_client(struct ker_socket_broker_server *server, struct sb_cl
     int fds[KER_SB_MAX_RIGHTS] = {-1, -1};
     int receive_result = receive_request(client, &request, input, &input_length, fds, &fd_count);
     if (receive_result == 1) return;
-    if (receive_result) { close_client(client); return; }
+    if (receive_result) { close_client(server, client); return; }
     if (fd_count != expected_rights(request.operation)) {
         for (size_t i = 0; i < fd_count; ++i) (void)host_close(fds[i]);
-        close_client(client); return;
+        close_client(server, client); return;
+    }
+    if (client->census_job >= 0) {
+        for (size_t i = 0; i < fd_count; ++i) (void)host_close(fds[i]);
+        close_client(server, client);
+        return;
     }
     unsigned char output[KER_SOCKET_BROKER_IO_MAX] = {0};
     size_t output_length = 0;
     int passed_fd = -1;
     int64_t result = 0;
-    int dispatch = dispatch_request(server, &request, input, input_length, fds, fd_count,
-        output, &output_length, &passed_fd, &result);
+    int dispatch;
+    bool deferred = false;
+    if (request.operation == KER_SB_MEMBER_CENSUS_SNAPSHOT) {
+        struct sb_object *object = fd_count == 1 ? lookup_cap(server, fds[0]) : NULL;
+        uint32_t right = required_right(request.operation);
+        if (input_length) dispatch = -EPROTO;
+        else if (!object) dispatch = -EBADF;
+        else if (object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS) dispatch = -ENOTSOCK;
+        else if ((object->rights & right) != right) dispatch = -EACCES;
+        else dispatch = start_member_census_job(server, client, &request, fds[0]);
+        if (!dispatch) deferred = true;
+    } else {
+        dispatch = dispatch_request(server, &request, input, input_length, fds, fd_count,
+            output, &output_length, &passed_fd, &result);
+    }
     for (size_t i = 0; i < fd_count; ++i) (void)host_close(fds[i]);
+    if (deferred) return;
     if (dispatch) {
         if (passed_fd >= 0) (void)host_close(passed_fd);
         passed_fd = -1; output_length = 0; result = dispatch;
     }
     if (send_reply(client, &request, result, output, output_length, passed_fd)) {
         if (passed_fd >= 0) (void)host_close(passed_fd);
-        close_client(client); return;
+        close_client(server, client); return;
     }
     if (passed_fd >= 0) (void)host_close(passed_fd);
 }
@@ -1091,7 +1288,7 @@ static int accept_clients(struct ker_socket_broker_server *server)
             if (server->clients[i].fd < 0) { slot = i; break; }
         if (slot == KER_SB_CLIENTS) { (void)host_close(pidfd); (void)host_close(fd); continue; }
         server->clients[slot] = (struct sb_client){.fd = fd, .pidfd = pidfd,
-            .pid = credential.pid, .credential = credential};
+            .pid = credential.pid, .credential = credential, .census_job = -1};
     }
     return 0;
 }
@@ -1118,7 +1315,7 @@ static void reap_dead(struct ker_socket_broker_server *server)
         struct pollfd pfd[2] = {{.fd = client->fd, .events = POLLIN | POLLHUP | POLLERR},
             {.fd = client->pidfd, .events = POLLIN}};
         if (syscall(SYS_poll, pfd, 2, 0) > 0 &&
-            ((pfd[0].revents & (POLLHUP | POLLERR | POLLNVAL)) || pfd[1].revents)) close_client(client);
+            ((pfd[0].revents & (POLLHUP | POLLERR | POLLNVAL)) || pfd[1].revents)) close_client(server, client);
     }
 }
 
@@ -1132,12 +1329,16 @@ static int broker_pump(void *argument)
         if (client->fd < 0) continue;
         struct pollfd pfd = {.fd = client->fd, .events = POLLIN | POLLHUP | POLLERR};
         if (syscall(SYS_poll, &pfd, 1, 0) <= 0) continue;
-        if (pfd.revents & POLLIN) service_client(server, client);
-        else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) close_client(client);
+        if (pfd.revents & POLLIN) {
+            if (client->census_job >= 0) close_client(server, client);
+            else service_client(server, client);
+        }
+        else if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) close_client(server, client);
     }
     reap_dead(server);
+    finish_member_census_jobs(server);
     if (server->failure || (server->stop_when_empty && !object_count(server) && !client_count(server))) {
-        for (size_t i = 0; i < KER_SB_CLIENTS; ++i) close_client(&server->clients[i]);
+        for (size_t i = 0; i < KER_SB_CLIENTS; ++i) close_client(server, &server->clients[i]);
         for (size_t i = 0; i < KER_SB_OBJECTS; ++i) close_object(server, &server->objects[i]);
         ker_posix_stop_run();
     }
@@ -1154,27 +1355,44 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
     struct ker_socket_broker_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
     server->listener = -1;
+    int lease_status = ker_member_census_server_claim(&server->runtime_lease);
+    if (lease_status) {
+        free(server);
+        errno = -lease_status;
+        return NULL;
+    }
+    server->runtime_lease_live = true;
     memcpy(server->path, path, length + 1);
-    for (size_t i = 0; i < KER_SB_CLIENTS; ++i) server->clients[i] = (struct sb_client){.fd = -1, .pidfd = -1};
+    for (size_t i = 0; i < KER_SB_CLIENTS; ++i)
+        server->clients[i] = (struct sb_client){.fd = -1, .pidfd = -1, .census_job = -1};
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i) server->objects[i] = (struct sb_object){.capability_read_fd = -1, .native_fd = -1};
     struct stat existing;
-    if (!lstat(path, &existing)) { free(server); errno = EADDRINUSE; return NULL; }
-    if (errno != ENOENT) { int error = errno; free(server); errno = error; return NULL; }
+    if (!lstat(path, &existing)) {
+        release_runtime_lease(server); free(server); errno = EADDRINUSE; return NULL;
+    }
+    if (errno != ENOENT) {
+        int error = errno; release_runtime_lease(server); free(server); errno = error; return NULL;
+    }
     int listener = (int)syscall(SYS_socket, AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (listener < 0) { int error = errno; free(server); errno = error; return NULL; }
+    if (listener < 0) {
+        int error = errno; release_runtime_lease(server); free(server); errno = error; return NULL;
+    }
     int pass_credentials = 1;
     if (syscall(SYS_setsockopt, listener, SOL_SOCKET, SO_PASSCRED,
             &pass_credentials, sizeof(pass_credentials))) {
-        int error = errno; (void)host_close(listener); free(server); errno = error; return NULL;
+        int error = errno; (void)host_close(listener); release_runtime_lease(server);
+        free(server); errno = error; return NULL;
     }
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     memcpy(address.sun_path, path, length + 1);
     if (syscall(SYS_bind, listener, &address, sizeof(address))) {
-        int error = errno; (void)host_close(listener); free(server); errno = error; return NULL;
+        int error = errno; (void)host_close(listener); release_runtime_lease(server);
+        free(server); errno = error; return NULL;
     }
     struct stat identity;
     if (lstat(path, &identity)) {
-        int error = errno; (void)host_close(listener); free(server); errno = error; return NULL;
+        int error = errno; (void)host_close(listener); release_runtime_lease(server);
+        free(server); errno = error; return NULL;
     }
     server->path_dev = identity.st_dev;
     server->path_ino = identity.st_ino;
@@ -1183,7 +1401,8 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
         int error = errno;
         if (!lstat(path, &identity) && identity.st_dev == server->path_dev &&
             identity.st_ino == server->path_ino) (void)syscall(SYS_unlinkat, AT_FDCWD, path, 0);
-        (void)host_close(listener); free(server); errno = error; return NULL;
+        (void)host_close(listener); release_runtime_lease(server);
+        free(server); errno = error; return NULL;
     }
     server->listener = listener;
     return server;
@@ -1205,7 +1424,13 @@ int ker_socket_broker_server_run(struct ker_socket_broker_server *server, int st
 void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server)
 {
     if (!server) return;
-    for (size_t i = 0; i < KER_SB_CLIENTS; ++i) close_client(&server->clients[i]);
+    for (size_t i = 0; i < KER_SB_CLIENTS; ++i) close_client(server, &server->clients[i]);
+    for (size_t i = 0; i < KER_SB_CENSUS_JOBS; ++i) {
+        struct sb_census_job *job = &server->census_jobs[i];
+        if (!job->live) continue;
+        (void)ker_member_census_query_cancel(job->ticket);
+        job->live = false;
+    }
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i) close_object(server, &server->objects[i]);
     (void)host_close(server->listener);
     if (server->path_bound) {
@@ -1213,5 +1438,6 @@ void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server)
         if (!lstat(server->path, &identity) && identity.st_dev == server->path_dev &&
             identity.st_ino == server->path_ino) (void)syscall(SYS_unlinkat, AT_FDCWD, server->path, 0);
     }
+    release_runtime_lease(server);
     free(server);
 }

@@ -133,6 +133,257 @@ def receive_group_bootstrap(connection):
     return fds
 
 
+def census_command(process, command, timeout=10):
+    try:
+        process.stdin.write((command + '\n').encode())
+        process.stdin.flush()
+    except BrokenPipeError as error:
+        output, errors = process.communicate(timeout=2)
+        raise RuntimeError(f'member census client exited before command {command!r}: '
+            f'rc={process.returncode}; stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+    return read_line(process.stdout, timeout, process)
+
+
+def receive_metadata_fds(connection, expected_tag, expected_index=None, count=2):
+    data, ancillary, flags, _ = connection.recvmsg(8,
+        socket.CMSG_SPACE(array.array('i').itemsize * count), socket.MSG_CMSG_CLOEXEC)
+    fds = []
+    for level, kind, payload in ancillary:
+        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+            values = array.array('i')
+            values.frombytes(payload[:len(payload) - len(payload) % values.itemsize])
+            fds.extend(values.tolist())
+    valid = not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+    if expected_index is None:
+        valid = valid and data == expected_tag and len(fds) == count
+    else:
+        valid = valid and data == bytes((ord(expected_tag), expected_index)) and len(fds) == 1
+    if not valid:
+        for fd in fds:
+            os.close(fd)
+        raise RuntimeError(f'invalid metadata capability transfer: data={data!r} flags={flags} fds={fds!r}')
+    return fds
+
+
+def census_observation(args, rpc_path, census_fds):
+    result = subprocess.run([str(args.member_census_client), '--observe', str(rpc_path),
+        str(census_fds[0]), str(census_fds[1])], pass_fds=tuple(census_fds),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+    require(result.returncode == 0,
+        f'metadata census query failed: stdout={result.stdout!r}; stderr={result.stderr!r}')
+    lines = result.stdout.decode().splitlines()
+    require(len(lines) == 2, f'metadata census emitted malformed results: {lines!r}')
+    return [parse_census_line(line) for line in lines]
+
+
+def tcp_observation(args, rpc_path, observer_fd):
+    result = subprocess.run([str(args.member_census_client), '--tcp-observe', str(rpc_path),
+        str(observer_fd)], pass_fds=(observer_fd,), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=10)
+    require(result.returncode == 0,
+        f'TCP send-queue observer failed: stdout={result.stdout!r}; stderr={result.stderr!r}')
+    line = result.stdout.decode().strip()
+    require(line.startswith('TCP_OBSERVER '), f'malformed TCP observer result: {line!r}')
+    return {key: int(value, 0) for key, value in
+        (item.split('=', 1) for item in line.split()[1:])}
+
+
+def census_nft(*arguments):
+    result = subprocess.run(['nft', *arguments], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, timeout=10)
+    require(result.returncode == 0,
+        f'nft {arguments!r} failed: {result.stderr.strip()}')
+    return result.stdout
+
+
+def parse_census_line(line):
+    fields = {}
+    for item in line.split()[2:]:
+        if '=' in item:
+            name, value = item.split('=', 1)
+            fields[name] = int(value, 0)
+    return fields
+
+
+def receive_pressure_pattern(connection, size):
+    payload = recv_exact(connection, size)
+    expected = bytes((index * 17 + 3) & 0xff for index in range(size))
+    require(payload == expected,
+        'host did not receive the exact queued original-Linux send prefix after descriptor close')
+    require(connection.recv(1) == b'', 'original Linux send queue did not end in orderly FIN')
+
+
+def census_accept(process, member, slot):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        response = census_command(process, f'ACCEPT {member} {slot}', 5)
+        parts = response.split()
+        require(len(parts) == 5 and parts[:3] == ['ACCEPT', str(member), str(slot)],
+            f'bad original Linux accept result: {response!r}')
+        if int(parts[3]) >= 0:
+            return
+        require(int(parts[4]) in (errno.EAGAIN, errno.EWOULDBLOCK),
+            f'original Linux accept failed: {response!r}')
+        time.sleep(0.01)
+    raise RuntimeError(f'listener {member} did not accept its completed TCP handshake')
+
+
+def run_member_census_client(args, rpc_path, broker, capability):
+    supervisor, child_control = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    supervisor.settimeout(20)
+    client = subprocess.Popen([str(args.member_census_client), str(rpc_path), str(capability),
+        str(child_control.fileno())], pass_fds=(capability, child_control.fileno()),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    os.close(capability)
+    child_control.close()
+    census_fds = []
+    observer_fds = []
+    table = f'ker_census_{os.getpid()}'
+    table_created = False
+    rule_installed = False
+    peers = []
+    try:
+        census_fds = receive_metadata_fds(supervisor, b'C', count=2)
+        require(read_line(client.stdout, 20, client) == 'CENSUS_CLIENT_READY',
+            'member census client did not create member/listener metadata handles')
+        first = census_command(client, 'SNAP')
+        second = read_line(client.stdout, 10, client)
+        first_values = parse_census_line(first)
+        second_values = parse_census_line(second)
+        require(first_values.get('listen') == 1 and second_values.get('listen') == 1 and
+            first_values.get('cookie') and second_values.get('cookie') and
+            first_values['cookie'] != second_values['cookie'],
+            f'census did not isolate both original Linux listeners: {first!r} {second!r}')
+
+        census_nft('add', 'table', 'inet', table)
+        table_created = True
+        census_nft('add', 'chain', 'inet', table, 'output',
+            '{', 'type', 'filter', 'hook', 'output', 'priority', 'filter;', 'policy', 'accept;', '}')
+        census_nft('add', 'rule', 'inet', table, 'output',
+            'oifname', 'kerhost',
+            'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'dport', '4097',
+            'tcp', 'sport', '43123', 'tcp', 'flags', '&',
+            '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        rule_installed = True
+        pending = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        pending.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        pending.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        pending.bind(('198.18.0.1', 43123))
+        pending.setblocking(False)
+        result = pending.connect_ex(('198.18.0.2', 4097))
+        require(result in (0, errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK),
+            f'normal TCP connect failed before SYN_RECV observation: {result}')
+        peers.append(pending)
+        wait_syn = census_command(client, 'WAIT 3 1 7000', 10)
+        require(wait_syn == 'WAIT 3 FOUND',
+            f'original Linux did not report the ACK-blocked normal TCP SYN_RECV: {wait_syn!r}')
+        before_select = census_observation(args, rpc_path, census_fds)
+        require(before_select[0].get('synrecv') == 1 and before_select[1].get('synrecv') == 0,
+            f'ACK-blocked SYN_RECV was not isolated to member0: {before_select!r}')
+        rule_text = census_nft('list', 'chain', 'inet', table, 'output')
+        rule_counter = re.search(r'counter packets (\d+) bytes (\d+)', rule_text)
+        require(rule_counter is not None and int(rule_counter.group(1)) > 0,
+            f'ACK-drop rule did not count a real matching packet: {rule_text!r}')
+        selected = census_command(client, 'SELECT 1')
+        require(selected == 'SELECT 1 0 0', f'could not flip listener selection during SYN_RECV: {selected!r}')
+        after_select = census_observation(args, rpc_path, census_fds)
+        require(after_select[0].get('synrecv') == 1 and after_select[1].get('synrecv') == 0,
+            f'SYN_RECV did not remain on old member after selector flip: {after_select!r}')
+        census_nft('delete', 'table', 'inet', table)
+        table_created = False
+        rule_installed = False
+        _, writable, exceptional = select.select([], [pending], [pending], 8)
+        require(writable and not exceptional and pending.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0,
+            'ordinary TCP handshake did not complete after allowing its real ACK')
+        census_accept(client, 0, 0)
+        pending.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        fill0 = census_command(client, 'FILL 0', 30).split()
+        require(len(fill0) == 6 and fill0[0] == 'FILL' and fill0[1] == '0' and
+            int(fill0[2]) > 0 and int(fill0[3]) > 0 and int(fill0[4]) == 0 and int(fill0[5]) == 0,
+            f'original Linux member0 sender did not reach EAGAIN: {fill0!r}')
+        sent0 = int(fill0[2])
+        observer_fds.append(receive_metadata_fds(supervisor, 'O', 0, count=1)[0])
+        require(census_command(client, 'CLOSE 0') == 'CLOSE 0 0 0',
+            'could not close old accepted TCP descriptor after native send pressure')
+
+        fresh = socket.create_connection(('198.18.0.2', 4097), timeout=8)
+        fresh.settimeout(8); fresh.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096); peers.append(fresh)
+        census_accept(client, 1, 1)
+        fill1 = census_command(client, 'FILL 1', 30).split()
+        require(len(fill1) == 6 and fill1[0] == 'FILL' and fill1[1] == '1' and
+            int(fill1[2]) > 0 and int(fill1[3]) > 0 and int(fill1[4]) == 0 and int(fill1[5]) == 0,
+            f'original Linux member1 sender did not reach EAGAIN: {fill1!r}')
+        sent1 = int(fill1[2])
+        observer_fds.append(receive_metadata_fds(supervisor, 'O', 1, count=1)[0])
+        require(census_command(client, 'CLOSE 1') == 'CLOSE 1 0 0',
+            'could not close new accepted TCP descriptor after native send pressure')
+
+        require(census_command(client, 'CLOSE_GROUP') == 'GROUP_CLOSED',
+            'could not release group/member descriptors while metadata handles persist')
+        require(census_command(client, 'QUIT') == 'CENSUS_CLIENT_DONE',
+            'native TCP worker did not exit after closing every accepted/group/member descriptor')
+        output, errors = client.communicate(timeout=20)
+        require(client.returncode == 0,
+            f'member census client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+
+        # The worker has exited and all its native socket descriptors are
+        # closed. Supervisor-held metadata capabilities are the only remaining
+        # references while the host delays reads from both streams.
+        before_drain = census_observation(args, rpc_path, census_fds)
+        for index, values in enumerate(before_drain):
+            require(values.get('listen') == 0 and
+                (values.get('finwait1', 0) + values.get('closing', 0) + values.get('lastack', 0)) > 0,
+                f'metadata did not observe descriptorless closing TCP on member {index}: {values!r}')
+        for index, observer_fd in enumerate(observer_fds):
+            state = tcp_observation(args, rpc_path, observer_fd)
+            require(state.get('present') == 1 and state.get('send_queue', 0) > 0,
+                f'original-Linux accepted send queue was not observable before drain, member {index}: {state!r}')
+
+        pending.settimeout(10); fresh.settimeout(10)
+        receive_pressure_pattern(pending, sent0)
+        receive_pressure_pattern(fresh, sent1)
+        pending.close(); peers.remove(pending)
+        fresh.close(); peers.remove(fresh)
+
+        deadline = time.monotonic() + 8
+        timewait_started = time.monotonic()
+        after_drain = before_drain
+        while time.monotonic() < deadline:
+            after_drain = census_observation(args, rpc_path, census_fds)
+            if all(values.get('timewait', 0) >= 1 for values in after_drain): break
+            time.sleep(0.05)
+        require(all(values.get('timewait', 0) >= 1 and values.get('listen') == 0
+                for values in after_drain),
+            f'original Linux did not retain the closed-member TIME_WAIT rows: {after_drain!r}')
+        require(all(values.get('cookie') == initial.get('cookie')
+                for values, initial in zip(after_drain, [first_values, second_values])),
+            f'metadata listener identity changed after all listener handles closed: {after_drain!r}')
+        for fd in observer_fds + census_fds:
+            os.close(fd)
+        observer_fds.clear(); census_fds.clear()
+        supervisor.close()
+        print(f'MEMBER_CENSUS_SYN_RECV_FLIP_OK old-member=0 new-flow=member1 '
+            f'worker-exit-before-host-drain=true native_send_pressure={sent0},{sent1} '
+            f'observed_send_queue={fill0[3]},{fill1[3]} '
+            f'time_wait_after_drain_ms={int((time.monotonic() - timewait_started) * 1000)} '
+            'closing/TIME_WAIT/listen-close verified')
+    finally:
+        if table_created:
+            try:
+                census_nft('delete', 'table', 'inet', table)
+            except (OSError, subprocess.SubprocessError, RuntimeError):
+                pass
+        for peer in peers:
+            peer.close()
+        if client.poll() is None:
+            client.kill(); client.wait()
+        for fd in observer_fds + census_fds:
+            try: os.close(fd)
+            except OSError: pass
+        supervisor.close()
+
+
 def run_reuseport_group_client(args, rpc_path, broker, capability):
     client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
         str(args.inherited_group_probe), str(args.preload_library)],
@@ -140,6 +391,19 @@ def run_reuseport_group_client(args, rpc_path, broker, capability):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     os.close(capability)
     try:
+        require(read_line(client.stdout, 20, client) == 'CENSUS_LIFETIME_OK',
+            'member census did not verify live and post-close metadata snapshots')
+        census_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        census_probe.settimeout(2)
+        try:
+            census_probe.connect(('198.18.0.2', 4099))
+        except OSError as error:
+            require(error.errno == errno.ECONNREFUSED,
+                f'metadata-only capabilities retained a closed census listener: {error!r}')
+        else:
+            raise RuntimeError('metadata-only capabilities kept the census listener reachable')
+        finally:
+            census_probe.close()
         require(read_line(client.stdout, 20, client) == 'GROUP_READY_0',
             'client did not publish selector-zero group')
         first = socket.create_connection(('198.18.0.2', 4097), timeout=10)
@@ -1325,11 +1589,32 @@ def inside(args):
             rpc_path = root / 'rpc.sock'
             bootstrap_path = root / 'bootstrap.sock'
             stats_path = root / 'stats.json'
+            if args.member_census_runtime_test:
+                command = [sys.executable, str(args.launcher), '--library',
+                    str(args.member_census_test_library),
+                    '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
+                    '--port', 'net_tap0', '--eal', eal, '--stats', str(stats_path), '--',
+                    str(args.member_census_runtime_test)]
+                environment = os.environ | {
+                    'PYTHONDONTWRITEBYTECODE': '1',
+                    'RUNTIME_DIRECTORY': str(root),
+                }
+                result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
+                    timeout=90, text=True)
+                require(result.returncode == 0 and 'MEMBER_CENSUS_RUNTIME_OK' in result.stdout,
+                    f'member census runtime lifecycle failed: stdout={result.stdout!r}; '
+                    f'stderr={result.stderr!r}')
+                stats = json.loads(stats_path.read_text())
+                require(stats.get('outstanding') == 0,
+                    f'member census runtime did not finalize its LKL/DPDK worker: {stats!r}')
+                print(result.stdout.strip())
+                return 0
             with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
                 bootstrap.bind(str(bootstrap_path)); os.chmod(bootstrap_path, 0o600); bootstrap.listen(1)
                 if args.generation_worker:
                     selected_broker = args.generation_broker
-                elif args.reuseport_group_client:
+                elif args.reuseport_group_client or args.member_census_client:
                     selected_broker = args.group_broker
                 else:
                     selected_broker = args.broker
@@ -1357,9 +1642,11 @@ def inside(args):
                         f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
                 with connection:
                     cap_fds = receive_group_bootstrap(connection) if (
-                        args.reuseport_group_client or args.generation_worker) else receive_bootstrap(connection)
+                        args.reuseport_group_client or args.member_census_client or
+                        args.generation_worker) else receive_bootstrap(connection)
                     connection.settimeout(5)
-                    if not args.reuseport_group_client and not args.generation_worker:
+                    if not (args.reuseport_group_client or args.member_census_client or
+                            args.generation_worker):
                         send_host_socket_probe(connection)
                 broker_line = read_line(broker.stdout, 15, broker)
                 require(broker_line == 'BROKER_READY', f'broker failed to enter its request loop: {broker_line}')
@@ -1382,6 +1669,18 @@ def inside(args):
                         f'original-Linux reuseport traffic or cleanup evidence missing: {stats!r}')
                     print('PASS: broker-created two-member original-Linux reuseport cBPF group, selector transitions, '
                         'group/member lifetime and accepted-stream teardown')
+                    return 0
+                if args.member_census_client:
+                    run_member_census_client(args, rpc_path, broker, cap_fds.pop(0))
+                    cap_fds.clear()
+                    output, errors = broker.communicate(timeout=30)
+                    require(broker.returncode == 0 and b'BROKER_DONE' in output,
+                        f'member census broker did not release all metadata: '
+                        f'stdout={output!r}; stderr={errors.decode(errors="replace")}')
+                    stats = json.loads(stats_path.read_text())
+                    native = stats.get('native', {})
+                    require(stats.get('outstanding') == 0 and native.get('passive_opens', 0) >= 2,
+                        f'member census traffic or native cleanup evidence missing: {stats!r}')
                     return 0
                 if args.generation_worker:
                     group_fd = cap_fds.pop(0)
@@ -1597,6 +1896,9 @@ def main():
     parser.add_argument('--group-broker', type=Path)
     parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--inherited-group-probe', type=Path)
+    parser.add_argument('--member-census-client', type=Path)
+    parser.add_argument('--member-census-runtime-test', type=Path)
+    parser.add_argument('--member-census-test-library', type=Path)
     parser.add_argument('--generation-broker', type=Path)
     parser.add_argument('--generation-worker', type=Path)
     parser.add_argument('--generation-controller', type=Path)
@@ -1607,6 +1909,8 @@ def main():
         parser.error('TCP observer test requires the socket preload library for inherited capability validation')
     if args.generation_worker and not (args.generation_broker and args.generation_controller):
         parser.error('generation handoff test requires broker factory and SDK controller')
+    if args.member_census_runtime_test and not args.member_census_test_library:
+        parser.error('member census runtime test requires its noninstalled isolated runtime')
     if not args.inside:
         if args.nginx_binary:
             command = ['unshare', '-Un', '--keep-caps', f'--map-user={os.getuid()}',
@@ -1633,6 +1937,14 @@ def main():
             command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
         if args.inherited_group_probe:
             command += ['--inherited-group-probe', str(args.inherited_group_probe.resolve())]
+        if args.member_census_client:
+            command += ['--member-census-client', str(args.member_census_client.resolve())]
+        if args.member_census_runtime_test:
+            command += ['--member-census-runtime-test',
+                str(args.member_census_runtime_test.resolve())]
+        if args.member_census_test_library:
+            command += ['--member-census-test-library',
+                str(args.member_census_test_library.resolve())]
         if args.generation_broker:
             command += ['--generation-broker', str(args.generation_broker.resolve())]
         if args.generation_worker:

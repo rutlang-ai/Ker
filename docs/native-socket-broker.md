@@ -105,6 +105,12 @@ broker socket binds cannot claim a port reserved by a live group, and generic
 `SO_REUSEPORT` listeners cannot join one. Existing broker bindings prevent
 group creation on their port.
 
+The trusted broker caller must keep group membership exclusive: it must not
+create native listeners outside this API on the reserved tuple or create
+outside aliases that bind or mutate these listener descriptions. The broker
+guards its own generic operations and known bindings, but cannot prevent
+trusted code from bypassing it through direct original-Linux syscalls.
+
 The server owns both base listener descriptors while any group capability or
 managed member capability remains. Accepted sockets are independent and do
 not extend group lifetime. After the final group/member reference closes, the
@@ -112,6 +118,53 @@ broker closes both listeners; an already accepted connection remains governed
 by its separate original-Linux socket descriptor. This is a bounded broker
 API for two-member IPv4 TCP selection, not arbitrary cBPF support or general
 reuseport-group adoption.
+
+## Reuseport member census
+
+`ker_socket_client_member_census_create(group, index)` creates a read-only
+metadata capability for one managed member. Each managed listener receives a
+unique, nonzero `SO_MARK` before publication. The broker attaches a fixed local
+`INET_DIAG_BC_MARK_COND` filter and issues bounded original-Linux
+`SOCK_DIAG_BY_FAMILY` multipart dumps. Callers cannot supply a mark, bytecode,
+netlink request, pointer, or descriptor. Snapshot results contain raw TCP
+state counts, the immutable listener cookie, and no queue metrics or F-Stack
+syncache/syncounter aliases.
+
+The kind-5 census capability has no TCP descriptor, group reference, or member
+handle. It remains valid after all group/member handles close: snapshots may
+then report no `LISTEN` row while previously marked accepted, closing, or
+`TIME_WAIT` rows remain. Listener cookie metadata remains the original cookie;
+it does not keep the listener open. A dump publishes only after a valid
+terminal `NLMSG_DONE`; truncation, interrupted dumps, duplicate socket
+identities, malformed rows, and incomplete/error replies fail without
+publishing partial counts. Rows are sampled during a non-atomic interval, not
+a linearizable snapshot.
+
+One `ker-posix` runtime permits one live broker server instance. This keeps
+member marks and group-port reservations global to the original Linux runtime;
+the nonwrapping mark allocator is not reset when a broker is destroyed and a
+later one is created. The broker uses one bounded census worker and a global
+four-query queue. Submission requires the caller already to hold effective
+`CAP_NET_ADMIN`; the worker rechecks its own authority and never elevates or
+changes credentials. Generic public `AF_NETLINK` restrictions are unchanged.
+The worker checks cancellation and bounded byte, datagram, row, and elapsed
+time budgets between nonblocking kernel calls; no hard bound is claimed for a
+single original-Linux syscall.
+
+`native-socket-broker-member-census` uses a real host TCP connection and a
+temporary nftables rule inside its isolated network namespace to drop the
+connection's ordinary final ACK. It observes the original-Linux `SYN_RECV`
+row on member 0, changes selection to member 1, then removes the rule so the
+real handshake completes on the original member. A later connection reaches
+member 1. On both accepted streams, the native sender fills the real original-
+Linux send queue until `EAGAIN` while the host delays reads. A separate
+existing TCP observer capability records a positive send-queue value; it is
+not added to the census result. The native worker then closes its accepted,
+member, and group descriptors and exits before the host drains the queued
+bytes. The host verifies every byte and orderly FIN while retaining only
+metadata capabilities; the census observes closing/TIME_WAIT states and
+confirms both listener rows disappear. The test does not synthesize TCP
+packets or claim a full-table census outside this bounded two-member group.
 
 Adding these typed operations advances the private broker wire protocol to
 version 2; client and broker must be built from compatible API versions.

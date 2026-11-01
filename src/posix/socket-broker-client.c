@@ -241,7 +241,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_EPOLL_CREATE1 || operation == KER_SB_DUP ||
         operation == KER_SB_REUSEPORT_GROUP_CREATE ||
         operation == KER_SB_REUSEPORT_GROUP_MEMBER ||
-        operation == KER_SB_TCP_OBSERVER_CREATE;
+        operation == KER_SB_TCP_OBSERVER_CREATE ||
+        operation == KER_SB_MEMBER_CENSUS_CREATE;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -250,7 +251,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_GETFL || operation == KER_SB_SETFL ||
         operation == KER_SB_FIONBIO || operation == KER_SB_FIONREAD;
     requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT ||
-        operation == KER_SB_TCP_OBSERVER_SNAPSHOT;
+        operation == KER_SB_TCP_OBSERVER_SNAPSHOT ||
+        operation == KER_SB_MEMBER_CENSUS_SNAPSHOT;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -457,7 +459,8 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
     if (received != sizeof(output) || output.flags < 0 ||
         (output.kind != KER_SOCKET_BROKER_SOCKET && output.kind != KER_SOCKET_BROKER_EPOLL &&
          output.kind != KER_SOCKET_BROKER_REUSEPORT_GROUP &&
-         output.kind != KER_SOCKET_BROKER_TCP_OBSERVER))
+         output.kind != KER_SOCKET_BROKER_TCP_OBSERVER &&
+         output.kind != KER_SOCKET_BROKER_MEMBER_CENSUS))
         return fail(EPROTO);
     *kind = (enum ker_socket_broker_kind)output.kind;
     *status_flags = output.flags;
@@ -620,4 +623,37 @@ int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
     struct ker_sb_reuseport_group_member input = {.index = index};
     return socket_call(client, group_cap, KER_SB_REUSEPORT_GROUP_SELECT,
         &input, sizeof(input), NULL, 0, NULL, NULL);
+}
+
+int ker_socket_client_member_census_create(struct ker_socket_client *client,
+    int group_cap, unsigned index)
+{
+    if (index > 1) return fail(EINVAL);
+    struct ker_sb_member_census_create input = {.index = index};
+    int census_cap = -1;
+    if (socket_call(client, group_cap, KER_SB_MEMBER_CENSUS_CREATE, &input,
+            sizeof(input), NULL, 0, &census_cap, NULL) < 0) return -1;
+    return census_cap;
+}
+
+int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
+    int census_cap, struct ker_socket_member_census_snapshot *snapshot)
+{
+    if (!snapshot) return fail(EINVAL);
+    struct ker_sb_member_census_snapshot wire = {0};
+    int received = 0;
+    if (socket_call(client, census_cap, KER_SB_MEMBER_CENSUS_SNAPSHOT, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire) || !wire.listener_cookie || wire.state_counts[0])
+        return fail(EPROTO);
+    uint64_t total = 0;
+    for (size_t i = 0; i < KER_SOCKET_BROKER_TCP_STATES; ++i) {
+        if (UINT64_MAX - total < wire.state_counts[i]) return fail(EPROTO);
+        total += wire.state_counts[i];
+    }
+    if (total != wire.total) return fail(EPROTO);
+    snapshot->total = wire.total;
+    memcpy(snapshot->state_counts, wire.state_counts, sizeof(snapshot->state_counts));
+    snapshot->listener_cookie = wire.listener_cookie;
+    return 0;
 }

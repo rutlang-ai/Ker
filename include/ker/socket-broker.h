@@ -23,7 +23,28 @@ enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_SOCKET = 1,
     KER_SOCKET_BROKER_EPOLL = 2,
     KER_SOCKET_BROKER_REUSEPORT_GROUP = 3,
-    KER_SOCKET_BROKER_TCP_OBSERVER = 4
+    KER_SOCKET_BROKER_TCP_OBSERVER = 4,
+    KER_SOCKET_BROKER_MEMBER_CENSUS = 5
+};
+
+#define KER_SOCKET_BROKER_TCP_STATES 14
+
+/* state_counts uses the original Linux TCP state numbers as array indices;
+ * index zero is reserved and remains zero in a successful snapshot. */
+enum ker_socket_tcp_state {
+    KER_SOCKET_TCP_STATE_ESTABLISHED = 1,
+    KER_SOCKET_TCP_STATE_SYN_SENT = 2,
+    KER_SOCKET_TCP_STATE_SYN_RECV = 3,
+    KER_SOCKET_TCP_STATE_FIN_WAIT1 = 4,
+    KER_SOCKET_TCP_STATE_FIN_WAIT2 = 5,
+    KER_SOCKET_TCP_STATE_TIME_WAIT = 6,
+    KER_SOCKET_TCP_STATE_CLOSE = 7,
+    KER_SOCKET_TCP_STATE_CLOSE_WAIT = 8,
+    KER_SOCKET_TCP_STATE_LAST_ACK = 9,
+    KER_SOCKET_TCP_STATE_LISTEN = 10,
+    KER_SOCKET_TCP_STATE_CLOSING = 11,
+    KER_SOCKET_TCP_STATE_NEW_SYN_RECV = 12,
+    KER_SOCKET_TCP_STATE_BOUND_INACTIVE = 13
 };
 
 struct ker_socket_tcp_observer_snapshot {
@@ -32,6 +53,15 @@ struct ker_socket_tcp_observer_snapshot {
     uint32_t send_queue;
     uint8_t state;
     uint8_t present;
+};
+
+/* Raw original-Linux TCP state counts for one fixed reuseport member mark.
+ * This is a read-only observation over a sample interval, not an atomic
+ * snapshot. It deliberately contains no queue or application-level counters. */
+struct ker_socket_member_census_snapshot {
+    uint64_t total;
+    uint64_t state_counts[KER_SOCKET_BROKER_TCP_STATES];
+    uint64_t listener_cookie;
 };
 
 struct ker_socket_client {
@@ -150,6 +180,15 @@ int ker_socket_client_reuseport_group_member(struct ker_socket_client *client,
     int group_cap, unsigned index);
 int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
     int group_cap, unsigned index);
+
+/* A census capability copies immutable group-member metadata, but retains no
+ * group or TCP descriptor. Creation and reads require CONTROL and READ rights
+ * respectively. The broker requires preexisting NET_ADMIN authority for its
+ * private fixed INET_DIAG query; it never elevates credentials. */
+int ker_socket_client_member_census_create(struct ker_socket_client *client,
+    int group_cap, unsigned index);
+int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
+    int census_cap, struct ker_socket_member_census_snapshot *snapshot);
 
 #ifdef __cplusplus
 }

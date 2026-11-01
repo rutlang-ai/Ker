@@ -694,10 +694,11 @@ static int initialize_inherited_capabilities(void)
             if (ker_sb_preload_register_inherited_epoll_locked(fd)) {
                 int error = errno; ker_sb_preload_unlock(); errno = error; return -1;
             }
-        } else if (kind == KER_SOCKET_BROKER_REUSEPORT_GROUP && status_flags == 0) {
-            /* A group is an opaque control capability, not an application
-             * socket or composite epoll descriptor. Preserve it across exec
-             * without adding it to either preload descriptor map. */
+        } else if ((kind == KER_SOCKET_BROKER_REUSEPORT_GROUP ||
+                    kind == KER_SOCKET_BROKER_MEMBER_CENSUS) && status_flags == 0) {
+            /* Group and census descriptors are opaque metadata/control
+             * capabilities, not application sockets or composite epolls.
+             * Preserve them across exec without adding them to either map. */
             continue;
         } else if (kind == KER_SOCKET_BROKER_TCP_OBSERVER && status_flags == 0) {
             /* Observer capabilities carry metadata authority only. Preserve
