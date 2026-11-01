@@ -25,18 +25,20 @@ The positive caller uses original `net_tap` and kernel-vhost `virtio_user` PMDs,
 with the original KNI allocation, enqueue and bidirectional processing functions.
 Inside a private user/network namespace, AF_PACKET peers send exact 128-byte
 experimental Ethernet frames in both directions. The original statistics must
-record RX1/TX1 with no drops. Both named rings are empty, both real devices and
+record RX1/TX2 with no drops (the primary-slim path accounts the host packet
+when it enters the inject ring and again when the owner transmits it). Both named rings are empty, both real devices and
 host interfaces disappear, and all 2047 mbufs return before EAL cleanup. A
 separately installed executable repeats the same exchange without a source-tree
 runtime dependency. No TCP/UDP parser or protocol implementation is imported.
 
 The source suite's synthetic future-owner setup is replaced only for these two
 allocation assertions by the actual primary's supported statistics ownership.
-The four future-owner/nonowner cases stay blocked. This does not qualify
-`primary_slim`, graceful reload, secondary ownership, generation banks, FreeBSD
-KNI ABI, physical NIC behavior, rate-limit policy or a Ker protocol stack.
-Unsupported reload-owner helpers abort explicitly. The example exports no Ker
-public API and does not route Ker application traffic automatically.
+These allocation cases cover ordinary-primary named allocation only. A
+separate scoped adaptation covers owner activation and nonowner selection;
+short TX and full RX-ring cases remain blocked. Neither batch qualifies
+cross-process secondary ownership, generation banks, FreeBSD KNI ABI, physical
+NIC behavior, rate-limit policy or a Ker protocol stack. The example exports
+no KNI API and does not route Ker application traffic automatically.
 
 ## Build and reproduce
 
@@ -64,6 +66,6 @@ GCC and Clang builds use strict warnings. Two existing upstream diagnostics
 suppressed only around the unchanged excerpt; the caller admits only port0,
 whose ring name fits the original fixed bound.
 
-The catalog now records342 scenario-adapted,1 partial and20 blocked out of433.
-The remaining21 behavioral contracts remain unfinished; `--require-complete`
+The catalog now records344 scenario-adapted,1 partial and18 blocked out of433.
+The remaining19 behavioral contracts remain unfinished; `--require-complete`
 continues to fail.

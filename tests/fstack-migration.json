@@ -3965,9 +3965,30 @@
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_owner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged source helper and owner assertion run through a source-only EAL process-type wrapper, a real bound original reload state, and the pinned `ff_reload_kni_owner_match`. The actual primary caller binds selected generation1 while active0, confirms one frame queued in the original KNI ring with no TX, activates through original reload begin/complete semantics, then exchanges exact TAP/kernel-vhost virtio-user frames. Exact3-packet source TX, statistics, pool recovery, generation/proc mismatch rejection, installed caller and queued-preactivation gate-bypass control pass. This qualifies same-process caller ownership, not a genuine secondary, cross-master directory or full reload; see docs/fstack-kni-ownership.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-owner-original-import",
+          "provenance_case": "fstack-kni-future-owner"
+        },
+        {
+          "ctest": "fstack-kni-owner-source",
+          "provenance_case": "fstack-kni-future-owner"
+        },
+        {
+          "ctest": "native-fstack-kni-host-consumer",
+          "provenance_case": "fstack-kni-future-owner"
+        },
+        {
+          "ctest": "native-fstack-kni-host-installed-consumer",
+          "provenance_case": "fstack-kni-future-owner"
+        },
+        {
+          "ctest": "native-fstack-kni-owner-bypass-control",
+          "provenance_case": "fstack-kni-future-owner"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_future_kni_short_tx",
@@ -3986,9 +4007,30 @@
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_nonowner",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source primary_slim/graceful_reload future-owner, non-owner and named statistics/slot allocation contracts use F-Stack generation tables and shared inject rings. A single-worker Linux TAP, partial TX release and generic allocation success do not implement that ownership/ABI boundary. Retained under issue219.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "Complete unchanged source helper and nonowner assertion run through the source-only EAL process-type wrapper; the original secondary ring-lookup path leaves statistics null, skips hotplug, and resolves both shared KNI rings. The real caller also rejects proc_id2 while generation1 is active, then restores proc_id1 and ownership. This is a bounded same-process caller adaptation, not genuine secondary or cross-master ownership; see docs/fstack-kni-ownership.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-kni-owner-original-import",
+          "provenance_case": "fstack-kni-nonowner"
+        },
+        {
+          "ctest": "fstack-kni-owner-source",
+          "provenance_case": "fstack-kni-nonowner"
+        },
+        {
+          "ctest": "native-fstack-kni-host-consumer",
+          "provenance_case": "fstack-kni-nonowner"
+        },
+        {
+          "ctest": "native-fstack-kni-host-installed-consumer",
+          "provenance_case": "fstack-kni-nonowner"
+        },
+        {
+          "ctest": "native-fstack-kni-owner-bypass-control",
+          "provenance_case": "fstack-kni-nonowner"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_kni.c::test_p1_kni_stats_oom",

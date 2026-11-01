@@ -83,6 +83,11 @@ struct ker_reload_runtime {
     uint64_t heartbeat, heartbeat_stalls;
 };
 KER_API int ker_reload_runtime_view(struct ker_reload_runtime *view);
+/* Read the pinned F-Stack KNI owner predicate against the bound runtime.
+ * Returns1 for the selected KNI owner,0 for a bound non-owner, or negative
+ * errno when no state is bound. This observes ownership only; it does not
+ * register a device or authorize packet polling. */
+KER_API int ker_reload_kni_owner_matches(void);
 /* Controller primitives retain original begin/commit/abort behavior. Commit
  * and abort can change RX ownership: first quiesce every affected callback and
  * obtain the required park proof. They do not replace that proof or supervise

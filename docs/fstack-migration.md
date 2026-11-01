@@ -14,13 +14,13 @@
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| scenario-adapted | 342 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
+| scenario-adapted | 344 | 有现存 Ker CTest 和来源映射；是场景适配，不是 API/实现等价认证 |
 | partial | 1 | 有相关场景，但未满足完整源用例合同；remaining 字段记录缺口 |
-| blocked | 20 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
+| blocked | 18 | 没有完整可执行的 Ker 对应项；明确保留缺口，不计为通过 |
 | architecture-specific | 15 | FreeBSD callout、kqueue filter、mbuf 头、page-array 构建限制及线程上下文/返回值 ABI 断言，不计 Linux 测试通过 |
 | harness-only | 55 | 53 个 F-Stack reload 工具链自测及 2 个 CMocka smoke；不计 Ker 网络覆盖 |
 
-**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为342 scenario-adapted、1 partial、20 blocked，共21项行为未完成；架构专用与 harness-only 不计通过。
+**全部原始测试已纳入；全部行为迁移尚未完成。** 当前为344 scenario-adapted、1 partial、18 blocked，共19项行为未完成；架构专用与 harness-only 不计通过。
 完整逐项 ID、处置理由和 CTest 链接在 [机器清单](../tests/fstack-migration.json)。
 一个 Ker CTest 可以适配多项上游场景；Ker 来源条目中还包含大量
 Ker 自有扩展，不能把这些扩展数量当作已迁移上游用例数。
@@ -2360,4 +2360,26 @@ The complete original `test_it_a09_boot_state` function now qualifies attached/o
 
 ## KNI named allocation failures
 
-The complete original `test_p1_kni_stats_oom` and `test_p1_kni_slot_oom` assertions now qualify exact named table/slot failures in an ordinary EAL primary. Separate processes verify actual exit1 and SIGABRT. A working original TAP/kernel-vhost virtio-user caller and independently installed consumer exchange exact frames in both directions, record live statistics, remove both ports and restore pool2047. This allocation scope does not qualify the four remaining future-owner/nonowner cases or full reload. See [scope and reproduction](fstack-kni-allocation.md). Current catalog:342 scenario-adapted,1 partial,20 blocked;21 behavioral contracts remain unfinished.
+The complete original `test_p1_kni_stats_oom` and `test_p1_kni_slot_oom` assertions qualify exact named table/slot failures in an ordinary EAL primary. Separate processes verify actual exit1 and SIGABRT. The TAP/kernel-vhost caller also exercises the pending generation-1 owner gate and actual activation; those two source contracts are recorded below. Two KNI cases (short TX and full ring) remain. See [allocation scope](fstack-kni-allocation.md) and [owner scope](fstack-kni-ownership.md). Current catalog:344 scenario-adapted,1 partial,18 blocked;19 behavioral contracts remain unfinished.
+
+
+## KNI owner activation and nonowner
+
+The complete unchanged original `test_p1_future_kni_owner` and
+`test_p1_kni_nonowner` source bodies run with their retained `p1_cold_*`
+helpers. Their EAL-process-type wrapper is confined to that source fixture;
+the fixture binds a valid original reload block through `ker::reload`, and the
+owner predicate delegates to the pinned `ff_reload_kni_owner_match`. It checks
+future-owner stats allocation before activation, no hotplug, both named ring
+lookups, preactivation no-TX, original activation, exact three-packet TX and
+pool restoration. The actual primary TAP/virtio-user caller independently
+binds selected generation1 against active generation0, holds one exact packet
+in the original KNI ring, proves no host TX until the original reload
+begin/complete transition, then exchanges exact frames through original
+PMDs. The original primary-slim path counts the host-to-wire packet once when
+enqueued and once when transmitted, so `tx_packets=2` represents one wire
+frame. A generation mismatch and proc-id mismatch are denied and then restored;
+an owner-gate bypass control observes the queued packet escape early. The
+independently installed caller also passes. This is same-process caller
+integration, not EAL-secondary, cross-master directory, FreeBSD KNI ABI or
+complete graceful-reload qualification. See [scope and reproduction](fstack-kni-ownership.md).
