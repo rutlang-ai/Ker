@@ -2,16 +2,20 @@
 #include <ff_api.h>
 #include <ker/socket-broker.h>
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <stdint.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
@@ -20,6 +24,8 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t public_symbol_calls;
+static volatile sig_atomic_t descriptor_interposition_guard;
+static volatile sig_atomic_t descriptor_interposition_calls;
 intptr_t ngx_max_sockets = 1024;
 int is_fstack_fd(int fd) { return fd >= ngx_max_sockets; }
 
@@ -31,6 +37,105 @@ ssize_t write(int fd, const void *buffer, size_t length)
 { (void)fd; (void)buffer; (void)length; ++public_symbol_calls; errno = EDEADLK; return -1; }
 int accept(int fd, struct sockaddr *address, socklen_t *length)
 { (void)fd; (void)address; (void)length; ++public_symbol_calls; errno = EDEADLK; return -1; }
+
+static int (*next_dup_function(void))(int)
+{
+    static int (*function)(int);
+    if (!function) function = (int (*)(int))dlsym(RTLD_NEXT, "dup");
+    return function;
+}
+
+int dup(int old_fd)
+{
+    if (descriptor_interposition_guard) {
+        ++descriptor_interposition_calls;
+        errno = EDEADLK;
+        return -1;
+    }
+    int (*next)(int) = next_dup_function();
+    if (!next) { errno = ENOSYS; return -1; }
+    return next(old_fd);
+}
+
+static int fcntl_command_has_no_argument(int command)
+{
+    switch (command) {
+    case F_GETFD: case F_GETFL: case F_GETOWN:
+#ifdef F_GETLEASE
+    case F_GETLEASE:
+#endif
+#ifdef F_GETSIG
+    case F_GETSIG:
+#endif
+#ifdef F_GETPIPE_SZ
+    case F_GETPIPE_SZ:
+#endif
+#ifdef F_GET_SEALS
+    case F_GET_SEALS:
+#endif
+        return 1;
+    default: return 0;
+    }
+}
+
+static int fcntl_command_has_pointer_argument(int command)
+{
+    switch (command) {
+    case F_GETLK: case F_SETLK: case F_SETLKW:
+#ifdef F_OFD_GETLK
+    case F_OFD_GETLK: case F_OFD_SETLK: case F_OFD_SETLKW:
+#endif
+#ifdef F_GETOWN_EX
+    case F_GETOWN_EX: case F_SETOWN_EX:
+#endif
+#ifdef F_GET_RW_HINT
+    case F_GET_RW_HINT: case F_SET_RW_HINT:
+#endif
+#ifdef F_GET_FILE_RW_HINT
+    case F_GET_FILE_RW_HINT: case F_SET_FILE_RW_HINT:
+#endif
+        return 1;
+    default: return 0;
+    }
+}
+
+int fcntl(int fd, int command, ...)
+{
+    if (descriptor_interposition_guard) {
+        ++descriptor_interposition_calls;
+        errno = EDEADLK;
+        return -1;
+    }
+    static int (*next)(int, int, ...);
+    if (!next) next = (int (*)(int, int, ...))dlsym(RTLD_NEXT, "fcntl");
+    if (!next) { errno = ENOSYS; return -1; }
+    if (fcntl_command_has_no_argument(command)) return next(fd, command);
+    va_list arguments;
+    va_start(arguments, command);
+    int result;
+    if (fcntl_command_has_pointer_argument(command))
+        result = next(fd, command, va_arg(arguments, void *));
+    else
+        result = next(fd, command, va_arg(arguments, int));
+    va_end(arguments);
+    return result;
+}
+
+static int guarded_ff_dup(int fd)
+{
+    descriptor_interposition_guard = 1;
+    int result = ff_dup(fd);
+    descriptor_interposition_guard = 0;
+    return result;
+}
+
+static int guarded_ff_fcntl(int fd, int command, int argument)
+{
+    descriptor_interposition_guard = 1;
+    int result = ff_fcntl(fd, command, argument);
+    descriptor_interposition_guard = 0;
+    return result;
+}
 
 #define CHECK(expression) do { if (!(expression)) { \
     char line[256]; int size = snprintf(line, sizeof(line), "ff bridge:%d: %s errno=%d\n", \
@@ -70,6 +175,54 @@ static int write_exact(int fd, const unsigned char *bytes, size_t size)
     return 0;
 }
 
+static int descriptor_count_below(unsigned limit)
+{
+    int count = 0;
+    for (unsigned fd = 0; fd < limit; ++fd) {
+        if (syscall(SYS_fcntl, (int)fd, F_GETFD) >= 0) {
+            ++count;
+        } else if (errno != EBADF) {
+            return -1;
+        }
+    }
+    return count;
+}
+
+static int ff_dup_emfile_child(int fd, int expected_count)
+{
+    if (ff_socket_drain_count() != expected_count) return 81;
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) < 0 || limit.rlim_max < 128) return 82;
+    limit.rlim_cur = 128;
+    if (setrlimit(RLIMIT_NOFILE, &limit) < 0) return 83;
+
+    int fillers[128];
+    size_t count = 0;
+    for (; count < sizeof(fillers) / sizeof(fillers[0]); ++count) {
+        fillers[count] = (int)syscall(SYS_eventfd2, 0, EFD_CLOEXEC);
+        if (fillers[count] < 0) break;
+    }
+    if (count == 0 || count == sizeof(fillers) / sizeof(fillers[0]) || errno != EMFILE)
+        return 84;
+    int hole = fillers[count - 1];
+    if (syscall(SYS_close, hole) < 0) return 85;
+    int before = descriptor_count_below(128);
+    if (before != 127) return 86;
+
+    errno = 0;
+    if (guarded_ff_dup(fd) != -1 || errno != EMFILE || descriptor_interposition_calls)
+        return 87;
+    int after = descriptor_count_below(128);
+    if (after != before || syscall(SYS_fcntl, hole, F_GETFD) >= 0 || errno != EBADF)
+        return 88;
+    if (ff_socket_drain_count() != expected_count) return 89;
+    int enabled = 0;
+    socklen_t length = sizeof(enabled);
+    if (ff_getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, &length) < 0 ||
+            enabled != 1 || length != sizeof(enabled)) return 90;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--broker-death-census") == 0) {
@@ -104,9 +257,19 @@ int main(int argc, char **argv)
             setrlimit(RLIMIT_NOFILE, &descriptor_limit) == 0);
     }
     CHECK(ff_socket_drain_count() == 0);
+    int inherited_capability = atoi(argv[1]);
+    CHECK(syscall(SYS_fcntl, inherited_capability, F_GETFD) >= 0);
+    CHECK(guarded_ff_dup(inherited_capability) == -1 && errno == EOPNOTSUPP);
+    CHECK(syscall(SYS_fcntl, inherited_capability, F_GETFD) >= 0);
     CHECK(ff_socket(AF_INET, SOCK_DGRAM, 0) == -1 && errno == EOPNOTSUPP);
     int host_socket = (int)syscall(SYS_socket, AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     CHECK(host_socket >= 0);
+    CHECK(guarded_ff_dup(host_socket) == -1 && errno == EOPNOTSUPP);
+    CHECK(syscall(SYS_fcntl, host_socket, F_GETFD) >= 0);
+    int invalid_ff_fd = (int)syscall(SYS_fcntl, host_socket, F_DUPFD_CLOEXEC,
+        (int)ngx_max_sockets);
+    CHECK(invalid_ff_fd >= ngx_max_sockets && syscall(SYS_close, invalid_ff_fd) == 0);
+    CHECK(guarded_ff_dup(invalid_ff_fd) == -1 && errno == EBADF);
     CHECK(ff_socket_drain_count() == 0);
     int host_udp = (int)syscall(SYS_socket, AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     CHECK(host_udp >= 0 && ff_socket_drain_count() == 0);
@@ -126,6 +289,7 @@ int main(int argc, char **argv)
     CHECK(ff_close(ipv6_socket) == 0 && ff_socket_drain_count() == 0);
     int pipe_fds[2];
     CHECK(syscall(SYS_pipe2, pipe_fds, O_CLOEXEC) == 0);
+    CHECK(guarded_ff_dup(pipe_fds[0]) == -1 && errno == EOPNOTSUPP);
     CHECK(ff_write(pipe_fds[1], "x", 1) == -1 && errno == EOPNOTSUPP);
     CHECK(ff_close(pipe_fds[0]) == -1 && errno == EOPNOTSUPP);
 #ifdef FIOCLEX
@@ -189,8 +353,72 @@ int main(int argc, char **argv)
     }
     CHECK(connected);
     CHECK(peer_length == sizeof(address));
-    int alias = ff_fcntl(connection, F_DUPFD, (int)ngx_max_sockets);
-    CHECK(alias >= ngx_max_sockets);
+    CHECK(ff_socket_drain_count() == 1);
+    int hole = (int)syscall(SYS_dup, connection);
+    CHECK(hole >= 0 && syscall(SYS_close, hole) == 0);
+    int alias = guarded_ff_dup(connection);
+    CHECK(alias == hole);
+    CHECK(descriptor_interposition_calls == 0);
+    CHECK((ff_fcntl(alias, F_GETFD) & FD_CLOEXEC) == 0);
+    CHECK(ff_socket_drain_count() == 2);
+    uint64_t connection_cookie = 0, alias_cookie = 0;
+    socklen_t cookie_length = sizeof(connection_cookie);
+    CHECK(ff_getsockopt(connection, SOL_SOCKET, SO_COOKIE, &connection_cookie,
+        &cookie_length) == 0 && cookie_length == sizeof(connection_cookie));
+    cookie_length = sizeof(alias_cookie);
+    CHECK(ff_getsockopt(alias, SOL_SOCKET, SO_COOKIE, &alias_cookie,
+        &cookie_length) == 0 && cookie_length == sizeof(alias_cookie));
+    CHECK(connection_cookie != 0 && alias_cookie == connection_cookie);
+    int keepalive = 0;
+    socklen_t keepalive_length = sizeof(keepalive);
+    CHECK(ff_getsockopt(alias, SOL_SOCKET, SO_KEEPALIVE, &keepalive,
+        &keepalive_length) == 0 && keepalive == 1);
+    keepalive = 0;
+    CHECK(ff_setsockopt(alias, SOL_SOCKET, SO_KEEPALIVE, &keepalive,
+        sizeof(keepalive)) == 0);
+    keepalive = 1;
+    keepalive_length = sizeof(keepalive);
+    CHECK(ff_getsockopt(connection, SOL_SOCKET, SO_KEEPALIVE, &keepalive,
+        &keepalive_length) == 0 && keepalive == 0);
+    keepalive = 1;
+    CHECK(ff_setsockopt(connection, SOL_SOCKET, SO_KEEPALIVE, &keepalive,
+        sizeof(keepalive)) == 0);
+    keepalive_length = sizeof(keepalive);
+    CHECK(ff_getsockopt(alias, SOL_SOCKET, SO_KEEPALIVE, &keepalive,
+        &keepalive_length) == 0 && keepalive == 1);
+    int nonblocking = 1;
+    CHECK(ff_ioctl(alias, FIONBIO, &nonblocking) == 0);
+    CHECK(ff_fcntl(connection, F_GETFL) & O_NONBLOCK);
+    CHECK(ff_fcntl(alias, F_GETFL) & O_NONBLOCK);
+#ifdef F_DUPFD_CLOEXEC
+    int direct_cloexec = guarded_ff_fcntl(connection, F_DUPFD_CLOEXEC, 0);
+    CHECK(direct_cloexec >= 0 && (ff_fcntl(direct_cloexec, F_GETFD) & FD_CLOEXEC));
+    CHECK(ff_socket_drain_count() == 3);
+    CHECK(ff_close(direct_cloexec) == 0 && ff_socket_drain_count() == 2);
+    int relocated_cloexec = guarded_ff_fcntl(connection, F_DUPFD_CLOEXEC,
+        (int)ngx_max_sockets);
+    CHECK(relocated_cloexec >= ngx_max_sockets &&
+        (ff_fcntl(relocated_cloexec, F_GETFD) & FD_CLOEXEC));
+    CHECK(ff_socket_drain_count() == 3);
+    CHECK(ff_close(relocated_cloexec) == 0 && ff_socket_drain_count() == 2);
+#endif
+    int high_alias = guarded_ff_fcntl(connection, F_DUPFD, (int)ngx_max_sockets);
+    CHECK(high_alias >= ngx_max_sockets &&
+        !(guarded_ff_fcntl(high_alias, F_GETFD, 0) & FD_CLOEXEC));
+    CHECK(ff_socket_drain_count() == 3);
+    CHECK(ff_close(high_alias) == 0 && ff_socket_drain_count() == 2);
+    errno = 0;
+    CHECK(guarded_ff_fcntl(connection, F_DUPFD, -1) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK((rlim_t)descriptor_limit.rlim_cur <= INT_MAX &&
+        guarded_ff_fcntl(connection, F_DUPFD, (int)descriptor_limit.rlim_cur) == -1 &&
+        errno == EINVAL);
+    pid_t exhaustion_child = fork();
+    CHECK(exhaustion_child >= 0);
+    if (exhaustion_child == 0) _exit(ff_dup_emfile_child(connection, 2));
+    int exhaustion_status = 0;
+    CHECK(waitpid(exhaustion_child, &exhaustion_status, 0) == exhaustion_child &&
+        WIFEXITED(exhaustion_status) && WEXITSTATUS(exhaustion_status) == 0);
     CHECK(ff_socket_drain_count() == 2);
     int duplicate = dup(alias);
     CHECK(duplicate >= 0);
@@ -269,6 +497,7 @@ int main(int argc, char **argv)
     CHECK(ff_socket_drain_count() == 0);
     int composite_epoll = epoll_create1(EPOLL_CLOEXEC);
     CHECK(composite_epoll >= 0);
+    CHECK(guarded_ff_dup(composite_epoll) == -1 && errno == EOPNOTSUPP);
     CHECK(ff_close(composite_epoll) == -1 && errno == EOPNOTSUPP);
     CHECK(fcntl(composite_epoll, F_GETFD) >= 0);
     CHECK(close(composite_epoll) == 0);

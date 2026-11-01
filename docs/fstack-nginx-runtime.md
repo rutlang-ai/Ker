@@ -85,6 +85,19 @@ FF/POSIX UDP creation and raw, unregistered fd bypasses remain unsupported.
 Reload state remains unsupported. Flow-map, dispatcher, syncache, and
 send-pending hooks abort with an explicit diagnostic if reached.
 
+The bounded FF socket bridge implements `ff_dup` for registered application
+INET/INET6 sockets by dispatching to the namespaced preload `F_DUPFD` path. It
+preserves the shared original-Linux open-file description, returns a descriptor
+with `FD_CLOEXEC` clear, and retains the broker descriptor's lowest available
+host slot when it already satisfies the requested minimum. `F_DUPFD` relocates
+only when its minimum requires it; `F_DUPFD_CLOEXEC` keeps close-on-exec in both
+paths. This is scoped to the adapter's registered descriptors and Linux host
+descriptor table; it does not claim equivalence with F-Stack's process-wide
+descriptor numbering because Ker's host and private broker descriptors share
+that table. `ff_dup2` remains unsupported. The pinned
+[`ff_dup`](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c#L2167-L2189)
+delegates to `sys_dup` for F-Stack descriptors.
+
 The lifecycle profile uses one Nginx worker and `reuseport`. In this pinned
 FF-enabled caller, the unchanged worker startup opens every `reuseport` clone
 in each worker, while the event initializer registers only the clone assigned

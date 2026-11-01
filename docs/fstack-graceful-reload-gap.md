@@ -78,6 +78,16 @@ creation adapters still reject UDP. The graceful-off caller profile does not
 invoke the generation FSM; syncache, send-pending, flow-map and dispatcher hooks
 remain unsupported. The source inventory entry remains blocked.
 
+The bounded FF bridge now supports `ff_dup` for registered TCP descriptors via
+the existing namespaced `F_DUPFD` adapter. Tests cover lowest-free slot reuse,
+shared socket identity and status, close-on-exec behavior, independent alias
+closure, fork/exec inheritance, resource-exhaustion rollback and live TCP
+traffic through the duplicate. Host and private broker descriptors are rejected
+by the FF bridge. This leaf does not add `ff_dup2` or establish full F-Stack FD
+table equivalence; the broader drain, lifecycle and blocked source inventory
+status are unchanged. The pinned [`ff_dup` implementation](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c#L2167-L2189)
+routes F-Stack descriptors through `sys_dup`.
+
 The existing [`ker::reload` controller](fstack-reload-controller.md) consumes
 the unchanged nginx FSM policy, but its caller demonstrates raw-record queue
 drain, worker readiness and pidfd retirement. It explicitly does not establish

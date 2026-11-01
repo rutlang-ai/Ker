@@ -495,7 +495,7 @@ if(BUILD_TESTING)
     add_executable(ker-fstack-socket-bridge-client-test
         tests/posix/fstack-socket-bridge-client.c)
     target_link_libraries(ker-fstack-socket-bridge-client-test PRIVATE
-        ker::fstack-socket-bridge ker-socket-client)
+        ker::fstack-socket-bridge ker-socket-client ${CMAKE_DL_LIBS})
     target_compile_options(ker-fstack-socket-bridge-client-test PRIVATE -Wall -Wextra -Werror)
     target_link_options(ker-fstack-socket-bridge-client-test PRIVATE -Wl,--export-dynamic)
     if(KER_BUILD_FSTACK_NGINX_RUNTIME)
@@ -505,7 +505,7 @@ if(BUILD_TESTING)
             "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
             "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
         target_link_libraries(ker-fstack-nginx-runtime-socket-client-test PRIVATE
-            ker-fstack-nginx-runtime ker-socket-client)
+            ker-fstack-nginx-runtime ker-socket-client ${CMAKE_DL_LIBS})
         target_compile_options(ker-fstack-nginx-runtime-socket-client-test PRIVATE
             -Wall -Wextra -Werror)
         target_link_options(ker-fstack-nginx-runtime-socket-client-test PRIVATE
