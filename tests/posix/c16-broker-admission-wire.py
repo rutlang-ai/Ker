@@ -78,6 +78,19 @@ def wait_line(process, expected, timeout=30):
     raise RuntimeError(f'timed out waiting for {expected}; recent={recent!r}')
 
 
+def wait_process_stopped(process, timeout=5):
+    status_path = Path(f'/proc/{process.pid}/status')
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None or not status_path.exists():
+            raise RuntimeError(f'owner exited before stop barrier: pid={process.pid}')
+        for line in status_path.read_text().splitlines():
+            if line.startswith('State:') and line.split()[1] in ('T', 't'):
+                return
+        time.sleep(.005)
+    raise RuntimeError(f'owner did not stop at explicit-stop barrier: pid={process.pid}')
+
+
 def wait_line_selftest():
     child = subprocess.Popen([sys.executable, '-c',
         "import os; os.write(1, b'FIRST_MARKER complete\\nSECOND_MARKER complete\\n'); os._exit(0)"],
@@ -314,11 +327,13 @@ def inside(args):
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             if args.listener_close_only:
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
+            if args.explicit_stop_live_listener_only:
+                app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             app_argument = ('pump-failure' if args.pump_failure_only else
                 '1' if (args.finalized_timeout_only or args.cancel_unsent_timeout_only) else
                 'owner-probe' if (args.registration_negative_only or
                     args.malformed_owner_hello_only or args.owner_death_only or
-                    args.listener_close_only) else '16')
+                    args.listener_close_only or args.explicit_stop_live_listener_only) else '16')
             flow_ports = (1132, 1354, 2031, 3027, 3769, 4125, 5963, 6537,
                 6708, 7356, 7512, 8925, 9382, 9604, 10735, 10970, 11392)
             peers = []
@@ -427,6 +442,45 @@ def inside(args):
                     f'owner death leaked broker I/O state: {report!r}')
                 print('C16_OWNER_DEATH_CLEANUP_PASS endpoint_unlinked=1 '
                     'broker_progress=1 pool=0')
+                return 0
+            if args.explicit_stop_live_listener_only:
+                wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
+                app_ready = wait_line(app, 'C16_APP_READY', 10)
+                require('C16_APP_READY' in app_ready,
+                    'owner did not attach before explicit-stop listener check')
+                os.kill(app.pid, signal.SIGSTOP)
+                wait_process_stopped(app)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                pre_finalize = wait_line(broker,
+                    'C16_ADMISSION listener-ref-put-before-native-finalize', 10)
+                require(pre_finalize.strip() ==
+                    'C16_ADMISSION listener-ref-put-before-native-finalize',
+                    f'listener reference was not released before native finalization: {pre_finalize!r}')
+                bout, berr = broker.communicate(timeout=35)
+                require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
+                    f'broker failed while stopping with live admission listener: '
+                    f'rc={broker.returncode}; stdout={bout!r}; stderr={berr!r}')
+                broker_lines = getattr(broker, '_ker_recent_lines', []) + bout.splitlines()
+                require(broker_lines.count(
+                    'C16_ADMISSION listener-ref-put-before-native-finalize') == 1 and
+                    'C16_ADMISSION listener-ref-put-at-task-release' not in broker_lines,
+                    f'listener reference was omitted, duplicated, or released after finalization: '
+                    f'{broker_lines!r}')
+                os.kill(app.pid, signal.SIGUSR2)
+                os.kill(app.pid, signal.SIGCONT)
+                app_output, app_errors = app.communicate(timeout=8)
+                owner_stopped = ('C16_APP_DONE accepted=0 inserted=0' in app_output and
+                    (app.returncode == 0 or (app.returncode == -signal.SIGABRT and
+                        'ker owner pump callback status=-104' in app_errors)))
+                require(owner_stopped,
+                    f'stopped owner did not terminate after broker endpoint shutdown: '
+                    f'rc={app.returncode}; stdout={app_output!r}; stderr={app_errors!r}')
+                report = json.loads(stats.read_text())
+                require(report.get('outstanding') == 0,
+                    f'explicit-stop listener lifecycle leaked broker I/O state: {report!r}')
+                print('C16_EXPLICIT_STOP_LIVE_LISTENER_PASS '
+                    'listener_ref=put-before-finalize task_release=no-op pool=0')
                 return 0
             if args.listener_close_only:
                 marker = wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
@@ -779,6 +833,7 @@ def main():
     parser.add_argument('--malformed-owner-hello-only', action='store_true')
     parser.add_argument('--owner-death-only', action='store_true')
     parser.add_argument('--listener-close-only', action='store_true')
+    parser.add_argument('--explicit-stop-live-listener-only', action='store_true')
     parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
     parser.add_argument('--wait-line-selftest', action='store_true')
@@ -803,6 +858,8 @@ def main():
         command.append('--owner-death-only')
     if args.listener_close_only:
         command.append('--listener-close-only')
+    if args.explicit_stop_live_listener_only:
+        command.append('--explicit-stop-live-listener-only')
     if args.finalized_timeout_only:
         command.append('--finalized-timeout-only')
     if args.cancel_unsent_timeout_only:

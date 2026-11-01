@@ -44,6 +44,7 @@ struct ker_ff_admission_task {
 	bool joined;
 	bool stop_requested;
 	bool listener_closed;
+	bool listener_ref_released;
 	int listener_fd;
 	struct ker_fd *listener_entry;
 	uint64_t listener_cookie;
@@ -82,8 +83,17 @@ static void task_test_trace(const char *event,
 	if (length > 0 && (size_t)length < sizeof(line))
 		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
+
+static void task_test_lifecycle_trace(const char *event)
+{
+	char line[128];
+	int length = snprintf(line, sizeof(line), "C16_ADMISSION %s\n", event);
+	if (length > 0 && (size_t)length < sizeof(line))
+		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
+}
 #else
 #define task_test_trace(event, packet) ((void)0)
+#define task_test_lifecycle_trace(event) ((void)0)
 #endif
 
 static uint64_t task_now_ns(void)
@@ -643,7 +653,8 @@ int ker_posix_ff_admission_task_listener_closed(
 {
 	if (!task || listener_fd < 0) return -EINVAL;
 	pthread_mutex_lock(&task->lock);
-	if (!task->listener_entry || task->listener_fd != listener_fd) {
+	if (task->listener_fd != listener_fd ||
+	    (!task->listener_entry && !task->listener_ref_released)) {
 		pthread_mutex_unlock(&task->lock);
 		return -ESTALE;
 	}
@@ -692,7 +703,10 @@ int ker_posix_ff_admission_task_release(struct ker_ff_admission_task *task)
 	}
 	active_task = NULL;
 	pthread_mutex_unlock(&task_global_lock);
-	if (task->listener_entry) ker_fd_put(task->listener_entry);
+	if (task->listener_entry) {
+		task_test_lifecycle_trace("listener-ref-put-at-task-release");
+		ker_fd_put(task->listener_entry);
+	}
 	if (task->actor_pidfd >= 0) (void)syscall(SYS_close, task->actor_pidfd);
 	if (task->peer_fd >= 0) (void)syscall(SYS_close, task->peer_fd);
 	pthread_mutex_destroy(&task->lock);
@@ -702,6 +716,7 @@ int ker_posix_ff_admission_task_release(struct ker_ff_admission_task *task)
 
 void ker_ff_admission_task_runtime_shutdown(void)
 {
+	struct ker_fd *listener_entry = NULL;
 	pthread_mutex_lock(&task_global_lock);
 	struct ker_ff_admission_task *task = active_task;
 	if (task) {
@@ -714,5 +729,16 @@ void ker_ff_admission_task_runtime_shutdown(void)
 	if (task && task->thread_started && !task->joined) {
 		if (!pthread_join(task->thread, NULL)) task->joined = true;
 	}
+	if (task && task->joined) {
+		pthread_mutex_lock(&task->lock);
+		listener_entry = task->listener_entry;
+		task->listener_entry = NULL;
+		task->listener_ref_released = true;
+		pthread_mutex_unlock(&task->lock);
+	}
 	pthread_mutex_unlock(&task_global_lock);
+	if (listener_entry) {
+		ker_fd_put(listener_entry);
+		task_test_lifecycle_trace("listener-ref-put-before-native-finalize");
+	}
 }
