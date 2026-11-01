@@ -197,6 +197,322 @@ def census_nft(*arguments):
     return result.stdout
 
 
+def checksum16(data):
+    if len(data) & 1:
+        data += b'\0'
+    total = sum(struct.unpack('!%dH' % (len(data) // 2), data))
+    total = (total & 0xffff) + (total >> 16)
+    total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+
+def ipv4_tcp_frame(frame):
+    if len(frame) < 54 or frame[12:14] != b'\x08\x00':
+        return None
+    ip = frame[14:]
+    ihl = (ip[0] & 0x0f) * 4
+    if ip[0] >> 4 != 4 or ihl < 20 or ip[9] != socket.IPPROTO_TCP or len(ip) < ihl + 20:
+        return None
+    total = struct.unpack_from('!H', ip, 2)[0]
+    if total < ihl + 20 or total > len(ip):
+        return None
+    tcp = ip[ihl:total]
+    data_offset = (tcp[12] >> 4) * 4
+    if data_offset < 20 or len(tcp) < data_offset:
+        return None
+    return {
+        'eth_src': frame[6:12], 'eth_dst': frame[0:6],
+        'src': socket.inet_ntoa(ip[12:16]), 'dst': socket.inet_ntoa(ip[16:20]),
+        'sport': struct.unpack_from('!H', tcp, 0)[0],
+        'dport': struct.unpack_from('!H', tcp, 2)[0],
+        'seq': struct.unpack_from('!I', tcp, 4)[0],
+        'ack': struct.unpack_from('!I', tcp, 8)[0],
+        'flags': tcp[13], 'options': tcp[20:data_offset],
+        'payload': tcp[data_offset:],
+    }
+
+
+def tcp_timestamp(options):
+    index = 0
+    while index < len(options):
+        kind = options[index]
+        if kind == 0:
+            break
+        if kind == 1:
+            index += 1
+            continue
+        if index + 2 > len(options):
+            break
+        length = options[index + 1]
+        if length < 2 or index + length > len(options):
+            break
+        if kind == 8 and length == 10:
+            return struct.unpack_from('!II', options, index + 2)
+        index += length
+    return None
+
+
+def inject_tcp_ack(packet, template, ack_number, sack=None):
+    options = b''
+    timestamp = tcp_timestamp(template['options'])
+    if timestamp:
+        echo = tcp_timestamp(packet['options'])
+        options = b'\x01\x01\x08\x0a' + struct.pack('!II',
+            (timestamp[0] + 1) & 0xffffffff, echo[0] if echo else 0)
+    if sack:
+        if not options:
+            options = b'\x01\x01'
+        options += b'\x05\x0a' + struct.pack('!II', sack[0], sack[1])
+        options += b'\x01' * (-len(options) % 4)
+    tcp = bytearray(struct.pack('!HHIIBBHHH', template['sport'], template['dport'],
+        (template['seq'] + 1) & 0xffffffff, ack_number, ((20 + len(options)) // 4) << 4,
+        0x10, 65535, 0, 0) + options)
+    source = socket.inet_aton(template['src'])
+    destination = socket.inet_aton(template['dst'])
+    pseudo = source + destination + b'\0\x06' + struct.pack('!H', len(tcp))
+    struct.pack_into('!H', tcp, 16, checksum16(pseudo + tcp))
+    ip = bytearray(struct.pack('!BBHHHBBH4s4s', 0x45, 0, 20 + len(tcp),
+        0, 0x4000, 64, socket.IPPROTO_TCP, 0, source, destination))
+    struct.pack_into('!H', ip, 10, checksum16(ip))
+    return packet['eth_src'] + packet['eth_dst'] + b'\x08\x00' + ip + tcp
+
+
+def wait_payload_state(prefix, expected, process, timeout=12):
+    path = Path(str(prefix) + '.state')
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            value = path.read_text().strip()
+            if value.startswith(expected):
+                return value
+        if process.poll() is not None:
+            output, errors = process.communicate()
+            raise RuntimeError(f'payload runtime exited before {expected}: {process.returncode}; '
+                f'stdout={output!r}; stderr={errors!r}')
+        time.sleep(0.01)
+    raise RuntimeError(f'timed out waiting for payload runtime state {expected}')
+
+
+def tcp_sack_permitted(options):
+    index = 0
+    while index < len(options):
+        kind = options[index]
+        if kind == 0:
+            break
+        if kind == 1:
+            index += 1
+            continue
+        if index + 2 > len(options):
+            break
+        length = options[index + 1]
+        if length < 2 or index + length > len(options):
+            break
+        if kind == 4 and length == 2:
+            return True
+        index += length
+    return False
+
+
+def run_payload_snapshot_wire_probe(args, eal, root):
+    port = 43891
+    table = f'ker_payload_{os.getpid()}'
+    prefix = root / 'payload-control'
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sack_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    process = None
+    peer = None
+    sack_peer = None
+    table_created = False
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('198.18.0.1', port)); listener.listen(1); listener.settimeout(20)
+        sack_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sack_listener.bind(('198.18.0.1', port + 1)); sack_listener.listen(1)
+        sack_listener.settimeout(20)
+        capture.bind(('kerhost', 0)); capture.settimeout(0.25)
+        census_nft('add', 'table', 'inet', table); table_created = True
+        census_nft('add', 'chain', 'inet', table, 'output', '{', 'type', 'filter',
+            'hook', 'output', 'priority', 'filter;', 'policy', 'accept;', '}')
+        census_nft('add', 'rule', 'inet', table, 'output', 'oifname', 'kerhost',
+            'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'sport', str(port), 'tcp', 'flags', '&',
+            '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        census_nft('add', 'rule', 'inet', table, 'output', 'oifname', 'kerhost',
+            'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'sport', str(port + 1), 'tcp', 'flags', '&',
+            '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        command = [sys.executable, str(args.launcher), '--library',
+            str(args.member_census_test_library), '--io-worker', str(args.worker),
+            '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', eal,
+            '--stats', str(root / 'stats.json'), '--', str(args.member_census_runtime_test)]
+        environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1',
+            'RUNTIME_DIRECTORY': str(root), 'KER_C9_PAYLOAD_CONTROL': str(prefix),
+            'KER_C9_PAYLOAD_PORT': str(port), 'KER_C9_PAYLOAD_SACK_PORT': str(port + 1)}
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, text=True)
+        peer, _ = listener.accept()
+        peer.settimeout(2)
+        synack = None
+        data = None
+        fin = None
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and (synack is None or data is None or fin is None):
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = ipv4_tcp_frame(frame)
+            if not packet:
+                continue
+            if packet['src'] == '198.18.0.1' and packet['dst'] == '198.18.0.2' and \
+                    packet['sport'] == port and packet['flags'] & 0x12 == 0x12:
+                synack = packet
+            if packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                    packet['dport'] == port and len(packet['payload']) == 1200:
+                data = packet
+                if packet['flags'] & 0x01:
+                    fin = packet
+            if packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                    packet['dport'] == port and packet['flags'] & 0x01:
+                fin = packet
+        require(synack is not None and data is not None and fin is not None,
+            f'could not capture real TCP SYN-ACK/data/FIN: synack={synack} data={data} fin={fin}')
+        expected_payload = bytes((index * 17 + 3) & 0xff for index in range(1200))
+        require(data['payload'] == expected_payload,
+            'captured original-Linux TCP payload differs from the generated test bytes')
+        require(fin['seq'] == (data['seq'] + len(data['payload'])) & 0xffffffff,
+            f'captured FIN did not immediately follow the payload: data={data} fin={fin}')
+        require(wait_payload_state(prefix, 'READY', process).startswith('READY'),
+            'payload process did not close its last application descriptor')
+        rule = census_nft('list', 'chain', 'inet', table, 'output')
+        counter = re.search(r'counter packets (\d+) bytes (\d+)', rule)
+        require(counter is not None and int(counter.group(1)) > 0,
+            f'nft did not drop a real ACK-only packet: {rule!r}')
+        ack_socket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        ack_socket.bind(('kerhost', 0))
+        try:
+            partial = 137
+            ack_socket.send(inject_tcp_ack(data, synack,
+                (data['seq'] + partial) & 0xffffffff))
+            Path(str(prefix) + '.command').write_text('PARTIAL\n')
+            partial_state = wait_payload_state(prefix, 'PARTIAL', process)
+            partial_values = dict(item.split('=') for item in partial_state.split()[1:])
+            require(int(partial_values['bytes']) == 1200 - partial and
+                int(partial_values['sockets']) == 1,
+                f'partial ACK did not leave the exact queued suffix: {partial_state!r}')
+            ack_socket.send(inject_tcp_ack(data, synack, (data['seq'] + 1200) & 0xffffffff))
+            Path(str(prefix) + '.command').write_text('FULL\n')
+            full_state = wait_payload_state(prefix, 'FULL', process)
+            full_values = dict(item.split('=') for item in full_state.split()[1:])
+            require(int(full_values['bytes']) == 0 and int(full_values['sockets']) == 1,
+                f'full payload ACK did not leave only the queued FIN control byte: {full_state!r}')
+            ack_socket.send(inject_tcp_ack(data, synack, (data['seq'] + 1201) & 0xffffffff))
+            Path(str(prefix) + '.command').write_text('FINACK\n')
+        finally:
+            ack_socket.close()
+        sack_peer, _ = sack_listener.accept()
+        sack_peer.settimeout(2)
+        sack_synack = None
+        sack_segments = {}
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline and (sack_synack is None or
+                sum(len(item['payload']) for item in sack_segments.values()) < 1200 or
+                len(sack_segments) < 3):
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = ipv4_tcp_frame(frame)
+            if not packet:
+                continue
+            if packet['src'] == '198.18.0.1' and packet['dst'] == '198.18.0.2' and \
+                    packet['sport'] == port + 1 and packet['flags'] & 0x12 == 0x12:
+                sack_synack = packet
+            if packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                    packet['dport'] == port + 1 and packet['payload']:
+                sack_segments[packet['seq']] = packet
+        sack_base = sack_synack['ack'] if sack_synack else 0
+        segments = sorted(sack_segments.values(),
+            key=lambda item: (item['seq'] - sack_base) & 0xffffffff)
+        require(sack_synack is not None and len(segments) >= 3 and
+            sum(len(item['payload']) for item in segments) == 1200,
+            f'could not capture three MSS-bounded payload segments: synack={sack_synack} '
+            f'segments={[(p["seq"], len(p["payload"])) for p in segments]}')
+        require(tcp_sack_permitted(sack_synack['options']),
+            f'peer did not negotiate SACK: {sack_synack["options"]!r}')
+        require(segments[0]['seq'] == sack_base and all(
+            segments[index]['seq'] == (segments[index - 1]['seq'] +
+                len(segments[index - 1]['payload'])) & 0xffffffff
+            for index in range(1, len(segments))),
+            f'captured data sequence ranges are not contiguous: '
+            f'{[(p["seq"], len(p["payload"])) for p in segments]}')
+        expected_sack_payload = bytes((index * 29 + 11) & 0xff for index in range(1200))
+        observed_sack_payload = b''.join(packet['payload'] for packet in segments)
+        require(observed_sack_payload == expected_sack_payload,
+            'captured SACK-flow payload does not match the generated bytes')
+        sack_rule = census_nft('list', 'chain', 'inet', table, 'output')
+        sack_counters = re.findall(r'counter packets (\d+) bytes (\d+)', sack_rule)
+        require(len(sack_counters) == 2 and int(sack_counters[1][0]) > 0,
+            f'ACK suppression counter missing for SACK flow: {sack_rule!r}')
+        sack_ack = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        sack_ack.bind(('kerhost', 0))
+        try:
+            middle = segments[1]
+            sack_ack.send(inject_tcp_ack(middle, sack_synack, sack_base,
+                (middle['seq'], (middle['seq'] + len(middle['payload'])) & 0xffffffff)))
+            Path(str(prefix) + '.command').write_text('SACK\n')
+            sack_state = wait_payload_state(prefix, 'SACK bytes=', process)
+            sack_values = dict(item.split('=') for item in sack_state.split()[1:])
+            require(int(sack_values['bytes']) == 1200 and int(sack_values['sockets']) == 1 and
+                int(sack_values['sacked']) > 0,
+                f'SACK-only ACK was not processed without advancing queued payload: {sack_state!r}')
+            sack_ack.send(inject_tcp_ack(segments[-1], sack_synack,
+                (sack_base + 1200) & 0xffffffff))
+            Path(str(prefix) + '.command').write_text('SACK_FULL\n')
+            full_sack_state = wait_payload_state(prefix, 'SACK_FULL', process)
+            full_sack_values = dict(item.split('=') for item in full_sack_state.split()[1:])
+            require(int(full_sack_values['bytes']) == 0,
+                f'cumulative ACK after SACK left payload: {full_sack_state!r}')
+            sack_fin = None
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline and sack_fin is None:
+                try:
+                    frame, _ = capture.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                packet = ipv4_tcp_frame(frame)
+                if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                        packet['dport'] == port + 1 and packet['flags'] & 0x01:
+                    sack_fin = packet
+            require(sack_fin is not None and sack_fin['seq'] == (sack_base + 1200) & 0xffffffff,
+                f'SACK flow close did not emit its expected FIN: {sack_fin}')
+            sack_ack.send(inject_tcp_ack(segments[-1], sack_synack,
+                (sack_base + 1201) & 0xffffffff))
+            Path(str(prefix) + '.command').write_text('FINACK2\n')
+        finally:
+            sack_ack.close()
+        output, errors = process.communicate(timeout=20)
+        require(process.returncode == 0 and 'C9_PAYLOAD_PARTIAL_ACK_ORPHAN_OK' in output,
+            f'payload runtime failed: stdout={output!r}; stderr={errors!r}')
+        print(f'C9_PAYLOAD_WIRE_OK captured=1200 partial_ack=137 remaining=1063 '
+            f'full_ack=0 fin_seq={fin["seq"]} dropped_ack_packets={counter.group(1)} '
+            f'sack_segments={len(segments)} sack_drop_packets={sack_counters[1][0]} '
+            f'sack_only_bytes={sack_values["bytes"]} '
+            f'tcpi_sacked={sack_values["sacked"]} descriptorless=true')
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill(); process.wait()
+        if peer is not None:
+            peer.close()
+        if sack_peer is not None:
+            sack_peer.close()
+        if table_created:
+            try: census_nft('delete', 'table', 'inet', table)
+            except (OSError, subprocess.SubprocessError, RuntimeError): pass
+        capture.close(); listener.close(); sack_listener.close()
+
+
 def parse_census_line(line):
     fields = {}
     for item in line.split()[2:]:
@@ -300,8 +616,9 @@ def run_member_census_client(args, rpc_path, broker, capability):
         census_accept(client, 0, 0)
         pending.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
         fill0 = census_command(client, 'FILL 0', 30).split()
-        require(len(fill0) == 6 and fill0[0] == 'FILL' and fill0[1] == '0' and
-            int(fill0[2]) > 0 and int(fill0[3]) > 0 and int(fill0[4]) == 0 and int(fill0[5]) == 0,
+        require(len(fill0) == 8 and fill0[0] == 'FILL' and fill0[1] == '0' and
+            int(fill0[2]) > 0 and int(fill0[3]) > 0 and int(fill0[4]) == 0 and
+            int(fill0[5]) == 0 and int(fill0[6]) > 0 and int(fill0[7]) > 0,
             f'original Linux member0 sender did not reach EAGAIN: {fill0!r}')
         sent0 = int(fill0[2])
         observer_fds.append(receive_metadata_fds(supervisor, 'O', 0, count=1)[0])
@@ -312,8 +629,9 @@ def run_member_census_client(args, rpc_path, broker, capability):
         fresh.settimeout(8); fresh.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096); peers.append(fresh)
         census_accept(client, 1, 1)
         fill1 = census_command(client, 'FILL 1', 30).split()
-        require(len(fill1) == 6 and fill1[0] == 'FILL' and fill1[1] == '1' and
-            int(fill1[2]) > 0 and int(fill1[3]) > 0 and int(fill1[4]) == 0 and int(fill1[5]) == 0,
+        require(len(fill1) == 8 and fill1[0] == 'FILL' and fill1[1] == '1' and
+            int(fill1[2]) > 0 and int(fill1[3]) > 0 and int(fill1[4]) == 0 and
+            int(fill1[5]) == 0 and int(fill1[6]) > 0 and int(fill1[7]) > 0,
             f'original Linux member1 sender did not reach EAGAIN: {fill1!r}')
         sent1 = int(fill1[2])
         observer_fds.append(receive_metadata_fds(supervisor, 'O', 1, count=1)[0])
@@ -367,6 +685,7 @@ def run_member_census_client(args, rpc_path, broker, capability):
         print(f'MEMBER_CENSUS_SYN_RECV_FLIP_OK old-member=0 new-flow=member1 '
             f'worker-exit-before-host-drain=true native_send_pressure={sent0},{sent1} '
             f'observed_send_queue={fill0[3]},{fill1[3]} '
+            f'payload_snapshot={fill0[6]}:{fill0[7]},{fill1[6]}:{fill1[7]} '
             f'time_wait_after_drain_ms={int((time.monotonic() - timewait_started) * 1000)} '
             'closing/TIME_WAIT/listen-close verified')
     finally:
@@ -1636,25 +1955,10 @@ def inside(args):
             bootstrap_path = root / 'bootstrap.sock'
             stats_path = root / 'stats.json'
             if args.member_census_runtime_test:
-                command = [sys.executable, str(args.launcher), '--library',
-                    str(args.member_census_test_library),
-                    '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
-                    '--port', 'net_tap0', '--eal', eal, '--stats', str(stats_path), '--',
-                    str(args.member_census_runtime_test)]
-                environment = os.environ | {
-                    'PYTHONDONTWRITEBYTECODE': '1',
-                    'RUNTIME_DIRECTORY': str(root),
-                }
-                result = subprocess.run(command, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
-                    timeout=90, text=True)
-                require(result.returncode == 0 and 'MEMBER_CENSUS_RUNTIME_OK' in result.stdout,
-                    f'member census runtime lifecycle failed: stdout={result.stdout!r}; '
-                    f'stderr={result.stderr!r}')
+                run_payload_snapshot_wire_probe(args, eal, root)
                 stats = json.loads(stats_path.read_text())
                 require(stats.get('outstanding') == 0,
                     f'member census runtime did not finalize its LKL/DPDK worker: {stats!r}')
-                print(result.stdout.strip())
                 return 0
             with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as bootstrap:
                 bootstrap.bind(str(bootstrap_path)); os.chmod(bootstrap_path, 0o600); bootstrap.listen(1)

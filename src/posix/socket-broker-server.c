@@ -70,6 +70,7 @@ struct sb_client {
 #define KER_SB_CENSUS_JOBS 4
 struct sb_census_job {
     bool live;
+    bool payload;
     int client_slot;
     int client_fd;
     struct ker_sb_header request;
@@ -188,7 +189,8 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_REUSEPORT_GROUP_CREATE: case KER_SB_REUSEPORT_GROUP_MEMBER:
     case KER_SB_REUSEPORT_GROUP_SELECT: return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_MEMBER_CENSUS_CREATE: return KER_SOCKET_BROKER_CONTROL;
-    case KER_SB_MEMBER_CENSUS_SNAPSHOT: return KER_SOCKET_BROKER_READ;
+    case KER_SB_MEMBER_CENSUS_SNAPSHOT:
+    case KER_SB_MEMBER_PAYLOAD_SNAPSHOT: return KER_SOCKET_BROKER_READ;
     default: return 0;
     }
 }
@@ -1150,7 +1152,8 @@ static size_t expected_rights(uint16_t operation)
 }
 
 static int start_member_census_job(struct ker_socket_broker_server *server,
-    struct sb_client *client, const struct ker_sb_header *request, int census_cap)
+    struct sb_client *client, const struct ker_sb_header *request, int census_cap,
+    bool payload)
 {
     struct sb_object *object = lookup_cap(server, census_cap);
     if (!object) return -EBADF;
@@ -1169,9 +1172,10 @@ static int start_member_census_job(struct ker_socket_broker_server *server,
         .mark = object->census_mark, .local_port = object->census_local_port,
         .listener_cookie = object->census_listener_cookie};
     uint64_t ticket = 0;
-    int submitted = ker_member_census_query_submit(&identity, &ticket);
+    int submitted = payload ? ker_member_payload_query_submit(identity.mark, &ticket) :
+        ker_member_census_query_submit(&identity, &ticket);
     if (submitted) return submitted;
-    *job = (struct sb_census_job){.live = true,
+    *job = (struct sb_census_job){.live = true, .payload = payload,
         .client_slot = (int)(client - server->clients), .client_fd = client->fd,
         .request = *request, .ticket = ticket};
     client->census_job = (int)slot;
@@ -1184,8 +1188,11 @@ static void finish_member_census_jobs(struct ker_socket_broker_server *server)
         struct sb_census_job *job = &server->census_jobs[i];
         if (!job->live) continue;
         struct ker_socket_member_census_snapshot snapshot = {0};
+        struct ker_socket_member_payload_snapshot payload_snapshot = {0};
         int query_status = 0;
-        int ready = ker_member_census_query_poll(job->ticket, &query_status, &snapshot);
+        int ready = job->payload ?
+            ker_member_payload_query_poll(job->ticket, &query_status, &payload_snapshot) :
+            ker_member_census_query_poll(job->ticket, &query_status, &snapshot);
         if (!ready) continue;
         if (ready < 0) {
             if (job->client_slot >= 0 && job->client_slot < KER_SB_CLIENTS) {
@@ -1200,8 +1207,10 @@ static void finish_member_census_jobs(struct ker_socket_broker_server *server)
             struct sb_client *client = &server->clients[job->client_slot];
             if (client->fd == job->client_fd && client->census_job == (int)i) {
                 client->census_job = -1;
-                const void *output = query_status ? NULL : &snapshot;
-                size_t output_length = query_status ? 0 : sizeof(snapshot);
+                const void *output = query_status ? NULL :
+                    job->payload ? (const void *)&payload_snapshot : (const void *)&snapshot;
+                size_t output_length = query_status ? 0 : job->payload ?
+                    sizeof(payload_snapshot) : sizeof(snapshot);
                 if (send_reply(client, &job->request, query_status, output,
                         output_length, -1)) close_client(server, client);
             }
@@ -1234,14 +1243,16 @@ static void service_client(struct ker_socket_broker_server *server, struct sb_cl
     int64_t result = 0;
     int dispatch;
     bool deferred = false;
-    if (request.operation == KER_SB_MEMBER_CENSUS_SNAPSHOT) {
+    if (request.operation == KER_SB_MEMBER_CENSUS_SNAPSHOT ||
+        request.operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT) {
         struct sb_object *object = fd_count == 1 ? lookup_cap(server, fds[0]) : NULL;
         uint32_t right = required_right(request.operation);
         if (input_length) dispatch = -EPROTO;
         else if (!object) dispatch = -EBADF;
         else if (object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS) dispatch = -ENOTSOCK;
         else if ((object->rights & right) != right) dispatch = -EACCES;
-        else dispatch = start_member_census_job(server, client, &request, fds[0]);
+        else dispatch = start_member_census_job(server, client, &request, fds[0],
+            request.operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT);
         if (!dispatch) deferred = true;
     } else {
         dispatch = dispatch_request(server, &request, input, input_length, fds, fd_count,

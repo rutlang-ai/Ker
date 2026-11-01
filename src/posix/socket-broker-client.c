@@ -252,7 +252,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FIONBIO || operation == KER_SB_FIONREAD;
     requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT ||
         operation == KER_SB_TCP_OBSERVER_SNAPSHOT ||
-        operation == KER_SB_MEMBER_CENSUS_SNAPSHOT;
+        operation == KER_SB_MEMBER_CENSUS_SNAPSHOT ||
+        operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -655,5 +656,22 @@ int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
     snapshot->total = wire.total;
     memcpy(snapshot->state_counts, wire.state_counts, sizeof(snapshot->state_counts));
     snapshot->listener_cookie = wire.listener_cookie;
+    return 0;
+}
+
+int ker_socket_client_member_payload_snapshot(struct ker_socket_client *client,
+    int census_cap, struct ker_socket_member_payload_snapshot *snapshot)
+{
+    if (!snapshot) return fail(EINVAL);
+    struct ker_sb_member_payload_snapshot wire = {0};
+    int received = 0;
+    if (socket_call(client, census_cap, KER_SB_MEMBER_PAYLOAD_SNAPSHOT, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire) || wire.sampled_sockets > 4096 ||
+        (wire.payload_bytes && !wire.sampled_sockets)) return fail(EPROTO);
+    struct ker_socket_member_payload_snapshot completed = {
+        .payload_bytes = wire.payload_bytes,
+        .sampled_sockets = wire.sampled_sockets};
+    *snapshot = completed;
     return 0;
 }

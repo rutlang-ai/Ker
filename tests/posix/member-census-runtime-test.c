@@ -1,13 +1,16 @@
 #define _GNU_SOURCE
 #include "member-census-runtime.h"
+#include "tcp-payload-snapshot.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <linux/if.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -44,6 +47,153 @@ static void pause_briefly(void)
     while (nanosleep(&pause, NULL) && errno == EINTR) { }
 }
 
+static int payload_wire_command(const char *prefix, const char *expected)
+{
+    char command_path[512];
+    uint64_t start = monotonic_ns();
+    if (!start || snprintf(command_path, sizeof(command_path), "%s.command", prefix) >=
+            (int)sizeof(command_path)) return -EINVAL;
+    for (;;) {
+        FILE *file = fopen(command_path, "r");
+        if (file) {
+            char command[64] = {0};
+            int read_ok = fscanf(file, "%63s", command) == 1;
+            fclose(file);
+            if (read_ok && !strcmp(command, expected)) {
+                unlink(command_path);
+                return 0;
+            }
+        }
+        uint64_t now = monotonic_ns();
+        if (!now || now < start || now - start >= QUERY_DEADLINE_NS) return -ETIMEDOUT;
+        pause_briefly();
+    }
+}
+
+static int payload_wire_state(const char *prefix, const char *state,
+    const struct ker_socket_member_payload_snapshot *snapshot)
+{
+    char state_path[512];
+    if (snprintf(state_path, sizeof(state_path), "%s.state", prefix) >=
+            (int)sizeof(state_path)) return -EINVAL;
+    FILE *file = fopen(state_path, "w");
+    if (!file) return -errno;
+    int result = fprintf(file, "%s bytes=%llu sockets=%llu\n", state,
+        (unsigned long long)snapshot->payload_bytes,
+        (unsigned long long)snapshot->sampled_sockets) < 0 ? -EIO : 0;
+    if (fclose(file) && !result) result = -errno;
+    return result;
+}
+
+static int payload_wire_probe(uint32_t mark, const char *prefix, uint16_t port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (fd < 0) return -errno;
+    if (setsockopt(fd, SOL_SOCKET, SO_MARK, &mark, sizeof(mark))) {
+        int error = errno; close(fd); return -error;
+    }
+    struct sockaddr_in peer = {.sin_family = AF_INET, .sin_port = htons(port)};
+    peer.sin_addr.s_addr = htonl(UINT32_C(0xc6120001)); /* 198.18.0.1 */
+    if (connect(fd, (struct sockaddr *)&peer, sizeof(peer))) {
+        int error = errno; close(fd); return -error;
+    }
+    uint8_t payload[1200];
+    for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (uint8_t)(i * 17u + 3u);
+    size_t sent = 0;
+    while (sent < sizeof(payload)) {
+        ssize_t count = send(fd, payload + sent, sizeof(payload) - sent, 0);
+        if (count < 0) { int error = errno; close(fd); return -error; }
+        if (!count) { close(fd); return -EIO; }
+        sent += (size_t)count;
+    }
+    /* Drop the last application descriptor while the peer suppresses ACKs.
+     * The snapshot must find this original-Linux orphan by the authenticated
+     * member mark, not by a retained adapter descriptor. */
+    if (close(fd)) return -errno;
+    struct ker_socket_member_payload_snapshot snapshot = {0};
+    int result = payload_wire_state(prefix, "READY", &snapshot);
+    if (result) return result;
+    result = payload_wire_command(prefix, "PARTIAL");
+    if (result) return result;
+    result = ker_native_tcp_payload_snapshot_test_limit(mark, 4096, &snapshot);
+    if (result) return result;
+    result = payload_wire_state(prefix, "PARTIAL", &snapshot);
+    if (result) return result;
+    result = payload_wire_command(prefix, "FULL");
+    if (result) return result;
+    result = ker_native_tcp_payload_snapshot_test_limit(mark, 4096, &snapshot);
+    if (result) return result;
+    if (snapshot.payload_bytes != 0) return -EPROTO;
+    result = payload_wire_state(prefix, "FULL", &snapshot);
+    if (result) return result;
+    /* Keep FIN outstanding during the zero-payload sample. */
+    return payload_wire_command(prefix, "FINACK");
+}
+
+static int payload_wire_sack_probe(uint32_t mark, const char *prefix, uint16_t port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (fd < 0) return -errno;
+    int mss = 512;
+    if (setsockopt(fd, SOL_SOCKET, SO_MARK, &mark, sizeof(mark)) ||
+        setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss, sizeof(mss))) {
+        int error = errno; close(fd); return -error;
+    }
+    struct sockaddr_in peer = {.sin_family = AF_INET, .sin_port = htons(port)};
+    peer.sin_addr.s_addr = htonl(UINT32_C(0xc6120001));
+    if (connect(fd, (struct sockaddr *)&peer, sizeof(peer))) {
+        int error = errno; close(fd); return -error;
+    }
+    uint8_t payload[1200];
+    for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (uint8_t)(i * 29u + 11u);
+    size_t sent = 0;
+    while (sent < sizeof(payload)) {
+        ssize_t count = send(fd, payload + sent, sizeof(payload) - sent, 0);
+        if (count < 0) { int error = errno; close(fd); return -error; }
+        if (!count) { close(fd); return -EIO; }
+        sent += (size_t)count;
+    }
+    struct ker_socket_member_payload_snapshot snapshot = {0};
+    int result = payload_wire_state(prefix, "SACK_READY", &snapshot);
+    if (result) { close(fd); return result; }
+    result = payload_wire_command(prefix, "SACK");
+    if (result) { fprintf(stderr, "SACK command timeout\\n"); close(fd); return result; }
+    struct tcp_info info;
+    socklen_t info_length = sizeof(info);
+    memset(&info, 0, sizeof(info));
+    if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &info_length)) {
+        int error = errno; close(fd); return -error;
+    }
+    result = ker_native_tcp_payload_snapshot_test_limit(mark, 4096, &snapshot);
+    if (result) { close(fd); return result; }
+    if (info.tcpi_sacked == 0 || snapshot.payload_bytes != sizeof(payload) ||
+        snapshot.sampled_sockets != 1) {
+        close(fd);
+        return -EPROTO;
+    }
+    char state_path[512];
+    if (snprintf(state_path, sizeof(state_path), "%s.state", prefix) >=
+            (int)sizeof(state_path)) { close(fd); return -EINVAL; }
+    FILE *state = fopen(state_path, "w");
+    if (!state) { int error = errno; close(fd); return -error; }
+    result = fprintf(state, "SACK bytes=%llu sockets=%llu sacked=%u unacked=%u\n",
+        (unsigned long long)snapshot.payload_bytes,
+        (unsigned long long)snapshot.sampled_sockets, info.tcpi_sacked,
+        info.tcpi_unacked) < 0 ? -EIO : 0;
+    if (fclose(state) && !result) result = -errno;
+    if (result) { close(fd); return result; }
+    result = payload_wire_command(prefix, "SACK_FULL");
+    if (result) { fprintf(stderr, "SACK_FULL command timeout\\n"); close(fd); return result; }
+    result = ker_native_tcp_payload_snapshot_test_limit(mark, 4096, &snapshot);
+    if (result || snapshot.payload_bytes) { close(fd); return result ? result : -EPROTO; }
+    if (close(fd)) return -errno;
+    result = payload_wire_state(prefix, "SACK_FULL", &snapshot);
+    if (result) return result;
+    result = payload_wire_command(prefix, "FINACK2");
+    if (result) fprintf(stderr, "SACK FINACK2 command timeout\\n");
+    return result;
+}
+
 static int create_marked_listener(uint32_t mark, int *fd_out,
     struct ker_member_census_identity *identity)
 {
@@ -75,6 +225,82 @@ static int create_marked_listener(uint32_t mark, int *fd_out,
     return 0;
 }
 
+static int create_marked_connections(uint32_t mark, uint16_t port,
+    int *listener_out, int clients[2], int accepted[2])
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int listener = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (listener < 0) return -errno;
+    if (setsockopt(listener, SOL_SOCKET, SO_MARK, &mark, sizeof(mark)) ||
+        bind(listener, (struct sockaddr *)&address, sizeof(address)) ||
+        listen(listener, 8)) {
+        int error = errno; close(listener); return -error;
+    }
+    socklen_t length = sizeof(address);
+    if (getsockname(listener, (struct sockaddr *)&address, &length) ||
+        length != sizeof(address)) {
+        int error = errno ? errno : EPROTO; close(listener); return -error;
+    }
+    clients[0] = clients[1] = accepted[0] = accepted[1] = -1;
+    for (size_t i = 0; i < 2; ++i) {
+        clients[i] = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+        if (clients[i] < 0 || setsockopt(clients[i], SOL_SOCKET, SO_MARK,
+                &mark, sizeof(mark)) ||
+            connect(clients[i], (struct sockaddr *)&address, sizeof(address))) {
+            int error = errno;
+            for (size_t j = 0; j <= i; ++j) if (clients[j] >= 0) close(clients[j]);
+            close(listener);
+            return -error;
+        }
+        accepted[i] = accept(listener, NULL, NULL);
+        if (accepted[i] < 0) {
+            int error = errno;
+            for (size_t j = 0; j <= i; ++j) {
+                close(clients[j]);
+                if (accepted[j] >= 0) close(accepted[j]);
+            }
+            close(listener);
+            return -error;
+        }
+    }
+    *listener_out = listener;
+    return 0;
+}
+
+static int create_marked_ipv6_connections(uint32_t mark, int fds[3])
+{
+    fds[0] = socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    fds[1] = fds[2] = -1;
+    if (fds[0] < 0) return -errno;
+    if (setsockopt(fds[0], SOL_SOCKET, SO_MARK, &mark, sizeof(mark))) {
+        int error = errno; close(fds[0]); return -error;
+    }
+    struct sockaddr_in6 address = {.sin6_family = AF_INET6,
+        .sin6_addr = IN6ADDR_LOOPBACK_INIT};
+    if (bind(fds[0], (struct sockaddr *)&address, sizeof(address)) || listen(fds[0], 4)) {
+        int error = errno; close(fds[0]); return -error;
+    }
+    socklen_t length = sizeof(address);
+    if (getsockname(fds[0], (struct sockaddr *)&address, &length) ||
+        length != sizeof(address) || !address.sin6_port) {
+        int error = errno ? errno : EPROTO; close(fds[0]); return -error;
+    }
+    fds[1] = socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (fds[1] < 0 || setsockopt(fds[1], SOL_SOCKET, SO_MARK, &mark, sizeof(mark)) ||
+        connect(fds[1], (struct sockaddr *)&address, sizeof(address))) {
+        int error = errno;
+        if (fds[1] >= 0) close(fds[1]);
+        close(fds[0]);
+        return -error;
+    }
+    fds[2] = accept(fds[0], NULL, NULL);
+    if (fds[2] < 0) {
+        int error = errno; close(fds[1]); close(fds[0]); return -error;
+    }
+    return 0;
+}
+
 static bool snapshot_matches_listener(
     const struct ker_socket_member_census_snapshot *snapshot, uint64_t cookie)
 {
@@ -87,6 +313,40 @@ static bool snapshot_unchanged(const struct ker_socket_member_census_snapshot *a
     const struct ker_socket_member_census_snapshot *expected)
 {
     return memcmp(actual, expected, sizeof(*actual)) == 0;
+}
+
+static bool payload_snapshot_unchanged(
+    const struct ker_socket_member_payload_snapshot *actual,
+    const struct ker_socket_member_payload_snapshot *expected)
+{
+    return memcmp(actual, expected, sizeof(*actual)) == 0;
+}
+
+static int poll_payload_until_done(uint64_t ticket, uint64_t minimum_sockets,
+    uint64_t maximum_sockets, struct ker_socket_member_payload_snapshot *snapshot)
+{
+    uint64_t start = monotonic_ns();
+    if (!start) return -EIO;
+    for (;;) {
+        int status = 0x5a5a;
+        struct ker_socket_member_payload_snapshot sentinel;
+        memset(&sentinel, 0xa5, sizeof(sentinel));
+        const struct ker_socket_member_payload_snapshot before = sentinel;
+        int polled = ker_member_payload_query_poll(ticket, &status, &sentinel);
+        if (polled == 1) {
+            if (status) return status;
+            if (sentinel.sampled_sockets < minimum_sockets ||
+                sentinel.sampled_sockets > maximum_sockets) return -EPROTO;
+            *snapshot = sentinel;
+            return 0;
+        }
+        if (polled < 0) return polled;
+        if (status != 0x5a5a || !payload_snapshot_unchanged(&sentinel, &before))
+            return -EPROTO;
+        uint64_t now = monotonic_ns();
+        if (!now || now < start || now - start >= QUERY_DEADLINE_NS) return -ETIMEDOUT;
+        pause_briefly();
+    }
 }
 
 static int netlink_denial(int protocol, const void *request, size_t request_length)
@@ -168,6 +428,27 @@ static int restricted_submitter_guard(const struct ker_member_census_identity *i
     if (ker_member_census_diag_require_net_admin() != -EPERM) result = -EPROTO;
     if (!result && (ker_member_census_query_submit(identity, &ticket) != -EPERM ||
             ticket != UINT64_C(0xfeedface))) result = -EPROTO;
+    if (!result) {
+        int denied = ker_member_payload_query_submit(identity->mark, &ticket);
+        if (denied != -EPERM || ticket != UINT64_C(0xfeedface)) {
+            fprintf(stderr, "payload query authority: result=%d ticket=%llx\n",
+                denied, (unsigned long long)ticket);
+            result = -EPROTO;
+        }
+    }
+    if (!result) {
+        struct ker_socket_member_payload_snapshot sentinel = {
+            .payload_bytes = UINT64_C(0xfeedfacecafebeef),
+            .sampled_sockets = UINT64_C(0xdecafbadc001d00d)};
+        struct ker_socket_member_payload_snapshot before = sentinel;
+        int denied = ker_native_tcp_payload_snapshot_test_limit(identity->mark, 1, &sentinel);
+        if (denied != -EPERM || !payload_snapshot_unchanged(&sentinel, &before)) {
+            fprintf(stderr, "payload ioctl authority: result=%d bytes=%llx sockets=%llx\n",
+                denied, (unsigned long long)sentinel.payload_bytes,
+                (unsigned long long)sentinel.sampled_sockets);
+            result = -EPROTO;
+        }
+    }
     int restored = ker_member_census_test_restore_capabilities();
     return result ? result : restored;
 }
@@ -304,6 +585,71 @@ int main(void)
         uint64_t now = monotonic_ns();
         REQUIRE(now && now >= empty_start && now - empty_start < QUERY_DEADLINE_NS);
         pause_briefly();
+    }
+
+    int payload_listener = -1;
+    int payload_clients[2] = {-1, -1}, payload_accepted[2] = {-1, -1};
+    REQUIRE(create_marked_connections(identity.mark, 0, &payload_listener,
+        payload_clients, payload_accepted) == 0);
+    struct ker_socket_member_payload_snapshot payload = {0};
+    int payload_result = ker_native_tcp_payload_snapshot_test_limit(identity.mark,
+        4096, &payload);
+    if (payload_result || payload.sampled_sockets < 2 || payload.sampled_sockets > 4096)
+        fprintf(stderr, "payload positive sample result=%d bytes=%llu sockets=%llu\n",
+            payload_result, (unsigned long long)payload.payload_bytes,
+            (unsigned long long)payload.sampled_sockets);
+    REQUIRE(payload_result == 0 && payload.sampled_sockets >= 2 &&
+        payload.sampled_sockets <= 4096);
+    struct ker_socket_member_payload_snapshot unchanged = {
+        .payload_bytes = UINT64_C(0xfeedfacecafebeef),
+        .sampled_sockets = UINT64_C(0xdecafbadc001d00d)};
+    struct ker_socket_member_payload_snapshot before = unchanged;
+    REQUIRE(ker_native_tcp_payload_snapshot_test_limit(identity.mark, 1,
+        &unchanged) == -EOVERFLOW && payload_snapshot_unchanged(&unchanged, &before));
+
+    uint64_t payload_ticket = 0;
+    REQUIRE(ker_member_payload_query_submit(identity.mark, &payload_ticket) == 0 &&
+        payload_ticket != 0);
+    REQUIRE(poll_payload_until_done(payload_ticket, 2, 4096, &payload) == 0);
+    for (size_t i = 0; i < 2; ++i) {
+        REQUIRE(close(payload_clients[i]) == 0);
+        REQUIRE(close(payload_accepted[i]) == 0);
+    }
+    REQUIRE(close(payload_listener) == 0);
+    payload_ticket = 0;
+    REQUIRE(ker_member_payload_query_submit(identity.mark, &payload_ticket) == 0 &&
+        payload_ticket != 0);
+    REQUIRE(poll_payload_until_done(payload_ticket, 0, 0, &payload) == 0 &&
+        payload.payload_bytes == 0 && payload.sampled_sockets == 0);
+
+    int ipv6_fds[3] = {-1, -1, -1};
+    REQUIRE(create_marked_ipv6_connections(identity.mark, ipv6_fds) == 0);
+    payload_result = ker_native_tcp_payload_snapshot_test_limit(identity.mark, 4096, &payload);
+    REQUIRE(payload_result == 0 && payload.sampled_sockets == 2 && payload.payload_bytes == 0);
+    for (size_t i = 0; i < 3; ++i) REQUIRE(close(ipv6_fds[i]) == 0);
+    payload_ticket = 0;
+    REQUIRE(ker_member_payload_query_submit(identity.mark, &payload_ticket) == 0 &&
+        payload_ticket != 0);
+    REQUIRE(poll_payload_until_done(payload_ticket, 0, 0, &payload) == 0 &&
+        payload.payload_bytes == 0 && payload.sampled_sockets == 0);
+
+    const char *wire_prefix = getenv("KER_C9_PAYLOAD_CONTROL");
+    if (wire_prefix) {
+        const char *port_text = getenv("KER_C9_PAYLOAD_PORT");
+        const char *sack_port_text = getenv("KER_C9_PAYLOAD_SACK_PORT");
+        char *end = NULL;
+        unsigned long port = port_text ? strtoul(port_text, &end, 10) : 0;
+        REQUIRE(port_text && end && *end == '\0' && port > 0 && port <= UINT16_MAX);
+        int wire_result = payload_wire_probe(identity.mark, wire_prefix, (uint16_t)port);
+        REQUIRE(wire_result == 0);
+        end = NULL;
+        unsigned long sack_port = sack_port_text ? strtoul(sack_port_text, &end, 10) : 0;
+        REQUIRE(sack_port_text && end && *end == '\0' && sack_port > 0 &&
+            sack_port <= UINT16_MAX);
+        wire_result = payload_wire_sack_probe(identity.mark, wire_prefix, (uint16_t)sack_port);
+        if (wire_result) fprintf(stderr, "SACK payload probe failed: %d\n", wire_result);
+        REQUIRE(wire_result == 0);
+        printf("C9_PAYLOAD_PARTIAL_ACK_ORPHAN_OK\n");
     }
 
     /* Leave work owned by the runtime for ker-posix finalization to cancel and join. */
