@@ -278,8 +278,12 @@ def runner_script_path():
 
 
 def active_consumer_reap_oracle_checks(native, runner):
-    committed = dict(generation=0, queue=0, object_index=1, pool_tag=7,
-        tx_lease_id=101, packet_pointer='0x1000')
+    captured_u2 = bytes.fromhex(
+        '024b45520001024b455200020800450000366c7b400040114214c6120002c6120001'
+        'afc8afc9002214154b45522d4130392d48414e444f46462d554450207365713d320a')
+    committed = dict(port=0, queue=0, generation=0, object_index=1, pool_tag=7,
+        tx_lease_id=101, packet_pointer='0x1000', length=len(captured_u2),
+        frame_hex=captured_u2.hex())
     no_trailing = runner.active_consumer_deferred_counts(committed, [], [], '')
     require(no_trailing == (0, 1), 'single held U2 did not derive the exact 0/1 baseline')
     mld = dict(port=0, queue=0, generation=0, object_index=2, pool_tag=7,
@@ -288,6 +292,24 @@ def active_consumer_reap_oracle_checks(native, runner):
     output = 'KER_SESSION_FRAME_COMMITTED ' + json.dumps(mld) + '\n'
     with_trailing = runner.active_consumer_deferred_counts(committed, [], [], output)
     require(with_trailing == (1, 2), 'post-dequeue committed MLD did not derive the exact 1/2 baseline')
+    trailing_commits = runner.active_consumer_trailing_commits(output)
+    trailing_drain = dict(object_index=mld['object_index'], lease_id=mld['tx_lease_id'],
+        pool_tag=mld['pool_tag'], packet_pointer=mld['packet_pointer'],
+        length=mld['length'], frame_hex=mld['frame_hex'])
+    final_u2_drain = dict(sequence=0, object_index=committed['object_index'],
+        pool_tag=committed['pool_tag'], packet_pointer=committed['packet_pointer'],
+        length=len(captured_u2), frame_hex=captured_u2.hex(), tx_before=1, tx_resume=1,
+        tx_after=0, pool_in_use_before=1, pool_in_use_resume=2,
+        pool_in_use_after=0, unrelated_count=1)
+    require(runner.validate_active_consumer_frame_drain(final_u2_drain, committed,
+        trailing_commits, [trailing_drain], b'KER-A09-HANDOFF-UDP seq=2\n', 1) is final_u2_drain,
+        'exact trailing MLD release was not included in final U2 ring/pool conservation')
+    require(not runner.active_consumer_deferred_counts(committed, [], [],
+        'KER_SESSION_FRAME_COMMITTED {broken json}\n'),
+        'malformed trailing MLD commit escaped the deferred identity oracle')
+    require(runner.active_consumer_deferred_counts(committed, [], [],
+        output + output) is None,
+        'duplicate trailing MLD lease identity escaped the deferred identity oracle')
     prior = dict(mld, object_index=3, tx_lease_id=103, packet_pointer='0x3000')
     prior_drain = dict(object_index=3, lease_id=103, pool_tag=7, packet_pointer='0x3000')
     require(runner.active_consumer_deferred_counts(committed, [prior], [prior_drain], '') == (0, 1),
