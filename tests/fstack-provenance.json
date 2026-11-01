@@ -4639,6 +4639,54 @@
         "fstack-rss-adjust-caller"
       ],
       "adaptation": "The unchanged complete source range assertions execute in BSS/unready state. A separate ready-context fixture explicitly sets thash_adjust=1 and multiple queues, verifies the v6 context is ready, then checks inverted and sub-RETA ranges decline with output sentinel unchanged. Real caller follows with a valid tuple sent through the original software predicate and net_ring. See docs/fstack-rss-adjust-guards.md."
+    },
+    "fstack-rss-adjust-sport-recheck-off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_recheck_off"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The complete unchanged100-iteration IPv4 source body and RD_RECHECK_N=100 are byte-audited and executed in BSS/unready state; it asserts zero adjustment predicate calls. A test-only library maps only the original adjustment helper call site to unchanged source counting wrappers. With real primary v4/v6 contexts ready and thash_adjust=1, ready controls observe recheck-off zero calls and recheck-on positive calls at the actual helper boundary. Every accepted candidate is independently hashed with the published key/RETA and verified by the original predicate. The real caller exercises both flags over net_ring records. No performance, Linux allocator, or hardware RSS equivalence is claimed; see docs/fstack-rss-adjust-recheck.md."
+    },
+    "fstack-rss-adjust-sport-recheck-on": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport_recheck_on"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The complete unchanged100-iteration IPv4 source body and RD_RECHECK_N=100 are byte-audited and executed in BSS/unready state; the loop asserts zero calls and its retained direct predicate check proves the original wrapper. A test-only library maps only the original adjustment helper call site to unchanged source counting wrappers. Real-ready controls observe positive helper call counts when recheck is enabled, and independently verify each accepted candidate against the published key/RETA and original predicate. The real caller exercises both flags over net_ring records. No performance, Linux allocator, or hardware RSS equivalence is claimed; see docs/fstack-rss-adjust-recheck.md."
+    },
+    "fstack-rss-adjust-sport6-recheck-off": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_recheck_off"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The complete unchanged100-iteration IPv6 source body and RD_RECHECK_N=100 are byte-audited and executed in BSS/unready state; it asserts zero adjustment predicate calls. A test-only library maps only the original adjustment helper call site to unchanged source counting wrappers. With real primary v4/v6 contexts ready and thash_adjust=1, ready controls observe recheck-off zero calls and recheck-on positive calls at the actual helper boundary. Every accepted candidate is independently hashed with the published key/RETA and verified by the original predicate. The real caller exercises both flags over net_ring records. No performance, Linux allocator, or hardware RSS equivalence is claimed; see docs/fstack-rss-adjust-recheck.md."
+    },
+    "fstack-rss-adjust-sport6-recheck-on": {
+      "source_file": "tests/unit/test_ff_dpdk_if.c",
+      "source_case": [
+        "test_ff_rss_adjust_sport6_recheck_on"
+      ],
+      "ker_ctests": [
+        "fstack-rss-adjust-original-import",
+        "fstack-rss-adjust-source",
+        "fstack-rss-adjust-caller"
+      ],
+      "adaptation": "The complete unchanged100-iteration IPv6 source body and RD_RECHECK_N=100 are byte-audited and executed in BSS/unready state; the loop asserts zero calls and its retained direct predicate check proves the original wrapper. A test-only library maps only the original adjustment helper call site to unchanged source counting wrappers. Real-ready controls observe positive helper call counts when recheck is enabled, and independently verify each accepted candidate against the published key/RETA and original predicate. The real caller exercises both flags over net_ring records. No performance, Linux allocator, or hardware RSS equivalence is claimed; see docs/fstack-rss-adjust-recheck.md."
     }
   }
 }

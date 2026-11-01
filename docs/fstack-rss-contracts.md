@@ -4,9 +4,9 @@
 source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. Two standalone
 IPv4/IPv6 thash equivalence cases were qualified earlier. Three parsed-document
 contracts and 12 software table/predicate contracts are now separately qualified
-in caller-side examples, as are three disabled-adjustment and six guard/range source contracts. The
-five remaining RSS cases (four rechecks and the microbenchmark) remain blocked. The matrix preserves the
-original assertion scope. None of these software
+in caller-side examples, as are three disabled-adjustment, six guard/range and
+four recheck source contracts. Only the unready microbenchmark remains blocked.
+The matrix preserves the original assertion scope. None of these software
 qualifications establishes a native allocation hook or observed hardware RSS.
 
 ## Three different kinds of evidence
@@ -95,10 +95,10 @@ not turn Linux range validation into native RSS port steering.
 | `test_ff_dpdk_if.c` | `test_ff_rss_tbl6_set_get` | Complete original IPv6 table init/hit/nonempty interval, up to128 candidate predicate checks and different-source miss assertions are qualified. See [caller-side scope](fstack-rss-table.md). Native Linux allocation and hardware RSS remain unqualified. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_guard` | Complete unchanged IPv6 NULL-softc/output and BSS/unready assertions execute; NULL softc conversion is safe before the original helper guard. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash6_equivalence_hitrate` | On a non-skipped run (EAL initialization must succeed), standalone thash contexts use36-byte IPv6 tuples and a16-bit helper at bit256 with RETA128/512; each deterministic200-tuple full loop must land200/200 in independent software verification. An EAL-init skip does not reach these assertions. Qualified by `fstack-rss-thash-ipv6` and the repeat/failure controls; see [evidence](fstack-rss-thash.md). No device RX queue is observed. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_off` | Source makes100 IPv4 adjustments with recheck=0, all declining at the unready-context guard, and asserts zero wrapped own-queue checks. The recheck branch is not reached. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_on` | Source makes100 IPv4 adjustments with recheck=1 but the unready-context guard still prevents rechecks; zero wrapper calls plus a direct predicate-call sanity check are asserted. It does not demonstrate enabled runtime rechecking. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_off` | Source makes100 IPv6 adjustments with recheck=0; RETA0/unready initialization causes -1 and no wrapped predicate calls. No ready recheck branch is exercised. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_on` | Source makes100 IPv6 adjustments with recheck=1; all still decline before rechecking. A direct predicate call checks wrapper wiring, not the ready adjustment branch. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_off` | The unchanged100-iteration source body runs BSS/unready and asserts0 calls. A real-ready profile observes0 original-helper calls with recheck off; all accepted candidates match published-key Toeplitz and the original predicate. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_on` | The unchanged100-iteration source body runs BSS/unready and asserts0 loop calls plus its retained direct-wrapper sanity check. A real-ready profile observes64 original-helper calls for64 accepted candidates. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_off` | The unchanged100-iteration source body runs BSS/unready and asserts0 calls. A real-ready profile observes0 original-helper calls with recheck off; all accepted candidates match published-key Toeplitz and the original predicate. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_on` | The unchanged100-iteration source body runs BSS/unready and asserts0 loop calls plus its retained direct-wrapper sanity check. A real-ready profile observes64 original-helper calls for64 accepted candidates. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_microbench` | Source probes context readiness and calls skip() when RETA0 leaves adjustment unavailable. Its unchanged table helper leaves thash_adjust=0, so even if original contexts are prepared it declines before the10000-call timing loop. A skipped run provides no performance result. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_thash_adjust_off` | The unchanged assertion runs in BSS/unready and real-ready DPDK profiles; in both, the source body itself sets the flag to zero. A synthetic reply caller demonstrates successful advisory use and exact unchanged fallback records; Linux allocation remains untouched. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_thash_adjust_off` | The unchanged assertion runs in BSS/unready and real-ready DPDK profiles; in both, the source body itself sets the flag to zero. A synthetic reply caller demonstrates successful advisory use and exact unchanged fallback records; Linux allocation remains untouched. |
@@ -116,9 +116,9 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is355 scenario-adapted,1 partial,7 blocked,
-15 architecture-specific and55 harness-only out of433. All8 blocked/partial
+The current catalog is359 scenario-adapted,1 partial,3 blocked,
+15 architecture-specific and55 harness-only out of433. All4 blocked/partial
 cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
-production helper. This qualification does not satisfy the remaining recheck/microbenchmark, Linux
+production helper. This qualification does not satisfy the remaining microbenchmark, Linux
 source-port allocation or data-plane RSS gates above.

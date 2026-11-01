@@ -1,3 +1,5 @@
+#define RD_RECHECK_N 100
+
 #define TEST_RSS_LAST    65535      /* FreeBSD default ipport_lastauto   */
 
 #define TEST_RSS_FIRST   10000      /* FreeBSD default ipport_firstauto */

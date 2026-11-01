@@ -12,7 +12,12 @@
     "test_ff_rss_adjust_sport_single_queue",
     "test_ff_rss_adjust_sport6_guard",
     "test_ff_rss_adjust_sport_range_params",
-    "test_ff_rss_adjust_sport6_range_params"
+    "test_ff_rss_adjust_sport6_range_params",
+    "test_ff_rss_adjust_sport_recheck_off",
+    "test_ff_rss_adjust_sport_recheck_on",
+    "test_ff_rss_adjust_sport6_recheck_off",
+    "test_ff_rss_adjust_sport6_recheck_on"
   ],
-  "helpers": "../fstack-rss-source-helpers.inc"
+  "helpers": "../fstack-rss-source-helpers.inc",
+  "wrappers": "fstack-rss-recheck-wrappers.inc"
 }

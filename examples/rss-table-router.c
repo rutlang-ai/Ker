@@ -200,6 +200,7 @@ static void advisory_consumer(struct rte_mempool *pool)
     CHECK(!memcmp(guard4, saved4, sizeof(guard4)));
     CHECK(advisory_classify4(guard4, &queue) == 0);
     send_advisory_record(pool, ports, outputs, guard4, sizeof(guard4), queue);
+
     CHECK(advisory_apply4(guard4, &queue) == 0 && queue == 1);
     send_advisory_record(pool, ports, outputs, guard4, sizeof(guard4), queue);
 
@@ -218,6 +219,20 @@ static void advisory_consumer(struct rte_mempool *pool)
     CHECK(!memcmp(guard6, saved6, sizeof(guard6)));
     CHECK(advisory_classify6(guard6, &queue) == 0);
     send_advisory_record(pool, ports, outputs, guard6, sizeof(guard6), queue);
+
+    uint8_t recheck_off4[28];
+    memcpy(recheck_off4, saved4, sizeof(recheck_off4));
+    CHECK(example_rss_advisory_enable(1, 0) == 0);
+    CHECK(advisory_apply4(recheck_off4, &queue) == 0 &&
+        queue == example_rss_advisory_own_queue());
+    send_advisory_record(pool, ports, outputs, recheck_off4, sizeof(recheck_off4), queue);
+    uint8_t recheck_off6[48];
+    memcpy(recheck_off6, saved6, sizeof(recheck_off6));
+    CHECK(advisory_apply6(recheck_off6, &queue) == 0 &&
+        queue == example_rss_advisory_own_queue());
+    send_advisory_record(pool, ports, outputs, recheck_off6, sizeof(recheck_off6), queue);
+    CHECK(example_rss_advisory_enable(1, 1) == 0);
+
     CHECK(advisory_apply6(guard6, &queue) == 0 && queue == 1);
     send_advisory_record(pool, ports, outputs, guard6, sizeof(guard6), queue);
 
