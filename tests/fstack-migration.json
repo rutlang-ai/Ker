@@ -3256,29 +3256,68 @@
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_microbench",
       "kind": "cmocka",
       "status": "blocked",
-      "reason": "Source probes context readiness and calls skip() when RETA0 leaves adjustment unavailable. Only a ready context times10000 calls for each recheck mode and asserts off<on. A skipped run provides no performance result. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
+      "reason": "The unchanged helper first probes readiness and skips when source-default RETA is zero. Even with contexts prepared, its table setup leaves thash_adjust=0, so the adjust helper declines before the 10000-call timing loop. No performance result is asserted. See docs/fstack-rss-contracts.md and issue220; no source pass is claimed.",
       "ker_tests": []
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_thash_adjust_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "With the source optimization disabled, IPv4 adjustment declines -1 so its original PCB caller can perform the fallback scan. Ker must preserve original Linux allocation rather than invent a TCP port scan. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged complete source assertion runs in both original BSS/unready and real-ready DPDK context profiles with thash_adjust disabled. A primary-only caller advisory uses the original helper for synthetic reply tuples, verifies accepted suggestions independently and routes exact records through net_ring; disabled mode preserves fallback tuples. This does not steer Linux socket allocation or implement a port scan. See docs/fstack-rss-adjust-disabled.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport-thash-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport-thash-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport-thash-off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport6_thash_adjust_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "With thash_adjust=0, IPv6 adjustment declines -1 for the original PCB caller fallback. No Ker equivalent optimization lifecycle or caller is implemented. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged complete source assertion runs in both original BSS/unready and real-ready DPDK context profiles with thash_adjust disabled. A primary-only caller advisory uses the original helper for synthetic reply tuples, verifies accepted suggestions independently and routes exact records through net_ring; disabled mode preserves fallback tuples. This does not steer Linux socket allocation or implement a port scan. See docs/fstack-rss-adjust-disabled.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-adjust-sport6-thash-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-adjust-sport6-thash-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-adjust-sport6-thash-off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_thash_ctx_init_thash_adjust_off",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "Source initialization returns0 when optimization is disabled. This is a deliberate disabled-path result, not evidence that a usable reverse-hash context exists. See docs/fstack-rss-contracts.md and issue220; no additional source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The unchanged complete source assertion runs in both original BSS/unready and real-ready DPDK context profiles. With FF_RSS_DIAG disabled, the original thash_ctx_init body only returns0; this is not context readiness evidence. The caller-level disabled advisory is separately qualified with real DPDK contexts and net_ring records. See docs/fstack-rss-adjust-disabled.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-original-import",
+          "provenance_case": "fstack-rss-thash-ctx-init-thash-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-source",
+          "provenance_case": "fstack-rss-thash-ctx-init-thash-off"
+        },
+        {
+          "ctest": "fstack-rss-adjust-caller",
+          "provenance_case": "fstack-rss-thash-ctx-init-thash-off"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_range_params",
