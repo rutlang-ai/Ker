@@ -92,7 +92,10 @@ def wait_owner_identity(prefix, process, owner_prefix, owner):
         if owner.poll() is not None:
             out, err = owner.communicate()
             raise RuntimeError(f'{error}; owner stdout={out!r}; stderr={err!r}') from error
-        raise
+        owner_identity = Path(str(owner_prefix) + '.controller')
+        identity_text = owner_identity.read_text().strip() if owner_identity.exists() else '<missing>'
+        raise RuntimeError(f'{error}; controller prefix={prefix}; identity={connecting!r}; '
+            f'owner prefix={owner_prefix}; owner controller={identity_text}') from error
 
 
 def run_probe(args, eal, root, native):
@@ -238,7 +241,9 @@ def run_probe(args, eal, root, native):
         peers.clear()
         run_unread_accept_ack_probe(args, eal, root, native)
         run_stopped_owner_timeout_probe(args, eal, root, native)
+        run_prepared_accept_expiry_probe(args, eal, root, native)
         run_duplicate_admission_probe(args, eal, root, native)
+        run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared=True)
         print('C15_TAP_ADMISSION_OK original_lkl=true held_synack=true '
             'map_admit=real_ff_flow_map collision_flows=16 mapfull=17 '
             'exact_c14_revoke=true late_ack_rst=true host_handshake=true '
@@ -451,8 +456,121 @@ def run_stopped_owner_timeout_probe(args, eal, root, native):
         capture.close()
 
 
-def run_duplicate_admission_probe(args, eal, root, native):
-    root = root / 'c15-duplicate'
+def run_prepared_accept_expiry_probe(args, eal, root, native):
+    root = root / 'c15-prepared-accept-expiry'
+    root.mkdir(mode=0o700)
+    capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    owner = process = peer = None
+    prefix = root / 'control'
+    owner_prefix = root / 'owner'
+    owner_path = root / 'owner.sock'
+    try:
+        capture.bind(('kerhost', 0))
+        capture.settimeout(.01)
+        owner = subprocess.Popen([str(args.owner), str(owner_path), str(owner_prefix)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        wait_state(str(owner_prefix), 'OWNER_READY', owner)
+        command = [sys.executable, str(args.launcher), '--library', str(args.library),
+            '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
+            '--port', 'net_tap0', '--eal', eal, '--stats', str(root / 'stats.json'),
+            '--', str(args.client)]
+        environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1',
+            'RUNTIME_DIRECTORY': str(root), 'KER_C15_ADMISSION_CONTROL': str(prefix),
+            'KER_C15_OWNER_PATH': str(owner_path), 'KER_C15_OWNER_PID': str(owner.pid),
+            'KER_C15_EXPIRE_AFTER_PREPARED': '1'}
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, text=True)
+        wait_owner_identity(prefix, process, owner_prefix, owner)
+        wait_state(prefix, 'READY', process)
+        peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        peer.bind(('198.18.0.1', 12003))
+        peer.setblocking(False)
+        result = peer.connect_ex(('198.18.0.2', 8080))
+        require(result in (0, errno.EINPROGRESS, errno.EALREADY),
+            f'prepared-expiry flow did not enter SYN_SENT: {result}')
+        held = wait_state(prefix, 'HELD index=1', process)
+        fields = dict(item.split('=', 1) for item in held.split()[1:])
+        host_syn = None
+        synack_seen = False
+        deadline = time.monotonic() + .03
+        while time.monotonic() < deadline:
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = native.ipv4_tcp_frame(frame)
+            if packet and packet['src'] == '198.18.0.1' and packet['dst'] == '198.18.0.2' and \
+                    packet['sport'] == 12003 and packet['dport'] == 8080 and packet['flags'] & 0x02:
+                host_syn = packet
+            if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                    packet['sport'] == 8080 and packet['dport'] == 12003 and \
+                    packet['flags'] & 0x12 == 0x12:
+                synack_seen = True
+        require(host_syn is not None and not synack_seen,
+            'fresh flow was not held before the prepared-accept timeout')
+        send_command(prefix, 'ADMIT')
+        expired = wait_state(prefix, 'EXPIRED_PREPARED index=1', process)
+        require('accept_sent=0' in expired and 'request_revoked=1' in expired and
+            'owner_cancelled=1' in expired and 'drop_sent=1' in expired,
+            f'prepared accept deadline did not prove unsent rollback: {expired!r}')
+        deadline = time.monotonic() + .08
+        while time.monotonic() < deadline:
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = native.ipv4_tcp_frame(frame)
+            if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                    packet['sport'] == 8080 and packet['dport'] == 12003 and \
+                    packet['flags'] & 0x12 == 0x12:
+                synack_seen = True
+        require(not synack_seen,
+            'fresh flow emitted SYN-ACK after a definitely unsent expired NF_ACCEPT')
+        revoke_source = Path(__file__).with_name('tcp-request-revoke-wire.py')
+        revoke_spec = importlib.util.spec_from_file_location('ker_c15_prepared_expiry', revoke_source)
+        revoke_module = importlib.util.module_from_spec(revoke_spec)
+        revoke_spec.loader.exec_module(revoke_module)
+        server_synack = {'seq': int(fields['server_seq']), 'options': bytes.fromhex(fields['options'])}
+        capture.send(revoke_module.request_ack(host_syn, server_synack))
+        reset_seen = False
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not reset_seen:
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = native.ipv4_tcp_frame(frame)
+            reset_seen = bool(packet and packet['src'] == '198.18.0.2' and
+                packet['dst'] == '198.18.0.1' and packet['sport'] == 8080 and
+                packet['dport'] == 12003 and packet['flags'] & 0x04)
+        require(reset_seen,
+            'late ACK after prepared-expiry request revocation did not receive original Linux RST')
+        send_command(prefix, 'STOP')
+        wait_state(prefix, 'DONE', process)
+        output, errors = process.communicate(timeout=15)
+        owner_output, owner_errors = owner.communicate(timeout=10)
+        require(process.returncode == 0 and 'C15_TAP_ADMISSION_POSITIVE_OK' in output,
+            f'prepared-expiry controller failed: rc={process.returncode}; stdout={output!r}; stderr={errors!r}')
+        require(owner.returncode == 0,
+            f'prepared-expiry map owner failed: rc={owner.returncode}; stdout={owner_output!r}; stderr={owner_errors!r}')
+        owner_state = Path(str(owner_prefix) + '.state').read_text().strip()
+        require(owner_state.startswith('OWNER_DONE inserted=1 duplicates=0 full=0') and
+            'revoked=1' in owner_state,
+            f'fresh prepared map entry was not rolled back exactly once: {owner_state!r}')
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        if owner is not None and owner.poll() is None:
+            owner.kill()
+            owner.wait()
+        if peer is not None:
+            peer.close()
+        capture.close()
+
+
+def run_duplicate_admission_probe(args, eal, root, native, expire_after_prepared=False):
+    root = root / ('c15-duplicate-expired' if expire_after_prepared else 'c15-duplicate')
     root.mkdir(mode=0o700)
     table = f'ker_c15_dup_{os.getpid()}'
     capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
@@ -461,6 +579,7 @@ def run_duplicate_admission_probe(args, eal, root, native):
     prefix = root / 'control'
     owner_prefix = root / 'owner'
     owner_path = root / 'owner.sock'
+    peer_port = 12004 if expire_after_prepared else 12002
     try:
         capture.bind(('kerhost', 0))
         capture.settimeout(.01)
@@ -483,12 +602,14 @@ def run_duplicate_admission_probe(args, eal, root, native):
             'RUNTIME_DIRECTORY': str(root), 'KER_C15_ADMISSION_CONTROL': str(prefix),
             'KER_C15_OWNER_PATH': str(owner_path), 'KER_C15_OWNER_PID': str(owner.pid),
             'KER_C15_DUPLICATE_MODE': '1'}
+        if expire_after_prepared:
+            environment['KER_C15_EXPIRE_AFTER_PREPARED'] = '2'
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, text=True)
         wait_owner_identity(prefix, process, owner_prefix, owner)
         wait_state(prefix, 'READY', process)
         peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        peer.bind(('198.18.0.1', 12002))
+        peer.bind(('198.18.0.1', peer_port))
         peer.setblocking(False)
         result = peer.connect_ex(('198.18.0.2', 8080))
         require(result in (0, errno.EINPROGRESS, errno.EALREADY),
@@ -504,7 +625,7 @@ def run_duplicate_admission_probe(args, eal, root, native):
                 continue
             packet = native.ipv4_tcp_frame(frame)
             if packet and packet['src'] == '198.18.0.1' and packet['dst'] == '198.18.0.2' and \
-                    packet['sport'] == 12002 and packet['dport'] == 8080 and packet['flags'] & 0x02:
+                    packet['sport'] == peer_port and packet['dport'] == 8080 and packet['flags'] & 0x02:
                 host_syn = packet
         require(host_syn is not None, 'duplicate-flow fixture did not capture original host SYN')
         send_command(prefix, 'ADMIT')
@@ -519,7 +640,7 @@ def run_duplicate_admission_probe(args, eal, root, native):
                 continue
             packet = native.ipv4_tcp_frame(frame)
             if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
-                    packet['sport'] == 8080 and packet['dport'] == 12002 and \
+                    packet['sport'] == 8080 and packet['dport'] == peer_port and \
                     packet['flags'] & 0x12 == 0x12:
                 first_synack = packet
         require(first_synack is not None, 'first real SYN-ACK was not released')
@@ -554,32 +675,52 @@ def run_duplicate_admission_probe(args, eal, root, native):
                 continue
             packet = native.ipv4_tcp_frame(frame)
             if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
-                    packet['sport'] == 8080 and packet['dport'] == 12002 and \
+                    packet['sport'] == 8080 and packet['dport'] == peer_port and \
                     packet['flags'] & 0x12 == 0x12:
                 duplicate_synack_seen = True
         require(not duplicate_synack_seen,
             'retransmitted SYN-ACK escaped before duplicate map result')
         native.census_nft('flush', 'chain', 'inet', table, 'output')
         send_command(prefix, 'ADMIT')
-        wait_state(prefix, 'ADMITTED index=2 map_created=0', process)
-        duplicate_synack = None
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and duplicate_synack is None:
-            try:
-                frame, _ = capture.recvfrom(65535)
-            except TimeoutError:
-                continue
-            packet = native.ipv4_tcp_frame(frame)
-            if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
-                    packet['sport'] == 8080 and packet['dport'] == 12002 and \
-                    packet['flags'] & 0x12 == 0x12:
-                duplicate_synack = packet
-        require(duplicate_synack is not None,
-            'duplicate map result did not release original TCP retransmission')
-        _, writable, exceptional = select.select([], [peer], [peer], 5)
-        require(bool(writable) and not exceptional and
-            peer.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0,
-            'duplicate map path did not complete the real host handshake')
+        if expire_after_prepared:
+            expired = wait_state(prefix, 'EXPIRED_PREPARED index=2', process)
+            require('accept_sent=0' in expired and 'request_revoked=1' in expired and
+                'owner_cancelled=1' in expired and 'drop_sent=1' in expired,
+                f'duplicate prepared accept did not fail before verdict send: {expired!r}')
+            duplicate_synack_seen = False
+            deadline = time.monotonic() + .08
+            while time.monotonic() < deadline:
+                try:
+                    frame, _ = capture.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                packet = native.ipv4_tcp_frame(frame)
+                if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                        packet['sport'] == 8080 and packet['dport'] == peer_port and \
+                        packet['flags'] & 0x12 == 0x12:
+                    duplicate_synack_seen = True
+            require(not duplicate_synack_seen,
+                'duplicate retransmission emitted SYN-ACK after definitely unsent NF_ACCEPT')
+        else:
+            wait_state(prefix, 'ADMITTED index=2 map_created=0', process)
+            duplicate_synack = None
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and duplicate_synack is None:
+                try:
+                    frame, _ = capture.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                packet = native.ipv4_tcp_frame(frame)
+                if packet and packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                        packet['sport'] == 8080 and packet['dport'] == peer_port and \
+                        packet['flags'] & 0x12 == 0x12:
+                    duplicate_synack = packet
+            require(duplicate_synack is not None,
+                'duplicate map result did not release original TCP retransmission')
+            _, writable, exceptional = select.select([], [peer], [peer], 5)
+            require(bool(writable) and not exceptional and
+                peer.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0,
+                'duplicate map path did not complete the real host handshake')
         Path(str(prefix) + '.command').write_text('STOP\n')
         wait_state(prefix, 'DONE', process)
         output, errors = process.communicate(timeout=15)
@@ -593,7 +734,7 @@ def run_duplicate_admission_probe(args, eal, root, native):
         owner_state = Path(str(owner_prefix) + '.state').read_text().strip()
         require(owner_state.startswith('OWNER_DONE inserted=1 duplicates=1 full=0') and
             'revoked=0' in owner_state,
-            f'duplicate admission did not preserve the single original map entry: {owner_state!r}')
+            f'duplicate map lifecycle counters were unexpected: {owner_state!r}')
     finally:
         if process is not None and process.poll() is None:
             process.kill()

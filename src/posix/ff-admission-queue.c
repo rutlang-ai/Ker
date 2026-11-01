@@ -10,7 +10,7 @@
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
-#include <linux/if_ether.h>
+#include <lkl/linux/if_ether.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <stddef.h>
@@ -451,7 +451,7 @@ int ker_ff_admission_queue_receive(struct ker_ff_admission_queue *queue,
 		attr = (struct ker_nlattr *)((unsigned char *)attr + aligned);
 	}
 	if (!have_packet_header || !have_packet_mark || !payload || packet_mark != queue->mark ||
-	    packet_header.hook != NF_INET_LOCAL_OUT || packet_header.hw_protocol != htons(ETH_P_IP) ||
+	    packet_header.hook != NF_INET_LOCAL_OUT || packet_header.hw_protocol != htons(LKL_ETH_P_IP) ||
 	    payload_length < sizeof(struct iphdr))
 		return -EPROTO;
 	struct iphdr iph;

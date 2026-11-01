@@ -171,7 +171,14 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	int unread_accept_ack = getenv("KER_C15_UNREAD_ACCEPT_ACK") != NULL;
 	int stopped_owner_timeout = getenv("KER_C15_STOP_OWNER_TIMEOUT") != NULL;
 	int duplicate_mode = getenv("KER_C15_DUPLICATE_MODE") != NULL;
+	const char *expire_after_prepared_env = getenv("KER_C15_EXPIRE_AFTER_PREPARED");
+	unsigned int expire_after_prepared_index = expire_after_prepared_env ?
+		(unsigned int)strtoul(expire_after_prepared_env, NULL, 10) : 0;
+	unsigned int packet_limit = expire_after_prepared_index ?
+		expire_after_prepared_index : duplicate_mode ? 2U : 17U;
+	int prepared_expiry_handled = 0;
 	int owner_timeout_handled = 0;
+	unsigned int current_index = 0;
 	int listener_owned = 1, result = -EINVAL;
 	const char *failure_stage = "setup";
 	if (listener_fd < 0 || !prefix || !*prefix || !owner_path || !*owner_path)
@@ -197,7 +204,8 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	if (listen(listener_fd, 64) != 0) { result = -errno; goto out; }
 	if (host_write_file(state_path, "READY")) { result = -EIO; goto out; }
 	for (unsigned int index = 1; index <= ((unread_accept_ack || stopped_owner_timeout) ?
-	    1U : duplicate_mode ? 2U : 17U); ++index) {
+	    1U : packet_limit); ++index) {
+		current_index = index;
 	uint32_t admitted_created = 0;
 		prepared = 0;
 		accept_sent = 0;
@@ -322,6 +330,22 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 		result = ker_ff_admission_request_identity_revalidate(identity);
 		failure_stage = "listener-revalidate";
 		if (result) goto reject_packet;
+		if (expire_after_prepared_index == index) {
+			/* Deterministically exercise the interval after PREPARED and before
+			 * NF_ACCEPT is sent. A zero sent flag is definitive: this call checks
+			 * the absolute packet deadline before sending any netlink message. */
+			while (monotonic_ns() < packet.deadline_ns) {
+				const struct timespec pause = {.tv_nsec = 1000000};
+				(void)nanosleep(&pause, NULL);
+			}
+			int sent = 0;
+			result = ker_ff_admission_queue_verdict(queue, packet.lease,
+				packet.deadline_ns, packet.id, 1, &sent);
+			accept_sent = sent;
+			if (result != -ETIMEDOUT || sent != 0) goto out;
+			failure_stage = "accept-unsent-expired";
+			goto reject_packet;
+		}
 		int sent = 0;
 		if (unread_accept_ack) {
 			result = ker_ff_admission_queue_test_accept_unread_ack(queue,
@@ -364,7 +388,13 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 		result = ker_ff_admission_queue_verdict(queue, packet.lease,
 			packet.deadline_ns, packet.id, 1, &sent);
 		accept_sent = sent;
-		if (result || !sent) goto out; /* acceptance may be uncertain; retain map */
+		if (result || !sent) {
+			if (!sent) {
+				failure_stage = "accept-definitely-unsent";
+				goto reject_packet;
+			}
+			goto out; /* a full ACCEPT send may already be irreversible */
+		}
 		result = ker_ff_admission_channel_send_control(channel,
 			KER_FF_ADMISSION_FINALIZE, command_id, packet.id);
 		if (result) goto out; /* accepted packet may already be on the wire */
@@ -391,12 +421,20 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 			if (result) goto out;
 		}
 	}
-	if (!unread_accept_ack && !stopped_owner_timeout && !duplicate_mode &&
+post_admission_packets:
+	if (!prepared_expiry_handled && !unread_accept_ack && !stopped_owner_timeout && !duplicate_mode &&
 	    (admitted != 16 || !map_full_rejected)) {
 		result = -EPROTO;
 		goto out;
 	}
-	if (duplicate_mode && admitted != 2) { result = -EPROTO; goto out; }
+	if (duplicate_mode && admitted != (prepared_expiry_handled ? 1U : 2U)) {
+		result = -EPROTO;
+		goto out;
+	}
+	if (expire_after_prepared_index && !prepared_expiry_handled) {
+		result = -EPROTO;
+		goto out;
+	}
 	if (stopped_owner_timeout && !owner_timeout_handled) { result = -EPROTO; goto out; }
 	result = wait_command(command_path, "STOP", monotonic_ns() + UINT64_C(10000000000));
 	if (result) goto out;
@@ -432,21 +470,59 @@ int ker_c15_admission_test_run(int listener_fd, const char *prefix)
 	goto out;
 
 reject_packet:
-	/* Any failure before a positive verdict is fail-closed. Only the definitive
-	 * map-full path above uses exact C14 request revocation. */
+	;
+	/* Only a fully sent ACCEPT can have crossed the irreversible boundary. If
+	 * ACCEPT was not sent, revoke the exact request, cancel a newly created map
+	 * entry and send DROP with a separate cleanup deadline. */
+	int request_revoked = 0, owner_cancelled = 0, drop_sent = 0;
+	int cleanup_error = 0;
 	if (prepared && !accept_sent && channel) {
-		if (!ker_ff_admission_channel_send_control(channel,
-			KER_FF_ADMISSION_CANCEL_UNSENT, command_id, packet.id))
-			(void)receive_channel(channel, KER_FF_ADMISSION_CANCELLED,
-				packet.deadline_ns, &response);
+		if (identity) {
+			int identity_result = ker_ff_admission_request_identity_revalidate(identity);
+			if (!identity_result) {
+				cleanup_error = ker_native_tcp_request_revoke(&request_identity);
+				request_revoked = cleanup_error == 0;
+			} else {
+				cleanup_error = identity_result;
+			}
+		}
+		int cancel_result = ker_ff_admission_channel_send_control(channel,
+			KER_FF_ADMISSION_CANCEL_UNSENT, command_id, packet.id);
+		if (!cancel_result) {
+			cancel_result = receive_channel(channel, KER_FF_ADMISSION_CANCELLED,
+				monotonic_ns() + UINT64_C(1000000000), &response);
+			if (!cancel_result) owner_cancelled = 1;
+		}
+		if (!cleanup_error) cleanup_error = cancel_result;
 	}
 	if (queue) {
-		int sent = 0;
-		(void)ker_ff_admission_queue_verdict(queue, packet.lease,
-			packet.deadline_ns, packet.id, 0, &sent);
+		int drop_result = ker_ff_admission_queue_verdict(queue, packet.lease,
+			monotonic_ns() + UINT64_C(1000000000), packet.id, 0, &drop_sent);
+		if (!cleanup_error && (drop_result || drop_sent != 1))
+			cleanup_error = drop_result ? drop_result : -EIO;
 	}
-	(void)snprintf(state, sizeof(state), "REJECTED_WITHOUT_IDENTITY stage=%.32s err=%d",
-		failure_stage, result);
+	if (failure_stage && !strcmp(failure_stage, "accept-unsent-expired") &&
+	    request_revoked && owner_cancelled && drop_sent == 1 && !cleanup_error) {
+		prepared = 0;
+		if (identity) ker_ff_admission_request_identity_close(identity);
+		identity = NULL;
+		prepared_expiry_handled = 1;
+		if (snprintf(state, sizeof(state),
+			"EXPIRED_PREPARED index=%u accept_sent=0 request_revoked=1 "
+			"owner_cancelled=1 drop_sent=1", current_index) >= (int)sizeof(state) ||
+			host_write_file(state_path, state)) {
+			result = -EIO;
+			goto out;
+		}
+		result = 0;
+		goto post_admission_packets;
+	}
+	if (cleanup_error) {
+		result = cleanup_error;
+	}
+	(void)snprintf(state, sizeof(state),
+		"REJECTED_BEFORE_ACCEPT stage=%.32s err=%d revoke=%d cancel=%d drop=%d",
+		failure_stage, result, request_revoked, owner_cancelled, drop_sent);
 	(void)host_write_file(state_path, state);
 out:
 	if (identity) ker_ff_admission_request_identity_close(identity);
