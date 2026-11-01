@@ -6,7 +6,8 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 for directory, names in [
-    ('fstack-reload', {'ff_reload.c', 'ff_config.h', 'ff_reload_gendir.c', 'ff_log.h'}),
+    ('fstack-reload', {'ff_reload.c', 'ff_config.h', 'ff_reload_gendir.c', 'ff_log.h',
+                       'ff_drain_ring.c', 'ff_drain_ring.h'}),
     ('fstack-ipc', {'ff_ipc.c', 'ff_ipc.h', 'ff_msg.h', 'ff_reload.h'}),
 ]:
     source = root / 'third_party' / directory
