@@ -446,6 +446,17 @@ static int owner_cleanup_unprepared(struct ker_ff_admission_channel *channel,
 	return 0;
 }
 
+static int owner_send_initial_result(struct ker_ff_admission_channel *channel,
+				     const struct ker_ff_admission_map_ops *ops)
+{
+	int result = send_pending_response(channel);
+	if (result == -EPIPE || result == -ECONNRESET) {
+		int cleanup = owner_cleanup_unprepared(channel, ops);
+		return cleanup ? cleanup : result;
+	}
+	return result;
+}
+
 int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel,
 					const struct ker_ff_admission_map_ops *ops)
 {
@@ -525,7 +536,7 @@ int ker_ff_admission_channel_owner_step(struct ker_ff_admission_channel *channel
 		response_from_current(channel, KER_FF_ADMISSION_RESULT, status);
 		channel->response.allowed = channel->current.allowed;
 		channel->response.created = channel->current.created;
-		return send_pending_response(channel);
+		return owner_send_initial_result(channel, ops);
 	}
 	if (command.command != KER_FF_ADMISSION_CANCEL &&
 	    command.command != KER_FF_ADMISSION_CANCEL_UNSENT &&
