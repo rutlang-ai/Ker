@@ -419,7 +419,8 @@ def run_tcp_observer_frontend(args, rpc_path, broker, cap_fds, root):
     peer = None
     try:
         client = subprocess.Popen([str(args.observer_client), str(rpc_path),
-            str(cap_fds[0]), str(cap_fds[1]), str(cap_fds[2]), str(ack_read)],
+            str(cap_fds[0]), str(cap_fds[1]), str(cap_fds[2]), str(ack_read),
+            str(args.preload_library.resolve())],
             pass_fds=tuple(cap_fds) + (ack_read,), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         os.close(ack_read); ack_read = -1
@@ -436,8 +437,13 @@ def run_tcp_observer_frontend(args, rpc_path, broker, cap_fds, root):
             'observer client did not accept the connected IPv4 TCP stream')
         inbound = bytes((index * 17 + 5) & 0xff for index in range(16384))
         peer.sendall(inbound)
-        require(read_line(client.stdout, 20, client) == 'OBSERVER_RX_DRAINED',
-            'observer failed to report/drain original Linux receive queue')
+        require(read_line(client.stdout, 20, client) == 'OBSERVER_EXEC_SNAPSHOT_OK',
+            'preloaded exec child did not retain/snapshot the inherited metadata capability')
+        require(read_line(client.stdout, 20, client) == 'OBSERVER_EXEC_CAP_RETAINED',
+            'parent observer capability was not usable after the preloaded exec exited')
+        observer_status = read_line(client.stdout, 20, client)
+        require(observer_status == 'OBSERVER_RX_DRAINED',
+            f'observer failed to report/drain original Linux receive queue: {observer_status!r}')
         line = read_line(client.stdout, 20, client)
         require(line.startswith('OBSERVER_CAPS_CLOSED '),
             f'observer did not close all TCP capabilities after real backpressure: {line}')
@@ -1036,6 +1042,8 @@ def main():
     args = parser.parse_args()
     if args.reuseport_group_client and (not args.inherited_group_probe or not args.preload_library):
         parser.error('reuseport group test requires inherited group probe and preload library')
+    if args.observer_client and not args.preload_library:
+        parser.error('TCP observer test requires the socket preload library for inherited capability validation')
     if not args.inside:
         if args.nginx_binary:
             command = ['unshare', '-Un', '--keep-caps', f'--map-user={os.getuid()}',

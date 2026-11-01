@@ -454,6 +454,7 @@ if(BUILD_TESTING)
             --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
             --client "$<TARGET_FILE:ker-socket-broker-client-test>"
             --observer-client "$<TARGET_FILE:ker-tcp-observer-client-test>"
+            --preload-library "$<TARGET_FILE:ker-socket-preload>"
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-tcp-socket-observer PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;tcp-observer")

@@ -5,6 +5,7 @@
 #endif
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -16,6 +17,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
@@ -93,8 +95,28 @@ static int malformed_snapshot_is_rejected(struct ker_socket_client *client, int 
 
 int main(int argc, char **argv)
 {
-    if (argc != 6) {
-        fprintf(stderr, "usage: tcp-observer-client <rpc-path> <listener-cap> <epoll-cap> <restricted-cap> <ack-fd>\n");
+    if (argc == 5 && !strcmp(argv[1], "--inherited-observer")) {
+        int inherited = parse_fd(argv[3]);
+        char *end = NULL;
+        uint64_t expected_cookie = strtoull(argv[4], &end, 10);
+        CHECK(inherited >= 0 && end && !*end && expected_cookie != 0);
+        CHECK((fcntl(inherited, F_GETFL) & O_ACCMODE) == O_WRONLY);
+        struct ker_socket_client inherited_client;
+        CHECK(ker_socket_client_open(&inherited_client, argv[2]) == 0);
+        enum ker_socket_broker_kind inherited_kind = 0;
+        int inherited_flags = -1;
+        CHECK(ker_socket_client_describe(&inherited_client, inherited,
+            &inherited_kind, &inherited_flags) == 0 &&
+            inherited_kind == KER_SOCKET_BROKER_TCP_OBSERVER && inherited_flags == 0);
+        struct ker_socket_tcp_observer_snapshot inherited_snapshot = {0};
+        CHECK(ker_socket_client_tcp_observer_snapshot(&inherited_client, inherited,
+            &inherited_snapshot) == 0 && inherited_snapshot.present &&
+            inherited_snapshot.cookie == expected_cookie);
+        ker_socket_client_close(&inherited_client);
+        return 0;
+    }
+    if (argc != 7) {
+        fprintf(stderr, "usage: tcp-observer-client <rpc-path> <listener-cap> <epoll-cap> <restricted-cap> <ack-fd> <preload-library>\n");
         return 2;
     }
     int listener = parse_fd(argv[2]), epoll = parse_fd(argv[3]);
@@ -158,6 +180,33 @@ int main(int argc, char **argv)
     struct ker_socket_tcp_observer_snapshot snapshot = {0};
     CHECK(wait_observer(&client, observer, &snapshot, 16384) == 0);
     CHECK(snapshot.cookie == cookie && snapshot.receive_queue > 0);
+    int descriptor_flags = fcntl(observer, F_GETFD);
+    CHECK(descriptor_flags >= 0 && (descriptor_flags & FD_CLOEXEC));
+    CHECK(fcntl(observer, F_SETFD, descriptor_flags & ~FD_CLOEXEC) == 0);
+    CHECK(setenv("KER_SOCKET_BROKER_PATH", argv[1], 1) == 0);
+    CHECK(setenv("LD_PRELOAD", argv[6], 1) == 0);
+    pid_t exec_child = fork();
+    CHECK(exec_child >= 0);
+    if (exec_child == 0) {
+        char observer_text[32], cookie_text[32];
+        (void)syscall(SYS_close, accepted);
+        (void)syscall(SYS_close, duplicate);
+        (void)snprintf(observer_text, sizeof(observer_text), "%d", observer);
+        (void)snprintf(cookie_text, sizeof(cookie_text), "%" PRIu64, cookie);
+        execl(argv[0], argv[0], "--inherited-observer", argv[1], observer_text,
+            cookie_text, (char *)NULL);
+        _exit(127);
+    }
+    int exec_status = 0;
+    CHECK(waitpid(exec_child, &exec_status, 0) == exec_child &&
+        WIFEXITED(exec_status) && WEXITSTATUS(exec_status) == 0);
+    puts("OBSERVER_EXEC_SNAPSHOT_OK"); fflush(stdout);
+    CHECK(fcntl(observer, F_SETFD, descriptor_flags) == 0);
+    CHECK(unsetenv("KER_SOCKET_BROKER_PATH") == 0);
+    CHECK(unsetenv("LD_PRELOAD") == 0);
+    CHECK(wait_observer(&client, observer, &snapshot, 16384) == 0 &&
+        snapshot.cookie == cookie && snapshot.receive_queue > 0);
+    puts("OBSERVER_EXEC_CAP_RETAINED"); fflush(stdout);
     errno = 0;
     CHECK(ker_socket_client_tcp_observer_snapshot(&client, accepted, &snapshot) == -1 &&
         errno == ENOTSOCK);

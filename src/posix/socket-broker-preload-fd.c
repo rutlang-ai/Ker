@@ -699,6 +699,11 @@ static int initialize_inherited_capabilities(void)
              * socket or composite epoll descriptor. Preserve it across exec
              * without adding it to either preload descriptor map. */
             continue;
+        } else if (kind == KER_SOCKET_BROKER_TCP_OBSERVER && status_flags == 0) {
+            /* Observer capabilities carry metadata authority only. Preserve
+             * the inherited host descriptor without treating it as a socket
+             * or retaining any TCP descriptor in the preload map. */
+            continue;
         } else {
             (void)status_flags; ker_sb_preload_unlock(); errno = EPROTO; return -1;
         }
