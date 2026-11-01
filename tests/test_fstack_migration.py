@@ -119,7 +119,7 @@ class CatalogTests(unittest.TestCase):
             audit.validate(self.root)
 
     def test_duplicate_followup_case_is_rejected(self):
-        self.followups['groups'][1]['cases'].append(self.followups['groups'][0]['cases'][0])
+        self.followups['groups'][0]['cases'].append(self.followups['groups'][0]['cases'][0])
         self.followup_path.write_text(json.dumps(self.followups))
         with self.assertRaisesRegex(ValueError, 'Duplicate follow-up case'):
             audit.validate(self.root)

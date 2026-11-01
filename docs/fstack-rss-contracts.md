@@ -5,7 +5,8 @@ source cases at `646a641cfff77f4815e1e29829a09e1ed15a2999`. Two standalone
 IPv4/IPv6 thash equivalence cases were qualified earlier. Three parsed-document
 contracts and 12 software table/predicate contracts are now separately qualified
 in caller-side examples, as are three disabled-adjustment, six guard/range and
-four recheck source contracts. Only the unready microbenchmark remains blocked.
+four recheck source contracts. The microbenchmark is now scenario-adapted with a
+separate BSS skip control and ready timing fixture.
 The matrix preserves the original assertion scope. None of these software
 qualifications establishes a native allocation hook or observed hardware RSS.
 
@@ -34,9 +35,7 @@ not a legitimate runtime capability query. The source oracle narrows
 ordinary C integer promotion. The fixed four-queue source cases compare the
 same low two bits; they do not isolate mask width or model a queried device RETA. Several adjustment guards run before the branches their
 names suggest. Their exact assertions are useful, but do not prove those later
-branches. The microbench calls `skip()` on unready context; it supplies no timing
-result on that path. Even after contexts are prepared, its unchanged helper resets
-`thash_adjust` to zero, so it skips before timing; it remains blocked. When their EAL initialization succeeds, the IPv4/IPv6
+branches. The original microbench still skips in its unchanged BSS profile, which is recorded only as a control. Its ready fixture calls the literal original table builder, then explicitly enables `thash_adjust`, and runs the unchanged N=10000 timing body with real `CLOCK_MONOTONIC` and the strict `t_off < t_on` assertion. The fixture uses genuine primary DPDK contexts, validates candidates independently against the published key/RETA and original predicate, and links the production uninstrumented caller library. This is a standalone caller-helper timing result, not Linux allocator, physical NIC, or hardware RSS performance evidence. One local run recorded 1.334 ms off and 5.312 ms on for 10,000 calls; this sample only demonstrates the retained timing output and assertion. When their EAL initialization succeeds, the IPv4/IPv6
 equivalence tests create real DPDK thash contexts and require200/200 full-loop
 software landing at RETA128 and512. An EAL-init skip reaches neither the context
 creation nor those assertions and is not a pass. They report first-candidate
@@ -99,7 +98,7 @@ not turn Linux range validation into native RSS port steering.
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_recheck_on` | The unchanged100-iteration source body runs BSS/unready and asserts0 loop calls plus its retained direct-wrapper sanity check. A real-ready profile observes64 original-helper calls for64 accepted candidates. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_off` | The unchanged100-iteration source body runs BSS/unready and asserts0 calls. A real-ready profile observes0 original-helper calls with recheck off; all accepted candidates match published-key Toeplitz and the original predicate. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_recheck_on` | The unchanged100-iteration source body runs BSS/unready and asserts0 loop calls plus its retained direct-wrapper sanity check. A real-ready profile observes64 original-helper calls for64 accepted candidates. |
-| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_microbench` | Source probes context readiness and calls skip() when RETA0 leaves adjustment unavailable. Its unchanged table helper leaves thash_adjust=0, so even if original contexts are prepared it declines before the10000-call timing loop. A skipped run provides no performance result. |
+| `test_ff_dpdk_if.c` | `test_ff_rss_adjust_microbench` | The complete original helper/body/N=10000/strict timing assertion is audited. BSS remains an expected-skip control, not a pass. The ready fixture explicitly enables adjustment after the original table builder, verifies real DPDK contexts and candidate oracles, then runs the unchanged timing body once. This is not Linux allocation or hardware RSS performance evidence. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport_thash_adjust_off` | The unchanged assertion runs in BSS/unready and real-ready DPDK profiles; in both, the source body itself sets the flag to zero. A synthetic reply caller demonstrates successful advisory use and exact unchanged fallback records; Linux allocation remains untouched. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_adjust_sport6_thash_adjust_off` | The unchanged assertion runs in BSS/unready and real-ready DPDK profiles; in both, the source body itself sets the flag to zero. A synthetic reply caller demonstrates successful advisory use and exact unchanged fallback records; Linux allocation remains untouched. |
 | `test_ff_dpdk_if.c` | `test_ff_rss_thash_ctx_init_thash_adjust_off` | The unchanged assertion runs in BSS and ready profiles. The source test sets the flag to zero; with `FF_RSS_DIAG` off `ff_rss_thash_ctx_init` has no adjustment branch and only returns0, which does not establish context readiness. |
@@ -116,9 +115,7 @@ protocol semantics. Ready-context branch tests must explicitly demonstrate
 readiness before measuring recheck/range behavior or timing. Keep the source's
 weaker guard assertions distinct from this stronger runtime acceptance.
 
-The current catalog is359 scenario-adapted,1 partial,3 blocked,
-15 architecture-specific and55 harness-only out of433. All4 blocked/partial
-cases remain unfinished. The two standalone tests already consume DPDK directly
+The current catalog is360 scenario-adapted,1 partial,2 blocked,
+15 architecture-specific and55 harness-only out of433. All3 remaining partial/blocked cases remain unfinished. The two standalone tests already consume DPDK directly
 in the original source; their unchanged arithmetic contracts need no new Ker
-production helper. This qualification does not satisfy the remaining microbenchmark, Linux
-source-port allocation or data-plane RSS gates above.
+production helper. This qualification does not satisfy the Linux source-port allocation or data-plane RSS gates above.

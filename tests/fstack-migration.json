@@ -3359,9 +3359,18 @@
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_microbench",
       "kind": "cmocka",
-      "status": "blocked",
-      "reason": "The unchanged helper first probes readiness and skips when source-default RETA is zero. Even with contexts prepared, its table setup leaves thash_adjust=0, so the adjust helper declines before the 10000-call timing loop. No performance result is asserted. See docs/fstack-rss-contracts.md and issue220; no source pass is claimed.",
-      "ker_tests": []
+      "status": "scenario-adapted",
+      "reason": "The complete original rd_now_ns helper, N=10000, strict t_off<t_on assertion and benchmark body are byte-audited. The original BSS profile is executed only as an expected-skip control and is not counted as a compatibility pass or timing evidence. A separate real-primary DPDK fixture calls the literal original table builder then explicitly sets thash_adjust=1, verifies both v4/v6 contexts and independently validates candidates against the published key/RETA and original software predicate. The original body then runs once with real CLOCK_MONOTONIC and the unchanged strict timing assertion. It links the production uninstrumented caller library. This is standalone caller-helper timing only; no Linux allocator, physical NIC, or hardware RSS performance claim. See docs/fstack-rss-contracts.md.",
+      "ker_tests": [
+        {
+          "ctest": "fstack-rss-adjust-microbench-original-import",
+          "provenance_case": "fstack-rss-adjust-microbench"
+        },
+        {
+          "ctest": "fstack-rss-adjust-microbench",
+          "provenance_case": "fstack-rss-adjust-microbench"
+        }
+      ]
     },
     {
       "id": "tests/unit/test_ff_dpdk_if.c::test_ff_rss_adjust_sport_thash_adjust_off",

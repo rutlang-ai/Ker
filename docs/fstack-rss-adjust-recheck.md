@@ -34,6 +34,6 @@ recovery.
 
 This demonstrates the original helper's caller-side recheck contract. It does
 not qualify Linux socket allocation, TCP behavior, physical RSS queue landing,
-or performance. The unready microbenchmark remains blocked: its unchanged
-setup leaves the optimization disabled and skips before timing even if separate
-contexts are available. See the [overall RSS contract matrix](fstack-rss-contracts.md).
+or Linux allocation or hardware RSS. The microbenchmark’s unchanged BSS profile
+still skips and remains only a control; its separate ready fixture and strict
+N=10000 timing are qualified in the [overall RSS contract matrix](fstack-rss-contracts.md).
