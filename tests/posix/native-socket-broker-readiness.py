@@ -2,6 +2,7 @@
 """TAP proof for the opt-in socket-broker READY/STOP control path."""
 import argparse
 import ctypes
+import errno
 import importlib.machinery
 import importlib.util
 import json
@@ -78,6 +79,32 @@ def send_test_packet(endpoint, packet, rights=()):
     require(sent == len(packet), f'short test STOP send: {sent} of {len(packet)}')
 
 
+def verify_request(nonce, epoch, sequence):
+    packet = bytearray(64)
+    struct.pack_into('<IHHII', packet, 0, wire.MAGIC, wire.VERSION, 4, 64, 0)
+    packet[16:32] = nonce
+    struct.pack_into('<QQ', packet, 32, epoch, sequence)
+    return bytes(packet)
+
+
+def verify_result(endpoint, broker_pid, expected_sequence, watch_fd, nonce, epoch):
+    send_test_packet(endpoint, verify_request(nonce, epoch, expected_sequence), (watch_fd,))
+    return receive_verify_result(endpoint, broker_pid, expected_sequence, nonce, epoch)
+
+
+def receive_verify_result(endpoint, broker_pid, expected_sequence, nonce, epoch):
+    packet, credentials = receive_record(endpoint, 128, 6)
+    require(credentials[0] == broker_pid,
+        f'watch result came from unexpected process credentials: {credentials!r}')
+    require(len(packet) == 128 and struct.unpack_from('<IHHII', packet, 0) ==
+        (wire.MAGIC, wire.VERSION, 5, 128, struct.unpack_from('<I', packet, 12)[0]),
+        f'malformed watch result header: {packet!r}')
+    require(packet[16:32] == nonce and struct.unpack_from('<Q', packet, 32)[0] == epoch and
+        struct.unpack_from('<Q', packet, 40)[0] == expected_sequence,
+        'watch result identity/sequence mismatch')
+    return struct.unpack_from('<I', packet, 12)[0], struct.unpack_from('<I', packet, 124)[0]
+
+
 def load_ker_run(path):
     loader = importlib.machinery.SourceFileLoader('_c34_test_ker_run', str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -100,6 +127,14 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
     ker_run = load_ker_run(args.launcher)
     state = {'manager': None, 'app': None, 'retainer_pid': -1}
     original_manager = ker_run.broker_readiness.BrokerReadiness
+    barrier_listener = None
+    barrier_channel = None
+    barrier_path = args.rpc_path.with_name(args.rpc_path.stem + '.verify-barrier.sock')
+    if args.mode == 'generation-watch-stop-cancel':
+        barrier_listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        barrier_listener.bind(str(barrier_path))
+        os.chmod(barrier_path, 0o600)
+        barrier_listener.listen(1)
 
     # The retainer is forked before ker-run starts worker/runtime threads. It
     # receives only a duplicate of the real readiness endpoint later.
@@ -180,6 +215,10 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                 if app is None:
                     time.sleep(0.001)
             require(app is not None, 'broker application Popen did not complete')
+            if args.mode == 'generation-watch-stop-cancel':
+                barrier_listener.settimeout(10)
+                barrier_channel, _ = barrier_listener.accept()
+                barrier_channel.settimeout(5)
             if args.mode == 'no-bootstrap':
                 wait_deadline = time.monotonic() + 15
                 while app.poll() is None and time.monotonic() < wait_deadline:
@@ -203,6 +242,146 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                     'retainer_held': state.get('retainer_held', False)}) + '\n').encode())
             if args.mode == 'parent-death':
                 return
+            if args.mode in ('generation-watch', 'generation-watch-replay',
+                             'generation-watch-rights', 'generation-watch-stop-cancel'):
+                actor_path = args.generation_watch_actor.resolve()
+                watch_path = args.rpc_path.with_name(args.rpc_path.stem + '.watch.sock')
+                with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as cap_listener:
+                    cap_listener.bind(str(watch_path))
+                    os.chmod(watch_path, 0o600)
+                    cap_listener.listen(1)
+                    actor = subprocess.Popen([str(actor_path), str(args.rpc_path),
+                        str(watch_path)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, close_fds=True)
+                    state['watch_actor'] = actor
+                    cap_listener.settimeout(15)
+                    try:
+                        channel, _ = cap_listener.accept()
+                    except TimeoutError as error:
+                        if actor.poll() is None:
+                            actor.kill()
+                        actor_output, actor_errors = actor.communicate(timeout=5)
+                        raise RuntimeError('watch actor did not connect its capability channel: '
+                            f'rc={actor.returncode}; stdout={actor_output!r}; '
+                            f'stderr={actor_errors.decode(errors="replace")!r}') from error
+                    with channel:
+                        channel.settimeout(10)
+                        payload, ancillary, flags, _ = channel.recvmsg(32,
+                            socket.CMSG_SPACE(struct.calcsize('i')))
+                        watch_fds = []
+                        for level, kind, data in ancillary:
+                            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                                watch_fds.extend(struct.unpack(
+                                    f'{len(data) // struct.calcsize("i")}i', data))
+                        require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and
+                            len(payload) == 12 and len(watch_fds) == 1,
+                            'actor did not transfer exactly one watch capability')
+                        magic, actor_pid, port, reserved = struct.unpack('<IIHH', payload)
+                        require(magic == 0x57415443 and actor_pid == actor.pid and
+                            port == 4127 and reserved == 0,
+                            f'actor watch identity mismatch: {payload!r}, pid={actor.pid}')
+                        watch_fd = watch_fds.pop()
+                        state['watch_fd'] = watch_fd
+                        status, state_code = verify_result(manager.parent, app.pid, 1,
+                            watch_fd, manager.nonce, manager.epoch)
+                        require(status == errno.EBUSY and state_code == 0,
+                            f'live owner was not denied retirement: status={status}, state={state_code}')
+                        channel.sendall(b'C')
+                        require(channel.recv(1) == b'C',
+                            'actor did not confirm closing every listener alias')
+                        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        probe.settimeout(1)
+                        try:
+                            probe.connect(('127.0.0.1', port))
+                        except OSError as error:
+                            require(error.errno in (errno.ECONNREFUSED, errno.EHOSTUNREACH),
+                                f'closed listener probe failed unexpectedly: {error!r}')
+                        else:
+                            raise RuntimeError('watch metadata retained a live listener alias')
+                        finally:
+                            probe.close()
+                        status, _ = verify_result(manager.parent, app.pid, 2,
+                            watch_fd, manager.nonce, manager.epoch)
+                        require(status == errno.EBUSY,
+                            f'live owner with closed listener was accepted: status={status}')
+                        os.kill(actor.pid, signal.SIGKILL)
+                        actor.wait(timeout=5)
+                        require(actor.returncode == -signal.SIGKILL,
+                            f'owner actor was not reaped as requested: {actor.returncode}')
+                        if args.mode == 'generation-watch-stop-cancel':
+                            send_test_packet(manager.parent,
+                                verify_request(manager.nonce, manager.epoch, 3), (watch_fd,))
+                            require(barrier_channel.recv(1) == b'P',
+                                'asynchronous census did not reach the test barrier')
+                            stop = wire.pack_stop(wire.STOP, manager.nonce, manager.epoch,
+                                supervisor_pid, os.getuid(), os.getgid(), manager.supervisor[3])
+                            send_test_packet(manager.parent, stop)
+                            status, state_code = receive_verify_result(manager.parent, app.pid,
+                                3, manager.nonce, manager.epoch)
+                            require(status == errno.ECANCELED and state_code == 0,
+                                f'in-flight verification was not canceled: {status}, {state_code}')
+                            ack_packet, ack_credentials = receive_record(manager.parent, 104, 6)
+                            wire.unpack_stop(ack_packet, wire.STOP_ACK)
+                            require(ack_credentials[0] == app.pid,
+                                f'STOP_ACK credentials mismatch: {ack_credentials!r}')
+                            manager.stopped = True
+                            stop_deadline = time.monotonic() + 10
+                            while app.poll() is None and time.monotonic() < stop_deadline:
+                                time.sleep(0.005)
+                            require(app.poll() is not None and app.returncode == 0,
+                                'canceled verification did not cleanly settle broker shutdown')
+                        else:
+                            status, state_code = verify_result(manager.parent, app.pid, 3,
+                                watch_fd, manager.nonce, manager.epoch)
+                            require(status == 0 and state_code == 1,
+                                f'reaped owner did not reach OLD_RETIRED: {status}, {state_code}')
+                            status, state_code = verify_result(manager.parent, app.pid, 4,
+                                watch_fd, manager.nonce, manager.epoch)
+                            require(status == 0 and state_code == 1,
+                                'terminal retirement query was not idempotent')
+                        if args.mode == 'generation-watch-replay':
+                            send_test_packet(manager.parent,
+                                verify_request(manager.nonce, manager.epoch, 4), (watch_fd,))
+                        elif args.mode == 'generation-watch-rights':
+                            read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
+                            try:
+                                send_test_packet(manager.parent,
+                                    verify_request(manager.nonce, manager.epoch, 5),
+                                    (watch_fd, read_fd))
+                            finally:
+                                os.close(read_fd)
+                                os.close(write_fd)
+                        elif args.mode == 'generation-watch':
+                            os.kill(supervisor_pid, signal.SIGTERM)
+                            stop_deadline = time.monotonic() + 10
+                            while not manager.stopped and time.monotonic() < stop_deadline:
+                                time.sleep(0.001)
+                            require(manager.stopped,
+                                'watch test did not complete authenticated STOP/ACK')
+                            app_deadline = time.monotonic() + 10
+                            while app.poll() is None and time.monotonic() < app_deadline:
+                                time.sleep(0.005)
+                            require(app.poll() is not None and app.returncode == 0,
+                                'watch test did not complete clean broker shutdown')
+                        if args.mode in ('generation-watch-replay', 'generation-watch-rights'):
+                            app_deadline = time.monotonic() + 10
+                            while app.poll() is None and time.monotonic() < app_deadline:
+                                time.sleep(0.005)
+                            require(app.poll() is not None and app.returncode != 0,
+                                f'{args.mode} verification input was not rejected')
+                        control_result.update({'live_owner_denied': True,
+                            'listener_alias_closed': True, 'owner_reaped': True,
+                            'reaped_owner_retired': args.mode != 'generation-watch-stop-cancel',
+                            'terminal_idempotent': args.mode != 'generation-watch-stop-cancel',
+                            'replay_rejected': args.mode == 'generation-watch-replay',
+                            'ancillary_rejected': args.mode == 'generation-watch-rights',
+                            'verify_canceled': args.mode == 'generation-watch-stop-cancel',
+                            'clean_stop': args.mode in ('generation-watch',
+                                'generation-watch-stop-cancel'),
+                            'app_returncode': app.returncode})
+                        os.close(watch_fd)
+                        state.pop('watch_fd', None)
+                    return
             if args.mode in ('bad-stop', 'rights-stop', 'truncated-stop'):
                 if args.mode == 'bad-stop':
                     bad = wire.pack_stop(wire.STOP,
@@ -255,6 +434,12 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
             app = state.get('app')
             if app is not None and app.poll() is None:
                 app.kill()
+            actor = state.get('watch_actor')
+            if actor is not None and actor.poll() is None:
+                actor.kill()
+            watch_fd = state.pop('watch_fd', None)
+            if watch_fd is not None:
+                os.close(watch_fd)
 
     thread = threading.Thread(target=control_thread, name='broker-readiness-test-control')
     thread.start()
@@ -265,6 +450,8 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
         str(args.broker), str(args.rpc_path)]
     if args.mode == 'no-bootstrap':
         arguments.append('--skip-bootstrap')
+    if args.mode == 'generation-watch-stop-cancel':
+        arguments += ['--verify-barrier', str(barrier_path)]
     old_argv = sys.argv
     try:
         sys.argv = arguments
@@ -272,6 +459,10 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
     finally:
         sys.argv = old_argv
         ker_run.broker_readiness.BrokerReadiness = original_manager
+        if barrier_channel is not None:
+            barrier_channel.close()
+        if barrier_listener is not None:
+            barrier_listener.close()
         if retainer_channel is not None:
             retainer_channel.close()
     thread.join(timeout=25)
@@ -305,6 +496,24 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
         require(launcher_result != 0 and control_result.get('no_ready') and
             stats and stats.get('outstanding') == 0,
             f'no-bootstrap path did not fail before READY and clean up: {result!r}')
+    elif args.mode in ('generation-watch', 'generation-watch-replay',
+                       'generation-watch-rights', 'generation-watch-stop-cancel'):
+        expected_result = (launcher_result == 143 and control_result.get('clean_stop') and
+            control_result.get('app_returncode') == 0) if args.mode == 'generation-watch' else (
+            launcher_result != 0 and control_result.get('app_returncode') != 0)
+        if args.mode == 'generation-watch-stop-cancel':
+            expected_result = launcher_result == 0 and control_result.get('clean_stop') and \
+                control_result.get('app_returncode') == 0 and control_result.get('verify_canceled')
+        require(expected_result and control_result.get('live_owner_denied') and
+            control_result.get('listener_alias_closed') and
+            (args.mode == 'generation-watch-stop-cancel' or
+                control_result.get('reaped_owner_retired')) and
+            (args.mode == 'generation-watch-stop-cancel' or
+                control_result.get('terminal_idempotent')) and
+            (args.mode != 'generation-watch-replay' or control_result.get('replay_rejected')) and
+            (args.mode != 'generation-watch-rights' or control_result.get('ancillary_rejected')) and
+            stats and stats.get('outstanding') == 0,
+            f'generation watch did not enforce retirement evidence: {result!r}')
     return 0
 
 def enable_subreaper():
@@ -338,6 +547,9 @@ def spawn_supervisor(args, mode, timeout=45):
             str(getattr(args, name.replace('-', '_')).resolve())]
     command += ['--stats', str(args.root / f'{mode}.json'),
         '--rpc-path', str(args.root / f'{mode}.sock')]
+    if mode in ('generation-watch', 'generation-watch-replay', 'generation-watch-rights',
+                'generation-watch-stop-cancel'):
+        command += ['--generation-watch-actor', str(args.generation_watch_actor.resolve())]
     retain = mode == 'parent-death'
     log_path = args.root / f'{mode}.supervisor.log'
     log_file = log_path.open('wb')
@@ -454,6 +666,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('launcher', 'library', 'worker', 'broker', 'dpdk-plugin-dir'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--generation-watch-actor', type=Path)
     parser.add_argument('--stats', type=Path,
         default=Path('/dev/shm/ker-broker-readiness-stats.json'))
     parser.add_argument('--rpc-path', type=Path,
@@ -462,7 +675,8 @@ def main():
     parser.add_argument('--supervisor', action='store_true')
     parser.add_argument('--mode', choices=('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop',
         'truncated-stop',
-        'no-bootstrap', 'parent-death'), default='healthy')
+        'no-bootstrap', 'parent-death', 'generation-watch', 'generation-watch-replay',
+        'generation-watch-rights', 'generation-watch-stop-cancel'), default='healthy')
     parser.add_argument('--notify-fd', type=int, default=-1)
     args = parser.parse_args()
     if args.supervisor:
@@ -474,14 +688,20 @@ def main():
             '--worker', str(args.worker.resolve()), '--broker', str(args.broker.resolve()),
             '--dpdk-plugin-dir', str(args.dpdk_plugin_dir.resolve()),
             '--stats', str(args.stats.resolve()), '--rpc-path', str(args.rpc_path.resolve())]
+        if args.generation_watch_actor:
+            command += ['--generation-watch-actor', str(args.generation_watch_actor.resolve())]
         subprocess.run(command, check=True)
         return 0
     set_up_network()
     enable_subreaper()
     with tempfile.TemporaryDirectory(prefix='ker-broker-readiness-') as directory:
         args.root = Path(directory)
-        for mode in ('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop', 'truncated-stop',
-                     'parent-death', 'no-bootstrap'):
+        modes = ('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop', 'truncated-stop',
+            'parent-death', 'no-bootstrap')
+        if args.generation_watch_actor:
+            modes += ('generation-watch', 'generation-watch-replay',
+                'generation-watch-rights', 'generation-watch-stop-cancel')
+        for mode in modes:
             spawn_supervisor(args, mode)
     print('BROKER_READINESS_TAP_OK authenticated_READY_STOP no-bootstrap malformed_STOP parent_pidfd_death')
     return 0

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <ker/socket-broker-server.h>
+#include "socket-broker-readiness-test.h"
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
@@ -9,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #define CHECK(expr) do { if (!(expr)) { \
@@ -46,8 +49,9 @@ int main(int argc, char **argv)
 {
     (void)signal(SIGPIPE, SIG_IGN);
     bool skip_bootstrap = argc == 3 && strcmp(argv[2], "--skip-bootstrap") == 0;
-    if (argc != 2 && !skip_bootstrap) {
-        fprintf(stderr, "usage: broker-readiness <rpc-path> [--skip-bootstrap]\n");
+    bool verify_barrier = argc == 4 && strcmp(argv[2], "--verify-barrier") == 0;
+    if (argc != 2 && !skip_bootstrap && !verify_barrier) {
+        fprintf(stderr, "usage: broker-readiness <rpc-path> [--skip-bootstrap|--verify-barrier <path>]\n");
         return 2;
     }
     const char *fd_text = getenv("KER_BROKER_READINESS_FD");
@@ -68,6 +72,18 @@ int main(int argc, char **argv)
     CHECK(ker_socket_broker_server_readiness_attach(server, control_fd,
         nonce, epoch, profile, parent_start) == 0);
     CHECK(syscall(SYS_close, control_fd) == 0);
+    if (verify_barrier) {
+        int barrier_fd = (int)syscall(SYS_socket, AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+        CHECK(barrier_fd >= 0);
+        struct sockaddr_un barrier_address = {.sun_family = AF_UNIX};
+        size_t barrier_length = strlen(argv[3]);
+        CHECK(barrier_length && barrier_length < sizeof(barrier_address.sun_path));
+        memcpy(barrier_address.sun_path, argv[3], barrier_length + 1);
+        CHECK(syscall(SYS_connect, barrier_fd, &barrier_address, sizeof(barrier_address)) == 0);
+        CHECK(ker_socket_broker_server_readiness_test_set_verify_barrier(
+            server, barrier_fd) == 0);
+        CHECK(syscall(SYS_close, barrier_fd) == 0);
+    }
     if (!skip_bootstrap)
         CHECK(ker_socket_broker_server_bootstrap_complete_empty(server) == 0);
     puts("BROKER_ENTER");

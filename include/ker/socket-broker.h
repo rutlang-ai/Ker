@@ -28,7 +28,8 @@ enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_FF_OWNER = 6,
     KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN = 7,
     KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT = 8,
-    KER_SOCKET_BROKER_FF_OWNER_CUTOVER = 9
+    KER_SOCKET_BROKER_FF_OWNER_CUTOVER = 9,
+    KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH = 10
 };
 
 enum ker_socket_broker_rights {
@@ -288,6 +289,11 @@ int ker_socket_client_owner_group_cutover_abort(
 int ker_socket_client_owner_group_cutover_poll(
     struct ker_socket_client *client, int cutover_cap,
     struct ker_socket_group_cutover_status *status);
+
+/* Creates a read-only generation metadata watch for member 0 of a live owner
+ * plan. The watch never owns a listener fd and cannot perform verification. */
+int ker_socket_client_owner_generation_watch_create(
+    struct ker_socket_client *client, int plan_cap);
 
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights

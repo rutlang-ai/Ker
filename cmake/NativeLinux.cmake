@@ -391,6 +391,22 @@ if(BUILD_TESTING)
     target_compile_definitions(ker-socket-broker-server PRIVATE
         KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1
         KER_SOCKET_BROKER_READINESS_TESTING=1)
+    # The deterministic async VERIFY barrier is built only into this
+    # uninstalled fixture library, never into the SDK server target.
+    add_library(ker-socket-broker-readiness-test-server STATIC
+        src/posix/socket-broker-server.c src/posix/tcp-observer-diag-parse.c)
+    target_include_directories(ker-socket-broker-readiness-test-server PUBLIC
+        "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-socket-broker-readiness-test-server PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-socket-broker-readiness-test-server PRIVATE c_std_11)
+    target_compile_options(ker-socket-broker-readiness-test-server PRIVATE
+        -Wall -Wextra -Werror)
+    target_compile_definitions(ker-socket-broker-readiness-test-server PRIVATE
+        KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1
+        KER_SOCKET_BROKER_READINESS_TESTING=1
+        KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1)
+    target_link_libraries(ker-socket-broker-readiness-test-server PRIVATE ker-posix)
 endif()
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
 add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
@@ -637,12 +653,19 @@ if(BUILD_TESTING)
     add_executable(ker-socket-broker-readiness-fixture
         tests/posix/socket-broker-readiness-broker.c)
     target_link_libraries(ker-socket-broker-readiness-fixture PRIVATE
-        ker-socket-broker-server)
+        ker-socket-broker-readiness-test-server)
     add_dependencies(ker-socket-broker-readiness-fixture ker-app ker-io-worker)
     target_compile_options(ker-socket-broker-readiness-fixture PRIVATE
         -Wall -Wextra -Werror)
     target_compile_definitions(ker-socket-broker-readiness-fixture PRIVATE
-        KER_SOCKET_BROKER_READINESS_TESTING=1)
+        KER_SOCKET_BROKER_READINESS_TESTING=1
+        KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING=1)
+    add_executable(ker-socket-broker-generation-watch-actor
+        tests/posix/socket-broker-generation-watch-actor.c)
+    target_link_libraries(ker-socket-broker-generation-watch-actor PRIVATE
+        ker-socket-client)
+    target_compile_options(ker-socket-broker-generation-watch-actor PRIVATE
+        -Wall -Wextra -Werror)
     add_test(NAME native-socket-broker-readiness-wire
         COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tests/posix/test_broker_readiness_wire.py")
@@ -654,6 +677,7 @@ if(BUILD_TESTING)
             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
             --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
             --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+            --generation-watch-actor "$<TARGET_FILE:ker-socket-broker-generation-watch-actor>"
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-readiness PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;socket-broker;readiness;tap"

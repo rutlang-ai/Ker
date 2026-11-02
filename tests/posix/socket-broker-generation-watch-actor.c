@@ -1,0 +1,96 @@
+#define _GNU_SOURCE
+#include <ker/socket-broker.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+static int send_watch(int fd, int watch_fd, uint16_t port)
+{
+    struct { uint32_t magic; uint32_t pid; uint16_t port; uint16_t reserved; } record = {
+        .magic = UINT32_C(0x57415443), .pid = (uint32_t)getpid(), .port = port};
+    char control[CMSG_SPACE(sizeof(int))] = {0};
+    struct iovec iov = {.iov_base = &record, .iov_len = sizeof(record)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &watch_fd, sizeof(watch_fd));
+    return sendmsg(fd, &message, MSG_NOSIGNAL) == (ssize_t)sizeof(record) ? 0 : -1;
+}
+
+static int connect_control(const char *path)
+{
+    int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    size_t length = strlen(path);
+    if (!length || length >= sizeof(address.sun_path)) { close(fd); errno = ENAMETOOLONG; return -1; }
+    memcpy(address.sun_path, path, length + 1);
+    if (connect(fd, (struct sockaddr *)&address, sizeof(address))) {
+        int error = errno; close(fd); errno = error; return -1;
+    }
+    return fd;
+}
+
+#define REQUIRE(call) do { if (!(call)) { \
+    fprintf(stderr, "generation watch actor:%d: %s: %s\n", __LINE__, #call, strerror(errno)); \
+    goto fail; } } while (0)
+
+int main(int argc, char **argv)
+{
+    if (argc != 3) { fprintf(stderr, "usage: generation-watch-actor <rpc-path> <control-path>\n"); return 2; }
+    const uint16_t port = 4127;
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    if (inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1) return 2;
+    struct ker_socket_client client;
+    int owner = -1, plan = -1, slot = -1, watch = -1, activated = -1, control = -1;
+    REQUIRE(ker_socket_client_open(&client, argv[1]) == 0);
+    owner = ker_socket_client_ff_owner_create(&client);
+    REQUIRE(owner >= 0);
+    plan = ker_socket_client_owner_group_staged_plan(&client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    REQUIRE(plan >= 0);
+    slot = ker_socket_client_owner_group_slot(&client, plan, 0);
+    REQUIRE(slot >= 0);
+    watch = ker_socket_client_owner_generation_watch_create(&client, plan);
+    REQUIRE(watch >= 0);
+    REQUIRE(ker_socket_client_ff_owner_group_claim(&client, owner, slot) == 0);
+    activated = ker_socket_client_owner_group_activate_initial(&client, owner, slot);
+    REQUIRE(activated >= 0);
+    REQUIRE(ker_socket_client_bind(&client, activated,
+        (const struct sockaddr *)&address, sizeof(address)) == 0);
+    REQUIRE(ker_socket_client_listen(&client, activated, 8) == 0);
+    control = connect_control(argv[2]);
+    REQUIRE(control >= 0);
+    REQUIRE(send_watch(control, watch, port) == 0);
+    char command = 0;
+    REQUIRE(recv(control, &command, 1, 0) == 1 && command == 'C');
+    close(activated); activated = -1;
+    close(slot); slot = -1;
+    close(plan); plan = -1;
+    /* Keep the owner actor alive after every listener and plan capability is
+     * closed. The watch capability belongs to the controller connection. */
+    close(watch); watch = -1;
+    REQUIRE(send(control, "C", 1, MSG_NOSIGNAL) == 1);
+    for (;;) pause();
+
+fail:
+    if (activated >= 0) close(activated);
+    if (watch >= 0) close(watch);
+    if (slot >= 0) close(slot);
+    if (plan >= 0) close(plan);
+    if (owner >= 0) close(owner);
+    if (control >= 0) close(control);
+    ker_socket_client_close(&client);
+    return 1;
+}
