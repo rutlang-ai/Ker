@@ -857,10 +857,14 @@ static int initialize_inherited_capabilities(void)
                 int error = errno; ker_sb_preload_unlock(); errno = error; return -1;
             }
         } else if ((kind == KER_SOCKET_BROKER_REUSEPORT_GROUP ||
-                    kind == KER_SOCKET_BROKER_MEMBER_CENSUS) && status_flags == 0) {
-            /* Group and census descriptors are opaque metadata/control
-             * capabilities, not application sockets or composite epolls.
-             * Preserve them across exec without adding them to either map. */
+                    kind == KER_SOCKET_BROKER_MEMBER_CENSUS ||
+                    kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+                    kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT) &&
+                   status_flags == 0) {
+            /* Group, census, and deferred owner-group descriptors are opaque
+             * metadata/control capabilities, not application sockets or
+             * composite epolls. Preserve them across exec without adding
+             * them to either map. */
             continue;
         } else if (kind == KER_SOCKET_BROKER_TCP_OBSERVER && status_flags == 0) {
             /* Observer capabilities carry metadata authority only. Preserve
@@ -872,7 +876,7 @@ static int initialize_inherited_capabilities(void)
              * intentionally never entered in the application socket map. */
             continue;
         } else {
-            (void)status_flags; ker_sb_preload_unlock(); errno = EPROTO; return -1;
+            ker_sb_preload_unlock(); errno = EPROTO; return -1;
         }
     }
     ker_sb_preload_unlock();

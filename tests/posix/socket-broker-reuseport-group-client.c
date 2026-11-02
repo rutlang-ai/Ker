@@ -13,6 +13,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -100,7 +101,48 @@ static int exec_inherited_group_probe(const char *rpc_path, const char *helper,
     if (child < 0) { errno = saved; return -1; }
     int status = 0;
     while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) { errno = ECHILD; return -1; }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "inherited capability probe failed: wait_status=%d\n", status);
+        errno = ECHILD; return -1;
+    }
+    return 0;
+}
+
+static int exec_inherited_owner_group_probe(const char *rpc_path, const char *helper,
+    const char *preload, int plan, int slot, int owner)
+{
+    int capabilities[] = {plan, slot, owner};
+    int original_flags[3];
+    char descriptors[3][32];
+    for (size_t i = 0; i < 3; ++i) {
+        original_flags[i] = fcntl(capabilities[i], F_GETFD);
+        if (original_flags[i] < 0 ||
+            fcntl(capabilities[i], F_SETFD, original_flags[i] & ~FD_CLOEXEC)) {
+            for (size_t j = 0; j < i; ++j)
+                (void)fcntl(capabilities[j], F_SETFD, original_flags[j]);
+            return -1;
+        }
+        snprintf(descriptors[i], sizeof(descriptors[i]), "%d", capabilities[i]);
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        if (setenv("KER_SOCKET_BROKER_PATH", rpc_path, 1) ||
+            setenv("LD_PRELOAD", preload, 1)) _exit(120);
+        execl(helper, helper, rpc_path, descriptors[0], descriptors[1],
+            descriptors[2], "owner-bundle", (char *)NULL);
+        _exit(121);
+    }
+    int saved = errno;
+    for (size_t i = 0; i < 3; ++i)
+        (void)fcntl(capabilities[i], F_SETFD, original_flags[i]);
+    if (child < 0) { errno = saved; return -1; }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "inherited owner-group bundle probe failed: wait_status=%d\n", status);
+        errno = ECHILD;
+        return -1;
+    }
     return 0;
 }
 
@@ -123,6 +165,452 @@ static int snapshot_live_member(struct ker_socket_client *client, int census,
         errno = EPROTO;
         return -1;
     }
+    return 0;
+}
+
+static int owner_wait_fd(struct ker_socket_client *client, int fd, uint32_t events)
+{
+    int epoll = ker_socket_client_epoll_create1(client, EPOLL_CLOEXEC);
+    if (epoll < 0) return -1;
+    struct epoll_event event = {.events = events, .data.u64 = 1};
+    int result = ker_socket_client_epoll_ctl(client, epoll, EPOLL_CTL_ADD, fd, &event);
+    if (!result) result = wait_token(client, epoll, 1, 0);
+    int error = errno;
+    close(epoll);
+    errno = error;
+    return result;
+}
+
+static int owner_accept_exchange(struct ker_socket_client *client, int owner,
+    int listener, const char *request, const char *reply, int *held_out)
+{
+    if (owner_wait_fd(client, listener, EPOLLIN)) return -1;
+    int accepted = ker_socket_client_accept4(client, listener, NULL, NULL, SOCK_CLOEXEC);
+    if (accepted < 0) return -1;
+    if (ker_socket_client_ff_owner_match(client, owner, accepted) != 1) {
+        int error = errno ? errno : EPROTO; close(accepted); errno = error; return -1;
+    }
+    int accepted_alias = ker_socket_client_dup(client, accepted);
+    if (accepted_alias < 0 ||
+        ker_socket_client_ff_owner_match(client, owner, accepted_alias) != 1) {
+        int error = errno ? errno : EPROTO;
+        if (accepted_alias >= 0) close(accepted_alias);
+        close(accepted); errno = error; return -1;
+    }
+    close(accepted_alias);
+    char actual[8];
+    int result = read_exact(client, accepted, actual, sizeof(actual));
+    if (!result && memcmp(actual, request, 8)) { errno = EPROTO; result = -1; }
+    if (!result) result = write_exact(client, accepted, reply, 8);
+    int error = errno;
+    if (!result && held_out) *held_out = accepted;
+    else close(accepted);
+    errno = error;
+    return result;
+}
+
+static int owner_echo_held(struct ker_socket_client *client, int fd,
+    const char *request, const char *reply)
+{
+    char actual[8];
+    if (read_exact(client, fd, actual, sizeof(actual))) return -1;
+    if (memcmp(actual, request, sizeof(actual))) { errno = EPROTO; return -1; }
+    return write_exact(client, fd, reply, 8);
+}
+
+static int owner_group_orphan_payload(struct ker_socket_client *client,
+    int owner, int census, int held_fd)
+{
+    struct ker_socket_member_payload_snapshot owner_snapshot = {0}, member_snapshot = {0};
+    struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
+    bool baseline = false;
+    for (unsigned attempt = 0; attempt < 500; ++attempt) {
+        if (ker_socket_client_ff_owner_payload_snapshot(client, owner,
+                &owner_snapshot) ||
+            ker_socket_client_member_payload_snapshot(client, census, &member_snapshot))
+            return -1;
+        if (!owner_snapshot.payload_bytes && !member_snapshot.payload_bytes &&
+            owner_snapshot.sampled_sockets == 1 && member_snapshot.sampled_sockets == 1) {
+            baseline = true;
+            break;
+        }
+        (void)nanosleep(&pause, NULL);
+    }
+    if (!baseline) { errno = EPROTO; return -1; }
+    puts("OWNER_GROUP_WAIT_PAYLOAD"); fflush(stdout);
+    char command[32] = {0};
+    if (!fgets(command, sizeof(command), stdin) || strcmp(command, "SEND\n")) {
+        fprintf(stderr, "C18 payload: bad SEND command %s\n", command);
+        errno = EPROTO; return -1;
+    }
+    unsigned char payload[1200];
+    for (size_t i = 0; i < sizeof(payload); ++i)
+        payload[i] = (unsigned char)((i * 17 + 3) & 0xff);
+    if (write_exact(client, held_fd, payload, sizeof(payload)) || close(held_fd)) return -1;
+
+    bool pending = false;
+    for (unsigned attempt = 0; attempt < 500; ++attempt) {
+        if (ker_socket_client_ff_owner_payload_snapshot(client, owner,
+                &owner_snapshot) ||
+            ker_socket_client_member_payload_snapshot(client, census, &member_snapshot))
+            { fprintf(stderr, "C18 payload: query failed errno=%d\n", errno); return -1; }
+        if (owner_snapshot.payload_bytes == sizeof(payload) &&
+            member_snapshot.payload_bytes == sizeof(payload) &&
+            owner_snapshot.sampled_sockets == 1 && member_snapshot.sampled_sockets == 1) {
+            pending = true;
+            break;
+        }
+        (void)nanosleep(&pause, NULL);
+    }
+    if (!pending) {
+        fprintf(stderr, "C18 payload: snapshots owner=%llu/%llu member=%llu/%llu\n",
+            (unsigned long long)owner_snapshot.payload_bytes,
+            (unsigned long long)owner_snapshot.sampled_sockets,
+            (unsigned long long)member_snapshot.payload_bytes,
+            (unsigned long long)member_snapshot.sampled_sockets);
+        errno = EPROTO; return -1;
+    }
+    printf("OWNER_GROUP_DESCRIPTORLESS_PENDING bytes=%llu owner_sockets=%llu member_sockets=%llu\n",
+        (unsigned long long)owner_snapshot.payload_bytes,
+        (unsigned long long)owner_snapshot.sampled_sockets,
+        (unsigned long long)member_snapshot.sampled_sockets);
+    fflush(stdout);
+    memset(command, 0, sizeof(command));
+    if (!fgets(command, sizeof(command), stdin) || strcmp(command, "DRAIN\n")) {
+        fprintf(stderr, "C18 payload: bad DRAIN command %s\n", command);
+        errno = EPROTO; return -1;
+    }
+    bool drained = false;
+    for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+        if (ker_socket_client_ff_owner_payload_snapshot(client, owner,
+                &owner_snapshot) ||
+            ker_socket_client_member_payload_snapshot(client, census, &member_snapshot))
+            return -1;
+        if (!owner_snapshot.payload_bytes && !member_snapshot.payload_bytes) {
+            drained = true;
+            break;
+        }
+        (void)nanosleep(&pause, NULL);
+    }
+    if (!drained) { errno = ETIMEDOUT; return -1; }
+    puts("OWNER_GROUP_DESCRIPTORLESS_DRAINED bytes=0"); fflush(stdout);
+    return 0;
+}
+
+static int owner_group_child(struct ker_socket_client *inherited_client,
+    const char *rpc_path, int foreign_owner, int slot, int control)
+{
+    ker_socket_client_close(inherited_client);
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 20;
+    errno = 0;
+    if (ker_socket_client_ff_owner_group_claim(&client, foreign_owner, slot) != -1 ||
+        errno != EXDEV) return 21;
+    close(foreign_owner);
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot)) return 22;
+    errno = 0;
+    if (ker_socket_client_ff_owner_group_claim(&client, owner, slot) != -1 ||
+        errno != EALREADY) return 23;
+    char token = 'C';
+    if (send(control, &token, 1, MSG_NOSIGNAL) != 1 || recv(control, &token, 1, 0) != 1 ||
+        token != 'P') return 24;
+    enum ker_socket_broker_kind slot_kind = 0;
+    int slot_flags = -1;
+    if (ker_socket_client_describe(&client, slot, &slot_kind, &slot_flags) ||
+        slot_kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT || slot_flags != 0) return 25;
+    errno = 0;
+    if (ker_socket_client_reuseport_group_select(&client, slot, 0) != -1 ||
+        errno != ENOTSOCK) return 25;
+    int member = ker_socket_client_owner_group_member(&client, owner, slot);
+    int alias = ker_socket_client_owner_group_member(&client, owner, slot);
+    if (member < 0 || alias < 0 ||
+        ker_socket_client_ff_owner_match(&client, owner, member) != 1) return 25;
+    int member_duplicate = ker_socket_client_dup(&client, member);
+    if (member_duplicate < 0 ||
+        ker_socket_client_ff_owner_match(&client, owner, member_duplicate) != 1) return 25;
+    close(member_duplicate);
+    uint64_t first_cookie = 0, second_cookie = 0;
+    socklen_t length = sizeof(first_cookie);
+    if (ker_socket_client_getsockopt(&client, member, SOL_SOCKET, SO_COOKIE,
+            &first_cookie, &length) || length != sizeof(first_cookie)) return 26;
+    length = sizeof(second_cookie);
+    if (ker_socket_client_getsockopt(&client, alias, SOL_SOCKET, SO_COOKIE,
+            &second_cookie, &length) || length != sizeof(second_cookie) ||
+        first_cookie != second_cookie) return 27;
+    token = 'R';
+    if (send(control, &token, 1, MSG_NOSIGNAL) != 1 || recv(control, &token, 1, 0) != 1 ||
+        token != 'A') return 28;
+    int result = owner_accept_exchange(&client, owner, member, "OWNER-01", "WORKER-1", NULL);
+    close(alias); close(member); close(slot); close(owner);
+    ker_socket_client_close(&client);
+    if (result) return 29;
+    token = 'D';
+    return send(control, &token, 1, MSG_NOSIGNAL) == 1 ? 0 : 30;
+}
+
+static int owner_group_smoke(struct ker_socket_client *client, const char *rpc_path,
+    const char *inherited_helper, const char *preload_library, int foreign_group)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4100)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int owner = ker_socket_client_ff_owner_create(client);
+    if (owner < 0) return -1;
+    int plan = ker_socket_client_owner_group_plan(client, &address, 16,
+        KER_SOCKET_BROKER_CONTROL);
+    if (plan < 0) return -1;
+    int slot0 = ker_socket_client_owner_group_slot(client, plan, 0);
+    int slot1 = ker_socket_client_owner_group_slot(client, plan, 1);
+    if (slot0 < 0 || slot1 < 0) return -1;
+    /* The preload constructor must retain these typed opaque capabilities
+     * across exec without classifying them as application sockets. The
+     * inherited probe describes each and runs its normal main after loading
+     * the preload library. */
+    if (!inherited_helper || !preload_library ||
+        exec_inherited_owner_group_probe(rpc_path, inherited_helper, preload_library,
+            plan, slot0, owner)) return -1;
+    errno = 0;
+    if (ker_socket_client_owner_group_slot(client, plan, 0) != -1 || errno != EALREADY)
+        { errno = EPROTO; return -1; }
+    if (ker_socket_client_ff_owner_group_claim(client, owner, slot0)) return -1;
+    errno = 0;
+    if (ker_socket_client_ff_owner_group_claim(client, owner, slot0) != -1 ||
+        errno != EALREADY) { errno = EPROTO; return -1; }
+    errno = 0;
+    if (ker_socket_client_ff_owner_socket(client, owner, AF_INET,
+            SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP) != -1 || errno != EBUSY)
+        { errno = EPROTO; return -1; }
+
+    int control[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, control)) return -1;
+    struct timeval timeout = {.tv_sec = 15};
+    if (setsockopt(control[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+        setsockopt(control[0], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) ||
+        setsockopt(control[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+        setsockopt(control[1], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) return -1;
+    pid_t child = fork();
+    if (child < 0) { int error = errno; close(control[0]); close(control[1]); errno = error; return -1; }
+    if (child == 0) {
+        close(control[0]);
+        close(STDOUT_FILENO);
+        close(foreign_group); close(plan); close(slot0);
+        int result = owner_group_child(client, rpc_path, owner, slot1, control[1]);
+        _exit(result);
+    }
+    close(control[1]);
+    char token = 0;
+    if (recv(control[0], &token, 1, 0) != 1 || token != 'C')
+        { errno = EPROTO; return -1; }
+    int group = ker_socket_client_owner_group_publish(client, plan);
+    if (group < 0) return -1;
+    errno = 0;
+    if (ker_socket_client_owner_group_publish(client, plan) != -1 || errno != EALREADY)
+        { errno = EPROTO; return -1; }
+    int member0 = ker_socket_client_owner_group_member(client, owner, slot0);
+    int alias0 = ker_socket_client_owner_group_member(client, owner, slot0);
+    if (member0 < 0 || alias0 < 0) return -1;
+    errno = 0;
+    if (ker_socket_client_ff_owner_socket(client, owner, AF_INET,
+            SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP) != -1 || errno != EBUSY) {
+        errno = EPROTO; return -1;
+    }
+    uint64_t cookie0 = 0;
+    socklen_t cookie_length = sizeof(cookie0);
+    if (ker_socket_client_getsockopt(client, member0, SOL_SOCKET, SO_COOKIE,
+            &cookie0, &cookie_length) || cookie_length != sizeof(cookie0)) return -1;
+    int census0 = ker_socket_client_member_census_create(client, group, 0);
+    int census1 = ker_socket_client_member_census_create(client, group, 1);
+    if (census0 < 0 || census1 < 0) return -1;
+    struct ker_socket_member_census_snapshot snap0 = {0}, snap1 = {0};
+    if (ker_socket_client_member_census_snapshot(client, census0, &snap0) ||
+        ker_socket_client_member_census_snapshot(client, census1, &snap1) ||
+        snap0.total != 1 || snap1.total != 1 ||
+        snap0.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1 ||
+        snap1.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1 ||
+        !snap0.listener_cookie || snap0.listener_cookie != cookie0 ||
+        snap0.listener_cookie == snap1.listener_cookie) { errno = EPROTO; return -1; }
+    if (send(control[0], "P", 1, MSG_NOSIGNAL) != 1 ||
+        recv(control[0], &token, 1, 0) != 1 || token != 'R')
+        { errno = EPROTO; return -1; }
+
+    if (ker_socket_client_reuseport_group_select(client, group, 0)) return -1;
+    puts("OWNER_GROUP_READY_0"); fflush(stdout);
+    int held_fd = -1;
+    if (owner_accept_exchange(client, owner, member0, "OWNER-00", "WORKER-0", &held_fd))
+        return -1;
+    puts("OWNER_GROUP_ACCEPTED_0"); fflush(stdout);
+    if (ker_socket_client_reuseport_group_select(client, group, 1) ||
+        send(control[0], "A", 1, MSG_NOSIGNAL) != 1) return -1;
+    puts("OWNER_GROUP_READY_1"); fflush(stdout);
+    if (
+        recv(control[0], &token, 1, 0) != 1 || token != 'D')
+        { errno = EPROTO; return -1; }
+    if (owner_echo_held(client, held_fd, "OLD-0001", "OLD-ACK1")) return -1;
+    puts("OWNER_GROUP_ACCEPTED_1"); fflush(stdout);
+    if (owner_group_orphan_payload(client, owner, census0, held_fd)) {
+        return -1;
+    }
+    close(control[0]);
+    int child_status = 0;
+    while (waitpid(child, &child_status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+        errno = ECHILD; return -1;
+    }
+    errno = 0;
+    if (ker_socket_client_owner_group_publish(client, plan) != -1 || errno != EALREADY)
+        { errno = EPROTO; return -1; }
+    close(census0); close(census1); close(alias0); close(member0);
+    close(slot0); close(slot1); close(group); close(plan); close(owner);
+    puts("OWNER_GROUP_TWO_ACTOR_TCP_OK"); fflush(stdout);
+    return 0;
+}
+
+static int owner_group_poison_actor(struct ker_socket_client *inherited_client,
+    const char *rpc_path, int slot, int control, bool poison)
+{
+    ker_socket_client_close(inherited_client);
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 30;
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot)) return 31;
+    if (poison) {
+        int ordinary = ker_socket_client_socket(&client, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (ordinary < 0 || close(ordinary)) return 32;
+    }
+    char token = 'C';
+    if (send(control, &token, 1, MSG_NOSIGNAL) != 1 || recv(control, &token, 1, 0) != 1 ||
+        token != 'R') return 33;
+    close(owner); close(slot); ker_socket_client_close(&client);
+    return 0;
+}
+
+static int owner_group_history_rejection(struct ker_socket_client *client,
+    const char *rpc_path, int foreign_group)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4101)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int plan = ker_socket_client_owner_group_plan(client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL);
+    if (plan < 0) return -1;
+    int slot0 = ker_socket_client_owner_group_slot(client, plan, 0);
+    int slot1 = ker_socket_client_owner_group_slot(client, plan, 1);
+    if (slot0 < 0 || slot1 < 0) return -1;
+    int controls[2][2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, controls[0]) ||
+        socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, controls[1])) return -1;
+    struct timeval timeout = {.tv_sec = 15};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (setsockopt(controls[i][0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+            setsockopt(controls[i][0], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) ||
+            setsockopt(controls[i][1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+            setsockopt(controls[i][1], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)))
+            return -1;
+    }
+    pid_t actors[2] = {-1, -1};
+    for (unsigned i = 0; i < 2; ++i) {
+        actors[i] = fork();
+        if (actors[i] < 0) return -1;
+        if (!actors[i]) {
+            close(controls[i][0]);
+            close(foreign_group); close(plan);
+            close(i ? slot0 : slot1);
+            int result = owner_group_poison_actor(client, rpc_path,
+                i ? slot1 : slot0, controls[i][1], i == 0);
+            _exit(result);
+        }
+        close(controls[i][1]);
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        char token = 0;
+        if (recv(controls[i][0], &token, 1, 0) != 1 || token != 'C')
+            { errno = EPROTO; return -1; }
+    }
+    errno = 0;
+    if (ker_socket_client_owner_group_publish(client, plan) != -1 || errno != EOPNOTSUPP)
+        { errno = EPROTO; return -1; }
+    for (unsigned i = 0; i < 2; ++i) {
+        (void)send(controls[i][0], "R", 1, MSG_NOSIGNAL);
+        close(controls[i][0]);
+        int status = 0;
+        while (waitpid(actors[i], &status, 0) < 0) if (errno != EINTR) return -1;
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) { errno = ECHILD; return -1; }
+    }
+    close(slot0); close(slot1); close(plan);
+    puts("OWNER_GROUP_HISTORY_FAIL_CLOSED_OK"); fflush(stdout);
+    return 0;
+}
+
+static int owner_group_dead_actor(struct ker_socket_client *inherited_client,
+    const char *rpc_path, int slot, int control, bool wait_release)
+{
+    ker_socket_client_close(inherited_client);
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 40;
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot)) return 41;
+    char token = 'C';
+    if (send(control, &token, 1, MSG_NOSIGNAL) != 1) return 42;
+    if (wait_release && (recv(control, &token, 1, 0) != 1 || token != 'R')) return 43;
+    close(owner); close(slot); ker_socket_client_close(&client);
+    return 0;
+}
+
+static int owner_group_dead_owner_rejection(struct ker_socket_client *client,
+    const char *rpc_path, int foreign_group)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4102)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int plan = ker_socket_client_owner_group_plan(client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL);
+    if (plan < 0) return -1;
+    int slot0 = ker_socket_client_owner_group_slot(client, plan, 0);
+    int slot1 = ker_socket_client_owner_group_slot(client, plan, 1);
+    if (slot0 < 0 || slot1 < 0) return -1;
+    int controls[2][2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, controls[0]) ||
+        socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, controls[1])) return -1;
+    struct timeval timeout = {.tv_sec = 15};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (setsockopt(controls[i][0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+            setsockopt(controls[i][0], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) ||
+            setsockopt(controls[i][1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+            setsockopt(controls[i][1], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)))
+            return -1;
+    }
+    pid_t actors[2] = {-1, -1};
+    for (unsigned i = 0; i < 2; ++i) {
+        actors[i] = fork();
+        if (actors[i] < 0) return -1;
+        if (!actors[i]) {
+            close(controls[i][0]); close(foreign_group); close(plan);
+            close(i ? slot0 : slot1);
+            int result = owner_group_dead_actor(client, rpc_path,
+                i ? slot1 : slot0, controls[i][1], i == 1);
+            _exit(result);
+        }
+        close(controls[i][1]);
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        char token = 0;
+        if (recv(controls[i][0], &token, 1, 0) != 1 || token != 'C') {
+            errno = EPROTO; return -1;
+        }
+    }
+    close(controls[0][0]);
+    int dead_status = 0;
+    while (waitpid(actors[0], &dead_status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(dead_status) || WEXITSTATUS(dead_status)) { errno = ECHILD; return -1; }
+    errno = 0;
+    if (ker_socket_client_owner_group_publish(client, plan) != -1 || errno != ESRCH) {
+        errno = EPROTO; return -1;
+    }
+    (void)send(controls[1][0], "R", 1, MSG_NOSIGNAL);
+    close(controls[1][0]);
+    int live_status = 0;
+    while (waitpid(actors[1], &live_status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(live_status) || WEXITSTATUS(live_status)) { errno = ECHILD; return -1; }
+    close(slot0); close(slot1); close(plan);
+    puts("OWNER_GROUP_DEAD_OWNER_FAIL_CLOSED_OK"); fflush(stdout);
     return 0;
 }
 
@@ -150,6 +638,10 @@ int main(int argc, char **argv)
     errno = 0;
     CHECK(ker_socket_client_member_census_snapshot(&client, denied_group,
         &invalid_snapshot) == -1 && errno == ENOTSOCK);
+
+    CHECK(owner_group_smoke(&client, argv[1], argv[3], argv[4], denied_group) == 0);
+    CHECK(owner_group_history_rejection(&client, argv[1], denied_group) == 0);
+    CHECK(owner_group_dead_owner_rejection(&client, argv[1], denied_group) == 0);
 
     /* Census capabilities contain immutable member metadata but retain no
      * group/listener reference. Prove both live LISTEN rows, inherited opaque

@@ -1045,10 +1045,92 @@ def run_member_census_client(args, rpc_path, broker, capability):
 def run_reuseport_group_client(args, rpc_path, broker, capability):
     client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
         str(args.inherited_group_probe), str(args.preload_library)],
-        pass_fds=(capability,), stdin=subprocess.DEVNULL,
+        pass_fds=(capability,), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     os.close(capability)
+    owner_table = f'ker_c18_{os.getpid()}'
+    owner_table_created = False
     try:
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_READY_0',
+            'owner group did not select its first claimed listener')
+        first_owner = socket.create_connection(('198.18.0.2', 4100), timeout=10)
+        first_owner.settimeout(10); first_owner.sendall(b'OWNER-00')
+        require(recv_exact(first_owner, 8) == b'WORKER-0',
+            'first claimed owner did not accept and answer real TCP traffic')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_ACCEPTED_0',
+            'first owner actor did not finish its accepted stream')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_READY_1',
+            'owner group did not select its second claimed listener')
+        second_owner = socket.create_connection(('198.18.0.2', 4100), timeout=10)
+        second_owner.settimeout(10); second_owner.sendall(b'OWNER-01')
+        require(recv_exact(second_owner, 8) == b'WORKER-1',
+            'second claimed owner did not accept and answer real TCP traffic')
+        second_owner.close()
+        first_owner.sendall(b'OLD-0001')
+        require(recv_exact(first_owner, 8) == b'OLD-ACK1',
+            'accepted member-0 stream stopped working after member-1 served a fresh connection')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_ACCEPTED_1',
+            'second owner actor or retained member-0 stream did not finish')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_WAIT_PAYLOAD',
+            'owner actors did not reach the descriptorless payload checkpoint')
+
+        census_nft('add', 'table', 'inet', owner_table); owner_table_created = True
+        census_nft('add', 'chain', 'inet', owner_table, 'output',
+            '{', 'type', 'filter', 'hook', 'output', 'priority', 'filter;', 'policy', 'accept;', '}')
+        peer_port = first_owner.getsockname()[1]
+        census_nft('add', 'rule', 'inet', owner_table, 'output',
+            'oifname', 'kerhost', 'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+            'tcp', 'sport', str(peer_port), 'tcp', 'dport', '4100', 'tcp', 'flags', '&',
+            '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+        client.stdin.write(b'SEND\n'); client.stdin.flush()
+        pending_line = read_line(client.stdout, 20, client)
+        require(pending_line == 'OWNER_GROUP_DESCRIPTORLESS_PENDING bytes=1200 owner_sockets=1 member_sockets=1',
+            f'owner and member READ authorities disagreed on descriptorless queued payload: {pending_line!r}')
+        rule = census_nft('list', 'chain', 'inet', owner_table, 'output')
+        counter = re.search(r'counter packets (\d+)', rule)
+        require(counter is not None,
+            f'owner-group ACK-drop rule did not report its counter: {rule!r}')
+        data = recv_exact(first_owner, 1200)
+        expected = bytes((index * 17 + 3) & 0xff for index in range(1200))
+        require(data == expected,
+            'descriptorless member-0 stream delivered different TCP payload bytes')
+        rule = census_nft('list', 'chain', 'inet', owner_table, 'output')
+        counter = re.search(r'counter packets (\d+)', rule)
+        require(counter is not None and int(counter.group(1)) > 0,
+            f'owner-group test did not drop a real ACK-only packet: {rule!r}')
+        census_nft('delete', 'table', 'inet', owner_table); owner_table_created = False
+        client.stdin.write(b'DRAIN\n'); client.stdin.flush()
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_DESCRIPTORLESS_DRAINED bytes=0',
+            'owner and member payload snapshots did not drain after real ACK delivery')
+        first_owner.close()
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_TWO_ACTOR_TCP_OK',
+            'owner group did not prove two-actor original-Linux TCP selection and census')
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_HISTORY_FAIL_CLOSED_OK',
+            'owner group did not reject post-claim unowned network history')
+        poisoned_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        poisoned_probe.settimeout(2)
+        try:
+            poisoned_probe.connect(('198.18.0.2', 4101))
+        except OSError as error:
+            require(error.errno == errno.ECONNREFUSED,
+                f'failed owner-group publish left a reachable listener: {error!r}')
+        else:
+            raise RuntimeError('failed owner-group publish created a reachable listener')
+        finally:
+            poisoned_probe.close()
+        require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_DEAD_OWNER_FAIL_CLOSED_OK',
+            'owner-group publish did not reject a claimed actor that exited before materialization')
+        dead_owner_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        dead_owner_probe.settimeout(2)
+        try:
+            dead_owner_probe.connect(('198.18.0.2', 4102))
+        except OSError as error:
+            require(error.errno == errno.ECONNREFUSED,
+                f'dead-owner publish created a reachable listener: {error!r}')
+        else:
+            raise RuntimeError('dead-owner publish created a reachable listener')
+        finally:
+            dead_owner_probe.close()
         require(read_line(client.stdout, 20, client) == 'CENSUS_LIFETIME_OK',
             'member census did not verify live and post-close metadata snapshots')
         census_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1124,10 +1206,17 @@ def run_reuseport_group_client(args, rpc_path, broker, capability):
             f'reuseport group client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
         print(f'REUSEPORT_GROUP selector0/1/0 delivered exact streams; accepted TCP survived final listener close; '
             f'fresh-connect attempts={attempts}')
-    except BaseException:
+    except BaseException as error:
+        if owner_table_created:
+            try: census_nft('delete', 'table', 'inet', owner_table)
+            except (OSError, subprocess.SubprocessError, RuntimeError): pass
         if client.poll() is None:
             client.kill(); client.wait()
-        raise
+        if not hasattr(client, 'communicate'):
+            raise
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{error}; owner-group client rc={client.returncode}; '
+            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
 
 
 GENERATION_MESSAGE = struct.Struct('=IIIIQ')

@@ -25,7 +25,19 @@ enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_REUSEPORT_GROUP = 3,
     KER_SOCKET_BROKER_TCP_OBSERVER = 4,
     KER_SOCKET_BROKER_MEMBER_CENSUS = 5,
-    KER_SOCKET_BROKER_FF_OWNER = 6
+    KER_SOCKET_BROKER_FF_OWNER = 6,
+    KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN = 7,
+    KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT = 8
+};
+
+enum ker_socket_broker_rights {
+    KER_SOCKET_BROKER_READ = 1u << 0,
+    KER_SOCKET_BROKER_WRITE = 1u << 1,
+    KER_SOCKET_BROKER_CONTROL = 1u << 2,
+    KER_SOCKET_BROKER_NAME = 1u << 3,
+    KER_SOCKET_BROKER_OPTION = 1u << 4,
+    KER_SOCKET_BROKER_WAIT = 1u << 5,
+    KER_SOCKET_BROKER_ALL = (1u << 6) - 1
 };
 
 #define KER_SOCKET_BROKER_TCP_STATES 14
@@ -188,6 +200,23 @@ int ker_socket_client_reuseport_group_member(struct ker_socket_client *client,
     int group_cap, unsigned index);
 int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
     int group_cap, unsigned index);
+
+/* Deferred owner-aware fixed two-member IPv4 reuseport group. The plan
+ * reserves a tuple but creates no listener until both distinct FF owner
+ * actors claim their one delegated index. Each slot can be issued once and
+ * each claim succeeds once. A successful claim is a reusable, index-scoped
+ * receipt for that actor's member only; it does not grant group selection or
+ * delegation authority. Publish is also one-shot. */
+int ker_socket_client_owner_group_plan(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog, uint32_t group_rights);
+int ker_socket_client_owner_group_slot(struct ker_socket_client *client,
+    int plan_cap, unsigned index);
+int ker_socket_client_ff_owner_group_claim(struct ker_socket_client *client,
+    int owner_cap, int slot_cap);
+int ker_socket_client_owner_group_publish(struct ker_socket_client *client,
+    int plan_cap);
+int ker_socket_client_owner_group_member(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap);
 
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights
