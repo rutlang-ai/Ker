@@ -27,6 +27,88 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+def finalize_c23_evidence(evidence_path, evidence, phase, success, error=None,
+        artifacts=None, broker=None, stats=None):
+    """Persist the overall C23 result only after runtime cleanup is observed."""
+    if not success:
+        evidence['qualification'] = 'UNQUALIFIED'
+        evidence['finalization'] = {'phase': phase, 'status': 'UNQUALIFIED',
+            'error': repr(error) if error is not None else 'runtime finalization failed'}
+        Path(evidence_path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+    archived = {}
+    archive_errors = {}
+    for label, source in (artifacts or {}).items():
+        try:
+            source = Path(source)
+            if not source.is_file():
+                archive_errors[label] = f'artifact source is unavailable: {source}'
+                continue
+            data = source.read_bytes()
+            destination = Path(evidence_path).parent / label
+            destination.write_bytes(data)
+            archived[label] = {'path': str(destination),
+                'sha256': hashlib.sha256(data).hexdigest()}
+        except BaseException as archive_error:
+            archive_errors[label] = repr(archive_error)
+    evidence['c22_runtime_artifacts'] = archived
+    evidence['artifact_archive_errors'] = archive_errors
+    if stats is not None:
+        evidence['broker_stats'] = stats
+    if broker is not None:
+        output, errors, returncode = broker
+        evidence['broker_stdout'] = output.decode(errors='replace')
+        evidence['broker_stderr'] = errors.decode(errors='replace')
+        evidence['broker_exit_code'] = returncode
+    evidence['finalization'] = {'phase': phase,
+        'status': 'PASS' if success else 'UNQUALIFIED'}
+    if error is not None:
+        evidence['finalization']['error'] = repr(error)
+    evidence['qualification'] = ('PASS' if success and
+        evidence.get('source_probe_qualification') == 'PASS' else 'UNQUALIFIED')
+    if success and archive_errors:
+        raise RuntimeError(f'C23 could not archive all required runtime artifacts: {archive_errors!r}')
+    Path(evidence_path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+    return evidence['qualification'] == 'PASS'
+
+
+def finalize_c23_runtime(evidence_path, evidence, shutdown, broker, stats_path, artifacts):
+    """Run mandatory post-probe cleanup and persist its final qualification."""
+    output = errors = b''
+    try:
+        shutdown()
+        try:
+            output, errors = broker.communicate(timeout=40)
+        except subprocess.TimeoutExpired as error:
+            broker.kill()
+            output, errors = broker.communicate(timeout=10)
+            raise RuntimeError('original-Linux broker did not release nginx descriptors: '
+                f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+        require(broker.returncode == 0 and b'BROKER_DONE' in output,
+            f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
+        stats = json.loads(Path(stats_path).read_text())
+        require(isinstance(stats, dict), f'C23 broker stats must be a JSON object: {stats!r}')
+        native = stats.get('native', {})
+        require(isinstance(native, dict) and stats.get('tx', 0) > 0 and
+            stats.get('rx', 0) > 0 and stats.get('outstanding') == 0 and
+            native.get('passive_opens', 0) >= 2,
+            f'C23 original-Linux traffic or broker cleanup evidence missing: {stats!r}')
+        qualified = finalize_c23_evidence(evidence_path, evidence, 'complete', True,
+            artifacts=artifacts, broker=(output, errors, broker.returncode), stats=stats)
+        return qualified
+    except BaseException as error:
+        finalize_c23_evidence(evidence_path, evidence, 'runtime_cleanup', False,
+            error, artifacts, (output, errors, getattr(broker, 'returncode', None)))
+        raise
+
+
+def finalize_c23_failure_if_needed(evidence_path, evidence, phase, error, artifacts=None):
+    """Finalize source-probe failures too, without overwriting a completed result."""
+    finalization = evidence.get('finalization', {})
+    if finalization.get('status') == 'UNQUALIFIED':
+        return False
+    return finalize_c23_evidence(evidence_path, evidence, phase, False, error, artifacts)
+
+
 def run_source_reload_probes(args, master, worker, nginx_command, env, logs, runtime_trace,
         prefix, config):
     probe_root = args.source_reload_probes.resolve()
@@ -63,7 +145,8 @@ def run_source_reload_probes(args, master, worker, nginx_command, env, logs, run
         'schema': 1,
         'scenario': 'C23 original-source reload probe',
         'mode': args.source_reload_mode,
-        'qualification': 'RUNNING',
+        'qualification': 'PENDING_FINALIZATION',
+        'source_probe_qualification': 'RUNNING',
         'target': '198.18.0.2:80',
         'probe_controller_pid': os.getpid(),
         'nginx_master_pid': master,
@@ -135,6 +218,7 @@ def run_source_reload_probes(args, master, worker, nginx_command, env, logs, run
                 'error': repr(error), 'output_file': str(baseline_log),
                 'output_sha256': sha256(baseline_log) if baseline_log.exists() else None})
             evidence['qualification'] = 'UNQUALIFIED'
+            evidence['source_probe_qualification'] = 'UNQUALIFIED'
             save_evidence()
             raise
         baseline_end = time.monotonic()
@@ -153,7 +237,7 @@ def run_source_reload_probes(args, master, worker, nginx_command, env, logs, run
             'output_file': str(baseline_log), 'output_sha256': sha256(baseline_log)})
         baseline_ok = baseline.returncode == 0 and baseline_oracle.returncode == 0
         evidence['baseline']['qualification'] = 'PASS' if baseline_ok else 'FAIL'
-        evidence['qualification'] = 'RUNNING' if baseline_ok else 'UNQUALIFIED'
+        evidence['source_probe_qualification'] = 'RUNNING' if baseline_ok else 'UNQUALIFIED'
         save_evidence()
 
     if args.source_reload_mode in ('gr0', 'all'):
@@ -187,7 +271,7 @@ def run_source_reload_probes(args, master, worker, nginx_command, env, logs, run
             evidence['gr0']['qualification'] = 'UNQUALIFIED'
             evidence['gr0']['output_file'] = str(outage_log)
             evidence['gr0']['output_sha256'] = sha256(outage_log) if outage_log.exists() else None
-            evidence['qualification'] = 'UNQUALIFIED'
+            evidence['source_probe_qualification'] = 'UNQUALIFIED'
             save_evidence()
             raise
         outage_text = outage_log.read_text(errors='replace')
@@ -213,11 +297,11 @@ def run_source_reload_probes(args, master, worker, nginx_command, env, logs, run
         'unchanged source probes changed while the C23 run was active')
     evidence['source_probe_sha256_after'] = current_source_hashes
     if args.source_reload_mode == 'baseline':
-        evidence['qualification'] = 'PASS' if baseline_ok else 'UNQUALIFIED'
+        evidence['source_probe_qualification'] = 'PASS' if baseline_ok else 'UNQUALIFIED'
     elif args.source_reload_mode == 'gr0':
-        evidence['qualification'] = 'PASS' if outage_ok else 'UNQUALIFIED'
+        evidence['source_probe_qualification'] = 'PASS' if outage_ok else 'UNQUALIFIED'
     else:
-        evidence['qualification'] = 'PASS' if baseline_ok and outage_ok else 'UNQUALIFIED'
+        evidence['source_probe_qualification'] = 'PASS' if baseline_ok and outage_ok else 'UNQUALIFIED'
     evidence['runtime_trace_sha256'] = sha256(runtime_trace) if runtime_trace.exists() else None
     evidence['error_log_sha256'] = sha256(logs / 'error.log')
     save_evidence()
@@ -227,7 +311,10 @@ def run_source_reload_probes(args, master, worker, nginx_command, env, logs, run
     if outage_ok is not None:
         print(f'C23_GR0 exit={outage_rc} oracle={outage_oracle.returncode} '
             f'log={outage_log} graceful_log_lines={len(graceful_lines)}')
-    return evidence['qualification'] == 'PASS'
+    evidence['qualification'] = ('PENDING_FINALIZATION'
+        if evidence['source_probe_qualification'] == 'PASS' else 'UNQUALIFIED')
+    save_evidence()
+    return evidence['source_probe_qualification'] == 'PASS'
 
 
 def read_line(stream, timeout, process=None):
@@ -2787,20 +2874,20 @@ graceful_reload=0
             require(len(initial_workers) == 1 and int(initial_workers[0]) == initial_pid,
                 f'C22 initial worker identity differs from listener trace: {initial_workers!r}; {initial_pid}')
             if source_reload:
+                args._c23_artifacts = {
+                    'nginx_runtime_trace': runtime_trace,
+                    'nginx_error_log': logs / 'error.log',
+                    'nginx_config': config,
+                    'fstack_ini': fstack_config,
+                }
+                args._c23_evidence_path = args.source_reload_output.resolve() / 'evidence.json'
                 qualified = run_source_reload_probes(args, master, initial_pid, command, env, logs,
                     runtime_trace, prefix, config)
-                os.kill(master, signal.SIGQUIT)
-                reap_frontend_child(master, 20)
-                master = None
-                for fd in capabilities:
-                    try: os.close(fd)
-                    except OSError: pass
-                capabilities.clear()
                 print(f'C23_SOURCE_RELOAD_PROBES mode={args.source_reload_mode} '
                     f'qualification={"PASS" if qualified else "UNQUALIFIED"} '
                     'target=198.18.0.2:80 graceful_reload=0')
-                return {'master': None, 'c23_qualified': qualified,
-                    'c23_evidence_path': args.source_reload_output.resolve() / 'evidence.json',
+                return {'master': master, 'c23_qualified': qualified,
+                    'c23_evidence_path': args._c23_evidence_path,
                     'c23_runtime_trace': runtime_trace,
                     'c23_error_log': logs / 'error.log',
                     'c23_nginx_config': config,
@@ -3325,49 +3412,58 @@ def inside(args):
                     return 0
 
                 if args.nginx_binary:
-                    nginx_result = run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
                     try:
+                        nginx_result = run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
+                        if args.source_reload_probes:
+                            def shutdown_c23_nginx():
+                                try:
+                                    os.kill(nginx_result['master'], signal.SIGQUIT)
+                                    reap_frontend_child(nginx_result['master'], 20)
+                                finally:
+                                    for fd in cap_fds:
+                                        try: os.close(fd)
+                                        except OSError: pass
+                                    cap_fds.clear()
+                            evidence_path = nginx_result['c23_evidence_path']
+                            evidence = json.loads(evidence_path.read_text())
+                            qualified = finalize_c23_runtime(evidence_path, evidence,
+                                shutdown_c23_nginx, broker, stats_path,
+                                getattr(args, '_c23_artifacts', None))
+                            if not qualified:
+                                print(f'C23_UNQUALIFIED evidence={evidence_path}')
+                                return 1
+                            print(f'C23_QUALIFIED evidence={evidence_path}')
+                            return 0
                         output, errors = broker.communicate(timeout=40)
                     except subprocess.TimeoutExpired as error:
                         broker.kill(); output, errors = broker.communicate(timeout=10)
-                        raise RuntimeError(f'original-Linux broker failed to release nginx descriptors: '
-                            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
-                    require(broker.returncode == 0 and b'BROKER_DONE' in output,
-                        f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
-                    stats = json.loads(stats_path.read_text())
+                        failure = RuntimeError(f'original-Linux broker failed to release nginx descriptors: '
+                            f'stdout={output!r}; stderr={errors.decode(errors="replace")}')
+                        if args.source_reload_probes:
+                            evidence_path = getattr(args, '_c23_evidence_path',
+                                args.source_reload_output.resolve() / 'evidence.json')
+                            if evidence_path.is_file():
+                                evidence = json.loads(evidence_path.read_text())
+                                finalize_c23_evidence(evidence_path, evidence, 'broker_communicate',
+                                    False, failure, getattr(args, '_c23_artifacts', None),
+                                    (output, errors, broker.returncode))
+                        raise failure from error
+                    except BaseException as error:
+                        if args.source_reload_probes:
+                            evidence_path = getattr(args, '_c23_evidence_path',
+                                args.source_reload_output.resolve() / 'evidence.json')
+                            if evidence_path.is_file():
+                                evidence = json.loads(evidence_path.read_text())
+                                finalize_c23_failure_if_needed(evidence_path, evidence,
+                                    'nginx_shutdown', error, getattr(args, '_c23_artifacts', None))
+                        raise
+                    try:
+                        require(broker.returncode == 0 and b'BROKER_DONE' in output,
+                            f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
+                        stats = json.loads(stats_path.read_text())
+                    except BaseException as error:
+                        raise
                     native = stats.get('native', {})
-                    if args.source_reload_probes:
-                        evidence_path = nginx_result['c23_evidence_path']
-                        evidence = json.loads(evidence_path.read_text())
-                        archived = {}
-                        for label, source in (
-                            ('nginx_runtime_trace', nginx_result['c23_runtime_trace']),
-                            ('nginx_error_log', nginx_result['c23_error_log']),
-                            ('nginx_config', nginx_result['c23_nginx_config']),
-                            ('fstack_ini', nginx_result['c23_fstack_config']),
-                        ):
-                            data = Path(source).read_bytes()
-                            destination = evidence_path.parent / label
-                            destination.write_bytes(data)
-                            archived[label] = {'path': str(destination),
-                                'sha256': hashlib.sha256(data).hexdigest()}
-                        evidence['c22_runtime_artifacts'] = archived
-                        evidence['broker_stats'] = stats
-                        evidence['broker_stdout'] = output.decode(errors='replace')
-                        evidence['broker_stderr'] = errors.decode(errors='replace')
-                        evidence['broker_exit_code'] = broker.returncode
-                        evidence['qualification'] = ('PASS' if evidence.get('qualification') == 'PASS'
-                            and broker.returncode == 0 and stats.get('outstanding') == 0
-                            else 'UNQUALIFIED')
-                        evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
-                        require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
-                            stats.get('outstanding') == 0 and native.get('passive_opens', 0) >= 2,
-                            f'C23 original-Linux traffic or broker cleanup evidence missing: {stats!r}')
-                        if evidence['qualification'] != 'PASS':
-                            print(f'C23_UNQUALIFIED evidence={evidence_path}')
-                            return 1
-                        print(f'C23_QUALIFIED evidence={evidence_path}')
-                        return 0
                     if args.nginx_owner_activation_missing_helper:
                         require(stats.get('outstanding') == 0 and
                             native.get('active_opens', 0) == 0 and
