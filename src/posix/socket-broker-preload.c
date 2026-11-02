@@ -337,7 +337,16 @@ int ker_sb_preload_ff_owner_admission_attach(
         if (marker_length > 0 && (size_t)marker_length < sizeof(marker))
             (void)syscall(SYS_write, STDOUT_FILENO, marker,
                 (size_t)marker_length);
-        struct timespec pause = {.tv_nsec = 500000000};
+        long pause_ms = 500;
+        const char *pause_text = getenv("KER_C20_TEST_PAUSE_AFTER_PREPARE_MS");
+        if (pause_text) {
+            char *end = NULL;
+            long parsed = strtol(pause_text, &end, 10);
+            if (*pause_text && end && !*end && parsed >= 1 && parsed <= 5000)
+                pause_ms = parsed;
+        }
+        struct timespec pause = {.tv_sec = pause_ms / 1000,
+            .tv_nsec = (pause_ms % 1000) * 1000000L};
         while (nanosleep(&pause, &pause) && errno == EINTR) { }
     }
 #endif
@@ -596,6 +605,38 @@ int ker_sb_preload_ff_owner_begin(void)
     ff_owner_context_started = true;
     ker_sb_preload_unlock();
     return 0;
+}
+
+int ker_sb_preload_ff_staged_group_claim(int slot_cap)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int owner_cap = ker_sb_preload_ff_owner_capability_locked();
+    int status = owner_cap >= 0 && client ?
+        ker_socket_client_ff_owner_group_claim(client, owner_cap, slot_cap) : -1;
+    if (status && owner_cap < 0) errno = ENOTCONN;
+    ker_sb_preload_unlock();
+    return status;
+}
+
+int ker_sb_preload_ff_staged_group_member(int slot_cap)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int owner_cap = ker_sb_preload_ff_owner_capability_locked();
+    int member = owner_cap >= 0 && client ?
+        ker_socket_client_owner_group_member(client, owner_cap, slot_cap) : -1;
+    if (member >= 0 && ker_sb_preload_register_network_locked(member)) {
+        int error = errno;
+        (void)syscall(SYS_close, member);
+        member = -1;
+        errno = error;
+    }
+    if (member < 0 && owner_cap < 0) errno = ENOTCONN;
+    ker_sb_preload_unlock();
+    return member;
 }
 
 int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol)

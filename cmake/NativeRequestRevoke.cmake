@@ -154,6 +154,23 @@ if(BUILD_TESTING)
             TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
+        add_test(NAME native-c20-staged-owner-admission-tap
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+                --staged-admission-only)
+        set_tests_properties(native-c20-staged-owner-admission-tap PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
         add_test(NAME native-c16-finalized-timeout-quarantine
             COMMAND "${Python3_EXECUTABLE}"
                 "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"

@@ -156,8 +156,11 @@ int ker_member_census_parse_datagram(struct ker_member_census_accumulator *state
     const void *bytes, size_t length, uint32_t sender_port_id,
     struct ker_socket_member_census_snapshot *complete_snapshot, bool *complete)
 {
+    if (complete) *complete = false;
     if (!state || !bytes || !complete_snapshot || !complete || !state->mark ||
         !state->local_port || !state->sequence || !state->local_port_id ||
+        (!state->listener_cookie && !state->expect_no_listener) ||
+        (state->listener_cookie && state->expect_no_listener) ||
         sender_port_id != 0 || !length) return -EPROTO;
     *complete = false;
     const unsigned char *cursor = bytes;
@@ -203,7 +206,9 @@ int ker_member_census_parse_datagram(struct ker_member_census_accumulator *state
             memcpy(&status, payload, sizeof(status));
             if (status > 0 || status < -4095) return -EPROTO;
             if (status) return status;
-            if (state->total != state->rows || !state->listener_cookie) return -EPROTO;
+            if (state->total != state->rows ||
+                (!state->listener_cookie && !state->expect_no_listener))
+                return -EPROTO;
             struct ker_socket_member_census_snapshot result = {
                 .total = state->total,
                 .listener_cookie = state->listener_cookie};
@@ -230,7 +235,9 @@ int ker_member_census_parse_datagram(struct ker_member_census_accumulator *state
         if (identity_status) return identity_status;
         if (message.state == KER_MEMBER_CENSUS_TCP_LISTEN) {
             uint64_t cookie = ((uint64_t)message.cookie[1] << 32) | message.cookie[0];
-            if (cookie != state->listener_cookie || state->listener_seen) return -ESTALE;
+            if (state->expect_no_listener || !state->listener_cookie ||
+                cookie != state->listener_cookie || state->listener_seen)
+                return -ESTALE;
             state->listener_seen = true;
         }
         if (state->rows == UINT64_MAX || state->total == UINT64_MAX ||

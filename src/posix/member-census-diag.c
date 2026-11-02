@@ -259,7 +259,8 @@ int ker_member_census_query_submit(const struct ker_member_census_identity *iden
     uint64_t *ticket)
 {
     if (!identity || !ticket || !identity->mark || !identity->local_port ||
-        !identity->listener_cookie) return -EINVAL;
+        (!!identity->listener_cookie == identity->expect_no_listener))
+        return -EINVAL;
     /* LKL host threads inherit host0 credentials, not the submitting caller's
      * current credentials. Check authority here before queueing and again in
      * the worker; never let a privileged worker authorize a restricted caller. */
@@ -510,7 +511,8 @@ int ker_member_census_diag_begin(struct ker_member_census_diag_state *state,
     const struct ker_member_census_identity *identity)
 {
     if (!state || !identity || !identity->mark || !identity->local_port ||
-        !identity->listener_cookie) return -EINVAL;
+        (!!identity->listener_cookie == identity->expect_no_listener))
+        return -EINVAL;
     memset(state, 0, sizeof(*state));
     state->fd = -1;
     state->start_ns = monotonic_ns();
@@ -586,6 +588,7 @@ int ker_member_census_diag_begin(struct ker_member_census_diag_state *state,
         .mark = identity->mark, .local_port = identity->local_port,
         .sequence = sequence, .local_port_id = local.nl_pid,
         .listener_cookie = identity->listener_cookie,
+        .expect_no_listener = identity->expect_no_listener,
         .seen_cookies = state->accumulator.seen_cookies,
         .seen_cookie_capacity = state->accumulator.seen_cookie_capacity};
     state->started = true;
