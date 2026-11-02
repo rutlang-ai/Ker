@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <ker/socket-broker.h>
 #include "socket-broker-protocol.h"
+#include "ff-owner-admission-control.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -742,5 +743,25 @@ int ker_socket_client_ff_owner_requests(struct ker_socket_client *client,
             &wire, sizeof(wire), NULL, &received) < 0) return -1;
     if (received != sizeof(wire)) return fail(EPROTO);
     *request_count = wire.request_count;
+    return 0;
+}
+
+int ker_socket_client_ff_owner_admission_prepare(
+    struct ker_socket_client *client, int owner_cap,
+    struct ker_ff_owner_admission_registration *registration)
+{
+    if (!registration) return fail(EINVAL);
+    struct ker_sb_ff_owner_admission_prepare wire = {0};
+    int received = 0;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_ADMISSION_PREPARE,
+            NULL, 0, &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire) || wire.reserved || !wire.registration_id ||
+        !memchr(wire.endpoint_path, '\0', sizeof(wire.endpoint_path)) ||
+        !wire.endpoint_path[0]) return fail(EPROTO);
+    struct ker_ff_owner_admission_registration completed = {0};
+    memcpy(completed.endpoint_path, wire.endpoint_path,
+        sizeof(completed.endpoint_path));
+    completed.registration_id = wire.registration_id;
+    *registration = completed;
     return 0;
 }

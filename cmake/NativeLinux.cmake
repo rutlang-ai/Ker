@@ -44,7 +44,8 @@ add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.
     src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
     src/posix/ff-owner-requests-diag.c src/posix/ff-owner-requests-parse.c
     src/posix/ff-admission-request-identity.c
-    src/posix/tcp-payload-snapshot.c src/posix/ff-admission-queue.c)
+    src/posix/tcp-payload-snapshot.c src/posix/ff-admission-queue.c
+    src/posix/ff-admission-channel.c src/posix/ff-admission-task.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
 target_include_directories(ker-posix PRIVATE
@@ -54,6 +55,9 @@ target_include_directories(ker-posix PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(ker-posix PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
+if(BUILD_TESTING)
+    target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1)
+endif()
 target_link_options(ker-posix PRIVATE -Wl,--no-undefined
     "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
@@ -78,7 +82,10 @@ set_target_properties(ker-socket-client PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # ordinary application descriptors onto the explicit broker capability API.
 add_library(ker-socket-preload SHARED
     src/posix/socket-broker-preload-fd.c
-    src/posix/socket-broker-preload.c)
+    src/posix/socket-broker-preload.c
+    src/posix/ff-admission-channel.c)
+set_source_files_properties(src/posix/ff-admission-channel.c PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden")
 set_target_properties(ker-socket-preload PROPERTIES EXPORT_NAME socket-preload)
 target_include_directories(ker-socket-preload PRIVATE
     "${PROJECT_SOURCE_DIR}/src/posix"
@@ -89,6 +96,9 @@ target_include_directories(ker-socket-preload PUBLIC
 target_compile_features(ker-socket-preload PRIVATE c_std_11)
 target_compile_options(ker-socket-preload PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ker-socket-preload PRIVATE ker-socket-client Threads::Threads ${CMAKE_DL_LIBS})
+if(BUILD_TESTING)
+    target_compile_definitions(ker-socket-preload PRIVATE KER_C16_ADMISSION_TEST_TRACE=1)
+endif()
 add_library(ker::socket-preload ALIAS ker-socket-preload)
 
 # Namespaced bridge for callers built against the original F-Stack socket ABI.
@@ -111,32 +121,37 @@ add_library(ker::fstack-socket-bridge ALIAS ker-fstack-socket-bridge)
 
 option(KER_BUILD_FSTACK_NGINX_RUNTIME
     "Build the bounded libfstack compatibility runtime for the pinned nginx caller profile" OFF)
-if(KER_BUILD_FSTACK_NGINX_RUNTIME)
-    # This opt-in DSO exports the subset of the original F-Stack runtime needed
-    # by the pinned nginx caller profile. It uses the exact detached reload
-    # helpers and the C1 socket bridge; it does not initialize EAL/LKL or claim
-    # the graceful-reload data plane.
-    add_library(ker-fstack-nginx-runtime SHARED
+
+function(ker_add_fstack_nginx_runtime target output_name)
+    add_library(${target} SHARED
         src/posix/fstack-nginx-runtime.c
         src/posix/fstack-socket-bridge.c
         third_party/fstack-reload/ff_reload.c)
-    set_target_properties(ker-fstack-nginx-runtime PROPERTIES
-        OUTPUT_NAME fstack
+    set_target_properties(${target} PROPERTIES
+        OUTPUT_NAME "${output_name}"
         INSTALL_RPATH "$ORIGIN")
-    target_include_directories(ker-fstack-nginx-runtime PRIVATE
+    target_include_directories(${target} PRIVATE
         "${PROJECT_SOURCE_DIR}/src/posix"
         "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
         "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
         "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
         "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
-    target_include_directories(ker-fstack-nginx-runtime SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
-    target_compile_features(ker-fstack-nginx-runtime PRIVATE c_std_11)
-    target_compile_options(ker-fstack-nginx-runtime PRIVATE -Wall -Wextra -Werror)
-    target_compile_definitions(ker-fstack-nginx-runtime PRIVATE KER_FSTACK_NGINX_RUNTIME=1)
-    target_link_options(ker-fstack-nginx-runtime PRIVATE -Wl,--no-undefined)
+    target_include_directories(${target} SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
+    target_compile_features(${target} PRIVATE c_std_11)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(${target} PRIVATE KER_FSTACK_NGINX_RUNTIME=1)
+    target_link_options(${target} PRIVATE -Wl,--no-undefined)
     set_target_properties(ker-ini PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    target_link_libraries(ker-fstack-nginx-runtime PRIVATE
+    target_link_libraries(${target} PRIVATE
         ker-ini ker-socket-preload ker-socket-client Threads::Threads ${CMAKE_DL_LIBS})
+endfunction()
+
+if(KER_BUILD_FSTACK_NGINX_RUNTIME)
+    # This opt-in DSO exports the subset of the original F-Stack runtime needed
+    # by the pinned nginx caller profile. It uses the exact detached reload
+    # helpers and the C1 socket bridge; it does not initialize EAL/LKL or claim
+    # the graceful-reload data plane.
+    ker_add_fstack_nginx_runtime(ker-fstack-nginx-runtime fstack)
     install(TARGETS ker-fstack-nginx-runtime
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -165,6 +180,14 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME)
             COMMAND ker-fstack-nginx-runtime-profile-test)
     endif()
 endif()
+
+# Native admission integration fixtures need the same bounded FF API shim,
+# but do not require installing or opting in to the caller runtime. Build an
+# isolated, test-only DSO when the product runtime option is disabled.
+if(BUILD_TESTING AND NOT TARGET ker-fstack-nginx-runtime)
+    ker_add_fstack_nginx_runtime(ker-c16-fstack-test-runtime fstack-c16-test-runtime)
+endif()
+
 set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
     "Pinned no-FF nginx executable for the native socket-preload lifecycle prerequisite")
 set(KER_FSTACK_NGINX_BINARY "" CACHE FILEPATH
@@ -290,6 +313,10 @@ target_include_directories(ker-socket-broker-server PUBLIC
 target_include_directories(ker-socket-broker-server PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
 target_compile_features(ker-socket-broker-server PUBLIC c_std_11)
 target_compile_options(ker-socket-broker-server PRIVATE -Wall -Wextra -Werror)
+if(BUILD_TESTING)
+    target_compile_definitions(ker-socket-broker-server PRIVATE
+        KER_C16_ADMISSION_TEST_TRACE=1)
+endif()
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
 add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
 include(CheckStructHasMember)
