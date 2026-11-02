@@ -318,7 +318,7 @@ http {{
                     stats.get('rx', 0) > 0 and stats.get('control_eof') is True and
                     stats.get('worker_exit_code') == 0 and
                     stats.get('run_shutdown') is True and
-                    stats.get('run_shutdown_ack') is True, 
+                    stats.get('run_shutdown_ack') is True,
                     f'worker/native cleanup accounting was incomplete: {stats!r}')
                 require(not Path(f'/proc/{master}').exists(),
                     'Nginx master remained alive after companion SETTLED')
