@@ -133,6 +133,7 @@ SESSION_CTEST = (
     "native-fstack-session-generation-tx-full",
     "native-fstack-session-generation-detach",
     "native-fstack-session-generation-empty-config",
+    "native-session-generation-wire-relay-smoke",
     "native-fstack-session-generation-invalid-selected-entry",
     "native-fstack-session-orphan-identity",
     "native-fstack-session-orphan-inflight-both",
