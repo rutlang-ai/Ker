@@ -114,6 +114,7 @@ set_target_properties(ker-socket-client PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(ker-socket-preload SHARED
     src/posix/socket-broker-preload-fd.c
     src/posix/socket-broker-preload.c
+    src/posix/runtime-service-client.c
     src/posix/ff-admission-channel.c)
 set_source_files_properties(src/posix/ff-admission-channel.c PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden")
@@ -126,7 +127,9 @@ target_include_directories(ker-socket-preload PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(ker-socket-preload PRIVATE c_std_11)
 target_compile_options(ker-socket-preload PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(ker-socket-preload PRIVATE ker-socket-client Threads::Threads ${CMAKE_DL_LIBS})
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+target_link_libraries(ker-socket-preload PRIVATE ker-socket-client Threads::Threads
+    OpenSSL::Crypto ${CMAKE_DL_LIBS})
 if(BUILD_TESTING)
     target_compile_definitions(ker-socket-preload PRIVATE KER_C16_ADMISSION_TEST_TRACE=1)
 endif()
@@ -600,9 +603,16 @@ file(RELATIVE_PATH KER_POSIX_LIB_FROM_BIN
 configure_file(tools/ker-run.py "${PROJECT_BINARY_DIR}/ker-run" @ONLY)
 configure_file(tools/rx_decision_wire.py
     "${PROJECT_BINARY_DIR}/rx_decision_wire.py" COPYONLY)
+configure_file(tools/runtime_service.py
+    "${PROJECT_BINARY_DIR}/runtime_service.py" COPYONLY)
+configure_file(tools/runtime_service_wire.py
+    "${PROJECT_BINARY_DIR}/runtime_service_wire.py" COPYONLY)
 install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT fstack-nginx-runtime)
 install(FILES "${PROJECT_BINARY_DIR}/rx_decision_wire.py"
+    DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
+install(FILES "${PROJECT_BINARY_DIR}/runtime_service.py"
+    "${PROJECT_BINARY_DIR}/runtime_service_wire.py"
     DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
 install(FILES "${ker_native_manifest}"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME build.json)
@@ -2627,3 +2637,5 @@ if(BUILD_TESTING)
     ker_add_ff_owner_requests_tests()
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/RxDecisionForwardTests.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceSupervisorTests.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceClientTests.cmake")

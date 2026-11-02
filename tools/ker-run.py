@@ -5,6 +5,7 @@ import array
 import concurrent.futures
 import contextlib
 import configparser
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 import selectors
 import shlex
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -32,6 +34,13 @@ if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
     raise ImportError(f'cannot load private RX decision codec: {_RX_DECISION_WIRE_PATH}')
 rx_decision_wire = importlib.util.module_from_spec(_RX_DECISION_WIRE_SPEC)
 _RX_DECISION_WIRE_SPEC.loader.exec_module(rx_decision_wire)
+
+_RUNTIME_SERVICE_SPEC = importlib.util.spec_from_file_location(
+    '_ker_runtime_service', Path(__file__).resolve().with_name('runtime_service.py'))
+if _RUNTIME_SERVICE_SPEC is None or _RUNTIME_SERVICE_SPEC.loader is None:
+    raise ImportError(f'cannot load runtime service beside {__file__}')
+runtime_service = importlib.util.module_from_spec(_RUNTIME_SERVICE_SPEC)
+_RUNTIME_SERVICE_SPEC.loader.exec_module(runtime_service)
 
 
 class Interrupted(Exception):
@@ -93,6 +102,32 @@ def wait_startup_marker(fd, data, marker, timeout, description):
                 raise RuntimeError(f'{description} exited before readiness marker')
             data += chunk
     return data
+
+
+def resolve_runtime_service_app_executable(command, search_path=None):
+    """Resolve the exact direct ELF that ker-app will execute.
+
+    execvp searches PATH for a bare command name; Path.resolve alone would
+    incorrectly look for that name in the current working directory.
+    """
+    if not command:
+        raise RuntimeError('runtime-service caller command is empty')
+    if os.sep in command or (os.altsep is not None and os.altsep in command):
+        candidate = command
+    else:
+        candidate = shutil.which(command, path=search_path)
+        if candidate is None:
+            raise RuntimeError('runtime-service caller executable was not found on PATH')
+    try:
+        executable = Path(candidate).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError('runtime-service caller executable cannot be resolved') from exc
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise RuntimeError('runtime-service caller must be an executable file')
+    with executable.open('rb') as executable_stream:
+        if executable_stream.read(4) != b'\x7fELF':
+            raise RuntimeError('runtime-service phase one requires a direct ELF application')
+    return executable
 
 
 def resolve_exit_code(exit_code, app_returncode, infrastructure_failure, preserve_signal):
@@ -601,6 +636,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--shutdown-timeout-ms', type=int)
     parser.add_argument('--stats', type=Path, help='write Ethernet I/O counters at shutdown')
     parser.add_argument('--rx-decision', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--runtime-service', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -619,6 +655,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
         sysctls[key] = value
     values.update(vars(supplied))
     values.setdefault('rx_decision', False)
+    values.setdefault('runtime_service', False)
     values['sysctls'] = sysctls
     args = argparse.Namespace(**values)
     missing = [name for name in ('address', 'port', 'eal') if getattr(args, name) is None]
@@ -914,6 +951,8 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
             networks6.extend(interface_networks6)
     if args.rx_decision and args.interfaces:
         parser.error('--rx-decision currently supports only the primary I/O worker')
+    if args.runtime_service and args.interfaces:
+        parser.error('--runtime-service currently supports only the primary I/O worker')
     # The CLI must finish all pure validation, including CLI overrides and
     # auxiliary address/queue/MTU ownership, before executing the worker query.
     # Standalone reader callers retain their selected-build validation above.
@@ -1245,6 +1284,9 @@ def main():
         return 125
     decision_app = decision_io = None
     supervisor_pidfd = worker_pidfd = app_pidfd = -1
+    runtime_actor_pidfd = -1
+    runtime_service_server = None
+    runtime_service_directory = None
     decision_nonce = None
     decision_epoch = 0
     supervisor_identity = None
@@ -1341,14 +1383,35 @@ def main():
                 stats = worker_done_record(ready)
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
         info = worker_ready_record(ready)
+        app_command = args.command
         if args.rx_decision:
             worker_pidfd = os.pidfd_open(worker.pid, 0)
             worker_identity = rx_decision_identity(worker.pid, worker_pidfd)
+        if args.runtime_service:
+            if worker_pidfd < 0:
+                worker_pidfd = os.pidfd_open(worker.pid, 0)
+            app_executable = resolve_runtime_service_app_executable(
+                args.command[0], os.environ.get('PATH'))
+            # Pass the resolved ELF path through ker-app so hashing and the
+            # eventual exec use the same file, including for bare PATH names.
+            app_command = [str(app_executable), *args.command[1:]]
+            app_executable_hash = runtime_service.sha256_file(app_executable)
+            runtime_service_directory = tempfile.mkdtemp(prefix='ker-runtime-service-')
+            os.chmod(runtime_service_directory, 0o700)
+            app_profile_hash = hashlib.sha256(
+                b'ker-runtime-service/slim-primary/v1\0' + app_executable_hash).digest()
+            runtime_service_server = runtime_service.RuntimeServiceSupervisor(
+                Path(runtime_service_directory) / 'service.sock', worker,
+                worker_pidfd, runtime_service.process_start_ticks(worker.pid),
+                runtime_service.process_executable_hash(worker.pid), info,
+                app_executable_hash, app_profile_hash, control_write)
+            runtime_service_server.start()
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
             extra_worker.start(worker_path, args)
-        env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
+        env = {key: value for key, value in os.environ.items()
+            if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_NATIVE_TX_FEATURES=str(info['tx_offload_features']), KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
@@ -1357,6 +1420,8 @@ def main():
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
         if args.rx_decision:
             env['KER_RX_DECISION_FD'] = str(decision_app.fileno())
+        if runtime_service_server is not None:
+            env.update(runtime_service_server.env)
         if additional:
             env['KER_PACKET_INTERFACES'] = ';'.join(extra.native_settings() for extra in additional)
         env.pop('KER_NATIVE_VLANS', None)
@@ -1395,8 +1460,11 @@ def main():
             *(fd for extra in additional for fd in extra.app_fds())]
         if args.rx_decision:
             app_pass_fds.append(decision_app.fileno())
-        app = subprocess.Popen([str(app_guard), *args.command], env=env,
+        app = subprocess.Popen([str(app_guard), *app_command], env=env,
             pass_fds=tuple(app_pass_fds))
+        if runtime_service_server is not None:
+            runtime_actor_pidfd = os.pidfd_open(app.pid, 0)
+            runtime_service_server.bind_actor(app, runtime_actor_pidfd)
         if args.rx_decision:
             app_pidfd = os.pidfd_open(app.pid, 0)
             app_identity = rx_decision_identity(app.pid, app_pidfd)
@@ -1478,6 +1546,12 @@ def main():
                         startup_status += pending
                     if b'KER_NATIVE_DONE\n' not in startup_status and b'KER_NATIVE_INCOMPLETE\n' not in startup_status:
                         raise RuntimeError('run requested EAL teardown before native kernel teardown')
+                    lease_release_ok = True
+                    if runtime_service_server is not None:
+                        lease_release_ok = runtime_service_server.prepare_worker_shutdown(1.0)
+                        if not lease_release_ok:
+                            print('ker-run: runtime-service lease was not released before worker shutdown',
+                                file=sys.stderr)
                     os.close(control_write)
                     control_write = -1
                     for extra in additional:
@@ -1486,9 +1560,10 @@ def main():
                     operations.extend(extra.finish for extra in additional)
                     reaped = finish_concurrently(operations)
                     worker_finished = True
-                    failed = True
+                    failed = not lease_release_ok
                     if not isinstance(reaped[0], Exception):
-                        stats, failed = reaped[0]
+                        stats, worker_failed = reaped[0]
+                        failed |= worker_failed
                     for result in reaped[1:]:
                         failed |= result if isinstance(result, bool) else True
                     if not normal_native_shutdown_markers(startup_status):
@@ -1535,6 +1610,19 @@ def main():
             except subprocess.TimeoutExpired:
                 app.kill()
                 app.wait()
+        if runtime_service_server is not None:
+            if runtime_service_server.active_count:
+                infrastructure_failure = True
+                runtime_service_server.revoke('ker-run explicit shutdown')
+            runtime_service_server.close()
+            runtime_service_server = None
+        if runtime_service_directory is not None:
+            try:
+                os.rmdir(runtime_service_directory)
+            except OSError as error:
+                print(f'ker-run: runtime-service directory cleanup: {error}', file=sys.stderr)
+                infrastructure_failure = True
+            runtime_service_directory = None
         channel_app.close()
         channel_io.close()
         mtu_app.close()
@@ -1543,7 +1631,7 @@ def main():
             decision_app.close()
         if decision_io is not None:
             decision_io.close()
-        for pidfd in (supervisor_pidfd, worker_pidfd, app_pidfd):
+        for pidfd in (supervisor_pidfd, worker_pidfd, app_pidfd, runtime_actor_pidfd):
             if pidfd >= 0:
                 os.close(pidfd)
         if control_read >= 0:
