@@ -94,186 +94,178 @@ def build_eal(args):
 
 def supervisor(args, notify_fd=-1, retain_endpoint=False):
     ker_run = load_ker_run(args.launcher)
-    supervisor_pid = os.getpid()
-    supervisor_start = start_ticks(supervisor_pid)
-    nonce = os.urandom(16)
-    epoch = int.from_bytes(os.urandom(8), 'little') or 1
-    app_endpoint, control_endpoint = socket.socketpair(
-        socket.AF_UNIX, socket.SOCK_SEQPACKET | getattr(socket, 'SOCK_CLOEXEC', 0))
-    control_endpoint.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-    control_endpoint.settimeout(20)
+    state = {'manager': None, 'app': None, 'retainer_pid': -1}
+    original_manager = ker_run.broker_readiness.BrokerReadiness
 
-    retainer_pid = -1
+    # The retainer is forked before ker-run starts worker/runtime threads. It
+    # receives only a duplicate of the real readiness endpoint later.
+    retainer_channel = None
     if retain_endpoint:
+        retainer_parent, retainer_child = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_SEQPACKET | getattr(socket, 'SOCK_CLOEXEC', 0))
         retainer_pid = os.fork()
         if retainer_pid == 0:
             try:
-                app_endpoint.close()
-                if notify_fd >= 0:
-                    os.close(notify_fd)
+                retainer_parent.close()
+                packet, ancillary, _, _ = retainer_child.recvmsg(1,
+                    socket.CMSG_SPACE(struct.calcsize('i')))
+                fds = []
+                for level, kind, data in ancillary:
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                        fds.extend(struct.unpack(f'{len(data) // struct.calcsize("i")}i', data))
+                require(packet == b'R' and len(fds) == 1,
+                    'retainer did not receive exactly one readiness endpoint')
+                held_endpoint_fd = fds[0]
+                fds.clear()
+                retainer_child.send(b'H')
                 time.sleep(60)
             finally:
+                if 'held_endpoint_fd' in locals():
+                    os.close(held_endpoint_fd)
+                for fd in locals().get('fds', []):
+                    os.close(fd)
                 os._exit(0)
+        retainer_child.close()
+        retainer_channel = retainer_parent
+        retainer_channel.settimeout(5)
+        state['retainer_pid'] = retainer_pid
 
-    state = {'app': None, 'profile': None, 'start_ticks': None}
-    original_popen = subprocess.Popen
+    supervisor_pid = os.getpid()
 
-    def test_popen(command, *popen_args, **kwargs):
-        values = [str(item) for item in command] if isinstance(command, (list, tuple)) else [str(command)]
-        if str(args.broker.resolve()) not in values:
-            return original_popen(command, *popen_args, **kwargs)
-        env = dict(kwargs.get('env') or os.environ)
-        worker_profile = env.get('KER_RUNTIME_SERVICE_WORKER_PROFILE')
-        require(worker_profile and len(worker_profile) == 64,
-            'runtime-service launcher did not provide the actual worker profile hash')
-        env.update({
-            'KER_BROKER_READINESS_FD': str(app_endpoint.fileno()),
-            'KER_BROKER_RUN_NONCE': nonce.hex(),
-            'KER_BROKER_WORKER_EPOCH': str(epoch),
-            'KER_BROKER_WORKER_PROFILE_SHA256': worker_profile,
-            'KER_BROKER_SUPERVISOR_START_TICKS': str(supervisor_start),
-        })
-        kwargs['env'] = env
-        kwargs['pass_fds'] = tuple(sorted(set(kwargs.get('pass_fds', ())) |
-                                           {app_endpoint.fileno()}))
-        broker_log_path = Path(args.stats).with_suffix('.broker.log')
-        broker_log = broker_log_path.open('wb', buffering=0)
-        state['broker_log'] = broker_log
-        kwargs['stdout'] = broker_log
-        kwargs['stderr'] = subprocess.STDOUT
-        process = original_popen(command, *popen_args, **kwargs)
-        state['app'] = process
-        state['profile'] = bytes.fromhex(worker_profile)
-        state['start_ticks'] = start_ticks(process.pid)
-        app_endpoint.close()
-        if notify_fd >= 0:
-            message = {'event': 'APP', 'pid': process.pid,
-                'start_ticks': state['start_ticks'], 'retainer_pid': retainer_pid}
-            os.write(notify_fd, (json.dumps(message) + '\n').encode())
-        return process
+    def observed_manager(*manager_args, **manager_kwargs):
+        manager = original_manager(*manager_args, **manager_kwargs)
+        state['manager'] = manager
+        if retainer_channel is not None:
+            values = struct.pack('i', manager.parent.fileno())
+            retainer_channel.sendmsg([b'R'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, values)])
+            require(retainer_channel.recv(1) == b'H',
+                'retainer did not acknowledge holding the readiness endpoint')
+            retainer_channel.close()
+            state['retainer_held'] = True
+        original_child_started = manager.child_started
 
+        def child_started(process, expected_executable_hash):
+            result = original_child_started(process, expected_executable_hash)
+            state['app'] = process
+            if notify_fd >= 0:
+                message = {'event': 'APP', 'pid': process.pid,
+                    'start_ticks': manager.app[3], 'retainer_pid': state['retainer_pid'],
+                    'retainer_held': state.get('retainer_held', False)}
+                os.write(notify_fd, (json.dumps(message) + '\n').encode())
+            return result
+
+        manager.child_started = child_started
+        return manager
+
+    ker_run.broker_readiness.BrokerReadiness = observed_manager
     control_errors = []
     control_result = {}
 
     def control_thread():
         try:
-            process = None
+            manager = None
             deadline = time.monotonic() + 25
-            while process is None and time.monotonic() < deadline:
-                process = state['app']
-                time.sleep(0.001)
-            require(process is not None, 'broker Popen was not observed before READY deadline')
+            while manager is None and time.monotonic() < deadline:
+                manager = state['manager']
+                if manager is None:
+                    time.sleep(0.001)
+            require(manager is not None, 'broker readiness manager was not created')
+            app = None
+            while app is None and time.monotonic() < deadline:
+                app = state['app']
+                if app is None:
+                    time.sleep(0.001)
+            require(app is not None, 'broker application Popen did not complete')
             if args.mode == 'no-bootstrap':
-                control_endpoint.settimeout(15)
-                packet = control_endpoint.recv(121)
-                require(packet == b'', f'expected no READY and broker endpoint close, got {packet!r}')
+                wait_deadline = time.monotonic() + 15
+                while app.poll() is None and time.monotonic() < wait_deadline:
+                    time.sleep(0.005)
+                require(app.poll() is not None and not manager.ready,
+                    'missing bootstrap unexpectedly reached READY')
                 control_result['no_ready'] = True
                 return
-            packet, credentials = receive_record(control_endpoint, 120, 20)
-            nonce_value, epoch_value, profile, broker_start, count, manifest = wire.unpack_ready(packet)
-            broker_pid, broker_uid, broker_gid = credentials
-            require(broker_pid == process.pid and broker_uid == os.getuid() and
-                    broker_gid == os.getgid(),
-                f'READY SCM credentials do not identify exact broker Popen: {credentials!r}')
-            broker_pidfd = os.pidfd_open(broker_pid, 0)
-            try:
-                require(process_alive(broker_pidfd), 'broker exited before READY was accepted')
-                require(start_ticks(broker_pid) == broker_start == state['start_ticks'],
-                    'READY start ticks do not match exact broker Popen')
-                require(os.path.realpath(f'/proc/{broker_pid}/exe') == str(args.broker.resolve()),
-                    'READY sender executable is not the pinned broker fixture')
-                require(nonce_value == nonce and epoch_value == epoch and
-                    profile == state['profile'] and count == 0 and
-                    manifest == wire.EMPTY_MANIFEST_SHA256,
-                    'READY fields do not match supervisor run/profile and empty bootstrap')
-                control_result['ready'] = True
-                if notify_fd >= 0:
-                    os.write(notify_fd, (json.dumps({'event': 'READY', 'pid': broker_pid,
-                        'start_ticks': broker_start, 'retainer_pid': retainer_pid}) + '\n').encode())
-                if args.mode == 'parent-death':
-                    return
+
+            ready_deadline = time.monotonic() + 20
+            while not manager.ready and time.monotonic() < ready_deadline:
+                if app.poll() is not None:
+                    break
+                time.sleep(0.001)
+            require(manager.ready,
+                f'ker-run did not accept authenticated READY; app_status={app.poll()}')
+            if notify_fd >= 0:
+                os.write(notify_fd, (json.dumps({'event': 'READY', 'pid': manager.app[0],
+                    'start_ticks': manager.app[3],
+                    'retainer_pid': state['retainer_pid'],
+                    'retainer_held': state.get('retainer_held', False)}) + '\n').encode())
+            if args.mode == 'parent-death':
+                return
+            if args.mode in ('bad-stop', 'rights-stop', 'truncated-stop'):
                 if args.mode == 'bad-stop':
-                    bad = wire.pack_stop(wire.STOP, bytes([nonce[0] ^ 1]) + nonce[1:],
-                        epoch, supervisor_pid, os.getuid(), os.getgid(), supervisor_start)
-                    send_test_packet(control_endpoint, bad)
-                    control_endpoint.settimeout(15)
-                    require(control_endpoint.recv(1) == b'',
-                        'invalid STOP must fail closed without STOP_ACK')
-                    control_result['bad_stop_rejected'] = True
-                    return
-                if args.mode == 'rights-stop':
-                    bad = wire.pack_stop(wire.STOP, nonce, epoch, supervisor_pid,
-                        os.getuid(), os.getgid(), supervisor_start)
+                    bad = wire.pack_stop(wire.STOP,
+                        bytes([manager.nonce[0] ^ 1]) + manager.nonce[1:], manager.epoch,
+                        supervisor_pid, os.getuid(), os.getgid(), manager.supervisor[3])
+                elif args.mode == 'rights-stop':
+                    bad = wire.pack_stop(wire.STOP, manager.nonce, manager.epoch,
+                        supervisor_pid, os.getuid(), os.getgid(), manager.supervisor[3])
                     read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
                     try:
-                        send_test_packet(control_endpoint, bad, (read_fd,))
+                        send_test_packet(manager.parent, bad, (read_fd,))
                     finally:
                         os.close(read_fd)
                         os.close(write_fd)
-                    control_endpoint.settimeout(15)
-                    require(control_endpoint.recv(1) == b'',
-                        'STOP carrying SCM_RIGHTS must fail closed without ACK')
-                    control_result['rights_stop_rejected'] = True
-                    return
-                if args.mode == 'truncated-stop':
-                    send_test_packet(control_endpoint,
-                        wire.pack_stop(wire.STOP, nonce, epoch, supervisor_pid,
-                            os.getuid(), os.getgid(), supervisor_start) + b'\0')
-                    control_endpoint.settimeout(15)
-                    require(control_endpoint.recv(1) == b'',
-                        'truncated STOP must fail closed without ACK')
-                    control_result['truncated_stop_rejected'] = True
-                    return
-                stop = wire.pack_stop(wire.STOP, nonce, epoch, supervisor_pid,
-                    os.getuid(), os.getgid(), supervisor_start)
-                send_test_packet(control_endpoint, stop)
-                ack, ack_credentials = receive_record(control_endpoint, 104, 10)
-                require(ack_credentials[0] == process.pid and
-                    ack_credentials[1:] == (os.getuid(), os.getgid()),
-                    f'STOP_ACK credentials do not identify broker: {ack_credentials!r}')
-                expected = (nonce, epoch, wire.EMPTY_MANIFEST_SHA256, supervisor_pid,
-                    os.getuid(), os.getgid(), supervisor_start, wire.STOP_ID)
-                require(wire.unpack_stop(ack, wire.STOP_ACK) == expected,
-                    'STOP_ACK does not match the one-shot supervisor request')
-                control_result['ack'] = True
-            finally:
-                os.close(broker_pidfd)
+                    bad = None
+                else:
+                    bad = wire.pack_stop(wire.STOP, manager.nonce, manager.epoch,
+                        supervisor_pid, os.getuid(), os.getgid(), manager.supervisor[3]) + b'\0'
+                if bad is not None:
+                    send_test_packet(manager.parent, bad)
+                wait_deadline = time.monotonic() + 15
+                while app.poll() is None and time.monotonic() < wait_deadline:
+                    time.sleep(0.005)
+                require(app.poll() is not None,
+                    'malformed STOP did not terminate the broker application')
+                key = {'bad-stop': 'bad_stop_rejected', 'rights-stop': 'rights_stop_rejected',
+                    'truncated-stop': 'truncated_stop_rejected'}[args.mode]
+                control_result[key] = True
+                return
+
+            os.kill(supervisor_pid, signal.SIGTERM)
+            stop_deadline = time.monotonic() + 15
+            while not manager.stopped and time.monotonic() < stop_deadline:
+                time.sleep(0.001)
+            require(manager.stopped,
+                'ker-run SIGTERM path did not complete authenticated STOP/ACK')
+            control_result['ack'] = True
         except BaseException as error:
             control_errors.append(error)
-            process = state.get('app')
-            if process is not None and process.poll() is None:
-                process.kill()
+            app = state.get('app')
+            if app is not None and app.poll() is None:
+                app.kill()
 
     thread = threading.Thread(target=control_thread, name='broker-readiness-test-control')
     thread.start()
     arguments = [str(args.launcher), '--library', str(args.library),
         '--io-worker', str(args.worker), '--address', '198.18.0.2/24',
         '--port', 'net_tap0', '--eal', build_eal(args), '--runtime-service',
-        '--stats', str(args.stats), '--', str(args.broker), str(args.rpc_path)]
+        '--broker-readiness', '--stats', str(args.stats), '--',
+        str(args.broker), str(args.rpc_path)]
     if args.mode == 'no-bootstrap':
         arguments.append('--skip-bootstrap')
     old_argv = sys.argv
-    subprocess.Popen = test_popen
     try:
         sys.argv = arguments
         launcher_result = ker_run.main()
     finally:
         sys.argv = old_argv
-        subprocess.Popen = original_popen
-        control_endpoint.close()
-        if app_endpoint.fileno() >= 0:
-            app_endpoint.close()
+        ker_run.broker_readiness.BrokerReadiness = original_manager
+        if retainer_channel is not None:
+            retainer_channel.close()
     thread.join(timeout=25)
     if thread.is_alive():
         raise RuntimeError('broker readiness controller did not terminate')
     if control_errors:
         raise RuntimeError(f'broker readiness controller failed: {control_errors[0]!r}')
-    broker_log = state.get('broker_log')
-    if broker_log is not None:
-        broker_log.close()
     if args.mode == 'parent-death':
-        # This mode remains alive until its outer harness kills the parent; it
-        # must not signal STOP or close the retained endpoint first.
         raise RuntimeError('parent-death supervisor unexpectedly returned')
     stats = json.loads(Path(args.stats).read_text()) if Path(args.stats).exists() else None
     result = {'event': 'RESULT', 'mode': args.mode, 'launcher_result': launcher_result,
@@ -281,9 +273,9 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
     if notify_fd >= 0:
         os.write(notify_fd, (json.dumps(result) + '\n').encode())
     if args.mode == 'healthy':
-        require(launcher_result == 0 and control_result.get('ack') and
+        require(launcher_result == 143 and control_result.get('ack') and
             stats and stats.get('outstanding') == 0,
-            f'healthy READY/STOP did not clean up: {result!r}')
+            f'healthy READY/STOP did not clean up through ker-run: {result!r}')
     elif args.mode in ('bad-stop', 'rights-stop', 'truncated-stop'):
         expected_key = {'bad-stop': 'bad_stop_rejected',
             'rights-stop': 'rights_stop_rejected',
@@ -292,11 +284,10 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
             stats and stats.get('outstanding') == 0,
             f'{args.mode} was not rejected with worker cleanup: {result!r}')
     elif args.mode == 'no-bootstrap':
-        require(launcher_result == 0 and control_result.get('no_ready') and
+        require(launcher_result != 0 and control_result.get('no_ready') and
             stats and stats.get('outstanding') == 0,
             f'no-bootstrap path did not fail before READY and clean up: {result!r}')
     return 0
-
 
 def enable_subreaper():
     libc = ctypes.CDLL(None, use_errno=True)
@@ -342,10 +333,14 @@ def spawn_supervisor(args, mode, timeout=45):
             if retain:
                 require(first_record.get('event') == 'APP',
                     f'parent-death helper did not publish broker identity: {first_record!r}')
+                require(first_record.get('retainer_held') is True,
+                    'endpoint retainer did not acknowledge the held descriptor')
                 ready_record = json.loads(read_line_bounded(stream, 20,
                     'parent-death broker READY'))
                 require(ready_record.get('event') == 'READY',
                     f'parent-death helper did not reach authenticated READY: {ready_record!r}')
+                require(ready_record.get('retainer_held') is True,
+                    'parent-death READY was published before endpoint retention')
                 broker_pid = ready_record['pid']
                 broker_pidfd = os.pidfd_open(broker_pid, 0)
                 retainer_pid = ready_record['retainer_pid']
@@ -372,7 +367,7 @@ def spawn_supervisor(args, mode, timeout=45):
                             broker_status = status
                             break
                         time.sleep(0.01)
-                    broker_log_path = args.root / 'parent-death.broker.log'
+                    broker_log_path = args.root / 'parent-death.supervisor.log'
                     diagnostic = broker_log_path.read_text(errors='replace')
                     require('BROKER_PARENT_CHECK_ERROR=3' in diagnostic,
                         f'broker did not record ESRCH from pinned parent check: {diagnostic!r}')
@@ -465,9 +460,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ker-broker-readiness-') as directory:
         args.root = Path(directory)
         for mode in ('healthy', 'bad-stop', 'rights-stop', 'truncated-stop',
-                     'no-bootstrap'):
+                     'parent-death', 'no-bootstrap'):
             spawn_supervisor(args, mode)
-        spawn_supervisor(args, 'parent-death')
     print('BROKER_READINESS_TAP_OK authenticated_READY_STOP no-bootstrap malformed_STOP parent_pidfd_death')
     return 0
 
