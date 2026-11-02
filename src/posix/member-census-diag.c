@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "member-census-diag.h"
 #include "member-census-runtime.h"
+#include "tcp-payload-snapshot.h"
 #include <errno.h>
 #include <lkl.h>
 #include <lkl/linux/capability.h>
@@ -32,11 +33,13 @@ struct census_job {
     enum census_job_state state;
     uint64_t ticket;
     bool abandoned;
+    bool payload;
     atomic_bool cancel;
     struct ker_member_census_identity identity;
     struct ker_member_census_diag_state query;
     int status;
     struct ker_socket_member_census_snapshot snapshot;
+    struct ker_socket_member_payload_snapshot payload_snapshot;
 };
 static pthread_mutex_t census_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t census_changed = PTHREAD_COND_INITIALIZER;
@@ -192,20 +195,34 @@ static void *census_worker(void *unused)
         }
         job->state = CENSUS_JOB_RUNNING;
         struct ker_member_census_identity identity = job->identity;
+        bool payload_job = job->payload;
         pthread_mutex_unlock(&census_lock);
 
         struct ker_socket_member_census_snapshot snapshot = {0};
-        int progress;
-        if (!job->query.started) progress = ker_member_census_diag_begin(&job->query, &identity);
-        else progress = ker_member_census_diag_step(&job->query, &job->cancel, &snapshot);
-        bool complete = progress != 0;
-        int status = progress < 0 ? progress : 0;
-        if (complete) ker_member_census_diag_close(&job->query);
+        struct ker_socket_member_payload_snapshot payload_snapshot = {0};
+        int progress = 0;
+        int status = 0;
+        bool complete;
+        if (payload_job) {
+            status = ker_native_tcp_payload_snapshot(identity.mark, &payload_snapshot);
+            complete = true;
+        } else {
+            if (!job->query.started)
+                progress = ker_member_census_diag_begin(&job->query, &identity);
+            else
+                progress = ker_member_census_diag_step(&job->query, &job->cancel, &snapshot);
+            complete = progress != 0;
+            status = progress < 0 ? progress : 0;
+        }
+        if (complete && !payload_job) ker_member_census_diag_close(&job->query);
 
         pthread_mutex_lock(&census_lock);
         if (complete) {
             job->status = status;
-            if (!status) job->snapshot = snapshot;
+            if (!status) {
+                if (payload_job) job->payload_snapshot = payload_snapshot;
+                else job->snapshot = snapshot;
+            }
             job->state = job->abandoned ? CENSUS_JOB_FREE : CENSUS_JOB_DONE;
             pthread_cond_broadcast(&census_changed);
         } else {
@@ -263,6 +280,46 @@ int ker_member_census_query_submit(const struct ker_member_census_identity *iden
     return 0;
 }
 
+int ker_member_payload_query_submit(uint32_t mark, uint64_t *ticket)
+{
+    if (!mark || !ticket) return -EINVAL;
+    int authority = ker_member_census_diag_require_net_admin();
+    if (authority) return authority;
+    pthread_mutex_lock(&census_lock);
+    if (census_shutting_down) {
+        pthread_mutex_unlock(&census_lock);
+        return -ESHUTDOWN;
+    }
+    size_t slot = CENSUS_GLOBAL_JOBS;
+    for (size_t i = 0; i < CENSUS_GLOBAL_JOBS; ++i)
+        if (census_jobs[i].state == CENSUS_JOB_FREE) { slot = i; break; }
+    if (slot == CENSUS_GLOBAL_JOBS || !census_next_ticket) {
+        pthread_mutex_unlock(&census_lock);
+        return slot == CENSUS_GLOBAL_JOBS ? -EAGAIN : -EOVERFLOW;
+    }
+    if (!census_worker_started) {
+        int created = pthread_create(&census_worker_thread, NULL, census_worker, NULL);
+        if (created) {
+            pthread_mutex_unlock(&census_lock);
+            return -created;
+        }
+        census_worker_started = true;
+    }
+    struct census_job *job = &census_jobs[slot];
+    memset(job, 0, sizeof(*job));
+    atomic_init(&job->cancel, false);
+    job->state = CENSUS_JOB_QUEUED;
+    job->payload = true;
+    job->identity.mark = mark;
+    job->ticket = census_next_ticket;
+    if (census_next_ticket == UINT64_MAX) census_next_ticket = 0;
+    else ++census_next_ticket;
+    *ticket = job->ticket;
+    pthread_cond_signal(&census_changed);
+    pthread_mutex_unlock(&census_lock);
+    return 0;
+}
+
 int ker_member_census_query_poll(uint64_t ticket, int *query_status,
     struct ker_socket_member_census_snapshot *snapshot)
 {
@@ -273,10 +330,37 @@ int ker_member_census_query_poll(uint64_t ticket, int *query_status,
         if (census_jobs[i].state != CENSUS_JOB_FREE && census_jobs[i].ticket == ticket) {
             job = &census_jobs[i]; break;
         }
-    if (!job) { pthread_mutex_unlock(&census_lock); return -ENOENT; }
+    if (!job || job->payload) { pthread_mutex_unlock(&census_lock); return -ENOENT; }
     if (job->state != CENSUS_JOB_DONE) { pthread_mutex_unlock(&census_lock); return 0; }
     int status = job->status;
     if (!status) *snapshot = job->snapshot;
+    *query_status = status;
+    memset(job, 0, sizeof(*job));
+    job->state = CENSUS_JOB_FREE;
+    pthread_mutex_unlock(&census_lock);
+    return 1;
+}
+
+int ker_member_payload_query_poll(uint64_t ticket, int *query_status,
+    struct ker_socket_member_payload_snapshot *snapshot)
+{
+    if (!ticket || !query_status || !snapshot) return -EINVAL;
+    pthread_mutex_lock(&census_lock);
+    struct census_job *job = NULL;
+    for (size_t i = 0; i < CENSUS_GLOBAL_JOBS; ++i)
+        if (census_jobs[i].state != CENSUS_JOB_FREE && census_jobs[i].ticket == ticket) {
+            job = &census_jobs[i]; break;
+        }
+    if (!job || !job->payload) {
+        pthread_mutex_unlock(&census_lock);
+        return -ENOENT;
+    }
+    if (job->state != CENSUS_JOB_DONE) {
+        pthread_mutex_unlock(&census_lock);
+        return 0;
+    }
+    int status = job->status;
+    if (!status) *snapshot = job->payload_snapshot;
     *query_status = status;
     memset(job, 0, sizeof(*job));
     job->state = CENSUS_JOB_FREE;

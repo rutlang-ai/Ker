@@ -14,6 +14,9 @@ int ker_member_census_query_submit(const struct ker_member_census_identity *iden
 int ker_member_census_query_poll(uint64_t ticket,
     int *query_status, struct ker_socket_member_census_snapshot *snapshot);
 int ker_member_census_query_cancel(uint64_t ticket);
+int ker_member_payload_query_submit(uint32_t mark, uint64_t *ticket);
+int ker_member_payload_query_poll(uint64_t ticket, int *query_status,
+    struct ker_socket_member_payload_snapshot *snapshot);
 void ker_member_census_runtime_shutdown(void);
 
 #endif

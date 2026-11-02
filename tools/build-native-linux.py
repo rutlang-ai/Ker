@@ -44,6 +44,28 @@ def output(repo, *args):
     return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
 
 
+def wire_ker_tcp_payload(source):
+    """Add Ker's one built-in LKL adapter object to generated Kbuild input.
+
+    The overlay copier intentionally refuses to replace upstream files. This
+    narrowly appends one object to the architecture's existing obj-y list;
+    include/net and all protocol implementation files remain byte-identical.
+    """
+    makefile = Path(source) / 'arch/lkl/kernel/Makefile'
+    text = makefile.read_text()
+    if text.count('ker_tcp_payload.o'):
+        raise RuntimeError('generated LKL Makefile already wires ker_tcp_payload.o')
+    lines = text.splitlines(keepends=True)
+    matches = [i for i, line in enumerate(lines) if line.startswith('obj-y = ')]
+    if len(matches) != 1:
+        raise RuntimeError('expected exactly one arch/lkl/kernel obj-y assignment')
+    if lines and not lines[-1].endswith(('\n', '\r')):
+        lines[-1] += '\n'
+    lines.append('obj-y += ker_tcp_payload.o\n')
+    makefile.write_text(''.join(lines))
+    git(source, 'add', '--', 'arch/lkl/kernel/Makefile')
+
+
 @contextmanager
 def repository_lock(repo):
     # A shallow fetch computes its update before Git takes shallow.lock.
@@ -140,6 +162,7 @@ def build_artifacts(args):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, target)
                 git(source, 'add', '--', target.relative_to(source))
+        wire_ker_tcp_payload(source)
         tree = output(source, 'write-tree')
         prepared.write_text(json.dumps({'fingerprint': fingerprint, 'tree': tree}, indent=2) + '\n')
     expected = json.loads(prepared.read_text())

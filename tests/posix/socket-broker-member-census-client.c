@@ -194,6 +194,7 @@ int main(int argc, char **argv)
     CENSUS_CHECK(group >= 0);
     close(bootstrap_group);
     int member[2] = {-1, -1}, census[2] = {-1, -1}, accepted[8];
+    unsigned accepted_member[8] = {0};
     for (size_t i = 0; i < 8; ++i) accepted[i] = -1;
     for (unsigned i = 0; i < 2; ++i) {
         member[i] = ker_socket_client_reuseport_group_member(&client, group, i);
@@ -244,6 +245,7 @@ int main(int argc, char **argv)
             if (index > 1 || slot >= 8 || accepted[slot] >= 0) return 3;
             accepted[slot] = ker_socket_client_accept4(&client, member[index], NULL, NULL,
                 SOCK_NONBLOCK | SOCK_CLOEXEC);
+            if (accepted[slot] >= 0) accepted_member[slot] = index;
             printf("ACCEPT %u %u %d %d\n", index, slot, accepted[slot],
                 accepted[slot] < 0 ? errno : 0); fflush(stdout);
         } else if (sscanf(command, "READ %u %u %zu", &slot, &index, &count) == 3) {
@@ -272,9 +274,15 @@ int main(int argc, char **argv)
                     if (send_observer_cap(control_fd, slot, observer)) result = -1;
                 }
             }
+            struct ker_socket_member_payload_snapshot payload = {0};
+            if (!result && ker_socket_client_member_payload_snapshot(&client,
+                    census[accepted_member[slot]], &payload)) result = -1;
+            if (!result && !payload.payload_bytes) { errno = ENODATA; result = -1; }
             int saved = errno;
             if (observer >= 0) close(observer);
-            printf("FILL %u %zu %u %d %d\n", slot, sent, send_queue, result, result ? saved : 0);
+            printf("FILL %u %zu %u %d %d %llu %llu\n", slot, sent, send_queue,
+                result, result ? saved : 0, (unsigned long long)payload.payload_bytes,
+                (unsigned long long)payload.sampled_sockets);
             fflush(stdout);
         } else if (!strncmp(command, "WRITE ", 6)) {
             char payload[64];
