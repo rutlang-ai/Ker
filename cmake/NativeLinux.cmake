@@ -77,9 +77,21 @@ if(BUILD_TESTING)
     target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1
         KER_C28_CUTOVER_TESTING=1)
 endif()
+set(ker_posix_exports_map "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+if(BUILD_TESTING)
+    # The shutdown barrier is a test-only private entry point used by the
+    # uninstalled RX decision fixture. Never expose it from tests-OFF builds.
+    file(READ "${PROJECT_SOURCE_DIR}/src/posix/exports.map" ker_posix_test_exports)
+    string(REPLACE "local: *;"
+        "ker_posix_run_test_set_shutdown_barrier; ker_posix_rx_decision_test_shutdown_ebusy_once; local: *;"
+        ker_posix_test_exports "${ker_posix_test_exports}")
+    set(ker_posix_exports_map "${CMAKE_CURRENT_BINARY_DIR}/rx-decision-test-exports.map")
+    file(WRITE "${ker_posix_exports_map}" "${ker_posix_test_exports}")
+endif()
 target_link_options(ker-posix PRIVATE -Wl,--no-undefined
-    "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
-set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    "-Wl,--version-script=${ker_posix_exports_map}")
+set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS
+    "${PROJECT_SOURCE_DIR}/src/posix/exports.map" "${ker_posix_exports_map}")
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 target_sources(ker-posix PRIVATE src/posix/tcp-request-revoke.c)
 
@@ -2606,3 +2618,4 @@ include(cmake/FStackOwnerRequestsTests.cmake)
 if(BUILD_TESTING)
     ker_add_ff_owner_requests_tests()
 endif()
+include("${PROJECT_SOURCE_DIR}/cmake/RxDecisionForwardTests.cmake")

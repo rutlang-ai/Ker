@@ -204,6 +204,27 @@ baseline CTest is opt-in because it takes more than five minutes; manual `gr0`
 and composite modes return nonzero when the unchanged oracle rejects a run.
 This work does not advance the source-case inventory or qualify graceful reload.
 
+## Private Linux RX decision lease (C31)
+
+The private `ker-run --rx-decision` profile gives the trusted original-Linux
+application a bounded, authenticated decision for each retained Ethernet RX
+mbuf. The consumer may choose `LOCAL` (inject the unchanged frame once into
+that application's original Linux instance) or `DROP`; it cannot provide
+replacement bytes, a target, or a file descriptor. Worker settlement waits
+until every decision lease is resolved. The implementation does not enable
+F-Stack dispatcher registration, PEER/RESPONSE actions, or a graceful-reload
+profile.
+
+The TAP qualification uses real original-Linux TCP: normal echo, an injected
+packet-channel EAGAIN followed by same-ID retry and one actual send, immediate
+application stop with RX decision progress during native send-queue drain,
+and a post-PREPARED SYN answered by DROP without a SYNACK. A separate retry
+case proves cleanup-only `EBUSY` continuation and retained native drain error.
+These cases qualify the private lease and shutdown ownership boundary only;
+they do not invoke the pinned Nginx callback, transfer packets between Nginx
+generations, qualify PEER routing, or complete the original graceful-reload
+entrypoint. They do not change the source-case inventory.
+
 The opt-in runtime now provides `ff_socket_snd_pending` for ordinary
 ready-copy TCP sockets created through the authenticated FF owner context. Each
 process receives a distinct broker-owned mark bound to its host PID, process
