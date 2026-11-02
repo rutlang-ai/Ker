@@ -83,6 +83,8 @@ static int ff_owner_capability = -1;
 static int ff_initial_listener_capability = -1;
 static int ff_initial_listener_application_fd = -1;
 static bool ff_initial_listener_adoption_failed;
+static int ff_candidate_listener_capability = -1;
+static bool ff_candidate_listener_adoption_failed;
 static pid_t ff_owner_pid;
 static bool ff_owner_context_started;
 static bool unowned_network_activity;
@@ -688,6 +690,36 @@ int ker_sb_preload_ff_owner_initial_listener_prepare(int slot_cap)
     return 0;
 }
 
+int ker_sb_preload_ff_owner_candidate_listener_prepare(int slot_cap)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    if (slot_cap < 0) { errno = EINVAL; return -1; }
+    ker_sb_preload_lock();
+    if (!ker_sb_preload_ff_owner_active_locked() ||
+        ff_candidate_listener_capability >= 0 || ff_candidate_listener_adoption_failed) {
+        ker_sb_preload_unlock(); errno = EALREADY; return -1;
+    }
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int owner_cap = ker_sb_preload_ff_owner_capability_locked();
+    if (!client || owner_cap < 0) {
+        ker_sb_preload_unlock(); errno = ENOTCONN; return -1;
+    }
+    int capability = ker_socket_client_owner_group_activate_candidate(client,
+        owner_cap, slot_cap);
+    if (capability < 0) {
+        int error = errno; ker_sb_preload_unlock(); errno = error; return -1;
+    }
+    if (ker_sb_preload_track_private_fd_locked(capability)) {
+        int error = errno;
+        (void)syscall(SYS_close, capability);
+        ff_candidate_listener_adoption_failed = true;
+        ker_sb_preload_unlock(); errno = error; return -1;
+    }
+    ff_candidate_listener_capability = capability;
+    ker_sb_preload_unlock();
+    return 0;
+}
+
 int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol)
 {
     if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
@@ -699,7 +731,21 @@ int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol)
     }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
     int fd = -1;
-    if (ff_initial_listener_capability >= 0) {
+    if (ff_candidate_listener_capability >= 0) {
+        int base_type = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (!client || domain != AF_INET || base_type != SOCK_STREAM ||
+            (protocol != 0 && protocol != IPPROTO_TCP)) {
+            int error = EOPNOTSUPP;
+            (void)syscall(SYS_close, ff_candidate_listener_capability);
+            ker_sb_preload_untrack_private_fd_locked(ff_candidate_listener_capability);
+            ff_candidate_listener_capability = -1;
+            ff_candidate_listener_adoption_failed = true;
+            ker_sb_preload_unlock(); errno = error; return -1;
+        }
+        fd = ff_candidate_listener_capability;
+    } else if (ff_candidate_listener_adoption_failed) {
+        ker_sb_preload_unlock(); errno = EOPNOTSUPP; return -1;
+    } else if (ff_initial_listener_capability >= 0) {
         int base_type = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (!client || domain != AF_INET || base_type != SOCK_STREAM ||
             (protocol != 0 && protocol != IPPROTO_TCP)) {
@@ -724,6 +770,11 @@ int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol)
     int registration_status = fd >= 0 ? ker_sb_preload_register_network_locked(fd) : 0;
     if (registration_status) {
         int error = errno; (void)syscall(SYS_close, fd); fd = -1; errno = error;
+        if (ff_candidate_listener_capability >= 0) {
+            ker_sb_preload_untrack_private_fd_locked(ff_candidate_listener_capability);
+            ff_candidate_listener_capability = -1;
+            ff_candidate_listener_adoption_failed = true;
+        }
         if (ff_initial_listener_capability >= 0) {
             ker_sb_preload_untrack_private_fd_locked(ff_initial_listener_capability);
             ff_initial_listener_capability = -1;
@@ -733,6 +784,9 @@ int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol)
         ker_sb_preload_untrack_private_fd_locked(fd);
         ff_initial_listener_capability = -1;
         ff_initial_listener_application_fd = fd;
+    } else if (fd >= 0 && ff_candidate_listener_capability == fd) {
+        ker_sb_preload_untrack_private_fd_locked(fd);
+        ff_candidate_listener_capability = -1;
     }
     ker_sb_preload_unlock();
     return fd;

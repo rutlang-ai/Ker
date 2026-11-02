@@ -238,6 +238,12 @@ int ker_socket_client_owner_group_member(struct ker_socket_client *client,
  * tuple. The coordinator can obtain GROUP control after listen succeeds. */
 int ker_socket_client_owner_group_activate_initial(struct ker_socket_client *client,
     int owner_cap, int claimed_slot_cap);
+/* Candidate activation is worker-scoped: it returns only the live actor's
+ * claimed slot-1 unbound socket after initial member 0 is published and the
+ * owner's admission task is READY. Bind/listen use the reserved tuple; listen
+ * publishes member 1 without changing selector 0. */
+int ker_socket_client_owner_group_activate_candidate(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap);
 int ker_socket_client_owner_group_control(struct ker_socket_client *client,
     int plan_cap);
 /* Obtain the coordinator receipt only after the claimed owner is confirmed

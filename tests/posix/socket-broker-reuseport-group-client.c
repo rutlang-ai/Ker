@@ -1280,6 +1280,8 @@ static int staged_candidate_failure_wire(struct ker_socket_client *client,
 static int staged_admission_initial(struct ker_socket_client *client,
     int transfer_fd, unsigned port)
 {
+    int pending_candidate_census = -1;
+    uint64_t candidate_listener_cookie = 0;
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
     if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
     int owner = ker_socket_client_ff_owner_create(client);
@@ -1340,7 +1342,8 @@ static int staged_admission_initial(struct ker_socket_client *client,
             puts("C20_STAGED_PREFLIP_ECHO"); fflush(stdout);
         } else if (!strcmp(command, "CENSUS1\n")) {
             errno = 0;
-            int census = ker_socket_client_member_census_create(client, group, 1);
+            int census = pending_candidate_census >= 0 ? pending_candidate_census :
+                ker_socket_client_member_census_create(client, group, 1);
             int create_status = census < 0 ? -errno : 0;
             struct ker_socket_member_census_snapshot snapshot = {0};
             int census_status = census < 0 ? create_status :
@@ -1354,9 +1357,13 @@ static int staged_admission_initial(struct ker_socket_client *client,
                 if (census >= 0) close(census);
                 errno = EPROTO; return -1;
             }
-            close(census);
+            pending_candidate_census = census;
             puts("C20_STAGED_CANDIDATE_NO_LISTEN"); fflush(stdout);
         } else if (!strcmp(command, "CENSUS_READY\n")) {
+            if (pending_candidate_census >= 0) {
+                close(pending_candidate_census);
+                pending_candidate_census = -1;
+            }
             int census = ker_socket_client_member_census_create(client, group, 1);
             struct ker_socket_member_census_snapshot snapshot = {0};
             if (census < 0 || ker_socket_client_member_census_snapshot(client,
@@ -1366,8 +1373,61 @@ static int staged_admission_initial(struct ker_socket_client *client,
                 if (census >= 0) close(census);
                 errno = EPROTO; return -1;
             }
-            close(census);
+            pending_candidate_census = census;
+            candidate_listener_cookie = snapshot.listener_cookie;
             puts("C20_STAGED_CANDIDATE_LISTEN_CENSUS"); fflush(stdout);
+        } else if (!strcmp(command, "CHECK_CLOSED\n")) {
+            if (pending_candidate_census < 0 || !candidate_listener_cookie) {
+                errno = ENOTCONN; return -1;
+            }
+            uint64_t deadline = 0;
+            struct timespec now = {0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+            deadline = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                (uint64_t)now.tv_nsec + UINT64_C(2000000000);
+            for (;;) {
+                struct ker_socket_member_census_snapshot snapshot = {0};
+                if (ker_socket_client_member_census_snapshot(client,
+                        pending_candidate_census, &snapshot)) {
+                    fprintf(stderr, "C25 close census failed: %s\n", strerror(errno));
+                    return -1;
+                }
+                if (!snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] &&
+                        snapshot.listener_cookie == candidate_listener_cookie) break;
+                if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+                uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                    (uint64_t)now.tv_nsec;
+                if (current >= deadline) {
+                    fprintf(stderr, "C25 listener still present after close: total=%llu listen=%llu cookie=%llu expected=%llu\n",
+                        (unsigned long long)snapshot.total,
+                        (unsigned long long)snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN],
+                        (unsigned long long)snapshot.listener_cookie,
+                        (unsigned long long)candidate_listener_cookie);
+                    errno = ETIMEDOUT; return -1;
+                }
+                struct timespec pause = {.tv_nsec = 10000000};
+                while (nanosleep(&pause, &pause) && errno == EINTR) { }
+            }
+            close(pending_candidate_census);
+            pending_candidate_census = -1;
+            puts("C25_LAST_ALIAS_CLOSED_LISTEN0"); fflush(stdout);
+        } else if (!strcmp(command, "FLIP0\n")) {
+            if (ker_socket_client_reuseport_group_select(client, group, 0)) return -1;
+            puts("C25_SELECTOR0_RESTORED"); fflush(stdout);
+        } else if (!strcmp(command, "WRONG_ACTOR_ACTIVATE\n")) {
+            errno = 0;
+            if (ker_socket_client_owner_group_activate_candidate(client, owner,
+                    slot1) != -1 || errno != ESTALE) {
+                errno = EPROTO; return -1;
+            }
+            puts("C25_WRONG_ACTOR_NO_EFFECT"); fflush(stdout);
+        } else if (!strcmp(command, "WRONG_SLOT_ACTIVATE\n")) {
+            errno = 0;
+            if (ker_socket_client_owner_group_activate_candidate(client, owner,
+                    slot0) != -1 || errno != EACCES) {
+                errno = EPROTO; return -1;
+            }
+            puts("C25_WRONG_SLOT_NO_EFFECT"); fflush(stdout);
         } else if (!strcmp(command, "EARLYPUBLISH\n")) {
             errno = 0;
             if (ker_socket_client_owner_group_publish_candidate(client, plan) != -1 ||
