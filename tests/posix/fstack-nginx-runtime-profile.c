@@ -8,6 +8,17 @@
 
 int ff_init(int argc, char * const argv[]);
 
+static int secondary_authorization_enabled;
+
+int
+ker_fstack_nginx_worker_consume_authorization(unsigned int proc_id)
+{
+    if (!secondary_authorization_enabled || proc_id != 1)
+        return 0;
+    secondary_authorization_enabled = 0;
+    return 1;
+}
+
 intptr_t ngx_max_sockets = 1024;
 int is_fstack_fd(int fd) { return fd >= ngx_max_sockets; }
 
@@ -56,11 +67,14 @@ main(void)
     char *secondary[] = {
         "nginx", "--conf=/unused", "--proc-id=1", "--proc-type=secondary"
     };
+    char *secondary_valid[] = {
+        "nginx", conf_arg, "--proc-id=1", "--proc-type=secondary"
+    };
     char *primary[] = {"nginx", conf_arg, "--proc-id=0", "--proc-type=primary"};
     int failed = 0;
 
     if (expect_reject(ENOTSUP, secondary)) {
-        fputs("FF nginx runtime did not reject the unsupported secondary profile\n", stderr);
+        fputs("FF nginx runtime accepted a secondary without the cooperative shim check\n", stderr);
         failed = 1;
     }
     if (setenv("FF_FAULT", "1", 1) || expect_reject(ENOTSUP, primary)) {
@@ -77,6 +91,17 @@ main(void)
         perror("write valid profile");
         unlink(config_path);
         return 1;
+    }
+    if (setenv("KER_SOCKET_BROKER_PATH", broker, 1)) {
+        perror("set broker environment");
+        unlink(config_path);
+        return 1;
+    }
+    secondary_authorization_enabled = 1;
+    if (expect_reject(ENOENT, secondary_valid) || secondary_authorization_enabled) {
+        fputs("FF nginx runtime did not require and consume shim authorization for worker 1\n",
+            stderr);
+        failed = 1;
     }
     if (setenv("KER_SOCKET_BROKER_PATH", broker, 1) ||
         snprintf(profile, sizeof(profile),

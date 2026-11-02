@@ -164,6 +164,117 @@ set(KER_NO_FF_NGINX_BINARY "" CACHE FILEPATH
     "Pinned no-FF nginx executable for the native socket-preload lifecycle prerequisite")
 set(KER_FSTACK_NGINX_BINARY "" CACHE FILEPATH
     "Pinned --with-ff_module nginx executable for the bounded Ker runtime profile")
+set(KER_FSTACK_NGINX_SOURCE_ROOT "" CACHE PATH
+    "Pinned F-Stack source checkout used to build the FF-enabled nginx executable")
+set(KER_FSTACK_NGINX_BUILD_DIR "" CACHE PATH
+    "Generated objs directory for the pinned FF-enabled nginx build")
+
+if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
+    if(NOT KER_BUILD_FSTACK_NGINX_RUNTIME OR NOT KER_FSTACK_NGINX_BINARY OR
+       NOT KER_FSTACK_NGINX_SOURCE_ROOT OR NOT KER_FSTACK_NGINX_BUILD_DIR)
+        message(FATAL_ERROR
+            "The multiworker shim requires the FF runtime, nginx binary, source root, and generated build dir")
+    endif()
+    if(NOT EXISTS "${KER_FSTACK_NGINX_BINARY}" OR
+       NOT EXISTS "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_connection.h" OR
+       NOT EXISTS "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_config.h" OR
+       NOT EXISTS "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_headers.h")
+        message(FATAL_ERROR "Pinned F-Stack nginx source/build inputs are incomplete")
+    endif()
+    execute_process(COMMAND git -C "${KER_FSTACK_NGINX_SOURCE_ROOT}" rev-parse HEAD
+        OUTPUT_VARIABLE ker_fstack_nginx_source_revision OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE ker_fstack_nginx_git_result)
+    if(NOT ker_fstack_nginx_git_result EQUAL 0 OR
+       NOT ker_fstack_nginx_source_revision STREQUAL "646a641cfff77f4815e1e29829a09e1ed15a2999")
+        message(FATAL_ERROR "Multiworker shim requires pinned F-Stack source 646a641cfff77f4815e1e29829a09e1ed15a2999")
+    endif()
+    execute_process(COMMAND git -C "${KER_FSTACK_NGINX_SOURCE_ROOT}" status --porcelain
+            --untracked-files=all -- app/nginx-1.28.0/src
+        OUTPUT_VARIABLE ker_fstack_nginx_source_status
+        OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE ker_fstack_nginx_status_result)
+    execute_process(COMMAND git -C "${KER_FSTACK_NGINX_SOURCE_ROOT}" ls-files
+            app/nginx-1.28.0/src
+        OUTPUT_VARIABLE ker_fstack_nginx_tracked_source_files
+        OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE ker_fstack_nginx_lsfiles_result)
+    if(NOT ker_fstack_nginx_status_result EQUAL 0 OR
+       NOT ker_fstack_nginx_lsfiles_result EQUAL 0 OR
+       NOT ker_fstack_nginx_source_status STREQUAL "")
+        message(FATAL_ERROR "Pinned F-Stack Nginx source tree is modified or not auditable")
+    endif()
+    file(GLOB_RECURSE ker_fstack_nginx_source_headers LIST_DIRECTORIES false
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/*.h")
+    string(REPLACE "\n" ";" ker_fstack_nginx_tracked_source_files
+        "${ker_fstack_nginx_tracked_source_files}")
+    foreach(ker_fstack_nginx_header IN LISTS ker_fstack_nginx_source_headers)
+        file(RELATIVE_PATH ker_fstack_nginx_header_relative
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}" "${ker_fstack_nginx_header}")
+        list(FIND ker_fstack_nginx_tracked_source_files
+            "${ker_fstack_nginx_header_relative}" ker_fstack_nginx_header_index)
+        if(ker_fstack_nginx_header_index EQUAL -1)
+            message(FATAL_ERROR
+                "Untracked Nginx header could shadow the pinned shim ABI: ${ker_fstack_nginx_header}")
+        endif()
+    endforeach()
+    set(ker_fstack_nginx_pinned_files
+        "${KER_FSTACK_NGINX_BINARY}|d8910d7ad11e9ae93766abbf01a01f19bedbfaac4e077839c66bd938999b9f7d"
+        "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_config.h|4ed89a3d32aaf18365fdafdc3e2ea1a5185d1c3e0b99e8835c3083022f2d9e04"
+        "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_auto_headers.h|59a24934cb2249013c5014394a2f752cf46fb6c43bc48e6fa8b23f3212ee804d"
+        "${KER_FSTACK_NGINX_BUILD_DIR}/ngx_modules.c|817dea55302110810c0cd9927761485f40d47f266e7eadf88f3ff7d8305d8d0e"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_connection.h|1b355239b59baedfb18b04bc53fda582593875c0ba2fde14079e0b514a1bb967"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_connection.c|9bef06290160f0ef3ab6c3385d1e4feaa2cb7ab5436e5041581d81112521e35d"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_cycle.h|2615d23fde0c936b2d6f6bdc4e91b54f8d4d564a4256012dc05d7a27ec7087ec"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core/ngx_module.h|d52332fc318da910ffdf032da4a4af19818a23041fb05cfc3258c3ae9987fa96"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/ngx_event.c|15618af40f54a289f4d2ae6e9d17a8163c225ec16181ab48eb02949b43866475"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules/ngx_ff_module.c|d33fd03ea7a9626130a6029a03505dce54f9ee74d863f3d648f31903a0307f14"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c|7abda2aa4f58ee3dfced545e19935587cce22198899b08a970b531d209cdaf27")
+    foreach(ker_fstack_nginx_file IN LISTS ker_fstack_nginx_pinned_files)
+        string(REPLACE "|" ";" ker_fstack_nginx_parts "${ker_fstack_nginx_file}")
+        list(GET ker_fstack_nginx_parts 0 ker_fstack_nginx_path)
+        list(GET ker_fstack_nginx_parts 1 ker_fstack_nginx_expected_hash)
+        file(SHA256 "${ker_fstack_nginx_path}" ker_fstack_nginx_actual_hash)
+        if(NOT ker_fstack_nginx_actual_hash STREQUAL ker_fstack_nginx_expected_hash)
+            message(FATAL_ERROR "Pinned F-Stack nginx input hash mismatch: ${ker_fstack_nginx_path}")
+        endif()
+    endforeach()
+
+    add_library(ker-fstack-nginx-worker-shim SHARED src/posix/fstack-nginx-multiworker-shim.c)
+    target_include_directories(ker-fstack-nginx-worker-shim PRIVATE
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix"
+        "${KER_FSTACK_NGINX_BUILD_DIR}"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+    target_compile_features(ker-fstack-nginx-worker-shim PRIVATE c_std_11)
+    target_compile_options(ker-fstack-nginx-worker-shim PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-fstack-nginx-worker-shim PRIVATE
+        KER_FSTACK_NGINX_EXPECTED_BUILD_ID="0806707a980bac49a4874ecd4f0aa2419d5b9da2")
+    target_link_options(ker-fstack-nginx-worker-shim PRIVATE -Wl,--no-undefined)
+    target_link_libraries(ker-fstack-nginx-worker-shim PRIVATE ${CMAKE_DL_LIBS})
+    file(SHA256 "${KER_FSTACK_NGINX_BINARY}" ker_fstack_nginx_binary_sha256)
+    configure_file(cmake/fstack-nginx-worker-shim-manifest.json.in
+        "${PROJECT_BINARY_DIR}/fstack-nginx-worker-shim-manifest.json" @ONLY)
+    install(TARGETS ker-fstack-nginx-worker-shim
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime)
+    install(FILES "${PROJECT_BINARY_DIR}/fstack-nginx-worker-shim-manifest.json"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-nginx-runtime
+        RENAME nginx-worker-shim-build.json COMPONENT fstack-nginx-runtime)
+    if(BUILD_TESTING)
+        add_executable(ker-fstack-nginx-worker-shim-abi-test
+            tests/posix/fstack-nginx-worker-shim-abi-test.c)
+        target_compile_features(ker-fstack-nginx-worker-shim-abi-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-nginx-worker-shim-abi-test PRIVATE
+            -Wall -Wextra -Werror)
+        target_link_libraries(ker-fstack-nginx-worker-shim-abi-test PRIVATE ${CMAKE_DL_LIBS})
+        add_test(NAME fstack-nginx-worker-shim-build-id-boundary
+            COMMAND "${CMAKE_COMMAND}" -E env
+                "LD_PRELOAD=$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                "$<TARGET_FILE:ker-fstack-nginx-worker-shim-abi-test>")
+        set_tests_properties(fstack-nginx-worker-shim-build-id-boundary PROPERTIES
+            TIMEOUT 10 LABELS "fstack;nginx;abi;failure-boundary")
+    endif()
+endif()
 
 add_library(ker-socket-broker-server STATIC
     src/posix/socket-broker-server.c src/posix/tcp-observer-diag-parse.c)
@@ -344,7 +455,7 @@ if(KER_WITH_NATIVE_BOND)
     endif()
 endif()
 install(TARGETS ker-posix EXPORT kerTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime)
 install(TARGETS ker-socket-client ker-socket-broker-server EXPORT kerTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(TARGETS ker-socket-preload EXPORT kerTargets
@@ -366,11 +477,13 @@ install(FILES third_party/fstack-flow-map/LICENSE third_party/fstack-flow-map/UP
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-flow-map)
 install(TARGETS ker-io-worker ker-app
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT fstack-nginx-runtime)
 file(RELATIVE_PATH KER_POSIX_LIB_FROM_BIN
     "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
 configure_file(tools/ker-run.py "${PROJECT_BINARY_DIR}/ker-run" @ONLY)
-install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT fstack-nginx-runtime)
 install(FILES "${ker_native_manifest}"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME build.json)
 install(FILES config/native-launcher.example.ini DESTINATION ${CMAKE_INSTALL_DATADIR}/ker)
@@ -687,6 +800,36 @@ if(BUILD_TESTING)
                 --dpdk-plugin-dir "${ker_session_pmd_dir}")
         set_tests_properties(native-nginx-fstack-runtime-lifecycle PROPERTIES
             TIMEOUT 420 LABELS "native-tcp;fstack;socket-broker;nginx;runtime-profile")
+        if(TARGET ker-fstack-nginx-worker-shim)
+            add_test(NAME native-nginx-fstack-runtime-multiworker-lifecycle
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                    --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                    --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                    --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                    --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --fstack-worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-workers 2
+                    --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}")
+            set_tests_properties(native-nginx-fstack-runtime-multiworker-lifecycle PROPERTIES
+                TIMEOUT 420 LABELS "native-tcp;fstack;socket-broker;nginx;multiworker;runtime-profile")
+            add_test(NAME native-nginx-fstack-runtime-rejects-listener-options
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                    --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                    --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                    --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                    --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --fstack-worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-workers 2 --nginx-test-unsupported-option
+                    --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}")
+            set_tests_properties(native-nginx-fstack-runtime-rejects-listener-options PROPERTIES
+                TIMEOUT 60 LABELS "native-tcp;fstack;socket-broker;nginx;failure-boundary")
+        endif()
     endif()
 
     add_executable(ker-session-peer-drain-retry-test tests/posix/session-peer-drain-retry.c)

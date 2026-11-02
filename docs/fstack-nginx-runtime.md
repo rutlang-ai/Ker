@@ -14,10 +14,19 @@ helpers and the `ker::fstack-socket-bridge` leaf calls for TCP sockets in the
 original Linux kernel owned by the broker. Its strict profile parser uses the
 existing `ker-ini` adapter over the unchanged imported inih parser, and the
 runtime install component includes that target artifact and its provenance.
+An optional worker-ownership shim is compiled only against the same pinned
+Nginx source headers and generated configuration as the executable. Its
+installed build manifest records the executable hash/build ID and generated
+configuration hashes.
 It does not initialize EAL or a second Linux kernel. Build it with
 `KER_BUILD_FSTACK_NGINX_RUNTIME=ON`; set
 `KER_FSTACK_NGINX_BINARY` to an unchanged `--with-ff_module` Nginx executable
-to register the native lifecycle CTest.
+to register the one-worker lifecycle CTest. To build the two-worker shim, also
+set `KER_FSTACK_NGINX_SOURCE_ROOT` to the clean pinned F-Stack checkout and
+`KER_FSTACK_NGINX_BUILD_DIR` to that executable's `objs` directory. Configuration
+fails if the source revision, source-header cleanliness, generated headers, or
+binary hash differ from the validated artifact. This opt-in adds separate
+two-worker positive and unsupported-listener-option negative CTests.
 
 To reproduce the linked Nginx build, first configure Ker with the matching
 native Linux manifest and DPDK installation, then build the runtime target. Put
@@ -62,10 +71,24 @@ LD_PRELOAD="$KER_INSTALL/lib64/libfstack.so:$KER_INSTALL/lib64/libker-socket-pre
   "$NGINX_PREFIX/sbin/nginx" -p "$NGINX_PREFIX/" -c "$NGINX_CONFIG"
 ```
 
+For the validated two-worker profile, the config must use `worker_processes 2`
+and the installed shim must be loaded before the runtime and POSIX adapter:
+
+```sh
+KER_SOCKET_BROKER_PATH="$BROKER_SOCKET" \
+LD_PRELOAD="$KER_INSTALL/lib64/libker-fstack-nginx-worker-shim.so:$KER_INSTALL/lib64/libfstack.so:$KER_INSTALL/lib64/libker-socket-preload.so" \
+  "$NGINX_PREFIX/sbin/nginx" -p "$NGINX_PREFIX/" -c "$NGINX_CONFIG"
+```
+
+Use this shim only with the exact Nginx binary and generated configuration
+recorded in `share/ker/fstack-nginx-runtime/nginx-worker-shim-build.json`.
+
 The supported profile accepts only `[ker_socket_broker] version=1` with a
 broker `path` equal to `KER_SOCKET_BROKER_PATH`, and `[dpdk] graceful_reload=0`.
 It rejects `FF_FAULT`, unsupported configuration keys, unreachable brokers,
-secondary roles, and nonzero process IDs. Nginx's `ff_global_cfg` retains its
+and nonzero process IDs unless the build-matched two-worker shim validates the
+secondary role and listener ownership. That validation handshake is cooperative
+same-process DSO coordination, not a security boundary. Nginx's `ff_global_cfg` retains its
 configuration filename after the caller frees its argument strings. Reload
 state remains genuinely detached and inactive; no synthetic generation block
 is installed. The FF `ff_socket_drain_count` hook counts registered application
@@ -98,13 +121,18 @@ that table. `ff_dup2` remains unsupported. The pinned
 [`ff_dup`](https://github.com/F-Stack/f-stack/blob/646a641cfff77f4815e1e29829a09e1ed15a2999/lib/ff_syscall_wrapper.c#L2167-L2189)
 delegates to `sys_dup` for F-Stack descriptors.
 
-The lifecycle profile uses one Nginx worker and `reuseport`. In this pinned
-FF-enabled caller, the unchanged worker startup opens every `reuseport` clone
-in each worker, while the event initializer registers only the clone assigned
-to that worker. With multiple workers, Linux `SO_REUSEPORT` can deliver traffic
-to an unserviced clone. The runtime rejects secondary initialization instead
-of claiming that profile works. Multiworker listener ownership remains an
-explicit unsupported boundary.
+The lifecycle profile supports its existing one-worker control and an opt-in
+two-worker TCP `reuseport` profile. In this pinned FF-enabled caller, unchanged
+worker startup opens every `reuseport` clone in each worker, while the event
+initializer registers only the clone assigned to that worker. The exact-build
+shim validates the executable build ID and Nginx module ABI before reading
+Nginx globals, then validates both listener clones and all FD-affecting options
+before runtime preflight. After broker/config/descriptor-offset preflight
+succeeds, it marks only the unowned clone ignored and clears its `listen` flag
+before the original open/configure loops. Unsupported listener options or
+unexpected live descriptors fail before any listener mutation. One-worker
+mode makes no listener changes. This bounded profile does not cover arbitrary
+listener layouts, UDP/QUIC, or general F-Stack graceful reload.
 
 The Nginx-specific adapter restores the original executable's FF descriptor
 offset only for descriptors selected by Nginx's exported classifier. It sends
@@ -115,7 +143,7 @@ to Linux `EPOLLET`, preserving the event data and other flags. Nginx's real
 `timer_resolution 1ms` signal path services host control events; the adapter
 does not synthesize readiness or shorten arbitrary waits.
 
-The opt-in test runs the unchanged `--with-ff_module` Nginx binary over the
+The opt-in lifecycle tests run the unchanged `--with-ff_module` Nginx binary over the
 TAP-backed original Linux TCP runtime. It sends twelve concurrent 8 MiB static
 responses and verifies each length and SHA-256 while exercising Nginx HUP,
 USR2, WINCH, idle control handling, replacement workers, a fresh request after
@@ -130,8 +158,13 @@ with preserved errno, and records the reported descriptor limit and Nginx
 offset so a worker-start failure is attributable. Original Linux TCP and DPDK
 counters remain separately reported authorities.
 
-This qualifies a bounded one-worker, `graceful_reload=0` Nginx caller path. It
-does not qualify the F-Stack generation-reload state machine, multiworker
-listener ownership, fault injection, original shell matrix, or shell cleanup
-oracle. Those requirements remain in
+The two-worker run proves both original and replacement worker PIDs serve
+requests across HUP, USR2, and WINCH; a separate negative run sets `rcvbuf` and
+requires the shim to reject the configuration before runtime commit or socket
+creation. The source/build manifest is installed with the shim. The worker
+ownership shim is only a build-specific adapter for the pinned executable.
+
+This qualifies bounded one- and two-worker, `graceful_reload=0` Nginx caller
+paths. It does not qualify the F-Stack generation-reload state machine, UDP,
+fault injection, the original shell matrix, or shell cleanup oracle. Those requirements remain in
 [`fstack-graceful-reload-gap.md`](fstack-graceful-reload-gap.md).

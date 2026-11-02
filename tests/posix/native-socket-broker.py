@@ -1528,8 +1528,9 @@ def wait_for_path(path, timeout, description):
     raise RuntimeError(f'timed out waiting for {description}: {path}')
 
 
-def read_http_response(connection, expected_body=None, pause_before_body=0, on_body_start=None):
-    connection.settimeout(30)
+def read_http_response(connection, expected_body=None, pause_before_body=0, on_body_start=None,
+    io_timeout=30):
+    connection.settimeout(io_timeout)
     header = bytearray()
     while not header.endswith(b'\r\n\r\n'):
         byte = connection.recv(1)
@@ -1568,9 +1569,38 @@ def request_static(address, port, path, pause_before_body=0, timeout=20):
     connection = socket.create_connection((address, port), timeout=timeout)
     connection.sendall(f'GET {path} HTTP/1.1\r\nHost: ker.test\r\nConnection: close\r\n\r\n'.encode())
     try:
-        return read_http_response(connection, pause_before_body=pause_before_body)
+        return read_http_response(connection, pause_before_body=pause_before_body,
+            io_timeout=timeout)
     finally:
         connection.close()
+
+
+def nginx_worker_for_request(access_log, address, port, path):
+    token = f'c11-{os.getpid()}-{time.monotonic_ns()}'
+    response = request_static(address, port, f'{path}?{token}', timeout=3)
+    require(response[0] == len(b'preload-http-ok\n'),
+        f'worker identity request returned an unexpected body: {response!r}')
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if access_log.exists():
+            for line in reversed(access_log.read_text().splitlines()):
+                fields = line.split()
+                if len(fields) == 2 and fields[1] == f'/small.txt?{token}':
+                    return int(fields[0])
+        time.sleep(0.01)
+    raise RuntimeError(f'no Nginx access-log record for worker proof token {token}')
+
+
+def prove_nginx_workers_serve(access_log, expected_pids, stage):
+    require(len(expected_pids) == 2,
+        f'{stage}: expected exactly two worker identities, got {sorted(expected_pids)!r}')
+    observed = set()
+    for _ in range(80):
+        observed.add(nginx_worker_for_request(access_log, '198.18.0.2', 4098, '/small.txt'))
+        if expected_pids <= observed:
+            return
+    raise RuntimeError(f'{stage}: workers failed to serve independently: '
+        f'expected={sorted(expected_pids)!r}; observed={sorted(observed)!r}')
 
 
 def wait_for_static(address, port, timeout=30):
@@ -1670,6 +1700,8 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     selected_preload = str(args.preload_library.resolve())
     if fstack_profile:
         selected_preload = f'{args.fstack_runtime.resolve()}:{selected_preload}'
+    if args.fstack_worker_shim:
+        selected_preload = f'{args.fstack_worker_shim.resolve()}:{selected_preload}'
     selected_runtime_env = os.environ | {
         'LD_PRELOAD': selected_preload,
         'KER_SOCKET_BROKER_PATH': str(rpc_path),
@@ -1699,7 +1731,16 @@ graceful_reload=0
         if fstack_profile else '')
     sendfile = 'off' if fstack_profile else 'on'
     reuseport = ' reuseport' if fstack_profile else ''
-    worker_count = 1 if fstack_profile else 2
+    unsupported_listener_option = ' rcvbuf=4096' if args.nginx_test_unsupported_option else ''
+    worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
+    if args.fstack_worker_shim:
+        require(fstack_profile and worker_count == 2,
+            'the worker ownership shim requires the FF runtime and exactly two Nginx workers')
+    access_log = logs / 'worker-pids.log'
+    worker_log_config = (
+        f"log_format ker_worker_pid '$pid $request_uri';\n" if args.fstack_worker_shim else '')
+    access_log_config = (
+        f'access_log {access_log} ker_worker_pid;\n' if args.fstack_worker_shim else '')
     config.write_text(f'''daemon on;
 master_process on;
 worker_processes {worker_count};
@@ -1709,14 +1750,15 @@ env LD_PRELOAD;
 env KER_SOCKET_BROKER_PATH;
 events {{ worker_connections 1024; use epoll; }}
 http {{
-    access_log off;
+    {worker_log_config}    access_log off;
     sendfile {sendfile};
     tcp_nopush off;
     keepalive_timeout 0;
     server {{
-        listen 198.18.0.2:4098{reuseport};
+        listen 198.18.0.2:4098{reuseport}{unsupported_listener_option};
         server_name ker.test;
         root {html};
+        {access_log_config}
     }}
 }}
 ''')
@@ -1734,6 +1776,28 @@ http {{
     try:
         wait_for_path(pidfile, 20, 'initial nginx pidfile')
         master = int(pidfile.read_text().strip())
+        if args.nginx_test_unsupported_option:
+            deadline = time.monotonic() + 10
+            error_log = logs / 'error.log'
+            while time.monotonic() < deadline:
+                current_log = error_log.read_text() if error_log.exists() else ''
+                if 'refusing profile: receive-buffer option' in current_log:
+                    break
+                time.sleep(0.02)
+            require('refusing profile: receive-buffer option' in current_log,
+                f'unsupported listener option was not rejected by the shim: {current_log!r}')
+            require(not runtime_trace.exists() or not any(
+                line.startswith(('ff_init ', 'nginx_worker_shim '))
+                for line in runtime_trace.read_text().splitlines()),
+                'unsupported listener option reached runtime commit or listener apply')
+            stop_frontend_children((master,))
+            master = None
+            for fd in capabilities:
+                try: os.close(fd)
+                except OSError: pass
+            capabilities.clear()
+            print('NGINX_FSTACK_UNSUPPORTED_LISTENER_REJECTED option=rcvbuf runtime_committed=false')
+            return {'master': None}
         children_path = Path(f'/proc/{master}/task/{master}/children')
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
@@ -1742,6 +1806,7 @@ http {{
             time.sleep(0.02)
         require(len(initial_workers) == worker_count,
             f'nginx did not start exactly {worker_count} workers: {initial_workers!r}')
+        initial_worker_pids = {int(pid) for pid in initial_workers}
         deadline = time.monotonic() + 20
         stage = 'initial HTTP request'
         first_request_error = None
@@ -1758,6 +1823,8 @@ http {{
             trace = runtime_trace.read_text() if runtime_trace.exists() else '<missing>'
             raise RuntimeError('nginx did not serve its first request through the selected broker caller; '
                 f'last_request_error={first_request_error}; error_log={error_log!r}; runtime_trace={trace!r}')
+        if args.fstack_worker_shim:
+            prove_nginx_workers_serve(access_log, initial_worker_pids, 'initial startup')
         require(len(capabilities) == 2,
             f'broker bootstrap returned {len(capabilities)} capabilities, expected listener and epoll')
         os.close(capabilities[0])
@@ -1810,9 +1877,12 @@ http {{
             time.sleep(0.05)
         require(len(current_workers) == worker_count and not (set(initial_workers) & set(current_workers)),
             f'HUP did not replace the nginx workers: before={initial_workers!r} after={current_workers!r}')
+        hup_worker_pids = {int(pid) for pid in current_workers}
         stage = 'HTTP after HUP'
         if fstack_profile:
             _, transition_retries['hup'] = wait_for_static('198.18.0.2', 4098)
+            if args.fstack_worker_shim:
+                prove_nginx_workers_serve(access_log, hup_worker_pids, 'after HUP')
         else:
             response = request_static('198.18.0.2', 4098, '/small.txt')
             require(response[0] == len(b'preload-http-ok\n'), 'fresh HTTP request failed after HUP')
@@ -1845,6 +1915,18 @@ http {{
             'USR2 did not exec a replacement nginx master')
         require(int(oldbin.read_text().strip()) == master,
             'nginx oldbin pidfile did not retain the predecessor master PID')
+        replacement_children_path = Path(f'/proc/{new_master}/task/{new_master}/children')
+        deadline = time.monotonic() + 20
+        replacement_worker_pids = set()
+        while time.monotonic() < deadline:
+            replacement_children = replacement_children_path.read_text().split() \
+                if replacement_children_path.exists() else []
+            if len(replacement_children) == worker_count:
+                replacement_worker_pids = {int(pid) for pid in replacement_children}
+                break
+            time.sleep(0.05)
+        require(len(replacement_worker_pids) == worker_count,
+            f'USR2 replacement master did not start {worker_count} workers: {replacement_children!r}')
         usr2_thread.join(timeout=40)
         require(not usr2_thread.is_alive() and usr2_result and
             usr2_result[0] == (len(large), expected_digest),
@@ -1852,6 +1934,8 @@ http {{
         stage = 'HTTP after USR2'
         if fstack_profile:
             _, transition_retries['usr2'] = wait_for_static('198.18.0.2', 4098)
+            if args.fstack_worker_shim:
+                prove_nginx_workers_serve(access_log, replacement_worker_pids, 'after USR2')
         else:
             response = request_static('198.18.0.2', 4098, '/small.txt')
             require(response[0] == len(b'preload-http-ok\n'), 'new nginx master did not serve after USR2')
@@ -1870,9 +1954,16 @@ http {{
             'old nginx workers remained after WINCH: children=' +
             ' '.join(old_children) +
             '; error_log=' + (logs / 'error.log').read_text())
+        if args.fstack_worker_shim:
+            new_children = replacement_children_path.read_text().split() \
+                if replacement_children_path.exists() else []
+            require({int(pid) for pid in new_children} == replacement_worker_pids,
+                f'WINCH changed replacement worker ownership unexpectedly: {new_children!r}')
         stage = 'HTTP after WINCH'
         if fstack_profile:
             _, transition_retries['winch'] = wait_for_static('198.18.0.2', 4098)
+            if args.fstack_worker_shim:
+                prove_nginx_workers_serve(access_log, replacement_worker_pids, 'after WINCH')
         else:
             response = request_static('198.18.0.2', 4098, '/small.txt')
             require(response[0] == len(b'preload-http-ok\n'),
@@ -1896,6 +1987,29 @@ http {{
             api_lines = [line for line in trace_lines if line.startswith('ff_leaf ')]
             require(len(init_lines) >= 3 and all('graceful_reload=0 attached=0 active=0 target=0' in line
                 for line in init_lines), f'FF runtime did not retain the original detached graceful-off view: {init_lines!r}')
+            if args.fstack_worker_shim:
+                role_by_pid = {}
+                for line in init_lines:
+                    match = re.search(r'ff_init pid=(\d+) proc_id=(\d+) proc_type=(primary|secondary)', line)
+                    if match:
+                        role_by_pid[int(match.group(1))] = (int(match.group(2)), match.group(3))
+                shim_by_pid = {}
+                for line in trace_lines:
+                    match = re.search(r'nginx_worker_shim pid=(\d+) worker=(\d+) workers=2 listeners=2 ignored_worker=(\d+)', line)
+                    if match:
+                        shim_by_pid[int(match.group(1))] = (int(match.group(2)), int(match.group(3)))
+                expected_worker_pids = initial_worker_pids | hup_worker_pids | replacement_worker_pids
+                require(expected_worker_pids <= role_by_pid.keys(),
+                    f'not every observed Nginx worker has a native FF role trace: {role_by_pid!r}')
+                require(expected_worker_pids <= shim_by_pid.keys(),
+                    f'not every observed Nginx worker has a listener-shim trace: {shim_by_pid!r}')
+                for pid in expected_worker_pids:
+                    worker = 0 if role_by_pid[pid] == (0, 'primary') else 1 \
+                        if role_by_pid[pid] == (1, 'secondary') else -1
+                    require(worker in (0, 1) and shim_by_pid[pid] ==
+                        (worker, 1 - worker),
+                        f'Nginx worker {pid} role/shim ownership mismatch: '
+                        f'role={role_by_pid[pid]!r}; shim={shim_by_pid[pid]!r}')
             require(leaf_lines, 'Nginx did not register any offset FF descriptors through the runtime adapter')
             for api in ('ff_socket', 'ff_bind', 'ff_listen', 'ff_accept', 'ff_recv', 'ff_writev'):
                 require(any(f'name={api} ' in line and 'first=success' in line for line in api_lines),
@@ -1907,6 +2021,11 @@ http {{
             print(f'NGINX_FSTACK_RUNTIME_OK workers={worker_count} active_streams=12 body_bytes={len(large)} sha256={expected_digest} '
                 f'ff_epoll_ctl_successes={len(leaf_lines)} ff_api_trace_events={len(api_lines)} init_calls={len(init_lines)} '
                 f'post_transition_retries={transition_retries} sendfile=off')
+            if args.fstack_worker_shim:
+                print(f'NGINX_FSTACK_WORKER_OWNERSHIP_OK initial_workers={sorted(initial_worker_pids)} '
+                    f'hup_workers={sorted(hup_worker_pids)} usr2_workers={sorted(replacement_worker_pids)} '
+                    f'active_workers_after_winch={sorted(replacement_worker_pids)} '
+                    f'worker_serving_access_log={access_log}')
         else:
             print(f'NGINX_POSIX_PRELOAD_OK active_streams=12 body_bytes={len(large)} sha256={expected_digest} '
                 f'old_master={master} new_master={new_master} sendfile=on')
@@ -2052,6 +2171,12 @@ def inside(args):
                         f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
                     stats = json.loads(stats_path.read_text())
                     native = stats.get('native', {})
+                    if args.nginx_test_unsupported_option:
+                        require(stats.get('outstanding') == 0 and
+                            native.get('active_opens', 0) == 0 and native.get('passive_opens', 0) == 0,
+                            f'unsupported listener option reached socket creation: {stats!r}')
+                        print('NGINX_FSTACK_UNSUPPORTED_LISTENER_NO_SOCKET_CREATED')
+                        return 0
                     require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
                         stats.get('outstanding') == 0 and native.get('passive_opens', 0) >= 13,
                         f'original-Linux TCP/DPDK traffic or cleanup evidence missing: {stats!r}')
@@ -2248,6 +2373,9 @@ def main():
     parser.add_argument('--preload-library', type=Path)
     parser.add_argument('--nginx-binary', type=Path)
     parser.add_argument('--fstack-runtime', type=Path)
+    parser.add_argument('--fstack-worker-shim', type=Path)
+    parser.add_argument('--nginx-workers', type=int, choices=(1, 2))
+    parser.add_argument('--nginx-test-unsupported-option', action='store_true')
     parser.add_argument('--group-broker', type=Path)
     parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--inherited-group-probe', type=Path)
@@ -2268,6 +2396,13 @@ def main():
         parser.error('generation handoff test requires broker factory and SDK controller')
     if args.member_census_runtime_test and not args.member_census_test_library:
         parser.error('member census runtime test requires its noninstalled isolated runtime')
+    if args.fstack_worker_shim and not (args.nginx_binary and args.fstack_runtime and
+        args.preload_library and args.nginx_workers == 2):
+        parser.error('F-Stack worker shim requires nginx, runtime, preload, and --nginx-workers=2')
+    if args.nginx_test_unsupported_option and not args.fstack_worker_shim:
+        parser.error('unsupported listener option test requires the F-Stack worker shim')
+    if args.nginx_workers and not args.nginx_binary:
+        parser.error('--nginx-workers requires --nginx-binary')
     if not args.inside:
         if args.nginx_binary:
             command = ['unshare', '-Un', '--keep-caps', f'--map-user={os.getuid()}',
@@ -2291,6 +2426,12 @@ def main():
             command += ['--nginx-binary', str(args.nginx_binary.resolve())]
         if args.fstack_runtime:
             command += ['--fstack-runtime', str(args.fstack_runtime.resolve())]
+        if args.fstack_worker_shim:
+            command += ['--fstack-worker-shim', str(args.fstack_worker_shim.resolve())]
+        if args.nginx_workers:
+            command += ['--nginx-workers', str(args.nginx_workers)]
+        if args.nginx_test_unsupported_option:
+            command.append('--nginx-test-unsupported-option')
         if args.group_broker:
             command += ['--group-broker', str(args.group_broker.resolve())]
         if args.reuseport_group_client:
