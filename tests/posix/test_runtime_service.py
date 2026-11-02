@@ -210,6 +210,47 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                     if descriptor >= 0:
                         os.close(descriptor)
 
+
+class RuntimeServiceDelegationWireTest(unittest.TestCase):
+    def test_fixed_delegation_records_round_trip(self):
+        nonce = bytes(range(wire.NONCE_BYTES))
+        intent_id = bytes(range(16, 32))
+        ticket = bytes(range(wire.TICKET_BYTES))
+        for role in (wire.ROLE_SLIM_STAGE1, wire.ROLE_SLIM_PRIMARY):
+            with self.subTest(role=role):
+                intent = wire.pack_delegate_intent(nonce, role)
+                self.assertEqual(len(intent), 24)
+                self.assertEqual(wire.unpack_delegate_intent(intent), (nonce, role))
+                self.assertEqual(wire.unpack_intent_result(
+                    wire.pack_intent_result(intent_id)), intent_id)
+                bind = wire.pack_delegate_bind(intent_id)
+                self.assertEqual(len(bind), 16)
+                self.assertEqual(wire.unpack_delegate_bind(bind), intent_id)
+                grant = wire.pack_bind_result(ticket, role)
+                self.assertEqual(len(grant), 36)
+                self.assertEqual(wire.unpack_bind_result(grant), (ticket, role))
+
+    def test_delegation_codec_rejects_bad_lengths_roles_and_reserved_bits(self):
+        with self.assertRaises(ValueError):
+            wire.pack_delegate_intent(b'short', wire.ROLE_SLIM_STAGE1)
+        with self.assertRaises(ValueError):
+            wire.pack_delegate_intent(bytes(16), 99)
+        good = wire.pack_delegate_intent(bytes(16), wire.ROLE_SLIM_STAGE1)
+        with self.assertRaises(ValueError):
+            wire.unpack_delegate_intent(good[:-1])
+        with self.assertRaises(ValueError):
+            wire.unpack_delegate_intent(good[:20] + b'\x01\x00\x00\x00')
+        with self.assertRaises(ValueError):
+            wire.unpack_delegate_intent(good[:16] + b'\x63\x00\x00\x00' + bytes(4))
+        with self.assertRaises(ValueError):
+            wire.unpack_intent_result(bytes(15))
+        with self.assertRaises(ValueError):
+            wire.unpack_delegate_bind(bytes(17))
+        with self.assertRaises(ValueError):
+            wire.unpack_bind_result(bytes(36 - 4) + b'\x63\x00\x00\x00')
+
+
+class RuntimeServiceAncillaryRightsTest(unittest.TestCase):
     def test_zero_length_rights_message_closes_fd_and_revokes_actor(self):
         with tempfile.TemporaryDirectory(prefix='ker-runtime-service-rights-') as directory:
             worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
