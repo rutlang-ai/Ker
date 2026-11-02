@@ -405,7 +405,7 @@ int ker_posix_rx_decision_register(int fd,
     struct received_message message = {0};
     int result = wait ? wait : receive_message(fd, true, &message);
     struct ker_rx_decision_header header = {0};
-    struct ker_rx_decision_bootstrap bootstrap;
+    struct ker_rx_decision_bootstrap bootstrap = {0};
     if (!result && message.length >= sizeof(header))
         memcpy(&header, message.bytes, sizeof(header));
     else if (!result) result = -EPROTO;
