@@ -22,6 +22,10 @@ _UCRED = __import__('struct').Struct('=3i')
 _PROFILE_DOMAIN = b'ker.socket-broker.worker-profile/v1\0'
 
 
+class _PollSliceElapsed(TimeoutError):
+    """A reactor poll interval ended; the operation deadline may still be live."""
+
+
 def _identity(pid):
     stat = open(f'/proc/{pid}/stat', encoding='ascii').read()
     close = stat.rfind(')')
@@ -70,6 +74,9 @@ class BrokerReadiness:
         self.ready = False
         self.stopped = False
         self.stop_attempted = False
+        self._verify = None
+        self._stop = None
+        self._verify_sequence = 0
 
     def environment(self):
         return {
@@ -94,7 +101,8 @@ class BrokerReadiness:
             raise ValueError('expected broker executable digest must be SHA-256')
         return self.app_pidfd
 
-    def _receive(self, expected_size, deadline):
+    def _receive(self, expected_size, deadline, allow_exited_app=False,
+                 poll_slice=None):
         poller = select.poll()
         poller.register(self.parent.fileno(), select.POLLIN | select.POLLHUP |
             select.POLLERR)
@@ -102,8 +110,11 @@ class BrokerReadiness:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('broker readiness control deadline expired')
-            events = poller.poll(max(1, int(remaining * 1000)))
+            wait = remaining if poll_slice is None else min(remaining, poll_slice)
+            events = poller.poll(max(1, int(wait * 1000)))
             if not events:
+                if poll_slice is not None and time.monotonic() < deadline:
+                    raise _PollSliceElapsed('broker readiness poll slice expired')
                 continue
             if (events[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL) and
                     not events[0][1] & select.POLLIN):
@@ -136,8 +147,11 @@ class BrokerReadiness:
                     raise ValueError('broker sent unexpected descriptors')
                 if credentials != self.app[:3]:
                     raise PermissionError('broker control sender is not pinned application')
-                if self.app_pidfd < 0:
-                    raise ProcessLookupError('invalid broker pidfd')
+                if allow_exited_app:
+                    if self.app_pidfd < 0:
+                        raise ProcessLookupError('invalid broker pidfd')
+                else:
+                    self._check_app_identity()
                 if len(packet) != expected_size:
                     raise ValueError('invalid broker control record length')
                 if time.monotonic() > deadline:
@@ -148,6 +162,18 @@ class BrokerReadiness:
                     os.close(fd)
                 raise
 
+    def _check_app_identity(self):
+        if self.app is None or self.app_pidfd < 0:
+            raise ProcessLookupError('invalid broker process identity')
+        poller = select.poll()
+        poller.register(self.app_pidfd,
+            select.POLLIN | select.POLLHUP | select.POLLERR | select.POLLNVAL)
+        if poller.poll(0) or _identity(self.app[0]) != self.app:
+            raise ProcessLookupError('broker process identity is no longer live')
+        expected = getattr(self, 'expected_executable_hash', None)
+        if expected is None or _sha256(f'/proc/{self.app[0]}/exe') != expected:
+            raise PermissionError('broker executable differs from the pinned app')
+
     def _validate_ready(self, packet):
         if self.app is None or self.ready:
             raise RuntimeError('broker readiness has invalid lifecycle state')
@@ -156,15 +182,7 @@ class BrokerReadiness:
                 broker_start != self.app[3] or count != 0 or
                 manifest != wire.EMPTY_MANIFEST_SHA256):
             raise PermissionError('broker READY did not match pinned empty runtime profile')
-        app_liveness = select.poll()
-        app_liveness.register(self.app_pidfd,
-            select.POLLIN | select.POLLHUP | select.POLLERR | select.POLLNVAL)
-        if app_liveness.poll(0):
-            raise ProcessLookupError('broker exited before READY was accepted')
-        if _identity(self.app[0]) != self.app:
-            raise ProcessLookupError('broker process identity changed after READY')
-        if _sha256(f'/proc/{self.app[0]}/exe') != self.expected_executable_hash:
-            raise PermissionError('READY sender executable differs from the pinned broker app')
+        self._check_app_identity()
         if time.monotonic() >= self.ready_deadline:
             raise TimeoutError('broker READY validation exceeded its absolute deadline')
         self.ready = True
@@ -185,41 +203,132 @@ class BrokerReadiness:
         if (events[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL) and
                 not events[0][1] & select.POLLIN):
             raise ConnectionError('broker readiness endpoint closed before READY')
-        packet = self._receive(wire.READY_RECORD.size,
-            min(self.ready_deadline, time.monotonic() + 0.1))
+        try:
+            packet = self._receive(wire.READY_RECORD.size,
+                self.ready_deadline, poll_slice=0.1)
+        except _PollSliceElapsed:
+            return False
         return self._validate_ready(packet)
 
     def stop(self, timeout=10.0):
-        if not self.ready or self.stopped or self.stop_attempted:
-            raise RuntimeError('broker STOP requires one READY and is one-use')
-        deadline = time.monotonic() + timeout
-        self.stop_attempted = True
-        stop = wire.pack_stop(wire.STOP, self.nonce, self.epoch,
-            *self.supervisor[:3], self.supervisor[3])
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError('broker STOP send timed out')
+        self.begin_stop(timeout)
+        while not self.poll_stop():
+            time.sleep(0.001)
+
+    def begin_verify(self, watch_fd, sequence, timeout=6.0):
+        if (not self.ready or self.stopped or self.stop_attempted or
+                self._verify is not None or watch_fd < 0 or
+                sequence != self._verify_sequence + 1):
+            raise RuntimeError('broker VERIFY is unavailable or out of sequence')
+        self._verify_sequence = sequence
+        self._verify = {'fd': watch_fd, 'sequence': sequence,
+            'deadline': time.monotonic() + timeout, 'sent': False}
+
+    def poll_verify(self):
+        request = self._verify
+        if request is None:
+            return None
+        if time.monotonic() >= request['deadline']:
+            self._verify = {'fd': request['fd'], 'sequence': request['sequence'],
+                'deadline': request['deadline'], 'sent': request['sent'],
+                'unresolved': True}
+            raise TimeoutError('broker VERIFY absolute deadline expired')
+        if not request['sent']:
             try:
-                sent = self.parent.send(stop, getattr(socket, 'MSG_NOSIGNAL', 0))
-                if sent != len(stop):
-                    raise OSError(5, 'short broker STOP record')
-                break
+                rights = array.array('i', (request['fd'],))
+                record = wire.pack_verify(self.nonce, self.epoch, request['sequence'])
+                sent = self.parent.sendmsg([record],
+                    [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+                    getattr(socket, 'MSG_NOSIGNAL', 0))
+                if sent != len(record):
+                    raise OSError(5, 'short broker VERIFY send')
+                request['sent'] = True
+                os.close(request['fd'])
+                request['fd'] = -1
             except BlockingIOError:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError('broker STOP send timed out')
-                poller = select.poll()
-                poller.register(self.parent.fileno(), select.POLLOUT | select.POLLERR |
-                    select.POLLHUP)
-                poller.poll(max(1, int(remaining * 1000)))
-        packet = self._receive(wire.STOP_RECORD.size, deadline)
-        fields = wire.unpack_stop(packet, wire.STOP_ACK)
-        expected = (self.nonce, self.epoch, wire.EMPTY_MANIFEST_SHA256,
-            *self.supervisor[:3], self.supervisor[3], wire.STOP_ID)
-        if fields != expected:
-            raise PermissionError('broker STOP acknowledgement identity mismatch')
+                return None
+            except BaseException:
+                request['unresolved'] = True
+                raise
+        poller = select.poll()
+        poller.register(self.parent.fileno(), select.POLLIN | select.POLLHUP |
+            select.POLLERR | select.POLLNVAL)
+        events = poller.poll(0)
+        if not events:
+            return None
+        if (events[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL) and
+                not events[0][1] & select.POLLIN):
+            request['unresolved'] = True
+            raise ConnectionError('broker VERIFY response channel closed')
+        try:
+            packet = self._receive(wire.VERIFY_RESULT.size,
+                request['deadline'], poll_slice=0.01)
+            wire.unpack_verify_result(packet, self.nonce, self.epoch,
+                request['sequence'])
+        except _PollSliceElapsed:
+            return None
+        except BaseException:
+            request['unresolved'] = True
+            raise
+        self._verify = None
+        return packet
+
+    def begin_stop(self, timeout=10.0):
+        if (not self.ready or self.stopped or self.stop_attempted or
+                self._verify is not None):
+            raise RuntimeError('broker STOP requires READY with no VERIFY and is one-use')
+        self.stop_attempted = True
+        self._stop = {'record': wire.pack_stop(wire.STOP, self.nonce, self.epoch,
+            *self.supervisor[:3], self.supervisor[3]),
+            'deadline': time.monotonic() + timeout, 'sent': False}
+
+    def poll_stop(self):
+        request = self._stop
+        if request is None:
+            return self.stopped
+        if time.monotonic() >= request['deadline']:
+            request['unresolved'] = True
+            raise TimeoutError('broker STOP absolute deadline expired')
+        if not request['sent']:
+            try:
+                sent = self.parent.send(request['record'],
+                    getattr(socket, 'MSG_NOSIGNAL', 0))
+                if sent != len(request['record']):
+                    raise OSError(5, 'short broker STOP record')
+                request['sent'] = True
+            except BlockingIOError:
+                return False
+            except BaseException:
+                request['unresolved'] = True
+                raise
+        poller = select.poll()
+        poller.register(self.parent.fileno(), select.POLLIN | select.POLLHUP |
+            select.POLLERR | select.POLLNVAL)
+        events = poller.poll(0)
+        if not events:
+            return False
+        if (events[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL) and
+                not events[0][1] & select.POLLIN):
+            request['unresolved'] = True
+            raise ConnectionError('broker STOP response channel closed')
+        try:
+            # STOP_ACK may be queued by the pinned app immediately before it
+            # exits as ker_posix_run unwinds. SCM credentials still bind the
+            # sender; do not reject a valid queued ACK solely because pidfd is
+            # readable by the time the reactor consumes it.
+            packet = self._receive(wire.STOP_RECORD.size, request['deadline'],
+                allow_exited_app=True)
+            fields = wire.unpack_stop(packet, wire.STOP_ACK)
+            expected = (self.nonce, self.epoch, wire.EMPTY_MANIFEST_SHA256,
+                *self.supervisor[:3], self.supervisor[3], wire.STOP_ID)
+            if fields != expected:
+                raise PermissionError('broker STOP acknowledgement identity mismatch')
+        except BaseException:
+            request['unresolved'] = True
+            raise
         self.stopped = True
+        self._stop = None
+        return True
 
     def close(self):
         if self.app_pidfd >= 0:

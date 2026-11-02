@@ -50,6 +50,13 @@ if _BROKER_READINESS_SPEC is None or _BROKER_READINESS_SPEC.loader is None:
 broker_readiness = importlib.util.module_from_spec(_BROKER_READINESS_SPEC)
 _BROKER_READINESS_SPEC.loader.exec_module(broker_readiness)
 
+_KER_RUN_CONTROL_SPEC = importlib.util.spec_from_file_location(
+    '_ker_run_control_relay', Path(__file__).resolve().with_name('ker_run_control.py'))
+if _KER_RUN_CONTROL_SPEC is None or _KER_RUN_CONTROL_SPEC.loader is None:
+    raise ImportError('cannot load private ker-run control relay')
+ker_run_control = importlib.util.module_from_spec(_KER_RUN_CONTROL_SPEC)
+_KER_RUN_CONTROL_SPEC.loader.exec_module(ker_run_control)
+
 _NGINX_COMPANION_SPEC = importlib.util.spec_from_file_location(
     '_ker_nginx_companion_supervisor',
     Path(__file__).resolve().with_name('nginx_companion_supervisor.py'))
@@ -1361,6 +1368,7 @@ def main():
     runtime_service_server = None
     runtime_service_directory = None
     broker_readiness_channel = None
+    run_control = None
     nginx_companion_server = None
     containment_unresolved = False
     decision_nonce = None
@@ -1392,6 +1400,7 @@ def main():
             return 125
     worker_finished = run_finished = False
     pending_shutdown_signal = None
+    pending_relay_stop = False
     def handle_shutdown_signal(signum, frame):
         nonlocal pending_shutdown_signal
         if args.broker_readiness:
@@ -1425,6 +1434,11 @@ def main():
             return
         signum = pending_shutdown_signal
         pending_shutdown_signal = None
+        if run_control is not None:
+            run_control._mark_unresolved('native shutdown signal arrived without relay STOP')
+            containment_unresolved = True
+            infrastructure_failure = True
+            raise RuntimeError('relay profile requires authenticated STOP before native shutdown')
         preserve_signal = True
         signal_exit_code = 128 + signum
         exit_code = signal_exit_code
@@ -1438,7 +1452,31 @@ def main():
         stop_deadline = time.monotonic() + 10.0
         broker_readiness_channel.stop()
 
+    def request_relay_shutdown():
+        nonlocal pending_relay_stop
+        if pending_relay_stop:
+            raise RuntimeError('duplicate shutdown request while relay stop is pending')
+        pending_relay_stop = True
+
+    def start_relay_shutdown():
+        nonlocal pending_relay_stop, stop_deadline
+        if not pending_relay_stop:
+            return
+        if (broker_readiness_channel is None or not broker_readiness_channel.ready or
+                broker_readiness_channel.stopped):
+            raise RuntimeError('relay STOP arrived outside broker READY lifecycle')
+        pending_relay_stop = False
+        stop_deadline = time.monotonic() + ker_run_control.STOP_ACK_TIMEOUT
+        broker_readiness_channel.begin_stop(ker_run_control.STOP_ACK_TIMEOUT)
+
     try:
+        run_control = ker_run_control.KerRunControl.from_environment()
+        if run_control is not None and (
+                not args.broker_readiness or not args.runtime_service or
+                args.rx_decision or control_nginx is not None):
+            run_control._mark_unresolved('relay requires the C34 broker-readiness runtime profile')
+            containment_unresolved = True
+            raise ValueError('ker-run relay requires the C34 profile without RX-decision or Nginx companion')
         vlan_ipv6 = any(value.version == 6 for _, entries in args.vlans for value in entries)
         multicast_options = ['--all-multicast'] if args.all_multicast or args.address6 is not None or vlan_ipv6 else []
         promiscuous_options = [] if args.promiscuous is None else [
@@ -1482,8 +1520,11 @@ def main():
         worker_pass_fds = [channel_io.fileno(), mtu_io.fileno(), control_read]
         if args.rx_decision:
             worker_pass_fds.append(decision_io.fileno())
+        worker_env = {key: value for key, value in os.environ.items()
+            if not key.startswith('KER_RUN_CONTROL_')}
         worker = subprocess.Popen(worker_command,
-            pass_fds=tuple(worker_pass_fds), stdout=subprocess.PIPE, text=True)
+            env=worker_env, pass_fds=tuple(worker_pass_fds),
+            stdout=subprocess.PIPE, text=True)
         channel_io.close()
         mtu_io.close()
         os.close(control_read)
@@ -1526,6 +1567,9 @@ def main():
         if args.broker_readiness:
             broker_readiness_channel = broker_readiness.BrokerReadiness(
                 worker_path, info, runtime_service_server.worker_profile_hash)
+            if run_control is not None:
+                run_control.bind_runtime(broker_readiness_channel, worker,
+                    worker_pidfd, worker_path, app_executable_hash)
         if control_nginx is not None:
             nginx_companion_server = nginx_companion.NginxCompanion(*control_nginx)
         for interface in args.interfaces:
@@ -1534,7 +1578,7 @@ def main():
             extra_worker.start(worker_path, args)
         env = {key: value for key, value in os.environ.items()
             if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_',
-                                   'KER_BROKER_'))}
+                                   'KER_BROKER_', 'KER_RUN_CONTROL_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_NATIVE_TX_FEATURES=str(info['tx_offload_features']), KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
@@ -1631,6 +1675,11 @@ def main():
             try:
                 if stop_deadline is not None and time.monotonic() >= stop_deadline:
                     raise TimeoutError('broker-requested native shutdown timed out')
+                if run_control is not None:
+                    run_control.poll(request_relay_shutdown)
+                    start_relay_shutdown()
+                    if broker_readiness_channel.stopped:
+                        stop_deadline = None
                 stop_broker_for_signal()
                 app_returncode = app.wait(timeout=0.25)
                 if preserve_signal:
@@ -1640,10 +1689,20 @@ def main():
                 else:
                     exit_code = app_returncode
                 stop_broker_for_signal()
+                if run_control is not None and run_control.state == 'STOP_PENDING':
+                    while run_control.state == 'STOP_PENDING':
+                        run_control.poll(request_relay_shutdown)
+                        if run_control.state == 'STOP_PENDING':
+                            if (run_control.stop is None or
+                                    time.monotonic() >= run_control.stop['deadline']):
+                                raise TimeoutError('relay STOP acceptance timed out after app exit')
+                            time.sleep(0.001)
                 if (broker_readiness_channel is not None and
                         (not broker_readiness_channel.ready or
                          not broker_readiness_channel.stopped)):
                     raise RuntimeError('broker application exited outside authenticated READY/STOP lifecycle')
+                if run_control is not None and run_control.state != 'STOP_ACCEPTED':
+                    raise RuntimeError('broker application exited before relay STOP was accepted')
                 if exit_code < 0:
                     preserve_signal = True
                 elif not run_finished:
@@ -1667,6 +1726,23 @@ def main():
                         if failure:
                             exit_code = 125
                             raise RuntimeError(failure)
+                if run_control is not None:
+                    if (run_control.state != 'STOP_ACCEPTED' or not run_finished or
+                            not worker_finished or app.returncode != 0 or
+                            worker.returncode != 0 or stats is None or
+                            stats.get('outstanding') != 0 or
+                            not stats.get('control_eof') or
+                            not normal_native_shutdown_markers(startup_status)):
+                        run_control._mark_unresolved(
+                            'native worker/app shutdown did not prove relay settlement')
+                        containment_unresolved = True
+                        infrastructure_failure = True
+                        raise RuntimeError('native worker/app shutdown did not prove relay settlement')
+                    run_control.send_settled(app.returncode, worker.returncode,
+                        stats['outstanding'], ker_run_control.SETTLED_FLAGS)
+                    while not run_control.flush_settled():
+                        time.sleep(0.001)
+                    run_control.close_after_settled()
                 break
             except subprocess.TimeoutExpired:
                 if stop_deadline is not None and time.monotonic() >= stop_deadline:
@@ -1676,6 +1752,12 @@ def main():
                     if (broker_readiness_channel.poll_ready() and
                             nginx_companion_server is not None):
                         nginx_companion_server.start()
+                if run_control is not None:
+                    run_control.poll(request_relay_shutdown)
+                    start_relay_shutdown()
+                    run_control.poll(request_relay_shutdown)
+                    if broker_readiness_channel.stopped:
+                        stop_deadline = None
                 if _COMPANION_RELOAD_REQUESTED:
                     _COMPANION_RELOAD_REQUESTED = False
                     if nginx_companion_server is None or not nginx_companion_server.started:
@@ -1762,7 +1844,12 @@ def main():
         preserve_signal = True
         signum = interruption.signum if isinstance(interruption, Interrupted) else signal.SIGINT
         exit_code = 128 + signum
-        if (nginx_companion_server is not None and nginx_companion_server.unresolved):
+        if run_control is not None and run_control.state not in (
+                'STARTING', 'SETTLED', 'FAILED'):
+            run_control._mark_unresolved('local shutdown signal arrived without relay settlement')
+            containment_unresolved = True
+            infrastructure_failure = True
+        elif (nginx_companion_server is not None and nginx_companion_server.unresolved):
             containment_unresolved = True
             infrastructure_failure = True
         elif broker_readiness_channel is not None and broker_readiness_channel.ready and app and app.poll() is None:
@@ -1791,10 +1878,16 @@ def main():
         print(f'ker-run: {error}', file=sys.stderr)
         if broker_readiness_channel is not None:
             infrastructure_failure = True
+        if run_control is not None and run_control.state not in ('SETTLED', 'FAILED'):
+            run_control._mark_unresolved(str(error))
+            containment_unresolved = True
+            infrastructure_failure = True
     finally:
         if (nginx_companion_server is not None and
                 (nginx_companion_server.unresolved or
                  (nginx_companion_server.started and not nginx_companion_server.settled))):
+            containment_unresolved = True
+        if run_control is not None and run_control.unresolved:
             containment_unresolved = True
         if containment_unresolved:
             print('ker-run: companion shutdown UNRESOLVED; retaining native broker and worker resources',

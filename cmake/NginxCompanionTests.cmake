@@ -4,6 +4,14 @@ add_test(NAME native-nginx-companion-wire
         "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_nginx_companion_wire.py")
 set_tests_properties(native-nginx-companion-wire PROPERTIES
     LABELS "native;socket-broker;nginx-companion")
+add_test(NAME native-ker-run-control-wire
+    COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_control_wire.py")
+add_test(NAME native-ker-run-control-process
+    COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_control.py")
+set_tests_properties(native-ker-run-control-wire native-ker-run-control-process
+    PROPERTIES TIMEOUT 10 LABELS "native;socket-broker;inner-relay;unit")
 add_test(NAME native-nginx-companion-installed-bundle
     COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/posix/test_nginx_companion_bundle.py"

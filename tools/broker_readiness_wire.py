@@ -7,6 +7,8 @@ VERSION = 1
 READY = 1
 STOP = 2
 STOP_ACK = 3
+VERIFY_RETIRE = 4
+VERIFY_RETIRE_RESULT = 5
 STOP_ID = 1
 EMPTY_MANIFEST_DOMAIN = b'ker.socket-broker.bootstrap.empty/v1'
 EMPTY_MANIFEST_SHA256 = hashlib.sha256(EMPTY_MANIFEST_DOMAIN).digest()
@@ -14,11 +16,15 @@ EMPTY_MANIFEST_SHA256 = hashlib.sha256(EMPTY_MANIFEST_DOMAIN).digest()
 HEADER = struct.Struct('<IHHII')
 READY_RECORD = struct.Struct('<IHHII16sQ32sQII32s')
 STOP_RECORD = struct.Struct('<IHHII16sQ32sIIIIQQ')
+VERIFY_REQUEST = struct.Struct('<IHHII16sQQ16s')
+VERIFY_RESULT = struct.Struct('<IHHII16sQQIIQQQIQ32sI')
 
 assert len(EMPTY_MANIFEST_DOMAIN) == 36
 assert HEADER.size == 16
 assert READY_RECORD.size == 120
 assert STOP_RECORD.size == 104
+assert VERIFY_REQUEST.size == 64
+assert VERIFY_RESULT.size == 128
 
 
 def _header(record_type, size):
@@ -79,3 +85,48 @@ def unpack_stop(packet, expected_type):
             manifest != EMPTY_MANIFEST_SHA256):
         raise ValueError('invalid STOP fields')
     return nonce, epoch, manifest, pid, uid, gid, start_ticks, stop_id
+
+
+def pack_verify(nonce, epoch, sequence):
+    if len(nonce) != 16 or not any(nonce) or not epoch or not sequence:
+        raise ValueError('invalid VERIFY context')
+    return VERIFY_REQUEST.pack(MAGIC, VERSION, VERIFY_RETIRE,
+        VERIFY_REQUEST.size, 0, nonce, epoch, sequence, bytes(16))
+
+
+def unpack_verify_result(packet, nonce, epoch, sequence):
+    if len(packet) != VERIFY_RESULT.size:
+        raise ValueError('invalid VERIFY result length')
+    fields = VERIFY_RESULT.unpack(packet)
+    (magic, version, record_type, size, status, got_nonce, got_epoch,
+     got_sequence, owner_pid, owner_reserved, owner_start, owner_token,
+     claim_generation, mark, cookie, profile, state) = fields
+    identity = (owner_pid > 0 and owner_start and owner_token and
+        claim_generation and mark and cookie)
+    if (magic != MAGIC or version != VERSION or record_type != VERIFY_RETIRE_RESULT or
+            size != len(packet) or got_nonce != nonce or got_epoch != epoch or
+            not sequence or got_sequence != sequence or owner_reserved or
+            status > 4095 or not any(profile) or state not in (0, 1) or
+            (status == 0 and (state != 1 or not identity)) or
+            (status != 0 and state != 0)):
+        raise ValueError('invalid VERIFY result fields')
+    return {'status': status, 'owner_pid': owner_pid,
+        'owner_start_ticks': owner_start, 'owner_token': owner_token,
+        'claim_generation': claim_generation, 'mark': mark,
+        'listener_cookie': cookie, 'profile': profile, 'state': state,
+        'sequence': got_sequence, 'nonce': got_nonce, 'epoch': got_epoch}
+
+
+def pack_verify_result(nonce, epoch, sequence, status, owner_pid, owner_start,
+        owner_token, claim_generation, mark, cookie, profile, state):
+    identity = (owner_pid > 0 and owner_start and owner_token and
+        claim_generation and mark and cookie)
+    if (len(nonce) != 16 or not any(nonce) or not epoch or not sequence or
+            len(profile) != 32 or not any(profile) or status < 0 or status > 4095 or
+            state not in (0, 1) or (status == 0 and (state != 1 or not identity)) or
+            (status != 0 and state != 0)):
+        raise ValueError('invalid VERIFY result context')
+    return VERIFY_RESULT.pack(MAGIC, VERSION, VERIFY_RETIRE_RESULT,
+        VERIFY_RESULT.size, status, nonce, epoch, sequence, owner_pid, 0,
+        owner_start, owner_token, claim_generation, mark, cookie, profile,
+        state)

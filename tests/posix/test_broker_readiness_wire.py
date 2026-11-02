@@ -59,6 +59,23 @@ class BrokerReadinessWireTests(unittest.TestCase):
             wire.pack_ready(b'n' * 16, 1, b'p' * 32, 2,
                             manifest_sha256=b'x' * 32)
 
+    def test_verify_result_accepts_partial_negative_but_not_false_retirement(self):
+        nonce, epoch, sequence = b'n' * 16, 7, 1
+        profile = b'p' * 32
+        negative = wire.pack_verify_result(nonce, epoch, sequence, 16, 0, 0,
+            0, 0, 0, 0, profile, 0)
+        fields = wire.unpack_verify_result(negative, nonce, epoch, sequence)
+        self.assertEqual(fields['status'], 16)
+        self.assertEqual(fields['state'], 0)
+        with self.assertRaises(ValueError):
+            wire.pack_verify_result(nonce, epoch, sequence, 0, 0, 0,
+                0, 0, 0, 0, profile, 0)
+        with self.assertRaises(ValueError):
+            wire.pack_verify_result(nonce, epoch, sequence, 16, 1, 2,
+                3, 4, 5, 6, profile, 1)
+        with self.assertRaises(ValueError):
+            wire.unpack_verify_result(negative, nonce, epoch, sequence + 1)
+
 
 if __name__ == '__main__':
     unittest.main()
