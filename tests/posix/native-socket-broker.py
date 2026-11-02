@@ -1043,6 +1043,7 @@ def run_member_census_client(args, rpc_path, broker, capability):
 
 
 def run_reuseport_group_client(args, rpc_path, broker, capability):
+    staged_capability = os.dup(capability)
     client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
         str(args.inherited_group_probe), str(args.preload_library)],
         pass_fds=(capability,), stdin=subprocess.PIPE,
@@ -1206,17 +1207,143 @@ def run_reuseport_group_client(args, rpc_path, broker, capability):
             f'reuseport group client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
         print(f'REUSEPORT_GROUP selector0/1/0 delivered exact streams; accepted TCP survived final listener close; '
             f'fresh-connect attempts={attempts}')
+        staged_to_transfer = staged_capability
+        staged_failure_capability = os.dup(staged_capability)
+        staged_death_capability = os.dup(staged_capability)
+        staged_capability = -1
+        run_staged_owner_group(args, rpc_path, staged_to_transfer)
+        run_staged_candidate_failure(args, rpc_path, staged_failure_capability, 'history')
+        staged_failure_capability = -1
+        run_staged_candidate_failure(args, rpc_path, staged_death_capability, 'death')
+        staged_death_capability = -1
     except BaseException as error:
         if owner_table_created:
             try: census_nft('delete', 'table', 'inet', owner_table)
             except (OSError, subprocess.SubprocessError, RuntimeError): pass
         if client.poll() is None:
             client.kill(); client.wait()
+        if staged_capability >= 0:
+            os.close(staged_capability)
+        for extra_capability in (locals().get('staged_failure_capability', -1),
+                locals().get('staged_death_capability', -1),
+                locals().get('staged_death_capability', -1)):
+            if extra_capability >= 0:
+                try: os.close(extra_capability)
+                except OSError: pass
         if not hasattr(client, 'communicate'):
             raise
         output, errors = client.communicate(timeout=5)
         raise RuntimeError(f'{error}; owner-group client rc={client.returncode}; '
             f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
+
+def run_staged_owner_group(args, rpc_path, capability):
+    try:
+        os.fstat(capability)
+    except OSError as error:
+        raise RuntimeError(f'staged bootstrap capability fd {capability} was closed before launch: {error}')
+    try:
+        client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+            str(args.inherited_group_probe), str(args.preload_library), '--staged'],
+            pass_fds=(capability,), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    except OSError as error:
+        raise RuntimeError(f'staged client launch failed with capability fd {capability}: {error}')
+    os.close(capability)
+    first = None
+    try:
+        require(read_line(client.stdout, 20, client) == 'STAGED_INITIAL_READY',
+            'staged owner group did not publish a live initial member before actor 1')
+        first = socket.create_connection(('198.18.0.2', 4103), timeout=10)
+        first.settimeout(10); first.sendall(b'INIT-000')
+        require(recv_exact(first, 8) == b'INIT-ACK',
+            'staged initial member did not serve real TCP before candidate actor existed')
+        require(read_line(client.stdout, 20, client) == 'STAGED_INITIAL_ECHO_OK',
+            'initial staged owner did not complete its first echo')
+        client.stdin.write(b'CANDIDATE\n'); client.stdin.flush()
+        require(read_line(client.stdout, 20, client) == 'STAGED_CANDIDATE_CLAIMED',
+            'later real PID did not claim the candidate slot after initial service')
+        preflip = socket.create_connection(('198.18.0.2', 4103), timeout=10)
+        preflip.settimeout(10); preflip.sendall(b'PRE-FLIP')
+        require(recv_exact(preflip, 8) == b'OLD-ACK!',
+            'candidate publication changed selector before explicit flip from member zero')
+        require(read_line(client.stdout, 20, client) == 'STAGED_PRE_FLIP_ECHO_OK',
+            'member zero did not serve while candidate was published but unselected')
+        require(read_line(client.stdout, 20, client) == 'STAGED_CANDIDATE_SELECTED',
+            'staged client did not explicitly select candidate member one')
+        candidate = socket.create_connection(('198.18.0.2', 4103), timeout=10)
+        candidate.settimeout(10); candidate.sendall(b'CAND-001')
+        require(recv_exact(candidate, 8) == b'CAND-ACK',
+            'explicit selector flip did not route a fresh TCP flow to candidate actor')
+        require(read_line(client.stdout, 20, client) == 'STAGED_CANDIDATE_ECHO_OK',
+            'later candidate actor did not accept and echo its selected flow')
+        first.sendall(b'HELD-OLD')
+        require(recv_exact(first, 8) == b'OLD-ACK!',
+            'held initial-member stream stopped after explicit candidate selection')
+        require(read_line(client.stdout, 20, client) == 'STAGED_OLD_STREAM_SURVIVED',
+            'initial owner did not complete held-stream echo after candidate flip')
+        require(read_line(client.stdout, 20, client) == 'STAGED_OWNER_GROUP_OK',
+            'staged owner group did not finish capability cleanup')
+        output, errors = client.communicate(timeout=20)
+        require(client.returncode == 0,
+            f'staged owner group client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+        first.close(); first = None; preflip.close(); candidate.close()
+        print('STAGED_OWNER_GROUP initial-live/later-claim/selector0/explicit-flip/held-stream PASS')
+    except BaseException as error:
+        if first is not None: first.close()
+        if client.poll() is None:
+            client.kill(); client.wait()
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{error}; staged owner-group client rc={client.returncode}; '
+            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
+
+def run_staged_candidate_failure(args, rpc_path, capability, case):
+    mode = f'--staged-{case}'
+    prefix = f'STAGED_{case.upper()}'
+    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+        str(args.inherited_group_probe), str(args.preload_library), mode],
+        pass_fds=(capability,), stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    os.close(capability)
+    port = {'history': 4104, 'death': 4105}[case]
+    first = second = None
+    try:
+        require(read_line(client.stdout, 20, client) == f'{prefix}_INITIAL_READY',
+            f'{case} staged plan did not publish its initial owner')
+        first = socket.create_connection(('198.18.0.2', port), timeout=10)
+        first.settimeout(10)
+        initial = {'history': b'HIST-000', 'death': b'DEAD-000'}[case]
+        first.sendall(initial)
+        require(recv_exact(first, 8) == b'FAIL-ACK',
+            f'{case} staged initial owner failed its first TCP exchange')
+        require(read_line(client.stdout, 20, client) == f'{prefix}_FIRST_ECHO_OK',
+            f'{case} initial owner did not finish its first echo')
+        client.stdin.write(b'ATTEMPT\n'); client.stdin.flush()
+        require(read_line(client.stdout, 20, client) == f'{prefix}_FAILURE_RETAINED',
+            f'{case} candidate rejection did not retain the initial listener')
+        second = socket.create_connection(('198.18.0.2', port), timeout=10)
+        second.settimeout(10); second.sendall(b'RETAIN-1')
+        require(recv_exact(second, 8) == b'FAIL-ACK',
+            f'{case} candidate failure stopped real initial-owner service')
+        require(read_line(client.stdout, 20, client) == f'{prefix}_SECOND_ECHO_OK' and
+            read_line(client.stdout, 20, client) == f'{prefix}_DONE',
+            f'{case} candidate failure wire fixture did not finish')
+        output, errors = client.communicate(timeout=20)
+        require(client.returncode == 0,
+            f'{case} staged failure client failed: stdout={output!r}; '
+            f'stderr={errors.decode(errors="replace")}')
+        first.close(); second.close()
+        print(f'STAGED_OWNER_GROUP {case}-rejection retained initial listener PASS')
+    except BaseException as error:
+        if first is not None: first.close()
+        if second is not None: second.close()
+        if client.poll() is None:
+            client.kill(); client.wait()
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{case} staged failure client rc={client.returncode}; '
+            f'{error}; stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
 
 
 GENERATION_MESSAGE = struct.Struct('=IIIIQ')
@@ -2523,6 +2650,7 @@ def inside(args):
                 environment = os.environ | {
                     'PYTHONDONTWRITEBYTECODE': '1',
                     'RUNTIME_DIRECTORY': str(root),
+                    'TMPDIR': str(root),
                 }
                 broker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0,

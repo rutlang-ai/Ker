@@ -119,6 +119,33 @@ by its separate original-Linux socket descriptor. This is a bounded broker
 API for two-member IPv4 TCP selection, not arbitrary cBPF support or general
 reuseport-group adoption.
 
+## Staged owner-group publication
+
+`ker_socket_client_owner_group_staged_plan()` creates a separate immutable
+plan mode while preserving the atomic `owner_group_plan()`/`owner_group_publish()`
+contract. After slot 0 is claimed by a fresh owner,
+`owner_group_publish_initial()` creates a real original-Linux listener and a
+selector fixed to member 0. It can serve traffic before a slot-1 owner exists.
+Slot 0 is sealed at this point; slot 1 can be delegated and claimed later.
+`owner_group_publish_candidate()` joins its fresh listener without changing
+selection. A caller must explicitly select member 1. Existing member-0 streams
+remain ordinary original-Linux TCP streams across that selection.
+
+Missing claims and an unpublished initial listener return `EAGAIN` without
+consuming the candidate attempt. Once a claimed candidate reaches preflight, a
+rejection is terminal: the candidate cannot be replaced or retried. Failures
+close only the candidate listener and preserve member 0. The initial listener
+identity, mark, bound tuple, and `SO_ACCEPTCONN` state are revalidated before
+candidate socket effects.
+
+Admission-prepared actors are explicitly unsupported in this staged profile.
+Initial publication returns `EOPNOTSUPP` before creating a listener; a prepared
+candidate returns `EOPNOTSUPP`, consumes its one attempt, and leaves member 0
+serving. The focused harness does not qualify admission READY gating for a
+staged candidate; admission support requires a separate real READY-before-
+listen and wire qualification. These SDK controls do not qualify Nginx
+`graceful_reload=1`, a full F-Stack lifecycle, or a graceful-reload FSM.
+
 ## Reuseport member census
 
 `ker_socket_client_member_census_create(group, index)` creates a read-only

@@ -248,8 +248,10 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_CREATE ||
         operation == KER_SB_FF_OWNER_SOCKET ||
         operation == KER_SB_FF_OWNER_GROUP_PLAN ||
+        operation == KER_SB_FF_OWNER_GROUP_STAGED_PLAN ||
         operation == KER_SB_FF_OWNER_GROUP_SLOT ||
         operation == KER_SB_FF_OWNER_GROUP_PUBLISH ||
+        operation == KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL ||
         operation == KER_SB_FF_OWNER_GROUP_MEMBER;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
@@ -265,6 +267,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_PAYLOAD ||
         operation == KER_SB_FF_OWNER_REQUESTS ||
         operation == KER_SB_FF_OWNER_GROUP_CLAIM;
+    requires_zero = requires_zero ||
+        operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -656,6 +660,22 @@ int ker_socket_client_owner_group_plan(struct ker_socket_client *client,
     return plan;
 }
 
+int ker_socket_client_owner_group_staged_plan(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog, uint32_t group_rights)
+{
+    if (!client || !address || address->sin_family != AF_INET ||
+        !address->sin_port || backlog < 0 ||
+        !(group_rights & KER_SOCKET_BROKER_CONTROL) ||
+        (group_rights & ~KER_SOCKET_BROKER_ALL)) return fail(EINVAL);
+    struct ker_sb_ff_owner_group_plan input = {.backlog = backlog,
+        .group_rights = group_rights};
+    memcpy(input.address, address, sizeof(*address));
+    int plan = -1;
+    if (socket_call(client, -1, KER_SB_FF_OWNER_GROUP_STAGED_PLAN, &input,
+            sizeof(input), NULL, 0, &plan, NULL) < 0) return -1;
+    return plan;
+}
+
 int ker_socket_client_owner_group_slot(struct ker_socket_client *client,
     int plan_cap, unsigned index)
 {
@@ -688,6 +708,24 @@ int ker_socket_client_owner_group_publish(struct ker_socket_client *client,
     if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_PUBLISH,
             NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
     return group;
+}
+
+int ker_socket_client_owner_group_publish_initial(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int group = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL,
+            NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
+    return group;
+}
+
+int ker_socket_client_owner_group_publish_candidate(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    return socket_call(client, plan_cap,
+        KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE, NULL, 0, NULL, 0, NULL, NULL);
 }
 
 int ker_socket_client_owner_group_member(struct ker_socket_client *client,
