@@ -2,6 +2,7 @@
 """TAP proof for the opt-in socket-broker READY/STOP control path."""
 import argparse
 import ctypes
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -78,7 +79,10 @@ def send_test_packet(endpoint, packet, rights=()):
 
 
 def load_ker_run(path):
-    spec = importlib.util.spec_from_file_location('_c34_test_ker_run', path)
+    loader = importlib.machinery.SourceFileLoader('_c34_test_ker_run', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'cannot load ker-run Python source from {path}')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
