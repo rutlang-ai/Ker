@@ -466,6 +466,13 @@ class RuntimeServiceSupervisor:
                     if not hmac.compare_digest(ticket, self.ticket):
                         return self._response(operation, sequence,
                             bytes(wire.LEASE_BYTES), 116), sequence
+                # A consumed direct capability must fail immediately after its
+                # actor has released or died. Do this only after delegated
+                # ticket lookup: a pending child grant remains independently
+                # claimable after its parent releases.
+                if self._claim_consumed and self._actor is None:
+                    return self._response(operation, sequence,
+                        bytes(wire.LEASE_BYTES), 116), sequence
                 if not self._wait_actor_binding_locked():
                     return self._response(operation, sequence,
                         bytes(wire.LEASE_BYTES), 11), sequence
@@ -478,8 +485,6 @@ class RuntimeServiceSupervisor:
                         not hmac.compare_digest(peer['exe_hash'], target['exe_hash']) or
                         _pidfd_dead(target['pidfd'])):
                     return self._response(operation, sequence, bytes(wire.LEASE_BYTES), 13), sequence
-                if self._claim_consumed and self._actor is None:
-                    return self._response(operation, sequence, bytes(wire.LEASE_BYTES), 116), sequence
                 if self._actor is not None:
                     actor = self._actor
                     if (actor['pid'] != peer['pid'] or actor['start'] != peer['start'] or
