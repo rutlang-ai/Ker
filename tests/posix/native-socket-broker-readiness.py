@@ -130,7 +130,7 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
     barrier_listener = None
     barrier_channel = None
     barrier_path = args.rpc_path.with_name(args.rpc_path.stem + '.verify-barrier.sock')
-    if args.mode == 'generation-watch-stop-cancel':
+    if args.mode in ('generation-watch-stop-cancel', 'generation-watch-close-cancel'):
         barrier_listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         barrier_listener.bind(str(barrier_path))
         os.chmod(barrier_path, 0o600)
@@ -215,7 +215,7 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                 if app is None:
                     time.sleep(0.001)
             require(app is not None, 'broker application Popen did not complete')
-            if args.mode == 'generation-watch-stop-cancel':
+            if args.mode in ('generation-watch-stop-cancel', 'generation-watch-close-cancel'):
                 barrier_listener.settimeout(10)
                 barrier_channel, _ = barrier_listener.accept()
                 barrier_channel.settimeout(5)
@@ -243,7 +243,8 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
             if args.mode == 'parent-death':
                 return
             if args.mode in ('generation-watch', 'generation-watch-replay',
-                             'generation-watch-rights', 'generation-watch-stop-cancel'):
+                             'generation-watch-rights', 'generation-watch-stop-cancel',
+                             'generation-watch-close-cancel'):
                 actor_path = args.generation_watch_actor.resolve()
                 watch_path = args.rpc_path.with_name(args.rpc_path.stem + '.watch.sock')
                 with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as cap_listener:
@@ -282,6 +283,10 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                             f'actor watch identity mismatch: {payload!r}, pid={actor.pid}')
                         watch_fd = watch_fds.pop()
                         state['watch_fd'] = watch_fd
+                        watch_alias_fd = -1
+                        if args.mode == 'generation-watch-close-cancel':
+                            watch_alias_fd = os.dup(watch_fd)
+                            state['watch_alias_fd'] = watch_alias_fd
                         status, state_code = verify_result(manager.parent, app.pid, 1,
                             watch_fd, manager.nonce, manager.epoch)
                         require(status == errno.EBUSY and state_code == 0,
@@ -308,18 +313,140 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                         actor.wait(timeout=5)
                         require(actor.returncode == -signal.SIGKILL,
                             f'owner actor was not reaped as requested: {actor.returncode}')
-                        if args.mode == 'generation-watch-stop-cancel':
+                        if args.mode in ('generation-watch-stop-cancel',
+                                         'generation-watch-close-cancel'):
                             send_test_packet(manager.parent,
                                 verify_request(manager.nonce, manager.epoch, 3), (watch_fd,))
                             require(barrier_channel.recv(1) == b'P',
                                 'asynchronous census did not reach the test barrier')
+                            if args.mode == 'generation-watch-close-cancel':
+                                os.close(watch_fd)
+                                watch_fd = -1
+                                state.pop('watch_fd', None)
+                                describe_path = args.rpc_path.with_name(
+                                    args.rpc_path.stem + '.watch-describe.sock')
+                                with socket.socket(socket.AF_UNIX,
+                                        socket.SOCK_SEQPACKET) as describe_listener:
+                                    describe_listener.bind(str(describe_path))
+                                    os.chmod(describe_path, 0o600)
+                                    describe_listener.listen(1)
+                                    describe_actor = subprocess.Popen(
+                                        [str(actor_path), '--describe-watch',
+                                            str(args.rpc_path), str(describe_path)],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, close_fds=True)
+                                    state['watch_describe_actor'] = describe_actor
+                                    describe_listener.settimeout(5)
+                                    describe_channel, _ = describe_listener.accept()
+                                    with describe_channel:
+                                        describe_channel.settimeout(5)
+                                        describe_channel.sendmsg([b'W'], [(socket.SOL_SOCKET,
+                                            socket.SCM_RIGHTS,
+                                            struct.pack('i', watch_alias_fd))])
+                                        describe_result = describe_channel.recv(1)
+                                    if describe_result != b'D':
+                                        describe_actor.wait(timeout=5)
+                                        out, err = describe_actor.communicate(timeout=5)
+                                        raise RuntimeError(
+                                            'public SDK describe did not accept retained alias: '
+                                            f'{describe_result!r}; rc={describe_actor.returncode}; '
+                                            f'out={out!r}; err={err.decode(errors="replace")!r}')
+                                    describe_actor.wait(timeout=5)
+                                    describe_output, describe_errors = describe_actor.communicate(
+                                        timeout=5)
+                                    require(describe_actor.returncode == 0,
+                                        'public SDK alias describe actor failed: '
+                                        f'rc={describe_actor.returncode}, '
+                                        f'out={describe_output!r}, '
+                                        f'err={describe_errors.decode(errors="replace")!r}')
+                                    state.pop('watch_describe_actor', None)
+                                readable, _, _ = select.select([manager.parent], [], [], 0)
+                                require(not readable,
+                                    'VERIFY canceled before the final public alias closed')
+                                os.close(watch_alias_fd)
+                                watch_alias_fd = -1
+                                state.pop('watch_alias_fd', None)
+                                status, state_code = receive_verify_result(
+                                    manager.parent, app.pid, 3, manager.nonce, manager.epoch)
+                                require(status == errno.ECANCELED and state_code == 0,
+                                    'closing the final watch capability did not cancel VERIFY')
+                                # The cancellation freed the metadata slot. Allocate a
+                                # replacement before releasing the test barrier so stale
+                                # completion cannot act on the reused watch slot.
+                                reuse_path = args.rpc_path.with_name(
+                                    args.rpc_path.stem + '.watch-reuse.sock')
+                                with socket.socket(socket.AF_UNIX,
+                                        socket.SOCK_SEQPACKET) as reuse_listener:
+                                    reuse_listener.bind(str(reuse_path))
+                                    os.chmod(reuse_path, 0o600)
+                                    reuse_listener.listen(1)
+                                    reused_actor = subprocess.Popen(
+                                        [str(actor_path), str(args.rpc_path), str(reuse_path)],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, close_fds=True)
+                                    state['watch_actor'] = reused_actor
+                                    reuse_listener.settimeout(10)
+                                    reuse_channel, _ = reuse_listener.accept()
+                                    with reuse_channel:
+                                        reuse_channel.settimeout(5)
+                                        payload, ancillary, flags, _ = reuse_channel.recvmsg(32,
+                                            socket.CMSG_SPACE(struct.calcsize('i')))
+                                        reused_fds = []
+                                        for level, kind, data in ancillary:
+                                            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                                                reused_fds.extend(struct.unpack(
+                                                    f'{len(data) // struct.calcsize("i")}i', data))
+                                        require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and
+                                            len(payload) == 12 and len(reused_fds) == 1,
+                                            'replacement actor did not transfer one watch capability')
+                                        magic, reused_pid, reused_port, reserved = struct.unpack(
+                                            '<IIHH', payload)
+                                        require(magic == 0x57415443 and
+                                            reused_pid == reused_actor.pid and reused_port == port and
+                                            reserved == 0,
+                                            'replacement watch identity was malformed')
+                                        reused_watch_fd = reused_fds.pop()
+                                        status, state_code = verify_result(manager.parent, app.pid,
+                                            4, reused_watch_fd, manager.nonce, manager.epoch)
+                                        require(status == errno.EBUSY and state_code == 0,
+                                            'replacement live owner watch was affected by stale completion')
+                                        barrier_channel.sendall(b'R')
+                                        readable, _, _ = select.select(
+                                            [manager.parent], [], [], 0)
+                                        require(not readable,
+                                            'stale completion escaped after replacement watch allocation')
+                                        reuse_channel.sendall(b'C')
+                                        require(reuse_channel.recv(1) == b'C',
+                                            'replacement actor did not close listener capabilities')
+                                        status, _ = verify_result(manager.parent, app.pid, 5,
+                                            reused_watch_fd, manager.nonce, manager.epoch)
+                                        require(status == errno.EBUSY,
+                                            'replacement watch lost its live-owner binding')
+                                        os.kill(reused_actor.pid, signal.SIGKILL)
+                                        reused_actor.wait(timeout=5)
+                                        require(reused_actor.returncode == -signal.SIGKILL,
+                                            'replacement owner was not reaped')
+                                        status, state_code = verify_result(manager.parent,
+                                            app.pid, 6, reused_watch_fd,
+                                            manager.nonce, manager.epoch)
+                                        require(status == 0 and state_code == 1,
+                                            'replacement watch was mutated by canceled query completion')
+                                        status, state_code = verify_result(manager.parent,
+                                            app.pid, 7, reused_watch_fd,
+                                            manager.nonce, manager.epoch)
+                                        require(status == 0 and state_code == 1,
+                                            'replacement terminal query was not idempotent')
+                                        os.close(reused_watch_fd)
+                                    state.pop('watch_actor', None)
+                                control_result['replacement_watch_unaffected'] = True
                             stop = wire.pack_stop(wire.STOP, manager.nonce, manager.epoch,
                                 supervisor_pid, os.getuid(), os.getgid(), manager.supervisor[3])
                             send_test_packet(manager.parent, stop)
-                            status, state_code = receive_verify_result(manager.parent, app.pid,
-                                3, manager.nonce, manager.epoch)
-                            require(status == errno.ECANCELED and state_code == 0,
-                                f'in-flight verification was not canceled: {status}, {state_code}')
+                            if args.mode == 'generation-watch-stop-cancel':
+                                status, state_code = receive_verify_result(manager.parent, app.pid,
+                                    3, manager.nonce, manager.epoch)
+                                require(status == errno.ECANCELED and state_code == 0,
+                                    f'in-flight verification was not canceled: {status}, {state_code}')
                             ack_packet, ack_credentials = receive_record(manager.parent, 104, 6)
                             wire.unpack_stop(ack_packet, wire.STOP_ACK)
                             require(ack_credentials[0] == app.pid,
@@ -371,16 +498,23 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                                 f'{args.mode} verification input was not rejected')
                         control_result.update({'live_owner_denied': True,
                             'listener_alias_closed': True, 'owner_reaped': True,
-                            'reaped_owner_retired': args.mode != 'generation-watch-stop-cancel',
-                            'terminal_idempotent': args.mode != 'generation-watch-stop-cancel',
+                            'reaped_owner_retired': args.mode not in (
+                                'generation-watch-stop-cancel', 'generation-watch-close-cancel'),
+                            'terminal_idempotent': args.mode not in (
+                                'generation-watch-stop-cancel', 'generation-watch-close-cancel'),
                             'replay_rejected': args.mode == 'generation-watch-replay',
                             'ancillary_rejected': args.mode == 'generation-watch-rights',
                             'verify_canceled': args.mode == 'generation-watch-stop-cancel',
+                            'watch_close_canceled': args.mode == 'generation-watch-close-cancel',
+                            'replacement_watch_unaffected': args.mode ==
+                                'generation-watch-close-cancel' and
+                                control_result.get('replacement_watch_unaffected'),
                             'clean_stop': args.mode in ('generation-watch',
-                                'generation-watch-stop-cancel'),
+                                'generation-watch-stop-cancel', 'generation-watch-close-cancel'),
                             'app_returncode': app.returncode})
-                        os.close(watch_fd)
-                        state.pop('watch_fd', None)
+                        if watch_fd >= 0:
+                            os.close(watch_fd)
+                            state.pop('watch_fd', None)
                     return
             if args.mode in ('bad-stop', 'rights-stop', 'truncated-stop'):
                 if args.mode == 'bad-stop':
@@ -437,9 +571,15 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
             actor = state.get('watch_actor')
             if actor is not None and actor.poll() is None:
                 actor.kill()
+            describe_actor = state.get('watch_describe_actor')
+            if describe_actor is not None and describe_actor.poll() is None:
+                describe_actor.kill()
             watch_fd = state.pop('watch_fd', None)
             if watch_fd is not None:
                 os.close(watch_fd)
+            watch_alias_fd = state.pop('watch_alias_fd', None)
+            if watch_alias_fd is not None:
+                os.close(watch_alias_fd)
 
     thread = threading.Thread(target=control_thread, name='broker-readiness-test-control')
     thread.start()
@@ -450,7 +590,7 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
         str(args.broker), str(args.rpc_path)]
     if args.mode == 'no-bootstrap':
         arguments.append('--skip-bootstrap')
-    if args.mode == 'generation-watch-stop-cancel':
+    if args.mode in ('generation-watch-stop-cancel', 'generation-watch-close-cancel'):
         arguments += ['--verify-barrier', str(barrier_path)]
     old_argv = sys.argv
     try:
@@ -497,21 +637,27 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
             stats and stats.get('outstanding') == 0,
             f'no-bootstrap path did not fail before READY and clean up: {result!r}')
     elif args.mode in ('generation-watch', 'generation-watch-replay',
-                       'generation-watch-rights', 'generation-watch-stop-cancel'):
+                       'generation-watch-rights', 'generation-watch-stop-cancel',
+                       'generation-watch-close-cancel'):
         expected_result = (launcher_result == 143 and control_result.get('clean_stop') and
             control_result.get('app_returncode') == 0) if args.mode == 'generation-watch' else (
             launcher_result != 0 and control_result.get('app_returncode') != 0)
-        if args.mode == 'generation-watch-stop-cancel':
+        if args.mode in ('generation-watch-stop-cancel', 'generation-watch-close-cancel'):
             expected_result = launcher_result == 0 and control_result.get('clean_stop') and \
-                control_result.get('app_returncode') == 0 and control_result.get('verify_canceled')
+                control_result.get('app_returncode') == 0 and (
+                    control_result.get('verify_canceled') if
+                    args.mode == 'generation-watch-stop-cancel' else
+                    control_result.get('watch_close_canceled'))
         require(expected_result and control_result.get('live_owner_denied') and
             control_result.get('listener_alias_closed') and
-            (args.mode == 'generation-watch-stop-cancel' or
+            (args.mode in ('generation-watch-stop-cancel', 'generation-watch-close-cancel') or
                 control_result.get('reaped_owner_retired')) and
-            (args.mode == 'generation-watch-stop-cancel' or
+            (args.mode in ('generation-watch-stop-cancel', 'generation-watch-close-cancel') or
                 control_result.get('terminal_idempotent')) and
             (args.mode != 'generation-watch-replay' or control_result.get('replay_rejected')) and
             (args.mode != 'generation-watch-rights' or control_result.get('ancillary_rejected')) and
+            (args.mode != 'generation-watch-close-cancel' or
+                control_result.get('replacement_watch_unaffected')) and
             stats and stats.get('outstanding') == 0,
             f'generation watch did not enforce retirement evidence: {result!r}')
     return 0
@@ -548,7 +694,7 @@ def spawn_supervisor(args, mode, timeout=45):
     command += ['--stats', str(args.root / f'{mode}.json'),
         '--rpc-path', str(args.root / f'{mode}.sock')]
     if mode in ('generation-watch', 'generation-watch-replay', 'generation-watch-rights',
-                'generation-watch-stop-cancel'):
+                'generation-watch-stop-cancel', 'generation-watch-close-cancel'):
         command += ['--generation-watch-actor', str(args.generation_watch_actor.resolve())]
     retain = mode == 'parent-death'
     log_path = args.root / f'{mode}.supervisor.log'
@@ -676,7 +822,8 @@ def main():
     parser.add_argument('--mode', choices=('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop',
         'truncated-stop',
         'no-bootstrap', 'parent-death', 'generation-watch', 'generation-watch-replay',
-        'generation-watch-rights', 'generation-watch-stop-cancel'), default='healthy')
+        'generation-watch-rights', 'generation-watch-stop-cancel',
+        'generation-watch-close-cancel'), default='healthy')
     parser.add_argument('--notify-fd', type=int, default=-1)
     args = parser.parse_args()
     if args.supervisor:
@@ -700,7 +847,8 @@ def main():
             'parent-death', 'no-bootstrap')
         if args.generation_watch_actor:
             modes += ('generation-watch', 'generation-watch-replay',
-                'generation-watch-rights', 'generation-watch-stop-cancel')
+                'generation-watch-rights', 'generation-watch-stop-cancel',
+                'generation-watch-close-cancel')
         for mode in modes:
             spawn_supervisor(args, mode)
     print('BROKER_READINESS_TAP_OK authenticated_READY_STOP no-bootstrap malformed_STOP parent_pidfd_death')

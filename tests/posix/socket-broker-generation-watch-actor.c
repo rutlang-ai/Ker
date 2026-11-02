@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,12 +43,69 @@ static int connect_control(const char *path)
     return fd;
 }
 
+static int describe_watch_actor(const char *rpc_path, const char *control_path)
+{
+    int control = connect_control(control_path);
+    if (control < 0) return 1;
+    char payload[8] = {0};
+    char ancillary[CMSG_SPACE(sizeof(int) * 4)] = {0};
+    struct iovec iov = {.iov_base = payload, .iov_len = sizeof(payload)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = ancillary, .msg_controllen = sizeof(ancillary)};
+    ssize_t received = recvmsg(control, &message, MSG_CMSG_CLOEXEC);
+    int fds[4];
+    size_t fd_count = 0;
+    bool malformed = received != 1 || payload[0] != 'W' ||
+        (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC));
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message); cmsg;
+         cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+            cmsg->cmsg_len < CMSG_LEN(0)) {
+            malformed = true;
+            continue;
+        }
+        size_t bytes = cmsg->cmsg_len - CMSG_LEN(0);
+        if (bytes % sizeof(int)) malformed = true;
+        size_t count = bytes / sizeof(int);
+        const int *installed = (const int *)CMSG_DATA(cmsg);
+        for (size_t i = 0; i < count; ++i) {
+            if (fd_count < sizeof(fds) / sizeof(fds[0])) fds[fd_count++] = installed[i];
+            else { close(installed[i]); malformed = true; }
+        }
+    }
+    struct ker_socket_client client = {.session_fd = -1};
+    int result = 1;
+    if (!malformed && fd_count == 1 && ker_socket_client_open(&client, rpc_path) == 0) {
+        enum ker_socket_broker_kind kind = 0;
+        int flags = 0;
+        int described = ker_socket_client_describe(&client, fds[0], &kind, &flags);
+        if (described == 0 &&
+            kind == KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH &&
+            flags == 0 &&
+            ker_socket_client_describe(&client, fds[0], &kind, &flags) == 0 &&
+            kind == KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH &&
+            flags == 0) {
+            result = send(control, "D", 1, MSG_NOSIGNAL) == 1 ? 0 : 1;
+        } else {
+            fprintf(stderr, "describe watch failed: rc=%d kind=%d flags=%d errno=%s\n",
+                described, kind, flags, strerror(errno));
+        }
+    }
+    if (result) (void)send(control, "X", 1, MSG_NOSIGNAL);
+    for (size_t i = 0; i < fd_count; ++i) close(fds[i]);
+    ker_socket_client_close(&client);
+    close(control);
+    return result;
+}
+
 #define REQUIRE(call) do { if (!(call)) { \
     fprintf(stderr, "generation watch actor:%d: %s: %s\n", __LINE__, #call, strerror(errno)); \
     goto fail; } } while (0)
 
 int main(int argc, char **argv)
 {
+    if (argc == 4 && strcmp(argv[1], "--describe-watch") == 0)
+        return describe_watch_actor(argv[2], argv[3]);
     if (argc != 3) { fprintf(stderr, "usage: generation-watch-actor <rpc-path> <control-path>\n"); return 2; }
     const uint16_t port = 4127;
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};

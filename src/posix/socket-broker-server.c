@@ -236,7 +236,6 @@ struct ker_socket_broker_server {
     uint64_t readiness_verify_sequence;
     uint64_t readiness_last_verify_sequence;
     uint64_t readiness_verify_deadline_ns;
-    int readiness_verify_cap_fd;
     int readiness_fd;
     int readiness_supervisor_pidfd;
 #ifdef KER_SOCKET_BROKER_READINESS_TESTING
@@ -860,8 +859,6 @@ static int readiness_verify_finish(struct ker_socket_broker_server *server, int 
         watch->state = GENERATION_WATCH_PUBLISHED;
     int sent = readiness_verify_send_result(server, watch,
         server->readiness_verify_sequence, status);
-    (void)host_close(server->readiness_verify_cap_fd);
-    server->readiness_verify_cap_fd = -1;
     server->readiness_verify_watch_slot = -1;
     server->readiness_verify_deadline_ns = 0;
     return sent;
@@ -869,9 +866,8 @@ static int readiness_verify_finish(struct ker_socket_broker_server *server, int 
 
 static int readiness_verify_begin(struct ker_socket_broker_server *server,
     const uint8_t record[KER_BROKER_VERIFY_RETIRE_REQUEST_BYTES],
-    const struct ucred *credentials, int watch_fd, bool *fd_transferred)
+    const struct ucred *credentials, int watch_fd)
 {
-    if (fd_transferred) *fd_transferred = false;
     if (!server->readiness_sent || server->readiness_stop_requested ||
         server->readiness_verify_watch_slot >= 0) return -EBUSY;
     if (readiness_credentials_check(server, credentials)) return -EACCES;
@@ -901,8 +897,6 @@ static int readiness_verify_begin(struct ker_socket_broker_server *server,
     watch->verify_sequence = sequence;
     server->readiness_verify_watch_slot = object->generation_watch_slot;
     server->readiness_verify_sequence = sequence;
-    server->readiness_verify_cap_fd = watch_fd;
-    if (fd_transferred) *fd_transferred = true;
     if (watch->state == GENERATION_WATCH_OLD_RETIRED)
         return readiness_verify_finish(server, 0);
     if (watch->state != GENERATION_WATCH_PUBLISHED)
@@ -973,10 +967,10 @@ static int readiness_receive_verify(struct ker_socket_broker_server *server)
         return -EPROTO;
     }
     int watch_fd = rights[0];
-    bool fd_transferred = false;
-    int status = readiness_verify_begin(server, record, &credentials, watch_fd,
-        &fd_transferred);
-    if (!fd_transferred) (void)host_close(watch_fd);
+    int status = readiness_verify_begin(server, record, &credentials, watch_fd);
+    /* The capability slot and watch metadata own async verification state.
+     * Keeping this received alias open would mask the owner's final close. */
+    (void)host_close(watch_fd);
     return status;
 }
 
@@ -5235,7 +5229,6 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
     server->readiness_fd = -1;
     server->readiness_supervisor_pidfd = -1;
     server->readiness_verify_watch_slot = -1;
-    server->readiness_verify_cap_fd = -1;
 #ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
     server->readiness_test_verify_fd = -1;
 #endif
@@ -5325,8 +5318,6 @@ int ker_socket_broker_server_destroy_checked(struct ker_socket_broker_server *se
             &server->generation_watches[server->readiness_verify_watch_slot];
         if (watch->live && watch->verify_ticket)
             (void)ker_member_census_query_cancel(watch->verify_ticket);
-        (void)host_close(server->readiness_verify_cap_fd);
-        server->readiness_verify_cap_fd = -1;
         server->readiness_verify_watch_slot = -1;
     }
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
