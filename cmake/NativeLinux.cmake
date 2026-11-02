@@ -293,7 +293,9 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     target_compile_features(ker-fstack-nginx-worker-shim PRIVATE c_std_11)
     target_compile_options(ker-fstack-nginx-worker-shim PRIVATE -Wall -Wextra -Werror)
     target_compile_definitions(ker-fstack-nginx-worker-shim PRIVATE
-        KER_FSTACK_NGINX_EXPECTED_BUILD_ID="0806707a980bac49a4874ecd4f0aa2419d5b9da2")
+        KER_FSTACK_NGINX_EXPECTED_BUILD_ID="0806707a980bac49a4874ecd4f0aa2419d5b9da2"
+        KER_FSTACK_NGINX_RESPAWN_FORK_RETURN_PC=0x45c0fe
+        KER_FSTACK_NGINX_WORKER_PROCESS_ADDRESS=0x45d8d5)
     target_link_options(ker-fstack-nginx-worker-shim PRIVATE -Wl,--no-undefined)
     target_link_libraries(ker-fstack-nginx-worker-shim PRIVATE ${CMAKE_DL_LIBS})
     file(SHA256 "${KER_FSTACK_NGINX_BINARY}" ker_fstack_nginx_binary_sha256)

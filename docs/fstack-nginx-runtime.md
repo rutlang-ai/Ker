@@ -278,8 +278,20 @@ exit through the broker's pidfd-gated admin receipt, and waits for a mark-scoped
 census to show `LISTEN=0` and no queued payload before reserving a new mark.
 Original-Linux TIME_WAIT rows may remain and are not forcibly cleared. The test
 also repeats HUP, checks the master's socket descriptor count does not grow,
-proves each cycle receives a distinct listener cookie, and waits for all three
-mark-scoped censuses to reach `LISTEN=0` at cleanup.
+proves each cycle receives a distinct listener cookie, and waits for each
+mark-scoped census to reach `LISTEN=0` at cleanup.
+
+The pinned shim also recognizes only the reaped worker-respawn `fork()` callsite
+in the exact Nginx ELF build. It drains the dead worker's mark, releases the old
+plan/slot, and creates a fresh slot before the original fork; the child then
+uses the same authenticated prepare path. The TAP test kills the serving worker
+twice with `SIGKILL`, verifies a new listener cookie and original-Linux HTTP
+service each time, and checks every respawn mark reaches `LISTEN=0` at shutdown.
+The old census capability is retained if a bounded drain attempt times out, but
+the shim refuses that fork rather than reuse a stale claim. A later explicit
+cycle attempt can retry the retained census. Automatic retry after a failed
+respawn attempt and recovery when the worker dies before publishing its
+listener are not claimed.
 
 This Nginx HUP path intentionally has an outage while the old worker exits and
 the new cycle starts. It does not claim active-stream preservation, does not

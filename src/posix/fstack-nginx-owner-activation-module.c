@@ -37,6 +37,11 @@ static struct ker_socket_client broker;
 static int broker_open;
 static int current_plan = -1;
 static int current_slot = -1;
+static int retiring_census = -1;
+static bool retirement_proven;
+static struct sockaddr_in owner_address;
+static int owner_backlog;
+static bool respawn_plan_pending;
 static bool worker_prepared;
 
 static void
@@ -202,43 +207,49 @@ drain_previous_cycle(ngx_log_t *log)
     struct ker_socket_member_census_snapshot snapshot;
     struct ker_socket_member_payload_snapshot payload;
     struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
-    if (current_plan < 0 || current_slot < 0 || !broker_open) return NGX_OK;
-    group = -1;
-    for (unsigned attempt = 0; attempt < 500; ++attempt) {
-        group = ker_socket_client_owner_group_control_after_exit(&broker, current_plan);
-        if (group >= 0 || errno != EAGAIN) break;
-        (void)nanosleep(&pause, NULL);
-    }
-    if (group < 0) {
-        ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
-            "C22 old listener owner has not reached authenticated exit");
-        return NGX_ERROR;
-    }
-    census = ker_socket_client_member_census_create(&broker, group, 0);
-    if (census < 0) {
-        ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
-            "C22 could not census previous published listener");
+    if (!broker_open) return current_plan < 0 && retiring_census < 0
+        ? NGX_OK : NGX_ERROR;
+    if (retiring_census < 0 && current_plan >= 0 && current_slot >= 0) {
+        group = -1;
+        for (unsigned attempt = 0; attempt < 500; ++attempt) {
+            group = ker_socket_client_owner_group_control_after_exit(&broker,
+                current_plan);
+            if (group >= 0 || errno != EAGAIN) break;
+            (void)nanosleep(&pause, NULL);
+        }
+        if (group < 0) {
+            ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                "C22 old listener owner has not reached authenticated exit");
+            return NGX_ERROR;
+        }
+        census = ker_socket_client_member_census_create(&broker, group, 0);
+        if (census < 0) {
+            ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                "C22 could not census previous published listener");
+            (void)syscall(SYS_close, group);
+            return NGX_ERROR;
+        }
         (void)syscall(SYS_close, group);
-        return NGX_ERROR;
+        retiring_census = census;
+        /* The plan and slot pin the listener. Retain only the independent
+         * census capability while old TCP state drains, including retries. */
+        (void)syscall(SYS_close, current_slot);
+        current_slot = -1;
+        (void)syscall(SYS_close, current_plan);
+        current_plan = -1;
     }
-    (void)syscall(SYS_close, group);
-    (void)syscall(SYS_close, current_slot);
-    current_slot = -1;
-    (void)syscall(SYS_close, current_plan);
-    current_plan = -1;
+    if (retiring_census < 0) return NGX_OK;
     for (unsigned attempt = 0; attempt < 500; ++attempt) {
         memset(&snapshot, 0, sizeof(snapshot));
-        if (ker_socket_client_member_census_snapshot(&broker, census, &snapshot)) {
+        if (ker_socket_client_member_census_snapshot(&broker, retiring_census, &snapshot)) {
             ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
                 "C22 previous listener census failed");
-            (void)syscall(SYS_close, census);
             return NGX_ERROR;
         }
         memset(&payload, 0, sizeof(payload));
-        if (ker_socket_client_member_payload_snapshot(&broker, census, &payload)) {
+        if (ker_socket_client_member_payload_snapshot(&broker, retiring_census, &payload)) {
             ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
                 "C22 previous listener payload census failed");
-            (void)syscall(SYS_close, census);
             return NGX_ERROR;
         }
         uint64_t time_wait = snapshot.state_counts[KER_SOCKET_TCP_STATE_TIME_WAIT];
@@ -248,15 +259,98 @@ drain_previous_cycle(ngx_log_t *log)
             trace_line("C22_RETIRED pid=%ld cookie=%llu total=%llu timewait=%llu listen=0 payload=0\n",
                 (long)getpid(), (unsigned long long)snapshot.listener_cookie,
                 (unsigned long long)snapshot.total, (unsigned long long)time_wait);
-            (void)syscall(SYS_close, census);
+            (void)syscall(SYS_close, retiring_census);
+            retiring_census = -1;
+            retirement_proven = true;
             return NGX_OK;
         }
         (void)nanosleep(&pause, NULL);
     }
     ngx_log_error(NGX_LOG_ERR, log, 0,
         "C22 previous listener did not drain before the bounded deadline");
-    (void)syscall(SYS_close, census);
     return NGX_ERROR;
+}
+
+static ngx_int_t
+create_owner_plan(ngx_log_t *log)
+{
+    const char *path = getenv("KER_SOCKET_BROKER_PATH");
+    if (!broker_open) {
+        if (!path || ker_socket_client_open(&broker, path)) {
+            ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                "C22 could not reopen broker control connection");
+            return NGX_ERROR;
+        }
+        broker_open = true;
+    }
+    current_plan = ker_socket_client_owner_group_staged_plan(&broker,
+        &owner_address, owner_backlog,
+        KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    if (current_plan < 0) goto failed;
+    current_slot = ker_socket_client_owner_group_slot(&broker, current_plan, 0);
+    if (current_slot < 0) goto failed;
+    retirement_proven = false;
+    trace_line("C22_PLAN pid=%ld address=%s port=%u backlog=%d\n",
+        (long)getpid(), inet_ntoa(owner_address.sin_addr),
+        ntohs(owner_address.sin_port), owner_backlog);
+    return NGX_OK;
+
+failed:
+    ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+        "C22 could not reserve owner-group respawn slot");
+    (void)close_cycle_caps();
+    return NGX_ERROR;
+}
+
+/* Called by the pinned fork interposer only at ngx_spawn_process's exact
+ * worker-respawn callsite, after the previous child has been reaped. */
+int
+ker_fstack_nginx_owner_activation_respawn_prepare(void)
+{
+    if (ngx_process != NGX_PROCESS_MASTER || ngx_cycle == NULL ||
+        (current_plan < 0 && retiring_census < 0 && !retirement_proven) ||
+        respawn_plan_pending) {
+        errno = EPROTO;
+        return -1;
+    }
+    if ((current_plan >= 0 || retiring_census >= 0) &&
+        drain_previous_cycle(ngx_cycle->log) != NGX_OK) {
+        errno = EAGAIN;
+        trace_line("C22_RESPAWN_DRAIN_PENDING pid=%ld\n", (long)getpid());
+        return -1;
+    }
+    if (!retirement_proven && current_plan >= 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    if (create_owner_plan(ngx_cycle->log) != NGX_OK) return -1;
+    respawn_plan_pending = true;
+    trace_line("C22_RESPAWN_PLAN pid=%ld slot=%d\n",
+        (long)getpid(), current_slot);
+    return 0;
+}
+
+void
+ker_fstack_nginx_owner_activation_respawn_commit(void)
+{
+    respawn_plan_pending = false;
+}
+
+void
+ker_fstack_nginx_owner_activation_respawn_abort(void)
+{
+    if (!respawn_plan_pending) return;
+    if (current_slot >= 0) {
+        (void)syscall(SYS_close, current_slot);
+        current_slot = -1;
+    }
+    if (current_plan >= 0) {
+        (void)syscall(SYS_close, current_plan);
+        current_plan = -1;
+    }
+    respawn_plan_pending = false;
+    retirement_proven = true;
+    trace_line("C22_RESPAWN_FORK_FAILED pid=%ld\n", (long)getpid());
 }
 
 static ngx_int_t
@@ -296,19 +390,9 @@ module_init(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
     broker_open = true;
-    current_plan = ker_socket_client_owner_group_staged_plan(&broker, &address,
-        backlog, KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
-    if (current_plan < 0 ||
-        (current_slot = ker_socket_client_owner_group_slot(&broker,
-            current_plan, 0)) < 0) {
-        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
-            "C22 could not reserve initial owner-group slot");
-        (void)close_cycle_caps();
-        return NGX_ERROR;
-    }
-    trace_line("C22_PLAN pid=%ld address=%s port=%u backlog=%d\n",
-        (long)getpid(), inet_ntoa(address.sin_addr), ntohs(address.sin_port), backlog);
-    return NGX_OK;
+    owner_address = address;
+    owner_backlog = backlog;
+    return create_owner_plan(cycle->log);
 }
 
 /* Called by the existing F-Stack ff_init shim after owner creation and before
@@ -346,6 +430,7 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
     (void)syscall(SYS_close, slot);
     current_slot = -1;
     worker_prepared = true;
+    respawn_plan_pending = false;
     trace_line("C22_WORKER_PREPARED pid=%ld\n", (long)getpid());
     return 0;
 }
@@ -353,8 +438,12 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
 static void
 module_exit_master(ngx_cycle_t *cycle)
 {
-    if (current_plan >= 0 && current_slot >= 0 && broker_open)
+    if ((current_plan >= 0 || retiring_census >= 0) && broker_open)
         (void)drain_previous_cycle(cycle->log);
+    if (retiring_census >= 0) {
+        (void)syscall(SYS_close, retiring_census);
+        retiring_census = -1;
+    }
     (void)close_cycle_caps();
 }
 

@@ -2662,6 +2662,62 @@ graceful_reload=0
                 'C22 master socket descriptor count grew after repeated HUP')
             new_listener = second_listener
 
+            # Ordinary worker respawn reuses the Nginx process slot without
+            # running the cycle init callback. The preload fork adapter must
+            # retire that dead owner's mark and reserve a fresh one first.
+            respawn_cookies = []
+            for crash_index in range(2):
+                previous_pid = int(new_listener.group(1))
+                previous_cookie = int(new_listener.group(3))
+                os.kill(previous_pid, signal.SIGKILL)
+                deadline = time.monotonic() + 35
+                respawn_workers = []
+                while time.monotonic() < deadline:
+                    respawn_workers = children_path.read_text().split() \
+                        if children_path.exists() else []
+                    if len(respawn_workers) == 1 and int(respawn_workers[0]) != previous_pid:
+                        break
+                    time.sleep(0.025)
+                require(len(respawn_workers) == 1 and
+                    int(respawn_workers[0]) != previous_pid,
+                    f'C22 worker crash {crash_index + 1} did not respawn: {respawn_workers!r}')
+                deadline = time.monotonic() + 25
+                last_error = None
+                while time.monotonic() < deadline:
+                    try:
+                        response = request_static('198.18.0.2', 4098, '/small.txt')
+                        require(response[0] == len(b'preload-http-ok\n'),
+                            f'C22 post-crash HTTP response differs: {response!r}')
+                        break
+                    except (OSError, RuntimeError) as error:
+                        last_error = repr(error)
+                        time.sleep(0.05)
+                else:
+                    raise RuntimeError(f'C22 respawn worker did not serve HTTP: {last_error!r}')
+                traces = runtime_trace.read_text().splitlines() \
+                    if runtime_trace.exists() else []
+                listeners = [re.search(
+                    r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                    for line in traces]
+                listeners = [match for match in listeners if match]
+                replacement = next((match for match in listeners
+                    if int(match.group(1)) == int(respawn_workers[0]) and
+                    int(match.group(3)) != previous_cookie), None)
+                require(replacement is not None,
+                    f'C22 crash respawn reused/staled listener identity: {traces!r}')
+                require(any(line.startswith('C22_RESPAWN_PLAN ') for line in traces),
+                    f'C22 crash respawn did not allocate through the pinned fork hook: {traces!r}')
+                retired = [re.search(
+                    r'C22_RETIRED pid=(\d+) cookie=(\d+) total=(\d+) timewait=(\d+) listen=0 payload=0$',
+                    line) for line in traces]
+                require(any(match and int(match.group(2)) == previous_cookie and
+                    match.group(3) == match.group(4) for match in retired),
+                    f'C22 crash respawn did not prove old listener drain: {traces!r}')
+                respawn_cookies.append(int(replacement.group(3)))
+                new_listener = replacement
+                require(nginx_socket_fd_count(master) == initial_socket_fds,
+                    'C22 master socket descriptor count grew after worker crash')
+
             os.kill(master, signal.SIGQUIT)
             reap_frontend_child(master, 20)
             master = None
@@ -2673,6 +2729,8 @@ graceful_reload=0
                 first_replacement_cookie in retired_cookies and
                 int(new_listener.group(3)) in retired_cookies,
                 f'C22 all three cycle marks did not census LISTEN=0 on cleanup: {traces!r}')
+            require(all(cookie in retired_cookies for cookie in respawn_cookies),
+                f'C22 respawn marks did not census LISTEN=0 on cleanup: {traces!r}')
             for fd in capabilities:
                 try: os.close(fd)
                 except OSError: pass
@@ -2680,7 +2738,7 @@ graceful_reload=0
             print(f'C22_NGINX_OWNER_ACTIVATION_OK initial_pid={initial_pid} '
                 f'initial_cookie={initial_cookie} '
                 f'replacement_pid={new_listener.group(1)} replacement_cookie={new_listener.group(3)} '
-                f'legacy_hup=outage-expected graceful_reload=0')
+                f'worker_respawns={len(respawn_cookies)} legacy_hup=outage-expected graceful_reload=0')
             return {'master': None}
         os.close(capabilities[0])
         # Keep the bootstrap epoll capability only in the supervisor. The
