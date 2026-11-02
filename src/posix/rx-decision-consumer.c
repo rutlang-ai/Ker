@@ -284,8 +284,11 @@ static int validate_worker_credentials(const struct ucred *credentials)
     if (!credentials || credentials->pid != consumer.worker_pid ||
         credentials->uid != consumer.worker_uid || credentials->gid != consumer.worker_gid)
         return -EACCES;
-    return validate_pidfd(consumer.worker_pidfd, consumer.worker_pid,
+    int result = validate_pidfd(consumer.worker_pidfd, consumer.worker_pid,
         consumer.worker_start_ticks);
+    if (result) return result;
+    return validate_pidfd(consumer.supervisor_pidfd, consumer.supervisor_pid,
+        consumer.supervisor_start_ticks);
 }
 
 static int send_message(int fd, const struct ker_rx_decision_header *header,
@@ -504,7 +507,8 @@ int ker_rx_decision_consumer_start(void)
     struct ker_rx_decision_header ready;
     if (!result) result = validate_header(&message, &ready,
         KER_RX_DECISION_READY, KER_RX_DECISION_HELLO_CONTROL_ID, 0);
-    if (!result && (message.length != sizeof(ready) || message.descriptor_count)) result = -EPROTO;
+    if (!result && (message.length != sizeof(ready) || message.descriptor_count ||
+            ready.deadline_ns)) result = -EPROTO;
     close_message_fds(&message);
     pthread_mutex_lock(&consumer_lock);
     if (result) {
@@ -682,14 +686,9 @@ int ker_rx_decision_consumer_prepare_runtime_shutdown(void)
         pthread_mutex_unlock(&consumer_lock);
     } else {
         if (consumer.state == CONSUMER_READY || consumer.state == CONSUMER_FAILED) {
-            struct ker_rx_decision_settled stop = {
-                .last_packet_id = consumer.last_result_id,
-                .outstanding_count = 0,
-            };
             struct ker_rx_decision_header header = make_header(KER_RX_DECISION_STOP,
-                0, KER_RX_DECISION_STOP_CONTROL_ID, 0,
-                sizeof(header) + sizeof(stop));
-            int sent = send_message(consumer.fd, &header, &stop, sizeof(stop),
+                0, KER_RX_DECISION_STOP_CONTROL_ID, 0, sizeof(header));
+            int sent = send_message(consumer.fd, &header, NULL, 0,
                 monotonic_ns() + RX_SHUTDOWN_TIMEOUT_NS);
             if (sent) {
                 consumer.state = CONSUMER_FAILED;
@@ -756,7 +755,8 @@ wait_for_settlement:
             struct ker_rx_decision_settled settled;
             result = validate_header(&message, &header, KER_RX_DECISION_SETTLED,
                 KER_RX_DECISION_STOP_CONTROL_ID, 0);
-            if (!result && message.length != sizeof(header) + sizeof(settled)) result = -EPROTO;
+            if (!result && (message.length != sizeof(header) + sizeof(settled) ||
+                    header.deadline_ns)) result = -EPROTO;
             if (!result) {
                 memcpy(&settled, message.bytes + sizeof(header), sizeof(settled));
                 if (settled.reserved || settled.outstanding_count ||

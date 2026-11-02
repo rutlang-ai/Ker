@@ -23,6 +23,7 @@ struct fixture {
     int app_fd;
     int worker_fd;
     int release_pipe[2];
+    int settle_pipe[2];
     pid_t worker_pid;
     int worker_pidfd;
     int supervisor_pidfd;
@@ -182,6 +183,18 @@ static int child_worker(struct fixture *fixture)
         .control_id = KER_RX_DECISION_HELLO_CONTROL_ID,
     };
     memcpy(ready.run_nonce, fixture->nonce, sizeof(ready.run_nonce));
+    if (!strcmp(fixture->mode, "wrong-worker-credential")) {
+        pid_t impostor = fork();
+        if (impostor < 0) return 39;
+        if (!impostor) {
+            ssize_t sent = send(fixture->worker_fd, &ready, sizeof(ready), MSG_NOSIGNAL);
+            _exit(sent == sizeof(ready) ? 0 : 40);
+        }
+        int status = 0;
+        if (waitpid(impostor, &status, 0) != impostor || !WIFEXITED(status) ||
+            WEXITSTATUS(status)) return 41;
+        return 0;
+    }
     if (send(fixture->worker_fd, &ready, sizeof(ready), MSG_NOSIGNAL) != sizeof(ready)) return 26;
     if (!strcmp(fixture->mode, "bad-ready")) return 27;
 
@@ -216,7 +229,8 @@ static int child_worker(struct fixture *fixture)
         if (sendmsg(fixture->worker_fd, &send_message, MSG_NOSIGNAL) != data_header.message_bytes) return 31;
     }
     if (strcmp(fixture->mode, "positive") && strcmp(fixture->mode, "wrong-thread") &&
-        strcmp(fixture->mode, "no-handler")) return 0;
+        strcmp(fixture->mode, "no-handler") && strcmp(fixture->mode, "alive-uncertain") &&
+        strcmp(fixture->mode, "dead-peer")) return 0;
     if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 32;
     if (length != sizeof(struct ker_rx_decision_header) + sizeof(struct ker_rx_decision_result)) return 33;
     struct ker_rx_decision_result decision;
@@ -226,9 +240,13 @@ static int child_worker(struct fixture *fixture)
         decision.action != KER_RX_DECISION_LOCAL) return 34;
     if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 35;
     memcpy(&header, bytes, sizeof(header));
-    if (length != sizeof(header) + sizeof(struct ker_rx_decision_settled) ||
+    if (length != sizeof(header) ||
         header.type != KER_RX_DECISION_STOP || header.control_id != KER_RX_DECISION_STOP_CONTROL_ID)
         return 36;
+    if (!strcmp(fixture->mode, "alive-uncertain")) {
+        if (read(fixture->settle_pipe[0], &release, 1) != 1) return 38;
+    }
+    if (!strcmp(fixture->mode, "dead-peer")) return 0;
     struct ker_rx_decision_header settled_header = {
         .magic = KER_RX_DECISION_MAGIC, .version = KER_RX_DECISION_VERSION,
         .type = KER_RX_DECISION_SETTLED, .header_bytes = sizeof(settled_header),
@@ -262,7 +280,8 @@ static int decide(const struct ker_rx_decision_packet *packet, void *context)
 static int run_case(const char *mode)
 {
     struct fixture fixture = {.app_fd = -1, .worker_fd = -1,
-        .release_pipe = {-1, -1}, .worker_pid = -1, .worker_pidfd = -1,
+        .release_pipe = {-1, -1}, .settle_pipe = {-1, -1},
+        .worker_pid = -1, .worker_pidfd = -1,
         .supervisor_pidfd = -1, .epoch = 19, .mode = mode};
     for (size_t i = 0; i < sizeof(fixture.nonce); ++i) fixture.nonce[i] = (uint8_t)(i + 1);
     int endpoints[2];
@@ -273,15 +292,19 @@ static int run_case(const char *mode)
     CHECK(setsockopt(fixture.app_fd, SOL_SOCKET, SO_PASSCRED, &pass, sizeof(pass)) == 0);
     CHECK(setsockopt(fixture.worker_fd, SOL_SOCKET, SO_PASSCRED, &pass, sizeof(pass)) == 0);
     CHECK(pipe2(fixture.release_pipe, O_CLOEXEC) == 0);
+    CHECK(pipe2(fixture.settle_pipe, O_CLOEXEC) == 0);
     fixture.worker_pid = fork();
     CHECK(fixture.worker_pid >= 0);
     if (fixture.worker_pid == 0) {
         close(fixture.app_fd);
         close(fixture.release_pipe[1]);
+        close(fixture.settle_pipe[1]);
         _exit(child_worker(&fixture));
     }
     close(fixture.release_pipe[0]);
     fixture.release_pipe[0] = -1;
+    close(fixture.settle_pipe[0]);
+    fixture.settle_pipe[0] = -1;
     fixture.worker_pidfd = pidfd_open_for(fixture.worker_pid);
     fixture.supervisor_pidfd = pidfd_open_for(getpid());
     CHECK(fixture.worker_pidfd >= 0 && fixture.supervisor_pidfd >= 0);
@@ -290,16 +313,17 @@ static int run_case(const char *mode)
         fixture.nonce, fixture.epoch) == 0);
     uint32_t role = !strcmp(mode, "wrong-role") ? KER_RX_DECISION_TARGET_CONSUMER :
         KER_RX_DECISION_TARGET_WORKER;
-    CHECK(send_bootstrap(fixture.worker_fd, role, fixture.worker_pid,
+    pid_t bootstrap_target = !strcmp(mode, "wrong-target") ? getpid() : fixture.worker_pid;
+    CHECK(send_bootstrap(fixture.worker_fd, role, bootstrap_target,
         fixture.worker_pidfd, getpid(), fixture.supervisor_pidfd,
         fixture.nonce, fixture.epoch) == 0);
     close(fixture.worker_fd);
     fixture.worker_fd = -1;
 
     struct callback_state callback = {.calls = 0, .owner = pthread_self()};
-    if (!strcmp(mode, "wrong-role")) {
+    if (!strcmp(mode, "wrong-role") || !strcmp(mode, "wrong-target")) {
         CHECK(ker_posix_rx_decision_register(fixture.app_fd, decide, &callback) < 0);
-        CHECK(errno == EACCES);
+        CHECK(errno == (!strcmp(mode, "wrong-role") ? EACCES : ESTALE));
         close(fixture.app_fd);
         fixture.app_fd = -1;
         kill(fixture.worker_pid, SIGKILL);
@@ -308,6 +332,7 @@ static int run_case(const char *mode)
         close(fixture.worker_pidfd);
         close(fixture.supervisor_pidfd);
         close(fixture.release_pipe[1]);
+        close(fixture.settle_pipe[1]);
         return 0;
     }
     if (!strcmp(mode, "no-handler")) {
@@ -322,6 +347,20 @@ static int run_case(const char *mode)
     CHECK(write(fixture.release_pipe[1], "x", 1) == 1);
     close(fixture.release_pipe[1]);
 
+    if (!strcmp(mode, "wrong-worker-credential")) {
+        CHECK(ker_rx_decision_consumer_start() == -EACCES);
+        int child_status = 0;
+        CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+        fixture.worker_pid = -1;
+        int shutdown = ker_rx_decision_consumer_prepare_runtime_shutdown();
+        if (shutdown == -EBUSY) shutdown = ker_rx_decision_consumer_prepare_runtime_shutdown();
+        CHECK(shutdown == 1);
+        close(fixture.worker_pidfd);
+        close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
+        return 0;
+    }
     if (!strcmp(mode, "wrong-thread")) {
         pthread_t wrong_thread;
         /* The worker is waiting for HELLO; wrong-thread start must have no side effect. */
@@ -333,7 +372,8 @@ static int run_case(const char *mode)
     CHECK(ker_rx_decision_consumer_start() == 0);
     CHECK(ker_posix_rx_decision_is_ready() == 1);
     if (strcmp(mode, "positive") && strcmp(mode, "wrong-thread") &&
-        strcmp(mode, "no-handler")) {
+        strcmp(mode, "no-handler") && strcmp(mode, "alive-uncertain") &&
+        strcmp(mode, "dead-peer")) {
         CHECK(wait_fd(consumer_fd) == 0);
         if (!strcmp(mode, "replay")) {
             CHECK(ker_rx_decision_consumer_pump() == 0);
@@ -345,6 +385,7 @@ static int run_case(const char *mode)
             CHECK(waitpid(fixture.worker_pid, &status, 0) == fixture.worker_pid);
             close(fixture.worker_pidfd);
             close(fixture.supervisor_pidfd);
+            close(fixture.settle_pipe[1]);
             return 0;
         }
         int expected = !strcmp(mode, "bad-sequence") || !strcmp(mode, "replay") ? -EPROTO :
@@ -357,6 +398,7 @@ static int run_case(const char *mode)
         close(fixture.release_pipe[1]);
         close(fixture.worker_pidfd);
         close(fixture.supervisor_pidfd);
+        close(fixture.settle_pipe[1]);
         return 0;
     }
     CHECK(wait_fd(consumer_fd) == 0);
@@ -366,13 +408,33 @@ static int run_case(const char *mode)
         if (!callback.calls) usleep(1000);
     }
     CHECK(callback.calls == 1);
-    CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == 0);
+    if (!strcmp(mode, "alive-uncertain")) {
+        CHECK(ker_rx_decision_consumer_prepare_runtime_shutdown() == -EBUSY);
+        CHECK(ker_rx_decision_consumer_registered() == 1);
+        CHECK(write(fixture.settle_pipe[1], "x", 1) == 1);
+    }
+    int shutdown = ker_rx_decision_consumer_prepare_runtime_shutdown();
+    if (!strcmp(mode, "dead-peer")) {
+        if (shutdown == -EBUSY) {
+            CHECK(ker_rx_decision_consumer_registered() == 1);
+            int child_status = 0;
+            CHECK(waitpid(fixture.worker_pid, &child_status, 0) == fixture.worker_pid);
+            CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+            fixture.worker_pid = -1;
+            shutdown = ker_rx_decision_consumer_prepare_runtime_shutdown();
+        }
+        CHECK(shutdown == 1);
+        CHECK(ker_rx_decision_consumer_error() < 0);
+    } else CHECK(shutdown == 0);
     int status = 0;
-    CHECK(waitpid(fixture.worker_pid, &status, 0) == fixture.worker_pid);
-    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    if (fixture.worker_pid > 0) {
+        CHECK(waitpid(fixture.worker_pid, &status, 0) == fixture.worker_pid);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
     CHECK(ker_posix_rx_decision_is_ready() == 0);
     close(fixture.worker_pidfd);
     close(fixture.supervisor_pidfd);
+    close(fixture.settle_pipe[1]);
     return 0;
 fail:
     if (fixture.worker_pid > 0) {
@@ -383,6 +445,8 @@ fail:
     if (fixture.worker_fd >= 0) close(fixture.worker_fd);
     if (fixture.release_pipe[0] >= 0) close(fixture.release_pipe[0]);
     if (fixture.release_pipe[1] >= 0) close(fixture.release_pipe[1]);
+    if (fixture.settle_pipe[0] >= 0) close(fixture.settle_pipe[0]);
+    if (fixture.settle_pipe[1] >= 0) close(fixture.settle_pipe[1]);
     if (fixture.worker_pidfd >= 0) close(fixture.worker_pidfd);
     if (fixture.supervisor_pidfd >= 0) close(fixture.supervisor_pidfd);
     return 1;
