@@ -3,6 +3,7 @@
 import argparse
 import array
 import ctypes
+import importlib.machinery
 import importlib.util
 import os
 from pathlib import Path
@@ -39,7 +40,8 @@ def wait_handler_ready(path, timeout=2.0):
 
 
 def load_module(path, name):
-    spec = importlib.util.spec_from_file_location(name, path)
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
     if spec is None or spec.loader is None:
         raise RuntimeError(f'cannot load {path}')
     module = importlib.util.module_from_spec(spec)
@@ -208,7 +210,7 @@ def main():
         '_test_nginx_companion_supervisor')
     wire = load_module(args.tools / 'nginx_companion_wire.py',
         '_test_nginx_companion_wire')
-    helper_module = load_module(args.tools / 'ker-nginx-companion.py',
+    helper_module = load_module(args.helper,
         '_test_ker_nginx_companion')
     valid_profiles = (
         b'daemon off; master_process on; worker_processes 1; # include ignored\n',
