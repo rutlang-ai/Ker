@@ -474,12 +474,18 @@ class NativeTestSelectorTests(unittest.TestCase):
             spec.loader.exec_module(fixture)
         finally:
             sys.path.pop(0)
+        expected_frames = [b"frame-1", b"frame-2", b"frame-3", b"frame-4"]
+        enqueue_records = [dict(producer_generation=1, target_generation=0,
+            length=len(frame), frame_hex=frame.hex()) for frame in expected_frames]
         child_code = (
             "import os, sys\n"
+            "import json\n"
+            "records = " + repr(enqueue_records) + "\n"
             "print('READY {\"waiting\":true}', flush=True)\n"
             "if os.read(0, 1) != b'Z': raise SystemExit(2)\n"
             "print('Z_QUEUED {\"consumed\":false}', flush=True)\n"
             "if os.read(0, 1) != b'P': raise SystemExit(3)\n"
+            "for record in records: print('KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED ' + json.dumps(record, sort_keys=True), flush=True)\n"
             "print('KER_SESSION_GENERATION_FORWARD_COMPLETE "
             "{\"complete\":true,\"forwarded_frames\":4,\"handoff_seen\":true,"
             "\"tcp_accepted\":true}', flush=True)\n"
@@ -498,7 +504,8 @@ class NativeTestSelectorTests(unittest.TestCase):
             def wait_for_receipt():
                 started.set()
                 try:
-                    result["value"] = fixture.wait_generation_forward_complete(child, timeout=3)
+                    result["value"] = fixture.wait_generation_forward_complete(
+                        child, expected_frames, timeout=3)
                 except BaseException as error:
                     result["error"] = error
                 finally:

@@ -737,14 +737,49 @@ def record(process, prefix, timeout=25, stderr_path=None):
     return parsed
 
 
-def wait_generation_forward_complete(process, timeout=10):
-    """Wait for the launcher receipt emitted only after it consumes Z."""
-    value = record(process, 'KER_SESSION_GENERATION_FORWARD_COMPLETE', timeout=timeout)
-    if (not isinstance(value, dict) or value.get('complete') is not True or
-            value.get('handoff_seen') is not True or value.get('tcp_accepted') is not True or
-            type(value.get('forwarded_frames')) is not int or value['forwarded_frames'] < 4):
-        raise RuntimeError('launcher completion receipt does not prove the consumed TCP handoff')
-    return value
+def wait_generation_forward_complete(process, expected_frames, timeout=10):
+    """Consume and verify every enqueued-frame record before the final Z receipt."""
+    expected = [dict(producer_generation=1, target_generation=0,
+        length=len(frame), frame_hex=frame.hex()) for frame in expected_frames]
+    deadline = time.monotonic() + timeout
+    observed = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('launcher completion timed out before its final receipt')
+        raw = line(process, timeout=remaining)
+        enqueue_prefix = 'KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED '
+        complete_prefix = 'KER_SESSION_GENERATION_FORWARD_COMPLETE '
+        if raw.startswith(enqueue_prefix):
+            try:
+                value = json.loads(raw[len(enqueue_prefix):])
+            except json.JSONDecodeError as error:
+                raise RuntimeError('malformed generation-forward enqueue record') from error
+            if observed >= len(expected) or value != expected[observed]:
+                raise RuntimeError('generation-forward enqueue record differs from the next captured frame')
+            if _active_handoff_evidence is not None:
+                _active_handoff_evidence['resident_markers'].append(dict(
+                    pid=process.pid, marker='KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED',
+                    value=value, raw=raw))
+            observed += 1
+            continue
+        if not raw.startswith(complete_prefix):
+            raise RuntimeError('unexpected runner output before generation-forward completion: ' + raw)
+        try:
+            completion = json.loads(raw[len(complete_prefix):])
+        except json.JSONDecodeError as error:
+            raise RuntimeError('malformed generation-forward completion receipt') from error
+        if (not isinstance(completion, dict) or completion.get('complete') is not True or
+                completion.get('handoff_seen') is not True or
+                completion.get('tcp_accepted') is not True or
+                type(completion.get('forwarded_frames')) is not int or
+                completion['forwarded_frames'] != len(expected) or observed != len(expected)):
+            raise RuntimeError('launcher completion receipt does not match all captured/enqueued TCP frames')
+        if _active_handoff_evidence is not None:
+            _active_handoff_evidence['resident_markers'].append(dict(
+                pid=process.pid, marker='KER_SESSION_GENERATION_FORWARD_COMPLETE',
+                value=completion, raw=raw))
+        return completion
 
 
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
@@ -1501,7 +1536,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 forwarding_complete_requested.set()
                 require(forwarding_complete_sent.wait(5),
                     'TAP proxy did not serialize completion after final ACK acknowledgement')
-                completion = wait_generation_forward_complete(runner)
+                completion = wait_generation_forward_complete(runner,
+                    list(forwarding_state['intercepted']))
                 require(completion['forwarded_frames'] == forwarding_state['forwarded'],
                     'launcher completion receipt did not correlate to every acknowledged old-stream frame')
                 print('KER_SESSION_GENERATION_FORWARD_TCP_PASS ' + json.dumps(dict(
