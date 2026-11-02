@@ -671,6 +671,12 @@ if(BUILD_TESTING)
             "${PROJECT_SOURCE_DIR}/tests/posix/test_broker_readiness_wire.py")
     set_tests_properties(native-socket-broker-readiness-wire PROPERTIES
         TIMEOUT 10 LABELS "native-tcp;socket-broker;readiness;unit")
+    add_test(NAME native-socket-broker-readiness-supervisor-unit
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/test_broker_readiness_supervisor.py")
+    set_tests_properties(native-socket-broker-readiness-supervisor-unit PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;socket-broker;readiness;unit"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;TMPDIR=/dev/shm")
     add_test(NAME native-socket-broker-readiness
         COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker-readiness.py"

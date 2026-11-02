@@ -22,6 +22,10 @@ _UCRED = __import__('struct').Struct('=3i')
 _PROFILE_DOMAIN = b'ker.socket-broker.worker-profile/v1\0'
 
 
+class _PollSliceElapsed(TimeoutError):
+    """A reactor poll interval ended; the operation deadline may still be live."""
+
+
 def _identity(pid):
     stat = open(f'/proc/{pid}/stat', encoding='ascii').read()
     close = stat.rfind(')')
@@ -97,7 +101,8 @@ class BrokerReadiness:
             raise ValueError('expected broker executable digest must be SHA-256')
         return self.app_pidfd
 
-    def _receive(self, expected_size, deadline, allow_exited_app=False):
+    def _receive(self, expected_size, deadline, allow_exited_app=False,
+                 poll_slice=None):
         poller = select.poll()
         poller.register(self.parent.fileno(), select.POLLIN | select.POLLHUP |
             select.POLLERR)
@@ -105,8 +110,11 @@ class BrokerReadiness:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('broker readiness control deadline expired')
-            events = poller.poll(max(1, int(remaining * 1000)))
+            wait = remaining if poll_slice is None else min(remaining, poll_slice)
+            events = poller.poll(max(1, int(wait * 1000)))
             if not events:
+                if poll_slice is not None and time.monotonic() < deadline:
+                    raise _PollSliceElapsed('broker readiness poll slice expired')
                 continue
             if (events[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL) and
                     not events[0][1] & select.POLLIN):
@@ -195,8 +203,11 @@ class BrokerReadiness:
         if (events[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL) and
                 not events[0][1] & select.POLLIN):
             raise ConnectionError('broker readiness endpoint closed before READY')
-        packet = self._receive(wire.READY_RECORD.size,
-            min(self.ready_deadline, time.monotonic() + 0.1))
+        try:
+            packet = self._receive(wire.READY_RECORD.size,
+                self.ready_deadline, poll_slice=0.1)
+        except _PollSliceElapsed:
+            return False
         return self._validate_ready(packet)
 
     def stop(self, timeout=10.0):
@@ -251,9 +262,11 @@ class BrokerReadiness:
             raise ConnectionError('broker VERIFY response channel closed')
         try:
             packet = self._receive(wire.VERIFY_RESULT.size,
-                min(request['deadline'], time.monotonic() + 0.01))
+                request['deadline'], poll_slice=0.01)
             wire.unpack_verify_result(packet, self.nonce, self.epoch,
                 request['sequence'])
+        except _PollSliceElapsed:
+            return None
         except BaseException:
             request['unresolved'] = True
             raise
