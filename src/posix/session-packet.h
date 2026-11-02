@@ -10,6 +10,13 @@
 #include "session-generation-rings.h"
 #define KER_SESSION_PACKET_RX "ker_session_packet_rx"
 #define KER_SESSION_PACKET_TX "ker_session_packet_tx"
+#define KER_SESSION_GENERATION_RX_BATCH_MAX 32U
+#define KER_SESSION_GENERATION_RX_IDLE_WAIT_MS 100U
+static inline int ker_session_generation_rx_wait_timeout_ms(unsigned delivered)
+{
+    return delivered >= KER_SESSION_GENERATION_RX_BATCH_MAX ? 0 :
+        (int)KER_SESSION_GENERATION_RX_IDLE_WAIT_MS;
+}
 #define KER_SESSION_PACKET_PORT "net_ring_ker_packet"
 /* Original ring PMD with independent inbound/outbound queues. The secondary
  * is both the PMD consumer and the software-device backing for a byte-only
@@ -23,6 +30,13 @@ int ker_session_generation_rx_deliver(int packet_fd,
     struct ker_generation_rings *rings,
     const struct ker_generation_identity *identity,
     struct rte_mbuf **pending);
+/* Drain at most one bounded generation-RX batch. A full batch tells the
+ * caller to recheck its control/heartbeat sources without sleeping before
+ * trying again. Empty, dequeue-EAGAIN, or socket backpressure ends the batch. */
+int ker_session_generation_rx_drain_batch(int packet_fd,
+    struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity,
+    struct rte_mbuf **pending, unsigned *delivered);
 /* Drain one opposite-generation TX lease to the physical wire datagram sink. */
 int ker_session_generation_peer_tx_deliver(int wire_fd,
     struct ker_generation_rings *rings,

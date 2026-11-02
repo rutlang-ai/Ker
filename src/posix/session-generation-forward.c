@@ -65,6 +65,24 @@ int ker_session_generation_rx_deliver(int packet_fd, struct ker_generation_rings
     return 1;
 }
 
+int ker_session_generation_rx_drain_batch(int packet_fd,
+    struct ker_generation_rings *rings,
+    const struct ker_generation_identity *identity,
+    struct rte_mbuf **pending, unsigned *delivered)
+{
+    if (!delivered || packet_fd < 0 || !rings || !identity || !pending)
+        return -EINVAL;
+    *delivered = 0;
+    while (*delivered < KER_SESSION_GENERATION_RX_BATCH_MAX) {
+        int result = ker_session_generation_rx_deliver(packet_fd, rings,
+            identity, pending);
+        if (result < 0) return result;
+        if (result == 0) break; /* empty/EAGAIN/backpressure: return to caller */
+        ++*delivered;
+    }
+    return 0;
+}
+
 int ker_session_generation_peer_tx_deliver(int wire_fd, struct ker_generation_rings *rings,
     const struct ker_generation_identity *identity, struct rte_mbuf **pending)
 {

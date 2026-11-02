@@ -3341,6 +3341,7 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
     struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings)
 {
     struct rte_mbuf *generation_rx_pending=NULL;
+    unsigned generation_rx_last_batch=0;
     struct ker_generation_identity generation_identity={.session=identity->session,
         .epoch=identity->epoch,.slot=(uint32_t)identity->slot,
         .generation=(uint32_t)identity->generation,.process=(uint32_t)identity->process,
@@ -3362,7 +3363,13 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
         struct pollfd waiters[]={{.fd=control,.events=POLLIN},{.fd=fd,.events=POLLIN},
             {.fd=resident,.events=POLLIN},{.fd=packet_fd,.events=(short)(POLLIN|
                 (generation_rx_pending?POLLOUT:0))}};
-        int ready=poll(waiters,4,100);
+        /* The generation ring has no pollable wake fd. Drain it in bounded
+         * batches; after a full batch, recheck control/heartbeat descriptors
+         * without sleeping before trying another batch. Once the ring is
+         * empty, return to the bounded wait so an idle parked owner does not
+         * spin. */
+        int ready=poll(waiters,4,
+            ker_session_generation_rx_wait_timeout_ms(generation_rx_last_batch));
         if(ready<0){if(errno==EINTR)continue;PARKED_RETURN(-errno);}
         if(waiters[2].revents)_Exit(125);
         if(waiters[1].revents) {
@@ -3427,9 +3434,11 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
         }
         if(generation_forwarding_enabled&&rings&&
             (!generation_rx_pending||(waiters[3].revents&POLLOUT))) {
-            int delivered=ker_session_generation_rx_deliver(packet_fd,rings,
-                &generation_identity,&generation_rx_pending);
-            if(delivered<0)PARKED_RETURN(delivered);
+            unsigned delivered_count=0;
+            int drain=ker_session_generation_rx_drain_batch(packet_fd,rings,
+                &generation_identity,&generation_rx_pending,&delivered_count);
+            if(drain)PARKED_RETURN(drain);
+            generation_rx_last_batch=delivered_count;
         }
         if (waiters[3].revents & (POLLERR|POLLHUP|POLLNVAL)) PARKED_RETURN(-EPIPE);
         if (waiters[3].revents & POLLIN) {

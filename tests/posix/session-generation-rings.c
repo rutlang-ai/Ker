@@ -250,15 +250,17 @@ static int generation_forward_sink_test(struct ker_generation_rings *rings,
     if(ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,first)||
         ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,second))SINK_FAIL();
     struct rte_mbuf *pending=NULL;
-    if(ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=0||!pending||
+    unsigned delivered_count=UINT_MAX;
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=0||!pending||
         rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=1)SINK_FAIL();
     struct rte_mbuf *same=pending;
-    if(ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=0||pending!=same)SINK_FAIL();
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=0||pending!=same)SINK_FAIL();
     while(recv(pair[1],discard,sizeof(discard),MSG_DONTWAIT)>=0){}
     if(errno!=EAGAIN&&errno!=EWOULDBLOCK)SINK_FAIL();
-    if(ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=1||pending||
-        ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=1||pending||
-        ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=0||pending)SINK_FAIL();
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=2||pending)SINK_FAIL();
     uint8_t received[256];
     ssize_t n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
     const size_t header_size=sizeof(struct ker_packet_header);
@@ -309,6 +311,44 @@ static int generation_forward_sink_test(struct ker_generation_rings *rings,
     pending=NULL;
     n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
     if(n>=0||(errno!=EAGAIN&&errno!=EWOULDBLOCK))SINK_FAIL();
+    /* Queue more than one bounded batch. The shared helper used by the
+     * parked owner must stop at the batch limit, leaving ordered leases for
+     * the next control/heartbeat check, then drain the suffix without an
+     * intervening sleep. */
+    enum { BATCH_TEST_PACKETS = KER_SESSION_GENERATION_RX_BATCH_MAX + 8 };
+    for(unsigned index=0;index<BATCH_TEST_PACKETS;index++) {
+        struct rte_mbuf *burst=rte_pktmbuf_alloc(pool);
+        uint8_t *bytes=burst?(uint8_t *)rte_pktmbuf_append(burst,60):NULL;
+        if(!bytes){if(burst)rte_pktmbuf_free(burst);SINK_FAIL();}
+        memset(bytes,(int)(index+1),60);
+        if(ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,burst)) {
+            rte_pktmbuf_free(burst);SINK_FAIL();
+        }
+    }
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=KER_SESSION_GENERATION_RX_BATCH_MAX||pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=8)SINK_FAIL();
+    if(ker_session_generation_rx_wait_timeout_ms(delivered_count)!=0||
+        ker_session_generation_rx_wait_timeout_ms(delivered_count-1)!=
+            (int)KER_SESSION_GENERATION_RX_IDLE_WAIT_MS)SINK_FAIL();
+    int control_pipe[2]={-1,-1};
+    if(pipe2(control_pipe,O_NONBLOCK|O_CLOEXEC)||write(control_pipe[1],"H",1)!=1)SINK_FAIL();
+    struct pollfd control_event={.fd=control_pipe[0],.events=POLLIN};
+    if(poll(&control_event,1,ker_session_generation_rx_wait_timeout_ms(delivered_count))!=1||
+        !(control_event.revents&POLLIN))SINK_FAIL();
+    close(control_pipe[0]);close(control_pipe[1]);
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=8||pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=0)SINK_FAIL();
+    for(unsigned index=0;index<BATCH_TEST_PACKETS;index++) {
+        n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+        if(n!=(ssize_t)(header_size+60))SINK_FAIL();
+        for(size_t offset=0;offset<header_size;offset++)if(received[offset])SINK_FAIL();
+        for(unsigned offset=0;offset<60;offset++)
+            if(received[header_size+offset]!=(uint8_t)(index+1))SINK_FAIL();
+    }
+    n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+    if(n>=0||(errno!=EAGAIN&&errno!=EWOULDBLOCK))SINK_FAIL();
     struct rte_mbuf *tx=rte_pktmbuf_alloc(pool);if(!tx)SINK_FAIL();
     uint8_t *tx_bytes=(uint8_t *)rte_pktmbuf_append(tx,60);
     if(!tx_bytes){rte_pktmbuf_free(tx);SINK_FAIL();}
@@ -329,7 +369,7 @@ static int generation_forward_sink_test(struct ker_generation_rings *rings,
     n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
     if(n!=60||received[0]!=0x70||received[59]!=(uint8_t)(0x70U+59))SINK_FAIL();
     close(pair[0]);close(pair[1]);
-    puts("NR29_GENERATION_FORWARD_SINK_PASS rx_header_exact=true rx_ordered=true tx_raw_frame=true eagain_lease_retained=true dequeue_ebusy_retry=true metadata_rejected=true malformed_chain_rejected=true");
+    puts("NR29_GENERATION_FORWARD_SINK_PASS rx_header_exact=true rx_ordered=true rx_batch32_ordered=true rx_batch_rechecks=true control_poll_zero_wait=true idle_poll_100ms=true tx_raw_frame=true eagain_lease_retained=true dequeue_ebusy_retry=true metadata_rejected=true malformed_chain_rejected=true");
     return 0;
 fail:
     close(pair[0]);close(pair[1]);
