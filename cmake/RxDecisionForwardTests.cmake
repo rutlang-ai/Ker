@@ -89,9 +89,15 @@ add_executable(ker-rx-decision-shutdown-retry-app
     tests/posix/rx-decision-shutdown-retry-app.c)
 target_include_directories(ker-rx-decision-shutdown-retry-app PRIVATE
     "${PROJECT_SOURCE_DIR}/src/posix")
+target_include_directories(ker-rx-decision-shutdown-retry-app SYSTEM PRIVATE
+    "${ker_native_source}/include/uapi" "${ker_native_source}/include"
+    "${ker_native_source}/arch/x86/include/uapi"
+    "${ker_native_source}/arch/x86/include"
+    "${ker_native_source}/tools/include")
 target_compile_features(ker-rx-decision-shutdown-retry-app PRIVATE c_std_11)
 target_compile_options(ker-rx-decision-shutdown-retry-app PRIVATE -Wall -Wextra -Werror)
-target_compile_definitions(ker-rx-decision-shutdown-retry-app PRIVATE KER_C31_RX_DECISION_TESTING=1)
+target_compile_definitions(ker-rx-decision-shutdown-retry-app PRIVATE
+    KER_C31_RX_DECISION_TESTING=1 __EXPORTED_HEADERS__)
 target_link_libraries(ker-rx-decision-shutdown-retry-app PRIVATE ker-posix)
 add_test(NAME native-rx-decision-shutdown-retry-tap
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-decision-shutdown-retry-tap.py"

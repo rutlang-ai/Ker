@@ -5,8 +5,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/tcp.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
