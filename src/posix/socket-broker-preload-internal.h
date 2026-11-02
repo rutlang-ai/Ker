@@ -30,6 +30,7 @@ int ker_sb_preload_ff_owner_begin(void);
 int ker_sb_preload_ff_staged_group_claim(int slot_cap);
 int ker_sb_preload_ff_staged_group_member(int slot_cap);
 int ker_sb_preload_ff_owner_initial_listener_prepare(int slot_cap);
+int ker_sb_preload_ff_owner_candidate_listener_prepare(int slot_cap);
 void ker_sb_preload_trace_initial_listener(int owner_fd);
 bool ker_sb_preload_ff_owner_active_locked(void);
 int ker_sb_preload_ff_owner_capability_locked(void);

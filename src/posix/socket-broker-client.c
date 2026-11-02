@@ -255,6 +255,7 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_GROUP_MEMBER;
     requires_cap = requires_cap ||
         operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL ||
+        operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE ||
         operation == KER_SB_FF_OWNER_GROUP_CONTROL ||
         operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
@@ -775,6 +776,28 @@ int ker_socket_client_owner_group_activate_initial(struct ker_socket_client *cli
     int64_t result = 0;
     size_t reply_length = 0;
     if (rpc(client, KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL, NULL, 0,
+            rights, 2, NULL, 0, SIZE_MAX, &activated, &result, &reply_length)) return -1;
+    if (result < 0) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(result >= -4095 ? (int)-result : EPROTO);
+    }
+    if (result != 1 || reply_length || activated < 0 ||
+        !valid_capability_fd(activated)) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(EPROTO);
+    }
+    return activated;
+}
+
+int ker_socket_client_owner_group_activate_candidate(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap)
+{
+    if (!client || owner_cap < 0 || claimed_slot_cap < 0) return fail(EINVAL);
+    int rights[2] = {owner_cap, claimed_slot_cap};
+    int activated = -1;
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE, NULL, 0,
             rights, 2, NULL, 0, SIZE_MAX, &activated, &result, &reply_length)) return -1;
     if (result < 0) {
         if (activated >= 0) (void)syscall(SYS_close, activated);

@@ -164,12 +164,28 @@ prebind option allowlist and perform the reserved-tuple `bind` and real
 after `listen` succeeds, and the coordinator can retrieve group CONTROL after
 that point. Owner history is checked before every activation operation, and
 the socket cookie and mark are revalidated against the native descriptor.
-Index 1 activation, admission-prepared owners, repeated replacement, Nginx
-worker/module binding, and the graceful-reload FSM remain unsupported. The TAP
-fixture exercises a real accepted TCP exchange, sticky-history refusal without
-bind/listen effects, capability cleanup, and reuse of the released tuple by a
-fresh non-reuseport listener. This is an SDK prerequisite, not a graceful
-reload qualification; the source inventory entry remains blocked.
+Admission-prepared initial owners, repeated replacement, Nginx worker/module
+binding, and the graceful-reload FSM remain outside this initial-member leaf.
+The TAP fixture exercises a real accepted TCP exchange, sticky-history refusal
+without bind/listen effects, capability cleanup, and reuse of the released
+tuple by a fresh non-reuseport listener. This is an SDK prerequisite, not a
+graceful-reload qualification; the source inventory entry remains blocked.
+
+The C25 candidate-activation leaf extends this sequence to a single slot-1
+candidate in the same fixed IPv4 group. Only its authenticated claimed owner
+can request the unbound marked socket, and only after the existing admission
+task reports READY. The owner then uses the ordinary bind/listen path for the
+reserved tuple. The broker pins a stable duplicate into the task after bind
+and before listen, and publishes the candidate cookie/member only after the
+original Linux `listen` succeeds. Candidate validation and failure cleanup
+remain scoped to slot 1; selector zero and the initial listener stay available
+until a separate coordinator selection. Published member aliases share the
+candidate activation lifetime, including when the original activation fd is
+closed. The real TAP fixture checks the pre-listen census, off-tuple bind
+rejection, task registration before listen, alias closure, selector change,
+candidate TCP/map admission, and a held old stream after selection. This does
+not bind the pinned Nginx worker lifecycle or qualify graceful reload; repeated
+generations and the full FSM remain unsupported.
 
 The opt-in C23 source baseline runs unchanged pinned `m4_lc.py` against the
 installed C22 Nginx runtime on `198.18.0.2:80`: 24 persistent connections plus

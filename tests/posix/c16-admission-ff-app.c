@@ -54,6 +54,7 @@ static int window_cycles_mode;
 static int window_cancel_mode;
 static int staged_candidate_mode;
 static int staged_candidate_hold_mode;
+static int staged_candidate_activation_mode;
 static int window_initial_reported;
 static volatile sig_atomic_t window_is_retired;
 static struct ff_flow_key window_cancel_key;
@@ -356,6 +357,7 @@ static void setup_owner(void)
 {
 	if (initialized) return;
 	initialized = 1;
+	bool candidate_no_task_refused = false;
 	ff_global_cfg.dpdk.graceful_reload = 1;
 	setup_stage = "reload state allocation/bind";
 	size_t state_size = ker_reload_state_size();
@@ -380,12 +382,74 @@ static void setup_owner(void)
 		.admit = map_admit, .revoke = map_revoke,
 		.retire = map_retire, .rearm = map_rearm};
 	setup_stage = "broker admission attach";
+	if (staged_candidate_activation_mode) {
+		setup_stage = "candidate activation without a ready task";
+		errno = 0;
+		if (ker_sb_preload_ff_owner_candidate_listener_prepare(staged_slot_fd) != -1 ||
+			errno != EOPNOTSUPP) { errno = EPROTO; goto fail; }
+		candidate_no_task_refused = true;
+		setup_stage = "broker admission attach";
+	}
 	if (ker_sb_preload_ff_owner_admission_attach(&ops)) goto fail;
+	if (candidate_no_task_refused) {
+		static const char no_task[] = "C25_CANDIDATE_NO_TASK_NO_EFFECT\n";
+		(void)syscall(SYS_write, STDOUT_FILENO, no_task, sizeof(no_task) - 1);
+	}
 	if (staged_candidate_mode) {
 		setup_stage = "staged candidate publication wait";
 		static const char ready[] = "C20_STAGED_TASK_READY_UNPUBLISHED\n";
 		(void)syscall(SYS_write, STDOUT_FILENO, ready, sizeof(ready) - 1);
-		if (staged_candidate_hold_mode) {
+		if (staged_candidate_activation_mode) {
+			const char *port_text = getenv("KER_C25_CANDIDATE_PORT");
+			char *end = NULL;
+			unsigned long port = port_text ? strtoul(port_text, &end, 10) : 0;
+			if (!port_text || !end || *end || !port || port > 65535) {
+				errno = EINVAL; goto fail;
+			}
+			const char *release_path = getenv("KER_C25_ACTIVATION_RELEASE");
+			if (!release_path || !*release_path) { errno = EINVAL; goto fail; }
+			uint64_t release_deadline = monotonic_ns() + UINT64_C(10000000000);
+			for (;;) {
+				errno = 0;
+				if (!access(release_path, F_OK)) break;
+				if (errno != ENOENT) goto fail;
+				if (monotonic_ns() >= release_deadline) { errno = ETIMEDOUT; goto fail; }
+				struct timespec pause = {.tv_nsec = 1000000};
+				(void)nanosleep(&pause, NULL);
+			}
+			setup_stage = "candidate listener activation";
+			uint64_t activation_deadline = monotonic_ns() + UINT64_C(5000000000);
+			for (;;) {
+				int pump_status = ker_sb_preload_owner_pump();
+				if (pump_status) { errno = -pump_status; goto fail; }
+				if (!ker_sb_preload_ff_owner_candidate_listener_prepare(staged_slot_fd))
+					break;
+				if (errno != EAGAIN) goto fail;
+				if (monotonic_ns() >= activation_deadline) { errno = ETIMEDOUT; goto fail; }
+				struct timespec pause = {.tv_nsec = 1000000};
+				(void)nanosleep(&pause, NULL);
+			}
+			listener_fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
+				IPPROTO_TCP);
+			if (listener_fd < 0) goto fail;
+			struct sockaddr_in candidate_address = {.sin_family = AF_INET,
+				.sin_port = htons((uint16_t)port)};
+			if (inet_pton(AF_INET, "198.18.0.3", &candidate_address.sin_addr) != 1 ||
+				ff_bind(listener_fd, (struct linux_sockaddr *)&candidate_address,
+					sizeof(candidate_address)) != -1 || errno != EADDRNOTAVAIL) {
+				errno = EPROTO; goto fail;
+			}
+			if (inet_pton(AF_INET, "198.18.0.2", &candidate_address.sin_addr) != 1 ||
+				ff_bind(listener_fd, (struct linux_sockaddr *)&candidate_address,
+					sizeof(candidate_address)) || ff_listen(listener_fd, 16)) goto fail;
+			int published_alias = ker_sb_preload_ff_staged_group_member(staged_slot_fd);
+			if (published_alias < 0 || ker_sb_posix_close(listener_fd)) goto fail;
+			listener_fd = published_alias;
+			static const char candidate[] = "C25_STAGED_CANDIDATE_LISTENING\n";
+			(void)syscall(SYS_write, STDOUT_FILENO, candidate, sizeof(candidate) - 1);
+			static const char published[] = "C20_STAGED_CANDIDATE_PUBLISHED\n";
+			(void)syscall(SYS_write, STDOUT_FILENO, published, sizeof(published) - 1);
+		} else if (staged_candidate_hold_mode) {
 		} else {
 			uint64_t deadline = monotonic_ns() + UINT64_C(5000000000);
 			for (;;) {
@@ -690,6 +754,8 @@ int main(int argc, char **argv)
 		requested_count = 0;
 	} else if (!strcmp(argv[1], "staged-candidate")) {
 		staged_candidate_mode = 1;
+		staged_candidate_activation_mode =
+			getenv("KER_C25_TEST_CANDIDATE_ACTIVATION") != NULL;
 		requested_count = 1;
 		const char *slot_text = getenv("KER_C20_STAGED_SLOT_FD");
 		char *end = NULL;

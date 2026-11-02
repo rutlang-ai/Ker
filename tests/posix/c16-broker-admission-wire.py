@@ -36,7 +36,7 @@ def recv_exact_tcp(connection, length):
 
 
 def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
-        broker, app_environment):
+        broker, app_environment, candidate_activation=False):
     transfer_parent, transfer_child = socket.socketpair(
         socket.AF_UNIX, socket.SOCK_SEQPACKET)
     helper = app = None
@@ -94,6 +94,11 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
             'KER_C20_TEST_PAUSE_AFTER_PREPARE_MS': '3000',
             'KER_C16_TEST_PAUSE_AFTER_PREPARE': '1',
         }
+        if candidate_activation:
+            activation_release = root / 'candidate-activation.release'
+            app_environment |= {'KER_C25_TEST_CANDIDATE_ACTIVATION': '1',
+                'KER_C25_CANDIDATE_PORT': '4108',
+                'KER_C25_ACTIVATION_RELEASE': str(activation_release)}
         app = subprocess.Popen([str(args.client), 'staged-candidate'],
             pass_fds=(slot_fd,), stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=app_environment,
@@ -102,13 +107,22 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
         require('C20_STAGED_CLAIMED' in wait_line(app, 'C20_STAGED_CLAIMED', 20),
             'fresh C16 actor did not claim slot 1 before network creation')
         wait_line(app, 'C16_ATTACH_ENDPOINT path=', 5)
-        helper_command('EARLYPUBLISH', 'C20_STAGED_EARLY_CANDIDATE_EAGAIN')
+        if candidate_activation:
+            wait_line(app, 'C25_CANDIDATE_NO_TASK_NO_EFFECT', 5)
+            helper_command('WRONG_ACTOR_ACTIVATE', 'C25_WRONG_ACTOR_NO_EFFECT')
+            helper_command('WRONG_SLOT_ACTIVATE', 'C25_WRONG_SLOT_NO_EFFECT')
+        if not candidate_activation:
+            helper_command('EARLYPUBLISH', 'C20_STAGED_EARLY_CANDIDATE_EAGAIN')
         helper_command('CENSUS1', 'C20_STAGED_CANDIDATE_NO_LISTEN')
         preflip = exchange('PREFLIP', 4108, b'PRE-FLIP', b'OLD-ACK!',
             'C20_STAGED_PREFLIP_ECHO')
         wait_line(app, 'C20_STAGED_TASK_READY_UNPUBLISHED', 10)
         helper_command('CENSUS1', 'C20_STAGED_CANDIDATE_NO_LISTEN')
-        helper_command('PUBLISH', 'C20_STAGED_COORDINATOR_PUBLISHED')
+        if candidate_activation:
+            activation_release.write_text('activate\n')
+            wait_line(app, 'C25_STAGED_CANDIDATE_LISTENING', 10)
+        else:
+            helper_command('PUBLISH', 'C20_STAGED_COORDINATOR_PUBLISHED')
         wait_line(app, 'C20_STAGED_CANDIDATE_PUBLISHED', 20)
         wait_line(app, 'C20_STAGED_APP_READY', 10)
         helper_command('CENSUS_READY', 'C20_STAGED_CANDIDATE_LISTEN_CENSUS')
@@ -152,6 +166,13 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
         require(app.returncode == 0 and 'C16_APP_DONE accepted=1 inserted=1' in app_output,
             f'C16 candidate actor did not cleanly finish its admitted flow: '
             f'rc={app.returncode}; stdout={app_output!r}; stderr={app_errors!r}')
+        if candidate_activation:
+            candidate.close()
+            peers.remove(candidate)
+            helper_command('CHECK_CLOSED', 'C25_LAST_ALIAS_CLOSED_LISTEN0')
+            helper_command('FLIP0', 'C25_SELECTOR0_RESTORED')
+            exchange('FRESH', 4108, b'AFTER-01', b'OLD-ACK!',
+                'C20_STAGED_FRESH_INITIAL_SERVICE')
         helper.stdin.write(b'STOP\n'); helper.stdin.flush()
         helper_output, helper_errors = helper.communicate(timeout=10)
         require(helper.returncode == 0,
@@ -571,7 +592,7 @@ def inside(args):
             }
             if args.staged_admission_only:
                 return run_c20_staged_admission(args, rpc_path, stop_path,
-                    stats, root, broker, app_env)
+                    stats, root, broker, app_env, args.candidate_activation_only)
             finalized_fifo = root / 'finalized.release'
             if args.finalized_timeout_only:
                 os.mkfifo(finalized_fifo, 0o600)
@@ -1363,6 +1384,7 @@ def main():
     parser.add_argument('--progress-client', type=Path, required=True)
     parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--staged-admission-only', action='store_true')
+    parser.add_argument('--candidate-activation-only', action='store_true')
     parser.add_argument('--pump-failure-only', action='store_true')
     parser.add_argument('--registration-negative-only', action='store_true')
     parser.add_argument('--malformed-owner-hello-only', action='store_true')
@@ -1380,6 +1402,8 @@ def main():
         return inside(args)
     if args.staged_admission_only and not args.reuseport_group_client:
         parser.error('--staged-admission-only requires --reuseport-group-client')
+    if args.candidate_activation_only and not args.staged_admission_only:
+        parser.error('--candidate-activation-only requires --staged-admission-only')
     command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
     for name in ('launcher', 'library', 'worker', 'dpdk_plugin_dir', 'preload',
                  'broker', 'client', 'progress_client'):
@@ -1388,6 +1412,8 @@ def main():
         command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
     if args.staged_admission_only:
         command.append('--staged-admission-only')
+    if args.candidate_activation_only:
+        command.append('--candidate-activation-only')
     if args.pump_failure_only:
         command.append('--pump-failure-only')
     if args.registration_negative_only:
