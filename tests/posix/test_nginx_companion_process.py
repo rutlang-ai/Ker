@@ -29,6 +29,15 @@ def wait_marker_count(path, expected, timeout=2.0):
     return path.read_bytes().count(b'HUP\n') if path.exists() else 0
 
 
+def wait_handler_ready(path, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.01)
+    raise RuntimeError('test server did not publish its installed signal handlers')
+
+
 def load_module(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -87,10 +96,12 @@ def cleanup_manager(manager):
 
 
 def new_manager(supervisor, server, helper_path, config, prefix, environment):
+    (prefix / 'hup-observed').unlink(missing_ok=True)
     manager = supervisor.NginxCompanion(server, config, prefix, environment)
     manager.helper_path = helper_path
     manager.helper_script_hash = supervisor._sha256(helper_path)
     manager.start(timeout=5)
+    wait_handler_ready(prefix / 'hup-observed')
     return manager
 
 
@@ -101,6 +112,9 @@ def exercise_profile_mutation(supervisor, server, helper_path, config, prefix,
     manager = new_manager(supervisor, server, helper_path, config, prefix,
         environment)
     try:
+        wait_handler_ready(marker)
+        require(marker.read_bytes() == b'',
+            f'{label} fixture began with unexpected HUP markers')
         mutate(config, ini)
         denied = False
         try:
@@ -219,6 +233,9 @@ def main():
             good = new_manager(supervisor, args.server, helper_path, config,
                 prefix, environment)
             good.check()
+            wait_handler_ready(prefix / 'hup-observed')
+            require((prefix / 'hup-observed').read_bytes() == b'',
+                'test server received HUP before healthy reload began')
             good.reload(timeout=5)
             require(wait_marker_count(prefix / 'hup-observed', 1) == 1,
                 'first healthy reload did not deliver exactly one SIGHUP')

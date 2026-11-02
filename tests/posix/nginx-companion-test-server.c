@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <signal.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -27,6 +28,8 @@ int main(int argc, char **argv)
 {
     int index;
     const char *prefix = ".";
+    sigset_t quit_set, original_mask;
+    struct sigaction action = {0};
 
     for (index = 1; index < argc; index++) {
         if (strcmp(argv[index], "-t") == 0) {
@@ -35,6 +38,21 @@ int main(int argc, char **argv)
         if (strcmp(argv[index], "-p") == 0 && index + 1 < argc) {
             prefix = argv[++index];
         }
+    }
+    sigemptyset(&quit_set);
+    sigaddset(&quit_set, SIGQUIT);
+    sigaddset(&quit_set, SIGHUP);
+    if (sigprocmask(SIG_BLOCK, &quit_set, &original_mask) != 0) {
+        return 2;
+    }
+    action.sa_handler = stop_master;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGQUIT, &action, NULL) != 0) {
+        return 2;
+    }
+    action.sa_handler = observe_hup;
+    if (sigaction(SIGHUP, &action, NULL) != 0) {
+        return 2;
     }
     {
         char marker_path[4096];
@@ -50,12 +68,9 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (signal(SIGQUIT, stop_master) == SIG_ERR ||
-        signal(SIGHUP, observe_hup) == SIG_ERR) {
+    while (!stopping)
+        (void)sigsuspend(&original_mask);
+    if (sigprocmask(SIG_SETMASK, &original_mask, NULL) != 0)
         return 2;
-    }
-    while (!stopping) {
-        pause();
-    }
     return 0;
 }
