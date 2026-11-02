@@ -1,0 +1,56 @@
+#ifndef KER_SOCKET_BROKER_READINESS_WIRE_H
+#define KER_SOCKET_BROKER_READINESS_WIRE_H
+
+#include <stdint.h>
+
+#define KER_BROKER_READY_MAGIC UINT32_C(0x4b425234)
+#define KER_BROKER_READY_VERSION UINT16_C(1)
+#define KER_BROKER_READY_RECORD_HEADER_BYTES 16U
+#define KER_BROKER_READY_RECORD_BYTES 120U
+#define KER_BROKER_STOP_RECORD_BYTES 104U
+#define KER_BROKER_READY_TYPE UINT16_C(1)
+#define KER_BROKER_STOP_TYPE UINT16_C(2)
+#define KER_BROKER_STOP_ACK_TYPE UINT16_C(3)
+#define KER_BROKER_READY_STOP_ID UINT64_C(1)
+#define KER_BROKER_EMPTY_MANIFEST_DOMAIN "ker.socket-broker.bootstrap.empty/v1"
+
+/* Wire records are explicitly encoded little-endian by the codec; these are
+ * offsets and lengths, not native structs to cast over received bytes. */
+#define KER_BROKER_WIRE_MAGIC_OFFSET 0U
+#define KER_BROKER_WIRE_VERSION_OFFSET 4U
+#define KER_BROKER_WIRE_TYPE_OFFSET 6U
+#define KER_BROKER_WIRE_SIZE_OFFSET 8U
+#define KER_BROKER_WIRE_RESERVED_OFFSET 12U
+#define KER_BROKER_WIRE_NONCE_OFFSET 16U
+#define KER_BROKER_WIRE_EPOCH_OFFSET 32U
+
+#define KER_BROKER_READY_PROFILE_OFFSET 40U
+#define KER_BROKER_READY_START_TICKS_OFFSET 72U
+#define KER_BROKER_READY_OBJECT_COUNT_OFFSET 80U
+#define KER_BROKER_READY_MANIFEST_OFFSET 88U
+
+#define KER_BROKER_STOP_MANIFEST_OFFSET 40U
+#define KER_BROKER_STOP_PID_OFFSET 72U
+#define KER_BROKER_STOP_UID_OFFSET 76U
+#define KER_BROKER_STOP_GID_OFFSET 80U
+#define KER_BROKER_STOP_RESERVED2_OFFSET 84U
+#define KER_BROKER_STOP_START_TICKS_OFFSET 88U
+#define KER_BROKER_STOP_ID_OFFSET 96U
+
+#if defined(__cplusplus)
+static_assert(sizeof(KER_BROKER_EMPTY_MANIFEST_DOMAIN) - 1 == 36,
+    "empty capability manifest domain length changed");
+static_assert(KER_BROKER_READY_MANIFEST_OFFSET + 32 ==
+    KER_BROKER_READY_RECORD_BYTES, "READY record layout changed");
+static_assert(KER_BROKER_STOP_ID_OFFSET + 8 ==
+    KER_BROKER_STOP_RECORD_BYTES, "STOP record layout changed");
+#else
+_Static_assert(sizeof(KER_BROKER_EMPTY_MANIFEST_DOMAIN) - 1 == 36,
+    "empty capability manifest domain length changed");
+_Static_assert(KER_BROKER_READY_MANIFEST_OFFSET + 32 ==
+    KER_BROKER_READY_RECORD_BYTES, "READY record layout changed");
+_Static_assert(KER_BROKER_STOP_ID_OFFSET + 8 ==
+    KER_BROKER_STOP_RECORD_BYTES, "STOP record layout changed");
+#endif
+
+#endif
