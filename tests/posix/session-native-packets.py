@@ -74,6 +74,15 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def tcp_fin_acknowledgment(sequence, payload_length):
+    """Return the next peer ACK after the exact TCP FIN segment, modulo 2^32."""
+    return (sequence + payload_length + 1) & 0xffffffff
+
+
+def tcp_acknowledges_fin(acknowledgment, fin_ack_sequence):
+    return acknowledgment == fin_ack_sequence
+
+
 def nonframe_reap_pool_delta_matches(before, waiting):
     available = before.get('generation')
     in_use = before.get('token')
@@ -930,18 +939,50 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
             wire.setblocking(False)
             host_mac=bytes.fromhex('024b45520001')
             forwarding_tap=-1
-            forwarding_state=dict(armed=False,intercepted=[],client_port=None,forwarded=0)
+            forwarding_state=dict(armed=False,intercepted=[],client_port=None,forwarded=0,
+                fin_ack_sequence=None,fin_ack_forwarded=False)
+            forwarding_complete_requested=threading.Event()
+            forwarding_complete_sent=threading.Event()
+            forwarding_fin_ack=threading.Event()
+            forward_command_lock=threading.Lock()
             if mode=='generation-forward-tcp':
                 forwarding_tap=os.open('/dev/net/tun',os.O_RDWR|os.O_NONBLOCK|os.O_CLOEXEC)
                 fcntl.ioctl(forwarding_tap,0x400454ca,struct.pack('16sH22x',b'kerfwd0',0x1002))
                 for command in (['link','set','kerfwd0','address','02:4b:45:52:00:01','mtu','1500'],
                         ['addr','add','198.18.0.1/24','dev','kerfwd0'],['link','set','kerfwd0','up']):
                     subprocess.run(['ip',*command],check=True)
+            def tcp4_fields(frame):
+                if len(frame)<54 or frame[12:14]!=b'\x08\x00' or frame[14]>>4!=4 or frame[23]!=6:
+                    return None
+                ip_length=(frame[14]&15)*4
+                if ip_length<20 or len(frame)<14+ip_length+20:
+                    return None
+                ip_total=struct.unpack('!H',frame[16:18])[0]
+                if (ip_total<ip_length+20 or ip_total>len(frame)-14 or
+                        struct.unpack('!H',frame[20:22])[0]&0x3fff):
+                    return None
+                offset=14+ip_length
+                tcp_length=(frame[offset+12]>>4)*4
+                if tcp_length<20 or ip_total<ip_length+tcp_length:
+                    return None
+                source_port,destination_port=struct.unpack('!HH',frame[offset:offset+4])
+                sequence,acknowledgment=struct.unpack('!II',frame[offset+4:offset+12])
+                flags=frame[offset+13]
+                payload_length=ip_total-ip_length-tcp_length
+                return (frame[26:30],frame[30:34],source_port,destination_port,
+                    sequence,acknowledgment,flags,payload_length)
             def handoff_wire_peer():
                 try:
                     if mode=='generation-forward-tcp':
                         to_tap,to_wire=deque(),deque()
                         while not wire_stop.is_set():
+                            if (forwarding_complete_requested.is_set() and
+                                    forwarding_state['fin_ack_forwarded'] and
+                                    not forwarding_complete_sent.is_set()):
+                                with forward_command_lock:
+                                    if os.write(handoff_write,b'Z')!=1:
+                                        raise RuntimeError('short generation-forward completion command')
+                                forwarding_complete_sent.set()
                             readers=[wire,forwarding_tap] if len(to_tap)<64 and len(to_wire)<64 else []
                             writers=([forwarding_tap] if to_tap else [])+([wire] if to_wire else [])
                             readable,writable,_=select.select(readers,writers,[],0.02)
@@ -949,36 +990,43 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                                 frame=wire.recv(65536)
                                 require(14<=len(frame)<=1518,'malformed native frame on TAP bridge')
                                 with wire_lock:wire_frames.append(frame)
+                                fields=tcp4_fields(frame)
+                                if (forwarding_state['armed'] and fields and
+                                        fields[0]==socket.inet_aton('198.18.0.2') and
+                                        fields[1]==socket.inet_aton('198.18.0.1') and
+                                        fields[2]==45000 and fields[3]==forwarding_state['client_port'] and
+                                        fields[6]&0x01):
+                                    forwarding_state['fin_ack_sequence']=tcp_fin_acknowledgment(fields[4],fields[7])
                                 to_tap.append(frame)
                             if forwarding_tap in readable:
                                 frame=os.read(forwarding_tap,65536)
                                 require(14<=len(frame)<=1518,'malformed host frame on TAP bridge')
                                 with wire_lock:wire_frames.append(frame)
+                                fields=tcp4_fields(frame)
                                 forward_to_old=False
-                                if (forwarding_state['armed'] and len(frame)>=54 and frame[12:14]==b'\x08\x00' and
-                                        frame[14]>>4==4 and frame[23]==6 and
-                                        frame[26:30]==socket.inet_aton('198.18.0.1') and
-                                        frame[30:34]==socket.inet_aton('198.18.0.2')):
-                                    ip_length=(frame[14]&15)*4;tcp_offset=14+ip_length
-                                    ip_total=struct.unpack('!H',frame[16:18])[0]
-                                    fragments=struct.unpack('!H',frame[20:22])[0]&0x3fff
-                                    if (ip_length>=20 and len(frame)>=tcp_offset+20 and ip_total>=ip_length+20 and
-                                            ip_total<=len(frame)-14 and not fragments and
-                                            struct.unpack('!H',frame[tcp_offset+2:tcp_offset+4])[0]==45000):
-                                        tcp_length=(frame[tcp_offset+12]>>4)*4
-                                        forward_to_old=(tcp_length>=20 and
-                                            struct.unpack('!H',frame[tcp_offset:tcp_offset+2])[0]==forwarding_state['client_port'] and
-                                            struct.unpack('!H',frame[tcp_offset+2:tcp_offset+4])[0]==45000)
+                                final_fin_ack=False
+                                if (forwarding_state['armed'] and fields and
+                                        fields[0]==socket.inet_aton('198.18.0.1') and
+                                        fields[1]==socket.inet_aton('198.18.0.2') and
+                                        fields[2]==forwarding_state['client_port'] and fields[3]==45000):
+                                    forward_to_old=True
+                                    final_fin_ack=(forwarding_state['fin_ack_sequence'] is not None and
+                                        fields[6]&0x10 and
+                                        tcp_acknowledges_fin(fields[5],forwarding_state['fin_ack_sequence']))
                                 if forward_to_old:
                                     forwarding_state['intercepted'].append(frame)
                                     command=b'I'+struct.pack('!H',len(frame))+frame
-                                    offset=0
-                                    while offset<len(command):
-                                        offset+=os.write(handoff_write,command[offset:])
-                                    ready,_,_=select.select([forward_ack_read],[],[],5)
-                                    if not ready or os.read(forward_ack_read,1)!=b'A':
-                                        raise RuntimeError('explicit producer did not acknowledge frame before wire omission')
+                                    with forward_command_lock:
+                                        offset=0
+                                        while offset<len(command):
+                                            offset+=os.write(handoff_write,command[offset:])
+                                        ready,_,_=select.select([forward_ack_read],[],[],5)
+                                        if not ready or os.read(forward_ack_read,1)!=b'A':
+                                            raise RuntimeError('explicit producer did not acknowledge frame before wire omission')
                                     forwarding_state['forwarded']+=1
+                                    if final_fin_ack:
+                                        forwarding_state['fin_ack_forwarded']=True
+                                        forwarding_fin_ack.set()
                                 else:
                                     to_wire.append(frame)
                             if forwarding_tap in writable:
@@ -1385,6 +1433,10 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     require(bytes(received)==response,'old original-Linux TCP stream did not return its exact response')
                 old_tcp_stream.shutdown(socket.SHUT_WR)
                 require(old_tcp_stream.recv(1)==b'','old original-Linux TCP stream did not complete its FIN exchange')
+                require(forwarding_state['fin_ack_sequence'] is not None,
+                    'captured old TCP stream did not expose its original Linux FIN sequence')
+                require(forwarding_fin_ack.wait(5),
+                    'host FIN acknowledgement was not sent through the old-generation consumer')
                 with wire_lock:observed_frames=list(wire_frames);observed_errors=list(wire_errors)
                 def tcp_payload(frame):
                     if len(frame)<54 or frame[12:14]!=b'\x08\x00' or frame[14]>>4!=4 or frame[23]!=6:return b''
@@ -1409,9 +1461,13 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     forwarding_state['forwarded']>=4 and not observed_errors,
                     'old-stream frames were reset, omitted, or failed explicit producer acknowledgement')
                 old_tcp_stream.close();old_tcp_stream=None
+                forwarding_complete_requested.set()
+                require(forwarding_complete_sent.wait(5),
+                    'TAP proxy did not serialize completion after final ACK acknowledgement')
                 print('KER_SESSION_GENERATION_FORWARD_TCP_PASS ' + json.dumps(dict(
                     old_listener_accepted_before_handoff=True,producer_generation=1,target_generation=0,
                     forwarded_old_tuple_frames=forwarding_state['forwarded'],
+                    final_fin_ack_forwarded=forwarding_state['fin_ack_forwarded'],
                     requests=[value.decode().rstrip() for value in requests],
                     responses=[value.decode().rstrip() for value in responses],
                     wire_payload_frames=4,orderly_fin=True,no_rst=True),sort_keys=True),flush=True)

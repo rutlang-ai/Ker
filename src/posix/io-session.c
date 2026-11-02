@@ -3425,7 +3425,8 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
                 PARKED_RETURN(-EPROTO); /* Parked workers accept no device/control commands. */
             }
         }
-        if(rings&&(!generation_rx_pending||(waiters[3].revents&POLLOUT))) {
+        if(generation_forwarding_enabled&&rings&&
+            (!generation_rx_pending||(waiters[3].revents&POLLOUT))) {
             int delivered=ker_session_generation_rx_deliver(packet_fd,rings,
                 &generation_identity,&generation_rx_pending);
             if(delivered<0)PARKED_RETURN(delivered);
@@ -4827,7 +4828,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             printf("KER_SESSION_PMD_PARKED {\"pid\":%ld,\"old_owner_key\":%llu,\"successor_slot\":%u,\"successor_generation\":%u,\"commit\":\"resident-quiesced\"}\n",
                 (long)getpid(),(unsigned long long)key,successor_slot,successor_generation); fflush(stdout);
             int parked_result=parked_owner_wait(control,packet_fd,fd,peer,&message,&message.sequence,
-                    capability,&heartbeat,generation_forwarding_enabled?generation_rings:NULL);
+                    capability,&heartbeat,generation_rings);
 #ifdef KER_SESSION_TEST_HOOKS
             if(getenv("KER_SESSION_TEST_FRAME_DRAIN")) {
                 printf("KER_SESSION_PARKED_OWNER_EXIT {\"pid\":%ld,\"result\":%d,\"stopping\":%s,\"generation\":%llu,\"process\":%llu}\n",

@@ -459,15 +459,20 @@ FRAME_U2_TRIGGER_MODES = frozenset({
 })
 
 
-def handoff_trigger_complete(mode, handoff_seen, udp_sequence):
-    """Whether this profile consumed its complete H/U trigger sequence."""
+def handoff_trigger_complete(mode, handoff_seen, udp_sequence, generation_forward_complete=False):
+    """Whether the profile's trigger and any required generation proof completed."""
     if mode == 'generation-forward-tcp':
-        return False
+        return bool(handoff_seen and generation_forward_complete)
     return bool(handoff_seen and (mode not in FRAME_U2_TRIGGER_MODES or udp_sequence >= 2))
 
 
-def close_completed_handoff_trigger(mode, handoff_seen, udp_sequence, fd, close_fd):
-    if fd is not None and handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+def close_completed_handoff_trigger(mode, handoff_seen, udp_sequence, fd, close_fd,
+        generation_forward_complete=False):
+    # The TCP profile consumes additional I frame commands after H; keep its
+    # injection pipe open until the fixture sends its explicit completion.
+    if (fd is not None and (mode != 'generation-forward-tcp' or generation_forward_complete) and
+            handoff_trigger_complete(mode, handoff_seen, udp_sequence,
+                generation_forward_complete)):
         close_fd(fd)
         return None
     return fd
@@ -813,13 +818,17 @@ def _frame_full_traceback_scope(enabled, label='KER_SESSION_FRAME_FULL_RUNNER_BE
             faulthandler.cancel_dump_traceback_later()
 
 
-def require_complete_handoff_trigger(mode, handoff_seen, udp_sequence):
-    if not handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+def require_complete_handoff_trigger(mode, handoff_seen, udp_sequence,
+        generation_forward_complete=False):
+    if not handoff_trigger_complete(mode, handoff_seen, udp_sequence,
+            generation_forward_complete):
         raise RuntimeError('test application exited before the handoff trigger sequence completed')
 
 
-def reject_handoff_trigger_eof(mode, handoff_seen, udp_sequence):
-    if not handoff_trigger_complete(mode, handoff_seen, udp_sequence):
+def reject_handoff_trigger_eof(mode, handoff_seen, udp_sequence,
+        generation_forward_complete=False):
+    if not handoff_trigger_complete(mode, handoff_seen, udp_sequence,
+            generation_forward_complete):
         raise RuntimeError('handoff trigger pipe reached EOF before the trigger sequence completed')
     raise RuntimeError('handoff trigger pipe reached unexpected EOF')
 
@@ -1634,6 +1643,8 @@ def _run_session_impl(args, api):
         startup = b''
         handoff_udp_sequence = 0
         handoff_seen = False
+        generation_forwarded_frames = 0
+        generation_forward_complete = False
         deadline = time.monotonic() + 20
         stopping_at = None
 
@@ -2075,7 +2086,8 @@ def _run_session_impl(args, api):
                     data = os.read(handoff_fd, 1)
                     if not data:
                         close(handoff_fd); handoff_fd = None
-                        reject_handoff_trigger_eof(handoff_mode, handoff_seen, handoff_udp_sequence)
+                        reject_handoff_trigger_eof(handoff_mode, handoff_seen, handoff_udp_sequence,
+                            generation_forward_complete)
                     action = handoff_trigger_action(data)
                     if data == b'I':
                         if (handoff_mode != 'generation-forward-tcp' or peer_worker is None or
@@ -2112,11 +2124,22 @@ def _run_session_impl(args, api):
                         ack_fd = int(os.environ.get('KER_SESSION_TEST_GENERATION_FORWARD_ACK_FD', '-1'))
                         if ack_fd < 0 or os.write(ack_fd, b'A') != 1:
                             raise RuntimeError('could not acknowledge exact generation frame to TAP bridge')
+                        generation_forwarded_frames += 1
+                        continue
+                    if data == b'Z' and handoff_mode == 'generation-forward-tcp':
+                        if (not handoff_seen or not metrics.get('handoff_tcp_accepted') or
+                                generation_forwarded_frames < 4):
+                            raise RuntimeError('generation-forward completion arrived before the accepted stream proof')
+                        generation_forward_complete = True
+                        handoff_fd = close_completed_handoff_trigger(
+                            handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close,
+                            generation_forward_complete)
                         continue
                     if action == 'udp':
                         trigger_handoff_udp()
                         handoff_fd = close_completed_handoff_trigger(
-                            handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close)
+                            handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close,
+                            generation_forward_complete)
                     elif data == b'N':
                         start_nonframe_active_reap()
                     elif data == b'C':
@@ -2167,8 +2190,12 @@ def _run_session_impl(args, api):
             time.sleep(0.01)
         code = app.wait()
         drain_startup()
+        if handoff_mode == 'generation-forward-tcp':
+            require_complete_handoff_trigger(handoff_mode, handoff_seen, handoff_udp_sequence,
+                generation_forward_complete)
         if handoff_fd is not None:
-            require_complete_handoff_trigger(handoff_mode, handoff_seen, handoff_udp_sequence)
+            require_complete_handoff_trigger(handoff_mode, handoff_seen, handoff_udp_sequence,
+                generation_forward_complete)
             close(handoff_fd); handoff_fd = None
         close(control_w)
         peer_control_w = close_peer_control_when_safe(handoff_mode, peer_control_w, close)

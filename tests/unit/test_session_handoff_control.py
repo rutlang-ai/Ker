@@ -45,6 +45,40 @@ def nested_code(code, name):
     return None
 
 
+def evaluate_close_gate(node, values):
+    """Evaluate the small literal boolean expression used for trigger-pipe close."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return values[node.id]
+    if isinstance(node, ast.Tuple):
+        return tuple(evaluate_close_gate(item, values) for item in node.elts)
+    if isinstance(node, ast.Set):
+        return {evaluate_close_gate(item, values) for item in node.elts}
+    if isinstance(node, ast.BoolOp):
+        items = [evaluate_close_gate(item, values) for item in node.values]
+        return all(items) if isinstance(node.op, ast.And) else any(items)
+    if isinstance(node, ast.Compare):
+        left = evaluate_close_gate(node.left, values)
+        for operator, comparator in zip(node.ops, node.comparators):
+            right = evaluate_close_gate(comparator, values)
+            if isinstance(operator, ast.NotIn):
+                matched = left not in right
+            elif isinstance(operator, ast.In):
+                matched = left in right
+            elif isinstance(operator, ast.NotEq):
+                matched = left != right
+            elif isinstance(operator, ast.Eq):
+                matched = left == right
+            else:
+                raise AssertionError(f'unsupported close-gate operator: {type(operator).__name__}')
+            if not matched:
+                return False
+            left = right
+        return True
+    raise AssertionError(f'unsupported close-gate expression: {type(node).__name__}')
+
+
 def cell(value):
     return (lambda: value).__closure__[0]
 
@@ -510,16 +544,26 @@ class HandoffControlPathTests(unittest.TestCase):
             isinstance(node.test.comparators[0], ast.Constant) and
             node.test.comparators[0].value == 'handoff')
         close_gate = next(node for node in ast.walk(handoff_dispatch)
-            if isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp) and
-            any(isinstance(value, ast.Compare) and isinstance(value.left, ast.Name) and
-                value.left.id == 'handoff_mode' and
-                any(isinstance(item, ast.Constant) and item.value == 'frame-death-queued'
-                    for item in value.comparators) for value in node.test.values))
-        self.assertTrue(any(isinstance(value, ast.Compare) and isinstance(value.left, ast.Name) and
-            value.left.id == 'handoff_mode' and
-            any(isinstance(item, ast.Constant) and item.value == 'frame-death-queued'
-                for item in value.comparators) for value in close_gate.test.values),
+            if isinstance(node, ast.If) and
+            any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and
+                call.func.id == 'close' and call.args and isinstance(call.args[0], ast.Name) and
+                call.args[0].id == 'handoff_fd' for statement in node.body for call in ast.walk(statement)) and
+            any(isinstance(name, ast.Name) and name.id == 'handoff_mode'
+                for name in ast.walk(node.test)))
+        modes_assignment = next(node for node in ast.walk(source)
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                target.id == 'FRAME_U2_TRIGGER_MODES' for target in node.targets))
+        mode_values = modes_assignment.value.args[0]
+        trigger_modes = {item.value for item in mode_values.elts
+            if isinstance(item, ast.Constant)}
+        close_values = {'handoff_mode': 'frame-death-queued',
+            'FRAME_U2_TRIGGER_MODES': trigger_modes}
+        self.assertFalse(evaluate_close_gate(close_gate.test, close_values),
             'queued-death mode must retain the trigger read end while perform_test_handoff waits for A')
+        mutated_gate = ast.parse(ast.unparse(close_gate.test).replace(
+            "'frame-death-queued'", "'wrong-mode'"), mode='eval').body
+        self.assertTrue(evaluate_close_gate(mutated_gate, close_values),
+            'the close-gate oracle must detect dropping the queued-death exception')
 
         profile_source = ast.parse(PROFILE_SOURCE.read_text())
         profile = next(node for node in ast.walk(profile_source)
@@ -918,10 +962,29 @@ class HandoffControlPathTests(unittest.TestCase):
                 self.assertEqual(calls, [17])
         self.assertTrue(complete('positive', True, 0))
         self.assertFalse(complete('positive', False, 0))
+        self.assertFalse(complete('generation-forward-tcp', True, 0))
+        self.assertTrue(complete('generation-forward-tcp', True, 0, True))
+        with self.assertRaisesRegex(RuntimeError, 'trigger sequence completed'):
+            self.launcher.require_complete_handoff_trigger('generation-forward-tcp', True, 0)
+        self.launcher.require_complete_handoff_trigger('generation-forward-tcp', True, 0, True)
+        calls = []
+        self.assertEqual(close_trigger('generation-forward-tcp', True, 0, 17, calls.append), 17)
+        self.assertEqual(calls, [], 'the TCP injection pipe stays open until its explicit completion marker')
+        self.assertIsNone(close_trigger('generation-forward-tcp', True, 0, 17, calls.append, True))
+        self.assertEqual(calls, [17])
         self.assertEqual(self.launcher.handoff_trigger_action(b'U'), 'udp')
         self.assertEqual(self.launcher.handoff_trigger_action(b'H'), 'handoff')
         self.assertEqual(self.launcher.handoff_trigger_action(b''), 'invalid')
         self.assertEqual(self.launcher.handoff_trigger_action(b'X'), 'invalid')
+
+    def test_generation_forward_fin_ack_uses_next_sequence_once(self):
+        next_sequence = PROFILE.tcp_fin_acknowledgment
+        acknowledges = PROFILE.tcp_acknowledges_fin
+        self.assertEqual(next_sequence(100, 0), 101)
+        self.assertEqual(next_sequence(100, 37), 138)
+        self.assertEqual(next_sequence(0xfffffffc, 3), 0)
+        self.assertTrue(acknowledges(0, next_sequence(0xfffffffc, 3)))
+        self.assertFalse(acknowledges(1, next_sequence(0xfffffffc, 3)))
 
     def test_actor_death_evidence_accepts_uncaptured_stderr(self):
         decode = self.launcher.decode_optional_stderr

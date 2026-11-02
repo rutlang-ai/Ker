@@ -3,6 +3,7 @@
 #include "session-packet.h"
 #include "packet-channel.h"
 #include <errno.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 
 #define KER_SESSION_GENERATION_MAX_SEGS 32U
@@ -47,7 +48,13 @@ int ker_session_generation_rx_deliver(int packet_fd, struct ker_generation_rings
 {
     if (packet_fd < 0 || !rings || !identity || !pending) return -EINVAL;
     if (!*pending) {
+#ifdef KER_SESSION_TEST_HOOKS
+        int result = getenv("KER_SESSION_TEST_RX_DEQUEUE_EBUSY") ? -EBUSY :
+            ker_generation_rx_dequeue(rings, identity, 0, 0, pending);
+#else
         int result = ker_generation_rx_dequeue(rings, identity, 0, 0, pending);
+#endif
+        if (result == -EBUSY) return 0; /* Reap temporarily closed this generation gate. */
         if (result < 0) return result;
         if (!result) return 0;
     }
@@ -63,7 +70,13 @@ int ker_session_generation_peer_tx_deliver(int wire_fd, struct ker_generation_ri
 {
     if (wire_fd < 0 || !rings || !identity || !pending) return -EINVAL;
     if (!*pending) {
+#ifdef KER_SESSION_TEST_HOOKS
+        int result = getenv("KER_SESSION_TEST_TX_DEQUEUE_EBUSY") ? -EBUSY :
+            ker_generation_tx_dequeue_peer(rings, identity, 0, 0, pending);
+#else
         int result = ker_generation_tx_dequeue_peer(rings, identity, 0, 0, pending);
+#endif
+        if (result == -EBUSY) return 0; /* Reap temporarily closed this generation gate. */
         if (result < 0) return result;
         if (!result) return 0;
     }

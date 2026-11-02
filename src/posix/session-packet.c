@@ -144,17 +144,21 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
             if(!generation_identity||!generation_identity->epoch||!generation_identity->pid) {
                 status=-EINVAL;break;
             }
+            bool generation_dequeue_busy=false;
             if(!generation_rx_packet) {
                 int dequeued=ker_generation_rx_dequeue(generation_rings,generation_identity,
                     0,0,&generation_rx_packet);
-                if(dequeued<0){status=dequeued;break;}
+                if(dequeued==-EBUSY)generation_dequeue_busy=true;
+                else if(dequeued<0){status=dequeued;break;}
             }
             if(!generation_peer_tx_packet) {
                 int dequeued=ker_generation_tx_dequeue_peer(generation_rings,generation_identity,
                     0,0,&generation_peer_tx_packet);
-                if(dequeued<0){status=dequeued;break;}
+                if(dequeued==-EBUSY)generation_dequeue_busy=true;
+                else if(dequeued<0){status=dequeued;break;}
             }
-            generation_queues_idle=!generation_rx_packet&&!generation_peer_tx_packet;
+            generation_queues_idle=!generation_dequeue_busy&&!generation_rx_packet&&
+                !generation_peer_tx_packet;
         }
         if (handoff_requested) {
             bool local_idle=!tx_pending&&!tx_queued&&!tx_output&&!rx_pending&&!rx_queued&&!rx_output&&

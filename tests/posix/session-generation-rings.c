@@ -278,6 +278,10 @@ static int generation_forward_sink_test(struct ker_generation_rings *rings,
     forged.epoch++;
     if(ker_session_generation_rx_deliver(pair[0],rings,&forged,&pending)!=-EINVAL||pending||
         rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=1)SINK_FAIL();
+    if(setenv("KER_SESSION_TEST_RX_DEQUEUE_EBUSY","1",1)||
+        ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=0||pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=1)SINK_FAIL();
+    unsetenv("KER_SESSION_TEST_RX_DEQUEUE_EBUSY");
     if(ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=1||pending)SINK_FAIL();
     n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
     if(n!=(ssize_t)(header_size+60))SINK_FAIL();
@@ -310,6 +314,10 @@ static int generation_forward_sink_test(struct ker_generation_rings *rings,
     if(!tx_bytes){rte_pktmbuf_free(tx);SINK_FAIL();}
     for(unsigned i=0;i<60;i++)tx_bytes[i]=(uint8_t)(0x70U+i);
     if(ker_generation_tx_enqueue(rings,producer,0,0,tx))SINK_FAIL();
+    if(setenv("KER_SESSION_TEST_TX_DEQUEUE_EBUSY","1",1)||
+        ker_session_generation_peer_tx_deliver(pair[0],rings,consumer,&pending)!=0||pending||
+        rte_ring_count(rte_ring_lookup("drain_tx_p0_q0_g0"))!=1)SINK_FAIL();
+    unsetenv("KER_SESSION_TEST_TX_DEQUEUE_EBUSY");
     while(send(pair[0],filler,sizeof(filler),MSG_DONTWAIT|MSG_NOSIGNAL)==sizeof(filler))filled++;
     if(errno!=EAGAIN&&errno!=EWOULDBLOCK)SINK_FAIL();
     if(ker_session_generation_peer_tx_deliver(pair[0],rings,consumer,&pending)!=0||!pending||
@@ -321,7 +329,7 @@ static int generation_forward_sink_test(struct ker_generation_rings *rings,
     n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
     if(n!=60||received[0]!=0x70||received[59]!=(uint8_t)(0x70U+59))SINK_FAIL();
     close(pair[0]);close(pair[1]);
-    puts("NR29_GENERATION_FORWARD_SINK_PASS rx_header_exact=true rx_ordered=true tx_raw_frame=true eagain_lease_retained=true metadata_rejected=true malformed_chain_rejected=true");
+    puts("NR29_GENERATION_FORWARD_SINK_PASS rx_header_exact=true rx_ordered=true tx_raw_frame=true eagain_lease_retained=true dequeue_ebusy_retry=true metadata_rejected=true malformed_chain_rejected=true");
     return 0;
 fail:
     close(pair[0]);close(pair[1]);
