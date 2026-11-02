@@ -1317,6 +1317,7 @@ def primary_channels():
 
 
 def main():
+    global _COMPANION_RELOAD_REQUESTED
     try:
         args = parse_arguments(defer_worker_limits=True)
     except MemoryError:
