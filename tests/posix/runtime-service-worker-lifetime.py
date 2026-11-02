@@ -21,6 +21,20 @@ COUNTERS = ('tx', 'rx', 'tx_bytes', 'rx_bytes', 'tx_dropped', 'rx_dropped',
             'dropped', 'tx_retries', 'rx_retries', 'outstanding')
 
 
+class DropFirstReleaseReply(runtime_service.RuntimeServiceSupervisor):
+    """Lose one reply after RELEASE mutation, like a transport failure."""
+    def __init__(self, *args, **kwargs):
+        self.release_reply_dropped = False
+        super().__init__(*args, **kwargs)
+
+    def _response(self, operation, sequence, lease_id, status, body=b''):
+        packet = super()._response(operation, sequence, lease_id, status, body)
+        if operation == runtime_service.wire.RELEASE and not self.release_reply_dropped:
+            self.release_reply_dropped = True
+            raise ConnectionResetError('injected RELEASE response loss')
+        return packet
+
+
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
@@ -40,12 +54,13 @@ def read_ready(process, timeout=20):
     return ready
 
 
-def start_worker(worker, directory):
+def start_worker(worker, directory, dpdk_plugin_dir):
     app_channel, io_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     control_read, control_write = os.pipe()
     cpu = min(os.sched_getaffinity(0))
     eal = [f'--lcores=0@{cpu}', '--no-huge', '--no-pci', '--no-shconf',
-           '--no-telemetry', '--iova-mode=va', '-m', '64',
+           '--no-telemetry', '--iova-mode=va', '-m', '64', '-d',
+           str(dpdk_plugin_dir / 'librte_net_tap.so'),
            '--vdev=net_tap0,iface=kerpeer,remote=kerlink']
     log = (directory / 'worker.stderr').open('w+')
     process = subprocess.Popen([str(worker), '--packet-fd', str(io_channel.fileno()),
@@ -58,16 +73,20 @@ def start_worker(worker, directory):
     return process, app_channel, control_write, ready, log
 
 
-def run_case(worker, actor_executable, directory, kill_worker=False):
-    process, channel, control_write, ready, log = start_worker(worker, directory)
+def run_case(worker, actor_executable, directory, dpdk_plugin_dir, kill_worker=False,
+        cleanup_lost_release=False):
+    process, channel, control_write, ready, log = start_worker(worker, directory,
+        dpdk_plugin_dir)
     worker_pidfd = os.pidfd_open(process.pid, 0)
     app_executable = actor_executable.resolve(strict=True)
     app_hash = runtime_service.sha256_file(app_executable)
     app_profile = hashlib.sha256(
         b'ker-runtime-service/slim-primary/v1\0' + app_hash).digest()
-    service_dir = directory / ('service-kill' if kill_worker else 'service-pin')
+    service_dir = directory / ('service-kill' if kill_worker else
+        ('service-lost-release' if cleanup_lost_release else 'service-pin'))
     service_dir.mkdir(mode=0o700)
-    supervisor = runtime_service.RuntimeServiceSupervisor(service_dir / 'service.sock',
+    supervisor_type = DropFirstReleaseReply if cleanup_lost_release else runtime_service.RuntimeServiceSupervisor
+    supervisor = supervisor_type(service_dir / 'service.sock',
         process, worker_pidfd, runtime_service.process_start_ticks(process.pid),
         runtime_service.process_executable_hash(process.pid), ready, app_hash,
         app_profile, control_write)
@@ -77,14 +96,47 @@ def run_case(worker, actor_executable, directory, kill_worker=False):
     actor_env = os.environ.copy()
     actor_env.update(supervisor.env)
     actor_env['KER_TEST_RELEASE_FD'] = str(release_read)
-    actor = subprocess.Popen([str(app_executable)] +
-        (['--expect-worker-death'] if kill_worker else []), env=actor_env,
+    actor_mode = (['--expect-worker-death'] if kill_worker else
+        (['--cleanup-lost-release'] if cleanup_lost_release else []))
+    actor = subprocess.Popen([str(app_executable)] + actor_mode, env=actor_env,
         pass_fds=(release_read,), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True)
     actor_pidfd = os.pidfd_open(actor.pid, 0)
     supervisor.bind_actor(actor, actor_pidfd)
     os.close(release_read)
     actor_line = actor.stdout.readline().strip()
+    if cleanup_lost_release:
+        actor_output, actor_error = actor.communicate(timeout=5)
+        require(actor.returncode == 0 and
+            (actor_line + actor_output).strip() == ('CLEANUP_SETTLED check_errno=13 tombstone_check=116 '
+                'wrong_lease=116 foreign_actor=116 duplicate_release=0 claim_errno=116'),
+            'actual C client did not settle the lost RELEASE reply safely: ' +
+            actor_line + actor_output + actor_error)
+        require(supervisor.release_reply_dropped and not supervisor.revoked and
+            supervisor.active_count == 0 and supervisor._claim_consumed and
+            supervisor._released_actor is not None,
+            'supervisor lost its exact released-actor tombstone')
+        os.close(control_write)
+        control_write = -1
+        require(supervisor.prepare_worker_shutdown(2.0),
+            'worker shutdown did not observe the settled lost RELEASE')
+        output, _ = process.communicate(timeout=10)
+        require(process.returncode == 0,
+            'worker cleanup failed after lost RELEASE: ' + log.read())
+        done = [line for line in output.splitlines() if line.startswith('KER_IO_DONE ')]
+        require(len(done) == 1, 'expected one worker DONE snapshot: ' + output)
+        stats = json.loads(done[0].split(' ', 1)[1])
+        require(stats.get('outstanding') == 0 and stats.get('control_eof') is True,
+            'worker did not clean up after lost RELEASE: ' + repr(stats))
+        print('lost-release: actual C client settled exact RELEASE tombstone; '
+            'CHECK denied, duplicate RELEASE acknowledged, CLAIM consumed', flush=True)
+        supervisor.close()
+        os.close(worker_pidfd)
+        os.close(actor_pidfd)
+        os.close(release_write)
+        channel.close()
+        log.close()
+        return
     require(actor_line == 'CLAIMED', 'real-worker actor failed to claim: ' + actor_line)
 
     if kill_worker:
@@ -142,14 +194,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker', type=Path, required=True)
     parser.add_argument('--actor', type=Path, required=True)
+    parser.add_argument('--dpdk-plugin-dir', type=Path, required=True)
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
     worker = args.worker.resolve(strict=True)
     actor = args.actor.resolve(strict=True)
+    plugin_dir = args.dpdk_plugin_dir.resolve(strict=True)
     if not args.inside:
         return subprocess.run(['unshare', '-Urn', sys.executable,
             str(Path(__file__).resolve()), '--inside', '--worker', str(worker),
-            '--actor', str(actor)]).returncode
+            '--actor', str(actor), '--dpdk-plugin-dir', str(plugin_dir)]).returncode
     for scope in ('all', 'default'):
         Path('/proc/sys/net/ipv6/conf/' + scope + '/disable_ipv6').write_text('1\n')
     for command in (['ip', 'link', 'add', 'kerhost', 'type', 'veth', 'peer', 'name', 'kerlink'],
@@ -157,8 +211,9 @@ def main():
         subprocess.run(command, check=True)
     with tempfile.TemporaryDirectory(prefix='ker-runtime-service-worker-') as temporary:
         directory = Path(temporary)
-        run_case(worker, actor, directory)
-        run_case(worker, actor, directory, kill_worker=True)
+        run_case(worker, actor, directory, plugin_dir)
+        run_case(worker, actor, directory, plugin_dir, cleanup_lost_release=True)
+        run_case(worker, actor, directory, plugin_dir, kill_worker=True)
     print('PASS: real DPDK primary/pool lease pin and worker-death revocation', flush=True)
     return 0
 

@@ -144,6 +144,10 @@ class RuntimeServiceSupervisor:
         self._accepted_connections = set()
         self._connection_threads = set()
         self._actor = None
+        # One run has one consumed role grant. Retain only the released
+        # identity/lease tuple so the same actor can settle a lost RELEASE
+        # reply; this is never authority for CHECK or a new claim.
+        self._released_actor = None
         self._actor_target = None
         self._claim_consumed = False
         self._revoked = False
@@ -390,14 +394,27 @@ class RuntimeServiceSupervisor:
             if operation not in (wire.CHECK, wire.RELEASE) or body or not any(lease_id):
                 return None, last_sequence
             actor = self._actor
-            if (actor is None or actor['pid'] != peer['pid'] or
-                    actor['start'] != peer['start'] or
+            if actor is None:
+                released = self._released_actor
+                if (operation == wire.RELEASE and released is not None and
+                        released['pid'] == peer['pid'] and
+                        released['uid'] == peer['uid'] and
+                        released['gid'] == peer['gid'] and
+                        released['start'] == peer['start'] and
+                        hmac.compare_digest(released['exe_hash'], peer['exe_hash']) and
+                        hmac.compare_digest(released['lease_id'], lease_id)):
+                    return self._response(operation, sequence, lease_id, 0), sequence
+                return self._response(operation, sequence, lease_id, 116), sequence
+            if (actor['pid'] != peer['pid'] or actor['uid'] != peer['uid'] or
+                    actor['gid'] != peer['gid'] or actor['start'] != peer['start'] or
                     not hmac.compare_digest(actor['exe_hash'], peer['exe_hash']) or
                     not hmac.compare_digest(actor['lease_id'], lease_id)):
                 return self._response(operation, sequence, lease_id, 116), sequence
             actor['last_seen'] = self.clock()
             if operation == wire.CHECK:
                 return self._response(operation, sequence, lease_id, 0), sequence
+            self._released_actor = {key: actor[key] for key in
+                ('pid', 'uid', 'gid', 'start', 'exe_hash', 'lease_id')}
             self._actor = None
             self._claim_consumed = True
             actor['released'] = True
