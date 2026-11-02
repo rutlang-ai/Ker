@@ -147,8 +147,11 @@ int ff_ioctl(int fd, unsigned long request, ...)
     FF_DISPATCH_RETURN(int, ker_sb_posix_ioctl(fd, request, argument));
 }
 
+int ff_dup(int fd)
+{ FF_DISPATCH_RETURN(int, ker_sb_posix_fcntl(fd, F_DUPFD, (unsigned long)0)); }
+
 /* The selected C1 bridge does not implement ancillary/datagram I/O, poll/select,
- * kqueue, or `ff_dup`/`ff_dup2`. No descriptor is silently reinterpreted. */
+ * kqueue, or `ff_dup2`. No descriptor is silently reinterpreted. */
 ssize_t ff_sendto(int fd, const void *buffer, size_t length, int flags,
     const struct linux_sockaddr *address, socklen_t address_length)
 { (void)fd; (void)buffer; (void)length; (void)flags; (void)address; (void)address_length; return unsupported(); }
@@ -176,9 +179,6 @@ int ff_kqueue(void)
 int ff_kevent(int queue, const struct kevent *changes, int change_count,
     struct kevent *events, int event_count, const struct timespec *timeout)
 { (void)queue; (void)changes; (void)change_count; (void)events; (void)event_count; (void)timeout; return unsupported(); }
-
-int ff_dup(int fd)
-{ (void)fd; return unsupported(); }
 
 int ff_dup2(int old_fd, int new_fd)
 { (void)old_fd; (void)new_fd; return unsupported(); }

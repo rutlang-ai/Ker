@@ -9,8 +9,8 @@ The bridge is a caller adapter over `ker::socket-preload`, not a complete
 F-Stack runtime.
 
 The selected leaf calls cover TCP `ff_socket` for IPv4/IPv6, bind/connect/listen,
-accept/accept4, close/shutdown, socket names and the broker's flat socket-option
-set, read/write/readv/writev/send/recv, and restricted fcntl/ioctl. They return
+accept/accept4, `ff_dup`, close/shutdown, socket names and the broker's flat
+socket-option set, read/write/readv/writev/send/recv, and restricted fcntl/ioctl. They return
 ordinary application descriptors tracked by the preload map. Buffer and
 sockaddr validation therefore follows the same fault-aware caller path as the
 POSIX adapter, while TCP state and packet processing remain in the one original
@@ -19,6 +19,14 @@ Linux `errno` values. Before preload initialization completes, supported calls
 return `ENOTCONN`. After readiness, supported descriptor-taking `ff_*` calls
 never fall back to host descriptors: valid non-broker FDs return
 `EOPNOTSUPP`, invalid FDs return `EBADF`, and host objects remain untouched.
+
+`ff_dup` uses the registered-socket `F_DUPFD` adapter. It preserves the original
+Linux shared open-file description and clears `FD_CLOEXEC`, as POSIX `dup`
+does. The adapter reuses a received broker duplicate when it already meets the
+minimum descriptor number, avoiding an extra temporary descriptor that would
+change lowest-free allocation. This behavior is scoped to registered sockets
+and the Linux host descriptor table; `ff_dup2` and full F-Stack descriptor-table
+number equivalence remain unsupported.
 
 The bridge does not provide `ff_init`, `ff_run`, global F-Stack configuration,
 reload/census hooks, UDP/datagram or ancillary I/O, poll/select, or kqueue.
@@ -35,7 +43,8 @@ such as `socket`, `read`, `write`, and `accept`; a bridge call through those
 symbols would recurse into the executable instead of reaching the broker.
 
 `native-fstack-socket-leaf-bridge` runs an adversarial executable that defines
-those POSIX symbols to fail if reached. It uses the FF ABI against a
+those POSIX symbols to fail if reached and guards public `dup`/`fcntl` while
+the FF duplication calls execute. It uses the FF ABI against a
 TAP-backed original-Linux TCP connection and an external host peer, verifies
 the exact 4097-byte stream, descriptor duplication and final close, option and
 FIONREAD calls, unsupported-call errors, and faulting user pointers. It also
