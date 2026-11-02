@@ -598,8 +598,12 @@ install(TARGETS ker-io-worker ker-app
 file(RELATIVE_PATH KER_POSIX_LIB_FROM_BIN
     "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
 configure_file(tools/ker-run.py "${PROJECT_BINARY_DIR}/ker-run" @ONLY)
+configure_file(tools/rx_decision_wire.py
+    "${PROJECT_BINARY_DIR}/rx_decision_wire.py" COPYONLY)
 install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT fstack-nginx-runtime)
+install(FILES "${PROJECT_BINARY_DIR}/rx_decision_wire.py"
+    DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
 install(FILES "${ker_native_manifest}"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME build.json)
 install(FILES config/native-launcher.example.ini DESTINATION ${CMAKE_INSTALL_DATADIR}/ker)
@@ -1698,6 +1702,10 @@ if(BUILD_TESTING)
     set_tests_properties(native-ker-run-boundaries PROPERTIES TIMEOUT 60 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
+    add_test(NAME native-ker-run-generated-bundle
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_bundle.py"
+            --launcher "${PROJECT_BINARY_DIR}/ker-run")
+    set_tests_properties(native-ker-run-generated-bundle PROPERTIES TIMEOUT 15 LABELS fstack)
     add_test(NAME native-linux-fetch-lock
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fetch.py")
     set_tests_properties(native-linux-fetch-lock PROPERTIES TIMEOUT 40 LABELS fstack)
