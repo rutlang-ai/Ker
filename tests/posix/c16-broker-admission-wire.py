@@ -222,11 +222,18 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
                         connect_errors.append(error)
                 connect_thread = threading.Thread(target=connect_while_aborting, daemon=True)
                 connect_thread.start()
+                helper.stdin.write(b'CUTOVER_WAIT_RECEIVED\n'); helper.stdin.flush()
+                held_line = wait_line(helper, 'C28_CUTOVER_PACKET_HELD', 9)
+                held_counts = re.search(r'received=(\d+) accepted=(\d+)', held_line)
+                require(held_counts and 1 <= int(held_counts.group(1)) <= 64 and
+                    held_counts.group(2) == '0',
+                    f'abort decision preceded an actual retained q88 packet: {held_line!r}')
                 helper.stdin.write(b'CUTOVER_ABORT\n'); helper.stdin.flush()
                 abort_line = wait_line(helper, 'C28_CUTOVER_ABORTED', 12)
                 counts = re.search(r'received=(\d+) accepted=(\d+) selector=0', abort_line)
-                require(counts and counts.groups() == ('1', '1'),
-                    f'abort did not reconcile exactly one held SYN to member 0: {abort_line!r}')
+                require(counts and 1 <= int(counts.group(1)) <= 64 and
+                    counts.group(1) == counts.group(2),
+                    f'abort did not reconcile all retained SYN IDs to member 0: {abort_line!r}')
                 connect_thread.join(timeout=12)
                 require(not connect_thread.is_alive() and not connect_errors and
                     len(connected) == 1,
@@ -250,11 +257,18 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
                         connect_errors.append(error)
                 connect_thread = threading.Thread(target=connect_while_frozen, daemon=True)
                 connect_thread.start()
+                helper.stdin.write(b'CUTOVER_WAIT_RECEIVED\n'); helper.stdin.flush()
+                held_line = wait_line(helper, 'C28_CUTOVER_PACKET_HELD', 9)
+                held_counts = re.search(r'received=(\d+) accepted=(\d+)', held_line)
+                require(held_counts and 1 <= int(held_counts.group(1)) <= 64 and
+                    held_counts.group(2) == '0',
+                    f'commit decision preceded an actual retained q88 packet: {held_line!r}')
                 helper.stdin.write(b'CUTOVER_COMMIT\n'); helper.stdin.flush()
                 cutover_line = wait_line(helper, 'C28_CUTOVER_COMMITTED', 12)
                 counts = re.search(r'received=(\d+) accepted=(\d+)', cutover_line)
-                require(counts and counts.groups() == ('1', '1'),
-                    f'cutover did not reconcile exactly one held SYN: {cutover_line!r}')
+                require(counts and 1 <= int(counts.group(1)) <= 64 and
+                    counts.group(1) == counts.group(2),
+                    f'cutover did not reconcile all retained SYN IDs: {cutover_line!r}')
                 connect_thread.join(timeout=12)
                 require(not connect_thread.is_alive() and not connect_errors and
                     len(connected) == 1,

@@ -2455,7 +2455,30 @@ static void group_cutover_advance(struct ker_socket_broker_server *server,
     }
     status = group_cutover_validate(server, group);
     if (status) { group_cutover_quarantine(group, status); return; }
-    if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_PREPARED) return;
+    if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_PREPARED) {
+        /* Observe real q88 notifications while the decision is still open.
+         * This lets a coordinator prove a packet is retained before it
+         * chooses COMMIT or ABORT. No verdict is sent until the decision,
+         * and the existing bounded ID array remains the sole correlation
+         * authority for the later DISARM/drain pass. */
+        if (cutover->packet_count < 64) {
+            struct ker_ff_ingress_packet packet = {0};
+            status = ker_posix_ff_ingress_controller_receive(
+                cutover->controller, &packet);
+            if (status < 0) {
+                group_cutover_quarantine(group, status); return;
+            }
+            if (status > 0) {
+                if (packet.lease != cutover->lease ||
+                    packet.deadline_ns != cutover->deadline_ns ||
+                    packet.local_port != htons(group->port) || !packet.id) {
+                    group_cutover_quarantine(group, -EPROTO); return;
+                }
+                cutover->packet_ids[cutover->packet_count++] = packet.id;
+            }
+        }
+        return;
+    }
     if (!cutover->decision_started) {
         if (group->selected_member != 0) {
             group_cutover_quarantine(group, -ESTALE); return;
