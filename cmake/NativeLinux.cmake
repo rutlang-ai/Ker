@@ -57,6 +57,8 @@ add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.
     src/posix/ff-owner-requests-diag.c src/posix/ff-owner-requests-parse.c
     src/posix/ff-admission-request-identity.c
     src/posix/tcp-payload-snapshot.c src/posix/ff-admission-queue.c
+    src/posix/ff-ingress-freeze-state.c src/posix/ff-ingress-freeze-queue-parse.c
+    src/posix/ff-ingress-freeze-queue.c
     src/posix/ff-admission-channel.c src/posix/ff-admission-task.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
@@ -653,6 +655,7 @@ if(BUILD_TESTING)
     target_link_libraries(ker-member-census-runtime-test PRIVATE ker-posix-member-census-test-runtime)
     include("${PROJECT_SOURCE_DIR}/cmake/NativeRequestRevoke.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeAdmissionRequestIdentity.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/NativeIngressFreezeTests.cmake")
     add_executable(ker-socket-broker-inherited-group-client
         tests/posix/socket-broker-inherited-group-client.c)
     target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
