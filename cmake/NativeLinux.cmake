@@ -144,7 +144,8 @@ function(ker_add_fstack_nginx_runtime target output_name)
     add_library(${target} SHARED
         src/posix/fstack-nginx-runtime.c
         src/posix/fstack-socket-bridge.c
-        third_party/fstack-reload/ff_reload.c)
+        third_party/fstack-reload/ff_reload.c
+        third_party/fstack-flow-map/ff_flow_map.c)
     set_target_properties(${target} PROPERTIES
         OUTPUT_NAME "${output_name}"
         INSTALL_RPATH "$ORIGIN")
@@ -168,7 +169,7 @@ if(KER_BUILD_FSTACK_NGINX_RUNTIME)
     # This opt-in DSO exports the subset of the original F-Stack runtime needed
     # by the pinned nginx caller profile. It uses the exact detached reload
     # helpers and the C1 socket bridge; it does not initialize EAL/LKL or claim
-    # the graceful-reload data plane.
+    # the graceful-reload data plane or packet dispatcher.
     ker_add_fstack_nginx_runtime(ker-fstack-nginx-runtime fstack)
     install(TARGETS ker-fstack-nginx-runtime
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT fstack-nginx-runtime

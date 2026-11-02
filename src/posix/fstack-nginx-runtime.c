@@ -472,10 +472,6 @@ unsupported_abort(const char *name)
     abort();
 }
 
-void ff_flow_map_open(void) { unsupported_abort("ff_flow_map_open"); }
-void ff_flow_map_close(void) { unsupported_abort("ff_flow_map_close"); }
-int ff_flow_map_lookup(const ff_flow_key_t *key) { (void)key; unsupported_abort("ff_flow_map_lookup"); }
-int ff_flow_map_insert(const ff_flow_key_t *key) { (void)key; unsupported_abort("ff_flow_map_insert"); }
 void ff_regist_packet_dispatcher_context(dispatch_func_context_t callback)
 { (void)callback; unsupported_abort("ff_regist_packet_dispatcher_context"); }
 void ff_unregist_packet_dispatcher_context(void)

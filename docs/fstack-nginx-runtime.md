@@ -139,12 +139,23 @@ owner and remain fail-closed; this does not qualify healthy recovery.
 
 This is a private fixture boundary, not a production Nginx generation binding.
 It does not add an Nginx dispatcher or FSM callback, enable public
-`graceful_reload=1`, or change the runtime's aborting flow-map/dispatcher hooks.
-The default runtime remains detached and graceful reload remains unsupported.
+`graceful_reload=1`, or implement packet dispatch. The runtime DSO now links
+the unchanged upstream `ff_flow_map.c`, so its map lifecycle and lookup/admit
+symbols resolve in the same DSO as the original reload context and
+`ff_global_cfg`. The table remains process-local and single-threaded by the
+upstream contract. It is active only when the caller attaches a valid original
+reload block and enables graceful reload; the supported Nginx runtime profile
+still sets graceful reload to zero and leaves reload state detached. The
+original dispatcher registration hooks remain fail-closed. The DSO map test
+and C16 app do not compile duplicate map, reload, or configuration definitions
+into the executable; they verify the actual DSO symbol ownership.
+
+The default Nginx runtime remains detached and graceful reload remains
+unsupported.
 The C16 test-only pump-failure and received-FD trace hooks are compiled only
 with `BUILD_TESTING`; they are absent from tests-off installs. When the optional
 product runtime is disabled, native testing builds an uninstalled fallback DSO
-from the same three runtime sources and shared CMake helper; the installed
+from the same runtime sources and shared CMake helper; the installed
 product runtime remains opt-in. The six C16 tests run with either runtime
 target, including `BUILD_TESTING=ON` plus the default runtime option `OFF`.
 Run the fixture set with `ctest -R '^native-c16-'`; it includes
