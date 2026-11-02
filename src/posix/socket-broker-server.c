@@ -77,6 +77,7 @@ struct sb_object {
     uint32_t census_mark;
     uint16_t census_local_port;
     uint64_t census_listener_cookie;
+    bool census_expect_no_listener;
     uint64_t owner_token;
     uint64_t group_incarnation;
     uint64_t group_claim_generation;
@@ -131,6 +132,7 @@ struct sb_census_job {
     bool live;
     bool payload;
     bool requests;
+    bool expect_no_listener;
     int client_slot;
     int client_fd;
     struct ker_sb_header request;
@@ -479,8 +481,15 @@ static int member_census_capability(struct ker_socket_broker_server *server,
         group_object->group_slot < 0 || index > 1) return fail(ENOTSOCK);
     struct sb_group *group = &server->groups[group_object->group_slot];
     if (group_object->group_incarnation != group->incarnation) return fail(ESTALE);
-    if (group->owner_aware && !group->member_present[index]) return fail(EAGAIN);
-    if (!group->live || !group->member_mark[index] || !group->member_cookie[index])
+    bool pending_staged_candidate = group->owner_aware &&
+        group->staged_owner_group && index == 1 &&
+        group->staged_state == SB_STAGED_INITIAL_PUBLISHED &&
+        group->member_owner_token[1] && group->member_mark[1] &&
+        !group->member_present[1];
+    if (group->owner_aware && !group->member_present[index] &&
+        !pending_staged_candidate) return fail(EAGAIN);
+    if (!group->live || !group->member_mark[index] ||
+        (group->member_present[index] && !group->member_cookie[index]))
         return fail(EBADF);
     size_t slot = KER_SB_OBJECTS;
     int capability = make_capability(server, -1, KER_SOCKET_BROKER_MEMBER_CENSUS,
@@ -491,7 +500,9 @@ static int member_census_capability(struct ker_socket_broker_server *server,
     struct sb_object *object = &server->objects[slot];
     object->census_mark = group->member_mark[index];
     object->census_local_port = group->port;
-    object->census_listener_cookie = group->member_cookie[index];
+    object->census_listener_cookie = pending_staged_candidate ? 0 :
+        group->member_cookie[index];
+    object->census_expect_no_listener = pending_staged_candidate;
     return capability;
 }
 
@@ -1500,10 +1511,22 @@ static int owner_group_staged_initial_listener_validate(const struct sb_group *g
 
 static int owner_group_staged_candidate_reject(struct sb_group *group, int status)
 {
-    if (group && group->staged_state == SB_STAGED_CANDIDATE_BUILDING)
+    if (group && (group->staged_state == SB_STAGED_INITIAL_PUBLISHED ||
+            group->staged_state == SB_STAGED_CANDIDATE_BUILDING))
         group->staged_state = SB_STAGED_CANDIDATE_FAILED;
     return status;
 }
+
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+static void staged_admission_trace(const char *event, int fd, uint32_t mark)
+{
+    char line[112];
+    int length = snprintf(line, sizeof(line),
+        "C20_STAGED %s fd=%d mark=%u\n", event, fd, mark);
+    if (length > 0 && (size_t)length < sizeof(line))
+        (void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
+}
+#endif
 
 static int owner_group_staged_member_publish(struct ker_socket_broker_server *server,
     struct sb_object *plan, unsigned index, int *group_capability)
@@ -1523,9 +1546,6 @@ static int owner_group_staged_member_publish(struct ker_socket_broker_server *se
         if (group->staged_state == SB_STAGED_BOTH_PUBLISHED) return -EALREADY;
         if (group->staged_state != SB_STAGED_INITIAL_PUBLISHED) return -EAGAIN;
         if (!group->member_owner_token[0] || !group->member_owner_token[1]) return -EAGAIN;
-        /* A claimed candidate has one attempt. Any identity/history/authority
-         * failure below is terminal and cannot be replaced by another actor. */
-        group->staged_state = SB_STAGED_CANDIDATE_BUILDING;
     }
     struct sb_owner *owner0 = owner_by_token(server, group->member_owner_token[0]);
     if (!owner0 || owner0->pid != group->member_owner_pid[0] ||
@@ -1561,8 +1581,18 @@ static int owner_group_staged_member_publish(struct ker_socket_broker_server *se
         if (status) return owner_group_staged_candidate_reject(group, status);
         if (owner->unowned_network_history || owner->owned_socket_history)
             return owner_group_staged_candidate_reject(group, -EOPNOTSUPP);
-        if (owner->admission_prepared)
-            return owner_group_staged_candidate_reject(group, -EOPNOTSUPP);
+        if (owner->admission_prepared) {
+            /* HELLO/READY and the admission queue must be live before this
+             * candidate attempt is consumed or any socket effect occurs.
+             * A normal STARTING/window transition is retryable. Terminal,
+             * quarantined, or foreign task state fails closed. */
+            status = owner_admission_ready_status(owner);
+            if (status == 0 || status == -EAGAIN) return -EAGAIN;
+            if (status < 0)
+                return owner_group_staged_candidate_reject(group, status);
+        }
+        /* Only a ready actor crosses the one-shot attempt boundary. */
+        group->staged_state = SB_STAGED_CANDIDATE_BUILDING;
     }
     int authority = native_net_admin_present();
     if (authority < 0) return index == 1 ?
@@ -1597,8 +1627,10 @@ initial_fail:
         return status ? status : -EIO;
     }
 
+    int fd = -1;
+    bool admission_registered = false;
     group->staged_state = SB_STAGED_CANDIDATE_BUILDING;
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     int one = 1;
     if (fd < 0) { status = -errno; goto candidate_fail; }
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) ||
@@ -1606,9 +1638,23 @@ initial_fail:
         bind(fd, (const struct sockaddr *)&group->address, sizeof(group->address))) {
         status = -errno; goto candidate_fail;
     }
+    if (owner->admission_prepared) {
+        status = ker_posix_ff_admission_task_set_listener(
+            owner->admission_task, fd);
+        if (status) goto candidate_fail;
+        owner->admission_listener_native_fd = fd;
+        admission_registered = true;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+        staged_admission_trace("REGISTERED", fd, group->member_mark[1]);
+#endif
+    }
     if (listen(fd, group->backlog) || socket_cookie(fd, &group->member_cookie[1])) {
         status = -errno; goto candidate_fail;
     }
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    if (admission_registered)
+        staged_admission_trace("LISTEN", fd, group->member_mark[1]);
+#endif
     group->base_fd[1] = fd;
     group->member_present[1] = true;
     group->staged_state = SB_STAGED_BOTH_PUBLISHED;
@@ -1616,6 +1662,12 @@ initial_fail:
     if (group_capability) *group_capability = 0;
     return 0;
 candidate_fail:
+    if (admission_registered) {
+        (void)ker_posix_ff_admission_task_listener_closed(
+            owner->admission_task, fd);
+        owner->admission_listener_native_fd = -1;
+        owner->admission_failed = true;
+    }
     if (fd >= 0) (void)close(fd);
     group->staged_state = SB_STAGED_CANDIDATE_FAILED;
     return status ? status : -EIO;
@@ -2657,7 +2709,8 @@ static int start_member_census_job(struct ker_socket_broker_server *server,
         object->group_slot >= 0) return -ENOTSOCK;
     if ((object->rights & KER_SOCKET_BROKER_READ) != KER_SOCKET_BROKER_READ) return -EACCES;
     if (!object->census_mark || !object->census_local_port ||
-        !object->census_listener_cookie) return -EPROTO;
+        (!!object->census_listener_cookie == object->census_expect_no_listener))
+        return -EPROTO;
     if (client->census_job >= 0) return -EBUSY;
     size_t slot = KER_SB_CENSUS_JOBS;
     for (size_t i = 0; i < KER_SB_CENSUS_JOBS; ++i)
@@ -2666,12 +2719,14 @@ static int start_member_census_job(struct ker_socket_broker_server *server,
     struct sb_census_job *job = &server->census_jobs[slot];
     struct ker_member_census_identity identity = {
         .mark = object->census_mark, .local_port = object->census_local_port,
-        .listener_cookie = object->census_listener_cookie};
+        .listener_cookie = object->census_listener_cookie,
+        .expect_no_listener = object->census_expect_no_listener};
     uint64_t ticket = 0;
     int submitted = payload ? ker_member_payload_query_submit(identity.mark, &ticket) :
         ker_member_census_query_submit(&identity, &ticket);
     if (submitted) return submitted;
     *job = (struct sb_census_job){.live = true, .payload = payload,
+        .expect_no_listener = object->census_expect_no_listener,
         .client_slot = (int)(client - server->clients), .client_fd = client->fd,
         .request = *request, .ticket = ticket};
     client->census_job = (int)slot;
@@ -2756,12 +2811,21 @@ static void finish_member_census_jobs(struct ker_socket_broker_server *server)
             struct sb_client *client = &server->clients[job->client_slot];
             if (client->fd == job->client_fd && client->census_job == (int)i) {
                 client->census_job = -1;
+                struct ker_sb_member_census_snapshot census_wire = {0};
+                if (!query_status && !job->requests && !job->payload) {
+                    census_wire.total = snapshot.total;
+                    memcpy(census_wire.state_counts, snapshot.state_counts,
+                        sizeof(census_wire.state_counts));
+                    census_wire.listener_cookie = snapshot.listener_cookie;
+                    census_wire.flags = job->expect_no_listener ?
+                        KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER : 0;
+                }
                 const void *output = query_status ? NULL : job->requests ?
                     (const void *)&request_count : job->payload ?
-                        (const void *)&payload_snapshot : (const void *)&snapshot;
+                        (const void *)&payload_snapshot : (const void *)&census_wire;
                 size_t output_length = query_status ? 0 : job->requests ?
                     sizeof(request_count) : job->payload ?
-                        sizeof(payload_snapshot) : sizeof(snapshot);
+                        sizeof(payload_snapshot) : sizeof(census_wire);
                 if (send_reply(client, &job->request, query_status, output,
                         output_length, -1)) close_client(server, client);
             }

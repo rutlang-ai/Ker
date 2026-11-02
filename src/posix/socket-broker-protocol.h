@@ -76,10 +76,15 @@ struct ker_sb_tcp_observer_snapshot {
     uint8_t reserved[2];
 } __attribute__((packed));
 struct ker_sb_member_census_create { uint32_t index; } __attribute__((packed));
+enum ker_sb_member_census_flags {
+    KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER = 1u << 0
+};
 struct ker_sb_member_census_snapshot {
     uint64_t total;
     uint64_t state_counts[KER_SOCKET_BROKER_TCP_STATES];
     uint64_t listener_cookie;
+    uint32_t flags;
+    uint32_t reserved;
 } __attribute__((packed));
 struct ker_sb_member_payload_snapshot {
     uint64_t payload_bytes;

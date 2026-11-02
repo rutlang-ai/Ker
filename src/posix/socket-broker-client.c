@@ -781,7 +781,13 @@ int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
     int received = 0;
     if (socket_call(client, census_cap, KER_SB_MEMBER_CENSUS_SNAPSHOT, NULL, 0,
             &wire, sizeof(wire), NULL, &received) < 0) return -1;
-    if (received != sizeof(wire) || !wire.listener_cookie || wire.state_counts[0])
+    if (received != sizeof(wire) || wire.reserved ||
+        (wire.flags & ~KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER) ||
+        (!!wire.listener_cookie ==
+            !!(wire.flags & KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER)) ||
+        wire.state_counts[0] ||
+        ((wire.flags & KER_SB_MEMBER_CENSUS_EXPECT_NO_LISTENER) &&
+            wire.state_counts[KER_SOCKET_TCP_STATE_LISTEN]))
         return fail(EPROTO);
     uint64_t total = 0;
     for (size_t i = 0; i < KER_SOCKET_BROKER_TCP_STATES; ++i) {
