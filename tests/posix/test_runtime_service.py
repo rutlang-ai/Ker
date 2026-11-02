@@ -15,9 +15,12 @@ import unittest
 
 
 TOOLS = Path(__file__).resolve().parents[2] / 'tools'
+TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(TESTS))
 import runtime_service
 import runtime_service_wire as wire
+from runtime_service_test_helpers import atomic_content_marker
 
 
 ACTOR = r'''import array, json, os, socket, sys, time
@@ -120,6 +123,7 @@ channel.close()
 
 DELEGATION_CHAIN_ACTOR = r"""import array, os, secrets, socket, sys, time
 import runtime_service_wire as w
+from runtime_service_test_helpers import atomic_content_marker
 env = os.environ
 path = env['KER_RUNTIME_SERVICE_PATH']
 nonce = bytes.fromhex(env['KER_RUNTIME_SERVICE_NONCE'])
@@ -157,8 +161,7 @@ def create_child(sock, sequence, lease, child_role):
     intent = w.unpack_intent_result(body)
     pause_role = os.environ.get('KER_TEST_PAUSE_INTENT_ROLE')
     if pause_role and int(pause_role) == child_role:
-        with open(os.environ['KER_TEST_INTENT_READY'], 'w') as marker:
-            marker.write(str(os.getpid()))
+        atomic_content_marker(os.environ['KER_TEST_INTENT_READY'], str(os.getpid()))
         deadline = time.monotonic() + 8
         while (not os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']) and
                 time.monotonic() < deadline):
@@ -192,6 +195,7 @@ def create_child(sock, sequence, lease, child_role):
 
 CHILD = r'''import array, os, socket, sys, time
 import runtime_service_wire as w
+from runtime_service_test_helpers import atomic_content_marker
 env = os.environ
 grant = sys.stdin.buffer.read(w.DELEGATE_BIND_RESULT.size)
 assert len(grant) == w.DELEGATE_BIND_RESULT.size
@@ -227,8 +231,7 @@ def create_child(sock, sequence, lease, child_role):
     intent = w.unpack_intent_result(body)
     pause_role = os.environ.get('KER_TEST_PAUSE_INTENT_ROLE')
     if pause_role and int(pause_role) == child_role:
-        with open(os.environ['KER_TEST_INTENT_READY'], 'w') as marker:
-            marker.write(str(os.getpid()))
+        atomic_content_marker(os.environ['KER_TEST_INTENT_READY'], str(os.getpid()))
         deadline = time.monotonic() + 8
         while (not os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']) and
                 time.monotonic() < deadline):
@@ -295,12 +298,12 @@ status, lease, body = rpc(sock, w.CLAIM, 1,
 if status != 0:
     status_marker = env.get('KER_TEST_FINAL_CLAIM_STATUS')
     if status_marker:
-        open(status_marker, 'w').write(str(status))
+        atomic_content_marker(status_marker, str(status))
         os._exit(0)
 assert status == 0 and len(body) == w.CLAIM_RESULT.size
 status, _, _ = rpc(sock, w.CHECK, 2, lease)
 assert status == 0
-open(env['KER_TEST_FINAL_CLAIMED'], 'w').close()
+atomic_content_marker(env['KER_TEST_FINAL_CLAIMED'], str(os.getpid()))
 if env.get('KER_TEST_FINAL_EXIT_AFTER_CLAIM'):
     os._exit(0)
 deadline = time.monotonic() + 10
@@ -379,7 +382,7 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                 baseline_null_fds = null_descriptors()
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 dropped_marker = Path(directory) / 'lease-dropped'
                 continue_marker = Path(directory) / 'continue-reconnect'
                 env['KER_TEST_LEASE_DROPPED'] = str(dropped_marker)
@@ -528,7 +531,7 @@ class RuntimeServiceDelegationChainTest(unittest.TestCase):
                 error_log = root / 'actor-stderr'
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 env.update({
                     'KER_TEST_FINAL_CLAIMED': str(root / 'final-claimed'),
                     'KER_TEST_FINAL_RELEASE': str(root / 'final-release'),
@@ -617,7 +620,7 @@ class RuntimeServiceDelegationChainTest(unittest.TestCase):
                 error_log = root / 'delegation-stderr'
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 env.update({
                     'KER_TEST_FINAL_CLAIMED': str(claimed),
                     'KER_TEST_FINAL_RELEASE': str(release),
@@ -723,7 +726,7 @@ class RuntimeServiceDelegationChainTest(unittest.TestCase):
                 release = Path(directory) / 'final-release'
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
                 env['KER_TEST_FINAL_RELEASE'] = str(release)
                 error_log = Path(directory) / 'delegation-stderr'
@@ -810,7 +813,7 @@ class RuntimeServiceDelegationChainTest(unittest.TestCase):
                 claim_status = Path(directory) / 'final-claim-status'
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
                 env['KER_TEST_FINAL_RELEASE'] = str(release)
                 env['KER_TEST_DEFER_FINAL_CLAIM'] = '1'
@@ -905,7 +908,7 @@ class RuntimeServiceDelegationChainTest(unittest.TestCase):
                 release = Path(directory) / 'final-release'
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
                 env['KER_TEST_FINAL_RELEASE'] = str(release)
                 env['KER_TEST_FINAL_EXIT_AFTER_CLAIM'] = '1'
@@ -974,7 +977,7 @@ class RuntimeServiceDelegationChainTest(unittest.TestCase):
                 master_released = Path(directory) / 'master-released'
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
                 env['KER_TEST_FINAL_RELEASE'] = str(release)
                 env['KER_TEST_MASTER_HOLD'] = '1'
@@ -1126,7 +1129,7 @@ s.close()
                 baseline_null_fds = null_descriptors()
                 env = os.environ.copy()
                 env.update(service.env)
-                env['PYTHONPATH'] = str(TOOLS)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
                 actor = subprocess.Popen([sys.executable, '-c', EMPTY_RIGHTS_ACTOR],
                     env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 actor_pidfd = os.pidfd_open(actor.pid, 0)
@@ -1162,6 +1165,38 @@ s.close()
                 for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
                     if descriptor >= 0:
                         os.close(descriptor)
+
+
+class RuntimeServiceContentMarkerTest(unittest.TestCase):
+    def test_content_marker_is_invisible_until_fully_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'child-pid'
+            prepared = threading.Event()
+            publish = threading.Event()
+            errors = []
+
+            def before_publish(temporary, final):
+                self.assertEqual(temporary.parent, final.parent)
+                self.assertEqual(temporary.read_text(), '12345')
+                prepared.set()
+                if not publish.wait(2):
+                    raise TimeoutError('test did not release atomic marker publication')
+
+            def writer():
+                try:
+                    atomic_content_marker(target, '12345', before_publish)
+                except BaseException as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=writer)
+            thread.start()
+            self.assertTrue(prepared.wait(1), 'writer did not reach the pre-publication barrier')
+            self.assertFalse(target.exists(), 'content marker became visible before complete write/close')
+            publish.set()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive(), 'atomic marker writer did not finish')
+            self.assertEqual(errors, [])
+            self.assertEqual(int(target.read_text()), 12345)
 
 
 if __name__ == '__main__':

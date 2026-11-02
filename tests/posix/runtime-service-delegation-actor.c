@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,12 +148,17 @@ static int marker(const char *name, const char *text)
 {
     const char *path = getenv(name);
     if (!path || !*path) { errno = EINVAL; return -1; }
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    char temporary[PATH_MAX];
+    int length = snprintf(temporary, sizeof(temporary), "%s.tmp.XXXXXX", path);
+    if (length < 0 || (size_t)length >= sizeof(temporary)) { errno = ENAMETOOLONG; return -1; }
+    int fd = mkostemp(temporary, O_CLOEXEC);
     if (fd < 0) return -1;
     int result = write_full(fd, text, strlen(text));
     if (!result && fsync(fd)) result = -1;
     int error = errno;
-    close(fd);
+    if (close(fd) && !result) { result = -1; error = errno; }
+    if (!result && link(temporary, path)) { result = -1; error = errno; }
+    if (unlink(temporary) && !result) { result = -1; error = errno; }
     errno = error;
     return result;
 }
