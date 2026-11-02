@@ -31,6 +31,7 @@
 #include "ff-owner-admission-control.h"
 #include "ff-admission-task.h"
 #include "ff-ingress-controller.h"
+#include "socket-broker-readiness-wire.h"
 
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
@@ -201,6 +202,23 @@ struct ker_socket_broker_server {
     uint64_t next_group_incarnation;
     struct sb_client clients[KER_SB_CLIENTS];
     struct sb_census_job census_jobs[KER_SB_CENSUS_JOBS];
+    int readiness_fd;
+    int readiness_supervisor_pidfd;
+#ifdef KER_SOCKET_BROKER_READINESS_TESTING
+    int readiness_parent_error;
+#endif
+    pid_t readiness_supervisor_pid;
+    uid_t readiness_supervisor_uid;
+    gid_t readiness_supervisor_gid;
+    uint64_t readiness_supervisor_start_ticks;
+    uint64_t readiness_broker_start_ticks;
+    uint64_t readiness_epoch;
+    uint8_t readiness_nonce[16];
+    uint8_t readiness_worker_profile[32];
+    bool readiness_attached;
+    bool readiness_bootstrap_complete;
+    bool readiness_sent;
+    bool readiness_stop_requested;
 };
 
 static void owner_group_activation_poison(struct ker_socket_broker_server *server,
@@ -208,6 +226,7 @@ static void owner_group_activation_poison(struct ker_socket_broker_server *serve
 static void advance_group_cutovers(struct ker_socket_broker_server *server);
 static bool group_cutover_terminal(uint32_t phase);
 static void group_cutover_quarantine(struct sb_group *group, int result);
+static int process_start_time(pid_t pid, uint64_t *start_time);
 
 static int host_close(int fd)
 {
@@ -522,6 +541,165 @@ static size_t client_count(const struct ker_socket_broker_server *server)
     return result;
 }
 
+static const uint8_t empty_manifest_sha256[32] =
+    KER_BROKER_EMPTY_MANIFEST_SHA256_BYTES;
+
+static void wire_put16(uint8_t *record, size_t offset, uint16_t value)
+{
+    record[offset] = (uint8_t)value;
+    record[offset + 1] = (uint8_t)(value >> 8);
+}
+
+static void wire_put32(uint8_t *record, size_t offset, uint32_t value)
+{
+    for (unsigned i = 0; i < 4; ++i) record[offset + i] = (uint8_t)(value >> (8 * i));
+}
+
+static void wire_put64(uint8_t *record, size_t offset, uint64_t value)
+{
+    for (unsigned i = 0; i < 8; ++i) record[offset + i] = (uint8_t)(value >> (8 * i));
+}
+
+static uint16_t wire_get16(const uint8_t *record, size_t offset)
+{
+    return (uint16_t)record[offset] | (uint16_t)((uint16_t)record[offset + 1] << 8);
+}
+
+static uint32_t wire_get32(const uint8_t *record, size_t offset)
+{
+    uint32_t result = 0;
+    for (unsigned i = 0; i < 4; ++i) result |= (uint32_t)record[offset + i] << (8 * i);
+    return result;
+}
+
+static uint64_t wire_get64(const uint8_t *record, size_t offset)
+{
+    uint64_t result = 0;
+    for (unsigned i = 0; i < 8; ++i) result |= (uint64_t)record[offset + i] << (8 * i);
+    return result;
+}
+
+static int readiness_supervisor_alive(struct ker_socket_broker_server *server)
+{
+    struct pollfd parent = {.fd = server->readiness_supervisor_pidfd, .events = POLLIN};
+    int ready = (int)syscall(SYS_poll, &parent, 1, 0);
+    if (ready < 0) return -errno;
+    if (ready && (parent.revents & POLLNVAL)) return -EBADF;
+    if (ready && (parent.revents & POLLERR)) return -EIO;
+    if (ready && (parent.revents & (POLLIN | POLLHUP))) return -ESRCH;
+    uint64_t current_start = 0;
+    if (process_start_time(server->readiness_supervisor_pid, &current_start))
+        return -errno;
+    return current_start == server->readiness_supervisor_start_ticks ? 0 : -ESTALE;
+}
+
+static void readiness_header(uint8_t *record, uint16_t type, uint32_t size)
+{
+    wire_put32(record, KER_BROKER_WIRE_MAGIC_OFFSET, KER_BROKER_READY_MAGIC);
+    wire_put16(record, KER_BROKER_WIRE_VERSION_OFFSET, KER_BROKER_READY_VERSION);
+    wire_put16(record, KER_BROKER_WIRE_TYPE_OFFSET, type);
+    wire_put32(record, KER_BROKER_WIRE_SIZE_OFFSET, size);
+    wire_put32(record, KER_BROKER_WIRE_RESERVED_OFFSET, 0);
+}
+
+static int readiness_send_ready(struct ker_socket_broker_server *server)
+{
+    if (!server->readiness_attached || server->readiness_sent) return 0;
+    if (!server->readiness_bootstrap_complete || object_count(server) != 0 ||
+        server->listener < 0) return -EPROTO;
+    uint8_t record[KER_BROKER_READY_RECORD_BYTES] = {0};
+    readiness_header(record, KER_BROKER_READY_TYPE, sizeof(record));
+    memcpy(record + KER_BROKER_WIRE_NONCE_OFFSET, server->readiness_nonce, 16);
+    wire_put64(record, KER_BROKER_WIRE_EPOCH_OFFSET, server->readiness_epoch);
+    memcpy(record + KER_BROKER_READY_PROFILE_OFFSET,
+        server->readiness_worker_profile, 32);
+    wire_put64(record, KER_BROKER_READY_START_TICKS_OFFSET,
+        server->readiness_broker_start_ticks);
+    wire_put32(record, KER_BROKER_READY_OBJECT_COUNT_OFFSET, 0);
+    memcpy(record + KER_BROKER_READY_MANIFEST_OFFSET, empty_manifest_sha256, 32);
+    ssize_t sent = syscall(SYS_sendto, server->readiness_fd, record, sizeof(record),
+        MSG_DONTWAIT | MSG_NOSIGNAL, NULL, 0);
+    if (sent != (ssize_t)sizeof(record)) return -(sent < 0 ? errno : EIO);
+    server->readiness_sent = true;
+    return 0;
+}
+
+/* Receive and close every installed SCM_RIGHTS descriptor before returning,
+ * including malformed, truncated, credential-mismatched and empty packets. */
+static int readiness_receive_stop(struct ker_socket_broker_server *server)
+{
+    uint8_t record[KER_BROKER_STOP_RECORD_BYTES];
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 16)] = {0};
+    struct iovec iov = {.iov_base = record, .iov_len = sizeof(record)};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t received = syscall(SYS_recvmsg, server->readiness_fd, &message,
+        MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    int error = received < 0 ? errno : 0;
+    struct ucred credentials = {0};
+    bool have_credentials = false;
+    bool unexpected_control = false;
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message); cmsg;
+         cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level != SOL_SOCKET) { unexpected_control = true; continue; }
+        if (cmsg->cmsg_type == SCM_RIGHTS) {
+            if (cmsg->cmsg_len < CMSG_LEN(0)) { unexpected_control = true; continue; }
+            size_t bytes = cmsg->cmsg_len - CMSG_LEN(0);
+            if (bytes % sizeof(int)) unexpected_control = true;
+            size_t count = bytes / sizeof(int);
+            const int *fds = (const int *)CMSG_DATA(cmsg);
+            for (size_t i = 0; i < count; ++i) (void)host_close(fds[i]);
+            unexpected_control = true;
+        } else if (cmsg->cmsg_type == SCM_CREDENTIALS) {
+            if (have_credentials || cmsg->cmsg_len != CMSG_LEN(sizeof(credentials))) {
+                unexpected_control = true;
+                continue;
+            }
+            memcpy(&credentials, CMSG_DATA(cmsg), sizeof(credentials));
+            have_credentials = true;
+        } else {
+            unexpected_control = true;
+        }
+    }
+    if (error) return -error;
+    if (received != (ssize_t)sizeof(record) ||
+        (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) || unexpected_control ||
+        !have_credentials) return -EPROTO;
+    struct pollfd parent = {.fd = server->readiness_supervisor_pidfd, .events = POLLIN};
+    int ready = (int)syscall(SYS_poll, &parent, 1, 0);
+    if (ready < 0) return -errno;
+    if (ready && (parent.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) return -ESRCH;
+    uint64_t current_start = 0;
+    if (credentials.pid != server->readiness_supervisor_pid ||
+        credentials.uid != server->readiness_supervisor_uid ||
+        credentials.gid != server->readiness_supervisor_gid ||
+        process_start_time(credentials.pid, &current_start) ||
+        current_start != server->readiness_supervisor_start_ticks) return -EACCES;
+    if (wire_get32(record, 0) != KER_BROKER_READY_MAGIC ||
+        wire_get16(record, 4) != KER_BROKER_READY_VERSION ||
+        wire_get16(record, 6) != KER_BROKER_STOP_TYPE ||
+        wire_get32(record, 8) != sizeof(record) || wire_get32(record, 12) != 0 ||
+        memcmp(record + KER_BROKER_WIRE_NONCE_OFFSET, server->readiness_nonce, 16) ||
+        wire_get64(record, KER_BROKER_WIRE_EPOCH_OFFSET) != server->readiness_epoch ||
+        memcmp(record + KER_BROKER_STOP_MANIFEST_OFFSET, empty_manifest_sha256, 32) ||
+        wire_get32(record, KER_BROKER_STOP_PID_OFFSET) != (uint32_t)server->readiness_supervisor_pid ||
+        wire_get32(record, KER_BROKER_STOP_UID_OFFSET) != (uint32_t)server->readiness_supervisor_uid ||
+        wire_get32(record, KER_BROKER_STOP_GID_OFFSET) != (uint32_t)server->readiness_supervisor_gid ||
+        wire_get32(record, KER_BROKER_STOP_RESERVED2_OFFSET) != 0 ||
+        wire_get64(record, KER_BROKER_STOP_START_TICKS_OFFSET) != server->readiness_supervisor_start_ticks ||
+        wire_get64(record, KER_BROKER_STOP_ID_OFFSET) != KER_BROKER_READY_STOP_ID)
+        return -EPROTO;
+    if (server->readiness_stop_requested) return -EALREADY;
+    record[6] = (uint8_t)KER_BROKER_STOP_ACK_TYPE;
+    record[7] = (uint8_t)(KER_BROKER_STOP_ACK_TYPE >> 8);
+    ssize_t sent = syscall(SYS_sendto, server->readiness_fd, record, sizeof(record),
+        MSG_DONTWAIT | MSG_NOSIGNAL, NULL, 0);
+    if (sent != (ssize_t)sizeof(record)) return -(sent < 0 ? errno : EIO);
+    server->readiness_stop_requested = true;
+    return 1;
+}
+
 static bool admission_tasks_stopping(struct ker_socket_broker_server *server)
 {
     bool active = false;
@@ -683,6 +861,111 @@ static int process_start_time(pid_t pid, uint64_t *start_time)
     *start_time = (uint64_t)value;
     return 0;
 }
+
+int ker_socket_broker_server_readiness_attach(
+    struct ker_socket_broker_server *server, int control_fd,
+    const uint8_t run_nonce[16], uint64_t worker_epoch,
+    const uint8_t expected_worker_profile_sha256[32],
+    uint64_t expected_supervisor_start_ticks)
+{
+    bool nonce_nonzero = false, profile_nonzero = false;
+    if (run_nonce)
+        for (size_t i = 0; i < 16; ++i) nonce_nonzero |= run_nonce[i] != 0;
+    if (expected_worker_profile_sha256)
+        for (size_t i = 0; i < 32; ++i)
+            profile_nonzero |= expected_worker_profile_sha256[i] != 0;
+    if (!server || control_fd < 0 || !run_nonce || !expected_worker_profile_sha256 ||
+        !nonce_nonzero || !profile_nonzero || !worker_epoch ||
+        !expected_supervisor_start_ticks || server->running ||
+        server->readiness_attached) return fail(EINVAL);
+    int domain = 0, type = 0;
+    socklen_t option_length = sizeof(type);
+    if (syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_DOMAIN,
+            &domain, &option_length)) return -1;
+    if (option_length != sizeof(domain) || domain != AF_UNIX) return fail(EPROTOTYPE);
+    option_length = sizeof(type);
+    if (syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_TYPE,
+            &type, &option_length)) return -1;
+    if (option_length != sizeof(type) || type != SOCK_SEQPACKET) return fail(EPROTOTYPE);
+    struct ucred peer = {0};
+    option_length = sizeof(peer);
+    if (syscall(SYS_getsockopt, control_fd, SOL_SOCKET, SO_PEERCRED,
+            &peer, &option_length)) return -1;
+    if (option_length != sizeof(peer) || peer.pid <= 0 || peer.pid != getppid())
+        return fail(EACCES);
+    uint64_t parent_start = 0, broker_start = 0;
+    if (process_start_time(peer.pid, &parent_start)) return -1;
+    if (parent_start != expected_supervisor_start_ticks) return fail(ESTALE);
+    if (process_start_time(getpid(), &broker_start)) return -1;
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+    int parent_pidfd = (int)syscall(SYS_pidfd_open, peer.pid, 0);
+    if (parent_pidfd < 0) return -1;
+    uint64_t rechecked_start = 0;
+    if (process_start_time(peer.pid, &rechecked_start)) {
+        int error = errno;
+        (void)host_close(parent_pidfd);
+        return fail(error);
+    }
+    if (rechecked_start != parent_start) {
+        (void)host_close(parent_pidfd);
+        return fail(ESTALE);
+    }
+    struct pollfd parent = {.fd = parent_pidfd, .events = POLLIN};
+    int parent_ready = (int)syscall(SYS_poll, &parent, 1, 0);
+    if (parent_ready < 0 || (parent_ready &&
+        (parent.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))) {
+        int error = parent_ready < 0 ? errno : ESRCH;
+        (void)host_close(parent_pidfd);
+        return fail(error);
+    }
+    int private_fd = (int)syscall(SYS_fcntl, control_fd, F_DUPFD_CLOEXEC, 0);
+    if (private_fd < 0) { int error = errno; (void)host_close(parent_pidfd); return fail(error); }
+    int pass_credentials = 1;
+    if (syscall(SYS_setsockopt, private_fd, SOL_SOCKET, SO_PASSCRED,
+            &pass_credentials, sizeof(pass_credentials))) {
+        int error = errno;
+        (void)host_close(private_fd);
+        (void)host_close(parent_pidfd);
+        return fail(error);
+    }
+    server->readiness_fd = private_fd;
+    server->readiness_supervisor_pidfd = parent_pidfd;
+    server->readiness_supervisor_pid = peer.pid;
+    server->readiness_supervisor_uid = peer.uid;
+    server->readiness_supervisor_gid = peer.gid;
+    server->readiness_supervisor_start_ticks = parent_start;
+    server->readiness_broker_start_ticks = broker_start;
+    server->readiness_epoch = worker_epoch;
+    memcpy(server->readiness_nonce, run_nonce, sizeof(server->readiness_nonce));
+    memcpy(server->readiness_worker_profile, expected_worker_profile_sha256,
+        sizeof(server->readiness_worker_profile));
+    server->readiness_attached = true;
+    return 0;
+}
+
+int ker_socket_broker_server_bootstrap_complete_empty(
+    struct ker_socket_broker_server *server)
+{
+    if (!server || !server->readiness_attached || server->running ||
+        server->readiness_bootstrap_complete || server->listener < 0)
+        return fail(EINVAL);
+    if (object_count(server) != 0) return fail(EBUSY);
+    struct stat identity;
+    if (fstat(server->listener, &identity)) return -1;
+    server->readiness_bootstrap_complete = true;
+    return 0;
+}
+
+#ifdef KER_SOCKET_BROKER_READINESS_TESTING
+int ker_socket_broker_server_readiness_test_parent_error(
+    const struct ker_socket_broker_server *server)
+{
+    if (!server || !server->readiness_attached) return EINVAL;
+    return server->readiness_parent_error;
+}
+#endif
 
 static int client_identity(struct sb_client *client, uint64_t *start_time)
 {
@@ -4341,11 +4624,36 @@ static void reap_dead(struct ker_socket_broker_server *server)
 static int broker_pump(void *argument)
 {
     struct ker_socket_broker_server *server = argument;
-    int accepted = accept_clients(server);
+    if (server->readiness_attached) {
+        int status = readiness_supervisor_alive(server);
+        if (status) {
+            server->failure = -status;
+#ifdef KER_SOCKET_BROKER_READINESS_TESTING
+            server->readiness_parent_error = -status;
+#endif
+        }
+    }
+    if (server->readiness_attached && !server->failure && !server->readiness_sent) {
+        int status = readiness_send_ready(server);
+        if (status) server->failure = -status;
+    }
+    if (server->readiness_attached && !server->failure && server->readiness_sent &&
+        !server->readiness_stop_requested) {
+        int status = readiness_receive_stop(server);
+        if (status < 0 && status != -EAGAIN && status != -EWOULDBLOCK &&
+            status != -EINTR) server->failure = -status;
+    }
+    int accepted = 0;
+    if (!server->readiness_stop_requested && !server->failure)
+        accepted = accept_clients(server);
     if (accepted) server->failure = -accepted;
     for (size_t i = 0; i < KER_SB_CLIENTS; ++i) {
         struct sb_client *client = &server->clients[i];
         if (client->fd < 0) continue;
+        if (server->readiness_stop_requested || server->failure) {
+            close_client(server, client);
+            continue;
+        }
         struct pollfd pfd = {.fd = client->fd, .events = POLLIN | POLLHUP | POLLERR};
         if (syscall(SYS_poll, &pfd, 1, 0) <= 0) continue;
         if (pfd.revents & POLLIN) {
@@ -4358,7 +4666,8 @@ static int broker_pump(void *argument)
     pump_owner_admission_endpoints(server);
     advance_group_cutovers(server);
     finish_member_census_jobs(server);
-    bool should_stop = server->failure || (server->stop_when_empty &&
+    bool should_stop = server->failure || server->readiness_stop_requested ||
+        (server->stop_when_empty &&
         !object_count(server) && !client_count(server));
     if (should_stop && admission_tasks_stopping(server)) {
         struct timespec task_pause = {.tv_nsec = 1000000};
@@ -4383,6 +4692,8 @@ struct ker_socket_broker_server *ker_socket_broker_server_create(const char *pat
     struct ker_socket_broker_server *server = calloc(1, sizeof(*server));
     if (!server) return NULL;
     server->listener = -1;
+    server->readiness_fd = -1;
+    server->readiness_supervisor_pidfd = -1;
     int lease_status = ker_member_census_server_claim(&server->runtime_lease);
     if (lease_status) {
         free(server);
@@ -4445,6 +4756,8 @@ int ker_socket_broker_server_run(struct ker_socket_broker_server *server, int st
 {
     if (!server || server->listener < 0 || server->running) return fail(EINVAL);
     if (stop_when_empty && !object_count(server)) return fail(EINVAL);
+    if (server->readiness_attached &&
+        (stop_when_empty || !server->readiness_bootstrap_complete)) return fail(EINVAL);
     server->running = true;
     server->stop_when_empty = !!stop_when_empty;
     int result = ker_posix_run(broker_pump, server);
@@ -4486,6 +4799,8 @@ int ker_socket_broker_server_destroy_checked(struct ker_socket_broker_server *se
         }
         (void)host_close(server->owners[i].pidfd);
     }
+    (void)host_close(server->readiness_fd);
+    (void)host_close(server->readiness_supervisor_pidfd);
     (void)host_close(server->listener);
     if (server->path_bound) {
         struct stat identity;

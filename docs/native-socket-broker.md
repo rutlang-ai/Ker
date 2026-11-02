@@ -274,6 +274,35 @@ malformed replies remain errors; none is treated as an empty census. This
 initial observer surface is limited to connected IPv4 TCP sockets and is not a
 per-generation or full-table F-Stack graceful-reload census.
 
+## Supervisor readiness control
+
+The optional `ker_socket_broker_server_readiness_attach()` profile gives a
+trusted direct supervisor a bounded readiness record and one-shot stop request
+over a pre-created Unix `SOCK_SEQPACKET` pair. It is deliberately restricted
+to an empty initial capability set: the caller attaches the channel, explicitly
+completes the empty bootstrap, and runs the broker with
+`ker_socket_broker_server_run(server, 0)`. The broker emits its fixed 120-byte
+little-endian READY record only from its first actual request-pump turn, after
+the listener is live and the empty bootstrap was confirmed. Stdout markers and
+the DPDK worker's `KER_IO_READY` do not substitute for this record.
+
+The supervisor authenticates READY using per-message kernel credentials and
+the exact broker process identity it launched. The broker pins its direct
+supervisor from the pre-fork channel's peer credentials, parent PID, start time,
+and pidfd; it continues checking that parent while its pump runs. STOP and
+STOP_ACK are fixed 104-byte records with a single stop ID. STOP is authenticated
+by per-message credentials and the pinned parent identity. The broker stops
+accepting RPC work after accepting STOP. STOP_ACK means the request was
+accepted; it does not mean descriptors or original Linux have been cleaned up.
+The supervisor must still observe normal `server_run()` return, checked
+destruction, the application/native completion signal, and worker resource
+cleanup. A lost STOP_ACK is ambiguous, so STOP is not resent.
+
+This profile does not transfer a sentinel capability or expose packet/run
+descriptors, F-Stack dispatcher callbacks, or runtime-service credentials. It
+does not enable `graceful_reload=1`, Nginx worker roles, or an F-Stack graceful
+reload claim. Calls that do not opt in keep their existing broker behavior.
+
 ## Scope
 
 The broker caller must quiesce socket users while adopting descriptors and

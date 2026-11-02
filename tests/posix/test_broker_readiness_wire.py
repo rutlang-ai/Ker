@@ -27,6 +27,10 @@ class BrokerReadinessWireTests(unittest.TestCase):
             bad[offset:offset + len(replacement)] = replacement
             with self.subTest(offset=offset), self.assertRaises(ValueError):
                 wire.unpack_ready(bad)
+        with self.assertRaises(ValueError):
+            wire.pack_ready(b'\0' * 16, 1, b'p' * 32, 2)
+        with self.assertRaises(ValueError):
+            wire.pack_ready(b'n' * 16, 1, b'\0' * 32, 2)
 
     def test_stop_and_ack_are_exact_and_one_shot(self):
         fields = (b'n' * 16, 9, 123, 1000, 1001, 4567)
@@ -43,6 +47,8 @@ class BrokerReadinessWireTests(unittest.TestCase):
             bad[96:104] = (2).to_bytes(8, 'little')
             with self.assertRaises(ValueError):
                 wire.unpack_stop(bad, record_type)
+        with self.assertRaises(ValueError):
+            wire.pack_stop(wire.STOP, b'\0' * 16, *fields[1:])
 
     def test_empty_manifest_digest_is_fixed_domain(self):
         self.assertEqual(len(wire.EMPTY_MANIFEST_DOMAIN), 36)

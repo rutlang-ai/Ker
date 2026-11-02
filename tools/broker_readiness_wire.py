@@ -30,6 +30,7 @@ def pack_ready(nonce, epoch, worker_profile_sha256, broker_start_ticks,
     if (len(nonce) != 16 or len(worker_profile_sha256) != 32 or
             len(manifest_sha256) != 32 or epoch <= 0 or
             broker_start_ticks <= 0 or object_count != 0 or
+            not any(nonce) or not any(worker_profile_sha256) or
             manifest_sha256 != EMPTY_MANIFEST_SHA256):
         raise ValueError('invalid empty-broker READY fields')
     return READY_RECORD.pack(MAGIC, VERSION, READY, READY_RECORD.size, 0,
@@ -45,6 +46,7 @@ def unpack_ready(packet):
     if (magic != MAGIC or version != VERSION or record_type != READY or
             size != len(packet) or reserved or reserved2 or not epoch or
             not start_ticks or count != 0 or
+            not any(nonce) or not any(profile) or
             manifest != EMPTY_MANIFEST_SHA256):
         raise ValueError('invalid READY fields')
     return nonce, epoch, profile, start_ticks, count, manifest
@@ -56,6 +58,7 @@ def pack_stop(record_type, nonce, epoch, supervisor_pid, supervisor_uid,
     if (record_type not in (STOP, STOP_ACK) or len(nonce) != 16 or
             len(manifest_sha256) != 32 or
             manifest_sha256 != EMPTY_MANIFEST_SHA256 or not epoch or
+            not any(nonce) or
             not supervisor_pid or not supervisor_start_ticks or
             stop_id != STOP_ID):
         raise ValueError('invalid STOP fields')
@@ -72,6 +75,7 @@ def unpack_stop(packet, expected_type):
     if (magic != MAGIC or version != VERSION or record_type != expected_type or
             size != len(packet) or reserved or reserved2 or not epoch or
             not pid or not start_ticks or stop_id != STOP_ID or
+            not any(nonce) or
             manifest != EMPTY_MANIFEST_SHA256):
         raise ValueError('invalid STOP fields')
     return nonce, epoch, manifest, pid, uid, gid, start_ticks, stop_id
