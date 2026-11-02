@@ -202,6 +202,79 @@ if(BUILD_TESTING)
             TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
+        add_test(NAME native-c28-broker-owned-cutover-tap
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+                --staged-admission-only --candidate-activation-only --cutover-coordinator)
+        string(JOIN ":" ker_c28_dpdk_library_path ${DPDK_LIBRARY_DIRS}
+            "${ker_session_pmd_dir}")
+        set_tests_properties(native-c28-broker-owned-cutover-tap PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport;cutover"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;LD_LIBRARY_PATH=${ker_c28_dpdk_library_path}")
+
+        add_test(NAME native-c28-broker-owned-cutover-abort-tap
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+                --staged-admission-only --candidate-activation-only
+                --cutover-coordinator --cutover-abort-only)
+        set_tests_properties(native-c28-broker-owned-cutover-abort-tap PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport;cutover"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;LD_LIBRARY_PATH=${ker_c28_dpdk_library_path}")
+
+        add_test(NAME native-c28-cutover-start-cancel-destroy-retry
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+                --staged-admission-only --candidate-activation-only
+                --cutover-coordinator --cutover-lifetime-only)
+        set_tests_properties(native-c28-cutover-start-cancel-destroy-retry PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport;cutover;quarantine"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;LD_LIBRARY_PATH=${ker_c28_dpdk_library_path}")
+
+        add_test(NAME native-c28-cutover-prearm-failure-cleanup
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                --library "$<TARGET_FILE:ker-posix>"
+                --worker "$<TARGET_FILE:ker-io-worker>"
+                --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                --preload "$<TARGET_FILE:ker-socket-preload>"
+                --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+                --staged-admission-only --candidate-activation-only
+                --cutover-coordinator --cutover-prearm-failure-only)
+        set_tests_properties(native-c28-cutover-prearm-failure-cleanup PROPERTIES
+            TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport;cutover;failure"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;LD_LIBRARY_PATH=${ker_c28_dpdk_library_path};KER_C28_TEST_FAIL_BEFORE_ARM=1;KER_C28_TEST_PREARM_FAILURE=1;KER_C28_TEST_CHECKED_DESTROY=1;KER_C28_TEST_CONTROLLER_TRACE=1")
+
         add_test(NAME native-c16-finalized-timeout-quarantine
             COMMAND "${Python3_EXECUTABLE}"
                 "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"

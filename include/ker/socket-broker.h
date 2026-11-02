@@ -27,7 +27,8 @@ enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_MEMBER_CENSUS = 5,
     KER_SOCKET_BROKER_FF_OWNER = 6,
     KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN = 7,
-    KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT = 8
+    KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT = 8,
+    KER_SOCKET_BROKER_FF_OWNER_CUTOVER = 9
 };
 
 enum ker_socket_broker_rights {
@@ -250,6 +251,43 @@ int ker_socket_client_owner_group_control(struct ker_socket_client *client,
  * exited through its broker-authenticated pidfd. Live owners return EAGAIN. */
 int ker_socket_client_owner_group_control_after_exit(
     struct ker_socket_client *client, int plan_cap);
+
+/* Bounded first-cutover coordinator for one staged owner group. The broker
+ * derives both member identities and the original-Linux listener from the
+ * plan. begin starts asynchronous gate setup and can return in STARTING; poll
+ * until PREPARED before treating the freeze as armed. Commit or abort only
+ * requests work, which the broker advances incrementally. Poll is nonblocking.
+ * Call commit only after the caller's own READY policy barrier; this API does
+ * not establish application readiness. A group permits only one 0-to-1
+ * attempt. QUARANTINING is unconfirmed; QUARANTINED is kernel-confirmed.
+ * FAILED means setup was proven never armed, not that a rollback succeeded. */
+enum ker_socket_group_cutover_phase {
+    KER_SOCKET_GROUP_CUTOVER_PREPARED = 1,
+    KER_SOCKET_GROUP_CUTOVER_COMMITTING = 2,
+    KER_SOCKET_GROUP_CUTOVER_ABORTING = 3,
+    KER_SOCKET_GROUP_CUTOVER_COMMITTED = 4,
+    KER_SOCKET_GROUP_CUTOVER_ABORTED = 5,
+    KER_SOCKET_GROUP_CUTOVER_QUARANTINED = 6,
+    KER_SOCKET_GROUP_CUTOVER_STARTING = 7,
+    KER_SOCKET_GROUP_CUTOVER_QUARANTINING = 8,
+    KER_SOCKET_GROUP_CUTOVER_FAILED = 9
+};
+struct ker_socket_group_cutover_status {
+    uint64_t lease;
+    uint32_t phase;
+    int32_t result;
+    uint32_t received_packets;
+    uint32_t accepted_packets;
+};
+int ker_socket_client_owner_group_cutover_begin(
+    struct ker_socket_client *client, int plan_cap);
+int ker_socket_client_owner_group_cutover_commit(
+    struct ker_socket_client *client, int cutover_cap);
+int ker_socket_client_owner_group_cutover_abort(
+    struct ker_socket_client *client, int cutover_cap);
+int ker_socket_client_owner_group_cutover_poll(
+    struct ker_socket_client *client, int cutover_cap,
+    struct ker_socket_group_cutover_status *status);
 
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights

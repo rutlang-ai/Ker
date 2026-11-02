@@ -3,6 +3,7 @@
 #include "lifecycle.h"
 #include "fd-table.h"
 #include "ff-admission-task.h"
+#include "ff-ingress-controller.h"
 #include <ker/posix.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,6 +19,9 @@
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static bool running, stopping;
+static bool cleanup_pending;
+static ker_posix_loop_func pending_loop;
+static void *pending_argument;
 static int control_fd = -1;
 
 int ker_run_control_init(int fd)
@@ -74,25 +78,44 @@ static int stop_workers(void)
 int ker_posix_run(ker_posix_loop_func loop, void *argument)
 {
     pthread_mutex_lock(&lock);
-    if (running || !ker_native_ready() || control_fd < 0) {
+    if (running || !ker_native_ready() || control_fd < 0 ||
+        (cleanup_pending && (loop != pending_loop || argument != pending_argument))) {
         int error = running ? EBUSY : (!ker_native_ready() ? ENETDOWN : EOPNOTSUPP);
+        if (cleanup_pending) error = EBUSY;
         pthread_mutex_unlock(&lock);
         errno = error;
         return -1;
     }
+    bool cleanup_only = cleanup_pending;
     running = true;
-    stopping = false;
-    for (;;) {
-        if (stopping) break;
-        if (!loop) {
-            pthread_cond_wait(&changed, &lock);
-            continue;
+    if (!cleanup_only) {
+        pending_loop = loop;
+        pending_argument = argument;
+        stopping = false;
+        for (;;) {
+            if (stopping) break;
+            if (!loop) {
+                pthread_cond_wait(&changed, &lock);
+                continue;
+            }
+            pthread_mutex_unlock(&lock);
+            (void)loop(argument); /* Same ignored return-value contract as ff_run. */
+            pthread_mutex_lock(&lock);
         }
-        pthread_mutex_unlock(&lock);
-        (void)loop(argument); /* Same ignored return-value contract as ff_run. */
-        pthread_mutex_lock(&lock);
     }
     pthread_mutex_unlock(&lock);
+    int ingress = ker_posix_ff_ingress_controller_prepare_runtime_shutdown();
+    if (ingress) {
+        pthread_mutex_lock(&lock);
+        cleanup_pending = true;
+        running = false;
+        pthread_mutex_unlock(&lock);
+        /* Preserve the live runtime for a cleanup-only continuation. The
+         * underlying controller error remains in its terminal receipt; EBUSY
+         * tells callers teardown has not completed. */
+        errno = EBUSY;
+        return -1;
+    }
     ker_ff_admission_task_runtime_shutdown();
     int result = ker_native_finalize();
     int workers = stop_workers();
@@ -100,6 +123,9 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
     if (!result) result = workers;
     pthread_mutex_lock(&lock);
     running = false;
+    cleanup_pending = false;
+    pending_loop = NULL;
+    pending_argument = NULL;
     pthread_mutex_unlock(&lock);
     if (result) { errno = -result; return -1; }
     return 0;

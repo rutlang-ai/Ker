@@ -19,7 +19,15 @@ int ker_ff_ingress_freeze_queue_start(int listener_native_fd,
 				 uint32_t owner_mark,
 				 uint64_t listener_cookie,
 				 struct ker_ff_ingress_freeze_queue **queue);
+/* Controller variant reports whether ARM succeeded and preserves the private
+ * queue handle if automatic post-ARM quarantine cannot be confirmed. */
+int ker_ff_ingress_freeze_queue_start_owned(int listener_native_fd,
+				 uint32_t owner_mark, uint64_t listener_cookie,
+				 struct ker_ff_ingress_freeze_queue **queue,
+				 int *arm_succeeded);
 uint64_t ker_ff_ingress_freeze_queue_lease(
+				 const struct ker_ff_ingress_freeze_queue *queue);
+uint64_t ker_ff_ingress_freeze_queue_deadline(
 				 const struct ker_ff_ingress_freeze_queue *queue);
 /* Serialized LKL barrier/inventory check; call before every held-skb verdict. */
 int ker_ff_ingress_freeze_queue_check(
@@ -42,6 +50,14 @@ int ker_ff_ingress_freeze_queue_drain(struct ker_ff_ingress_freeze_queue *queue,
 int ker_ff_ingress_freeze_queue_accept(struct ker_ff_ingress_freeze_queue *queue,
 				 uint64_t lease, uint64_t deadline_ns,
 				 uint32_t packet_id, int *sent_to_kernel);
+/* Split nonblocking coordinator path. begin returns after complete send; poll
+ * returns 0 while ACK is pending, 1 for the matching ACK, or a negative error.
+ * Any error after send is uncertain and terminal for the caller. */
+int ker_ff_ingress_freeze_queue_accept_begin(
+	struct ker_ff_ingress_freeze_queue *queue, uint64_t lease,
+	uint64_t deadline_ns, uint32_t packet_id, int *sent_to_kernel);
+int ker_ff_ingress_freeze_queue_accept_poll(
+	struct ker_ff_ingress_freeze_queue *queue);
 /* Explicit fail-closed cleanup after uncertainty: queue close drops its held
  * skb entries and leaves the kernel lease/gate allocated; no healthy recovery
  * or subsequent lease reuse is implied. */

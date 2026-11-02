@@ -783,7 +783,7 @@ int main(int argc, char **argv)
 		staged_candidate_mode = 1;
 		staged_candidate_activation_mode =
 			getenv("KER_C25_TEST_CANDIDATE_ACTIVATION") != NULL;
-		requested_count = 1;
+		requested_count = getenv("KER_C28_TEST_ABORT_ONLY") ? 0 : 1;
 		const char *slot_text = getenv("KER_C20_STAGED_SLOT_FD");
 		char *end = NULL;
 		long slot = slot_text ? strtol(slot_text, &end, 10) : -1;

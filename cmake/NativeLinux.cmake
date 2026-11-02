@@ -58,7 +58,7 @@ add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.
     src/posix/ff-admission-request-identity.c
     src/posix/tcp-payload-snapshot.c src/posix/ff-admission-queue.c
     src/posix/ff-ingress-freeze-state.c src/posix/ff-ingress-freeze-queue-parse.c
-    src/posix/ff-ingress-freeze-queue.c
+    src/posix/ff-ingress-freeze-queue.c src/posix/ff-ingress-controller.c
     src/posix/ff-admission-channel.c src/posix/ff-admission-task.c)
 target_include_directories(ker-posix SYSTEM PRIVATE
     "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
@@ -74,7 +74,8 @@ if(ker_ff_admission_window_serialized_lkl)
         KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL=1)
 endif()
 if(BUILD_TESTING)
-    target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1)
+    target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1
+        KER_C28_CUTOVER_TESTING=1)
 endif()
 target_link_options(ker-posix PRIVATE -Wl,--no-undefined
     "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
@@ -373,7 +374,7 @@ target_compile_features(ker-socket-broker-server PUBLIC c_std_11)
 target_compile_options(ker-socket-broker-server PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
     target_compile_definitions(ker-socket-broker-server PRIVATE
-        KER_C16_ADMISSION_TEST_TRACE=1)
+        KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1)
 endif()
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
 add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
@@ -637,7 +638,8 @@ if(BUILD_TESTING)
     target_include_directories(ker-posix-member-census-test-runtime SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_compile_definitions(ker-posix-member-census-test-runtime PRIVATE
-        ${ker_posix_definitions} KER_MEMBER_CENSUS_TEST_RUNTIME=1)
+        ${ker_posix_definitions} KER_MEMBER_CENSUS_TEST_RUNTIME=1
+        KER_C28_CUTOVER_TESTING=1)
     target_compile_features(ker-posix-member-census-test-runtime PRIVATE c_std_11)
     target_compile_options(ker-posix-member-census-test-runtime PRIVATE
         ${ker_posix_options} -Wall -Wextra -Werror)

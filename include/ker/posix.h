@@ -114,15 +114,19 @@ KER_API int ker_posix_buffer_writer_send(struct ker_posix_buffer_writer *writer,
     size_t offset, size_t length, int flags);
 /* Run the caller's callback on this thread until stop_run is requested.
  * NULL waits for a stop from another thread. Callback return values are ignored.
- * Exactly one run is allowed per native instance; nested/concurrent runs fail
- * EBUSY. A stop request does not interrupt a callback currently executing.
+ * Exactly one active run is allowed; nested/concurrent runs fail EBUSY. A stop
+ * request does not interrupt a callback currently executing. If an ingress
+ * controller cannot confirm quarantine during shutdown, run returns EBUSY
+ * without halting original Linux. The caller must resolve that controller and
+ * invoke run again with the same callback and argument; this continuation only
+ * retries teardown and does not invoke the callback again.
  * On successful return, original Linux is halted and all launcher-owned EAL workers have
  * been reaped. Native sockets are closed and cannot be used afterwards.
  * Before returning from the last callback, the caller must quiesce all other
  * native socket users. Do not cancel/longjmp out of run. stop_run is thread-safe,
  * idempotent and a no-op outside run; it is not async-signal-safe.
  * Returns 0 on complete teardown, -1/errno on failure (including ENETDOWN after
- * an earlier run). Requires ker-run's private supervisor channel. */
+ * teardown). Requires ker-run's private supervisor channel. */
 typedef int (*ker_posix_loop_func)(void *argument);
 KER_API int ker_posix_run(ker_posix_loop_func loop, void *argument);
 KER_API void ker_posix_stop_run(void);

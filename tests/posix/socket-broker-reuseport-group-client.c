@@ -1330,6 +1330,7 @@ static int staged_admission_initial(struct ker_socket_client *client,
     close(transfer_fd);
     puts("C20_STAGED_INITIAL_READY"); fflush(stdout);
     int held = -1;
+    int cutover = -1;
     char command[32];
     while (fgets(command, sizeof(command), stdin)) {
         if (!strcmp(command, "INITIAL\n")) {
@@ -1439,6 +1440,186 @@ static int staged_admission_initial(struct ker_socket_client *client,
         } else if (!strcmp(command, "FLIP\n")) {
             if (ker_socket_client_reuseport_group_select(client, group, 1)) return -1;
             puts("C20_STAGED_SELECTOR1"); fflush(stdout);
+        } else if (!strcmp(command, "CUTOVER_BEGIN\n")) {
+            if (cutover >= 0) { errno = EALREADY; return -1; }
+            cutover = ker_socket_client_owner_group_cutover_begin(client, plan);
+            if (cutover < 0) return -1;
+            struct timespec pause = {.tv_nsec = 10000000};
+            uint64_t deadline = 0;
+            struct timespec now = {0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+            deadline = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                (uint64_t)now.tv_nsec + UINT64_C(5000000000);
+            for (;;) {
+                struct ker_socket_group_cutover_status status = {0};
+                if (ker_socket_client_owner_group_cutover_poll(client, cutover,
+                        &status)) return -1;
+                if (status.phase == KER_SOCKET_GROUP_CUTOVER_PREPARED) break;
+                if (status.phase == KER_SOCKET_GROUP_CUTOVER_FAILED ||
+                    status.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED ||
+                    status.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINING) {
+                    fprintf(stderr, "C28 cutover terminal phase=%u result=%d received=%u accepted=%u\n",
+                        status.phase, status.result, status.received_packets,
+                        status.accepted_packets);
+                    errno = status.result ? -status.result : EIO; return -1;
+                }
+                if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+                uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                    (uint64_t)now.tv_nsec;
+                if (current >= deadline) { errno = ETIMEDOUT; return -1; }
+                while (nanosleep(&pause, &pause) && errno == EINTR) { }
+                pause.tv_nsec = 10000000;
+            }
+            errno = 0;
+            if (ker_socket_client_reuseport_group_select(client, group, 1) != -1 ||
+                errno != EBUSY) { errno = EPROTO; return -1; }
+            puts("C28_CUTOVER_PREPARED_SELECT_BLOCKED"); fflush(stdout);
+        } else if (!strcmp(command, "CUTOVER_WAIT_RECEIVED\n")) {
+            if (cutover < 0) { errno = ENOTCONN; return -1; }
+            struct timespec pause = {.tv_nsec = 10000000};
+            struct timespec now = {0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+            uint64_t deadline = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                (uint64_t)now.tv_nsec + UINT64_C(8000000000);
+            for (;;) {
+                struct ker_socket_group_cutover_status status = {0};
+                if (ker_socket_client_owner_group_cutover_poll(client, cutover,
+                        &status)) return -1;
+                if (status.received_packets >= 1) {
+                    if (status.received_packets > 64 ||
+                        status.accepted_packets != 0 ||
+                        status.phase != KER_SOCKET_GROUP_CUTOVER_PREPARED) {
+                        errno = EPROTO; return -1;
+                    }
+                    printf("C28_CUTOVER_PACKET_HELD received=%u accepted=%u\n",
+                        status.received_packets, status.accepted_packets);
+                    fflush(stdout);
+                    break;
+                }
+                if (status.phase != KER_SOCKET_GROUP_CUTOVER_PREPARED) {
+                    errno = status.result ? -status.result : EPROTO; return -1;
+                }
+                if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+                uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                    (uint64_t)now.tv_nsec;
+                if (current >= deadline) { errno = ETIMEDOUT; return -1; }
+                while (nanosleep(&pause, &pause) && errno == EINTR) { }
+                pause.tv_nsec = 10000000;
+            }
+        } else if (!strcmp(command, "CUTOVER_COMMIT\n")) {
+            if (cutover < 0 || ker_socket_client_owner_group_cutover_commit(
+                    client, cutover)) return -1;
+            struct timespec pause = {.tv_nsec = 10000000};
+            uint64_t deadline = 0;
+            struct timespec now = {0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+            deadline = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                (uint64_t)now.tv_nsec + UINT64_C(10000000000);
+            for (;;) {
+                struct ker_socket_group_cutover_status status = {0};
+                if (ker_socket_client_owner_group_cutover_poll(client, cutover,
+                        &status)) return -1;
+                if (status.phase == KER_SOCKET_GROUP_CUTOVER_COMMITTED) {
+                    if (!status.received_packets || status.received_packets > 64 ||
+                        status.received_packets != status.accepted_packets) {
+                        errno = EPROTO; return -1;
+                    }
+                    int stale_capability = cutover;
+                    if (ker_socket_client_owner_group_cutover_commit(client,
+                            cutover)) return -1;
+                    errno = 0;
+                    if (ker_socket_client_owner_group_cutover_abort(client,
+                            cutover) != -1 || errno != EALREADY) {
+                        errno = EPROTO; return -1;
+                    }
+                    errno = 0;
+                    if (ker_socket_client_reuseport_group_select(client, group, 0) != -1 ||
+                        errno != EOPNOTSUPP) { errno = EPROTO; return -1; }
+                    if (close(cutover)) return -1;
+                    cutover = -1;
+                    errno = 0;
+                    if (ker_socket_client_owner_group_cutover_poll(client,
+                            stale_capability, &status) != -1 || errno != EBADF) {
+                        errno = EPROTO; return -1;
+                    }
+                    printf("C28_CUTOVER_COMMITTED received=%u accepted=%u\n",
+                        status.received_packets, status.accepted_packets);
+                    fflush(stdout);
+                    break;
+                }
+                if (status.phase == KER_SOCKET_GROUP_CUTOVER_FAILED ||
+                    status.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED ||
+                    status.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINING) {
+                    fprintf(stderr, "C28 commit terminal phase=%u result=%d received=%u accepted=%u\n",
+                        status.phase, status.result, status.received_packets,
+                        status.accepted_packets);
+                    errno = status.result ? -status.result : EIO; return -1;
+                }
+                if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+                uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                    (uint64_t)now.tv_nsec;
+                if (current >= deadline) { errno = ETIMEDOUT; return -1; }
+                while (nanosleep(&pause, &pause) && errno == EINTR) { }
+                pause.tv_nsec = 10000000;
+            }
+        } else if (!strcmp(command, "CUTOVER_ABORT\n")) {
+            if (cutover < 0 || ker_socket_client_owner_group_cutover_abort(
+                    client, cutover)) return -1;
+            struct timespec pause = {.tv_nsec = 10000000};
+            uint64_t deadline = 0;
+            struct timespec now = {0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+            deadline = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                (uint64_t)now.tv_nsec + UINT64_C(10000000000);
+            for (;;) {
+                struct ker_socket_group_cutover_status status = {0};
+                if (ker_socket_client_owner_group_cutover_poll(client, cutover,
+                        &status)) return -1;
+                if (status.phase == KER_SOCKET_GROUP_CUTOVER_ABORTED) {
+                    if (!status.received_packets || status.received_packets > 64 ||
+                        status.received_packets != status.accepted_packets) {
+                        errno = EPROTO; return -1;
+                    }
+                    if (ker_socket_client_owner_group_cutover_abort(client,
+                            cutover)) return -1;
+                    errno = 0;
+                    if (ker_socket_client_owner_group_cutover_commit(client,
+                            cutover) != -1 || errno != EALREADY) {
+                        errno = EPROTO; return -1;
+                    }
+                    errno = 0;
+                    if (ker_socket_client_reuseport_group_select(client, group, 1) != -1 ||
+                        errno != EOPNOTSUPP) { errno = EPROTO; return -1; }
+                    printf("C28_CUTOVER_ABORTED received=%u accepted=%u selector=0\n",
+                        status.received_packets, status.accepted_packets);
+                    fflush(stdout);
+                    break;
+                }
+                if (status.phase == KER_SOCKET_GROUP_CUTOVER_FAILED ||
+                    status.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED ||
+                    status.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINING) {
+                    errno = status.result ? -status.result : EIO; return -1;
+                }
+                if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
+                uint64_t current = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                    (uint64_t)now.tv_nsec;
+                if (current >= deadline) { errno = ETIMEDOUT; return -1; }
+                while (nanosleep(&pause, &pause) && errno == EINTR) { }
+                pause.tv_nsec = 10000000;
+            }
+        } else if (!strcmp(command, "CUTOVER_CANCEL_START\n")) {
+            if (cutover >= 0) { errno = EALREADY; return -1; }
+            cutover = ker_socket_client_owner_group_cutover_begin(client, plan);
+            if (cutover < 0) return -1;
+            int canceled = cutover;
+            if (close(cutover)) return -1;
+            cutover = -1;
+            errno = 0;
+            if (ker_socket_client_owner_group_cutover_poll(client, canceled,
+                    &(struct ker_socket_group_cutover_status){0}) != -1 ||
+                errno != EBADF) { errno = EPROTO; return -1; }
+            puts("C28_CUTOVER_CANCELED_DURING_STARTING capability-closed");
+            fflush(stdout);
         } else if (!strcmp(command, "SELECT1\n")) {
             errno = 0;
             if (ker_socket_client_reuseport_group_select(client, group, 1) != -1 ||
@@ -1477,6 +1658,7 @@ static int staged_admission_initial(struct ker_socket_client *client,
         else { errno = EPROTO; return -1; }
     }
     if (held >= 0) close(held);
+    if (cutover >= 0) close(cutover);
     close(member0); close(slot0); close(slot1); close(group); close(plan); close(owner);
     return 0;
 }

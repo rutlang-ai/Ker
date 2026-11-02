@@ -4,9 +4,10 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <lkl/linux/netlink.h>
+#include <lkl/asm/syscalls.h>
+#include <linux/netfilter/nfnetlink_queue.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter/nfnetlink.h>
-#include <linux/netfilter/nfnetlink_queue.h>
 #include <linux/netfilter_ipv4.h>
 #include <lkl/linux/if_ether.h>
 #include <netinet/ip.h>
@@ -18,6 +19,37 @@
 #define KER_NLA_TYPE_MASK 0x3fffU
 #define KER_INGRESS_COPY_RANGE 256U
 #define KER_INGRESS_MAX_MESSAGE 4096U
+
+int ker_ff_ingress_parse_verdict_ack(const void *input, size_t length,
+				     size_t sender_length, uint16_t sender_family,
+				     uint32_t sender_pid, uint32_t sender_groups,
+				     uint32_t portid, uint32_t sequence,
+				     uint16_t request_type, uint16_t request_flags,
+				     uint32_t request_length, int *ack_error)
+{
+	if (!input || !ack_error || !portid || !sequence ||
+	    sender_length != sizeof(struct lkl_sockaddr_nl) ||
+	    sender_family != LKL_AF_NETLINK || sender_pid || sender_groups ||
+	    length < LKL_NLMSG_HDRLEN) return -EPROTO;
+	struct lkl_nlmsghdr header;
+	memcpy(&header, input, sizeof(header));
+	if (header.nlmsg_len != length) return -EPROTO;
+	if (header.nlmsg_type == ((NFNL_SUBSYS_QUEUE << 8) | NFQNL_MSG_PACKET) &&
+	    header.nlmsg_seq == 0) return -EPROTO;
+	if (header.nlmsg_type != LKL_NLMSG_ERROR || header.nlmsg_pid != portid ||
+	    header.nlmsg_seq != sequence) return 0;
+	if (header.nlmsg_len < LKL_NLMSG_HDRLEN + sizeof(struct lkl_nlmsgerr))
+		return -EPROTO;
+	struct lkl_nlmsgerr error;
+	memcpy(&error, (const unsigned char *)input + LKL_NLMSG_HDRLEN,
+	       sizeof(error));
+	if (error.msg.nlmsg_type != request_type ||
+	    error.msg.nlmsg_seq != sequence || error.msg.nlmsg_flags != request_flags ||
+	    error.msg.nlmsg_len != request_length || error.msg.nlmsg_pid != portid ||
+	    error.error > 0 || error.error < -4095) return -EPROTO;
+	*ack_error = error.error;
+	return 1;
+}
 
 struct ker_nlattr {
 	uint16_t nla_len;

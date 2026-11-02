@@ -55,6 +55,13 @@ struct ker_ff_ingress_freeze_queue {
 	uint64_t lease;
 	uint64_t deadline_ns;
 	int released;
+	bool accept_pending;
+	uint32_t pending_packet_id;
+	uint32_t pending_sequence;
+	uint32_t pending_request_length;
+	uint16_t pending_request_type;
+	uint16_t pending_request_flags;
+	uint64_t pending_ack_deadline_ns;
 };
 
 
@@ -286,9 +293,10 @@ static int set_kernel_operation(struct ker_ff_ingress_freeze_queue *queue,
 	return closed < 0 ? (int)closed : 0;
 }
 
-int ker_ff_ingress_freeze_queue_start(int listener_native_fd, uint32_t owner_mark,
-				 uint64_t listener_cookie,
-				 struct ker_ff_ingress_freeze_queue **output)
+int ker_ff_ingress_freeze_queue_start_owned(int listener_native_fd,
+				 uint32_t owner_mark, uint64_t listener_cookie,
+				 struct ker_ff_ingress_freeze_queue **output,
+				 int *arm_succeeded)
 {
 	struct ker_ff_ingress_freeze_queue *queue;
 	struct lkl_sockaddr_nl local = {.nl_family = LKL_AF_NETLINK};
@@ -311,12 +319,13 @@ int ker_ff_ingress_freeze_queue_start(int listener_native_fd, uint32_t owner_mar
 	long native;
 	struct timespec start_time;
 
-	if (!output || listener_native_fd < 0 || !owner_mark ||
-	    owner_mark > INT32_MAX || !listener_cookie)
-		return -EINVAL;
+	if (!output || !arm_succeeded) return -EINVAL;
+	*output = NULL;
+	if (listener_native_fd < 0 || !owner_mark || owner_mark > INT32_MAX ||
+	    !listener_cookie) return -EINVAL;
+	*arm_succeeded = 0;
 	if (clock_gettime(CLOCK_MONOTONIC, &start_time) != 0)
 		return -errno;
-	*output = NULL;
 	queue = calloc(1, sizeof(*queue));
 	if (!queue)
 		return -ENOMEM;
@@ -360,6 +369,7 @@ int ker_ff_ingress_freeze_queue_start(int listener_native_fd, uint32_t owner_mar
 	(void)lkl_sys_close((unsigned int)control_fd);
 	if (result < 0)
 		goto failure;
+	*arm_succeeded = 1;
 	queue->lease = control.lease;
 	if (!queue->lease || !control.deadline_ns || !control.local_address ||
 	    !control.local_port) { result = -EPROTO; goto failure; }
@@ -374,17 +384,52 @@ int ker_ff_ingress_freeze_queue_start(int listener_native_fd, uint32_t owner_mar
 	return 0;
 
 failure:
-	/* Closing this queue releases only q88. If ARM already succeeded, the
-	 * active gate remains fail closed until its exact lease is disarmed. */
+	/* On any post-ARM setup error, first confirm terminal quarantine while the
+	 * exact queue handle and lease are still available. Preserve the handle for
+	 * the broker controller if quarantine itself fails. */
+	if (*arm_succeeded) {
+		int quarantine = queue->lease ? set_kernel_operation(queue,
+			KER_FF_INGRESS_FREEZE_QUARANTINE) : -EPROTO;
+		if (quarantine < 0) {
+			*output = queue;
+			return quarantine;
+		}
+	}
 	(void)lkl_sys_close((unsigned int)fd);
 	free(queue);
 	return result;
+}
+
+int ker_ff_ingress_freeze_queue_start(int listener_native_fd, uint32_t owner_mark,
+				 uint64_t listener_cookie,
+				 struct ker_ff_ingress_freeze_queue **output)
+{
+	if (!output) return -EINVAL;
+	int arm_succeeded = 0;
+	struct ker_ff_ingress_freeze_queue *queue = NULL;
+	int status = ker_ff_ingress_freeze_queue_start_owned(listener_native_fd,
+		owner_mark, listener_cookie, &queue, &arm_succeeded);
+	if (status && queue) {
+		/* Legacy private callers cannot retain a failed-start handle. Closing
+		 * only drops notifications; the kernel gate remains fail closed. */
+		(void)lkl_sys_close((unsigned int)queue->fd);
+		free(queue);
+		queue = NULL;
+	}
+	if (output) *output = status ? NULL : queue;
+	return status;
 }
 
 uint64_t ker_ff_ingress_freeze_queue_lease(
 				 const struct ker_ff_ingress_freeze_queue *queue)
 {
 	return queue ? queue->lease : 0;
+}
+
+uint64_t ker_ff_ingress_freeze_queue_deadline(
+				 const struct ker_ff_ingress_freeze_queue *queue)
+{
+	return queue ? queue->deadline_ns : 0;
 }
 
 int ker_ff_ingress_freeze_queue_check(
@@ -446,7 +491,7 @@ int ker_ff_ingress_freeze_queue_receive(struct ker_ff_ingress_freeze_queue *queu
 static int queue_verdict(struct ker_ff_ingress_freeze_queue *queue,
 			 uint64_t lease, uint64_t deadline_ns,
 			 uint32_t packet_id, int accept,
-			 int *sent_to_kernel)
+			 int *sent_to_kernel, bool asynchronous)
 {
 	struct queue_message message = {0};
 	struct nfgenmsg nfgen = {
@@ -465,7 +510,8 @@ static int queue_verdict(struct ker_ff_ingress_freeze_queue *queue,
 	uint16_t request_flags = LKL_NLM_F_REQUEST | LKL_NLM_F_ACK;
 	uint64_t ack_deadline_ns;
 	if (sent_to_kernel) *sent_to_kernel = 0;
-	if (!queue || !sent_to_kernel || (accept != 0 && accept != 1))
+	if (!queue || !sent_to_kernel || (accept != 0 && accept != 1) ||
+	    queue->accept_pending)
 		return -EINVAL;
 	if (lease != queue->lease || deadline_ns != queue->deadline_ns)
 		return -ESTALE;
@@ -499,6 +545,16 @@ static int queue_verdict(struct ker_ff_ingress_freeze_queue *queue,
 			true, -EIO);
 		return -EIO;
 	}
+	if (asynchronous) {
+		queue->accept_pending = true;
+		queue->pending_packet_id = packet_id;
+		queue->pending_sequence = queue->sequence;
+		queue->pending_request_length = message.header.nlmsg_len;
+		queue->pending_request_type = request_type;
+		queue->pending_request_flags = request_flags;
+		queue->pending_ack_deadline_ns = ack_deadline_ns;
+		return 0;
+	}
 	/* A complete send is irreversible/uncertain: the kernel may have already
 	 * reinjected ACCEPT even if its later ACK cannot be observed. */
 	result = wait_ack(queue, queue->sequence, request_type, request_flags,
@@ -523,7 +579,65 @@ int ker_ff_ingress_freeze_queue_accept(struct ker_ff_ingress_freeze_queue *queue
 	status = ker_ff_ingress_freeze_queue_check(queue);
 	if (status) { ker_ff_ingress_state_quarantine(&queue->state); return status; }
 	return queue_verdict(queue, lease, deadline_ns, packet_id, 1,
-		sent_to_kernel);
+		sent_to_kernel, false);
+}
+
+int ker_ff_ingress_freeze_queue_accept_begin(
+	struct ker_ff_ingress_freeze_queue *queue, uint64_t lease,
+	uint64_t deadline_ns, uint32_t packet_id, int *sent_to_kernel)
+{
+	if (!queue || !sent_to_kernel) return -EINVAL;
+	if (lease != queue->lease || deadline_ns != queue->deadline_ns) return -ESTALE;
+	if (queue->accept_pending) return -EBUSY;
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -errno;
+	uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
+	int status = ker_ff_ingress_state_authorize_accept(&queue->state, lease,
+		deadline_ns, packet_id, now_ns);
+	if (status) return status;
+	status = ker_ff_ingress_freeze_queue_check(queue);
+	if (status) { ker_ff_ingress_state_quarantine(&queue->state); return status; }
+	return queue_verdict(queue, lease, deadline_ns, packet_id, 1,
+		sent_to_kernel, true);
+}
+
+int ker_ff_ingress_freeze_queue_accept_poll(
+	struct ker_ff_ingress_freeze_queue *queue)
+{
+	if (!queue || !queue->accept_pending) return -EINVAL;
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -errno;
+	uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
+	if (now_ns >= queue->pending_ack_deadline_ns) {
+		queue->accept_pending = false;
+		(void)ker_ff_ingress_state_finish_accept(&queue->state,
+			queue->pending_packet_id, true, -ETIMEDOUT);
+		return -ETIMEDOUT;
+	}
+	unsigned char reply[KER_FF_INGRESS_MAX_MESSAGE];
+	struct lkl_sockaddr_nl sender = {0};
+	unsigned int sender_length = sizeof(sender);
+	int result = receive_datagram(queue, reply, sizeof(reply), &sender,
+		&sender_length, 0);
+	if (result < 0) goto failure;
+	if (!result) return 0;
+	int ack_error = 0;
+	int parsed = ker_ff_ingress_parse_verdict_ack(reply, (size_t)result,
+		sender_length, sender.nl_family, sender.nl_pid, sender.nl_groups,
+		queue->portid, queue->pending_sequence, queue->pending_request_type,
+		queue->pending_request_flags, queue->pending_request_length, &ack_error);
+	if (parsed < 0) { result = parsed; goto failure; }
+	if (!parsed) return 0;
+	queue->accept_pending = false;
+	result = ker_ff_ingress_state_finish_accept(&queue->state,
+		queue->pending_packet_id, true, ack_error);
+	return result ? result : 1;
+
+failure:
+	queue->accept_pending = false;
+	(void)ker_ff_ingress_state_finish_accept(&queue->state,
+		queue->pending_packet_id, true, result);
+	return result;
 }
 
 
