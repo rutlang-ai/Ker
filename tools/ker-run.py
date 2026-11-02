@@ -1645,6 +1645,8 @@ def main():
                 pass
     except (OSError, ValueError, RuntimeError) as error:
         print(f'ker-run: {error}', file=sys.stderr)
+        if broker_readiness_channel is not None:
+            infrastructure_failure = True
     finally:
         if app and app.poll() is None:
             app.terminate()
