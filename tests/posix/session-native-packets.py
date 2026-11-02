@@ -74,6 +74,34 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+def relay_queued_datagram(queue, sink, counters, direction, label):
+    """Forward one intact frame and update its direction counter on success."""
+    frame = queue[0]
+    amount = sink(frame)
+    require(amount == len(frame), 'short ' + label)
+    queue.popleft()
+    counters[direction] += 1
+
+
+def generation_wire_relay_smoke():
+    """Exercise the exact atomic bidirectional relay helper without DPDK."""
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        counters = [0, 0]
+        to_right = deque([b'original frame from Linux to TAP'])
+        relay_queued_datagram(to_right, left.send, counters, 0, 'left-to-right datagram')
+        require(right.recv(256) == b'original frame from Linux to TAP',
+            'left-to-right relay changed frame bytes')
+        to_left = deque([b'original frame from TAP to Linux'])
+        relay_queued_datagram(to_left, right.send, counters, 1, 'right-to-left datagram')
+        require(left.recv(256) == b'original frame from TAP to Linux',
+            'right-to-left relay changed frame bytes')
+        require(counters == [1, 1] and not to_right and not to_left,
+            'bidirectional relay counters/ownership did not settle exactly once')
+    finally:
+        left.close(); right.close()
+
+
 def tcp_fin_acknowledgment(sequence, payload_length):
     """Return the next peer ACK after the exact TCP FIN segment, modulo 2^32."""
     return (sequence + payload_length + 1) & 0xffffffff
@@ -987,6 +1015,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
             forwarding_network_setup={}
             forwarding_state=dict(armed=False,intercepted=[],client_port=None,forwarded=0,
                 fin_ack_sequence=None,fin_ack_forwarded=False)
+            forward_counts=[0,0]
             forwarding_complete_requested=threading.Event()
             forwarding_complete_sent=threading.Event()
             forwarding_fin_ack=threading.Event()
@@ -1098,14 +1127,13 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                                 else:
                                     to_wire.append(frame)
                             if forwarding_tap in writable:
-                                amount=os.write(forwarding_tap,to_tap[0])
-                                require(amount==len(to_tap[0]),'short TAP write')
-                                to_tap.popleft();counts[0]+=1
+                                relay_queued_datagram(to_tap, lambda frame: os.write(forwarding_tap, frame),
+                                    forward_counts, 0, 'TAP write')
                             if wire in writable:
-                                try:amount=wire.send(to_wire[0])
+                                try:
+                                    relay_queued_datagram(to_wire, wire.send, forward_counts, 1,
+                                        'native channel datagram')
                                 except BlockingIOError:continue
-                                require(amount==len(to_wire[0]),'short native channel datagram')
-                                to_wire.popleft();counts[1]+=1
                         return
                     while not wire_stop.is_set():
                         readable,_,_=select.select([wire],[],[],0.02)
@@ -2494,6 +2522,10 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
 
 
 def main():
+    if sys.argv[1:] == ['--relay-smoke']:
+        generation_wire_relay_smoke()
+        print('PASS: bidirectional generation relay preserved exact datagrams and counters')
+        return 0
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('worker', 'tool', 'library', 'app'): parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inside', action='store_true')

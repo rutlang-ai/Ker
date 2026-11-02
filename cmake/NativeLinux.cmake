@@ -1195,6 +1195,11 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-fstack-session-native-packets PROPERTIES TIMEOUT 150 SKIP_RETURN_CODE 77 LABELS "fstack;session;native-tcp"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME native-session-generation-wire-relay-smoke
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-native-packets.py"
+            --relay-smoke)
+    set_tests_properties(native-session-generation-wire-relay-smoke PROPERTIES TIMEOUT 5
+        LABELS "fstack;session;wire-relay")
     add_test(NAME native-fstack-session-standby
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/session-standby.py"
             --worker "$<TARGET_FILE:ker-io-session>" --tool "${PROJECT_SOURCE_DIR}/tools/ker-session.py")
