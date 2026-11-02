@@ -40,10 +40,15 @@ done:
     lkl_sys_close(fd);
     return result;
 }
-int ker_native_drain(unsigned int timeout_ms)
+int ker_native_drain_with_progress(unsigned int timeout_ms,
+    ker_native_drain_progress_fn progress, void *context)
 {
     int64_t deadline = now_ns() + (int64_t)timeout_ms * INT64_C(1000000);
     for (;;) {
+        if (progress) {
+            int advanced = progress(context);
+            if (advanced) return advanced;
+        }
         int pending = queued("/proc/net/tcp");
         if (pending < 0) return pending;
         int ipv6 = queued("/proc/net/tcp6");
@@ -54,4 +59,9 @@ int ker_native_drain(unsigned int timeout_ms)
         struct timespec delay = {.tv_nsec = 1000000};
         nanosleep(&delay, NULL);
     }
+}
+
+int ker_native_drain(unsigned int timeout_ms)
+{
+    return ker_native_drain_with_progress(timeout_ms, NULL, NULL);
 }

@@ -25,6 +25,15 @@ static ker_posix_loop_func pending_loop;
 static void *pending_argument;
 static int pending_error;
 static int control_fd = -1;
+#ifdef KER_C31_RX_DECISION_TESTING
+static int shutdown_barrier_fd = -1;
+#endif
+
+static int rx_decision_drain_progress(void *context)
+{
+    (void)context;
+    return ker_rx_decision_consumer_pump();
+}
 
 int ker_run_control_init(int fd)
 {
@@ -41,6 +50,57 @@ void ker_run_control_close(void)
     if (control_fd >= 0) syscall(SYS_close, control_fd);
     control_fd = -1;
 }
+
+#ifdef KER_C31_RX_DECISION_TESTING
+int ker_posix_run_test_set_shutdown_barrier(int fd)
+{
+    if (fd < 0) return -EINVAL;
+    int retained = (int)syscall(SYS_fcntl, fd, F_DUPFD_CLOEXEC, 0);
+    if (retained < 0) return -errno;
+    pthread_mutex_lock(&lock);
+    if (running || cleanup_pending || shutdown_barrier_fd >= 0) {
+        pthread_mutex_unlock(&lock);
+        syscall(SYS_close, retained);
+        return -EBUSY;
+    }
+    shutdown_barrier_fd = retained;
+    pthread_mutex_unlock(&lock);
+    return 0;
+}
+
+static int wait_test_shutdown_barrier(void)
+{
+    pthread_mutex_lock(&lock);
+    int fd = shutdown_barrier_fd;
+    shutdown_barrier_fd = -1;
+    pthread_mutex_unlock(&lock);
+    if (fd < 0) return 0;
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+        int error = errno;
+        syscall(SYS_close, fd);
+        return -error;
+    }
+    int64_t deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + 5000;
+    int result = -ETIMEDOUT;
+    for (;;) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now)) { result = -errno; break; }
+        int64_t remaining = deadline - ((int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
+        if (remaining <= 0) break;
+        struct pollfd event = {.fd = fd, .events = POLLIN};
+        int ready = (int)syscall(SYS_poll, &event, 1, (int)remaining);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) { result = -errno; break; }
+        if (!ready) break;
+        unsigned char release;
+        long count = syscall(SYS_read, fd, &release, sizeof(release));
+        result = count == 1 && release == 0xa5 ? 0 : -EPROTO;
+        break;
+    }
+    syscall(SYS_close, fd);
+    return result;
+}
+#endif
 
 void ker_posix_stop_run(void)
 {
@@ -130,20 +190,10 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
         }
     }
     pthread_mutex_unlock(&lock);
-    int rx = ker_rx_decision_consumer_prepare_runtime_shutdown();
-    if (rx < 0) {
-        pthread_mutex_lock(&lock);
-        cleanup_pending = true;
-        pending_error = run_error;
-        running = false;
-        pthread_mutex_unlock(&lock);
-        errno = EBUSY;
-        return -1;
-    }
-    if (rx > 0 && !run_error) {
-        run_error = ker_rx_decision_consumer_error();
-        if (!run_error) run_error = -EPIPE;
-    }
+#ifdef KER_C31_RX_DECISION_TESTING
+    int barrier = wait_test_shutdown_barrier();
+    if (barrier && !run_error) run_error = barrier;
+#endif
     int ingress = ker_posix_ff_ingress_controller_prepare_runtime_shutdown();
     if (ingress) {
         pthread_mutex_lock(&lock);
@@ -158,7 +208,45 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
         return -1;
     }
     ker_ff_admission_task_runtime_shutdown();
-    int result = ker_native_finalize();
+    int native_drain_error = 0;
+    int native_prepare = ker_native_finalize_prepare(
+        ker_rx_decision_consumer_registered() ? rx_decision_drain_progress : NULL,
+        NULL, &native_drain_error);
+    if (native_prepare) {
+        pthread_mutex_lock(&lock);
+        cleanup_pending = true;
+        pending_error = run_error;
+        running = false;
+        pthread_mutex_unlock(&lock);
+        errno = EBUSY;
+        return -1;
+    }
+    int rx = ker_rx_decision_consumer_prepare_runtime_shutdown();
+    if (rx < 0) {
+        pthread_mutex_lock(&lock);
+        cleanup_pending = true;
+        pending_error = run_error;
+        running = false;
+        pthread_mutex_unlock(&lock);
+        errno = EBUSY;
+        return -1;
+    }
+    if (rx > 0 && !run_error) {
+        run_error = ker_rx_decision_consumer_error();
+        if (!run_error) run_error = -EPIPE;
+    }
+    int finish_error = 0;
+    int finished = ker_native_finalize_finish(&finish_error);
+    if (finished) {
+        pthread_mutex_lock(&lock);
+        cleanup_pending = true;
+        pending_error = run_error;
+        running = false;
+        pthread_mutex_unlock(&lock);
+        errno = EBUSY;
+        return -1;
+    }
+    int result = native_drain_error ? native_drain_error : finish_error;
     int workers = stop_workers();
     ker_run_control_close();
     if (!result) result = workers;
