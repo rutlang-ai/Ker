@@ -253,6 +253,9 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_GROUP_PUBLISH ||
         operation == KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL ||
         operation == KER_SB_FF_OWNER_GROUP_MEMBER;
+    requires_cap = requires_cap ||
+        operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL ||
+        operation == KER_SB_FF_OWNER_GROUP_CONTROL;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -760,6 +763,38 @@ int ker_socket_client_owner_group_member(struct ker_socket_client *client,
         }
     }
     return reply_fds[0];
+}
+
+int ker_socket_client_owner_group_activate_initial(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap)
+{
+    if (!client || owner_cap < 0 || claimed_slot_cap < 0) return fail(EINVAL);
+    int rights[2] = {owner_cap, claimed_slot_cap};
+    int activated = -1;
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL, NULL, 0,
+            rights, 2, NULL, 0, SIZE_MAX, &activated, &result, &reply_length)) return -1;
+    if (result < 0) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(result >= -4095 ? (int)-result : EPROTO);
+    }
+    if (result != 1 || reply_length || activated < 0 ||
+        !valid_capability_fd(activated)) {
+        if (activated >= 0) (void)syscall(SYS_close, activated);
+        return fail(EPROTO);
+    }
+    return activated;
+}
+
+int ker_socket_client_owner_group_control(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int group = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CONTROL,
+            NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
+    return group;
 }
 
 int ker_socket_client_member_census_create(struct ker_socket_client *client,

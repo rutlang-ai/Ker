@@ -156,6 +156,21 @@ This SDK leaf supports one fixed two-member IPv4 group. It does not bind Nginx
 generation startup, worker dispatcher behavior, repeated generations, or the
 graceful-reload FSM; the source inventory entry remains blocked.
 
+The C21 SDK leaf adds an opt-in activation path for the initial member of a
+staged owner group. The claimed owner receives one unbound original-Linux TCP
+socket tagged with its immutable owner mark; only that actor may set the small
+prebind option allowlist and perform the reserved-tuple `bind` and real
+`listen`. The broker publishes the member cookie and selector-0 group only
+after `listen` succeeds, and the coordinator can retrieve group CONTROL after
+that point. Owner history is checked before every activation operation, and
+the socket cookie and mark are revalidated against the native descriptor.
+Index 1 activation, admission-prepared owners, repeated replacement, Nginx
+worker/module binding, and the graceful-reload FSM remain unsupported. The TAP
+fixture exercises a real accepted TCP exchange, sticky-history refusal without
+bind/listen effects, capability cleanup, and reuse of the released tuple by a
+fresh non-reuseport listener. This is an SDK prerequisite, not a graceful
+reload qualification; the source inventory entry remains blocked.
+
 The opt-in runtime now provides `ff_socket_snd_pending` for ordinary
 ready-copy TCP sockets created through the authenticated FF owner context. Each
 process receives a distinct broker-owned mark bound to its host PID, process

@@ -232,6 +232,14 @@ int ker_socket_client_owner_group_publish_candidate(struct ker_socket_client *cl
     int plan_cap);
 int ker_socket_client_owner_group_member(struct ker_socket_client *client,
     int owner_cap, int claimed_slot_cap);
+/* Opt-in initial-listener activation for staged plans. The authenticated owner
+ * receives only its claimed slot's unbound managed socket; bind/listen remain
+ * original-Linux operations enforced by the broker against the reserved
+ * tuple. The coordinator can obtain GROUP control after listen succeeds. */
+int ker_socket_client_owner_group_activate_initial(struct ker_socket_client *client,
+    int owner_cap, int claimed_slot_cap);
+int ker_socket_client_owner_group_control(struct ker_socket_client *client,
+    int plan_cap);
 
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights
