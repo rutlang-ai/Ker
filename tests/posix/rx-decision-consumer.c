@@ -223,12 +223,19 @@ static int child_worker(struct fixture *fixture)
     struct msghdr send_message = {.msg_iov = vectors, .msg_iovlen = 3};
     if (sendmsg(fixture->worker_fd, &send_message, MSG_NOSIGNAL) != data_header.message_bytes)
         return 28;
+    bool should_resolve = !strcmp(fixture->mode, "positive") ||
+        !strcmp(fixture->mode, "drop") || !strcmp(fixture->mode, "wrong-thread") ||
+        !strcmp(fixture->mode, "no-handler") || !strcmp(fixture->mode, "alive-uncertain") ||
+        !strcmp(fixture->mode, "dead-peer") || !strcmp(fixture->mode, "replay") ||
+        !strcmp(fixture->mode, "bad-action");
+    if (!should_resolve) for (;;) pause();
     if (!strcmp(fixture->mode, "replay")) {
         if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 29;
         if (length != sizeof(struct ker_rx_decision_header) + sizeof(struct ker_rx_decision_result)) return 30;
         if (sendmsg(fixture->worker_fd, &send_message, MSG_NOSIGNAL) != data_header.message_bytes) return 31;
     }
-    if (strcmp(fixture->mode, "positive") && strcmp(fixture->mode, "wrong-thread") &&
+    if (strcmp(fixture->mode, "positive") && strcmp(fixture->mode, "drop") &&
+        strcmp(fixture->mode, "bad-action") && strcmp(fixture->mode, "wrong-thread") &&
         strcmp(fixture->mode, "no-handler") && strcmp(fixture->mode, "alive-uncertain") &&
         strcmp(fixture->mode, "dead-peer")) return 0;
     if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 32;
@@ -236,8 +243,10 @@ static int child_worker(struct fixture *fixture)
     struct ker_rx_decision_result decision;
     memcpy(&header, bytes, sizeof(header));
     memcpy(&decision, bytes + sizeof(header), sizeof(decision));
+    uint32_t expected_action = !strcmp(fixture->mode, "drop") ? KER_RX_DECISION_DROP :
+        KER_RX_DECISION_LOCAL;
     if (header.type != KER_RX_DECISION_RESULT || header.packet_id != 1 ||
-        decision.action != KER_RX_DECISION_LOCAL) return 34;
+        decision.action != expected_action) return 34;
     if (receive_packet(fixture->worker_fd, bytes, sizeof(bytes), &length, getppid(), false)) return 35;
     memcpy(&header, bytes, sizeof(header));
     if (length != sizeof(header) ||
@@ -262,7 +271,7 @@ static int child_worker(struct fixture *fixture)
     return 0;
 }
 
-struct callback_state { int calls; pthread_t owner; };
+struct callback_state { int calls; pthread_t owner; int action; };
 static int decide(const struct ker_rx_decision_packet *packet, void *context)
 {
     struct callback_state *state = context;
@@ -274,7 +283,7 @@ static int decide(const struct ker_rx_decision_packet *packet, void *context)
     const unsigned char *snapshot = packet->first_segment;
     for (size_t i = 0; i < 64; ++i)
         if (snapshot[i] != (unsigned char)(i ^ 0x5a)) return 99;
-    return KER_RX_DECISION_LOCAL;
+    return state->action;
 }
 
 static int run_case(const char *mode)
@@ -320,7 +329,10 @@ static int run_case(const char *mode)
     close(fixture.worker_fd);
     fixture.worker_fd = -1;
 
-    struct callback_state callback = {.calls = 0, .owner = pthread_self()};
+    int callback_action = !strcmp(mode, "drop") ? KER_RX_DECISION_DROP :
+        !strcmp(mode, "bad-action") ? 99 : KER_RX_DECISION_LOCAL;
+    struct callback_state callback = {.calls = 0, .owner = pthread_self(),
+        .action = callback_action};
     if (!strcmp(mode, "wrong-role") || !strcmp(mode, "wrong-target")) {
         CHECK(ker_posix_rx_decision_register(fixture.app_fd, decide, &callback) < 0);
         CHECK(errno == (!strcmp(mode, "wrong-role") ? EACCES : ESTALE));
@@ -371,7 +383,8 @@ static int run_case(const char *mode)
     }
     CHECK(ker_rx_decision_consumer_start() == 0);
     CHECK(ker_posix_rx_decision_is_ready() == 1);
-    if (strcmp(mode, "positive") && strcmp(mode, "wrong-thread") &&
+    if (strcmp(mode, "positive") && strcmp(mode, "drop") &&
+        strcmp(mode, "wrong-thread") &&
         strcmp(mode, "no-handler") && strcmp(mode, "alive-uncertain") &&
         strcmp(mode, "dead-peer")) {
         CHECK(wait_fd(consumer_fd) == 0);
@@ -388,10 +401,11 @@ static int run_case(const char *mode)
             close(fixture.settle_pipe[1]);
             return 0;
         }
-        int expected = !strcmp(mode, "bad-sequence") || !strcmp(mode, "replay") ? -EPROTO :
+        int expected = !strcmp(mode, "bad-sequence") || !strcmp(mode, "replay") ||
+            !strcmp(mode, "bad-action") ? -EPROTO :
             !strcmp(mode, "expired") ? -ETIMEDOUT : -EOPNOTSUPP;
         CHECK(ker_rx_decision_consumer_pump() == expected);
-        CHECK(callback.calls == 0);
+        CHECK(callback.calls == (!strcmp(mode, "bad-action") ? 1 : 0));
         kill(fixture.worker_pid, SIGKILL);
         int status;
         CHECK(waitpid(fixture.worker_pid, &status, 0) == fixture.worker_pid);
