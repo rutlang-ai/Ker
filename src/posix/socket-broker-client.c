@@ -255,7 +255,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_GROUP_MEMBER;
     requires_cap = requires_cap ||
         operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL ||
-        operation == KER_SB_FF_OWNER_GROUP_CONTROL;
+        operation == KER_SB_FF_OWNER_GROUP_CONTROL ||
+        operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -793,6 +794,16 @@ int ker_socket_client_owner_group_control(struct ker_socket_client *client,
     if (!client || plan_cap < 0) return fail(EINVAL);
     int group = -1;
     if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CONTROL,
+            NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
+    return group;
+}
+
+int ker_socket_client_owner_group_control_after_exit(
+    struct ker_socket_client *client, int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int group = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT,
             NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
     return group;
 }

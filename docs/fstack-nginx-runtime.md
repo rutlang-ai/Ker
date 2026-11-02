@@ -250,3 +250,43 @@ This qualifies bounded one- and two-worker, `graceful_reload=0` Nginx caller
 paths. It does not qualify the F-Stack generation-reload state machine, UDP,
 fault injection, the original shell matrix, or shell cleanup oracle. Those requirements remain in
 [`fstack-graceful-reload-gap.md`](fstack-graceful-reload-gap.md).
+
+The C22 owner-activation module adds one narrower opt-in profile for a single
+IPv4 TCP `reuseport` listener and exactly one worker. The master validates the
+pinned runtime configuration and reserves a staged plan plus slot zero before
+fork. The child inherits only that slot, closes its plan and master RPC copies,
+then the existing F-Stack shim claims and activates the unbound member after
+the authenticated owner starts and before Nginx's original socket/bind/listen
+sequence. Ker does not replace those Nginx or Linux calls. The broker validates
+the exact address, socket cookie, mark, role, and listen backlog; it allows the
+pinned caller's second same-backlog `listen()` invocation without changing the
+published selector.
+
+Both initial and HUP cycles require the Nginx dynamic module to be loaded. The
+module verifies the running executable's GNU build ID before reading any
+build-specific Nginx structure. It parses the bounded path from the actual
+`fstack_conf` directive and requires `KER_FSTACK_NGINX_INI` to name that same
+`graceful_reload=0` file. `nginx -t` validates the profile but creates no
+broker plan; `nginx -s reload` follows the original signaller path without
+creating broker state. Unsupported listener layouts/options fail closed. Negative tests
+cover the wrong worker count, extra or missing listeners, IPv6, forbidden
+listener options, `graceful_reload=1`, a mismatched INI environment path, and a
+missing worker shim; they require rejection before plan creation and TCP
+socket opens. The C22 TAP test proves
+HTTP before and after the pinned legacy HUP path, authenticates the old worker's
+exit through the broker's pidfd-gated admin receipt, and waits for a mark-scoped
+census to show `LISTEN=0` and no queued payload before reserving a new mark.
+Original-Linux TIME_WAIT rows may remain and are not forcibly cleared. The test
+also repeats HUP, checks the master's socket descriptor count does not grow,
+proves each cycle receives a distinct listener cookie, and waits for all three
+mark-scoped censuses to reach `LISTEN=0` at cleanup.
+
+This Nginx HUP path intentionally has an outage while the old worker exits and
+the new cycle starts. It does not claim active-stream preservation, does not
+override Nginx signal handling, and does not qualify `graceful_reload=1` or a
+second worker. Build and install the module only with the same clean pinned
+source, generated configuration, and executable inputs required by the worker
+shim; the installed `nginx-owner-activation-build.json` records that boundary.
+Run `ctest -R 'native-nginx-fstack-owner-activation|fstack-nginx-worker-shim-build-id-boundary'`
+for the positive TAP cycle, unsupported-profile matrix, and wrong-main-build-ID
+guard.

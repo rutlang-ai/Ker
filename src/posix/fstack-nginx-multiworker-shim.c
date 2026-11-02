@@ -168,6 +168,12 @@ main_binary_matches_pinned_build(void)
     return 0;
 }
 
+int
+ker_fstack_nginx_owner_activation_abi_matches(void)
+{
+    return main_binary_matches_pinned_build();
+}
+
 static int
 unsupported(const char *reason)
 {
@@ -391,8 +397,10 @@ ff_init(int argc, char * const argv[])
 {
     typedef int (*preflight_fn)(int, char * const []);
     typedef int (*commit_fn)(void);
+    typedef int (*initial_owner_prepare_fn)(ngx_cycle_t *);
     preflight_fn runtime_preflight;
     commit_fn runtime_commit;
+    initial_owner_prepare_fn initial_owner_prepare;
     ngx_cycle_t *cycle;
     ngx_listening_t *listeners;
     ngx_uint_t worker, worker_count;
@@ -417,6 +425,22 @@ ff_init(int argc, char * const argv[])
     if (runtime_preflight(argc, argv) != 0) {
         secondary_authorization_active = 0;
         return -1;
+    }
+
+    /* The optional pinned C22 dynamic module reserves the initial listener
+     * before fork and exposes only slot 0 to this worker. Its helper runs
+     * after runtime_preflight established the authenticated FF owner, but
+     * before Nginx's first ff_socket call in ngx_open_listening_sockets(). */
+    initial_owner_prepare = (initial_owner_prepare_fn)dlsym(RTLD_DEFAULT,
+        "ker_fstack_nginx_owner_activation_worker_prepare");
+    if (initial_owner_prepare == NULL &&
+        getenv("KER_FSTACK_NGINX_INI") != NULL)
+        return unsupported("C22 owner activation module helper is unavailable");
+    if (initial_owner_prepare != NULL) {
+        if (worker != 0 || worker_count != 1 || initial_owner_prepare(cycle) != 0) {
+            secondary_authorization_active = 0;
+            return unsupported("initial owner activation requires the validated one-worker profile");
+        }
     }
 
     /* The upstream socket-open loop honors ignore. Its later configure pass

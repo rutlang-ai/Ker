@@ -240,6 +240,10 @@ int ker_socket_client_owner_group_activate_initial(struct ker_socket_client *cli
     int owner_cap, int claimed_slot_cap);
 int ker_socket_client_owner_group_control(struct ker_socket_client *client,
     int plan_cap);
+/* Obtain the coordinator receipt only after the claimed owner is confirmed
+ * exited through its broker-authenticated pidfd. Live owners return EAGAIN. */
+int ker_socket_client_owner_group_control_after_exit(
+    struct ker_socket_client *client, int plan_cap);
 
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights

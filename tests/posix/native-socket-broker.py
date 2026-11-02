@@ -2332,6 +2332,11 @@ def run_tcp_observer_frontend(args, rpc_path, broker, cap_fds, root):
 def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     binary = args.nginx_binary.resolve()
     fstack_profile = args.fstack_runtime is not None
+    owner_activation = args.nginx_owner_activation_module is not None
+    missing_owner_shim_control = args.nginx_owner_activation_missing_helper
+    worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
+    negative_profile = args.nginx_test_negative_profile
+    unsupported_profile_test = bool(args.nginx_test_unsupported_option or negative_profile)
     selected_preload = str(args.preload_library.resolve())
     if fstack_profile:
         selected_preload = f'{args.fstack_runtime.resolve()}:{selected_preload}'
@@ -2354,29 +2359,48 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     config = prefix / 'nginx.conf'
     runtime_trace = prefix / 'fstack-runtime.trace'
     fstack_config = prefix / 'fstack.ini'
+    graceful_reload = 1 if negative_profile == 'graceful-one' else 0
     if fstack_profile:
         fstack_config.write_text(f'''[ker_socket_broker]
 version=1
 path={rpc_path}
 
 [dpdk]
-graceful_reload=0
+graceful_reload={graceful_reload}
 ''')
     runtime_config = (f'fstack_conf {fstack_config};\ntimer_resolution 1ms;\nenv KER_FSTACK_RUNTIME_TRACE;\n'
         if fstack_profile else '')
+    if owner_activation:
+        require(fstack_profile and (worker_count == 1 or negative_profile == 'two-workers'),
+            'C22 owner activation requires the single-worker F-Stack runtime profile')
+        runtime_config += 'env KER_FSTACK_NGINX_INI;\n'
     sendfile = 'off' if fstack_profile else 'on'
     reuseport = ' reuseport' if fstack_profile else ''
-    unsupported_listener_option = ' rcvbuf=4096' if args.nginx_test_unsupported_option else ''
-    worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
+    unsupported_listener_option = ''
+    if args.nginx_test_unsupported_option or negative_profile == 'rcvbuf':
+        unsupported_listener_option = ' rcvbuf=4096'
+    elif negative_profile == 'keepalive':
+        unsupported_listener_option = ' so_keepalive=on'
+    listener_lines = ''
+    listener_address = '198.18.0.2:4098'
+    if negative_profile == 'ipv6':
+        listener_address = '[::1]:4098'
+    if negative_profile != 'missing-listener':
+        listener_lines = f'        listen {listener_address}{reuseport}{unsupported_listener_option};\n'
+        if negative_profile == 'extra-listener':
+            listener_lines += f'        listen 198.18.0.2:4099{reuseport};\n'
     if args.fstack_worker_shim:
-        require(fstack_profile and worker_count == 2,
-            'the worker ownership shim requires the FF runtime and exactly two Nginx workers')
+        require(fstack_profile and (worker_count == 2 or
+            (owner_activation and worker_count == 1)),
+            'the worker shim requires its two-worker profile or C22 single-worker profile')
     access_log = logs / 'worker-pids.log'
     worker_log_config = (
         f"log_format ker_worker_pid '$pid $request_uri';\n" if args.fstack_worker_shim else '')
     access_log_config = (
         f'access_log {access_log} ker_worker_pid;\n' if args.fstack_worker_shim else '')
-    config.write_text(f'''daemon on;
+    load_module = (f'load_module {args.nginx_owner_activation_module.resolve()};\n'
+        if owner_activation else '')
+    config.write_text(f'''{load_module}daemon on;
 master_process on;
 worker_processes {worker_count};
 {runtime_config}pid {logs / 'nginx.pid'};
@@ -2390,7 +2414,7 @@ http {{
     tcp_nopush off;
     keepalive_timeout 0;
     server {{
-        listen 198.18.0.2:4098{reuseport}{unsupported_listener_option};
+{listener_lines.rstrip()}
         server_name ker.test;
         root {html};
         {access_log_config}
@@ -2400,7 +2424,66 @@ http {{
     env = selected_runtime_env.copy()
     if fstack_profile:
         env['KER_FSTACK_RUNTIME_TRACE'] = str(runtime_trace)
+    if owner_activation:
+        if negative_profile == 'ini-env-mismatch':
+            env_ini = prefix / 'different-fstack.ini'
+            env_ini.write_text(f'''[ker_socket_broker]
+version=1
+path={rpc_path}
+
+[dpdk]
+graceful_reload=0
+''')
+            env['KER_FSTACK_NGINX_INI'] = str(env_ini)
+        else:
+            env['KER_FSTACK_NGINX_INI'] = str(fstack_config)
     command = [str(binary), '-p', str(prefix) + '/', '-c', str(config)]
+    if owner_activation:
+        signal_check = subprocess.run(command + ['-s', 'reload'], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        require(signal_check.returncode != 0,
+            'C22 signal-only command unexpectedly found a running master')
+        require(not runtime_trace.exists() or not any(
+            line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+            'C22 signal-only command created broker owner-group resources')
+        checked = subprocess.run(command + ['-t'], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        if missing_owner_shim_control:
+            require(checked.returncode != 0 and
+                b'missing pinned worker activation shim' in checked.stderr,
+                f'C22 did not reject missing owner shim before plan creation: '
+                f'{checked.returncode}; {checked.stderr.decode(errors="replace")}')
+            require(not runtime_trace.exists() or not any(
+                line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+                'C22 missing-shim `nginx -t` created broker owner-group resources')
+            for fd in capabilities:
+                try: os.close(fd)
+                except OSError: pass
+            capabilities.clear()
+            print('C22_NGINX_MISSING_SHIM_REJECTED before_broker_plan=true')
+            return {'master': None}
+        if unsupported_profile_test:
+            expected_profile_error = (b'runtime INI environment differs from fstack_conf'
+                if negative_profile == 'ini-env-mismatch' else
+                b'C22 owner-activation module refuses unsupported Nginx profile')
+            require(checked.returncode != 0 and
+                expected_profile_error in checked.stderr,
+                f'C22 `nginx -t` did not reject the unsupported listener profile: '
+                f'{checked.returncode}; {checked.stderr.decode(errors="replace")}')
+            require(not runtime_trace.exists() or not any(
+                line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+                'C22 unsupported `nginx -t` created broker owner-group resources')
+            for fd in capabilities:
+                try: os.close(fd)
+                except OSError: pass
+            capabilities.clear()
+            print('C22_NGINX_UNSUPPORTED_PROFILE_REJECTED before_broker_plan=true')
+            return {'master': None}
+        require(checked.returncode == 0,
+            f'C22 nginx -t failed: {checked.stderr.decode(errors="replace")}')
+        require(not runtime_trace.exists() or not any(
+            line.startswith('C22_PLAN ') for line in runtime_trace.read_text().splitlines()),
+            'C22 nginx -t created broker owner-group resources')
     startup = subprocess.run(command, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
     require(startup.returncode == 0,
@@ -2411,7 +2494,7 @@ http {{
     try:
         wait_for_path(pidfile, 20, 'initial nginx pidfile')
         master = int(pidfile.read_text().strip())
-        if args.nginx_test_unsupported_option:
+        if unsupported_profile_test:
             deadline = time.monotonic() + 10
             error_log = logs / 'error.log'
             while time.monotonic() < deadline:
@@ -2458,10 +2541,147 @@ http {{
             trace = runtime_trace.read_text() if runtime_trace.exists() else '<missing>'
             raise RuntimeError('nginx did not serve its first request through the selected broker caller; '
                 f'last_request_error={first_request_error}; error_log={error_log!r}; runtime_trace={trace!r}')
-        if args.fstack_worker_shim:
+        if args.fstack_worker_shim and not owner_activation:
             prove_nginx_workers_serve(access_log, initial_worker_pids, 'initial startup')
         require(len(capabilities) == 2,
             f'broker bootstrap returned {len(capabilities)} capabilities, expected listener and epoll')
+        if owner_activation:
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            listeners = [re.search(r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                for line in traces]
+            listeners = [match for match in listeners if match]
+            plans = [line for line in traces if line.startswith('C22_PLAN ')]
+            require(len(plans) == 1 and len(listeners) >= 1,
+                f'C22 initial plan/listener identity proof missing: {traces!r}')
+            initial = listeners[0]
+            initial_pid, initial_cookie = int(initial.group(1)), int(initial.group(3))
+            require(initial_cookie > 0,
+                f'C22 listener lacked native cookie identity: {initial.group(0)!r}')
+            wait_for_path(pidfile, 20, 'C22 nginx pidfile')
+            master = int(pidfile.read_text().strip())
+            children_path = Path(f'/proc/{master}/task/{master}/children')
+            deadline = time.monotonic() + 20
+            initial_workers = []
+            while time.monotonic() < deadline:
+                initial_workers = children_path.read_text().split() if children_path.exists() else []
+                if len(initial_workers) == 1: break
+                time.sleep(0.02)
+            require(len(initial_workers) == 1 and int(initial_workers[0]) == initial_pid,
+                f'C22 initial worker identity differs from listener trace: {initial_workers!r}; {initial_pid}')
+            response = request_static('198.18.0.2', 4098, '/small.txt')
+            require(response[0] == len(b'preload-http-ok\n'),
+                f'C22 initial original-Linux HTTP response differs: {response!r}')
+            def nginx_socket_fd_count(pid):
+                fd_dir = Path(f'/proc/{pid}/fd')
+                return sum(1 for item in fd_dir.iterdir()
+                    if os.readlink(item).startswith('socket:['))
+            initial_socket_fds = nginx_socket_fd_count(master)
+
+            # This profile intentionally follows Nginx's legacy graceful_reload=0
+            # HUP behavior: old worker exit precedes the replacement cycle, so a
+            # brief connection refusal is expected and no stream continuity is claimed.
+            stage = 'C22 legacy HUP retirement'
+            os.kill(master, signal.SIGHUP)
+            deadline = time.monotonic() + 30
+            replacement_workers = []
+            while time.monotonic() < deadline:
+                replacement_workers = children_path.read_text().split() if children_path.exists() else []
+                if len(replacement_workers) == 1 and replacement_workers[0] != initial_workers[0]:
+                    break
+                time.sleep(0.025)
+            require(len(replacement_workers) == 1 and replacement_workers[0] != initial_workers[0],
+                f'C22 HUP did not replace the original worker: {replacement_workers!r}')
+            deadline = time.monotonic() + 25
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    response = request_static('198.18.0.2', 4098, '/small.txt')
+                    require(response[0] == len(b'preload-http-ok\n'),
+                        f'C22 post-HUP HTTP response differs: {response!r}')
+                    break
+                except (OSError, RuntimeError) as error:
+                    last_error = repr(error)
+                    time.sleep(0.05)
+            else:
+                raise RuntimeError(f'C22 replacement worker did not serve HTTP: {last_error!r}')
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            retired = [re.search(r'C22_RETIRED pid=(\d+) cookie=(\d+) total=(\d+) timewait=(\d+) listen=0 payload=0$', line)
+                for line in traces]
+            retired = [match for match in retired if match]
+            listeners = [re.search(r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                for line in traces]
+            listeners = [match for match in listeners if match]
+            require(any(int(match.group(2)) == initial_cookie and
+                match.group(3) == match.group(4) for match in retired),
+                f'C22 old listener census did not prove its cookie drained: {traces!r}')
+            new_listener = next((match for match in listeners
+                if int(match.group(1)) != initial_pid and int(match.group(3)) != initial_cookie), None)
+            require(new_listener is not None,
+                f'C22 HUP did not allocate a fresh listener cookie: {traces!r}')
+
+            # Repeat legacy HUP to prove the master replaces its broker session
+            # instead of leaking one control socket per cycle.
+            first_replacement_pid = int(new_listener.group(1))
+            first_replacement_cookie = int(new_listener.group(3))
+            require(nginx_socket_fd_count(master) == initial_socket_fds,
+                'C22 master socket descriptor count grew after first HUP')
+            os.kill(master, signal.SIGHUP)
+            deadline = time.monotonic() + 30
+            second_workers = []
+            while time.monotonic() < deadline:
+                second_workers = children_path.read_text().split() if children_path.exists() else []
+                if len(second_workers) == 1 and int(second_workers[0]) != first_replacement_pid:
+                    break
+                time.sleep(0.025)
+            require(len(second_workers) == 1 and
+                int(second_workers[0]) != first_replacement_pid,
+                f'C22 second HUP did not replace its worker: {second_workers!r}')
+            deadline = time.monotonic() + 25
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    response = request_static('198.18.0.2', 4098, '/small.txt')
+                    require(response[0] == len(b'preload-http-ok\n'),
+                        f'C22 second post-HUP HTTP response differs: {response!r}')
+                    break
+                except (OSError, RuntimeError) as error:
+                    last_error = repr(error)
+                    time.sleep(0.05)
+            else:
+                raise RuntimeError(f'C22 second replacement worker did not serve HTTP: {last_error!r}')
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            listeners = [re.search(r'C22_LISTENER pid=(\d+) fd=(\d+) cookie=(\d+) acceptconn=1$', line)
+                for line in traces]
+            listeners = [match for match in listeners if match]
+            second_listener = next((match for match in listeners
+                if int(match.group(1)) != first_replacement_pid and
+                int(match.group(3)) not in (initial_cookie, first_replacement_cookie)), None)
+            require(second_listener is not None,
+                f'C22 second HUP did not allocate a third distinct listener: {traces!r}')
+            require(nginx_socket_fd_count(master) == initial_socket_fds,
+                'C22 master socket descriptor count grew after repeated HUP')
+            new_listener = second_listener
+
+            os.kill(master, signal.SIGQUIT)
+            reap_frontend_child(master, 20)
+            master = None
+            traces = runtime_trace.read_text().splitlines() if runtime_trace.exists() else []
+            retired_cookies = {int(match.group(2)) for line in traces
+                if (match := re.search(r'C22_RETIRED pid=(\d+) cookie=(\d+) total=(\d+) timewait=(\d+) listen=0 payload=0$', line))
+                and match.group(3) == match.group(4)}
+            require(initial_cookie in retired_cookies and
+                first_replacement_cookie in retired_cookies and
+                int(new_listener.group(3)) in retired_cookies,
+                f'C22 all three cycle marks did not census LISTEN=0 on cleanup: {traces!r}')
+            for fd in capabilities:
+                try: os.close(fd)
+                except OSError: pass
+            capabilities.clear()
+            print(f'C22_NGINX_OWNER_ACTIVATION_OK initial_pid={initial_pid} '
+                f'initial_cookie={initial_cookie} '
+                f'replacement_pid={new_listener.group(1)} replacement_cookie={new_listener.group(3)} '
+                f'legacy_hup=outage-expected graceful_reload=0')
+            return {'master': None}
         os.close(capabilities[0])
         # Keep the bootstrap epoll capability only in the supervisor. The
         # fixture broker exits when its last object closes; retaining this
@@ -2821,14 +3041,23 @@ def inside(args):
                         f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
                     stats = json.loads(stats_path.read_text())
                     native = stats.get('native', {})
-                    if args.nginx_test_unsupported_option:
+                    if args.nginx_owner_activation_missing_helper:
+                        require(stats.get('outstanding') == 0 and
+                            native.get('active_opens', 0) == 0 and
+                            native.get('passive_opens', 0) == 0,
+                            f'missing C22 activation shim created sockets or traffic: {stats!r}')
+                        print('C22_NGINX_MISSING_SHIM_NO_SOCKET_CREATED')
+                        return 0
+                    if args.nginx_test_unsupported_option or args.nginx_test_negative_profile:
                         require(stats.get('outstanding') == 0 and
                             native.get('active_opens', 0) == 0 and native.get('passive_opens', 0) == 0,
                             f'unsupported listener option reached socket creation: {stats!r}')
                         print('NGINX_FSTACK_UNSUPPORTED_LISTENER_NO_SOCKET_CREATED')
                         return 0
+                    minimum_nginx_opens = 2 if args.nginx_owner_activation_module else 13
                     require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
-                        stats.get('outstanding') == 0 and native.get('passive_opens', 0) >= 13,
+                        stats.get('outstanding') == 0 and
+                        native.get('passive_opens', 0) >= minimum_nginx_opens,
                         f'original-Linux TCP/DPDK traffic or cleanup evidence missing: {stats!r}')
                     print(f'NGINX_ORIGINAL_LINUX_STATS tx={stats.get("tx")} rx={stats.get("rx")} '
                         f'passive_opens={native.get("passive_opens")} outstanding={stats.get("outstanding")}')
@@ -3024,8 +3253,13 @@ def main():
     parser.add_argument('--nginx-binary', type=Path)
     parser.add_argument('--fstack-runtime', type=Path)
     parser.add_argument('--fstack-worker-shim', type=Path)
+    parser.add_argument('--nginx-owner-activation-module', type=Path)
+    parser.add_argument('--nginx-owner-activation-missing-helper', action='store_true')
     parser.add_argument('--nginx-workers', type=int, choices=(1, 2))
     parser.add_argument('--nginx-test-unsupported-option', action='store_true')
+    parser.add_argument('--nginx-test-negative-profile', choices=(
+        'two-workers', 'extra-listener', 'missing-listener', 'ipv6',
+        'graceful-one', 'rcvbuf', 'keepalive', 'ini-env-mismatch'))
     parser.add_argument('--group-broker', type=Path)
     parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--inherited-group-probe', type=Path)
@@ -3050,10 +3284,21 @@ def main():
     if args.ff_owner_payload_client and not (args.fstack_runtime and args.preload_library):
         parser.error('FF owner payload test requires the F-Stack runtime and preload library')
     if args.fstack_worker_shim and not (args.nginx_binary and args.fstack_runtime and
-        args.preload_library and args.nginx_workers == 2):
-        parser.error('F-Stack worker shim requires nginx, runtime, preload, and --nginx-workers=2')
+        args.preload_library and (args.nginx_workers == 2 or
+        (args.nginx_owner_activation_module and args.nginx_workers == 1))):
+        parser.error('F-Stack worker shim requires its two-worker or C22 one-worker profile')
+    if args.nginx_owner_activation_module and not (args.nginx_binary and
+        args.fstack_runtime and args.preload_library and
+        (args.nginx_workers == 1 or args.nginx_test_negative_profile == 'two-workers') and
+        (args.fstack_worker_shim or args.nginx_owner_activation_missing_helper)):
+        parser.error('C22 owner activation requires nginx, runtime, preload, and its shim')
+    if args.nginx_owner_activation_missing_helper and not args.nginx_owner_activation_module:
+        parser.error('missing-helper control requires the C22 owner-activation module')
     if args.nginx_test_unsupported_option and not args.fstack_worker_shim:
         parser.error('unsupported listener option test requires the F-Stack worker shim')
+    if args.nginx_test_negative_profile and not (args.nginx_owner_activation_module and
+        args.fstack_worker_shim):
+        parser.error('C22 negative profile test requires the owner module and worker shim')
     if args.nginx_workers and not args.nginx_binary:
         parser.error('--nginx-workers requires --nginx-binary')
     if not args.inside:
@@ -3081,10 +3326,17 @@ def main():
             command += ['--fstack-runtime', str(args.fstack_runtime.resolve())]
         if args.fstack_worker_shim:
             command += ['--fstack-worker-shim', str(args.fstack_worker_shim.resolve())]
+        if args.nginx_owner_activation_module:
+            command += ['--nginx-owner-activation-module',
+                str(args.nginx_owner_activation_module.resolve())]
+        if args.nginx_owner_activation_missing_helper:
+            command.append('--nginx-owner-activation-missing-helper')
         if args.nginx_workers:
             command += ['--nginx-workers', str(args.nginx_workers)]
         if args.nginx_test_unsupported_option:
             command.append('--nginx-test-unsupported-option')
+        if args.nginx_test_negative_profile:
+            command += ['--nginx-test-negative-profile', args.nginx_test_negative_profile]
         if args.group_broker:
             command += ['--group-broker', str(args.group_broker.resolve())]
         if args.reuseport_group_client:
