@@ -257,7 +257,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL ||
         operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE ||
         operation == KER_SB_FF_OWNER_GROUP_CONTROL ||
-        operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT;
+        operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT ||
+        operation == KER_SB_FF_OWNER_GENERATION_WATCH_CREATE;
     requires_cap = requires_cap ||
         operation == KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
@@ -489,7 +490,8 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
          output.kind != KER_SOCKET_BROKER_FF_OWNER &&
          output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN &&
          output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT &&
-         output.kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER))
+         output.kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER &&
+         output.kind != KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH))
         return fail(EPROTO);
     *kind = (enum ker_socket_broker_kind)output.kind;
     *status_flags = output.flags;
@@ -884,6 +886,24 @@ int ker_socket_client_owner_group_cutover_poll(
     status->received_packets = wire.received_packets;
     status->accepted_packets = wire.accepted_packets;
     return 0;
+}
+
+int ker_socket_client_owner_generation_watch_create(
+    struct ker_socket_client *client, int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int watch = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GENERATION_WATCH_CREATE,
+            NULL, 0, NULL, 0, &watch, NULL) < 0) return -1;
+    enum ker_socket_broker_kind kind = 0;
+    int flags = 0;
+    if (ker_socket_client_describe(client, watch, &kind, &flags) < 0 ||
+        kind != KER_SOCKET_BROKER_FF_OWNER_GENERATION_WATCH) {
+        int error = errno ? errno : EPROTO;
+        (void)syscall(SYS_close, watch);
+        return fail(error);
+    }
+    return watch;
 }
 
 int ker_socket_client_member_census_create(struct ker_socket_client *client,
