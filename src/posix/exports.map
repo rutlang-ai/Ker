@@ -7,6 +7,7 @@
         ker_member_census_query_submit; ker_member_census_query_poll;
         ker_member_census_query_cancel;
         ker_member_payload_query_submit; ker_member_payload_query_poll;
+        ker_member_requests_query_submit; ker_member_requests_query_poll;
         ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc; ker_posix_buffer_write;
         ker_posix_buffer_writer_create; ker_posix_buffer_writer_create_segmented; ker_posix_buffer_writer_segment; ker_posix_buffer_writer_append;
         ker_posix_buffer_writer_view; ker_posix_buffer_writer_destroy; ker_posix_buffer_writer_send;

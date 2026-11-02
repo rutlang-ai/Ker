@@ -256,7 +256,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_TCP_OBSERVER_SNAPSHOT ||
         operation == KER_SB_MEMBER_CENSUS_SNAPSHOT ||
         operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT ||
-        operation == KER_SB_FF_OWNER_PAYLOAD;
+        operation == KER_SB_FF_OWNER_PAYLOAD ||
+        operation == KER_SB_FF_OWNER_REQUESTS;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -728,5 +729,18 @@ int ker_socket_client_ff_owner_payload_snapshot(struct ker_socket_client *client
     struct ker_socket_member_payload_snapshot completed = {
         .payload_bytes = wire.payload_bytes, .sampled_sockets = wire.sampled_sockets};
     *snapshot = completed;
+    return 0;
+}
+
+int ker_socket_client_ff_owner_requests(struct ker_socket_client *client,
+    int owner_cap, uint64_t *request_count)
+{
+    if (!request_count) return fail(EINVAL);
+    struct ker_sb_ff_owner_requests wire = {0};
+    int received = 0;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_REQUESTS, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire)) return fail(EPROTO);
+    *request_count = wire.request_count;
     return 0;
 }
