@@ -55,6 +55,7 @@ target_link_options(ker-posix PRIVATE -Wl,--no-undefined
     "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
+target_sources(ker-posix PRIVATE src/posix/tcp-request-revoke.c)
 
 # The frontend client is deliberately independent of ker-posix. Opaque host
 # pipe write ends refer to socket capabilities owned by one broker process
@@ -565,6 +566,7 @@ if(BUILD_TESTING)
     target_link_libraries(ker-posix-member-census-test-runtime PRIVATE
         "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
     target_link_libraries(ker-member-census-runtime-test PRIVATE ker-posix-member-census-test-runtime)
+    include("${PROJECT_SOURCE_DIR}/cmake/NativeRequestRevoke.cmake")
     add_executable(ker-socket-broker-inherited-group-client
         tests/posix/socket-broker-inherited-group-client.c)
     target_link_libraries(ker-socket-broker-inherited-group-client PRIVATE ker-socket-client)
