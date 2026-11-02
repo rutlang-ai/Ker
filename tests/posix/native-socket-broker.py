@@ -456,15 +456,51 @@ def receive_metadata_fds(connection, expected_tag, expected_index=None, count=2)
     return fds
 
 
-def census_observation(args, rpc_path, census_fds):
+def census_observation(args, rpc_path, census_fds, timeout=10):
     result = subprocess.run([str(args.member_census_client), '--observe', str(rpc_path),
         str(census_fds[0]), str(census_fds[1])], pass_fds=tuple(census_fds),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     require(result.returncode == 0,
         f'metadata census query failed: stdout={result.stdout!r}; stderr={result.stderr!r}')
     lines = result.stdout.decode().splitlines()
     require(len(lines) == 2, f'metadata census emitted malformed results: {lines!r}')
     return [parse_census_line(line) for line in lines]
+
+
+def wait_for_finwait2_census(args, rpc_path, census_fds, expected_cookies, timeout=5.0):
+    """Wait boundedly for both exact closed members to finish their FIN ACK transition."""
+    if (not isinstance(expected_cookies, (list, tuple)) or len(expected_cookies) != 2 or
+            any(type(cookie) is not int or cookie <= 0 for cookie in expected_cookies) or
+            expected_cookies[0] == expected_cookies[1]):
+        raise RuntimeError(f'invalid retained FIN_WAIT2 member cookies: {expected_cookies!r}')
+    deadline = time.monotonic() + timeout
+    observations = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            observations = census_observation(args, rpc_path, census_fds, timeout=remaining)
+        except subprocess.TimeoutExpired:
+            break
+        observed_at = time.monotonic()
+        # A census RPC that started before the deadline but returned after it
+        # cannot turn a missed transition deadline into a successful proof.
+        if observed_at >= deadline:
+            break
+        if (len(observations) == 2 and all(
+                values.get('cookie') == expected_cookies[index] and
+                values.get('total') == 1 and values.get('listen') == 0 and
+                values.get('finwait2') == 1 and values.get('timewait') == 0
+                for index, values in enumerate(observations))):
+            return observations
+        remaining = deadline - observed_at
+        if remaining <= 0:
+            break
+        time.sleep(min(0.01, remaining))
+    raise RuntimeError('original Linux did not reach exact retained FIN_WAIT2 rows before the bounded deadline: '
+        + repr(dict(expected_cookies=list(expected_cookies), observations=observations,
+            timeout_seconds=timeout)))
 
 
 def tcp_observation(args, rpc_path, observer_fd):
@@ -1290,10 +1326,8 @@ def run_member_census_client(args, rpc_path, broker, capability):
         pending.settimeout(10); fresh.settimeout(10)
         receive_pressure_pattern(pending, sent0)
         receive_pressure_pattern(fresh, sent1)
-        finwait2 = census_observation(args, rpc_path, census_fds)
-        require(all(values.get('finwait2', 0) >= 1 and
-                values.get('timewait', 0) == 0 for values in finwait2),
-            f'closed accepted sockets were not counted as FIN_WAIT2 while peers stayed open: {finwait2!r}')
+        finwait2 = wait_for_finwait2_census(args, rpc_path, census_fds,
+            [values['cookie'] for values in (first_values, second_values)])
         print(f'MEMBER_CENSUS_FIN_WAIT2 retained_peer=true rows={finwait2!r}', flush=True)
         pending.close(); peers.remove(pending)
         fresh.close(); peers.remove(fresh)
