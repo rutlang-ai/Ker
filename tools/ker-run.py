@@ -50,6 +50,14 @@ if _BROKER_READINESS_SPEC is None or _BROKER_READINESS_SPEC.loader is None:
 broker_readiness = importlib.util.module_from_spec(_BROKER_READINESS_SPEC)
 _BROKER_READINESS_SPEC.loader.exec_module(broker_readiness)
 
+_NGINX_COMPANION_SPEC = importlib.util.spec_from_file_location(
+    '_ker_nginx_companion_supervisor',
+    Path(__file__).resolve().with_name('nginx_companion_supervisor.py'))
+if _NGINX_COMPANION_SPEC is None or _NGINX_COMPANION_SPEC.loader is None:
+    raise ImportError('cannot load private Nginx companion supervisor')
+nginx_companion = importlib.util.module_from_spec(_NGINX_COMPANION_SPEC)
+_NGINX_COMPANION_SPEC.loader.exec_module(nginx_companion)
+
 
 class Interrupted(Exception):
     def __init__(self, signum):
@@ -58,6 +66,14 @@ class Interrupted(Exception):
 
 def interrupted(signum, _frame):
     raise Interrupted(signum)
+
+
+_COMPANION_RELOAD_REQUESTED = False
+
+
+def companion_reload_requested(_signum, _frame):
+    global _COMPANION_RELOAD_REQUESTED
+    _COMPANION_RELOAD_REQUESTED = True
 
 
 def process_start_ticks(pid):
@@ -144,6 +160,43 @@ def resolve_exit_code(exit_code, app_returncode, infrastructure_failure, preserv
     if app_returncode is not None and app_returncode < 0 and preserve_signal:
         return 128 - app_returncode
     return exit_code if exit_code >= 0 else 128 - exit_code
+
+
+def control_nginx_profile(args):
+    fields = tuple(getattr(args, name, None) for name in
+        ('control_nginx_binary', 'control_nginx_config', 'control_nginx_prefix'))
+    supplied_env = getattr(args, 'control_nginx_env', None) or []
+    requested = any(value is not None for value in fields) or bool(supplied_env)
+    if not requested:
+        return None
+    if (not args.broker_readiness or not args.runtime_service or args.rx_decision or
+            any(value is None for value in fields)):
+        raise ValueError('control-only Nginx requires broker-readiness and a complete pinned profile')
+    allowed = {'LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
+        'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE'}
+    env = {}
+    for item in supplied_env:
+        key, separator, value = item.partition('=')
+        if (not separator or key not in allowed or key in env or not value or
+                '\0' in value):
+            raise ValueError('invalid/duplicate control-only Nginx environment entry')
+        env[key] = value
+    if not {'LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
+            'KER_FSTACK_NGINX_INI'} <= env.keys():
+        raise ValueError('control-only Nginx requires its F-Stack preload, broker path and INI')
+    if 'libker-posix' in env['LD_PRELOAD']:
+        raise ValueError('control-only Nginx cannot preload the native Linux runtime')
+    preload_names = [Path(item).name for item in env['LD_PRELOAD'].split(':') if item]
+    if (not any(name.startswith('libfstack.so') for name in preload_names) or
+            not any(name.startswith('libker-socket-preload.so') for name in preload_names) or
+            any('nginx-worker-shim' in name for name in preload_names)):
+        raise ValueError('control-only Nginx requires the pinned F-Stack socket preload profile')
+    binary, config, prefix = (value.resolve(strict=True) for value in fields)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError('control-only Nginx binary is not an executable file')
+    if not config.is_file() or not prefix.is_dir():
+        raise ValueError('control-only Nginx config/prefix does not exist')
+    return binary, config, prefix, env
 
 
 # CMake substitutes the relative library path for the installed launcher.
@@ -646,6 +699,10 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--rx-decision', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--runtime-service', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--broker-readiness', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-binary', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-config', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-prefix', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--control-nginx-env', action='append', help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -1260,10 +1317,16 @@ def primary_channels():
 
 
 def main():
+    global _COMPANION_RELOAD_REQUESTED
     try:
         args = parse_arguments(defer_worker_limits=True)
     except MemoryError:
         print('ker-run: configuration allocation failed', file=sys.stderr)
+        return 2
+    try:
+        control_nginx = control_nginx_profile(args)
+    except (OSError, ValueError) as error:
+        print(f'ker-run: {error}', file=sys.stderr)
         return 2
     try:
         library = args.library.resolve(strict=True)
@@ -1298,6 +1361,8 @@ def main():
     runtime_service_server = None
     runtime_service_directory = None
     broker_readiness_channel = None
+    nginx_companion_server = None
+    containment_unresolved = False
     decision_nonce = None
     decision_epoch = 0
     supervisor_identity = None
@@ -1338,6 +1403,8 @@ def main():
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
     if args.broker_readiness:
         signal.signal(signal.SIGINT, handle_shutdown_signal)
+    if control_nginx is not None:
+        signal.signal(signal.SIGHUP, companion_reload_requested)
     worker = app = None
     additional = []
     exit_code = 125
@@ -1352,6 +1419,7 @@ def main():
     def stop_broker_for_signal():
         nonlocal exit_code, preserve_signal, signal_exit_code, stop_deadline
         nonlocal pending_shutdown_signal
+        nonlocal containment_unresolved, infrastructure_failure
         if (pending_shutdown_signal is None or broker_readiness_channel is None or
                 not broker_readiness_channel.ready or broker_readiness_channel.stopped):
             return
@@ -1360,6 +1428,13 @@ def main():
         preserve_signal = True
         signal_exit_code = 128 + signum
         exit_code = signal_exit_code
+        if (nginx_companion_server is not None and nginx_companion_server.started and
+                not nginx_companion_server.settled):
+            nginx_companion_server.stop()
+            if nginx_companion_server.unresolved or not nginx_companion_server.settled:
+                containment_unresolved = True
+                infrastructure_failure = True
+                raise RuntimeError('Nginx companion did not settle before broker STOP')
         stop_deadline = time.monotonic() + 10.0
         broker_readiness_channel.stop()
 
@@ -1451,6 +1526,8 @@ def main():
         if args.broker_readiness:
             broker_readiness_channel = broker_readiness.BrokerReadiness(
                 worker_path, info, runtime_service_server.worker_profile_hash)
+        if control_nginx is not None:
+            nginx_companion_server = nginx_companion.NginxCompanion(*control_nginx)
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
@@ -1596,7 +1673,16 @@ def main():
                     raise TimeoutError('broker-requested native shutdown timed out')
                 stop_broker_for_signal()
                 if broker_readiness_channel is not None and not broker_readiness_channel.ready:
-                    broker_readiness_channel.poll_ready()
+                    if (broker_readiness_channel.poll_ready() and
+                            nginx_companion_server is not None):
+                        nginx_companion_server.start()
+                if _COMPANION_RELOAD_REQUESTED:
+                    _COMPANION_RELOAD_REQUESTED = False
+                    if nginx_companion_server is None or not nginx_companion_server.started:
+                        raise RuntimeError('Nginx reload requested before companion master readiness')
+                    nginx_companion_server.reload()
+                if nginx_companion_server is not None:
+                    nginx_companion_server.check()
                 try:
                     startup_status += os.read(startup_read, 4096)
                 except BlockingIOError:
@@ -1618,6 +1704,11 @@ def main():
                         startup_status += pending
                     if b'KER_NATIVE_DONE\n' not in startup_status and b'KER_NATIVE_INCOMPLETE\n' not in startup_status:
                         raise RuntimeError('run requested EAL teardown before native kernel teardown')
+                    if (nginx_companion_server is not None and
+                            nginx_companion_server.started and
+                            not nginx_companion_server.settled):
+                        containment_unresolved = True
+                        raise RuntimeError('native runtime finished before companion SETTLED')
                     lease_release_ok = True
                     if runtime_service_server is not None:
                         lease_release_ok = runtime_service_server.prepare_worker_shutdown(1.0)
@@ -1650,6 +1741,11 @@ def main():
                     run_finished = True
                     run_parent.send(b'FAIL\n' if failed else b'OK\n')
                 if b'KER_NATIVE_STOPPING\n' in startup_status and not run_finished:
+                    if (nginx_companion_server is not None and
+                            nginx_companion_server.started and
+                            not nginx_companion_server.settled):
+                        containment_unresolved = True
+                        raise RuntimeError('native shutdown began before companion SETTLED')
                     failure = unexpected_additional_worker_exit(additional)
                     if failure:
                         raise RuntimeError(failure)
@@ -1666,8 +1762,13 @@ def main():
         preserve_signal = True
         signum = interruption.signum if isinstance(interruption, Interrupted) else signal.SIGINT
         exit_code = 128 + signum
-        if broker_readiness_channel is not None and broker_readiness_channel.ready and app and app.poll() is None:
+        if (nginx_companion_server is not None and nginx_companion_server.unresolved):
+            containment_unresolved = True
+            infrastructure_failure = True
+        elif broker_readiness_channel is not None and broker_readiness_channel.ready and app and app.poll() is None:
             try:
+                if nginx_companion_server is not None and nginx_companion_server.started:
+                    nginx_companion_server.stop()
                 broker_readiness_channel.stop()
                 app.wait(timeout=10)
                 if app.returncode != 0:
@@ -1677,6 +1778,8 @@ def main():
                     raise RuntimeError('broker STOP did not produce normal native shutdown markers')
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
                 infrastructure_failure = True
+                if nginx_companion_server is not None:
+                    containment_unresolved = True
                 print(f'ker-run: broker STOP failed: {error}', file=sys.stderr)
         elif app and app.poll() is None:
             app.send_signal(signum)
@@ -1689,6 +1792,21 @@ def main():
         if broker_readiness_channel is not None:
             infrastructure_failure = True
     finally:
+        if (nginx_companion_server is not None and
+                (nginx_companion_server.unresolved or
+                 (nginx_companion_server.started and not nginx_companion_server.settled))):
+            containment_unresolved = True
+        if containment_unresolved:
+            print('ker-run: companion shutdown UNRESOLVED; retaining native broker and worker resources',
+                file=sys.stderr)
+            while True:
+                try:
+                    signal.pause()
+                except Interrupted:
+                    break
+            infrastructure_failure = True
+        if nginx_companion_server is not None:
+            nginx_companion_server.close()
         if app and app.poll() is None:
             app.terminate()
             try:

@@ -1,4 +1,5 @@
 """Private wire codec for ker-run's control-only Nginx containment helper."""
+import hashlib
 import struct
 
 MAGIC = 0x4B434834
@@ -117,6 +118,22 @@ def validate_error(fields):
         raise ValueError('ERROR requires a positive errno and nonzero phase')
     if unresolved_descendants and (not start_ticks or profile == bytes(32)):
         raise ValueError('unresolved descendants require a pinned master identity')
+
+
+def profile_hash(binary_hash, config_hash, ini_hash, prefix, env):
+    if any(len(digest) != 32 for digest in (binary_hash, config_hash, ini_hash)):
+        raise ValueError('Nginx binary/config/INI identity must be SHA-256')
+    material = bytearray(b'ker.nginx.control-companion/v1\0')
+    for value in (binary_hash, config_hash, ini_hash, prefix.encode()):
+        material.extend(struct.pack('<I', len(value)))
+        material.extend(value)
+    for key, value in sorted(env.items()):
+        key_bytes, value_bytes = key.encode(), value.encode()
+        material.extend(struct.pack('<I', len(key_bytes)))
+        material.extend(key_bytes)
+        material.extend(struct.pack('<I', len(value_bytes)))
+        material.extend(value_bytes)
+    return hashlib.sha256(material).digest()
 
 
 class RequestSequence:
