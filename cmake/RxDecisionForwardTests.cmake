@@ -59,6 +59,13 @@ add_test(NAME native-rx-decision-forward-tap
 set_tests_properties(native-rx-decision-forward-tap PROPERTIES
     TIMEOUT 90 LABELS "native-tcp;rx-decision;dpdk-tap;original-linux")
 
+add_test(NAME native-rx-decision-producer-faults
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-decision-producer-faults.py"
+        --worker "$<TARGET_FILE:ker-io-worker>"
+        --dpdk-plugin-dir "${ker_rx_decision_dpdk_plugin_dir}")
+set_tests_properties(native-rx-decision-producer-faults PROPERTIES
+    TIMEOUT 90 LABELS "rx-decision;dpdk-tap;producer;fail-closed")
+
 add_executable(ker-rx-decision-shutdown-retry-app
     tests/posix/rx-decision-shutdown-retry-app.c)
 target_include_directories(ker-rx-decision-shutdown-retry-app PRIVATE

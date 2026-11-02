@@ -220,6 +220,10 @@ packet-channel EAGAIN followed by same-ID retry and one actual send, immediate
 application stop with RX decision progress during native send-queue drain,
 and a post-PREPARED SYN answered by DROP without a SYNACK. A separate retry
 case proves cleanup-only `EBUSY` continuation and retained native drain error.
+Actual-worker negative cases also exercise an expired lease, a replayed stale
+RESULT, wrong sender credentials, and consumer death with a lease outstanding;
+each must fail closed with `ETIMEDOUT` or `EPROTO`, inject no packet on the
+local packet channel, and return the worker pool to zero outstanding buffers.
 These cases qualify the private lease and shutdown ownership boundary only;
 they do not invoke the pinned Nginx callback, transfer packets between Nginx
 generations, qualify PEER routing, or complete the original graceful-reload
