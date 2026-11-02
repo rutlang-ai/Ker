@@ -185,6 +185,19 @@ class NativeTestSelectorTests(unittest.TestCase):
                  mock.patch.object(native_tests, "summary"):
                 native_tests.run_full_ctest(Path("build"), junit)
 
+    def test_generation_forward_sink_is_isolated_from_orderly_detach_sentinel(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-generation-rings.c"
+        code = source.read_text(encoding="utf-8")
+        primary = code[code.index("static int primary("):]
+        selector = Path(__file__).resolve().with_name("native_tests.py")
+        self.assertIn("m=packet(pool,0x45)", code)
+        self.assertIn("rte_ring_count(reaper_tx)!=1", primary)
+        self.assertIn('"native-fstack-session-generation-forward-sink"',
+                      selector.read_text(encoding="utf-8"))
+        self.assertNotIn("generation_forward_sink_test(r,pool,&id0,&id1)", primary)
+        self.assertIn("generation_forward_sink_test(rings,pool,&producer,&consumer)", code)
+        self.assertIn('else if(!strcmp(mode,"forward-only"))rc=generation_forward_nohuge_test();', code)
+
     def test_resident_component_regressions_are_mandatory_inventory(self):
         cmake = Path(__file__).resolve().parents[2] / "cmake/NativeLinux.cmake"
         registrations = set(re.findall(

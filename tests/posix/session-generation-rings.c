@@ -1289,7 +1289,6 @@ static int primary(const char *prefix,const char *exe)
     struct ker_generation_identity id1={.session=TEST_SESSION,.epoch=8,.slot=2,.generation=1,.process=0,.pid=(uint32_t)pids[1]};
     if(ker_generation_admit(r,&id1,pidfds[1]))FAIL_CHILDREN();
     if(parent_wait_stage(c,6,pids,2))FAIL_CHILDREN();
-    if(generation_forward_sink_test(r,pool,&id0,&id1))FAIL_CHILDREN();
     if(packet_lease_core_test(r,pool,&id0,&id1))FAIL_CHILDREN();
     struct ker_generation_cleanup_config cleanup={.version=KER_GENERATION_CLEANUP_CONFIG_VERSION,
         .size=sizeof(cleanup),.ports=1,.queues=2,.rx_queue_mask=0,.tx_queue_mask=1};

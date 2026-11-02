@@ -128,6 +128,7 @@ SESSION_CTEST = (
     "native-fstack-session-coordinate",
     "native-fstack-hugepage-preflight",
     "native-fstack-session-generation-rings",
+    "native-fstack-session-generation-forward-sink",
     "native-fstack-session-generation-rings-registration",
     "native-fstack-session-generation-tx-full",
     "native-fstack-session-generation-detach",
