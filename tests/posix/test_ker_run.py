@@ -36,10 +36,12 @@ if port == 'aux0' and os.environ.get('FAKE_AUX_SIGNAL') == '1':
     signal.signal(signal.SIGTERM, stop)
     print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02', 'tx_offload_features': 0}}), flush=True)
     while True: signal.pause()
-ready_record = {{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}
 if os.environ.get('FAKE_RUNTIME_SERVICE_READY') == '1':
+    ready_record = {{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}
     ready_record.update(process_type='primary', mbuf_pool_count=4, queues=1)
-print('KER_IO_READY ' + json.dumps(ready_record), flush=True)
+    print('KER_IO_READY ' + json.dumps(ready_record), flush=True)
+else:
+    print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}), flush=True)
 if port == 'aux0' and os.environ.get('FAKE_AUX_PID_FILE'):
     Path(os.environ['FAKE_AUX_PID_FILE']).write_text(str(os.getpid()))
 if os.environ.get('FAKE_PRIMARY_PID_FILE'):
