@@ -10,9 +10,11 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--launcher', type=Path, required=True)
+    parser.add_argument('--companion', type=Path, required=True)
     parser.add_argument('--tools', type=Path, required=True)
     args = parser.parse_args()
-    for name in ('broker_readiness_supervisor.py', 'broker_readiness_wire.py'):
+    for name in ('broker_readiness_supervisor.py', 'broker_readiness_wire.py',
+                 'nginx_companion_supervisor.py', 'nginx_companion_wire.py'):
         if not (args.tools / name).is_file():
             raise RuntimeError(f'generated sibling module is missing: {name}')
     env = dict(os.environ)
@@ -24,6 +26,11 @@ def main():
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
         if launcher.returncode or 'Run a POSIX application' not in launcher.stdout:
             raise RuntimeError(f'generated ker-run bundle failed: {launcher.stderr}')
+        companion = subprocess.run([os.sys.executable, str(args.companion), '--help'],
+            cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        if companion.returncode or '--control-fd' not in companion.stdout:
+            raise RuntimeError(f'generated companion bundle failed: {companion.stderr}')
     return 0
 
 

@@ -1,7 +1,19 @@
 """Validation for the private ker-run companion helper wire codec."""
 import unittest
+import importlib.util
+from pathlib import Path
+import socket
+import tempfile
 
 from nginx_companion_wire import *
+from nginx_companion_supervisor import NginxCompanion
+
+_COMPANION_SPEC = importlib.util.spec_from_file_location(
+    '_test_ker_nginx_companion', Path(__file__).parents[2] / 'tools' /
+    'ker-nginx-companion.py')
+_COMPANION = importlib.util.module_from_spec(_COMPANION_SPEC)
+_COMPANION_SPEC.loader.exec_module(_COMPANION)
+broker_ini_matches = _COMPANION.broker_ini_matches
 
 
 class CompanionWireTest(unittest.TestCase):
@@ -89,6 +101,66 @@ class CompanionWireTest(unittest.TestCase):
                     (5, 0, 55, 0, 42, b'\0' * 32)):
             with self.subTest(fields=bad), self.assertRaises(ValueError):
                 validate_error(bad)
+
+    def test_profile_binds_binary_config_ini_prefix_and_environment(self):
+        binary = b'b' * 32
+        config = b'c' * 32
+        ini = b'i' * 32
+        env = {'KER_SOCKET_BROKER_PATH': '/run/ker.sock'}
+        baseline = profile_hash(binary, config, ini, '/opt/nginx', env)
+        self.assertEqual(len(baseline), 32)
+        for replacement in (
+                (b'x' * 32, config, ini, '/opt/nginx', env),
+                (binary, b'x' * 32, ini, '/opt/nginx', env),
+                (binary, config, b'x' * 32, '/opt/nginx', env),
+                (binary, config, ini, '/srv/nginx', env),
+                (binary, config, ini, '/opt/nginx',
+                    {'KER_SOCKET_BROKER_PATH': '/run/other.sock'})):
+            with self.subTest(replacement=replacement):
+                self.assertNotEqual(profile_hash(*replacement), baseline)
+
+    def test_graceful_reload_profile_is_exact_and_unambiguous(self):
+        profiles = (
+            ('[ker_socket_broker]\nversion=1\npath=/run/ker.sock\n'
+             '[dpdk]\ngraceful_reload=0\n', True),
+            ('[ker_socket_broker]\nversion=1\npath=/run/other.sock\n'
+             '[dpdk]\ngraceful_reload=0\n', False),
+            ('[ker_socket_broker]\nversion=1\npath=/run/ker.sock\n'
+             '[dpdk]\ngraceful_reload=1\n', False),
+            ('[ker_socket_broker]\nversion=1\npath=/run/ker.sock\n'
+             '[dpdk]\ngraceful_reload=0\ngraceful_reload=1\n', False),
+            ('[ker_socket_broker]\nversion=1\npath=/run/ker.sock\n'
+             '[dpdk]\ngraceful_reload=0\n[dpdk]\ngraceful_reload=0\n', False),
+            ('[ker_socket_broker]\nversion=1\npath=/run/ker.sock\n'
+             '[dpdk]\n# graceful_reload=0\ngraceful_reload=1\n', False))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fstack.ini'
+            for content, expected in profiles:
+                with self.subTest(content=content):
+                    path.write_text(content, encoding='utf-8')
+                    self.assertEqual(broker_ini_matches(path, '/run/ker.sock'),
+                        expected)
+
+    def test_unsettled_companion_retains_channel_and_pidfds(self):
+        class LiveHelper:
+            def poll(self):
+                return None
+
+        parent, child = socket.socketpair()
+        companion = object.__new__(NginxCompanion)
+        companion.helper = LiveHelper()
+        companion.channel = parent
+        companion.master_pidfd = 101
+        companion.supervisor_pidfd = 102
+        companion.settled = False
+        companion.unresolved = False
+        companion.close()
+        self.assertTrue(companion.unresolved)
+        self.assertGreaterEqual(parent.fileno(), 0)
+        self.assertEqual((companion.master_pidfd, companion.supervisor_pidfd),
+            (101, 102))
+        parent.close()
+        child.close()
 
 
 if __name__ == '__main__':
