@@ -81,6 +81,28 @@ It does not bind the production Nginx dispatcher or generation FSM, and does
 not enable public `graceful_reload=1`; all six C16 controls are narrower than
 the original shell matrix and leave this source entry blocked.
 
+The C17 fixture adds private retirement and rearm of the marked admission
+queue while preserving the same listener. The controller disables the old
+lease, drains notifications while the owner map remains open, then asks the
+owner thread to close that map. Rearm revalidates the retained listener and
+uses a fresh lease before the owner reopens the map. A real connection during
+the retired interval exercises the unchanged map's outside-window
+allow-without-record behavior. Three windows are tested; this bounded profile
+does not establish production Nginx generation/FSM integration, arbitrary
+kernel hook quiescence, or recovery from an uncertain accepted verdict. The
+public graceful-reload path remains unsupported and the source entry remains
+blocked.
+
+This retirement ordering is qualified only for the configured native artifact
+`399c02b3aa05a7ee2a35c13fca64a279198c0d0675a8dc218eddc07399525b8d`, whose
+config is UP, `PREEMPT_NONE`, and `TINY_RCU`. The pinned LKL syscall holds its
+single CPU through synchronous `LOCAL_OUT` NFQUEUE enqueue, whose callback uses
+atomic allocation and nonblocking netlink delivery. Disabling the exact mark
+and lease serializes behind any hook already executing on that CPU; the broker
+then drains queued/deferred notifications before the FF owner closes the map.
+The CMake profile guard rejects other scheduling/RCU configurations; this is
+not a generic kernel quiescence guarantee.
+
 The bounded FF runtime now implements `ff_socket_drain_count` over authenticated
 broker capabilities registered in the current process. It counts application
 FD aliases individually and queries live `SO_ACCEPTCONN`, so an inherited

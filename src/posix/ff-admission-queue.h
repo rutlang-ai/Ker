@@ -30,6 +30,12 @@ int ker_ff_admission_queue_verdict(struct ker_ff_admission_queue *queue,
 				   uint64_t lease, uint64_t deadline_ns,
 				   uint32_t packet_id, int accept,
 				   int *sent_to_kernel);
+/* Disable the exact mark/lease without discarding an already-delivered
+ * deferred notification; caller drains it before closing the queue. */
+int ker_ff_admission_queue_disable_for_retire(
+	struct ker_ff_admission_queue *queue);
+int ker_ff_admission_queue_retire_drained(
+	const struct ker_ff_admission_queue *queue);
 #ifdef KER_C15_TEST_ACK_LOSS
 /* Test-only control: close the netlink socket after a full NF_ACCEPT send and
  * leave its ACK unread, returning -ECONNRESET with sent_to_kernel=1. */

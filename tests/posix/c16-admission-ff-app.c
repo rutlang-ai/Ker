@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "ff-admission-channel.h"
+#include "ff-admission-task.h"
 #include "ff-owner-admission-control.h"
 #include "socket-broker-preload-internal.h"
 
@@ -35,9 +36,11 @@ int ker_sb_posix_epoll_wait(int epfd, struct epoll_event *events,
 
 intptr_t ngx_max_sockets = 1024;
 int is_fstack_fd(int fd) { return fd >= ngx_max_sockets; }
+int ff_flow_map_lookup(const struct ff_flow_key *key);
 
 static void *reload_state;
 static int listener_fd = -1;
+static int retired_probe_fd = -1;
 static int epoll_fd = -1;
 static int initialized;
 static unsigned accepted_count;
@@ -46,16 +49,31 @@ static unsigned completed_count;
 static int pump_failure_mode;
 static int owner_probe_mode;
 static int product_smoke_mode;
+static int window_cycles_mode;
+static int window_cancel_mode;
+static int window_initial_reported;
+static volatile sig_atomic_t window_is_retired;
+static struct ff_flow_key window_cancel_key;
+static int window_cancel_key_valid;
 static volatile sig_atomic_t request_snapshot_requested;
+static volatile sig_atomic_t retired_rpc_probe_requested;
 static volatile sig_atomic_t stop_requested;
 static volatile sig_atomic_t close_listener_requested;
+static volatile sig_atomic_t retire_window_requested;
+static volatile sig_atomic_t rearm_window_requested;
+static int window_retiring;
+static int window_rearming;
 static int recursive_wait_checked;
 static const char *setup_stage = "map bootstrap";
+static uint64_t monotonic_ns(void);
 
 static void request_snapshot_signal(int signal_number)
 {
 	(void)signal_number;
-	if (owner_probe_mode) close_listener_requested = 1;
+	if (window_cycles_mode && window_is_retired) {
+		retired_rpc_probe_requested = 1;
+		request_snapshot_requested = 1;
+	} else if (owner_probe_mode) close_listener_requested = 1;
 	else request_snapshot_requested = 1;
 }
 
@@ -65,10 +83,28 @@ static void stop_signal(int signal_number)
 	stop_requested = 1;
 }
 
+static void retire_window_signal(int signal_number)
+{
+	(void)signal_number;
+	retire_window_requested = 1;
+}
+
+static void rearm_window_signal(int signal_number)
+{
+	(void)signal_number;
+	rearm_window_requested = 1;
+}
+
 static int map_active(void *context)
 {
 	(void)context;
 	return ff_flow_map_active();
+}
+
+static int map_context_live(void *context)
+{
+	(void)context;
+	return ff_reload_state_attached() && ff_global_cfg.dpdk.graceful_reload;
 }
 
 static int map_admit(const struct ker_ff_admission_key *key, int *created,
@@ -86,7 +122,12 @@ static int map_admit(const struct ker_ff_admission_key *key, int *created,
 	}
 	struct ff_flow_key original;
 	memcpy(&original, key, sizeof(original));
-	return ff_flow_map_admit(&original, created);
+	int allowed = ff_flow_map_admit(&original, created);
+	if (window_cancel_mode && allowed == 1 && created && *created == 1) {
+		window_cancel_key = original;
+		window_cancel_key_valid = 1;
+	}
+	return allowed;
 }
 
 static int map_revoke(const struct ker_ff_admission_key *key, void *context)
@@ -108,6 +149,35 @@ static int admission_listener_rejects_fastopen(int fd)
 	if (ff_getsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN, &value, &length) ||
 	    length != sizeof(value) || value != 0) return -1;
 	return 0;
+}
+
+static int map_retire(void *context)
+{
+	(void)context;
+	if (!ff_flow_map_active()) return -ESTALE;
+	if (window_cancel_mode) {
+		uint64_t inserted = 0, revoked = 0;
+		ff_flow_map_stats2(&inserted, NULL, NULL, NULL, NULL, NULL, NULL,
+			&revoked);
+		if (!window_cancel_key_valid || inserted != 1 || revoked != 1 ||
+		    ff_flow_map_lookup(&window_cancel_key) != 0) return -EUCLEAN;
+		char marker[128];
+		int length = snprintf(marker, sizeof(marker),
+			"C17_RETIRE_AFTER_CANCEL active=1 inserted=1 revoked=1 lookup=0 now_ns=%llu\n",
+			(unsigned long long)monotonic_ns());
+		if (length > 0 && (size_t)length < sizeof(marker))
+			(void)syscall(SYS_write, STDOUT_FILENO, marker, (size_t)length);
+	}
+	ff_flow_map_close();
+	return ff_flow_map_active() ? -EIO : 0;
+}
+
+static int map_rearm(void *context)
+{
+	(void)context;
+	if (ff_flow_map_active()) return -EALREADY;
+	ff_flow_map_open();
+	return ff_flow_map_active() ? 0 : -ENOMEM;
 }
 
 static int write_all(int fd, const void *buffer, size_t length)
@@ -280,7 +350,9 @@ static void setup_owner(void)
 	if (!ff_flow_map_active() || !ff_reload_state_attached() ||
 	    !ff_global_cfg.dpdk.graceful_reload) goto fail;
 	const struct ker_ff_admission_map_ops ops = {
-		.active = map_active, .admit = map_admit, .revoke = map_revoke};
+		.context_live = map_context_live, .active = map_active,
+		.admit = map_admit, .revoke = map_revoke,
+		.retire = map_retire, .rearm = map_rearm};
 	setup_stage = "broker admission attach";
 	if (ker_sb_preload_ff_owner_admission_attach(&ops)) goto fail;
 	setup_stage = "FF listener creation";
@@ -296,6 +368,12 @@ static void setup_owner(void)
 	setup_stage = "FF listener listen";
 	if (ff_listen(listener_fd, 128)) goto fail;
 	if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
+	if (window_cycles_mode) {
+		setup_stage = "retired-window probe socket creation";
+		retired_probe_fd = ff_socket(AF_INET,
+			SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+		if (retired_probe_fd < 0) goto fail;
+	}
 	static const char tfo_guard[] =
 		"C16_TFO_GUARD_PASS enabled=0 prebind=EOPNOTSUPP postlisten=EOPNOTSUPP\n";
 	(void)syscall(SYS_write, STDOUT_FILENO, tfo_guard, sizeof(tfo_guard) - 1);
@@ -314,7 +392,8 @@ static void setup_owner(void)
 	setup_stage = "FF listener epoll registration";
 	struct epoll_event event = {.events = EPOLLIN, .data.fd = listener_fd};
 	if (ker_sb_posix_epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listener_fd, &event)) goto fail;
-	if (!pump_failure_mode && !owner_probe_mode && !product_smoke_mode) {
+	if (!pump_failure_mode && !owner_probe_mode && !product_smoke_mode &&
+	    !window_cycles_mode && !window_cancel_mode) {
 		setup_stage = "owner wait contract checks";
 		if (owner_wait_contract_checks()) goto fail;
 	}
@@ -340,10 +419,95 @@ static int owner_loop(void *unused)
 {
 	(void)unused;
 	setup_owner();
+	if (window_cycles_mode && !window_initial_reported) {
+		window_initial_reported = 1;
+		struct ker_ff_owner_admission_window window = {0};
+		uint64_t inserted = 0;
+		if (ker_sb_preload_ff_owner_admission_status(&window)) _exit(13);
+		ff_flow_map_stats(&inserted, NULL, NULL);
+		char marker[112];
+		int length = snprintf(marker, sizeof(marker),
+			"C17_WINDOW_INITIAL epoch=%llu lease=%llu active=%d inserted=%llu\n",
+			(unsigned long long)window.epoch,
+			(unsigned long long)window.queue_lease, ff_flow_map_active(),
+			(unsigned long long)inserted);
+		if (length > 0) (void)syscall(SYS_write, STDOUT_FILENO, marker,
+			(size_t)length);
+	}
 	if (pump_failure_mode) {
 		if (pump_failure_retains_ready_event()) _exit(7);
 		ff_stop_run();
 		return 0;
+	}
+	if (retire_window_requested) {
+		retire_window_requested = 0;
+		if (ker_sb_preload_ff_owner_admission_retire()) _exit(9);
+		window_retiring = 1;
+		if (window_cancel_mode) {
+			static const char marker[] = "C17_RETIRE_BEGIN_ACK state=retiring\n";
+			(void)syscall(SYS_write, STDOUT_FILENO, marker, sizeof(marker) - 1);
+		}
+	}
+	if (rearm_window_requested) {
+		rearm_window_requested = 0;
+		if (ker_sb_preload_ff_owner_admission_rearm()) _exit(10);
+		window_rearming = 1;
+	}
+	if (window_retiring || window_rearming) {
+		struct ker_ff_owner_admission_window window = {0};
+		if (ker_sb_preload_ff_owner_admission_status(&window)) _exit(11);
+		if (window_retiring && window.state == KER_FF_ADMISSION_TASK_RETIRED) {
+			window_retiring = 0;
+			window_is_retired = 1;
+			uint64_t inserted = 0;
+			ff_flow_map_stats(&inserted, NULL, NULL);
+			char marker[128];
+			int length = snprintf(marker, sizeof(marker),
+				"C17_WINDOW_RETIRED epoch=%llu lease=%llu active=%d inserted=%llu\n",
+				(unsigned long long)window.epoch,
+				(unsigned long long)window.queue_lease, ff_flow_map_active(),
+				(unsigned long long)inserted);
+			if (length > 0) (void)syscall(SYS_write, STDOUT_FILENO, marker,
+				(size_t)length);
+		} else if (window_rearming &&
+		    window.state == KER_FF_ADMISSION_TASK_READY) {
+			window_rearming = 0;
+			window_is_retired = 0;
+			uint64_t inserted = 0;
+			ff_flow_map_stats(&inserted, NULL, NULL);
+			char marker[128];
+			int length = snprintf(marker, sizeof(marker),
+				"C17_WINDOW_READY epoch=%llu lease=%llu active=%d inserted=%llu\n",
+				(unsigned long long)window.epoch,
+				(unsigned long long)window.queue_lease, ff_flow_map_active(),
+				(unsigned long long)inserted);
+			if (length > 0) (void)syscall(SYS_write, STDOUT_FILENO, marker,
+				(size_t)length);
+		} else if (window.state == KER_FF_ADMISSION_TASK_QUARANTINED ||
+		    window.status) _exit(12);
+	}
+	if (retired_rpc_probe_requested) {
+		retired_rpc_probe_requested = 0;
+		errno = 0;
+		int rejected = ff_socket(AF_INET,
+			SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+		if (rejected >= 0 || errno != EAGAIN) _exit(14);
+		errno = 0;
+		if (retired_probe_fd < 0 || ff_listen(retired_probe_fd, 16) != -1 ||
+		    errno != EAGAIN) _exit(15);
+		struct sockaddr_in local = {0};
+		socklen_t local_length = sizeof(local);
+		int accepting = -1;
+		socklen_t accepting_length = sizeof(accepting);
+		if (ff_getsockname(retired_probe_fd,
+			(struct linux_sockaddr *)&local, &local_length) ||
+		    local_length != sizeof(local) || local.sin_port ||
+		    ff_getsockopt(retired_probe_fd, SOL_SOCKET, SO_ACCEPTCONN,
+			&accepting, &accepting_length) ||
+		    accepting_length != sizeof(accepting) || accepting != 0) _exit(16);
+		static const char marker[] =
+			"C17_RETIRED_RPC_EAGAIN socket=1 listen=1 native_unchanged=1\n";
+		(void)syscall(SYS_write, STDOUT_FILENO, marker, sizeof(marker) - 1);
 	}
 	if (close_listener_requested) {
 		close_listener_requested = 0;
@@ -453,6 +617,12 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "product-smoke")) {
 		product_smoke_mode = 1;
 		requested_count = 1;
+	} else if (!strcmp(argv[1], "window-cycles")) {
+		window_cycles_mode = 1;
+		requested_count = 4;
+	} else if (!strcmp(argv[1], "window-cancel")) {
+		window_cancel_mode = 1;
+		requested_count = 0;
 	} else {
 	char *end = NULL;
 	unsigned long count = strtoul(argv[1], &end, 10);
@@ -485,9 +655,18 @@ int main(int argc, char **argv)
 	stop_action.sa_handler = stop_signal;
 	sigemptyset(&stop_action.sa_mask);
 	if (sigaction(SIGUSR2, &stop_action, NULL)) return 2;
+	struct sigaction retire_action = {0};
+	retire_action.sa_handler = retire_window_signal;
+	sigemptyset(&retire_action.sa_mask);
+	if (sigaction(SIGWINCH, &retire_action, NULL)) return 2;
+	struct sigaction rearm_action = {0};
+	rearm_action.sa_handler = rearm_window_signal;
+	sigemptyset(&rearm_action.sa_mask);
+	if (sigaction(SIGHUP, &rearm_action, NULL)) return 2;
 	ff_run(owner_loop, NULL);
 	(void)syscall(SYS_unlinkat, AT_FDCWD, config_path, 0);
 	if (listener_fd >= 0) (void)ff_close(listener_fd);
+	if (retired_probe_fd >= 0) (void)ff_close(retired_probe_fd);
 	if (epoll_fd >= 0) (void)ff_close(epoll_fd);
 	ff_flow_map_close();
 	ker_reload_unbind_state();

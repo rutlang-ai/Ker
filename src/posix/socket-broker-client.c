@@ -2,6 +2,7 @@
 #include <ker/socket-broker.h>
 #include "socket-broker-protocol.h"
 #include "ff-owner-admission-control.h"
+#include "ff-admission-task.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -764,4 +765,27 @@ int ker_socket_client_ff_owner_admission_prepare(
     completed.registration_id = wire.registration_id;
     *registration = completed;
     return 0;
+}
+
+int ker_socket_client_ff_owner_admission_window(
+	struct ker_socket_client *client, int owner_cap, uint16_t operation,
+	struct ker_ff_owner_admission_window *window)
+{
+	if (!window || (operation != KER_SB_FF_OWNER_ADMISSION_RETIRE &&
+	    operation != KER_SB_FF_OWNER_ADMISSION_REARM &&
+	    operation != KER_SB_FF_OWNER_ADMISSION_STATUS)) return fail(EINVAL);
+	struct ker_sb_ff_owner_admission_window wire = {0};
+	int received = 0;
+	if (socket_call(client, owner_cap, operation, NULL, 0, &wire,
+			sizeof(wire), NULL, &received) < 0) return -1;
+	if (received != sizeof(wire) || wire.reserved || wire.reserved2 ||
+	    wire.state > KER_FF_ADMISSION_TASK_QUARANTINED ||
+	    (wire.state != KER_FF_ADMISSION_TASK_STARTING && !wire.queue_lease) ||
+	    wire.status > 0 || wire.status < -4095)
+		return fail(EPROTO);
+	struct ker_ff_owner_admission_window completed = {
+		.state = wire.state, .reserved = 0, .queue_lease = wire.queue_lease,
+		.epoch = wire.epoch, .status = wire.status, .reserved2 = 0};
+	*window = completed;
+	return 0;
 }

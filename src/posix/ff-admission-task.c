@@ -36,6 +36,8 @@
 
 enum task_state { TASK_STARTING, TASK_READY, TASK_FAILED, TASK_STOPPING,
 	TASK_TERMINAL };
+enum task_window_state { WINDOW_ACTIVE, WINDOW_RETIRING, WINDOW_RETIRED,
+	WINDOW_REARMING, WINDOW_QUARANTINED };
 
 struct ker_ff_admission_task {
 	pthread_mutex_t lock;
@@ -43,6 +45,9 @@ struct ker_ff_admission_task {
 	bool thread_started;
 	bool joined;
 	bool stop_requested;
+	bool retire_requested;
+	bool rearm_requested;
+	bool accept_uncertain;
 	bool listener_closed;
 	bool listener_ref_released;
 	int listener_fd;
@@ -58,9 +63,11 @@ struct ker_ff_admission_task {
 	int peer_fd;
 	int peer_monitor_fd;
 	enum task_state state;
+	enum task_window_state window_state;
 	int status;
 	uint64_t lease;
 	uint64_t next_command_id;
+	uint64_t epoch;
 	struct ker_ff_admission_queue *queue;
 	struct ker_ff_admission_channel *channel;
 };
@@ -83,7 +90,15 @@ static void task_test_trace(const char *event,
 	if (length > 0 && (size_t)length < sizeof(line))
 		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
-
+static void task_test_window_status(const char *event, int status)
+{
+	char line[128];
+	int length = snprintf(line, sizeof(line),
+		"C17_WINDOW_TASK %s status=%d now_ns=%llu\n", event, status,
+		(unsigned long long)task_now_ns());
+	if (length > 0 && (size_t)length < sizeof(line))
+		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
+}
 static void task_test_lifecycle_trace(const char *event)
 {
 	char line[128];
@@ -91,9 +106,51 @@ static void task_test_lifecycle_trace(const char *event)
 	if (length > 0 && (size_t)length < sizeof(line))
 		(void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
+static bool task_test_fail_retire_window(void)
+{
+	const char *value = getenv("KER_C17_TEST_FAIL_RETIRE_WINDOW");
+	return value && !strcmp(value, "1");
+}
+static void task_test_quarantine_barrier(void)
+{
+	const char *base = getenv("KER_C17_TEST_QUARANTINE_BARRIER");
+	if (!base || !*base) return;
+	char ready[512], temporary[512], release[512];
+	int ready_length = snprintf(ready, sizeof(ready), "%s.ready", base);
+	int temporary_length = snprintf(temporary, sizeof(temporary), "%s.tmp", base);
+	int release_length = snprintf(release, sizeof(release), "%s.release", base);
+	if (ready_length <= 0 || (size_t)ready_length >= sizeof(ready) ||
+	    temporary_length <= 0 || (size_t)temporary_length >= sizeof(temporary) ||
+	    release_length <= 0 || (size_t)release_length >= sizeof(release)) return;
+	int fd = (int)syscall(SYS_openat, AT_FDCWD, temporary,
+		O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	if (fd < 0) return;
+	static const char marker[] = "quarantine-published\n";
+	bool published = syscall(SYS_write, fd, marker, sizeof(marker) - 1) ==
+		(ssize_t)(sizeof(marker) - 1);
+	if (syscall(SYS_close, fd)) published = false;
+	if (!published || syscall(SYS_renameat, AT_FDCWD, temporary,
+		AT_FDCWD, ready)) {
+		(void)syscall(SYS_unlinkat, AT_FDCWD, temporary, 0);
+		return;
+	}
+	task_test_lifecycle_trace("quarantine-published");
+	uint64_t deadline = task_now_ns() + UINT64_C(5000000000);
+	for (;;) {
+		if (!syscall(SYS_access, release, F_OK)) break;
+		uint64_t now = task_now_ns();
+		if (!now || now >= deadline) break;
+		struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+	(void)syscall(SYS_unlinkat, AT_FDCWD, ready, 0);
+	task_test_lifecycle_trace("quarantine-barrier-finished");
+}
 #else
 #define task_test_trace(event, packet) ((void)0)
+#define task_test_window_status(event, status) ((void)0)
 #define task_test_lifecycle_trace(event) ((void)0)
+static void task_test_quarantine_barrier(void) { }
 #endif
 
 static uint64_t task_now_ns(void)
@@ -189,12 +246,19 @@ static int task_wait_cancelled(struct ker_ff_admission_task *task,
 	}
 }
 
-static void task_drop_packet(struct ker_ff_admission_task *task,
+static int task_drop_packet(struct ker_ff_admission_task *task,
 	const struct ker_ff_admission_packet *packet)
 {
+	uint64_t now = task_now_ns();
+	if (!now || now > UINT64_MAX - UINT64_C(250000000)) return -EIO;
+	/* DROP is mandatory cleanup whether admission expired or failed earlier.
+	 * Give its ACK a separate bounded cleanup deadline; this can never turn an
+	 * expired packet into ACCEPT. */
+	uint64_t cleanup_deadline = now + UINT64_C(250000000);
 	int sent = 0;
-	(void)ker_ff_admission_queue_verdict(task->queue, packet->lease,
-		packet->deadline_ns, packet->id, 0, &sent);
+	int status = ker_ff_admission_queue_verdict(task->queue, packet->lease,
+		cleanup_deadline, packet->id, 0, &sent);
+	return status;
 }
 
 static int task_process_packet(struct ker_ff_admission_task *task,
@@ -326,6 +390,9 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 			/* No later packet may reuse this owner channel/map transaction. */
 			task_test_trace("accepted-quarantine-map-retained", packet);
 			status = -EOWNERDEAD;
+			pthread_mutex_lock(&task->lock);
+			task->accept_uncertain = true;
+			pthread_mutex_unlock(&task->lock);
 		}
 		goto out;
 	}
@@ -347,7 +414,8 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 	}
 	/* DROP the held skb before bounded owner cleanup. A complete DROP send with
 	 * an uncertain ACK remains fail-closed in the queue layer. */
-	task_drop_packet(task, packet);
+	int drop_status = task_drop_packet(task, packet);
+	if (drop_status) status = drop_status;
 	if (prepare_sent && !accept_sent && !map_cancelled) {
 		int cancel = ker_ff_admission_channel_send_control(task->channel,
 			KER_FF_ADMISSION_CANCEL_UNSENT, request.command_id, packet->id);
@@ -360,6 +428,7 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 				&response);
 			if (!cancel && !response.status) map_cancelled = true;
 		}
+		if (map_cancelled) task_test_trace("cancel-unsent-settled", packet);
 		if (!map_cancelled) {
 			task_test_trace("cancel-unsent-unresolved", packet);
 			/* The owner may still hold the map reservation. Do not let the
@@ -382,7 +451,10 @@ static int task_process_packet(struct ker_ff_admission_task *task,
 	}
 	out:
 	if (identity) ker_ff_admission_request_identity_close(identity);
-	return status;
+	pthread_mutex_lock(&task->lock);
+	bool uncertain = task->accept_uncertain;
+	pthread_mutex_unlock(&task->lock);
+	return uncertain ? -EINPROGRESS : status;
 }
 
 static void task_set_terminal(struct ker_ff_admission_task *task, int status)
@@ -390,7 +462,238 @@ static void task_set_terminal(struct ker_ff_admission_task *task, int status)
 	pthread_mutex_lock(&task->lock);
 	task->status = status;
 	task->state = status ? TASK_FAILED : TASK_TERMINAL;
+	if (status) task->window_state = WINDOW_QUARANTINED;
 	pthread_mutex_unlock(&task->lock);
+}
+
+static void task_set_window(struct ker_ff_admission_task *task,
+	enum task_window_state state)
+{
+	pthread_mutex_lock(&task->lock);
+	task->window_state = state;
+	pthread_mutex_unlock(&task->lock);
+}
+
+static bool task_retire_requested(struct ker_ff_admission_task *task)
+{
+	pthread_mutex_lock(&task->lock);
+	bool requested = task->retire_requested;
+	pthread_mutex_unlock(&task->lock);
+	return requested;
+}
+
+static int task_next_command(struct ker_ff_admission_task *task,
+	uint64_t *command_id)
+{
+	if (task->next_command_id == UINT64_MAX) return -EOVERFLOW;
+	*command_id = ++task->next_command_id;
+	return 0;
+}
+
+static int task_wait_window_reply(struct ker_ff_admission_task *task,
+	uint16_t expected, uint64_t command_id, uint64_t lease,
+	struct ker_ff_admission_result *response)
+{
+	uint64_t now = task_now_ns();
+	if (!now || now > UINT64_MAX - UINT64_C(2000000000)) return -EIO;
+	uint64_t deadline = now + UINT64_C(2000000000);
+	for (;;) {
+		if (task_peer_gone(task)) return -ECONNRESET;
+		int received = ker_ff_admission_channel_receive(task->channel, response);
+		if (received == expected) {
+			if (response->lease != lease || response->command_id != command_id ||
+			    response->packet_id || response->allowed || response->created)
+				return -EPROTO;
+			return response->status;
+		}
+		if (received > 0) return -EPROTO;
+		if (received < 0 && received != -EAGAIN && received != -EWOULDBLOCK)
+			return received;
+		now = task_now_ns();
+		if (!now) return -EIO;
+		if (now >= deadline) return -ETIMEDOUT;
+		struct timespec pause = {.tv_nsec = 1000000};
+		(void)nanosleep(&pause, NULL);
+	}
+}
+
+static int task_retire_window(struct ker_ff_admission_task *task,
+	struct ker_ff_admission_queue **queue_ptr)
+{
+	struct ker_ff_admission_queue *queue = *queue_ptr;
+	struct ker_ff_admission_packet packet;
+	struct ker_ff_admission_result response = {0};
+	int status;
+	bool drained_successfully = false;
+	pthread_mutex_lock(&task->lock);
+	bool uncertain = task->accept_uncertain;
+	pthread_mutex_unlock(&task->lock);
+	if (uncertain) return -EINPROGRESS;
+	/* Disable first, atomically with respect to the single LKL CPU. An already
+	 * delivered deferred notification remains in this queue object and is
+	 * processed below while the old map is still open. */
+	if (task_should_stop(task)) return -ECANCELED;
+	status = ker_ff_admission_queue_disable_for_retire(queue);
+	if (status) return status;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+	if (task_test_fail_retire_window()) return -EIO;
+#endif
+	/* Drain notifications that entered the old queue before disable acquired
+	 * the LKL CPU. No new hook can enqueue after that point. */
+	for (unsigned drained = 0; drained < 128; ++drained) {
+		status = ker_ff_admission_queue_receive(queue, &packet, 0);
+		if (status < 0) return status;
+		if (!status) {
+			status = ker_ff_admission_queue_retire_drained(queue);
+			if (status == 1) {
+				drained_successfully = true;
+				break;
+			}
+			if (status < 0) return status;
+			continue;
+		}
+		status = task_process_packet(task, &packet, task->listener_fd);
+		if (status && status != -ETIMEDOUT && status != -ECANCELED &&
+		    status != -ENOENT && status != -ENOBUFS) return status;
+		if (drained == 127) return -EOVERFLOW;
+	}
+	if (!drained_successfully) return -EOVERFLOW;
+	/* Do not publish a pointer to a queue after its fd has been closed. */
+	pthread_mutex_lock(&task->lock);
+	if (task->queue == queue) task->queue = NULL;
+	pthread_mutex_unlock(&task->lock);
+	ker_ff_admission_queue_close(queue);
+	*queue_ptr = NULL;
+	uint64_t command_id;
+	status = task_next_command(task, &command_id);
+	if (status) return status;
+	status = ker_ff_admission_channel_send_retire(task->channel, command_id);
+	if (status) return status;
+	status = task_wait_window_reply(task, KER_FF_ADMISSION_RETIRED,
+		command_id, task->lease, &response);
+	if (status) return status;
+	task_set_window(task, WINDOW_RETIRED);
+	pthread_mutex_lock(&task->lock);
+	task->retire_requested = false;
+	pthread_mutex_unlock(&task->lock);
+	return 0;
+}
+
+static int task_listener_revalidate(struct ker_ff_admission_task *task,
+	int listener_fd)
+{
+	struct ker_fd *entry = ker_fd_get(listener_fd);
+	if (!entry) return -EBADF;
+	if (entry != task->listener_entry) {
+		ker_fd_put(entry);
+		return -ESTALE;
+	}
+	int domain = 0, type = 0, protocol = 0, accepting = 0, mark = 0, fastopen = 0;
+	int length = sizeof(int);
+	long result = lkl_sys_getsockopt((unsigned int)entry->native, SOL_SOCKET,
+		SO_DOMAIN, (char *)&domain, &length);
+	if (result >= 0 && length == sizeof(domain)) {
+		length = sizeof(type);
+		result = lkl_sys_getsockopt((unsigned int)entry->native, SOL_SOCKET,
+			SO_TYPE, (char *)&type, &length);
+	} else if (result >= 0) result = -EPROTO;
+	if (result >= 0 && length == sizeof(type)) {
+		length = sizeof(protocol);
+		result = lkl_sys_getsockopt((unsigned int)entry->native, SOL_SOCKET,
+			SO_PROTOCOL, (char *)&protocol, &length);
+	} else if (result >= 0) result = -EPROTO;
+	if (result >= 0 && length == sizeof(protocol)) {
+		length = sizeof(accepting);
+		result = lkl_sys_getsockopt((unsigned int)entry->native, SOL_SOCKET,
+			SO_ACCEPTCONN, (char *)&accepting, &length);
+	} else if (result >= 0) result = -EPROTO;
+	if (result >= 0 && length == sizeof(accepting)) {
+		length = sizeof(mark);
+		result = lkl_sys_getsockopt((unsigned int)entry->native, SOL_SOCKET,
+			SO_MARK, (char *)&mark, &length);
+	} else if (result >= 0) result = -EPROTO;
+	if (result >= 0 && length == sizeof(mark)) {
+		length = sizeof(fastopen);
+		result = lkl_sys_getsockopt((unsigned int)entry->native, IPPROTO_TCP,
+			TCP_FASTOPEN, (char *)&fastopen, &length);
+	} else if (result >= 0) result = -EPROTO;
+	if (result >= 0 && length != sizeof(fastopen)) result = -EPROTO;
+	struct sockaddr_in local = {0};
+	int local_length = sizeof(local);
+	if (result >= 0) result = lkl_sys_getsockname((unsigned int)entry->native,
+		(struct lkl_sockaddr *)&local, &local_length);
+	uint64_t cookie = 0;
+	int cookie_length = sizeof(cookie);
+	if (result >= 0) result = lkl_sys_getsockopt((unsigned int)entry->native,
+		SOL_SOCKET, SO_COOKIE, (char *)&cookie, &cookie_length);
+	if (result >= 0 && (domain != AF_INET || type != SOCK_STREAM ||
+	    protocol != IPPROTO_TCP || accepting != 1 ||
+	    (uint32_t)mark != task->mark || fastopen ||
+	    local_length != sizeof(local) || local.sin_family != AF_INET ||
+	    !local.sin_port || cookie != task->listener_cookie ||
+	    cookie_length != sizeof(cookie))) result = -ESTALE;
+	ker_fd_put(entry);
+	return (int)result;
+}
+
+static int task_syncookies_not_forced(void)
+{
+	char value[16] = {0};
+	long fd = lkl_sys_open("/proc/sys/net/ipv4/tcp_syncookies",
+		LKL_O_RDONLY | LKL_O_CLOEXEC, 0);
+	if (fd < 0) return (int)fd;
+	long amount = lkl_sys_read((unsigned int)fd, value, sizeof(value) - 1);
+	long closed = lkl_sys_close((unsigned int)fd);
+	if (amount <= 0) return amount < 0 ? (int)amount : -EPROTO;
+	if (closed < 0) return (int)closed;
+	value[amount] = '\0';
+	char *cursor = value;
+	while (*cursor == ' ' || *cursor == '\t') ++cursor;
+	if (*cursor < '0' || *cursor > '2') return -EPROTO;
+	int mode = *cursor++ - '0';
+	while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' ||
+	       *cursor == '\n') ++cursor;
+	if (*cursor) return -EPROTO;
+	return mode == 2 ? -EOPNOTSUPP : 0;
+}
+
+static int task_rearm_window(struct ker_ff_admission_task *task,
+	struct ker_ff_admission_queue **queue_ptr, int listener_fd)
+{
+	int status = task_listener_revalidate(task, listener_fd);
+	if (status) return status;
+	status = task_syncookies_not_forced();
+	if (status) return status;
+	struct ker_ff_admission_queue *queue = NULL;
+	status = ker_ff_admission_queue_start(task->mark, &queue);
+	if (status) return status;
+	uint64_t new_lease = ker_ff_admission_queue_lease(queue);
+	if (!new_lease || new_lease <= task->lease) {
+		ker_ff_admission_queue_close(queue);
+		return -ESTALE;
+	}
+	uint64_t command_id;
+	status = task_next_command(task, &command_id);
+	/* Listener close and REARM are serialized by task->lock. Revalidate after
+	 * queue setup, immediately before arming the replacement lease. */
+	pthread_mutex_lock(&task->lock);
+	if (!status && (task->listener_closed || task->stop_requested))
+		status = -ECANCELED;
+	if (!status) status = task_listener_revalidate(task, listener_fd);
+	if (!status) status = ker_ff_admission_channel_send_rearm(task->channel,
+		new_lease, command_id);
+	pthread_mutex_unlock(&task->lock);
+	struct ker_ff_admission_result response = {0};
+	if (!status) status = task_wait_window_reply(task,
+		KER_FF_ADMISSION_REARMED, command_id, new_lease, &response);
+	if (status) {
+		/* The new gate may be active. Closing the consumer leaves it armed and
+		 * fail-closed; never try to restore the old lease. */
+		ker_ff_admission_queue_close(queue);
+		return status;
+	}
+	*queue_ptr = queue;
+	return 0;
 }
 
 static void *task_worker(void *argument)
@@ -422,6 +725,8 @@ static void *task_worker(void *argument)
 	task->queue = queue;
 	task->channel = channel;
 	task->lease = lease;
+	task->window_state = WINDOW_ACTIVE;
+	task->epoch = 1;
 	task->state = TASK_READY;
 	pthread_mutex_unlock(&task->lock);
 	ssize_t sent = syscall(SYS_sendto, channel_fd, &ready, sizeof(ready),
@@ -429,6 +734,52 @@ static void *task_worker(void *argument)
 	if (sent != sizeof(ready)) { status = sent < 0 ? -errno : -EIO; goto terminal; }
 	for (;;) {
 		if (task_should_stop(task)) break;
+		if (task_retire_requested(task)) {
+			task_set_window(task, WINDOW_RETIRING);
+			status = task_retire_window(task, &queue);
+			task_test_window_status("retire-complete", status);
+			if (status) {
+				task_set_window(task, WINDOW_QUARANTINED);
+				break;
+			}
+			pthread_mutex_lock(&task->lock);
+			task->queue = NULL;
+			pthread_mutex_unlock(&task->lock);
+			for (;;) {
+				if (task_should_stop(task)) break;
+				pthread_mutex_lock(&task->lock);
+				bool rearm = task->rearm_requested;
+				pthread_mutex_unlock(&task->lock);
+				if (rearm) break;
+				struct timespec pause = {.tv_nsec = 1000000};
+				(void)nanosleep(&pause, NULL);
+			}
+			if (task_should_stop(task)) break;
+			pthread_mutex_lock(&task->lock);
+			int listener_fd = task->listener_fd;
+			pthread_mutex_unlock(&task->lock);
+			task_set_window(task, WINDOW_REARMING);
+			status = task_rearm_window(task, &queue, listener_fd);
+			if (status) {
+				task_set_window(task, WINDOW_QUARANTINED);
+				break;
+			}
+			pthread_mutex_lock(&task->lock);
+			if (task->listener_closed || task->stop_requested) {
+				pthread_mutex_unlock(&task->lock);
+				status = -ESTALE;
+				task_set_window(task, WINDOW_QUARANTINED);
+				break;
+			}
+			task->queue = queue;
+			task->lease = ker_ff_admission_queue_lease(queue);
+			++task->epoch;
+			task->retire_requested = false;
+			task->rearm_requested = false;
+			task->window_state = WINDOW_ACTIVE;
+			pthread_mutex_unlock(&task->lock);
+			continue;
+		}
 		struct ker_ff_admission_packet packet = {0};
 		status = ker_ff_admission_queue_receive(queue, &packet, 10);
 		if (status < 0) break;
@@ -437,10 +788,15 @@ static void *task_worker(void *argument)
 		int listener_fd = task->listener_closed ? -1 : task->listener_fd;
 		pthread_mutex_unlock(&task->lock);
 		if (listener_fd < 0) {
-			task_drop_packet(task, &packet);
+			status = task_drop_packet(task, &packet);
+			if (status) break;
 			continue;
 		}
 		status = task_process_packet(task, &packet, listener_fd);
+		pthread_mutex_lock(&task->lock);
+		bool uncertain = task->accept_uncertain;
+		pthread_mutex_unlock(&task->lock);
+		if (uncertain) { status = -EINPROGRESS; break; }
 		if (status && status != -ETIMEDOUT && status != -ECANCELED &&
 		    status != -ENOENT && status != -ENOBUFS)
 			break;
@@ -454,7 +810,9 @@ static void *task_worker(void *argument)
 	pthread_mutex_lock(&task->lock);
 	task->channel = NULL;
 	task->queue = NULL;
+	bool quarantined = task->window_state == WINDOW_QUARANTINED;
 	pthread_mutex_unlock(&task->lock);
+	if (quarantined) task_test_quarantine_barrier();
 	task_set_terminal(task, status == -ECANCELED ? 0 : status);
 	return NULL;
 
@@ -566,7 +924,12 @@ int ker_posix_ff_admission_task_poll(struct ker_ff_admission_task *task,
 {
 	if (!task || !queue_lease) return -EINVAL;
 	pthread_mutex_lock(&task->lock);
-	int status = task->state == TASK_READY ? KER_FF_ADMISSION_TASK_READY :
+	int status = task->state == TASK_READY ?
+		(task->window_state == WINDOW_ACTIVE ? KER_FF_ADMISSION_TASK_READY :
+		 task->window_state == WINDOW_RETIRING ? KER_FF_ADMISSION_TASK_RETIRING :
+		 task->window_state == WINDOW_RETIRED ? KER_FF_ADMISSION_TASK_RETIRED :
+		 task->window_state == WINDOW_REARMING ? KER_FF_ADMISSION_TASK_REARMING :
+		 KER_FF_ADMISSION_TASK_QUARANTINED) :
 		(task->state == TASK_STARTING ? KER_FF_ADMISSION_TASK_STARTING :
 		 task->state == TASK_STOPPING ? KER_FF_ADMISSION_TASK_STOPPING :
 		 task->state == TASK_TERMINAL ? KER_FF_ADMISSION_TASK_TERMINAL :
@@ -575,6 +938,78 @@ int ker_posix_ff_admission_task_poll(struct ker_ff_admission_task *task,
 	pthread_mutex_unlock(&task->lock);
 	if (status == 1) *queue_lease = lease;
 	return status;
+}
+
+int ker_posix_ff_admission_task_poll_window(
+	struct ker_ff_admission_task *task, uint32_t *state,
+	uint64_t *queue_lease, uint64_t *epoch, int *task_status)
+{
+	if (!task || !state || !queue_lease || !epoch || !task_status) return -EINVAL;
+	pthread_mutex_lock(&task->lock);
+	uint32_t window = task->state == TASK_FAILED ?
+		KER_FF_ADMISSION_TASK_QUARANTINED :
+		task->state == TASK_STARTING ?
+		KER_FF_ADMISSION_TASK_STARTING :
+		task->state == TASK_STOPPING ? KER_FF_ADMISSION_TASK_STOPPING :
+		task->state == TASK_TERMINAL ? KER_FF_ADMISSION_TASK_TERMINAL :
+		task->window_state == WINDOW_ACTIVE ? KER_FF_ADMISSION_TASK_READY :
+		task->window_state == WINDOW_RETIRING ? KER_FF_ADMISSION_TASK_RETIRING :
+		task->window_state == WINDOW_RETIRED ? KER_FF_ADMISSION_TASK_RETIRED :
+		task->window_state == WINDOW_REARMING ? KER_FF_ADMISSION_TASK_REARMING :
+		KER_FF_ADMISSION_TASK_QUARANTINED;
+	uint64_t lease = task->lease, current_epoch = task->epoch;
+	int error = task->status;
+	pthread_mutex_unlock(&task->lock);
+	*state = window;
+	*queue_lease = lease;
+	*epoch = current_epoch;
+	*task_status = error;
+	return 0;
+}
+
+int ker_posix_ff_admission_task_window_action(
+	struct ker_ff_admission_task *task, uint32_t action, int listener_fd)
+{
+#ifndef KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL
+	(void)task;
+	(void)action;
+	(void)listener_fd;
+	return -EOPNOTSUPP;
+#else
+	if (!task) return -EINVAL;
+	if (action == KER_FF_ADMISSION_WINDOW_RETIRE) {
+		int profile = task_syncookies_not_forced();
+		if (profile) return profile;
+		pthread_mutex_lock(&task->lock);
+		if (task->state != TASK_READY || task->window_state != WINDOW_ACTIVE ||
+		    !task->listener_entry || task->listener_closed || task->stop_requested ||
+		    task->retire_requested || task->accept_uncertain) {
+			pthread_mutex_unlock(&task->lock);
+			return -EBUSY;
+		}
+		task->retire_requested = true;
+		task->window_state = WINDOW_RETIRING;
+		pthread_mutex_unlock(&task->lock);
+		return 0;
+	}
+	if (action == KER_FF_ADMISSION_WINDOW_REARM) {
+		if (listener_fd < 0) return -EINVAL;
+		int status = task_listener_revalidate(task, listener_fd);
+		if (status) return status;
+		pthread_mutex_lock(&task->lock);
+		if (task->state != TASK_READY || task->window_state != WINDOW_RETIRED ||
+		    task->listener_closed || task->stop_requested || task->rearm_requested ||
+		    task->accept_uncertain) {
+			pthread_mutex_unlock(&task->lock);
+			return -EBUSY;
+		}
+		task->rearm_requested = true;
+		task->window_state = WINDOW_REARMING;
+		pthread_mutex_unlock(&task->lock);
+		return 0;
+	}
+	return -EOPNOTSUPP;
+#endif
 }
 
 int ker_posix_ff_admission_task_set_listener(

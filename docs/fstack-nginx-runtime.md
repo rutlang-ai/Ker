@@ -152,6 +152,44 @@ Run the fixture set with `ctest -R '^native-c16-'`; it includes
 `native-c16-owner-auth-negative`, `native-c16-owner-hello-fd-negative`,
 `native-c16-owner-death-cleanup`, and `native-c16-listener-close-cleanup`.
 
+The C17 private window-cycle fixture retires the marked queue while retaining
+the same live listener, closes the imported flow map only after the old queue
+drains, serves an outside-window connection through the original map's
+allow-without-record behavior, and rearms with a fresh queue lease. It verifies
+three real admission windows and two retirement/rearm transitions. This is
+limited to the guarded UP/PREEMPT_NONE/TINY_RCU IPv4 profile and does not prove
+production Nginx generation binding, generic queue quiescence, or healthy
+recovery after an uncertain verdict. Public `graceful_reload=1` remains
+unsupported.
+
+The serialization guard is tied to the configured native artifact, not a
+general Linux claim: manifest fingerprint
+`399c02b3aa05a7ee2a35c13fca64a279198c0d0675a8dc218eddc07399525b8d` has
+`CONFIG_SMP` unset, `CONFIG_PREEMPT_NONE=y`, and `CONFIG_TINY_RCU=y`. In that
+profile the LKL syscall owns its single CPU while the synchronous IPv4
+`LOCAL_OUT` hook runs through `nf_hook_slow`, `nf_queue`, and the NFQUEUE
+enqueue callback; the queue copy uses atomic allocation and nonblocking
+netlink delivery. Returning from the mark-disable ioctl therefore serializes
+after any hook already running on that LKL CPU. C17 then consumes deferred and
+queued notifications before it asks the FF owner thread to close the map. The
+source audit is against the pinned original tree at
+`/dev/shm/ker-c15-native-full/source-399c02b3aa05a7ee`: `arch/lkl/kernel/syscalls.c`
+holds the LKL CPU from syscall entry through interrupt processing before
+`lkl_cpu_put()`, implemented in `arch/lkl/kernel/cpu.c`; the IPv4 `LOCAL_OUT`
+hook runs through `net/ipv4` and `net/netfilter/core.c`, `net/netfilter/nf_queue.c`,
+and `net/netfilter/nfnetlink_queue.c`. A different scheduling/RCU profile is
+rejected at configure time. This proof does not establish a generic network
+quiescence barrier for another kernel build.
+
+`native-c17-retire-pending-cancellation` requests retirement while a real SYN's
+PREPARED reply is pending. A test-only nonblocking delay keeps the owner
+response pending while the outer event loop acknowledges RETIRE_BEGIN. After
+the packet decision deadline, the broker revokes the exact request, completes
+the known-unsent cancellation, and only then invokes the map-close callback;
+that callback verifies the map is still active with one insertion and one
+revoke and that the key is absent. DROP acknowledgement has a separate bounded
+cleanup deadline. The delayed-response hook exists only in testing builds.
+
 The bounded FF socket bridge implements `ff_dup` for registered application
 INET/INET6 sockets by dispatching to the namespaced preload `F_DUPFD` path. It
 preserves the shared original-Linux open-file description, returns a descriptor

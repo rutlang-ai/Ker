@@ -314,6 +314,12 @@ def inside(args):
             str(args.broker), str(rpc_path), str(stop_path)]
         environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1',
             'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root)}
+        quarantine_barrier = root / 'quarantine'
+        if args.quarantine_release_race_only:
+            environment |= {
+                'KER_C17_TEST_FAIL_RETIRE_WINDOW': '1',
+                'KER_C17_TEST_QUARANTINE_BARRIER': str(quarantine_barrier),
+            }
         try:
             broker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -332,9 +338,12 @@ def inside(args):
             if args.cancel_unsent_timeout_only:
                 os.mkfifo(cancel_fifo, 0o600)
                 app_env['KER_C16_TEST_HOLD_PREPARED_FIFO'] = str(cancel_fifo)
-            if not args.pump_failure_only:
+            if not args.pump_failure_only and not args.window_cycles_only and \
+                    not args.window_cancel_only and not args.quarantine_release_race_only:
                 app_env |= {'KER_C16_TEST_PUMP_DELAY_US': '80000',
                     'KER_C16_TEST_RECURSIVE_WAIT': '1'}
+            if args.window_cancel_only:
+                app_env['KER_C17_TEST_DELAY_PREPARED_MS'] = '350'
             if args.registration_negative_only:
                 app_env |= {'KER_C16_TEST_PAUSE_AFTER_PREPARE': '1',
                     'KER_C16_TEST_PREPARE_ONCE': '1'}
@@ -347,17 +356,93 @@ def inside(args):
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             if args.explicit_stop_live_listener_only:
                 app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
+            if args.quarantine_release_race_only:
+                app_env['KER_C16_TEST_PAUSE_AFTER_PREPARE'] = '1'
             app_argument = ('pump-failure' if args.pump_failure_only else
-                '1' if (args.finalized_timeout_only or args.cancel_unsent_timeout_only) else
+                '1' if args.cancel_unsent_timeout_only else
+                '1' if args.finalized_timeout_only else
+                'window-cycles' if args.window_cycles_only else
+                'window-cancel' if args.window_cancel_only else
                 'owner-probe' if (args.registration_negative_only or
                     args.malformed_owner_hello_only or args.owner_death_only or
-                    args.listener_close_only or args.explicit_stop_live_listener_only) else '16')
+                    args.listener_close_only or args.explicit_stop_live_listener_only) else
+                'window-cancel' if args.quarantine_release_race_only else '16')
             flow_ports = (1132, 1354, 2031, 3027, 3769, 4125, 5963, 6537,
                 6708, 7356, 7512, 8925, 9382, 9604, 10735, 10970, 11392)
             peers = []
             app = subprocess.Popen([str(args.client), app_argument], stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 env=app_env, bufsize=1, preexec_fn=disable_core_dumps)
+            if args.quarantine_release_race_only:
+                first_endpoint_line = wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
+                first_endpoint = Path(first_endpoint_line.split('path=', 1)[1].strip())
+                wait_line(app, 'C16_APP_READY', 20)
+                os.kill(app.pid, signal.SIGWINCH)
+                wait_line(app, 'C17_RETIRE_BEGIN_ACK', 5)
+                barrier_ready = Path(str(quarantine_barrier) + '.ready')
+                deadline = time.monotonic() + 5
+                while not barrier_ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                require(barrier_ready.exists(),
+                    'task did not reach the bounded pre-terminal quarantine barrier')
+                deferred = wait_line(broker, 'C17_TASK_RELEASE deferred', 5)
+                require('status=-16' in deferred,
+                    f'broker did not observe EBUSY while quarantine was published: {deferred!r}')
+                release_path = Path(str(quarantine_barrier) + '.release')
+                release_path.write_text('release\n')
+                released = wait_line(broker, 'C17_TASK_RELEASE released', 5)
+                require('status=0' in released,
+                    f'broker did not release the terminal task after the barrier: {released!r}')
+                require(any('C16_ADMISSION listener-ref-put-at-task-release' in line
+                    for line in getattr(broker, '_ker_recent_lines', [])),
+                    'terminal task release did not drop the pinned listener reference')
+                first_output, first_errors = app.communicate(timeout=10)
+                first_failed_closed = app.returncode == 12 or (
+                    app.returncode == 3 and
+                    'ker owner pump callback status=-104' in first_errors)
+                require(first_failed_closed,
+                    f'first owner did not fail closed after forced retire failure: '
+                    f'rc={app.returncode}; stdout={first_output!r}; stderr={first_errors!r}')
+                deadline = time.monotonic() + 5
+                while first_endpoint.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                require(not first_endpoint.exists(),
+                    'failed owner endpoint was not reclaimed after task release')
+                fresh_owner_env = app_env | {'KER_C16_TEST_PAUSE_AFTER_PREPARE': '1'}
+                app = subprocess.Popen([str(args.client), 'owner-probe'],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, env=fresh_owner_env, bufsize=1,
+                    preexec_fn=disable_core_dumps)
+                try:
+                    endpoint_line = wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
+                except RuntimeError as error:
+                    raise RuntimeError(f'{error}; broker_recent='
+                        f'{getattr(broker, "_ker_recent_lines", [])!r}') from error
+                endpoint = Path(endpoint_line.split('path=', 1)[1].strip())
+                require('C16_APP_READY' in wait_line(app, 'C16_APP_READY', 10),
+                    'a fresh owner could not attach after quarantine task release')
+                os.kill(app.pid, signal.SIGUSR2)
+                app_output, app_errors = app.communicate(timeout=10)
+                require(app.returncode == 0 and 'C16_APP_DONE accepted=0' in app_output,
+                    f'fresh owner did not shut down cleanly: rc={app.returncode}; '
+                    f'stdout={app_output!r}; stderr={app_errors!r}')
+                deadline = time.monotonic() + 5
+                while endpoint.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                require(not endpoint.exists(),
+                    'fresh owner admission endpoint was not reclaimed at shutdown')
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                bout, berr = broker.communicate(timeout=35)
+                require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
+                    f'broker failed after quarantine task reclamation: rc={broker.returncode}; '
+                    f'stdout={bout!r}; stderr={berr!r}')
+                report = json.loads(stats.read_text())
+                require(report.get('outstanding') == 0,
+                    f'quarantine task/re-registration cleanup leaked I/O state: {report!r}')
+                print('C17_QUARANTINE_RELEASE_RETRY_PASS observed_ebusy=1 terminal_release=1 '
+                    'fresh_owner=ready pool=0')
+                return 0
             if args.registration_negative_only:
                 marker = wait_line(app, 'C16_ATTACH_ENDPOINT path=', 20)
                 endpoint = Path(marker.split('path=', 1)[1].strip())
@@ -538,6 +623,194 @@ def inside(args):
                     'postlisten=EOPNOTSUPP' in tfo_guard,
                     f'admission-owned listener did not reject late TCP_FASTOPEN: {tfo_guard!r}')
             app_ready = wait_line(app, 'C16_APP_READY', 20)
+            if args.window_cycles_only:
+                require('C16_APP_READY' in app_ready,
+                    f'owner did not attach for window-cycle test: {app_ready!r}')
+                initial = wait_line(app, 'C17_WINDOW_INITIAL', 5)
+                initial_match = re.search(r'epoch=(\d+) lease=(\d+) active=(\d+) inserted=(\d+)', initial)
+                require(initial_match and int(initial_match.group(1)) == 1 and
+                    int(initial_match.group(2)) > 0 and
+                    int(initial_match.group(3)) == 1 and
+                    int(initial_match.group(4)) == 0,
+                    f'initial map window was not active: {initial!r}')
+                initial_lease = int(initial_match.group(2))
+
+                def complete_window_flow(source_port, payload):
+                    peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    peer.settimeout(8)
+                    peer.bind(('198.18.0.1', source_port))
+                    peer.connect(('198.18.0.2', 8080))
+                    peer.sendall(payload)
+                    received = bytearray()
+                    while len(received) < len(payload):
+                        chunk = peer.recv(len(payload) - len(received))
+                        require(bool(chunk),
+                            f'window flow {source_port} closed before echo')
+                        received.extend(chunk)
+                    require(bytes(received) == payload,
+                        f'window flow {source_port} echo mismatch: {bytes(received)!r}')
+                    peer.close()
+
+                complete_window_flow(12021, b'c17-window-1')
+                os.kill(app.pid, signal.SIGWINCH)
+                retired1 = wait_line(app, 'C17_WINDOW_RETIRED', 10)
+                retired1_match = re.search(
+                    r'epoch=(\d+) lease=(\d+) active=(\d+) inserted=(\d+)', retired1)
+                require(retired1_match and
+                    tuple(map(int, retired1_match.groups())) ==
+                    (1, initial_lease, 0, 1),
+                    f'first retirement did not close the original map window: {retired1!r}')
+
+                # Cross the broker's five-second initial-attach deadline while
+                # this established owner remains deliberately retired. The
+                # socket/listen RPCs below must be rejected without ending the
+                # admission task or mutating the existing probe socket.
+                retired_wait = time.monotonic()
+                time.sleep(5.2)
+                require(time.monotonic() - retired_wait >= 5.0,
+                    'retired-window regression did not cross initial attach deadline')
+                os.kill(app.pid, signal.SIGUSR1)
+                rpc_probe = wait_line(app, 'C17_RETIRED_RPC_EAGAIN', 5)
+                require('socket=1 listen=1 native_unchanged=1' in rpc_probe,
+                    f'retired-window socket/listen operations mutated native state: '
+                    f'{rpc_probe!r}')
+                outside_snapshot = wait_line(app, 'C16_REQUESTS', 5)
+                require('status=0' in outside_snapshot and 'count=0' in outside_snapshot,
+                    f'established owner stopped responding during the retired window: '
+                    f'{outside_snapshot!r}')
+
+                # The same live listener must continue serving during the
+                # interval when the original flow map is closed and its mark
+                # gate is disabled. This flow must not mutate the closed map.
+                complete_window_flow(12022, b'c17-outside-window')
+                os.kill(app.pid, signal.SIGUSR1)
+                outside = wait_line(app, 'C16_REQUESTS', 5)
+                require('status=0' in outside and 'count=0' in outside and
+                    'inserted=1' in outside,
+                    f'outside-window listener flow touched the retired map: {outside!r}')
+
+                os.kill(app.pid, signal.SIGHUP)
+                ready2 = wait_line(app, 'C17_WINDOW_READY', 10)
+                ready2_match = re.search(
+                    r'epoch=(\d+) lease=(\d+) active=(\d+) inserted=(\d+)', ready2)
+                require(ready2_match and int(ready2_match.group(1)) == 2 and
+                    int(ready2_match.group(2)) > initial_lease and
+                    int(ready2_match.group(3)) == 1 and
+                    int(ready2_match.group(4)) == 1,
+                    f'second window did not rearm with a fresh lease: {ready2!r}')
+                lease2 = int(ready2_match.group(2))
+                complete_window_flow(12023, b'c17-window-2')
+                os.kill(app.pid, signal.SIGWINCH)
+                retired2 = wait_line(app, 'C17_WINDOW_RETIRED', 10)
+                retired2_match = re.search(
+                    r'epoch=(\d+) lease=(\d+) active=(\d+) inserted=(\d+)', retired2)
+                require(retired2_match and tuple(map(int, retired2_match.groups())) ==
+                    (2, lease2, 0, 2),
+                    f'second retirement did not settle the current epoch: {retired2!r}')
+                os.kill(app.pid, signal.SIGHUP)
+                ready3 = wait_line(app, 'C17_WINDOW_READY', 10)
+                ready3_match = re.search(
+                    r'epoch=(\d+) lease=(\d+) active=(\d+) inserted=(\d+)', ready3)
+                require(ready3_match and int(ready3_match.group(1)) == 3 and
+                    int(ready3_match.group(2)) > lease2 and
+                    int(ready3_match.group(3)) == 1 and
+                    int(ready3_match.group(4)) == 2,
+                    f'third window did not rearm with a fresh lease: {ready3!r}')
+                complete_window_flow(12024, b'c17-window-3')
+                os.kill(app.pid, signal.SIGUSR2)
+                done = wait_line(app, 'C16_APP_DONE', 10)
+                require('accepted=4' in done and 'inserted=3' in done,
+                    f'three active windows plus one outside-window flow were not accounted: {done!r}')
+                output, errors = app.communicate(timeout=10)
+                require(app.returncode == 0,
+                    f'FF app failed after three window cycles: rc={app.returncode}; '
+                    f'stdout={output!r}; stderr={errors!r}')
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                bout, berr = broker.communicate(timeout=35)
+                require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
+                    f'broker failed after window cycles: rc={broker.returncode}; '
+                    f'stdout={bout!r}; stderr={berr!r}')
+                report = json.loads(stats.read_text())
+                native = report.get('native', {})
+                require(report.get('outstanding') == 0 and report.get('tx', 0) >= 4 and
+                    report.get('rx', 0) >= 4 and native.get('passive_opens', 0) >= 4,
+                    f'original-Linux packet/lifecycle cleanup evidence missing: {report!r}')
+                print(f'C17_ADMISSION_WINDOWS_PASS {done.strip()} leases={initial_lease},'
+                    f'{lease2},{int(ready3_match.group(2))} outside_window=served pool=0')
+                return 0
+            if args.window_cancel_only:
+                require('C16_APP_READY' in app_ready,
+                    f'owner did not attach for delayed-cancel test: {app_ready!r}')
+                peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                peer.setblocking(False)
+                peer.bind(('198.18.0.1', 12031))
+                pending = peer.connect_ex(('198.18.0.2', 8080))
+                require(pending in (errno.EINPROGRESS, errno.EALREADY),
+                    f'flow did not remain pending while PREPARED was delayed: {pending}')
+                delayed = wait_line(app, 'C17_PREPARED_REPLY_DELAYED', 5)
+                require('owner_prepared=1 response_pending=1' in delayed,
+                    f'owner did not retain a nonblocking PREPARED response: {delayed!r}')
+                os.kill(app.pid, signal.SIGWINCH)
+                retire_begin = wait_line(app, 'C17_RETIRE_BEGIN_ACK', 5)
+                require('state=retiring' in retire_begin,
+                    f'broker did not acknowledge retirement during the packet transaction: '
+                    f'{retire_begin!r}')
+                prepared_timeout = wait_line(broker,
+                    'C16_ADMISSION prepared-timeout remote_port=12031', 5)
+                timeout_ns, packet_deadline_ns = trace_times(prepared_timeout,
+                    'prepared-timeout', 12031)
+                require(timeout_ns >= packet_deadline_ns,
+                    f'PREPARED timeout did not occur after packet deadline: '
+                    f'{prepared_timeout!r}')
+                revoked = wait_line(broker,
+                    'C16_ADMISSION request-revoked remote_port=12031', 5)
+                cancel = wait_line(broker,
+                    'C16_ADMISSION cancel-unsent-settled remote_port=12031', 5)
+                revoke_ns, _ = trace_times(revoked, 'request-revoked', 12031)
+                cancel_ns, _ = trace_times(cancel, 'cancel-unsent-settled', 12031)
+                require(revoke_ns <= cancel_ns,
+                    f'exact request revoke did not precede settled cancellation: '
+                    f'{revoked!r}; {cancel!r}')
+                window_task = wait_line(broker,
+                    'C17_WINDOW_TASK retire-complete', 5)
+                require('status=0' in window_task,
+                    f'broker could not complete retirement after cancellation: '
+                    f'{window_task!r}')
+                try:
+                    map_retired = wait_line(app, 'C17_RETIRE_AFTER_CANCEL', 10)
+                except RuntimeError as error:
+                    raise RuntimeError(f'{error}; broker_recent='
+                        f'{getattr(broker, "_ker_recent_lines", [])!r}') from error
+                retired_match = re.search(r'now_ns=(\d+)', map_retired)
+                require('active=1 inserted=1 revoked=1 lookup=0' in map_retired and
+                    retired_match and cancel_ns < int(retired_match.group(1)),
+                    f'map closed before successful cancellation/revoke: '
+                    f'{cancel!r}; {map_retired!r}')
+                retired = wait_line(app, 'C17_WINDOW_RETIRED', 5)
+                require('active=0' in retired,
+                    f'owner did not report retirement after cancellation: {retired!r}')
+                require(not captured_synacks(capture, {12031}),
+                    'SYN-ACK escaped while retirement waited for PREPARED cancellation')
+                peer.close()
+                os.kill(app.pid, signal.SIGUSR2)
+                wait_line(app, 'C16_APP_DONE', 5)
+                output, errors = app.communicate(timeout=10)
+                require(app.returncode == 0,
+                    f'FF app failed after delayed cancellation: rc={app.returncode}; '
+                    f'stdout={output!r}; stderr={errors!r}')
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                    stop.sendto(b'STOP', str(stop_path))
+                bout, berr = broker.communicate(timeout=35)
+                require(broker.returncode == 0 and 'C16_BROKER_DONE' in bout,
+                    f'broker failed after delayed cancellation: rc={broker.returncode}; '
+                    f'stdout={bout!r}; stderr={berr!r}')
+                report = json.loads(stats.read_text())
+                require(report.get('outstanding') == 0 and report.get('pool', 0) == 0,
+                    f'delayed cancellation leaked broker I/O state: {report!r}')
+                print('C17_RETIRE_PENDING_CANCEL_PASS retire_begin=acknowledged '
+                    'cancelled=1 revoked=1 map_active_until_cancel=1 synack=0 pool=0')
+                return 0
             if args.pump_failure_only:
                 retained = wait_line(app, 'C16_PUMP_FAILURE_EVENT_RETAINED', 5)
                 require('sticky=ECONNRESET' in retained,
@@ -852,14 +1125,13 @@ def main():
     parser.add_argument('--owner-death-only', action='store_true')
     parser.add_argument('--listener-close-only', action='store_true')
     parser.add_argument('--explicit-stop-live-listener-only', action='store_true')
+    parser.add_argument('--quarantine-release-race-only', action='store_true')
     parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
-    parser.add_argument('--wait-line-selftest', action='store_true')
+    parser.add_argument('--window-cycles-only', action='store_true')
+    parser.add_argument('--window-cancel-only', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
-    if args.wait_line_selftest:
-        wait_line_selftest()
-        return 0
     if args.inside:
         return inside(args)
     command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
@@ -878,10 +1150,16 @@ def main():
         command.append('--listener-close-only')
     if args.explicit_stop_live_listener_only:
         command.append('--explicit-stop-live-listener-only')
+    if args.quarantine_release_race_only:
+        command.append('--quarantine-release-race-only')
     if args.finalized_timeout_only:
         command.append('--finalized-timeout-only')
     if args.cancel_unsent_timeout_only:
         command.append('--cancel-unsent-timeout-only')
+    if args.window_cycles_only:
+        command.append('--window-cycles-only')
+    if args.window_cancel_only:
+        command.append('--window-cancel-only')
     return subprocess.run(command).returncode
 
 
