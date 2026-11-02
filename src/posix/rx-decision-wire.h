@@ -57,9 +57,11 @@ struct __attribute__((packed)) ker_rx_decision_header {
     uint64_t deadline_ns;
 };
 
-/* BOOTSTRAP body. Exactly two SCM_RIGHTS descriptors accompany it: target
- * pidfd, supervisor pidfd. The message sender is independently authenticated
- * against SO_PEERCRED and per-message SCM_CREDENTIALS. */
+/* BOOTSTRAP body. target_role and target identity describe the expected
+ * REMOTE PEER, not the receiving process: the consumer receives WORKER and
+ * the worker receives CONSUMER. Exactly two SCM_RIGHTS descriptors accompany
+ * it: expected-peer pidfd, supervisor pidfd. The sender is independently
+ * authenticated against SO_PEERCRED and per-message SCM_CREDENTIALS. */
 struct __attribute__((packed)) ker_rx_decision_bootstrap {
     uint32_t target_role;
     uint32_t target_pid;
@@ -86,7 +88,7 @@ struct __attribute__((packed)) ker_rx_decision_data {
     uint16_t vlan_tci;
     uint16_t flags;
     uint64_t rx_offload_flags;
-    uint32_t reserved;
+    uint32_t data_room_bytes;
 };
 
 struct __attribute__((packed)) ker_rx_decision_result {
