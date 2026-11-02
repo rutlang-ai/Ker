@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -18,7 +19,7 @@ import runtime_service
 import runtime_service_wire as wire
 
 
-ACTOR = r'''import json, os, socket, sys, time
+ACTOR = r'''import array, json, os, socket, sys, time
 import runtime_service_wire as w
 env = os.environ
 path = env['KER_RUNTIME_SERVICE_PATH']
@@ -67,8 +68,13 @@ assert body == w.CLAIM_RESULT.pack(bytes.fromhex(env['KER_RUNTIME_SERVICE_WORKER
 pid = os.fork()
 if pid == 0:
     try:
-        rpc(channel, w.CHECK, 2, lease)
-        os._exit(23)
+        fd = os.open('/dev/null', os.O_RDONLY)
+        packet = w.pack_header(w.CHECK, 2, epoch, nonce, lease,
+            packet_length=w.HEADER.size)
+        channel.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+            array.array('i', [fd]))])
+        os.close(fd)
+        os._exit(0)
     except BaseException:
         os._exit(0)
 _, status = os.waitpid(pid, 0)
@@ -160,7 +166,11 @@ def create_child(sock, sequence, lease, child_role):
         os.execve(sys.executable, [sys.executable, '-c', CHILD, CHILD], child_env)
     os.close(read_fd)
     child_pidfd = os.pidfd_open(pid, 0)
-    status, _, body = rpc(sock, w.DELEGATE_BIND, sequence + 1, lease,
+    status, _, _ = rpc(sock, w.DELEGATE_BIND, sequence + 1,
+        b'\xa5' * w.LEASE_BYTES,
+        body=w.pack_delegate_bind(intent), fd=child_pidfd)
+    assert status == 116, 'BIND accepted a different parent lease from the intent'
+    status, _, body = rpc(sock, w.DELEGATE_BIND, sequence + 2, lease,
         body=w.pack_delegate_bind(intent), fd=child_pidfd)
     os.close(child_pidfd)
     assert status == 0
@@ -168,7 +178,7 @@ def create_child(sock, sequence, lease, child_role):
     assert returned_role == child_role
     assert os.write(write_fd, grant_ticket + returned_role.to_bytes(4, 'little')) == 36
     os.close(write_fd)
-    return pid
+    return pid, sequence + 3
 
 CHILD = r'''import array, os, socket, sys, time
 import runtime_service_wire as w
@@ -218,7 +228,11 @@ def create_child(sock, sequence, lease, child_role):
             [sys.executable, '-c', sys.argv[1], sys.argv[1]], child_env)
     os.close(read_fd)
     child_pidfd = os.pidfd_open(pid, 0)
-    status, _, body = rpc(sock, w.DELEGATE_BIND, sequence + 1, lease,
+    status, _, _ = rpc(sock, w.DELEGATE_BIND, sequence + 1,
+        b'\xa5' * w.LEASE_BYTES,
+        body=w.pack_delegate_bind(intent), fd=child_pidfd)
+    assert status == 116, 'BIND accepted a different parent lease from the intent'
+    status, _, body = rpc(sock, w.DELEGATE_BIND, sequence + 2, lease,
         body=w.pack_delegate_bind(intent), fd=child_pidfd)
     os.close(child_pidfd)
     assert status == 0
@@ -226,7 +240,7 @@ def create_child(sock, sequence, lease, child_role):
     assert returned_role == child_role
     assert os.write(write_fd, grant_ticket + returned_role.to_bytes(4, 'little')) == 36
     os.close(write_fd)
-    return pid
+    return pid, sequence + 3
 
 sock = connect()
 if role == w.ROLE_SLIM_STAGE1:
@@ -235,10 +249,14 @@ if role == w.ROLE_SLIM_STAGE1:
     assert status == 0 and len(body) == w.CLAIM_RESULT.size
     # The stage1 parent remains alive until BIND completes, then exits. The
     # final child waits for this PID to change before attempting CLAIM.
-    child_pid = create_child(sock, 2, lease, w.ROLE_SLIM_PRIMARY)
-    status, _, _ = rpc(sock, w.DELEGATE_INTENT, 4, lease, body=
+    child_pid, next_sequence = create_child(sock, 2, lease, w.ROLE_SLIM_PRIMARY)
+    status, _, _ = rpc(sock, w.DELEGATE_INTENT, next_sequence, lease, body=
         w.pack_delegate_intent(os.urandom(16), w.ROLE_SLIM_PRIMARY))
     assert status == 13, 'stage1 replacement grant was unexpectedly accepted'
+    status, _, _ = rpc(sock, w.RELEASE, next_sequence + 1, lease)
+    assert status == 0
+    status, _, _ = rpc(sock, w.RELEASE, next_sequence + 2, lease)
+    assert status == 0, 'stage1 lost its exact RELEASE tombstone'
     os.close(sock.fileno())
     os._exit(0)
 assert role == w.ROLE_SLIM_PRIMARY
@@ -272,6 +290,8 @@ while not os.path.exists(env['KER_TEST_FINAL_RELEASE']) and time.monotonic() < d
 assert os.path.exists(env['KER_TEST_FINAL_RELEASE'])
 status, _, _ = rpc(sock, w.RELEASE, 3, lease)
 assert status == 0
+status, _, _ = rpc(sock, w.RELEASE, 4, lease)
+assert status == 0, 'primary lost its exact RELEASE tombstone'
 sock.close()
 '''
 
@@ -279,10 +299,21 @@ master = connect()
 status, master_lease, _ = rpc(master, w.CLAIM, 1,
     body=w.CLAIM_BODY.pack(ticket, profile))
 assert status == 0
-create_child(master, 2, master_lease, w.ROLE_SLIM_STAGE1)
-status, _, _ = rpc(master, w.DELEGATE_INTENT, 4, master_lease, body=
+stage1_pid, next_sequence = create_child(master, 2, master_lease,
+    w.ROLE_SLIM_STAGE1)
+status, _, _ = rpc(master, w.DELEGATE_INTENT, next_sequence, master_lease, body=
     w.pack_delegate_intent(secrets.token_bytes(16), w.ROLE_SLIM_STAGE1))
 assert status == 13, 'master replacement stage1 grant was unexpectedly accepted'
+if env.get('KER_TEST_MASTER_HOLD'):
+    status, _, _ = rpc(master, w.RELEASE, next_sequence + 1, master_lease)
+    assert status == 0
+    open(env['KER_TEST_MASTER_RELEASED'], 'w').close()
+    deadline = time.monotonic() + 10
+    while not os.path.exists(final_release) and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert os.path.exists(final_release)
+    status, _, _ = rpc(master, w.RELEASE, next_sequence + 2, master_lease)
+    assert status == 0, 'master RELEASE tombstone was lost after child role releases'
 master.close()
 os._exit(0)
 """
@@ -312,6 +343,15 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                 os.close(control_write)
                 control_write = -1
                 service.start()
+                def null_descriptors():
+                    count = 0
+                    for name in os.listdir('/proc/self/fd'):
+                        try:
+                            count += os.readlink('/proc/self/fd/' + name) == '/dev/null'
+                        except FileNotFoundError:
+                            pass
+                    return count
+                baseline_null_fds = null_descriptors()
                 env = os.environ.copy()
                 env.update(service.env)
                 env['PYTHONPATH'] = str(TOOLS)
@@ -339,6 +379,12 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                 self.assertTrue(result['inherited_socket_rejected'])
                 self.assertEqual((result['claim'], result['reconnect_check'],
                     result['release']), (0, 0, 0))
+                deadline = time.monotonic() + 2
+                while service._connection_threads and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertFalse(service._connection_threads)
+                self.assertEqual(null_descriptors(), baseline_null_fds,
+                    'forked peer SCM_RIGHTS descriptor leaked before credential rejection')
                 self.assertEqual(service.active_count, 0)
                 self.assertTrue(service.wait_for_release(0.1))
 
@@ -680,8 +726,156 @@ class RuntimeServiceDelegationChainTest(unittest.TestCase):
                     if descriptor >= 0:
                         os.close(descriptor)
 
+    def test_release_tombstones_remain_per_role_after_later_releases(self):
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-tombstones-') as directory:
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            service = None
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                app_hash = runtime_service.sha256_file(sys.executable)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    Path(directory) / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-delegation-tombstones-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                claimed = Path(directory) / 'final-claimed'
+                release = Path(directory) / 'final-release'
+                master_released = Path(directory) / 'master-released'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['PYTHONPATH'] = str(TOOLS)
+                env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
+                env['KER_TEST_FINAL_RELEASE'] = str(release)
+                env['KER_TEST_MASTER_HOLD'] = '1'
+                env['KER_TEST_MASTER_RELEASED'] = str(master_released)
+                actor = subprocess.Popen([sys.executable, '-c', DELEGATION_CHAIN_ACTOR],
+                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, text=True)
+                actor_pidfd = os.pidfd_open(actor.pid, 0)
+                service.bind_actor(actor, actor_pidfd)
+                deadline = time.monotonic() + 8
+                while (not master_released.exists() or not claimed.exists()) and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(master_released.exists(), 'master did not release its role')
+                self.assertTrue(claimed.exists(), 'final role did not claim after stage1 exit')
+                self.assertEqual(service.active_count, 1,
+                    'master/stage1 release did not leave exactly the primary role active')
+                release.touch()
+                actor.wait(timeout=10)
+                self.assertEqual(actor.returncode, 0,
+                    actor.stderr.read() if actor.stderr is not None else '')
+                deadline = time.monotonic() + 5
+                while service.active_count and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertEqual(service.active_count, 0)
+                self.assertTrue(service.wait_for_release(1.0))
+                self.assertTrue(service.prepare_worker_shutdown(0.1))
+                self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if actor is not None and actor.stderr is not None:
+                    actor.stderr.close()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
 
 class RuntimeServiceAncillaryRightsTest(unittest.TestCase):
+    def test_received_rights_are_closed_when_process_identity_recheck_fails(self):
+        sender = r'''import array, os, socket, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+s.connect(os.environ['KER_RUNTIME_SERVICE_PATH'])
+fd = os.open('/dev/null', os.O_RDONLY)
+s.sendmsg([b'bad'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [fd]))])
+os.close(fd)
+time.sleep(0.05)
+s.close()
+'''
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-identity-fd-') as directory:
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            service = None
+            actor = None
+            original = runtime_service.process_start_ticks
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                service = runtime_service.RuntimeServiceSupervisor(
+                    Path(directory) / 'service.sock', worker, worker_pidfd,
+                    original(worker.pid), runtime_service.process_executable_hash(worker.pid),
+                    ready, runtime_service.sha256_file(sys.executable),
+                    hashlib.sha256(b'ff-slim-identity-fd-test-v1').digest(), control_write)
+                service.start()
+                def null_descriptors():
+                    count = 0
+                    for name in os.listdir('/proc/self/fd'):
+                        try:
+                            count += os.readlink('/proc/self/fd/' + name) == '/dev/null'
+                        except FileNotFoundError:
+                            pass
+                    return count
+                baseline = null_descriptors()
+                calls = {}
+                def fail_identity_recheck(pid):
+                    if threading.current_thread().name == 'ker-runtime-service-client':
+                        calls[pid] = calls.get(pid, 0) + 1
+                        if calls[pid] == 2:
+                            raise OSError(5, 'injected peer identity read failure')
+                    return original(pid)
+                runtime_service.process_start_ticks = fail_identity_recheck
+                env = os.environ.copy()
+                env.update(service.env)
+                actor = subprocess.Popen([sys.executable, '-c', sender], env=env,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                _, stderr = actor.communicate(timeout=5)
+                self.assertEqual(actor.returncode, 0, stderr)
+                deadline = time.monotonic() + 2
+                while service._connection_threads and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertEqual(calls.get(actor.pid), 2,
+                    'injected failure did not occur on the post-recv identity recheck')
+                self.assertEqual(null_descriptors(), baseline,
+                    'SCM_RIGHTS descriptor leaked when peer identity recheck failed')
+            finally:
+                runtime_service.process_start_ticks = original
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
     def test_zero_length_rights_message_closes_fd_and_revokes_actor(self):
         with tempfile.TemporaryDirectory(prefix='ker-runtime-service-rights-') as directory:
             worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])

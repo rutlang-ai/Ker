@@ -162,6 +162,7 @@ class RuntimeServiceSupervisor:
         # identity/lease tuple so the same actor can settle a lost RELEASE
         # reply; this is never authority for CHECK or a new claim.
         self._released_actor = None
+        self._released_actors = {}
         self._actor_target = None
         self._claim_consumed = False
         self._delegated_actors = {}
@@ -532,6 +533,8 @@ class RuntimeServiceSupervisor:
                     if intent is None or self.clock() >= intent['deadline'] or not hmac.compare_digest(
                             intent['id'], intent_id):
                         return self._response(operation, sequence, lease_id, 116), sequence
+                    if not hmac.compare_digest(intent['parent_lease'], lease_id):
+                        return self._response(operation, sequence, lease_id, 116), sequence
                     parent = self._find_delegation_parent_locked(intent['parent'],
                         intent['parent_lease'])
                     if parent is None or not self._same_identity(parent, peer):
@@ -548,7 +551,7 @@ class RuntimeServiceSupervisor:
                             int(child_fields[1], 10) != peer['pid'] or
                             child['uid'] != peer['uid'] or child['gid'] != peer['gid'] or
                             not hmac.compare_digest(child['exe_hash'], self.app_executable_hash)):
-                        return self._response(operation, sequence, bytes(wire.LEASE_BYTES), 13), sequence
+                        return self._response(operation, sequence, lease_id, 13), sequence
                     if len(self._delegated_grants) + len(self._delegated_actors) >= 2:
                         return self._response(operation, sequence, lease_id, 16), sequence
                     pinned = os.dup(rights[0])
@@ -572,7 +575,10 @@ class RuntimeServiceSupervisor:
                     if self._same_identity(candidate, peer) and
                     hmac.compare_digest(candidate['lease_id'], lease_id)), None)
             if actor is None:
-                released = self._released_actor
+                released = (self._released_actors.get(
+                    (peer['pid'], peer['uid'], peer['gid'], peer['start'],
+                     peer['exe_hash'], lease_id)) if self.delegation_enabled else
+                    self._released_actor)
                 if (operation == wire.RELEASE and released is not None and
                         released['pid'] == peer['pid'] and
                         released['uid'] == peer['uid'] and
@@ -590,8 +596,14 @@ class RuntimeServiceSupervisor:
             actor['last_seen'] = self.clock()
             if operation == wire.CHECK:
                 return self._response(operation, sequence, lease_id, 0), sequence
-            self._released_actor = {key: actor[key] for key in
+            released = {key: actor[key] for key in
                 ('pid', 'uid', 'gid', 'start', 'exe_hash', 'lease_id')}
+            if self.delegation_enabled:
+                tombstone_key = (released['pid'], released['uid'], released['gid'],
+                    released['start'], released['exe_hash'], released['lease_id'])
+                self._released_actors[tombstone_key] = released
+            else:
+                self._released_actor = released
             if actor is self._actor:
                 self._actor = None
                 if self._actor_target is not None:
@@ -685,24 +697,24 @@ class RuntimeServiceSupervisor:
                         rights.extend(struct.unpack('=' + 'i' * (usable // 4), data[:usable]))
                     else:
                         unexpected = True
-                if (len(credentials) != 1 or
-                        credentials[0] != (peer['pid'], peer['uid'], peer['gid'])):
-                    # SO_PEERCRED is fixed at connect time. Per-message
-                    # credentials reject a forked sibling using an inherited
-                    # connected descriptor as the bound actor.
-                    return
                 try:
-                    current = {'pid': peer['pid'], 'uid': peer['uid'],
-                        'gid': peer['gid'], 'start': process_start_ticks(peer['pid']),
-                        'pidfd': peer['pidfd'],
-                        'exe_hash': process_executable_hash(peer['pid']),
-                        'comm': process_comm(peer['pid'])}
-                except (OSError, RuntimeError, ValueError):
-                    return
-                if (current['start'] != peer['start'] or
-                        not hmac.compare_digest(current['exe_hash'], peer['exe_hash'])):
-                    return
-                try:
+                    if (len(credentials) != 1 or
+                            credentials[0] != (peer['pid'], peer['uid'], peer['gid'])):
+                        # SO_PEERCRED is fixed at connect time. Per-message
+                        # credentials reject a forked sibling using an inherited
+                        # connected descriptor as the bound actor.
+                        return
+                    try:
+                        current = {'pid': peer['pid'], 'uid': peer['uid'],
+                            'gid': peer['gid'], 'start': process_start_ticks(peer['pid']),
+                            'pidfd': peer['pidfd'],
+                            'exe_hash': process_executable_hash(peer['pid']),
+                            'comm': process_comm(peer['pid'])}
+                    except (OSError, RuntimeError, ValueError):
+                        return
+                    if (current['start'] != peer['start'] or
+                            not hmac.compare_digest(current['exe_hash'], peer['exe_hash'])):
+                        return
                     if message_flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
                         self._revoke_bound_actor(current, 'actor-malformed-message')
                         return
