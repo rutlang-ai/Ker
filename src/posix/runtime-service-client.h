@@ -23,9 +23,14 @@ struct ker_runtime_service_client {
     int cleanup_only;
     int failed;
     int fd_identity_valid;
+    int delegated_actor;
+    int delegation_intent_valid;
+    int delegation_terminal;
     uint64_t fd_device;
     uint64_t fd_inode;
     uint64_t fd_cookie;
+    uint32_t actor_role;
+    uint32_t delegation_role;
     uint64_t owner_start_time;
     uint64_t sequence;
     uint64_t service_epoch;
@@ -41,6 +46,7 @@ struct ker_runtime_service_client {
     uint8_t expected_worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES];
     uint8_t worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES];
     uint8_t lease_id[KER_RUNTIME_SERVICE_LEASE_BYTES];
+    uint8_t delegation_intent_id[KER_RUNTIME_SERVICE_INTENT_BYTES];
 };
 
 /* Initialize a fresh context before its first claim. */
@@ -53,6 +59,22 @@ int ker_runtime_service_claim(struct ker_runtime_service_client *client,
     const uint8_t expected_worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
     int32_t supervisor_pid, uint64_t supervisor_start_time,
     const uint8_t supervisor_exe_sha256[KER_RUNTIME_SERVICE_PROFILE_BYTES]);
+/* Claim a target-bound grant created by DELEGATE_BIND. Unlike direct CLAIM,
+ * the actor may be reparented; the supervisor identity remains pinned. */
+int ker_runtime_service_claim_delegated(struct ker_runtime_service_client *client,
+    const char *path, const uint8_t run_nonce[KER_RUNTIME_SERVICE_NONCE_BYTES],
+    uint64_t service_epoch,
+    const uint8_t ticket[KER_RUNTIME_SERVICE_TICKET_BYTES], uint32_t role,
+    const uint8_t role_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    const uint8_t expected_worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    int32_t supervisor_pid, uint64_t supervisor_start_time,
+    const uint8_t supervisor_exe_sha256[KER_RUNTIME_SERVICE_PROFILE_BYTES]);
+int ker_runtime_service_delegate_intent(struct ker_runtime_service_client *client,
+    uint32_t child_role,
+    uint8_t intent_id[KER_RUNTIME_SERVICE_INTENT_BYTES]);
+int ker_runtime_service_delegate_bind(struct ker_runtime_service_client *client,
+    const uint8_t intent_id[KER_RUNTIME_SERVICE_INTENT_BYTES], int child_pidfd,
+    uint8_t ticket[KER_RUNTIME_SERVICE_TICKET_BYTES], uint32_t *child_role);
 int ker_runtime_service_check(struct ker_runtime_service_client *client);
 int ker_runtime_service_release(struct ker_runtime_service_client *client);
 int ker_runtime_service_reconnect(struct ker_runtime_service_client *client);
