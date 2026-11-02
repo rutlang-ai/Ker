@@ -233,13 +233,23 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                 control_result[key] = True
                 return
 
-            os.kill(supervisor_pid, signal.SIGTERM)
+            shutdown_signal = (signal.SIGINT if args.mode == 'healthy-sigint'
+                else signal.SIGTERM)
+            os.kill(supervisor_pid, shutdown_signal)
             stop_deadline = time.monotonic() + 15
             while not manager.stopped and time.monotonic() < stop_deadline:
                 time.sleep(0.001)
             require(manager.stopped,
-                'ker-run SIGTERM path did not complete authenticated STOP/ACK')
+                'ker-run signal path did not complete authenticated STOP/ACK')
             control_result['ack'] = True
+            app_deadline = time.monotonic() + 15
+            while app.poll() is None and time.monotonic() < app_deadline:
+                time.sleep(0.001)
+            require(app.poll() is not None,
+                'broker application did not exit after authenticated STOP')
+            control_result['app_returncode'] = app.returncode
+            require(app.returncode == 0,
+                f'broker application shutdown was not clean: {app.returncode}')
         except BaseException as error:
             control_errors.append(error)
             app = state.get('app')
@@ -276,10 +286,14 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
         'control': control_result, 'stats': stats}
     if notify_fd >= 0:
         os.write(notify_fd, (json.dumps(result) + '\n').encode())
-    if args.mode == 'healthy':
-        require(launcher_result == 143 and control_result.get('ack') and
-            stats and stats.get('outstanding') == 0,
-            f'healthy READY/STOP did not clean up through ker-run: {result!r}')
+    if args.mode in ('healthy', 'healthy-sigint'):
+        expected_exit = 130 if args.mode == 'healthy-sigint' else 143
+        require(launcher_result == expected_exit and control_result.get('ack') and
+            control_result.get('app_returncode') == 0 and
+            stats and stats.get('outstanding') == 0 and
+            stats.get('run_shutdown') is True and
+            stats.get('run_shutdown_ack') is True,
+            f'healthy READY/STOP did not complete native run-control shutdown: {result!r}')
     elif args.mode in ('bad-stop', 'rights-stop', 'truncated-stop'):
         expected_key = {'bad-stop': 'bad_stop_rejected',
             'rights-stop': 'rights_stop_rejected',
@@ -418,6 +432,9 @@ def spawn_supervisor(args, mode, timeout=45):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        if process.returncode != 0:
+            log_file.flush()
+            print(log_path.read_text(errors='replace'), file=sys.stderr)
         log_file.close()
 
 def set_up_network():
@@ -443,7 +460,7 @@ def main():
         default=Path('/dev/shm/ker-broker-readiness-rpc.sock'))
     parser.add_argument('--inside', action='store_true')
     parser.add_argument('--supervisor', action='store_true')
-    parser.add_argument('--mode', choices=('healthy', 'bad-stop', 'rights-stop',
+    parser.add_argument('--mode', choices=('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop',
         'truncated-stop',
         'no-bootstrap', 'parent-death'), default='healthy')
     parser.add_argument('--notify-fd', type=int, default=-1)
@@ -463,7 +480,7 @@ def main():
     enable_subreaper()
     with tempfile.TemporaryDirectory(prefix='ker-broker-readiness-') as directory:
         args.root = Path(directory)
-        for mode in ('healthy', 'bad-stop', 'rights-stop', 'truncated-stop',
+        for mode in ('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop', 'truncated-stop',
                      'parent-death', 'no-bootstrap'):
             spawn_supervisor(args, mode)
     print('BROKER_READINESS_TAP_OK authenticated_READY_STOP no-bootstrap malformed_STOP parent_pidfd_death')

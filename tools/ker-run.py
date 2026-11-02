@@ -1326,7 +1326,18 @@ def main():
             print(f'ker-run: RX decision setup is unavailable: {error}', file=sys.stderr)
             return 125
     worker_finished = run_finished = False
-    signal.signal(signal.SIGTERM, interrupted)
+    pending_shutdown_signal = None
+    def handle_shutdown_signal(signum, frame):
+        nonlocal pending_shutdown_signal
+        if args.broker_readiness:
+            if pending_shutdown_signal is None:
+                pending_shutdown_signal = signum
+        else:
+            interrupted(signum, frame)
+
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    if args.broker_readiness:
+        signal.signal(signal.SIGINT, handle_shutdown_signal)
     worker = app = None
     additional = []
     exit_code = 125
@@ -1335,6 +1346,23 @@ def main():
     startup_status = b""
     infrastructure_failure = False
     preserve_signal = False
+    signal_exit_code = None
+    stop_deadline = None
+
+    def stop_broker_for_signal():
+        nonlocal exit_code, preserve_signal, signal_exit_code, stop_deadline
+        nonlocal pending_shutdown_signal
+        if (pending_shutdown_signal is None or broker_readiness_channel is None or
+                not broker_readiness_channel.ready or broker_readiness_channel.stopped):
+            return
+        signum = pending_shutdown_signal
+        pending_shutdown_signal = None
+        preserve_signal = True
+        signal_exit_code = 128 + signum
+        exit_code = signal_exit_code
+        stop_deadline = time.monotonic() + 10.0
+        broker_readiness_channel.stop()
+
     try:
         vlan_ipv6 = any(value.version == 6 for _, entries in args.vlans for value in entries)
         multicast_options = ['--all-multicast'] if args.all_multicast or args.address6 is not None or vlan_ipv6 else []
@@ -1524,7 +1552,17 @@ def main():
         stopping_at = None
         while True:
             try:
-                exit_code = app.wait(timeout=0.25)
+                if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                    raise TimeoutError('broker-requested native shutdown timed out')
+                stop_broker_for_signal()
+                app_returncode = app.wait(timeout=0.25)
+                if preserve_signal:
+                    if app_returncode != 0:
+                        infrastructure_failure = True
+                    exit_code = signal_exit_code
+                else:
+                    exit_code = app_returncode
+                stop_broker_for_signal()
                 if (broker_readiness_channel is not None and
                         (not broker_readiness_channel.ready or
                          not broker_readiness_channel.stopped)):
@@ -1554,6 +1592,9 @@ def main():
                             raise RuntimeError(failure)
                 break
             except subprocess.TimeoutExpired:
+                if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                    raise TimeoutError('broker-requested native shutdown timed out')
+                stop_broker_for_signal()
                 if broker_readiness_channel is not None and not broker_readiness_channel.ready:
                     broker_readiness_channel.poll_ready()
                 try:
@@ -1758,6 +1799,8 @@ def main():
                 except (OSError, ValueError, TypeError) as error:
                     print(f'ker-run: statistics output: {error}', file=sys.stderr)
                     infrastructure_failure = True
+    if signal_exit_code is not None and infrastructure_failure:
+        preserve_signal = False
     return resolve_exit_code(exit_code, app.returncode if app else None,
         infrastructure_failure, preserve_signal)
 
