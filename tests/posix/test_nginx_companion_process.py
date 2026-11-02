@@ -2,6 +2,7 @@
 """Test helper ownership/protocol using a tiny non-networking process fixture."""
 import argparse
 import array
+import ctypes
 import importlib.util
 import os
 from pathlib import Path
@@ -76,12 +77,83 @@ def cleanup_manager(manager):
     close_manager(manager)
 
 
+def new_manager(supervisor, server, helper_path, config, prefix, environment):
+    manager = supervisor.NginxCompanion(server, config, prefix, environment)
+    manager.helper_path = helper_path
+    manager.helper_script_hash = supervisor._sha256(helper_path)
+    manager.start(timeout=5)
+    return manager
+
+
+def signal_and_reap_master(manager, master_pidfd):
+    try:
+        signal.pidfd_send_signal(master_pidfd, signal.SIGQUIT)
+    except ProcessLookupError:
+        pass
+    require(wait_dead(master_pidfd, 5), 'external recovery did not stop pinned master')
+    try:
+        os.waitpid(manager.master_pid, 0)
+    except ChildProcessError:
+        pass
+
+
+def inject_bad_record(manager, wire, kind):
+    if kind == 'eof':
+        manager.channel.shutdown(socket.SHUT_WR)
+        return
+    fd = os.open('/dev/null', os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        body = b'' if kind == 'rights' else b'x' * 5000
+        packet = wire.pack_record(wire.RELOAD, body, manager.nonce,
+            manager.epoch, manager.sequence)
+        ancillary = ([(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+            array.array('i', (fd,)))] if kind == 'rights' else [])
+        sent = manager.channel.sendmsg([packet], ancillary,
+            getattr(socket, 'MSG_NOSIGNAL', 0))
+        require(sent == len(packet), f'short malformed {kind} control injection')
+    finally:
+        os.close(fd)
+
+
+def exercise_bad_receive(supervisor, wire, server, helper_path, config, prefix,
+                         environment, kind):
+    manager = new_manager(supervisor, server, helper_path, config, prefix,
+        environment)
+    master_pidfd = os.dup(manager.master_pidfd)
+    try:
+        inject_bad_record(manager, wire, kind)
+        deadline = time.monotonic() + 5
+        failure_seen = False
+        while time.monotonic() < deadline:
+            try:
+                manager.check()
+            except (OSError, RuntimeError, ValueError):
+                failure_seen = True
+                break
+            time.sleep(0.01)
+        require(failure_seen and manager.unresolved,
+            f'{kind} receive failure did not mark containment unresolved')
+        require(wait_dead(master_pidfd, 0.1),
+            f'{kind} failure was reported before the owned child settled')
+        manager.helper.wait(timeout=5)
+        require(manager.helper.returncode != 0,
+            f'{kind} receive failure returned a healthy helper status')
+        require(not manager.settled,
+            f'{kind} receive failure fabricated a SETTLED result')
+    finally:
+        os.close(master_pidfd)
+        cleanup_manager(manager)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--server', type=Path, required=True)
     parser.add_argument('--tools', type=Path, required=True)
     parser.add_argument('--helper', type=Path, required=True)
     args = parser.parse_args()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'test subreaper setup failed')
     sys.path.insert(0, str(args.tools))
     supervisor = load_module(args.tools / 'nginx_companion_supervisor.py',
         '_test_nginx_companion_supervisor')
@@ -103,12 +175,11 @@ def main():
             'KER_SOCKET_BROKER_PATH': str(broker_path),
             'KER_FSTACK_NGINX_INI': str(ini),
         }
+        helper_path = args.helper.resolve(strict=True)
         good = None
         try:
-            good = supervisor.NginxCompanion(args.server, config, prefix, environment)
-            good.helper_path = args.helper.resolve(strict=True)
-            good.helper_script_hash = supervisor._sha256(good.helper_path)
-            good.start(timeout=5)
+            good = new_manager(supervisor, args.server, helper_path, config,
+                prefix, environment)
             good.check()
             good.reload(timeout=5)
             good.reload(timeout=5)
@@ -118,44 +189,38 @@ def main():
         finally:
             cleanup_manager(good)
 
-        malformed = None
-        master_pidfd = -1
+        crashed = new_manager(supervisor, args.server, helper_path, config,
+            prefix, environment)
+        master_pidfd = os.dup(crashed.master_pidfd)
         try:
-            malformed = supervisor.NginxCompanion(args.server, config, prefix, environment)
-            malformed.helper_path = args.helper.resolve(strict=True)
-            malformed.helper_script_hash = supervisor._sha256(malformed.helper_path)
-            malformed.start(timeout=5)
-            master_pidfd = os.dup(malformed.master_pidfd)
-            fd = os.open('/dev/null', os.O_RDONLY | os.O_CLOEXEC)
+            helper_fd = crashed.channel.fileno()
+            master_fd = crashed.master_pidfd
+            supervisor_fd = crashed.supervisor_pidfd
+            crashed.helper.kill()
+            crashed.helper.wait(timeout=5)
+            require(not wait_dead(master_pidfd, 0.1),
+                'master unexpectedly exited with its helper killed')
+            stop_failed = False
             try:
-                packet = wire.pack_record(wire.RELOAD, b'', malformed.nonce,
-                    malformed.epoch, malformed.sequence)
-                sent = malformed.channel.sendmsg([packet], [(socket.SOL_SOCKET,
-                    socket.SCM_RIGHTS, array.array('i', (fd,)))],
-                    getattr(socket, 'MSG_NOSIGNAL', 0))
-                require(sent == len(packet), 'short malformed control injection')
-            finally:
-                os.close(fd)
-            rejected = False
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                try:
-                    malformed.check()
-                except (OSError, RuntimeError, ValueError):
-                    rejected = True
-                    break
-                time.sleep(0.01)
-            require(rejected and malformed.unresolved,
-                'unexpected SCM_RIGHTS did not fail closed after STARTED')
-            require(wait_dead(master_pidfd, 5),
-                'helper did not settle pinned child after malformed post-STARTED record')
-            malformed.helper.wait(timeout=5)
-            require(malformed.helper.returncode != 0,
-                'helper treated malformed post-STARTED command as healthy')
+                crashed.stop(timeout=1)
+            except (OSError, RuntimeError, ValueError, TimeoutError):
+                stop_failed = True
+            crashed.close()
+            require(stop_failed and crashed.unresolved and not crashed.settled,
+                'dead helper was reported as a settled companion')
+            require(crashed.channel is not None and
+                    crashed.channel.fileno() == helper_fd and
+                    crashed.master_pidfd == master_fd and
+                    crashed.supervisor_pidfd == supervisor_fd,
+                'UNRESOLVED close discarded its channel/pidfd ownership records')
         finally:
-            if master_pidfd >= 0:
-                os.close(master_pidfd)
-            cleanup_manager(malformed)
+            signal_and_reap_master(crashed, master_pidfd)
+            os.close(master_pidfd)
+            close_manager(crashed)
+
+        for kind in ('rights', 'truncated', 'eof'):
+            exercise_bad_receive(supervisor, wire, args.server, helper_path,
+                config, prefix, environment, kind)
     print('C34 helper control ownership fixture: PASS')
     return 0
 
