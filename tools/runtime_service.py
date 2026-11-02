@@ -78,12 +78,25 @@ def _pidfd_dead(pidfd):
     return bool(flags & (select.POLLIN | select.POLLHUP))
 
 
+def _pidfd_pid(pidfd):
+    """Return the PID pinned by a Linux pidfd, without trusting caller input."""
+    text = Path(f'/proc/self/fdinfo/{pidfd}').read_text(encoding='ascii')
+    for line in text.splitlines():
+        if line.startswith('Pid:\t'):
+            pid = int(line.split('\t', 1)[1], 10)
+            if pid > 0:
+                return pid
+            break
+    raise OSError(9, 'descriptor is not a live pidfd')
+
+
 class RuntimeServiceSupervisor:
     """Own one authenticated lease over a ker-run-launched child and worker."""
     def __init__(self, path, worker, worker_pidfd, worker_start_ticks,
                  worker_executable_hash, ready_record, app_executable_hash,
                  app_profile_hash, control_fd, ttl_seconds=30.0,
-                 clock=time.monotonic, max_clients=4, io_timeout=5.0):
+                 clock=time.monotonic, max_clients=4, io_timeout=5.0,
+                 delegation_enabled=False):
         if (not isinstance(worker_executable_hash, bytes) or
                 not isinstance(app_executable_hash, bytes) or
                 len(worker_executable_hash) != 32 or len(app_executable_hash) != 32):
@@ -136,6 +149,7 @@ class RuntimeServiceSupervisor:
         self.clock = clock
         self.max_clients = max_clients
         self.io_timeout = float(io_timeout)
+        self.delegation_enabled = bool(delegation_enabled)
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._listener = None
@@ -150,6 +164,12 @@ class RuntimeServiceSupervisor:
         self._released_actor = None
         self._actor_target = None
         self._claim_consumed = False
+        self._delegated_actors = {}
+        self._delegated_grants = {}
+        self._delegation_intent = None
+        self._delegation_roles_intended = set()
+        self._delegation_roles_issued = set()
+        self._delegation_request_nonces = set()
         self._revoked = False
         self._closed = False
         self._release_reason = None
@@ -172,7 +192,10 @@ class RuntimeServiceSupervisor:
     @property
     def active_count(self):
         with self._lock:
-            return int(self._actor is not None and not self._revoked)
+            if self._revoked:
+                return 0
+            return (int(self._actor is not None) + len(self._delegated_actors) +
+                len(self._delegated_grants))
 
     @property
     def revoked(self):
@@ -279,6 +302,18 @@ class RuntimeServiceSupervisor:
         self._actor_target = None
         if target and target['pidfd'] >= 0:
             os.close(target['pidfd'])
+        for actor in self._delegated_actors.values():
+            if actor['pidfd'] >= 0:
+                os.close(actor['pidfd'])
+        self._delegated_actors.clear()
+        for grant in self._delegated_grants.values():
+            if grant['pidfd'] >= 0:
+                os.close(grant['pidfd'])
+        self._delegated_grants.clear()
+        self._delegation_intent = None
+        self._delegation_roles_intended.clear()
+        self._delegation_roles_issued.clear()
+        self._delegation_request_nonces.clear()
         self._condition.notify_all()
 
     def _reap_locked(self):
@@ -291,12 +326,39 @@ class RuntimeServiceSupervisor:
         except (OSError, RuntimeError, ValueError):
             self._revoke_locked('worker-identity-error')
             return
+        now = self.clock()
+        intent = self._delegation_intent
+        if intent is not None and now >= intent['deadline']:
+            self._delegation_intent = None
+        for ticket, grant in list(self._delegated_grants.items()):
+            try:
+                if now >= grant['deadline'] or _pidfd_dead(grant['pidfd']):
+                    os.close(grant['pidfd'])
+                    del self._delegated_grants[ticket]
+            except OSError:
+                self._revoke_locked('delegated-grant-identity-error')
+                return
+        for role, actor in list(self._delegated_actors.items()):
+            try:
+                if (_pidfd_dead(actor['pidfd']) or
+                        now - actor['last_seen'] > self.ttl_seconds):
+                    os.close(actor['pidfd'])
+                    del self._delegated_actors[role]
+            except OSError:
+                self._revoke_locked('delegated-actor-identity-error')
+                return
         target = self._actor_target
         if target is not None:
             try:
                 if _pidfd_dead(target['pidfd']) and self._actor is not None:
-                    self._revoke_locked('actor-dead')
-                    return
+                    if not self.delegation_enabled:
+                        self._revoke_locked('actor-dead')
+                        return
+                    os.close(self._actor['pidfd'])
+                    self._actor = None
+                    os.close(target['pidfd'])
+                    self._actor_target = None
+                    self._delegation_intent = None
             except OSError:
                 self._revoke_locked('actor-identity-error')
                 return
@@ -305,11 +367,25 @@ class RuntimeServiceSupervisor:
             return
         try:
             if _pidfd_dead(actor['pidfd']):
-                self._revoke_locked('actor-dead')
+                if self.delegation_enabled:
+                    os.close(actor['pidfd'])
+                    self._actor = None
+                else:
+                    self._revoke_locked('actor-dead')
             elif self.clock() - actor['last_seen'] > self.ttl_seconds:
-                self._revoke_locked('lease-expired')
+                if self.delegation_enabled:
+                    os.close(actor['pidfd'])
+                    self._actor = None
+                else:
+                    self._revoke_locked('lease-expired')
         except OSError:
             self._revoke_locked('actor-identity-error')
+        if self.delegation_enabled and self._actor is None:
+            if self._actor_target is not None:
+                os.close(self._actor_target['pidfd'])
+                self._actor_target = None
+            if self._delegation_intent is not None and self._delegation_intent['role'] == wire.ROLE_SLIM_STAGE1:
+                self._delegation_intent = None
 
     def _peer_identity(self, connection):
         raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED.size)
@@ -343,7 +419,7 @@ class RuntimeServiceSupervisor:
             packet_length=wire.HEADER.size + len(body))
         return header + body
 
-    def _handle(self, connection, peer, packet, last_sequence):
+    def _handle(self, connection, peer, packet, last_sequence, rights=()):
         try:
             operation, status, sequence, epoch, nonce, lease_id = wire.unpack_header(packet)
         except ValueError:
@@ -358,9 +434,36 @@ class RuntimeServiceSupervisor:
             if self._revoked:
                 return self._response(operation, sequence, lease_id, 108), sequence
             if operation == wire.CLAIM:
-                if len(body) != wire.CLAIM_BODY.size or any(lease_id):
+                if rights or len(body) != wire.CLAIM_BODY.size or any(lease_id):
                     return None, last_sequence
                 ticket, profile_hash = wire.CLAIM_BODY.unpack(body)
+                if self.delegation_enabled:
+                    grant = self._delegated_grants.get(ticket)
+                    if grant is not None:
+                        if (not hmac.compare_digest(profile_hash, self.role_profile_hash) or
+                                grant['pid'] != peer['pid'] or grant['uid'] != peer['uid'] or
+                                grant['gid'] != peer['gid'] or grant['start'] != peer['start'] or
+                                not hmac.compare_digest(grant['exe_hash'], peer['exe_hash']) or
+                                _pidfd_dead(grant['pidfd'])):
+                            return self._response(operation, sequence,
+                                bytes(wire.LEASE_BYTES), 13), sequence
+                        if grant['role'] in self._delegated_actors:
+                            return self._response(operation, sequence,
+                                bytes(wire.LEASE_BYTES), 16), sequence
+                        actor_pidfd = os.dup(grant['pidfd'])
+                        role = grant['role']
+                        actor = {**grant, 'pidfd': actor_pidfd,
+                            'lease_id': secrets.token_bytes(wire.LEASE_BYTES),
+                            'last_seen': self.clock(), 'released': False}
+                        del self._delegated_grants[ticket]
+                        os.close(grant['pidfd'])
+                        self._delegated_actors[role] = actor
+                        self._condition.notify_all()
+                        return self._response(operation, sequence, actor['lease_id'], 0,
+                            wire.CLAIM_RESULT.pack(self.worker_profile_hash)), sequence
+                    if not hmac.compare_digest(ticket, self.ticket):
+                        return self._response(operation, sequence,
+                            bytes(wire.LEASE_BYTES), 116), sequence
                 if not self._wait_actor_binding_locked():
                     return self._response(operation, sequence,
                         bytes(wire.LEASE_BYTES), 11), sequence
@@ -386,14 +489,88 @@ class RuntimeServiceSupervisor:
                 actor_pidfd = os.dup(peer['pidfd'])
                 self._actor = {**peer, 'pidfd': actor_pidfd,
                     'lease_id': secrets.token_bytes(wire.LEASE_BYTES),
-                    'last_seen': self.clock(), 'released': False}
+                    'last_seen': self.clock(), 'released': False,
+                    'role': 0}
                 self._claim_consumed = True
                 self._condition.notify_all()
                 return self._response(operation, sequence, self._actor['lease_id'], 0,
                     wire.CLAIM_RESULT.pack(self.worker_profile_hash)), sequence
-            if operation not in (wire.CHECK, wire.RELEASE) or body or not any(lease_id):
+            if operation == wire.DELEGATE_INTENT:
+                if (not self.delegation_enabled or rights or
+                        len(body) != wire.DELEGATE_INTENT_BODY.size or not any(lease_id)):
+                    return None, last_sequence
+                try:
+                    request_nonce, child_role = wire.unpack_delegate_intent(body)
+                except ValueError:
+                    return None, last_sequence
+                if (not any(request_nonce) or request_nonce in self._delegation_request_nonces or
+                        self._delegation_intent is not None):
+                    return self._response(operation, sequence, lease_id, 16), sequence
+                parent = self._delegation_parent_locked(peer, lease_id)
+                expected_role = (wire.ROLE_SLIM_STAGE1 if parent and parent['role'] == 0
+                    else wire.ROLE_SLIM_PRIMARY if parent and
+                    parent['role'] == wire.ROLE_SLIM_STAGE1 else 0)
+                if (parent is None or child_role != expected_role or
+                        child_role in self._delegation_roles_intended):
+                    return self._response(operation, sequence, lease_id, 13), sequence
+                intent_id = secrets.token_bytes(wire.INTENT_BYTES)
+                self._delegation_intent = {'id': intent_id, 'nonce': request_nonce,
+                    'role': child_role, 'parent': self._identity_key(parent),
+                    'parent_lease': lease_id,
+                    'deadline': self.clock() + 5.0}
+                self._delegation_roles_intended.add(child_role)
+                self._delegation_request_nonces.add(request_nonce)
+                return self._response(operation, sequence, lease_id, 0,
+                    wire.pack_intent_result(intent_id)), sequence
+            if operation == wire.DELEGATE_BIND:
+                if (not self.delegation_enabled or len(rights) != 1 or
+                        len(body) != wire.DELEGATE_BIND_BODY.size or not any(lease_id)):
+                    return None, last_sequence
+                try:
+                    intent_id = wire.unpack_delegate_bind(body)
+                    intent = self._delegation_intent
+                    if intent is None or self.clock() >= intent['deadline'] or not hmac.compare_digest(
+                            intent['id'], intent_id):
+                        return self._response(operation, sequence, lease_id, 116), sequence
+                    parent = self._find_delegation_parent_locked(intent['parent'],
+                        intent['parent_lease'])
+                    if parent is None or not self._same_identity(parent, peer):
+                        return self._response(operation, sequence, lease_id, 13), sequence
+                    child_pid = _pidfd_pid(rights[0])
+                    child = {'pid': child_pid, 'uid': os.stat(f'/proc/{child_pid}').st_uid,
+                        'gid': os.stat(f'/proc/{child_pid}').st_gid,
+                        'start': process_start_ticks(child_pid),
+                        'exe_hash': process_executable_hash(child_pid),
+                        'comm': process_comm(child_pid)}
+                    child_stat = Path(f'/proc/{child_pid}/stat').read_text(encoding='ascii')
+                    child_fields = child_stat[child_stat.rfind(')') + 2:].split()
+                    if (len(child_fields) <= 1 or _pidfd_dead(rights[0]) or
+                            int(child_fields[1], 10) != peer['pid'] or
+                            child['uid'] != peer['uid'] or child['gid'] != peer['gid'] or
+                            not hmac.compare_digest(child['exe_hash'], self.app_executable_hash)):
+                        return self._response(operation, sequence, bytes(wire.LEASE_BYTES), 13), sequence
+                    if len(self._delegated_grants) + len(self._delegated_actors) >= 2:
+                        return self._response(operation, sequence, lease_id, 16), sequence
+                    pinned = os.dup(rights[0])
+                    ticket = secrets.token_bytes(wire.TICKET_BYTES)
+                    self._delegated_grants[ticket] = {**child, 'pidfd': pinned,
+                        'ticket': ticket, 'role': intent['role'],
+                        'parent': intent['parent'], 'deadline': self.clock() + 5.0}
+                    self._delegation_intent = None
+                    self._delegation_roles_issued.add(intent['role'])
+                    self._condition.notify_all()
+                    return self._response(operation, sequence, lease_id, 0,
+                        wire.pack_bind_result(ticket, intent['role'])), sequence
+                except (OSError, RuntimeError, ValueError, IndexError):
+                    return self._response(operation, sequence, lease_id, 13), sequence
+            if rights or operation not in (wire.CHECK, wire.RELEASE) or body or not any(lease_id):
                 return None, last_sequence
             actor = self._actor
+            if actor is None or not self._same_identity(actor, peer) or not hmac.compare_digest(
+                    actor['lease_id'], lease_id):
+                actor = next((candidate for candidate in self._delegated_actors.values()
+                    if self._same_identity(candidate, peer) and
+                    hmac.compare_digest(candidate['lease_id'], lease_id)), None)
             if actor is None:
                 released = self._released_actor
                 if (operation == wire.RELEASE and released is not None and
@@ -415,19 +592,49 @@ class RuntimeServiceSupervisor:
                 return self._response(operation, sequence, lease_id, 0), sequence
             self._released_actor = {key: actor[key] for key in
                 ('pid', 'uid', 'gid', 'start', 'exe_hash', 'lease_id')}
-            self._actor = None
+            if actor is self._actor:
+                self._actor = None
+                if self._actor_target is not None:
+                    os.close(self._actor_target['pidfd'])
+                    self._actor_target = None
+                if self._delegation_intent is not None and self._delegation_intent['parent'] == self._identity_key(actor):
+                    self._delegation_intent = None
+            else:
+                self._delegated_actors.pop(actor['role'], None)
             self._claim_consumed = True
             actor['released'] = True
             os.close(actor['pidfd'])
             self._condition.notify_all()
             return self._response(operation, sequence, lease_id, 0), sequence
 
+    @staticmethod
+    def _identity_key(actor):
+        return actor['pid'], actor['uid'], actor['gid'], actor['start'], actor['exe_hash']
+
+    @classmethod
+    def _same_identity(cls, left, right):
+        return cls._identity_key(left) == cls._identity_key(right)
+
+    def _find_delegation_parent_locked(self, identity, lease_id):
+        candidates = ([self._actor] if self._actor is not None else []) + list(
+            self._delegated_actors.values())
+        return next((actor for actor in candidates
+            if self._identity_key(actor) == identity and
+            hmac.compare_digest(actor['lease_id'], lease_id)), None)
+
+    def _delegation_parent_locked(self, peer, lease_id):
+        parent = self._find_delegation_parent_locked(self._identity_key(peer), lease_id)
+        if parent is None or _pidfd_dead(parent['pidfd']):
+            return None
+        return parent
+
     def _revoke_bound_actor(self, peer, reason):
         with self._condition:
             target = self._actor_target
-            if (target is not None and peer['pid'] == target['pid'] and
-                    peer['start'] == target['start'] and
-                    hmac.compare_digest(peer['exe_hash'], target['exe_hash'])):
+            bound = target is not None and self._same_identity(target, peer)
+            bound = bound or any(self._same_identity(actor, peer)
+                for actor in self._delegated_actors.values())
+            if bound:
                 self._revoke_locked(reason)
 
     def _serve_connection(self, connection):
@@ -463,6 +670,7 @@ class RuntimeServiceSupervisor:
                 if not packet and not ancillary and not message_flags:
                     return
                 credentials = []
+                rights = []
                 unexpected = False
                 for level, kind, data in ancillary:
                     if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
@@ -474,9 +682,7 @@ class RuntimeServiceSupervisor:
                         usable = len(data) // 4 * 4
                         if usable != len(data):
                             unexpected = True
-                        for descriptor in struct.unpack('=' + 'i' * (usable // 4), data[:usable]):
-                            os.close(descriptor)
-                        unexpected = True
+                        rights.extend(struct.unpack('=' + 'i' * (usable // 4), data[:usable]))
                     else:
                         unexpected = True
                 if (len(credentials) != 1 or
@@ -496,17 +702,21 @@ class RuntimeServiceSupervisor:
                 if (current['start'] != peer['start'] or
                         not hmac.compare_digest(current['exe_hash'], peer['exe_hash'])):
                     return
-                if message_flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
-                    self._revoke_bound_actor(current, 'actor-malformed-message')
-                    return
-                if unexpected:
-                    self._revoke_bound_actor(current, 'actor-unexpected-ancillary')
-                    return
-                if not packet:
-                    self._revoke_bound_actor(current, 'actor-empty-message')
-                    return
-                response, last_sequence = self._handle(connection, current, packet,
-                    last_sequence)
+                try:
+                    if message_flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+                        self._revoke_bound_actor(current, 'actor-malformed-message')
+                        return
+                    if unexpected:
+                        self._revoke_bound_actor(current, 'actor-unexpected-ancillary')
+                        return
+                    if not packet:
+                        self._revoke_bound_actor(current, 'actor-empty-message')
+                        return
+                    response, last_sequence = self._handle(connection, current, packet,
+                        last_sequence, rights)
+                finally:
+                    for descriptor in rights:
+                        os.close(descriptor)
                 if response is None:
                     self._revoke_bound_actor(current, 'actor-protocol-violation')
                     return
@@ -557,14 +767,19 @@ class RuntimeServiceSupervisor:
     def wait_for_release(self, timeout):
         deadline = self.clock() + timeout
         with self._condition:
-            while self._actor is not None and not self._revoked:
+            def pinned():
+                if not self.delegation_enabled:
+                    return self._actor is not None
+                return (self._actor is not None or bool(self._delegated_actors) or
+                    bool(self._delegated_grants) or self._delegation_intent is not None)
+            while pinned() and not self._revoked:
                 remaining = deadline - self.clock()
                 if remaining <= 0:
                     self._revoke_locked('supervisor-shutdown-timeout')
                     return False
                 self._condition.wait(min(remaining, 0.1))
                 self._reap_locked()
-            return self._actor is None and not self._revoked
+            return not pinned() and not self._revoked
 
     def revoke(self, reason='explicit-supervisor-shutdown'):
         with self._condition:

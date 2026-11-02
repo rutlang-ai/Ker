@@ -111,6 +111,182 @@ os.close(fd)
 channel.close()
 '''
 
+DELEGATION_CHAIN_ACTOR = r"""import array, os, secrets, socket, sys, time
+import runtime_service_wire as w
+env = os.environ
+path = env['KER_RUNTIME_SERVICE_PATH']
+nonce = bytes.fromhex(env['KER_RUNTIME_SERVICE_NONCE'])
+epoch = int(env['KER_RUNTIME_SERVICE_EPOCH'])
+profile = bytes.fromhex(env['KER_RUNTIME_SERVICE_PROFILE'])
+ticket = bytes.fromhex(env['KER_RUNTIME_SERVICE_TICKET'])
+role = w.ROLE_SLIM_STAGE1
+final_claimed = env['KER_TEST_FINAL_CLAIMED']
+final_release = env['KER_TEST_FINAL_RELEASE']
+
+def connect():
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    sock.connect(path)
+    sock.settimeout(3)
+    return sock
+
+def rpc(sock, operation, sequence, lease=b'\0' * w.LEASE_BYTES, body=b'', fd=None):
+    packet = w.pack_header(operation, sequence, epoch, nonce, lease,
+        packet_length=w.HEADER.size + len(body)) + body
+    if fd is None:
+        sent = sock.send(packet)
+    else:
+        sent = sock.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+            array.array('i', [fd]))])
+    assert sent == len(packet)
+    response = sock.recv(w.HEADER.size + 64)
+    op, status, seq, got_epoch, got_nonce, got_lease = w.unpack_header(response)
+    assert (op, seq, got_epoch, got_nonce) == (operation, sequence, epoch, nonce)
+    return status, got_lease, response[w.HEADER.size:]
+
+def create_child(sock, sequence, lease, child_role):
+    status, _, body = rpc(sock, w.DELEGATE_INTENT, sequence, lease, body=
+        w.pack_delegate_intent(secrets.token_bytes(16), child_role))
+    assert status == 0
+    intent = w.unpack_intent_result(body)
+    child_env = dict(env)
+    child_env['KER_TEST_EXPECTED_PARENT_PID'] = str(os.getpid())
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(write_fd)
+        os.dup2(read_fd, 0)
+        if read_fd != 0:
+            os.close(read_fd)
+        os.execve(sys.executable, [sys.executable, '-c', CHILD, CHILD], child_env)
+    os.close(read_fd)
+    child_pidfd = os.pidfd_open(pid, 0)
+    status, _, body = rpc(sock, w.DELEGATE_BIND, sequence + 1, lease,
+        body=w.pack_delegate_bind(intent), fd=child_pidfd)
+    os.close(child_pidfd)
+    assert status == 0
+    grant_ticket, returned_role = w.unpack_bind_result(body)
+    assert returned_role == child_role
+    assert os.write(write_fd, grant_ticket + returned_role.to_bytes(4, 'little')) == 36
+    os.close(write_fd)
+    return pid
+
+CHILD = r'''import array, os, socket, sys, time
+import runtime_service_wire as w
+env = os.environ
+grant = sys.stdin.buffer.read(w.DELEGATE_BIND_RESULT.size)
+assert len(grant) == w.DELEGATE_BIND_RESULT.size
+ticket, role = w.unpack_bind_result(grant)
+nonce = bytes.fromhex(env['KER_RUNTIME_SERVICE_NONCE'])
+epoch = int(env['KER_RUNTIME_SERVICE_EPOCH'])
+profile = bytes.fromhex(env['KER_RUNTIME_SERVICE_PROFILE'])
+
+def connect():
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    sock.connect(env['KER_RUNTIME_SERVICE_PATH'])
+    sock.settimeout(3)
+    return sock
+
+def rpc(sock, operation, sequence, lease=b'\0' * w.LEASE_BYTES, body=b'', fd=None):
+    packet = w.pack_header(operation, sequence, epoch, nonce, lease,
+        packet_length=w.HEADER.size + len(body)) + body
+    if fd is None:
+        sent = sock.send(packet)
+    else:
+        sent = sock.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+            array.array('i', [fd]))])
+    assert sent == len(packet)
+    response = sock.recv(w.HEADER.size + 64)
+    op, status, seq, got_epoch, got_nonce, got_lease = w.unpack_header(response)
+    assert (op, seq, got_epoch, got_nonce) == (operation, sequence, epoch, nonce)
+    return status, got_lease, response[w.HEADER.size:]
+
+def create_child(sock, sequence, lease, child_role):
+    status, _, body = rpc(sock, w.DELEGATE_INTENT, sequence, lease, body=
+        w.pack_delegate_intent(os.urandom(16), child_role))
+    assert status == 0
+    intent = w.unpack_intent_result(body)
+    child_env = dict(env)
+    child_env['KER_TEST_EXPECTED_PARENT_PID'] = str(os.getpid())
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(write_fd)
+        os.dup2(read_fd, 0)
+        if read_fd != 0:
+            os.close(read_fd)
+        os.execve(sys.executable,
+            [sys.executable, '-c', sys.argv[1], sys.argv[1]], child_env)
+    os.close(read_fd)
+    child_pidfd = os.pidfd_open(pid, 0)
+    status, _, body = rpc(sock, w.DELEGATE_BIND, sequence + 1, lease,
+        body=w.pack_delegate_bind(intent), fd=child_pidfd)
+    os.close(child_pidfd)
+    assert status == 0
+    grant_ticket, returned_role = w.unpack_bind_result(body)
+    assert returned_role == child_role
+    assert os.write(write_fd, grant_ticket + returned_role.to_bytes(4, 'little')) == 36
+    os.close(write_fd)
+    return pid
+
+sock = connect()
+if role == w.ROLE_SLIM_STAGE1:
+    status, lease, body = rpc(sock, w.CLAIM, 1,
+        body=w.CLAIM_BODY.pack(ticket, profile))
+    assert status == 0 and len(body) == w.CLAIM_RESULT.size
+    # The stage1 parent remains alive until BIND completes, then exits. The
+    # final child waits for this PID to change before attempting CLAIM.
+    child_pid = create_child(sock, 2, lease, w.ROLE_SLIM_PRIMARY)
+    status, _, _ = rpc(sock, w.DELEGATE_INTENT, 4, lease, body=
+        w.pack_delegate_intent(os.urandom(16), w.ROLE_SLIM_PRIMARY))
+    assert status == 13, 'stage1 replacement grant was unexpectedly accepted'
+    os.close(sock.fileno())
+    os._exit(0)
+assert role == w.ROLE_SLIM_PRIMARY
+old_parent = int(env['KER_TEST_EXPECTED_PARENT_PID'])
+deadline = time.monotonic() + 5
+while os.getppid() == old_parent and time.monotonic() < deadline:
+    time.sleep(0.002)
+assert os.getppid() != old_parent, 'stage1 parent did not exit before final CLAIM'
+defer_claim = env.get('KER_TEST_DEFER_FINAL_CLAIM')
+if defer_claim:
+    deadline = time.monotonic() + 5
+    while not os.path.exists(env['KER_TEST_ALLOW_FINAL_CLAIM']) and time.monotonic() < deadline:
+        time.sleep(0.002)
+    assert os.path.exists(env['KER_TEST_ALLOW_FINAL_CLAIM'])
+status, lease, body = rpc(sock, w.CLAIM, 1,
+    body=w.CLAIM_BODY.pack(ticket, profile))
+if status != 0:
+    status_marker = env.get('KER_TEST_FINAL_CLAIM_STATUS')
+    if status_marker:
+        open(status_marker, 'w').write(str(status))
+        os._exit(0)
+assert status == 0 and len(body) == w.CLAIM_RESULT.size
+status, _, _ = rpc(sock, w.CHECK, 2, lease)
+assert status == 0
+open(env['KER_TEST_FINAL_CLAIMED'], 'w').close()
+if env.get('KER_TEST_FINAL_EXIT_AFTER_CLAIM'):
+    os._exit(0)
+deadline = time.monotonic() + 10
+while not os.path.exists(env['KER_TEST_FINAL_RELEASE']) and time.monotonic() < deadline:
+    time.sleep(0.005)
+assert os.path.exists(env['KER_TEST_FINAL_RELEASE'])
+status, _, _ = rpc(sock, w.RELEASE, 3, lease)
+assert status == 0
+sock.close()
+'''
+
+master = connect()
+status, master_lease, _ = rpc(master, w.CLAIM, 1,
+    body=w.CLAIM_BODY.pack(ticket, profile))
+assert status == 0
+create_child(master, 2, master_lease, w.ROLE_SLIM_STAGE1)
+status, _, _ = rpc(master, w.DELEGATE_INTENT, 4, master_lease, body=
+    w.pack_delegate_intent(secrets.token_bytes(16), w.ROLE_SLIM_STAGE1))
+assert status == 13, 'master replacement stage1 grant was unexpectedly accepted'
+master.close()
+os._exit(0)
+"""
+
 
 class RuntimeServiceActorGrantTest(unittest.TestCase):
     def test_direct_child_only_and_reconnect_release(self):
@@ -197,6 +373,8 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                 if actor is not None and actor.poll() is None:
                     actor.kill()
                     actor.wait()
+                if actor is not None and actor.stderr is not None:
+                    actor.stderr.close()
                 if service is not None:
                     service.close()
                 if worker.poll() is None:
@@ -248,6 +426,259 @@ class RuntimeServiceDelegationWireTest(unittest.TestCase):
             wire.unpack_delegate_bind(bytes(17))
         with self.assertRaises(ValueError):
             wire.unpack_bind_result(bytes(36 - 4) + b'\x63\x00\x00\x00')
+
+
+class RuntimeServiceDelegationChainTest(unittest.TestCase):
+    def test_two_stage_pidfd_grants_survive_parent_exit_and_pin_worker(self):
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-delegation-') as directory:
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            service = None
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                actor_path = Path(os.environ.get('KER_TEST_C33_ACTOR', sys.executable)).resolve()
+                app_hash = runtime_service.sha256_file(actor_path)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    Path(directory) / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-delegation-test-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                claimed = Path(directory) / 'final-claimed'
+                release = Path(directory) / 'final-release'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['PYTHONPATH'] = str(TOOLS)
+                env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
+                env['KER_TEST_FINAL_RELEASE'] = str(release)
+                error_log = Path(directory) / 'delegation-stderr'
+                error_stream = error_log.open('w')
+                actor_command = ([str(actor_path)] if 'KER_TEST_C33_ACTOR' in os.environ else
+                    [sys.executable, '-c', DELEGATION_CHAIN_ACTOR])
+                actor = subprocess.Popen(actor_command,
+                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=error_stream)
+                error_stream.close()
+                actor_pidfd = os.pidfd_open(actor.pid, 0)
+                service.bind_actor(actor, actor_pidfd)
+                actor.wait(timeout=10)
+                self.assertEqual(actor.returncode, 0, error_log.read_text())
+
+                deadline = time.monotonic() + 8
+                while not claimed.exists() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(claimed.exists(),
+                    'reparented final child did not claim its bound grant: ' +
+                    error_log.read_text())
+                self.assertFalse(select.select([control_read], [], [], 0)[0],
+                    'master exit released the worker before final-role RELEASE')
+                self.assertEqual(service.active_count, 1)
+                release.touch()
+                deadline = time.monotonic() + 8
+                while service.active_count and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertEqual(service.active_count, 0)
+                self.assertTrue(service.wait_for_release(1.0))
+                self.assertTrue(service.prepare_worker_shutdown(0.1))
+                self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if actor is not None and actor.stderr is not None:
+                    actor.stderr.close()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
+    def test_unclaimed_bound_grant_expires_and_child_ticket_stays_stale(self):
+        class ControlledClock:
+            value = 100.0
+
+            def __call__(self):
+                return self.value
+
+        clock = ControlledClock()
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-expiry-') as directory:
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            service = None
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                app_hash = runtime_service.sha256_file(sys.executable)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    Path(directory) / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-delegation-expiry-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4, clock=clock,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                claimed = Path(directory) / 'final-claimed'
+                release = Path(directory) / 'final-release'
+                allow_claim = Path(directory) / 'allow-final-claim'
+                claim_status = Path(directory) / 'final-claim-status'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['PYTHONPATH'] = str(TOOLS)
+                env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
+                env['KER_TEST_FINAL_RELEASE'] = str(release)
+                env['KER_TEST_DEFER_FINAL_CLAIM'] = '1'
+                env['KER_TEST_ALLOW_FINAL_CLAIM'] = str(allow_claim)
+                env['KER_TEST_FINAL_CLAIM_STATUS'] = str(claim_status)
+                error_log = Path(directory) / 'delegation-stderr'
+                error_stream = error_log.open('w')
+                actor = subprocess.Popen([sys.executable, '-c', DELEGATION_CHAIN_ACTOR],
+                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=error_stream)
+                error_stream.close()
+                actor_pidfd = os.pidfd_open(actor.pid, 0)
+                service.bind_actor(actor, actor_pidfd)
+                actor.wait(timeout=10)
+                self.assertEqual(actor.returncode, 0)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    with service._condition:
+                        service._reap_locked()
+                        pending_roles = {grant['role'] for grant in
+                            service._delegated_grants.values()}
+                        stage_actors = len(service._delegated_actors)
+                    if (wire.ROLE_SLIM_PRIMARY in pending_roles and
+                            stage_actors == 0):
+                        break
+                    time.sleep(0.005)
+                self.assertEqual((pending_roles, stage_actors),
+                    ({wire.ROLE_SLIM_PRIMARY}, 0),
+                    'expected only the final unclaimed child grant to pin the worker')
+                self.assertFalse(select.select([control_read], [], [], 0)[0],
+                    'master and stage1 exit released worker while final grant remained live')
+                clock.value += 6.0
+                with service._condition:
+                    service._reap_locked()
+                self.assertEqual(len(service._delegated_grants), 0,
+                    'expired bound grant retained its pidfd/resource pin')
+                allow_claim.touch()
+                deadline = time.monotonic() + 5
+                while not claim_status.exists() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(claim_status.exists(), 'expired child did not receive a terminal claim result: ' +
+                    error_log.read_text())
+                self.assertEqual(claim_status.read_text(), '116',
+                    'expired child ticket was accepted or returned an unrelated status')
+                self.assertTrue(service.wait_for_release(1.0))
+                self.assertFalse(select.select([control_read], [], [], 0)[0],
+                    'server dropped worker control before explicit shutdown')
+                self.assertTrue(service.prepare_worker_shutdown(0.1))
+                self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if actor is not None and actor.stderr is not None:
+                    actor.stderr.close()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
+    def test_final_actor_death_releases_role_then_explicit_shutdown_closes_worker(self):
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-death-') as directory:
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            service = None
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                app_hash = runtime_service.sha256_file(sys.executable)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    Path(directory) / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-delegation-death-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                claimed = Path(directory) / 'final-claimed'
+                release = Path(directory) / 'final-release'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['PYTHONPATH'] = str(TOOLS)
+                env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
+                env['KER_TEST_FINAL_RELEASE'] = str(release)
+                env['KER_TEST_FINAL_EXIT_AFTER_CLAIM'] = '1'
+                actor = subprocess.Popen([sys.executable, '-c', DELEGATION_CHAIN_ACTOR],
+                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, text=True)
+                actor_pidfd = os.pidfd_open(actor.pid, 0)
+                service.bind_actor(actor, actor_pidfd)
+                actor.wait(timeout=10)
+                self.assertEqual(actor.returncode, 0,
+                    actor.stderr.read() if actor.stderr is not None else '')
+                deadline = time.monotonic() + 8
+                while (not claimed.exists() or service.active_count) and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(claimed.exists(), 'final actor never claimed before its exit')
+                self.assertEqual(service.active_count, 0,
+                    'confirmed final pidfd death retained a role lease')
+                self.assertFalse(select.select([control_read], [], [], 0)[0],
+                    'role death unexpectedly bypassed explicit worker shutdown')
+                self.assertTrue(service.wait_for_release(1.0))
+                self.assertTrue(service.prepare_worker_shutdown(0.1))
+                self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if actor is not None and actor.stderr is not None:
+                    actor.stderr.close()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
 
 
 class RuntimeServiceAncillaryRightsTest(unittest.TestCase):
