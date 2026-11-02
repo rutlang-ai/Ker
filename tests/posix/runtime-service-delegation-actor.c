@@ -287,7 +287,22 @@ static int delegated_main(uint32_t expected_role)
         marker("KER_TEST_FINAL_CLAIMED", pid_text)) fail("final claim marker");
     if (wait_for_release()) fail("final release wait");
     if (ker_runtime_service_check(&client)) fail("final CHECK");
-    if (ker_runtime_service_release(&client)) fail("final RELEASE");
+    if (getenv("KER_TEST_LOSE_FINAL_RELEASE_REPLY")) {
+        if (!ker_runtime_service_release(&client)) {
+            errno = EIO;
+            fail("lost final RELEASE response was not observed");
+        }
+        int first_error = errno;
+        if (first_error != EPROTO && first_error != ECONNRESET && first_error != EPIPE) {
+            errno = first_error;
+            fail("lost final RELEASE response error");
+        }
+        if (!ker_runtime_service_reconnect(&client) || errno != ESTALE)
+            fail("released lease CHECK after reconnect");
+        if (ker_runtime_service_release(&client)) fail("idempotent final RELEASE retry");
+    } else if (ker_runtime_service_release(&client)) {
+        fail("final RELEASE");
+    }
     ker_runtime_service_client_close(&client);
     if (getenv("KER_TEST_FINAL_RELEASED") &&
         marker("KER_TEST_FINAL_RELEASED", pid_text)) fail("final release marker");

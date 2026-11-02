@@ -40,4 +40,12 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_rx_decision_dpdk_plugin_dir}")
     set_tests_properties(native-runtime-service-delegation-worker-lifetime
         PROPERTIES TIMEOUT 90 LABELS "runtime-service;delegation;dpdk;worker-lifetime")
+    add_test(NAME native-runtime-service-delegation-lost-release-reply
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/test_runtime_service.py"
+            RuntimeServiceLostReleaseReplyTest.test_real_c_actor_retries_lost_final_release_reply_idempotently)
+    set_tests_properties(native-runtime-service-delegation-lost-release-reply
+        PROPERTIES TIMEOUT 30
+            ENVIRONMENT "KER_TEST_C33_ACTOR=$<TARGET_FILE:ker-runtime-service-delegation-actor>"
+            LABELS "runtime-service;delegation;release;response-loss")
 endif()

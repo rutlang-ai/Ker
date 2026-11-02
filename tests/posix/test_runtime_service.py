@@ -1,5 +1,6 @@
 """Exercise the private ker-run runtime-service actor grant on real processes."""
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -432,6 +433,34 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                 self.assertEqual(service.active_count, 0)
                 self.assertTrue(service.wait_for_release(0.1))
 
+                # A consumed direct ticket must be rejected before waiting for
+                # a now-absent Popen binding. This models a client retry after
+                # RELEASE or confirmed actor death, with the service still up.
+                binding_wait_calls = []
+                original_binding_wait = service._wait_actor_binding_locked
+                def tracked_binding_wait():
+                    binding_wait_calls.append(True)
+                    return original_binding_wait()
+                service._wait_actor_binding_locked = tracked_binding_wait
+                stale = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                stale.settimeout(2)
+                stale.connect(service.path)
+                nonce = bytes.fromhex(service.env['KER_RUNTIME_SERVICE_NONCE'])
+                epoch = int(service.env['KER_RUNTIME_SERVICE_EPOCH'])
+                ticket = bytes.fromhex(service.env['KER_RUNTIME_SERVICE_TICKET'])
+                role_hash = bytes.fromhex(service.env['KER_RUNTIME_SERVICE_PROFILE'])
+                claim = wire.pack_header(wire.CLAIM, 1, epoch, nonce,
+                    packet_length=wire.HEADER.size + wire.CLAIM_BODY.size) + \
+                    wire.CLAIM_BODY.pack(ticket, role_hash)
+                stale.sendall(claim)
+                response = stale.recv(wire.HEADER.size + wire.CLAIM_RESULT.size)
+                self.assertEqual(wire.unpack_header(response)[1], 116,
+                    'consumed direct CLAIM did not return ESTALE')
+                self.assertFalse(binding_wait_calls,
+                    'consumed direct CLAIM waited for an absent actor binding')
+                stale.close()
+                service._wait_actor_binding_locked = original_binding_wait
+
                 def wait_client_count(count):
                     deadline = time.monotonic() + 2
                     while len(service._connection_threads) != count and time.monotonic() < deadline:
@@ -465,6 +494,126 @@ class RuntimeServiceActorGrantTest(unittest.TestCase):
                     actor.wait()
                 if actor is not None and actor.stderr is not None:
                     actor.stderr.close()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
+
+@unittest.skipUnless(os.environ.get('KER_TEST_C33_ACTOR'),
+    'requires the compiled C runtime-service delegation actor')
+class RuntimeServiceLostReleaseReplyTest(unittest.TestCase):
+    def test_real_c_actor_retries_lost_final_release_reply_idempotently(self):
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-lost-release-') as directory:
+            root = Path(directory)
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            service = None
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                actor_path = Path(os.environ['KER_TEST_C33_ACTOR']).resolve()
+                app_hash = runtime_service.sha256_file(actor_path)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    root / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-lost-release-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                claimed = root / 'final-claimed'
+                release = root / 'final-release'
+                released = root / 'final-released'
+                error_log = root / 'delegation-stderr'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['KER_TEST_C33_ACTOR'] = str(actor_path)
+                env['KER_TEST_FINAL_CLAIMED'] = str(claimed)
+                env['KER_TEST_FINAL_RELEASE'] = str(release)
+                env['KER_TEST_FINAL_RELEASED'] = str(released)
+                env['KER_TEST_LOSE_FINAL_RELEASE_REPLY'] = '1'
+
+                response_lost = threading.Event()
+                original_handle = service._handle
+                def handle_and_drop_final_release(connection, peer, packet,
+                        last_sequence, rights=()):
+                    try:
+                        operation, _, _, _, _, lease_id = wire.unpack_header(packet)
+                    except ValueError:
+                        return original_handle(connection, peer, packet,
+                            last_sequence, rights)
+                    final_actor = None
+                    if operation == wire.RELEASE:
+                        with service._condition:
+                            final_actor = service._delegated_actors.get(
+                                wire.ROLE_SLIM_PRIMARY)
+                            final_actor = (final_actor is not None and
+                                service._same_identity(final_actor, peer) and
+                                hmac.compare_digest(final_actor['lease_id'], lease_id))
+                    response, sequence = original_handle(connection, peer,
+                        packet, last_sequence, rights)
+                    if final_actor and response and wire.unpack_header(response)[1] == 0:
+                        # The server commits RELEASE/tombstone, then the test
+                        # transport drops that exact response before sendall.
+                        connection.shutdown(socket.SHUT_RDWR)
+                        response_lost.set()
+                    return response, sequence
+                service._handle = handle_and_drop_final_release
+
+                with error_log.open('w') as error_stream:
+                    actor = subprocess.Popen([str(actor_path)], env=env,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=error_stream)
+                actor_pidfd = os.pidfd_open(actor.pid, 0)
+                service.bind_actor(actor, actor_pidfd)
+                actor.wait(timeout=10)
+                self.assertEqual(actor.returncode, 0, error_log.read_text())
+                deadline = time.monotonic() + 8
+                while not claimed.exists() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(claimed.exists(),
+                    'C actor did not claim the final role: ' + error_log.read_text())
+                self.assertEqual(service.active_count, 1,
+                    'direct/stage actor exit released final role before RELEASE')
+                self.assertFalse(select.select([control_read], [], [], 0)[0],
+                    'worker resource pin disappeared before final RELEASE')
+                release.touch()
+                deadline = time.monotonic() + 8
+                while not released.exists() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(released.exists(),
+                    'C actor did not complete idempotent RELEASE retry: ' +
+                    error_log.read_text())
+                self.assertTrue(response_lost.is_set(),
+                    'test did not drop the committed final RELEASE response')
+                deadline = time.monotonic() + 5
+                while service.active_count and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertEqual(service.active_count, 0,
+                    'exact duplicate RELEASE failed to settle the final lease')
+                self.assertFalse(select.select([control_read], [], [], 0)[0],
+                    'worker control channel closed before explicit shutdown')
+                self.assertTrue(service.wait_for_release(1.0))
+                self.assertTrue(service.prepare_worker_shutdown(0.1))
+                self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
                 if service is not None:
                     service.close()
                 if worker.poll() is None:
