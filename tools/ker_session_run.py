@@ -2134,6 +2134,12 @@ def _run_session_impl(args, api):
                         handoff_fd = close_completed_handoff_trigger(
                             handoff_mode, handoff_seen, handoff_udp_sequence, handoff_fd, close,
                             generation_forward_complete)
+                        print('KER_SESSION_GENERATION_FORWARD_COMPLETE ' + json.dumps(dict(
+                            complete=generation_forward_complete,
+                            forwarded_frames=generation_forwarded_frames,
+                            handoff_seen=handoff_seen,
+                            tcp_accepted=bool(metrics.get('handoff_tcp_accepted'))),
+                            sort_keys=True), flush=True)
                         continue
                     if action == 'udp':
                         trigger_handoff_udp()

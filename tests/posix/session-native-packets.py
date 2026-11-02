@@ -737,6 +737,16 @@ def record(process, prefix, timeout=25, stderr_path=None):
     return parsed
 
 
+def wait_generation_forward_complete(process, timeout=10):
+    """Wait for the launcher receipt emitted only after it consumes Z."""
+    value = record(process, 'KER_SESSION_GENERATION_FORWARD_COMPLETE', timeout=timeout)
+    if (not isinstance(value, dict) or value.get('complete') is not True or
+            value.get('handoff_seen') is not True or value.get('tcp_accepted') is not True or
+            type(value.get('forwarded_frames')) is not int or value['forwarded_frames'] < 4):
+        raise RuntimeError('launcher completion receipt does not prove the consumed TCP handoff')
+    return value
+
+
 def run_live_handoff_profile(args, api, plugin_paths, mode='positive'):
     evidence = dict(mode=mode, resident_markers=[], snapshots=[], actors={})
     with _frame_full_traceback_scope(mode == 'frame-full',
@@ -1464,6 +1474,9 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 forwarding_complete_requested.set()
                 require(forwarding_complete_sent.wait(5),
                     'TAP proxy did not serialize completion after final ACK acknowledgement')
+                completion = wait_generation_forward_complete(runner)
+                require(completion['forwarded_frames'] == forwarding_state['forwarded'],
+                    'launcher completion receipt did not correlate to every acknowledged old-stream frame')
                 print('KER_SESSION_GENERATION_FORWARD_TCP_PASS ' + json.dumps(dict(
                     old_listener_accepted_before_handoff=True,producer_generation=1,target_generation=0,
                     forwarded_old_tuple_frames=forwarding_state['forwarded'],

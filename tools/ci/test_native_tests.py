@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -449,6 +450,65 @@ class NativeTestSelectorTests(unittest.TestCase):
             log.write_text("SKIP: huge pages unavailable\n" + "\n".join(lines), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "cannot be qualified by a skipped runtime"):
                 native_tests.verify_session_profiles(log, source)
+
+    def test_generation_forward_fixture_waits_for_launcher_consumption_receipt(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
+        spec = importlib.util.spec_from_file_location("ker_session_native_packets_ack", source)
+        self.assertIsNotNone(spec)
+        fixture = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, str(source.parent))
+        try:
+            spec.loader.exec_module(fixture)
+        finally:
+            sys.path.pop(0)
+        child_code = (
+            "import os, sys\n"
+            "print('READY {\"waiting\":true}', flush=True)\n"
+            "if os.read(0, 1) != b'Z': raise SystemExit(2)\n"
+            "print('Z_QUEUED {\"consumed\":false}', flush=True)\n"
+            "if os.read(0, 1) != b'P': raise SystemExit(3)\n"
+            "print('KER_SESSION_GENERATION_FORWARD_COMPLETE "
+            "{\"complete\":true,\"forwarded_frames\":4,\"handoff_seen\":true,"
+            "\"tcp_accepted\":true}', flush=True)\n"
+        )
+        child = subprocess.Popen([sys.executable, "-c", child_code], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        started = threading.Event()
+        completed = threading.Event()
+        result = {}
+        try:
+            self.assertEqual(fixture.record(child, "READY"), {"waiting": True})
+            child.stdin.write(b"Z")
+            child.stdin.flush()
+            self.assertEqual(fixture.record(child, "Z_QUEUED"), {"consumed": False})
+
+            def wait_for_receipt():
+                started.set()
+                try:
+                    result["value"] = fixture.wait_generation_forward_complete(child, timeout=3)
+                except BaseException as error:
+                    result["error"] = error
+                finally:
+                    completed.set()
+
+            waiter = threading.Thread(target=wait_for_receipt)
+            waiter.start()
+            self.assertTrue(started.wait(1))
+            self.assertFalse(completed.is_set(), "fixture treated the queued Z write as launcher completion")
+            child.stdin.write(b"P")
+            child.stdin.flush()
+            self.assertTrue(completed.wait(3), "fixture did not receive the launcher's completion receipt")
+            waiter.join(timeout=1)
+            self.assertNotIn("error", result)
+            self.assertEqual(result["value"]["forwarded_frames"], 4)
+            self.assertEqual(child.wait(timeout=3), 0)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=3)
+            child.stdin.close()
+            child.stdout.close()
+            child.stderr.close()
 
     def test_legacy_fixed_profile_markers_match_checked_in_fixture_literals(self):
         source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
