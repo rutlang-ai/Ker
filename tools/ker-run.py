@@ -5,6 +5,7 @@ import array
 import concurrent.futures
 import contextlib
 import configparser
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -32,6 +33,13 @@ if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
     raise ImportError(f'cannot load private RX decision codec: {_RX_DECISION_WIRE_PATH}')
 rx_decision_wire = importlib.util.module_from_spec(_RX_DECISION_WIRE_SPEC)
 _RX_DECISION_WIRE_SPEC.loader.exec_module(rx_decision_wire)
+
+_RUNTIME_SERVICE_SPEC = importlib.util.spec_from_file_location(
+    '_ker_runtime_service', Path(__file__).resolve().with_name('runtime_service.py'))
+if _RUNTIME_SERVICE_SPEC is None or _RUNTIME_SERVICE_SPEC.loader is None:
+    raise ImportError(f'cannot load runtime service beside {__file__}')
+runtime_service = importlib.util.module_from_spec(_RUNTIME_SERVICE_SPEC)
+_RUNTIME_SERVICE_SPEC.loader.exec_module(runtime_service)
 
 
 class Interrupted(Exception):
@@ -601,6 +609,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--shutdown-timeout-ms', type=int)
     parser.add_argument('--stats', type=Path, help='write Ethernet I/O counters at shutdown')
     parser.add_argument('--rx-decision', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--runtime-service', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -619,6 +628,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
         sysctls[key] = value
     values.update(vars(supplied))
     values.setdefault('rx_decision', False)
+    values.setdefault('runtime_service', False)
     values['sysctls'] = sysctls
     args = argparse.Namespace(**values)
     missing = [name for name in ('address', 'port', 'eal') if getattr(args, name) is None]
@@ -914,6 +924,8 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
             networks6.extend(interface_networks6)
     if args.rx_decision and args.interfaces:
         parser.error('--rx-decision currently supports only the primary I/O worker')
+    if args.runtime_service and args.interfaces:
+        parser.error('--runtime-service currently supports only the primary I/O worker')
     # The CLI must finish all pure validation, including CLI overrides and
     # auxiliary address/queue/MTU ownership, before executing the worker query.
     # Standalone reader callers retain their selected-build validation above.
@@ -1245,6 +1257,9 @@ def main():
         return 125
     decision_app = decision_io = None
     supervisor_pidfd = worker_pidfd = app_pidfd = -1
+    runtime_actor_pidfd = -1
+    runtime_service_server = None
+    runtime_service_directory = None
     decision_nonce = None
     decision_epoch = 0
     supervisor_identity = None
@@ -1344,6 +1359,23 @@ def main():
         if args.rx_decision:
             worker_pidfd = os.pidfd_open(worker.pid, 0)
             worker_identity = rx_decision_identity(worker.pid, worker_pidfd)
+        if args.runtime_service:
+            if worker_pidfd < 0:
+                worker_pidfd = os.pidfd_open(worker.pid, 0)
+            app_executable = Path(args.command[0]).resolve(strict=True)
+            if not app_executable.is_file() or not os.access(app_executable, os.X_OK):
+                raise RuntimeError('runtime-service caller must be an executable file')
+            app_executable_hash = runtime_service.sha256_file(app_executable)
+            runtime_service_directory = tempfile.mkdtemp(prefix='ker-runtime-service-')
+            os.chmod(runtime_service_directory, 0o700)
+            app_profile_hash = hashlib.sha256(
+                b'ker-runtime-service/slim-primary/v1\0' + app_executable_hash).digest()
+            runtime_service_server = runtime_service.RuntimeServiceSupervisor(
+                Path(runtime_service_directory) / 'service.sock', worker,
+                worker_pidfd, runtime_service.process_start_ticks(worker.pid),
+                runtime_service.sha256_file(worker_path), info,
+                app_executable_hash, app_profile_hash, control_write)
+            runtime_service_server.start()
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
@@ -1357,6 +1389,8 @@ def main():
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
         if args.rx_decision:
             env['KER_RX_DECISION_FD'] = str(decision_app.fileno())
+        if runtime_service_server is not None:
+            env.update(runtime_service_server.env)
         if additional:
             env['KER_PACKET_INTERFACES'] = ';'.join(extra.native_settings() for extra in additional)
         env.pop('KER_NATIVE_VLANS', None)
@@ -1397,6 +1431,9 @@ def main():
             app_pass_fds.append(decision_app.fileno())
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
             pass_fds=tuple(app_pass_fds))
+        if runtime_service_server is not None:
+            runtime_actor_pidfd = os.pidfd_open(app.pid, 0)
+            runtime_service_server.bind_actor(app, runtime_actor_pidfd)
         if args.rx_decision:
             app_pidfd = os.pidfd_open(app.pid, 0)
             app_identity = rx_decision_identity(app.pid, app_pidfd)
@@ -1478,6 +1515,12 @@ def main():
                         startup_status += pending
                     if b'KER_NATIVE_DONE\n' not in startup_status and b'KER_NATIVE_INCOMPLETE\n' not in startup_status:
                         raise RuntimeError('run requested EAL teardown before native kernel teardown')
+                    lease_release_ok = True
+                    if runtime_service_server is not None:
+                        lease_release_ok = runtime_service_server.wait_for_release(1.0)
+                        if not lease_release_ok:
+                            print('ker-run: runtime-service lease was not released before worker shutdown',
+                                file=sys.stderr)
                     os.close(control_write)
                     control_write = -1
                     for extra in additional:
@@ -1486,7 +1529,7 @@ def main():
                     operations.extend(extra.finish for extra in additional)
                     reaped = finish_concurrently(operations)
                     worker_finished = True
-                    failed = True
+                    failed = not lease_release_ok
                     if not isinstance(reaped[0], Exception):
                         stats, failed = reaped[0]
                     for result in reaped[1:]:
