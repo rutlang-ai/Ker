@@ -26,7 +26,8 @@ static void *pending_argument;
 static int pending_error;
 static int control_fd = -1;
 #ifdef KER_C31_RX_DECISION_TESTING
-static int shutdown_barrier_fd = -1;
+static int shutdown_barrier_ready_fd = -1;
+static int shutdown_barrier_release_fd = -1;
 #endif
 
 static int rx_decision_drain_progress(void *context)
@@ -52,18 +53,27 @@ void ker_run_control_close(void)
 }
 
 #ifdef KER_C31_RX_DECISION_TESTING
-int ker_posix_run_test_set_shutdown_barrier(int fd)
+int ker_posix_run_test_set_shutdown_barrier(int ready_fd, int release_fd)
 {
-    if (fd < 0) return -EINVAL;
-    int retained = (int)syscall(SYS_fcntl, fd, F_DUPFD_CLOEXEC, 0);
-    if (retained < 0) return -errno;
+    if (ready_fd < 0 || release_fd < 0 || ready_fd == release_fd) return -EINVAL;
+    int retained_ready = (int)syscall(SYS_fcntl, ready_fd, F_DUPFD_CLOEXEC, 0);
+    if (retained_ready < 0) return -errno;
+    int retained_release = (int)syscall(SYS_fcntl, release_fd, F_DUPFD_CLOEXEC, 0);
+    if (retained_release < 0) {
+        int error = errno;
+        syscall(SYS_close, retained_ready);
+        return -error;
+    }
     pthread_mutex_lock(&lock);
-    if (running || cleanup_pending || shutdown_barrier_fd >= 0) {
+    if (running || cleanup_pending || shutdown_barrier_ready_fd >= 0 ||
+        shutdown_barrier_release_fd >= 0) {
         pthread_mutex_unlock(&lock);
-        syscall(SYS_close, retained);
+        syscall(SYS_close, retained_ready);
+        syscall(SYS_close, retained_release);
         return -EBUSY;
     }
-    shutdown_barrier_fd = retained;
+    shutdown_barrier_ready_fd = retained_ready;
+    shutdown_barrier_release_fd = retained_release;
     pthread_mutex_unlock(&lock);
     return 0;
 }
@@ -71,14 +81,28 @@ int ker_posix_run_test_set_shutdown_barrier(int fd)
 static int wait_test_shutdown_barrier(void)
 {
     pthread_mutex_lock(&lock);
-    int fd = shutdown_barrier_fd;
-    shutdown_barrier_fd = -1;
+    int ready_fd = shutdown_barrier_ready_fd;
+    int release_fd = shutdown_barrier_release_fd;
+    shutdown_barrier_ready_fd = -1;
+    shutdown_barrier_release_fd = -1;
     pthread_mutex_unlock(&lock);
-    if (fd < 0) return 0;
+    if (ready_fd < 0 || release_fd < 0) {
+        if (ready_fd >= 0) syscall(SYS_close, ready_fd);
+        if (release_fd >= 0) syscall(SYS_close, release_fd);
+        return 0;
+    }
+    const unsigned char prepared = 0x5a;
+    long notified = syscall(SYS_write, ready_fd, &prepared, sizeof(prepared));
+    syscall(SYS_close, ready_fd);
+    if (notified != 1) {
+        int error = notified < 0 ? errno : EIO;
+        syscall(SYS_close, release_fd);
+        return -error;
+    }
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now)) {
         int error = errno;
-        syscall(SYS_close, fd);
+        syscall(SYS_close, release_fd);
         return -error;
     }
     int64_t deadline = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000 + 5000;
@@ -87,17 +111,17 @@ static int wait_test_shutdown_barrier(void)
         if (clock_gettime(CLOCK_MONOTONIC, &now)) { result = -errno; break; }
         int64_t remaining = deadline - ((int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000);
         if (remaining <= 0) break;
-        struct pollfd event = {.fd = fd, .events = POLLIN};
+        struct pollfd event = {.fd = release_fd, .events = POLLIN};
         int ready = (int)syscall(SYS_poll, &event, 1, (int)remaining);
         if (ready < 0 && errno == EINTR) continue;
         if (ready < 0) { result = -errno; break; }
         if (!ready) break;
         unsigned char release;
-        long count = syscall(SYS_read, fd, &release, sizeof(release));
+        long count = syscall(SYS_read, release_fd, &release, sizeof(release));
         result = count == 1 && release == 0xa5 ? 0 : -EPROTO;
         break;
     }
-    syscall(SYS_close, fd);
+    syscall(SYS_close, release_fd);
     return result;
 }
 #endif
@@ -190,10 +214,6 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
         }
     }
     pthread_mutex_unlock(&lock);
-#ifdef KER_C31_RX_DECISION_TESTING
-    int barrier = wait_test_shutdown_barrier();
-    if (barrier && !run_error) run_error = barrier;
-#endif
     int ingress = ker_posix_ff_ingress_controller_prepare_runtime_shutdown();
     if (ingress) {
         pthread_mutex_lock(&lock);
@@ -221,6 +241,10 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
         errno = EBUSY;
         return -1;
     }
+#ifdef KER_C31_RX_DECISION_TESTING
+    int barrier = wait_test_shutdown_barrier();
+    if (barrier && !run_error) run_error = barrier;
+#endif
     int rx = ker_rx_decision_consumer_prepare_runtime_shutdown();
     if (rx < 0) {
         pthread_mutex_lock(&lock);

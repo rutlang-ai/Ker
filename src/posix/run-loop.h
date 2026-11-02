@@ -4,8 +4,8 @@
 int ker_run_control_init(int fd);
 void ker_run_control_close(void);
 #ifdef KER_C31_RX_DECISION_TESTING
-/* BUILD_TESTING-only barrier: after the business callback exits, wait for one
- * byte from the harness before cleanup begins. */
-int ker_posix_run_test_set_shutdown_barrier(int fd);
+/* BUILD_TESTING-only barrier: after native prepare/drain, write 0x5a to
+ * ready_fd, then wait for 0xa5 on release_fd before consumer settlement. */
+int ker_posix_run_test_set_shutdown_barrier(int ready_fd, int release_fd);
 #endif
 #endif

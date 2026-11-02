@@ -5,6 +5,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -71,6 +72,14 @@ struct consumer {
 static pthread_mutex_t consumer_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct consumer consumer = {.state = CONSUMER_EMPTY, .fd = -1,
     .worker_pidfd = -1, .supervisor_pidfd = -1};
+#ifdef KER_C31_RX_DECISION_TESTING
+static atomic_bool test_shutdown_ebusy_once;
+
+void ker_posix_rx_decision_test_shutdown_ebusy_once(void)
+{
+    atomic_store_explicit(&test_shutdown_ebusy_once, true, memory_order_release);
+}
+#endif
 
 static uint64_t monotonic_ns(void)
 {
@@ -682,6 +691,14 @@ int ker_rx_decision_consumer_prepare_runtime_shutdown(void)
         pthread_mutex_unlock(&consumer_lock);
         return -EBUSY;
     }
+#ifdef KER_C31_RX_DECISION_TESTING
+    if (consumer.state == CONSUMER_READY &&
+        atomic_exchange_explicit(&test_shutdown_ebusy_once, false,
+            memory_order_acq_rel)) {
+        pthread_mutex_unlock(&consumer_lock);
+        return -EBUSY;
+    }
+#endif
     if (consumer.state == CONSUMER_STOPPING) {
         pthread_mutex_unlock(&consumer_lock);
     } else {
