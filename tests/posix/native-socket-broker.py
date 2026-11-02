@@ -27,6 +27,209 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+def run_source_reload_probes(args, master, worker, nginx_command, env, logs, runtime_trace,
+        prefix, config):
+    probe_root = args.source_reload_probes.resolve()
+    probe_dir = probe_root / 'common' / 'reload_probes'
+    checker = probe_root / 'common' / 'reload_checks.py'
+    baseline_probe = probe_dir / 'm4_lc.py'
+    outage_probe = probe_dir / 'm4_outage.py'
+    for path in (checker, baseline_probe, outage_probe, probe_dir / 'http_probe.py'):
+        require(path.is_file(), f'unchanged original reload probe is missing: {path}')
+    output = args.source_reload_output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    require(not any(output.iterdir()), f'C23 evidence directory is not empty: {output}')
+
+    def sha256(path):
+        digest = hashlib.sha256()
+        with open(path, 'rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+        return digest.hexdigest()
+
+    source_files = [baseline_probe, outage_probe, probe_dir / 'http_probe.py', checker,
+        probe_root / 'test_graceful_reload.sh']
+    expected_source_hashes = {
+        'm4_lc.py': 'b6539d6c81cd9fceff3c657493b52d962cd4260e09e2d8dec38ecfe88ecca8ac',
+        'm4_outage.py': '4d57b775a52ceab27b6a64aae6334ad168f6944cf74250054ab8ea6cc2231569',
+        'http_probe.py': '7c19eae3b1dd6eeaa914d12e4d42fbb45d03370aad40232c42c42cfe8c756b31',
+        'reload_checks.py': '686a57c12981af7be78a24f2f8e94e0070e456ee5042fe0f528b200bfc37bb7d',
+        'test_graceful_reload.sh': '7efd3e0d10e584daa57377915da0ba2a9d1f67bebbcd2f512298230d71f35203',
+    }
+    initial_source_hashes = {path.name: sha256(path) for path in source_files}
+    require(initial_source_hashes == expected_source_hashes,
+        f'C23 original probe files differ from their pinned source copies: {initial_source_hashes!r}')
+    evidence = {
+        'schema': 1,
+        'scenario': 'C23 original-source reload probe',
+        'mode': args.source_reload_mode,
+        'qualification': 'RUNNING',
+        'target': '198.18.0.2:80',
+        'probe_controller_pid': os.getpid(),
+        'nginx_master_pid': master,
+        'nginx_worker_pid': worker,
+        'source_probe_sha256': {str(path): sha256(path) for path in source_files},
+        'source_probe_expected_sha256': expected_source_hashes,
+        'source_probe_revision': '646a641cfff77f4815e1e29829a09e1ed15a2999',
+        'ker_build_manifest': str(args.c23_ker_manifest.resolve()),
+        'ker_build_manifest_sha256': sha256(args.c23_ker_manifest),
+        'artifacts': {},
+        'config_sha256': sha256(config),
+        'nginx_runtime_trace': str(runtime_trace),
+        'nginx_error_log': str(logs / 'error.log'),
+        'baseline': {'status': 'NOT_RUN', 'argv': [sys.executable, str(baseline_probe), '--server', '198.18.0.2',
+            '--conns', '24', '--interval', '0.5', '--duration', '330', '--fresh', '0.5',
+            '--timeout', '2']},
+        'gr0': {'status': 'NOT_RUN', 'argv': [sys.executable, str(outage_probe), '--server', '198.18.0.2',
+            '--duration', '25', '--timeout', '0.5'], 'hup_anchor_seconds': 5},
+    }
+    for label, path in (
+        ('nginx_binary', args.nginx_binary),
+        ('owner_activation_module', args.nginx_owner_activation_module),
+        ('fstack_runtime', args.fstack_runtime),
+        ('worker_shim', args.fstack_worker_shim),
+        ('preload', args.preload_library),
+        ('ker_library', args.library),
+        ('io_worker', args.worker),
+        ('broker', args.broker),
+    ):
+        evidence['artifacts'][label] = {'path': str(path.resolve()), 'sha256': sha256(path)}
+    with open(args.c23_ker_manifest) as stream:
+        manifest = json.load(stream)
+    require(manifest.get('fingerprint') and manifest.get('library_sha256'),
+        'C23 requires a complete installed Ker native-Linux manifest')
+    evidence['ker_native_manifest'] = manifest
+    module_manifest = (Path(args.c23_ker_manifest).resolve().parent.parent /
+        'fstack-nginx-runtime' / 'nginx-owner-activation-build.json')
+    require(module_manifest.is_file(), f'C22 installed module manifest is missing: {module_manifest}')
+    module_build = json.loads(module_manifest.read_text())
+    require(module_build.get('fstackSourceRevision') ==
+        '646a641cfff77f4815e1e29829a09e1ed15a2999' and
+        module_build.get('nginxBinarySha256') == sha256(args.nginx_binary),
+        'installed C22 module manifest does not match the pinned Nginx artifact')
+    evidence['c22_owner_activation_manifest'] = {
+        'path': str(module_manifest), 'sha256': sha256(module_manifest),
+        'contents': module_build}
+    evidence_path = output / 'evidence.json'
+    def save_evidence():
+        evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+    save_evidence()
+    probe_env = os.environ.copy()
+    for key in ('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH', 'KER_FSTACK_RUNTIME_TRACE',
+            'KER_FSTACK_NGINX_INI'):
+        probe_env.pop(key, None)
+
+    baseline_ok = None
+    outage_ok = None
+    if args.source_reload_mode in ('baseline', 'all'):
+        evidence['baseline']['status'] = 'RUNNING'
+        baseline_log = output / 'baseline.log'
+        baseline_argv = evidence['baseline']['argv']
+        baseline_start = time.monotonic()
+        try:
+            with baseline_log.open('wb') as stream:
+                baseline = subprocess.run(baseline_argv, cwd=probe_dir, env=probe_env,
+                    stdout=stream, stderr=subprocess.STDOUT, timeout=345)
+        except BaseException as error:
+            evidence['baseline'].update({'qualification': 'UNQUALIFIED',
+                'error': repr(error), 'output_file': str(baseline_log),
+                'output_sha256': sha256(baseline_log) if baseline_log.exists() else None})
+            evidence['qualification'] = 'UNQUALIFIED'
+            save_evidence()
+            raise
+        baseline_end = time.monotonic()
+        baseline_text = baseline_log.read_text(errors='replace')
+        baseline_summaries = [line for line in baseline_text.splitlines()
+            if line.startswith('LC_SUMMARY ')]
+        baseline_oracle = subprocess.run([sys.executable, str(checker), 'summary', 'lc'],
+            input=baseline_text, text=True, capture_output=True)
+        evidence['baseline'].update({'status': 'COMPLETED',
+            'exit_code': baseline.returncode, 'oracle_exit_code': baseline_oracle.returncode,
+            'summary_lines': baseline_summaries,
+            'oracle_stdout': baseline_oracle.stdout.strip(),
+            'oracle_stderr': baseline_oracle.stderr.strip(),
+            'start_monotonic': baseline_start, 'end_monotonic': baseline_end,
+            'elapsed_seconds': baseline_end - baseline_start,
+            'output_file': str(baseline_log), 'output_sha256': sha256(baseline_log)})
+        baseline_ok = baseline.returncode == 0 and baseline_oracle.returncode == 0
+        evidence['baseline']['qualification'] = 'PASS' if baseline_ok else 'FAIL'
+        evidence['qualification'] = 'RUNNING' if baseline_ok else 'UNQUALIFIED'
+        save_evidence()
+
+    if args.source_reload_mode in ('gr0', 'all'):
+        evidence['gr0']['status'] = 'RUNNING'
+        outage_log = output / 'gr0-outage.log'
+        outage_argv = evidence['gr0']['argv']
+        with outage_log.open('wb') as stream:
+            outage = subprocess.Popen(outage_argv, cwd=probe_dir, env=probe_env,
+                stdout=stream, stderr=subprocess.STDOUT)
+        evidence['gr0']['probe_start_monotonic'] = time.monotonic()
+        try:
+            time.sleep(5)
+            require(outage.poll() is None,
+                'unchanged gr0 outage probe exited before the original 5 second HUP anchor')
+            evidence['gr0']['hup_sent_monotonic'] = time.monotonic()
+            evidence['gr0']['hup_argv'] = nginx_command + ['-s', 'reload']
+            reload = subprocess.run(evidence['gr0']['hup_argv'], env=env,
+                capture_output=True, timeout=20)
+            evidence['gr0']['hup_exit_code'] = reload.returncode
+            evidence['gr0']['hup_stdout'] = reload.stdout.decode(errors='replace')
+            evidence['gr0']['hup_stderr'] = reload.stderr.decode(errors='replace')
+            require(reload.returncode == 0,
+                f'original Nginx HUP/reload command failed: {evidence["gr0"]!r}')
+            outage_rc = outage.wait(timeout=35)
+        except BaseException:
+            if outage.poll() is None:
+                outage.terminate()
+                try: outage.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    outage.kill(); outage.wait(timeout=2)
+            evidence['gr0']['qualification'] = 'UNQUALIFIED'
+            evidence['gr0']['output_file'] = str(outage_log)
+            evidence['gr0']['output_sha256'] = sha256(outage_log) if outage_log.exists() else None
+            evidence['qualification'] = 'UNQUALIFIED'
+            save_evidence()
+            raise
+        outage_text = outage_log.read_text(errors='replace')
+        outage_summaries = [line for line in outage_text.splitlines()
+            if line.startswith('OUTAGE_SUMMARY ')]
+        outage_oracle = subprocess.run([sys.executable, str(checker), 'summary', 'outage'],
+            input=outage_text, text=True, capture_output=True)
+        error_text = logs.joinpath('error.log').read_text(errors='replace')
+        graceful_lines = [line for line in error_text.splitlines()
+            if re.search(r'graceful reload complete|graceful reload fsm:', line)]
+        evidence['gr0'].update({'status': 'COMPLETED',
+            'exit_code': outage_rc, 'oracle_exit_code': outage_oracle.returncode,
+            'summary_lines': outage_summaries,
+            'oracle_stdout': outage_oracle.stdout.strip(),
+            'oracle_stderr': outage_oracle.stderr.strip(),
+            'output_file': str(outage_log), 'output_sha256': sha256(outage_log),
+            'graceful_reload_log_lines': graceful_lines})
+        outage_ok = outage_rc == 0 and outage_oracle.returncode == 0 and not graceful_lines
+        evidence['gr0']['qualification'] = 'PASS' if outage_ok else 'UNQUALIFIED'
+
+    current_source_hashes = {str(path): sha256(path) for path in source_files}
+    require(current_source_hashes == evidence['source_probe_sha256'],
+        'unchanged source probes changed while the C23 run was active')
+    evidence['source_probe_sha256_after'] = current_source_hashes
+    if args.source_reload_mode == 'baseline':
+        evidence['qualification'] = 'PASS' if baseline_ok else 'UNQUALIFIED'
+    elif args.source_reload_mode == 'gr0':
+        evidence['qualification'] = 'PASS' if outage_ok else 'UNQUALIFIED'
+    else:
+        evidence['qualification'] = 'PASS' if baseline_ok and outage_ok else 'UNQUALIFIED'
+    evidence['runtime_trace_sha256'] = sha256(runtime_trace) if runtime_trace.exists() else None
+    evidence['error_log_sha256'] = sha256(logs / 'error.log')
+    save_evidence()
+    if baseline_ok is not None:
+        print(f'C23_BASELINE exit={baseline.returncode} oracle={baseline_oracle.returncode} '
+            f'log={baseline_log}')
+    if outage_ok is not None:
+        print(f'C23_GR0 exit={outage_rc} oracle={outage_oracle.returncode} '
+            f'log={outage_log} graceful_log_lines={len(graceful_lines)}')
+    return evidence['qualification'] == 'PASS'
+
+
 def read_line(stream, timeout, process=None):
     selector = select.poll()
     selector.register(stream, select.POLLIN | select.POLLHUP | select.POLLERR)
@@ -2333,6 +2536,7 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     binary = args.nginx_binary.resolve()
     fstack_profile = args.fstack_runtime is not None
     owner_activation = args.nginx_owner_activation_module is not None
+    source_reload = args.source_reload_probes is not None
     missing_owner_shim_control = args.nginx_owner_activation_missing_helper
     worker_count = args.nginx_workers or (2 if not fstack_profile else 1)
     negative_profile = args.nginx_test_negative_profile
@@ -2356,6 +2560,11 @@ def run_nginx_preloaded(args, rpc_path, capabilities, root, broker):
     large = bytes((index * 17 + 3) & 0xff for index in range(8 * 1024 * 1024))
     (html / 'large.bin').write_bytes(large)
     (html / 'small.txt').write_bytes(b'preload-http-ok\n')
+    if source_reload:
+        # The unchanged source m4_lc/m4_outage probes request `/` (their
+        # --path option is not forwarded in those modes), so provide the same
+        # index contract as the original Nginx configuration.
+        (html / 'index.html').write_bytes(b'ker original-source reload probe\n')
     config = prefix / 'nginx.conf'
     runtime_trace = prefix / 'fstack-runtime.trace'
     fstack_config = prefix / 'fstack.ini'
@@ -2382,7 +2591,7 @@ graceful_reload={graceful_reload}
     elif negative_profile == 'keepalive':
         unsupported_listener_option = ' so_keepalive=on'
     listener_lines = ''
-    listener_address = '198.18.0.2:4098'
+    listener_address = '198.18.0.2:80' if source_reload else '198.18.0.2:4098'
     if negative_profile == 'ipv6':
         listener_address = '[::1]:4098'
     if negative_profile != 'missing-listener':
@@ -2400,6 +2609,10 @@ graceful_reload={graceful_reload}
         f'access_log {access_log} ker_worker_pid;\n' if args.fstack_worker_shim else '')
     load_module = (f'load_module {args.nginx_owner_activation_module.resolve()};\n'
         if owner_activation else '')
+    keepalive_config = ('keepalive_timeout 300;\n    keepalive_requests 100000;'
+        if source_reload else 'keepalive_timeout 0;')
+    index_config = ('location / { root ' + str(html) + '; index index.html index.htm; }'
+        if source_reload else '')
     config.write_text(f'''{load_module}daemon on;
 master_process on;
 worker_processes {worker_count};
@@ -2412,11 +2625,12 @@ http {{
     {worker_log_config}    access_log off;
     sendfile {sendfile};
     tcp_nopush off;
-    keepalive_timeout 0;
+    {keepalive_config}
     server {{
 {listener_lines.rstrip()}
         server_name ker.test;
         root {html};
+        {index_config}
         {access_log_config}
     }}
 }}
@@ -2530,8 +2744,12 @@ graceful_reload=0
         first_request_error = None
         while time.monotonic() < deadline:
             try:
-                response = request_static('198.18.0.2', 4098, '/small.txt')
-                require(response[0] == len(b'preload-http-ok\n'), f'small response length differs: {response}')
+                response = request_static('198.18.0.2', 80 if source_reload else 4098,
+                    '/' if source_reload else '/small.txt')
+                expected_first_length = (len(b'ker original-source reload probe\n') if source_reload
+                    else len(b'preload-http-ok\n'))
+                require(response[0] == expected_first_length,
+                    f'small response length differs: {response}')
                 break
             except (OSError, RuntimeError) as error:
                 first_request_error = repr(error)
@@ -2568,6 +2786,25 @@ graceful_reload=0
                 time.sleep(0.02)
             require(len(initial_workers) == 1 and int(initial_workers[0]) == initial_pid,
                 f'C22 initial worker identity differs from listener trace: {initial_workers!r}; {initial_pid}')
+            if source_reload:
+                qualified = run_source_reload_probes(args, master, initial_pid, command, env, logs,
+                    runtime_trace, prefix, config)
+                os.kill(master, signal.SIGQUIT)
+                reap_frontend_child(master, 20)
+                master = None
+                for fd in capabilities:
+                    try: os.close(fd)
+                    except OSError: pass
+                capabilities.clear()
+                print(f'C23_SOURCE_RELOAD_PROBES mode={args.source_reload_mode} '
+                    f'qualification={"PASS" if qualified else "UNQUALIFIED"} '
+                    'target=198.18.0.2:80 graceful_reload=0')
+                return {'master': None, 'c23_qualified': qualified,
+                    'c23_evidence_path': args.source_reload_output.resolve() / 'evidence.json',
+                    'c23_runtime_trace': runtime_trace,
+                    'c23_error_log': logs / 'error.log',
+                    'c23_nginx_config': config,
+                    'c23_fstack_config': fstack_config}
             response = request_static('198.18.0.2', 4098, '/small.txt')
             require(response[0] == len(b'preload-http-ok\n'),
                 f'C22 initial original-Linux HTTP response differs: {response!r}')
@@ -3088,7 +3325,7 @@ def inside(args):
                     return 0
 
                 if args.nginx_binary:
-                    run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
+                    nginx_result = run_nginx_preloaded(args, rpc_path, cap_fds, root, broker)
                     try:
                         output, errors = broker.communicate(timeout=40)
                     except subprocess.TimeoutExpired as error:
@@ -3099,6 +3336,38 @@ def inside(args):
                         f'broker did not finalize nginx sockets: {output!r} {errors.decode(errors="replace")}')
                     stats = json.loads(stats_path.read_text())
                     native = stats.get('native', {})
+                    if args.source_reload_probes:
+                        evidence_path = nginx_result['c23_evidence_path']
+                        evidence = json.loads(evidence_path.read_text())
+                        archived = {}
+                        for label, source in (
+                            ('nginx_runtime_trace', nginx_result['c23_runtime_trace']),
+                            ('nginx_error_log', nginx_result['c23_error_log']),
+                            ('nginx_config', nginx_result['c23_nginx_config']),
+                            ('fstack_ini', nginx_result['c23_fstack_config']),
+                        ):
+                            data = Path(source).read_bytes()
+                            destination = evidence_path.parent / label
+                            destination.write_bytes(data)
+                            archived[label] = {'path': str(destination),
+                                'sha256': hashlib.sha256(data).hexdigest()}
+                        evidence['c22_runtime_artifacts'] = archived
+                        evidence['broker_stats'] = stats
+                        evidence['broker_stdout'] = output.decode(errors='replace')
+                        evidence['broker_stderr'] = errors.decode(errors='replace')
+                        evidence['broker_exit_code'] = broker.returncode
+                        evidence['qualification'] = ('PASS' if evidence.get('qualification') == 'PASS'
+                            and broker.returncode == 0 and stats.get('outstanding') == 0
+                            else 'UNQUALIFIED')
+                        evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + '\n')
+                        require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
+                            stats.get('outstanding') == 0 and native.get('passive_opens', 0) >= 2,
+                            f'C23 original-Linux traffic or broker cleanup evidence missing: {stats!r}')
+                        if evidence['qualification'] != 'PASS':
+                            print(f'C23_UNQUALIFIED evidence={evidence_path}')
+                            return 1
+                        print(f'C23_QUALIFIED evidence={evidence_path}')
+                        return 0
                     if args.nginx_owner_activation_missing_helper:
                         require(stats.get('outstanding') == 0 and
                             native.get('active_opens', 0) == 0 and
@@ -3312,6 +3581,10 @@ def main():
     parser.add_argument('--fstack-runtime', type=Path)
     parser.add_argument('--fstack-worker-shim', type=Path)
     parser.add_argument('--nginx-owner-activation-module', type=Path)
+    parser.add_argument('--source-reload-probes', type=Path)
+    parser.add_argument('--source-reload-output', type=Path)
+    parser.add_argument('--source-reload-mode', choices=('baseline', 'gr0', 'all'), default='all')
+    parser.add_argument('--c23-ker-manifest', type=Path)
     parser.add_argument('--nginx-owner-activation-missing-helper', action='store_true')
     parser.add_argument('--nginx-workers', type=int, choices=(1, 2))
     parser.add_argument('--nginx-test-unsupported-option', action='store_true')
@@ -3350,6 +3623,18 @@ def main():
         (args.nginx_workers == 1 or args.nginx_test_negative_profile == 'two-workers') and
         (args.fstack_worker_shim or args.nginx_owner_activation_missing_helper)):
         parser.error('C22 owner activation requires nginx, runtime, preload, and its shim')
+    if args.source_reload_probes and not (args.source_reload_output and
+        args.c23_ker_manifest and args.nginx_binary and args.fstack_runtime and
+        args.fstack_worker_shim and args.nginx_owner_activation_module and
+        args.nginx_workers == 1):
+        parser.error('C23 source probes require the installed single-worker C22 profile and evidence paths')
+    if not args.source_reload_probes and (args.source_reload_output or args.c23_ker_manifest):
+        parser.error('C23 evidence arguments require --source-reload-probes')
+    if not args.source_reload_probes and args.source_reload_mode != 'all':
+        parser.error('--source-reload-mode requires --source-reload-probes')
+    if args.source_reload_probes and not args.inside:
+        args.source_reload_output = Path(str(args.source_reload_output.resolve()) +
+            f'-run-{os.getpid()}-{time.time_ns()}')
     if args.nginx_owner_activation_missing_helper and not args.nginx_owner_activation_module:
         parser.error('missing-helper control requires the C22 owner-activation module')
     if args.nginx_test_unsupported_option and not args.fstack_worker_shim:
@@ -3387,6 +3672,11 @@ def main():
         if args.nginx_owner_activation_module:
             command += ['--nginx-owner-activation-module',
                 str(args.nginx_owner_activation_module.resolve())]
+        if args.source_reload_probes:
+            command += ['--source-reload-probes', str(args.source_reload_probes.resolve()),
+                '--source-reload-output', str(args.source_reload_output.resolve()),
+                '--source-reload-mode', args.source_reload_mode,
+                '--c23-ker-manifest', str(args.c23_ker_manifest.resolve())]
         if args.nginx_owner_activation_missing_helper:
             command.append('--nginx-owner-activation-missing-helper')
         if args.nginx_workers:
