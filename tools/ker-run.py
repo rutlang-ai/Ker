@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run a POSIX application against imported Linux, with DPDK Ethernet I/O."""
 import argparse
+import array
 import concurrent.futures
 import contextlib
 import configparser
+import importlib.util
 import ipaddress
 import json
 import os
@@ -17,6 +19,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
+import secrets
+
+# This launcher is also loaded by path (for example from CTest's generated
+# selector tests). Load its private codec by sibling path so neither the
+# caller's sys.path nor a cached module with the same public name can override it.
+_RX_DECISION_WIRE_PATH = Path(__file__).resolve().with_name('rx_decision_wire.py')
+_RX_DECISION_WIRE_SPEC = importlib.util.spec_from_file_location(
+    '_ker_run_rx_decision_wire', _RX_DECISION_WIRE_PATH)
+if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
+    raise ImportError(f'cannot load private RX decision codec: {_RX_DECISION_WIRE_PATH}')
+rx_decision_wire = importlib.util.module_from_spec(_RX_DECISION_WIRE_SPEC)
+_RX_DECISION_WIRE_SPEC.loader.exec_module(rx_decision_wire)
 
 
 class Interrupted(Exception):
@@ -26,6 +41,58 @@ class Interrupted(Exception):
 
 def interrupted(signum, _frame):
     raise Interrupted(signum)
+
+
+def process_start_ticks(pid):
+    """Return Linux /proc starttime (field 22), parsing comm with spaces safely."""
+    text = Path(f'/proc/{pid}/stat').read_text(encoding='ascii')
+    close = text.rfind(')')
+    if close < 0 or close + 2 >= len(text):
+        raise RuntimeError(f'cannot parse /proc/{pid}/stat')
+    fields = text[close + 2:].split()  # field 3 (state) is fields[0]
+    if len(fields) <= 19:
+        raise RuntimeError(f'incomplete /proc/{pid}/stat')
+    start = int(fields[19], 10)
+    if start <= 0:
+        raise RuntimeError(f'invalid /proc/{pid}/stat starttime for pid {pid}')
+    return start
+
+
+def rx_decision_bootstrap(endpoint, target_role, target, supervisor,
+                          supervisor_pidfd, nonce, worker_epoch):
+    """Send a supervisor-authenticated bootstrap and duplicate both pidfds."""
+    body = rx_decision_wire.BOOTSTRAP_BODY.pack(
+        target_role, target.pid, target.uid, target.gid, target.start_ticks,
+        supervisor.pid, supervisor.uid, supervisor.gid, 0, supervisor.start_ticks)
+    header = rx_decision_wire.pack_header(rx_decision_wire.BOOTSTRAP, nonce,
+        worker_epoch, control_id=1, body_bytes=len(body))
+    rights = array.array('i', (target.pidfd, supervisor_pidfd))
+    sent = endpoint.sendmsg([header, body], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+                            getattr(socket, 'MSG_NOSIGNAL', 0))
+    if sent != len(header) + len(body):
+        raise RuntimeError('short RX decision bootstrap send')
+
+
+def rx_decision_identity(pid, pidfd):
+    return SimpleNamespace(pid=pid, uid=os.stat(f'/proc/{pid}').st_uid,
+        gid=os.stat(f'/proc/{pid}').st_gid, start_ticks=process_start_ticks(pid),
+        pidfd=pidfd)
+
+
+def wait_startup_marker(fd, data, marker, timeout, description):
+    """Read complete startup bytes until marker; preserve all bytes for later checks."""
+    deadline = time.monotonic() + timeout
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while marker not in data:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise RuntimeError(f'{description} startup timed out')
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                raise RuntimeError(f'{description} exited before readiness marker')
+            data += chunk
+    return data
 
 
 def resolve_exit_code(exit_code, app_returncode, infrastructure_failure, preserve_signal):
@@ -533,6 +600,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--io-worker', type=Path, default=Path(__file__).resolve().parent / 'ker-io-worker')
     parser.add_argument('--shutdown-timeout-ms', type=int)
     parser.add_argument('--stats', type=Path, help='write Ethernet I/O counters at shutdown')
+    parser.add_argument('--rx-decision', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -550,6 +618,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
         sysctls.pop(key, None)
         sysctls[key] = value
     values.update(vars(supplied))
+    values.setdefault('rx_decision', False)
     values['sysctls'] = sysctls
     args = argparse.Namespace(**values)
     missing = [name for name in ('address', 'port', 'eal') if getattr(args, name) is None]
@@ -843,6 +912,8 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
             if any(network.overlaps(previous) for network in interface_networks6 for previous in networks6):
                 parser.error('IPv6 networks must not overlap across interfaces')
             networks6.extend(interface_networks6)
+    if args.rx_decision and args.interfaces:
+        parser.error('--rx-decision currently supports only the primary I/O worker')
     # The CLI must finish all pure validation, including CLI overrides and
     # auxiliary address/queue/MTU ownership, before executing the worker query.
     # Standalone reader callers retain their selected-build validation above.
@@ -1172,6 +1243,35 @@ def main():
     except OSError as error:
         print(f'ker-run: IPC setup: {error}', file=sys.stderr)
         return 125
+    decision_app = decision_io = None
+    supervisor_pidfd = worker_pidfd = app_pidfd = -1
+    decision_nonce = None
+    decision_epoch = 0
+    supervisor_identity = None
+    if args.rx_decision:
+        try:
+            decision_app, decision_io = socket.socketpair(socket.AF_UNIX,
+                socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK)
+            # SO_PASSCRED is set on both receiving endpoints before any child
+            # exists, so bootstrap messages cannot race credential collection.
+            decision_app.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            decision_io.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            supervisor_pidfd = os.pidfd_open(os.getpid(), 0)
+            decision_nonce = secrets.token_bytes(rx_decision_wire.NONCE_BYTES)
+            decision_epoch = secrets.randbits(64) or 1
+            supervisor_identity = rx_decision_identity(os.getpid(), supervisor_pidfd)
+        except (AttributeError, OSError, RuntimeError, ValueError) as error:
+            for channel in (decision_app, decision_io):
+                if channel is not None:
+                    channel.close()
+            if supervisor_pidfd >= 0:
+                os.close(supervisor_pidfd)
+            for channel in (channel_app, channel_io, mtu_app, mtu_io, run_parent, run_app):
+                channel.close()
+            for descriptor in (control_read, control_write, startup_read, startup_write):
+                os.close(descriptor)
+            print(f'ker-run: RX decision setup is unavailable: {error}', file=sys.stderr)
+            return 125
     worker_finished = run_finished = False
     signal.signal(signal.SIGTERM, interrupted)
     worker = app = None
@@ -1213,9 +1313,21 @@ def main():
                 if value is not None:
                     exception_options += ['--exception-' + name + '-ports', value]
         rx_lcore_options = ['--rx-lcores', args.rx_lcores] if args.rx_lcores is not None else []
-        worker = subprocess.Popen([str(worker_path), '--packet-fd', str(channel_io.fileno()),
-            '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), *(['--rss'] if args.rss else []), '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu), '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us), '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu), '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa', *multicast_options, *promiscuous_options, *capture_options, *log_options, *bond_options, *exception_options, *rx_lcore_options, '--', *args.eal_args],
-            pass_fds=(channel_io.fileno(), mtu_io.fileno(), control_read), stdout=subprocess.PIPE, text=True)
+        worker_command = [str(worker_path), '--packet-fd', str(channel_io.fileno()),
+            '--tx-offloads', str(TX_OFFLOADS[args.tx_offloads]), *(['--rss'] if args.rss else []),
+            '--queues', str(args.queues), '--mtu-fd', str(mtu_io.fileno()), '--max-mtu', str(args.max_mtu),
+            '--control-fd', str(control_read), '--idle-sleep-us', str(args.idle_sleep_us),
+            '--tx-delay-us', str(args.tx_delay_us), '--port', args.port, '--mtu', str(args.mtu),
+            '--mbuf-mode', args.mbuf_mode, '--numa' if args.numa else '--no-numa',
+            *multicast_options, *promiscuous_options, *capture_options, *log_options,
+            *bond_options, *exception_options, *rx_lcore_options,
+            *(['--rx-decision-fd', str(decision_io.fileno())] if args.rx_decision else []),
+            '--', *args.eal_args]
+        worker_pass_fds = [channel_io.fileno(), mtu_io.fileno(), control_read]
+        if args.rx_decision:
+            worker_pass_fds.append(decision_io.fileno())
+        worker = subprocess.Popen(worker_command,
+            pass_fds=tuple(worker_pass_fds), stdout=subprocess.PIPE, text=True)
         channel_io.close()
         mtu_io.close()
         os.close(control_read)
@@ -1229,6 +1341,9 @@ def main():
                 stats = worker_done_record(ready)
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
         info = worker_ready_record(ready)
+        if args.rx_decision:
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            worker_identity = rx_decision_identity(worker.pid, worker_pidfd)
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
@@ -1240,6 +1355,8 @@ def main():
             KER_PACKET_FD=str(channel_app.fileno()), KER_PACKET_MTU=str(args.mtu), LKL_HIJACK_NET_IFTYPE='ker-channel',
             LKL_HIJACK_NET_IP=str(args.address.ip), LKL_HIJACK_NET_NETMASK_LEN=str(args.address.network.prefixlen),
             LKL_HIJACK_NET_MAC=info['mac'], LKL_HIJACK_OFFLOAD='0')
+        if args.rx_decision:
+            env['KER_RX_DECISION_FD'] = str(decision_app.fileno())
         if additional:
             env['KER_PACKET_INTERFACES'] = ';'.join(extra.native_settings() for extra in additional)
         env.pop('KER_NATIVE_VLANS', None)
@@ -1274,9 +1391,26 @@ def main():
             env['KER_NATIVE_TCP_ECN'] = str(TCP_ECN[args.tcp_ecn])
         if args.gateway:
             env['LKL_HIJACK_NET_GATEWAY'] = str(args.gateway)
+        app_pass_fds = [channel_app.fileno(), mtu_app.fileno(), startup_write, run_app.fileno(),
+            *(fd for extra in additional for fd in extra.app_fds())]
+        if args.rx_decision:
+            app_pass_fds.append(decision_app.fileno())
         app = subprocess.Popen([str(app_guard), *args.command], env=env,
-            pass_fds=(channel_app.fileno(), mtu_app.fileno(), startup_write, run_app.fileno(),
-                      *(fd for extra in additional for fd in extra.app_fds())))
+            pass_fds=tuple(app_pass_fds))
+        if args.rx_decision:
+            app_pidfd = os.pidfd_open(app.pid, 0)
+            app_identity = rx_decision_identity(app.pid, app_pidfd)
+            # Worker-side bootstrap first: the worker must know the consumer
+            # identity before the consumer can send HELLO. Then give the app
+            # the worker identity so its HELLO is authenticated.
+            rx_decision_bootstrap(decision_app, rx_decision_wire.TARGET_CONSUMER,
+                app_identity, supervisor_identity, supervisor_pidfd,
+                decision_nonce, decision_epoch)
+            rx_decision_bootstrap(decision_io, rx_decision_wire.TARGET_WORKER,
+                worker_identity, supervisor_identity, supervisor_pidfd,
+                decision_nonce, decision_epoch)
+            decision_app.close(); decision_app = None
+            decision_io.close(); decision_io = None
         channel_app.close()
         mtu_app.close()
         run_app.close()
@@ -1290,6 +1424,10 @@ def main():
                 startup_status = os.read(startup_read, 128)
             if not startup_status.startswith(b'KER_NATIVE_READY\n'):
                 raise RuntimeError('application did not initialize the native Linux backend')
+        if args.rx_decision:
+            startup_status = wait_startup_marker(startup_read, startup_status,
+                b'KER_RX_DECISION_READY\n', 20,
+                'RX decision consumer (handler/identity/worker handshake)')
         stopping_at = None
         while True:
             try:
@@ -1401,6 +1539,13 @@ def main():
         channel_io.close()
         mtu_app.close()
         mtu_io.close()
+        if decision_app is not None:
+            decision_app.close()
+        if decision_io is not None:
+            decision_io.close()
+        for pidfd in (supervisor_pidfd, worker_pidfd, app_pidfd):
+            if pidfd >= 0:
+                os.close(pidfd)
         if control_read >= 0:
             os.close(control_read)
         if control_write >= 0:
@@ -1448,6 +1593,10 @@ def main():
                         if worker.stdout is not None:
                             worker.stdout.close()
             infrastructure_failure |= stats is None or stats.get('outstanding', 1) != 0
+            if args.rx_decision:
+                infrastructure_failure |= (stats is None or
+                    stats.get('rx_decision_enabled') is not True or
+                    stats.get('rx_decision_settled') is not True)
             if stats is not None:
                 stats['io'] = info
             try:

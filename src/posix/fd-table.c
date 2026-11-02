@@ -15,6 +15,27 @@
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct ker_fd *entries[KER_FD_LIMIT];
 static struct ker_fd *private_hosts;
+static bool native_install_shutdown;
+#ifdef KER_C31_FD_TABLE_TESTING
+static ker_fd_table_test_hook export_locked_hook;
+static void *export_locked_context;
+static ker_fd_table_test_hook shutdown_lock_hook;
+static void *shutdown_lock_context;
+
+void ker_fd_table_test_set_export_locked_hook(ker_fd_table_test_hook hook,
+    void *context)
+{
+    export_locked_hook = hook;
+    export_locked_context = context;
+}
+
+void ker_fd_table_test_set_shutdown_lock_hook(ker_fd_table_test_hook hook,
+    void *context)
+{
+    shutdown_lock_hook = hook;
+    shutdown_lock_context = context;
+}
+#endif
 struct host_snapshot { int fd; struct host_snapshot *next; };
 static struct host_snapshot *snapshots;
 
@@ -127,6 +148,16 @@ int ker_fd_export(int native, enum ker_fd_kind kind, int host, int flags,
     if (fd >= KER_FD_LIMIT || fixed >= KER_FD_LIMIT) { saved = EMFILE; goto fail; }
     pthread_mutex_lock(&mutex);
     locked = true;
+    if (native_install_shutdown) { saved = ESHUTDOWN; goto fail; }
+#ifdef KER_C31_FD_TABLE_TESTING
+    if (export_locked_hook) {
+        ker_fd_table_test_hook hook = export_locked_hook;
+        void *context = export_locked_context;
+        export_locked_hook = NULL;
+        export_locked_context = NULL;
+        hook(context); /* Deliberately holds the same lock as production export. */
+    }
+#endif
     register_private(entry);
     if (host >= 0) {
         struct host_snapshot **link = &snapshots;
@@ -233,10 +264,27 @@ int ker_fd_epoll_host_create(int flags)
 }
 void ker_fd_close_all(void)
 {
+    ker_fd_native_shutdown_begin();
     for (int fd = 0; fd < KER_FD_LIMIT; ++fd) {
         struct ker_fd *entry = ker_fd_get(fd);
         if (entry) { ker_fd_close(fd); ker_fd_put(entry); }
     }
+}
+
+void ker_fd_native_shutdown_begin(void)
+{
+#ifdef KER_C31_FD_TABLE_TESTING
+    if (shutdown_lock_hook) {
+        ker_fd_table_test_hook hook = shutdown_lock_hook;
+        void *context = shutdown_lock_context;
+        shutdown_lock_hook = NULL;
+        shutdown_lock_context = NULL;
+        hook(context);
+    }
+#endif
+    pthread_mutex_lock(&mutex);
+    native_install_shutdown = true;
+    pthread_mutex_unlock(&mutex);
 }
 
 int close_range(unsigned first, unsigned last, int flags)

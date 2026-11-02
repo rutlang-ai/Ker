@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 #include <rte_config.h>
@@ -18,6 +21,7 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include "packet-channel.h"
+#include "rx-decision-wire.h"
 #include "bond-policy.h"
 #include "pcap.h"
 #include "worker-log.h"
@@ -32,6 +36,7 @@
 #include "worker-offload.h"
 #include "worker-receive-mode.h"
 #include "worker-exception.h"
+#include "io-worker-rx-metadata.h"
 #include "worker-device.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
@@ -75,6 +80,434 @@ static void worker_rx_free(void *context, struct rte_mbuf *packet)
 {
     (void)context;
     rte_pktmbuf_free(packet);
+}
+
+struct ker_rx_decision_peer {
+    pid_t pid;
+    uid_t uid;
+    gid_t gid;
+    uint64_t start_ticks;
+    int pidfd;
+};
+
+struct ker_rx_decision_worker {
+    int fd;
+    bool bootstrapped;
+    uint8_t nonce[KER_RX_DECISION_NONCE_BYTES];
+    uint64_t epoch, packet_id, control_id;
+    struct ker_rx_decision_peer supervisor, consumer;
+#ifdef KER_RX_DECISION_TESTING
+    const char *test_data_marker_path;
+    bool test_data_marked;
+#endif
+};
+
+static int rx_decision_process_start(pid_t pid, uint64_t *ticks)
+{
+    char path[64], buffer[4096];
+    int length = snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid);
+    if (length < 0 || (size_t)length >= sizeof(path)) return -EINVAL;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -errno;
+    ssize_t count;
+    do { count = read(fd, buffer, sizeof(buffer) - 1); } while (count < 0 && errno == EINTR);
+    int saved = errno;
+    close(fd);
+    if (count <= 0) return count < 0 ? -saved : -EPROTO;
+    buffer[count] = '\0';
+    char *close_name = strrchr(buffer, ')');
+    if (!close_name || close_name[1] != ' ') return -EPROTO;
+    char *cursor = close_name + 2;
+    /* stat field 3 (state) starts here; starttime is field 22. */
+    for (unsigned field = 3; field < 22; field++) {
+        char *space = strchr(cursor, ' ');
+        if (!space) return -EPROTO;
+        cursor = space + 1;
+    }
+    errno = 0;
+    char *end = NULL;
+    unsigned long long value = strtoull(cursor, &end, 10);
+    if (errno || end == cursor || (*end && *end != ' ' && *end != '\n')) return -EPROTO;
+    *ticks = (uint64_t)value;
+    return 0;
+}
+
+static bool rx_decision_pidfd_alive(int pidfd)
+{
+    struct pollfd item = {.fd = pidfd, .events = POLLIN};
+    int result;
+    do { result = poll(&item, 1, 0); } while (result < 0 && errno == EINTR);
+    return result == 0 || (result > 0 && !(item.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)));
+}
+
+static int rx_decision_check_peer(const struct ker_rx_decision_peer *peer)
+{
+    uint64_t current = 0;
+    int result = rx_decision_process_start(peer->pid, &current);
+    if (result) return result;
+    if (current != peer->start_ticks || !rx_decision_pidfd_alive(peer->pidfd)) return -ESTALE;
+#ifdef SYS_pidfd_send_signal
+    if (syscall(SYS_pidfd_send_signal, peer->pidfd, 0, NULL, 0) < 0) return -errno;
+#else
+    return -EOPNOTSUPP;
+#endif
+    return 0;
+}
+
+static int rx_decision_recv(int fd, void *buffer, size_t capacity, ssize_t *length,
+        struct ucred *credential, int *rights, size_t expected_rights)
+{
+    char control[CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int) * 16)] = {0};
+    struct iovec vector = {.iov_base = buffer, .iov_len = capacity};
+    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t count;
+    do { count = recvmsg(fd, &message, MSG_CMSG_CLOEXEC); } while (count < 0 && errno == EINTR);
+    if (count < 0) return -errno;
+    bool malformed = count == 0 || (message.msg_flags & MSG_TRUNC) != 0;
+    bool got_credential = false;
+    size_t got_rights = 0;
+    size_t total_rights = 0;
+    for (struct cmsghdr *item = CMSG_FIRSTHDR(&message); item; item = CMSG_NXTHDR(&message, item)) {
+        if (item->cmsg_level != SOL_SOCKET) {
+            malformed = true;
+            continue;
+        }
+        if (item->cmsg_type == SCM_CREDENTIALS && !got_credential &&
+                item->cmsg_len == CMSG_LEN(sizeof(*credential))) {
+            memcpy(credential, CMSG_DATA(item), sizeof(*credential));
+            got_credential = true;
+        } else if (item->cmsg_type == SCM_RIGHTS) {
+            if (!rights || item->cmsg_len < CMSG_LEN(0)) {
+                malformed = true;
+                continue;
+            }
+            size_t rights_bytes = item->cmsg_len - CMSG_LEN(0);
+            if (item->cmsg_len < CMSG_LEN(sizeof(int)) || rights_bytes % sizeof(int))
+                malformed = true;
+            size_t count_rights = rights_bytes / sizeof(int);
+            int *incoming = (int *)CMSG_DATA(item);
+            for (size_t index = 0; index < count_rights; index++) {
+                total_rights++;
+                if (got_rights < 2) rights[got_rights++] = incoming[index];
+                else { close(incoming[index]); malformed = true; }
+            }
+        } else malformed = true;
+    }
+    if (malformed || (message.msg_flags & MSG_CTRUNC) || !got_credential ||
+        got_rights != expected_rights || total_rights != expected_rights)
+        goto malformed;
+    *length = count;
+    return 0;
+malformed:
+    if (rights) for (size_t index = 0; index < got_rights; index++) {
+        if (rights[index] >= 0) close(rights[index]);
+        rights[index] = -1;
+    }
+    return -EPROTO;
+}
+
+static bool rx_decision_credential_matches(const struct ucred *credential,
+        const struct ker_rx_decision_peer *peer)
+{
+    return credential->pid == peer->pid && credential->uid == peer->uid &&
+        credential->gid == peer->gid;
+}
+
+static int rx_decision_validate_header(const struct ker_rx_decision_header *header,
+        size_t length, uint16_t type, const struct ker_rx_decision_worker *worker)
+{
+    if (length < sizeof(*header) || header->magic != KER_RX_DECISION_MAGIC ||
+        header->version != KER_RX_DECISION_VERSION || header->type != type ||
+        header->header_bytes != sizeof(*header) || header->message_bytes != length ||
+        header->worker_epoch != worker->epoch ||
+        memcmp(header->run_nonce, worker->nonce, sizeof(worker->nonce))) return -EPROTO;
+    return 0;
+}
+
+static int rx_decision_prepare(int fd, struct ker_rx_decision_worker *worker)
+{
+    int enabled = 1;
+    int socket_type = 0;
+    socklen_t type_size = sizeof(socket_type);
+    struct ucred socket_peer = {0};
+    socklen_t peer_size = sizeof(socket_peer);
+    if (setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled))) return -errno;
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &socket_type, &type_size)) return -errno;
+    if (type_size != sizeof(socket_type) || socket_type != SOCK_SEQPACKET) return -EPROTO;
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &socket_peer, &peer_size)) return -errno;
+    if (peer_size != sizeof(socket_peer) || socket_peer.pid <= 0) return -EPROTO;
+    uint64_t supervisor_start = 0;
+    int result = rx_decision_process_start(socket_peer.pid, &supervisor_start);
+    if (result) return result;
+    worker->fd = fd;
+    worker->supervisor.pid = socket_peer.pid;
+    worker->supervisor.uid = socket_peer.uid;
+    worker->supervisor.gid = socket_peer.gid;
+    worker->supervisor.start_ticks = supervisor_start;
+    worker->supervisor.pidfd = -1;
+    return 0;
+}
+
+static int rx_decision_bootstrap(struct ker_rx_decision_worker *worker,
+        const uint8_t *buffer, ssize_t length, const struct ucred *sender,
+        const struct ker_rx_decision_peer *socket_peer, int received_fds[2])
+{
+    int result = 0;
+    if (length != (ssize_t)(sizeof(struct ker_rx_decision_header) +
+            sizeof(struct ker_rx_decision_bootstrap))) return -EPROTO;
+    struct ker_rx_decision_header header;
+    memcpy(&header, buffer, sizeof(header));
+    if (header.magic != KER_RX_DECISION_MAGIC || header.version != KER_RX_DECISION_VERSION ||
+        header.type != KER_RX_DECISION_BOOTSTRAP || header.header_bytes != sizeof(header) ||
+        header.message_bytes != (uint32_t)length || !header.worker_epoch ||
+        header.control_id != 1 || header.packet_id || header.deadline_ns ||
+        !rx_decision_credential_matches(sender, socket_peer))
+        return -EPROTO;
+    struct ker_rx_decision_bootstrap bootstrap;
+    memcpy(&bootstrap, buffer + sizeof(header), sizeof(bootstrap));
+    if (bootstrap.target_role != KER_RX_DECISION_TARGET_CONSUMER ||
+        bootstrap.target_pid == 0 || bootstrap.supervisor_pid != (uint32_t)socket_peer->pid ||
+        bootstrap.supervisor_uid != (uint32_t)socket_peer->uid ||
+        bootstrap.supervisor_gid != (uint32_t)socket_peer->gid || bootstrap.reserved ||
+        !bootstrap.target_start_ticks || !bootstrap.supervisor_start_ticks) {
+        return -EPROTO;
+    }
+    if (bootstrap.supervisor_start_ticks != worker->supervisor.start_ticks) return -EPROTO;
+    uint64_t target_start = 0;
+    result = rx_decision_process_start((pid_t)bootstrap.target_pid, &target_start);
+    if (result || target_start != bootstrap.target_start_ticks) return -ESTALE;
+    memcpy(worker->nonce, header.run_nonce, sizeof(worker->nonce));
+    worker->epoch = header.worker_epoch;
+    worker->packet_id = 0;
+    worker->control_id = header.control_id;
+    struct ker_rx_decision_peer consumer = {.pid = (pid_t)bootstrap.target_pid,
+        .uid = (uid_t)bootstrap.target_uid, .gid = (gid_t)bootstrap.target_gid,
+        .start_ticks = bootstrap.target_start_ticks, .pidfd = received_fds[0]};
+    struct ker_rx_decision_peer supervisor = {.pid = (pid_t)bootstrap.supervisor_pid,
+        .uid = (uid_t)bootstrap.supervisor_uid, .gid = (gid_t)bootstrap.supervisor_gid,
+        .start_ticks = bootstrap.supervisor_start_ticks, .pidfd = received_fds[1]};
+    if ((result = rx_decision_check_peer(&consumer)) ||
+        (result = rx_decision_check_peer(&supervisor))) return result;
+    worker->consumer = consumer;
+    worker->supervisor.pidfd = supervisor.pidfd;
+    received_fds[0] = received_fds[1] = -1;
+    worker->bootstrapped = true;
+    return 0;
+}
+
+static int rx_decision_send_ready(struct ker_rx_decision_worker *worker)
+{
+    struct ker_rx_decision_header ready = {0};
+    ready.magic = KER_RX_DECISION_MAGIC;
+    ready.version = KER_RX_DECISION_VERSION;
+    ready.type = KER_RX_DECISION_READY;
+    ready.header_bytes = sizeof(ready);
+    ready.message_bytes = sizeof(ready);
+    memcpy(ready.run_nonce, worker->nonce, sizeof(worker->nonce));
+    ready.worker_epoch = worker->epoch;
+    ready.control_id = 2;
+    ssize_t sent = send(worker->fd, &ready, sizeof(ready), MSG_DONTWAIT | MSG_NOSIGNAL);
+    return sent == (ssize_t)sizeof(ready) ? 0 : (sent < 0 ? -errno : -EIO);
+}
+
+static int rx_decision_send_settled(struct ker_rx_decision_worker *worker)
+{
+    struct ker_rx_decision_header reply = {0};
+    reply.magic = KER_RX_DECISION_MAGIC;
+    reply.version = KER_RX_DECISION_VERSION;
+    reply.type = KER_RX_DECISION_SETTLED;
+    reply.header_bytes = sizeof(reply);
+    reply.message_bytes = sizeof(reply) + sizeof(struct ker_rx_decision_settled);
+    memcpy(reply.run_nonce, worker->nonce, sizeof(worker->nonce));
+    reply.worker_epoch = worker->epoch;
+    reply.control_id = KER_RX_DECISION_STOP_CONTROL_ID;
+    struct ker_rx_decision_settled body = {.last_packet_id = worker->packet_id,
+        .outstanding_count = 0, .reserved = 0};
+    struct iovec vectors[] = {{&reply, sizeof(reply)}, {&body, sizeof(body)}};
+    struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
+    ssize_t sent;
+    do { sent = sendmsg(worker->fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL); }
+    while (sent < 0 && errno == EINTR);
+    if (sent != (ssize_t)(sizeof(reply) + sizeof(body))) return sent < 0 ? -errno : -EIO;
+    return 0;
+}
+
+static int rx_decision_handle_control(struct ker_rx_decision_worker *worker,
+        bool *ready, bool *stopping, bool *settled)
+{
+    uint8_t buffer[KER_RX_DECISION_MAX_MESSAGE];
+    struct ucred sender = {0};
+    int fds[2] = {-1, -1};
+    ssize_t length = 0;
+    int result = rx_decision_recv(worker->fd, buffer, sizeof(buffer), &length,
+        &sender, fds,
+        worker->bootstrapped ? 0 : 2);
+    if (result == -EAGAIN || result == -EWOULDBLOCK) return 0;
+    if (result) {
+        for (size_t i = 0; i < 2; i++) if (fds[i] >= 0) close(fds[i]);
+        return result;
+    }
+    if (!worker->bootstrapped) {
+        result = rx_decision_bootstrap(worker, buffer, length, &sender,
+            &worker->supervisor, fds);
+        for (size_t i = 0; i < 2; i++) if (fds[i] >= 0) close(fds[i]);
+        return result;
+    }
+    if (!rx_decision_credential_matches(&sender, &worker->consumer) ||
+        rx_decision_check_peer(&worker->consumer) ||
+        length < (ssize_t)sizeof(struct ker_rx_decision_header)) return -EPROTO;
+    struct ker_rx_decision_header header;
+    memcpy(&header, buffer, sizeof(header));
+    if (!*ready) {
+        if (rx_decision_validate_header(&header, (size_t)length,
+                KER_RX_DECISION_HELLO, worker) == 0 && !header.packet_id &&
+            !header.deadline_ns && header.control_id == 2) {
+            result = rx_decision_send_ready(worker);
+            if (result) return result;
+            *ready = true;
+            return 0;
+        }
+    }
+    if (*stopping || *settled || rx_decision_validate_header(&header,
+            (size_t)length, KER_RX_DECISION_STOP, worker) || header.packet_id ||
+        header.deadline_ns || header.control_id != KER_RX_DECISION_STOP_CONTROL_ID ||
+        length != (ssize_t)sizeof(header)) return -EPROTO;
+    *stopping = true;
+    return 0;
+}
+
+static int rx_decision_lease(struct ker_rx_decision_worker *worker,
+        struct rte_mbuf *packet, uint16_t queue, uint16_t queue_count,
+        uint16_t mtu, uint32_t *action, bool *stopping)
+{
+    if (!worker || !packet || !action || !worker->epoch ||
+        worker->packet_id == UINT64_MAX || packet->pkt_len > KER_RX_DECISION_MAX_FRAME ||
+        packet->pkt_len > (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN ||
+        packet->data_len > packet->pkt_len || packet->nb_segs == 0 ||
+        packet->data_off > packet->buf_len || packet->data_len > packet->buf_len - packet->data_off ||
+        packet->data_len > KER_RX_DECISION_MAX_MESSAGE - sizeof(struct ker_rx_decision_header) -
+            sizeof(struct ker_rx_decision_data)) return -EPROTO;
+    const uint64_t allowed_rx = RTE_MBUF_F_RX_IP_CKSUM_MASK | RTE_MBUF_F_RX_L4_CKSUM_MASK;
+    uint64_t ip_status = packet->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
+    uint64_t l4_status = packet->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK;
+    if ((packet->ol_flags & ~allowed_rx) ||
+        (ip_status && ip_status != RTE_MBUF_F_RX_IP_CKSUM_GOOD) ||
+        (l4_status && l4_status != RTE_MBUF_F_RX_L4_CKSUM_GOOD) || packet->vlan_tci)
+        return -EOPNOTSUPP;
+    int result = rx_decision_check_peer(&worker->consumer);
+    if (result) return result;
+    int64_t now_ns;
+    if (ker_worker_now_ns(&now_ns) || now_ns < 0 ||
+        (uint64_t)now_ns > UINT64_MAX - KER_RX_DECISION_DEADLINE_NS) return -EIO;
+    uint64_t deadline_ns = (uint64_t)now_ns + KER_RX_DECISION_DEADLINE_NS;
+    uint64_t packet_id = ++worker->packet_id;
+    struct ker_rx_decision_header header = {0};
+    header.magic = KER_RX_DECISION_MAGIC;
+    header.version = KER_RX_DECISION_VERSION;
+    header.type = KER_RX_DECISION_DATA;
+    header.header_bytes = sizeof(header);
+    header.message_bytes = sizeof(header) + sizeof(struct ker_rx_decision_data) + packet->data_len;
+    memcpy(header.run_nonce, worker->nonce, sizeof(worker->nonce));
+    header.worker_epoch = worker->epoch;
+    header.packet_id = packet_id;
+    header.deadline_ns = deadline_ns;
+    struct ker_rx_decision_data data = {.packet_bytes = packet->pkt_len,
+        .first_segment_bytes = packet->data_len, .data_offset = packet->data_off,
+        .segment_count = packet->nb_segs, .queue_id = queue, .queue_count = queue_count,
+        .vlan_tci = packet->vlan_tci, .flags = 0, .rx_offload_flags = packet->ol_flags,
+        .data_room_bytes = packet->buf_len};
+    struct iovec vectors[] = {{&header, sizeof(header)}, {&data, sizeof(data)},
+        {rte_pktmbuf_mtod(packet, void *), packet->data_len}};
+    struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 3};
+    for (;;) {
+        if (ker_worker_now_ns(&now_ns) || now_ns < 0 || (uint64_t)now_ns >= deadline_ns)
+            return -ETIMEDOUT;
+        ssize_t sent = sendmsg(worker->fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (sent == (ssize_t)header.message_bytes) break;
+        if (sent >= 0) return -EIO; /* SOCK_SEQPACKET must accept the whole lease. */
+        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return -errno;
+        if (ker_worker_now_ns(&now_ns) || now_ns < 0 || (uint64_t)now_ns >= deadline_ns) return -ETIMEDOUT;
+        uint64_t remaining_ns = deadline_ns - (uint64_t)now_ns;
+        int timeout_ms = (int)((remaining_ns + 999999) / 1000000);
+        struct pollfd writable = {.fd = worker->fd, .events = POLLOUT};
+        int polled = poll(&writable, 1, timeout_ms);
+        if (polled < 0 && errno == EINTR) continue;
+        if (polled < 0) return -errno;
+        if (polled == 0) return -ETIMEDOUT;
+        if (!(writable.revents & POLLOUT)) return -EPIPE;
+    }
+#ifdef KER_RX_DECISION_TESTING
+    if (worker->test_data_marker_path && !worker->test_data_marked) {
+        int marker_fd = open(worker->test_data_marker_path,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (marker_fd < 0) return -errno;
+        char marker[64];
+        int marker_length = snprintf(marker, sizeof(marker), "%llu\n",
+            (unsigned long long)packet_id);
+        int marker_error = marker_length > 0 && (size_t)marker_length < sizeof(marker) ? 0 : -EOVERFLOW;
+        size_t marker_offset = 0;
+        while (!marker_error && marker_offset < (size_t)marker_length) {
+            ssize_t written = write(marker_fd, marker + marker_offset,
+                (size_t)marker_length - marker_offset);
+            if (written > 0) marker_offset += (size_t)written;
+            else if (written < 0 && errno == EINTR) continue;
+            else marker_error = written < 0 ? -errno : -EIO;
+        }
+        if (close(marker_fd) && !marker_error) marker_error = -errno;
+        if (marker_error) return marker_error;
+        worker->test_data_marked = true;
+    }
+#endif
+    for (;;) {
+        if (ker_worker_now_ns(&now_ns) || now_ns < 0 || (uint64_t)now_ns >= deadline_ns) return -ETIMEDOUT;
+        uint64_t remaining_ns = deadline_ns - (uint64_t)now_ns;
+        int timeout_ms = (int)((remaining_ns + 999999) / 1000000);
+        struct pollfd readable = {.fd = worker->fd, .events = POLLIN};
+        int polled = poll(&readable, 1, timeout_ms);
+        if (polled < 0 && errno == EINTR) continue;
+        if (polled == 0) return -ETIMEDOUT;
+        if (polled < 0) return -errno;
+        if (ker_worker_now_ns(&now_ns) || now_ns < 0 || (uint64_t)now_ns >= deadline_ns)
+            return -ETIMEDOUT;
+        if (!(readable.revents & POLLIN)) return -EPIPE;
+        uint8_t buffer[KER_RX_DECISION_MAX_MESSAGE];
+        struct ucred sender = {0};
+        int unexpected_fds[2] = {-1, -1};
+        ssize_t length = 0;
+        result = rx_decision_recv(worker->fd, buffer, sizeof(buffer), &length,
+            &sender, unexpected_fds, 0);
+        if (result) return result;
+        if (!rx_decision_credential_matches(&sender, &worker->consumer) ||
+            rx_decision_check_peer(&worker->consumer) ||
+            length < (ssize_t)sizeof(struct ker_rx_decision_header)) return -EPROTO;
+        struct ker_rx_decision_header response;
+        memcpy(&response, buffer, sizeof(response));
+        if (response.type == KER_RX_DECISION_STOP) {
+            if (*stopping || rx_decision_validate_header(&response, (size_t)length,
+                    KER_RX_DECISION_STOP, worker) || length != (ssize_t)sizeof(response) ||
+                response.packet_id || response.deadline_ns ||
+                response.control_id != KER_RX_DECISION_STOP_CONTROL_ID)
+                return -EPROTO;
+            *stopping = true;
+            continue; /* Resolve this exact outstanding mbuf before SETTLED. */
+        }
+        if (length != (ssize_t)(sizeof(struct ker_rx_decision_header) +
+                sizeof(struct ker_rx_decision_result))) return -EPROTO;
+        struct ker_rx_decision_result decision;
+        memcpy(&decision, buffer + sizeof(response), sizeof(decision));
+        if (rx_decision_validate_header(&response, (size_t)length,
+                KER_RX_DECISION_RESULT, worker) || response.packet_id != packet_id ||
+            response.control_id || response.deadline_ns || decision.reserved[0] ||
+            decision.reserved[1] || decision.reserved[2] ||
+            (decision.action != KER_RX_DECISION_LOCAL && decision.action != KER_RX_DECISION_DROP))
+            return -EPROTO;
+        if (*stopping && decision.action != KER_RX_DECISION_DROP) return -EPROTO;
+        if (ker_worker_now_ns(&now_ns) || now_ns < 0 ||
+            (uint64_t)now_ns >= deadline_ns) return -ETIMEDOUT;
+        *action = decision.action;
+        return 0;
+    }
 }
 static int number(const char *text)
 {
@@ -211,15 +644,6 @@ static bool frame_size_supported(const unsigned char *bytes, size_t length, int 
     size_t header = RTE_ETHER_HDR_LEN + (tagged ? RTE_VLAN_HLEN : 0);
     return length >= header && length <= (size_t)mtu + header;
 }
-static bool metadata_supported(const struct rte_mbuf *packet)
-{
-    const uint64_t changed = RTE_MBUF_F_RX_VLAN_STRIPPED | RTE_MBUF_F_RX_QINQ_STRIPPED |
-        RTE_MBUF_F_RX_LRO | RTE_MBUF_F_RX_SEC_OFFLOAD | RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED;
-    return !(packet->ol_flags & changed) &&
-        (packet->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK) != RTE_MBUF_F_RX_IP_CKSUM_NONE &&
-        (packet->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) != RTE_MBUF_F_RX_L4_CKSUM_NONE;
-}
-
 static uint16_t tx_burst(void *context, struct rte_mbuf **packets, uint16_t count)
 {
     return rte_eth_tx_burst(*(uint16_t *)context, 0, packets, count);
@@ -233,13 +657,32 @@ int main(int argc, char **argv)
         printf("{\"max_numa_nodes\":%d}\n", RTE_MAX_NUMA_NODES);
         return RTE_MAX_NUMA_NODES > 0 ? 0 : 1;
     }
-    int packet_fd = -1, control_fd = -1, mtu_fd = -1, split = 0;
+    int packet_fd = -1, control_fd = -1, mtu_fd = -1, rx_decision_fd = -1, split = 0;
     bool rss_enabled = false;
     int queues = 1;
     bool numa = true, all_multicast = false, pcap_nsec = false, log_level_set = false;
     const char *pcap_dir = NULL, *log_dir = NULL, *exception_iface = NULL;
     int exception_type = 0, exception_queue = 256, exception_rate = 0, exception_console_rate = 0, exception_general_rate = 0;
     const char *exception_mode = "ethertype", *exception_policy = "accept", *exception_tcp = NULL, *exception_udp = NULL;
+    struct ker_rx_decision_worker rx_decision = {.fd = -1,
+        .supervisor = {.pidfd = -1}, .consumer = {.pidfd = -1}};
+    bool rx_decision_enabled = false, rx_decision_ready = false;
+    bool rx_decision_stopping = false, rx_decision_settled = false;
+    bool rx_pollers_stopped = false;
+#ifdef KER_RX_DECISION_TESTING
+    bool rx_test_eagain_once = false;
+    uint64_t rx_test_eagain_id = 0, rx_test_eagain_injected = 0, rx_test_eagain_same_id = 0;
+    const char *rx_test_eagain = getenv("KER_RX_DECISION_TEST_EAGAIN_ONCE");
+    if (rx_test_eagain) {
+        if (strcmp(rx_test_eagain, "1")) return 2;
+        rx_test_eagain_once = true;
+    }
+    rx_decision.test_data_marker_path = getenv("KER_RX_DECISION_TEST_DATA_MARKER_PATH");
+#endif
+    uint16_t rx_queue_id[BURST] = {0};
+    uint64_t rx_decision_leases = 0, rx_decision_drops = 0;
+    uint64_t rx_decision_local = 0, rx_decision_forwarded = 0;
+    uint64_t rx_decision_local_cancelled = 0;
     struct ker_exception_filter exception_filter;
     int idle_sleep_us = 1000, tx_delay_us = 0;
     int promiscuous = -1, tx_offloads = 0;
@@ -270,6 +713,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--tx-delay-us")) tx_delay_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--idle-sleep-us")) idle_sleep_us = number(argv[++i]);
         else if (!strcmp(argv[i], "--packet-fd")) packet_fd = number(argv[++i]);
+        else if (!strcmp(argv[i], "--rx-decision-fd")) rx_decision_fd = number(argv[++i]);
         else if (!strcmp(argv[i], "--bond-policy")) bond_policy = argv[++i];
         else if (!strcmp(argv[i], "--tx-offloads")) tx_offloads = number(argv[++i]);
         else if (!strcmp(argv[i], "--rx-lcores")) rx_lcores = argv[++i];
@@ -302,8 +746,25 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: ker-io-worker --packet-fd N --control-fd N --port NAME [--tx-offloads 0..2] [--rss] [--queues 1..16] [--mtu-fd N] [--max-mtu 1280..9000] [--mtu 1280..9000] [--mbuf-mode large|scatter] [--numa|--no-numa] [--all-multicast] [--idle-sleep-us 0..100000] [--tx-delay-us 0..100] [--promiscuous|--no-promiscuous] [--log-dir DIR] [--log-level 1..8] [--pcap-dir DIR] [--pcap-snaplen N] [--pcap-max-bytes N] [--pcap-nsec] -- EAL_ARGS\n");
         return 2;
     }
+    if (rx_decision_fd >= 0 && (rx_decision_fd == packet_fd || rx_decision_fd == control_fd || rx_decision_fd == mtu_fd)) return 2;
+#ifdef KER_RX_DECISION_TESTING
+    if ((rx_test_eagain_once || rx_decision.test_data_marker_path) && rx_decision_fd < 0)
+        return 2;
+#endif
     if (fcntl(packet_fd, F_SETFL, O_NONBLOCK) || fcntl(control_fd, F_SETFL, O_NONBLOCK)) {
         perror("ker packet/control channel"); return 1;
+    }
+    if (rx_decision_fd >= 0) {
+        int old_flags = fcntl(rx_decision_fd, F_GETFL);
+        if (old_flags < 0 || fcntl(rx_decision_fd, F_SETFL, old_flags | O_NONBLOCK)) {
+            perror("ker RX decision channel"); return 1;
+        }
+        int prepared = rx_decision_prepare(rx_decision_fd, &rx_decision);
+        if (prepared) {
+            fprintf(stderr, "ker: RX decision channel setup failed: %s\n", strerror(-prepared));
+            return 1;
+        }
+        rx_decision_enabled = true;
     }
     struct sigaction action = {.sa_handler = stop_worker};
     sigemptyset(&action.sa_mask);
@@ -342,6 +803,8 @@ int main(int argc, char **argv)
     struct rte_mbuf *pending_tx = NULL, *rx[BURST] = {0};
     uint16_t rx_count = 0, rx_index = 0, next_queue = 0;
     bool rx_shared[BURST] = {0};
+    bool rx_decision_authorized[BURST] = {0};
+    uint64_t rx_decision_authorized_id[BURST] = {0};
     uint64_t rx_by_queue[MAX_QUEUES] = {0}, rx_rss_metadata = 0;
     struct ker_pcap tx_capture = {0}, rx_capture = {0};
     uint64_t transmitted = 0, received = 0, tx_dropped = 0, rx_dropped = 0, tx_retries = 0, rx_retries = 0;
@@ -707,6 +1170,24 @@ int main(int argc, char **argv)
             if (ker_worker_now_ns(&drain_started)) goto clock_error;
             drain_progress = drain_started;
         }
+        if (rx_decision_enabled) {
+            struct pollfd decision_event = {.fd = rx_decision.fd, .events = POLLIN};
+            int decision_poll;
+            do { decision_poll = poll(&decision_event, 1, 0); }
+            while (decision_poll < 0 && errno == EINTR);
+            if (decision_poll < 0 || (decision_poll > 0 &&
+                    (decision_event.revents & (POLLERR | POLLHUP | POLLNVAL)))) {
+                fprintf(stderr, "ker: RX decision channel closed or failed\n"); status = 1; break;
+            }
+            if (decision_poll > 0 && (decision_event.revents & POLLIN)) {
+                int decision_status = rx_decision_handle_control(&rx_decision,
+                    &rx_decision_ready, &rx_decision_stopping, &rx_decision_settled);
+                if (decision_status) {
+                    fprintf(stderr, "ker: RX decision control failed: %s\n", strerror(-decision_status));
+                    status = 1; break;
+                }
+            }
+        }
         bool progress = false;
         /* Alternate which traffic source gets its TX opportunity first. */
         if (exception_first && exception.pending && !draining) {
@@ -798,24 +1279,58 @@ int main(int argc, char **argv)
         exception_first = !exception_first;
         if (draining) {
             uint64_t abandoned;
-            int stopped = ker_worker_rx_lcores_stop(&rx_workers, &abandoned, rx_capture.file ? &rx_capture : NULL);
-            rx_shutdown_discarded += abandoned;
+            int stopped = 0;
+            if (!rx_pollers_stopped) {
+                stopped = ker_worker_rx_lcores_stop(&rx_workers, &abandoned,
+                    rx_capture.file ? &rx_capture : NULL);
+                rx_pollers_stopped = true;
+                rx_shutdown_discarded += abandoned;
+            }
             if (stopped) { status = 1; break; }
             rx_shutdown_discarded += rx_count - rx_index;
-            while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
+            while (rx_index < rx_count) {
+                if (rx_decision_authorized[rx_index])
+                    rx_decision_local_cancelled++;
+                rte_pktmbuf_free(rx[rx_index]);
+                rx[rx_index] = NULL;
+                rx_decision_authorized[rx_index] = false;
+                rx_decision_authorized_id[rx_index] = 0;
+                rx_index++;
+            }
+            /* The worker may acknowledge STOP only after RX polling is
+             * quiesced and every queued suffix mbuf has been released. */
+            if (rx_decision_stopping && !rx_decision_settled) {
+                int settled = rx_decision_send_settled(&rx_decision);
+                if (settled) {
+                    fprintf(stderr, "ker: RX decision settlement failed: %s\n",
+                        strerror(-settled));
+                    status = 1;
+                    break;
+                }
+                rx_decision_settled = true;
+                /* No protocol traffic is valid after SETTLED. Closing our
+                 * endpoint now also avoids treating the consumer's expected
+                 * close as an unexpected mid-session channel failure. */
+                close(rx_decision.fd);
+                rx_decision.fd = -1;
+                rx_decision_fd = -1;
+            }
             int64_t now;
             if (ker_worker_now_ns(&now)) goto clock_error;
             if (progress) drain_progress = now;
-            if (!pending_tx && !tx_length && !batch.count && now - drain_progress >= INT64_C(5000000)) break;
+            if (!pending_tx && !tx_length && !batch.count && now - drain_progress >= INT64_C(5000000) &&
+                (!rx_decision_enabled || rx_decision_settled)) break;
             if (now - drain_started >= INT64_C(500000000)) { status = 1; break; }
             if (!progress) usleep(1000);
             continue;
         }
-        if (rx_index == rx_count) {
+        if (rx_index == rx_count && (!rx_decision_enabled ||
+                (rx_decision_ready && !rx_decision_stopping))) {
             for (int visited = 0; visited < queues; visited++) {
                 uint16_t queue = next_queue;
                 next_queue = (uint16_t)((next_queue + 1) % queues);
                 rx_count = ker_worker_rx_lcores_burst(&rx_workers, queue, rx, BURST);
+                for (uint16_t index = 0; index < rx_count; index++) rx_queue_id[index] = queue;
                 rx_by_queue[queue] += rx_count;
                 for (uint16_t index = 0; index < rx_count; index++)
                     if (rx[index]->ol_flags & RTE_MBUF_F_RX_RSS_HASH) rx_rss_metadata++;
@@ -823,6 +1338,7 @@ int main(int argc, char **argv)
             }
             rx_index = 0;
             memset(rx_shared, 0, sizeof(rx_shared));
+            memset(rx_decision_authorized, 0, sizeof(rx_decision_authorized));
             /* Each received frame is captured once, even if channel delivery
              * later retries or metadata validation rejects it. */
             if (pcap_dir) for (uint16_t i = 0; i < rx_count; ++i) {
@@ -834,14 +1350,23 @@ int main(int argc, char **argv)
             }
             if (status) break;
         }
-        while (rx_index < rx_count) {
+        while (rx_index < rx_count && !rx_decision_stopping) {
             struct rte_mbuf *packet = rx[rx_index];
             uint32_t length = packet->pkt_len;
             const void *bytes = NULL;
-            if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && metadata_supported(packet))
+            bool supported_metadata = ker_io_worker_metadata_supported(packet);
+            if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && supported_metadata)
                 bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
             if (bytes && frame_size_supported(bytes, length, mtu)) {
                 enum ker_exception_route route = ker_worker_exception_route(&exception, packet);
+                if (!ker_io_worker_route_metadata_supported(packet, route,
+                        rx_decision_enabled)) {
+                    rx_dropped++;
+                    rte_pktmbuf_free(packet);
+                    rx[rx_index++] = NULL;
+                    progress = true;
+                    continue;
+                }
                 if (route == KER_EXCEPTION_DROP) {
                     exception.fragment_dropped++; rx_dropped++;
                     rte_pktmbuf_free(rx[rx_index]); rx[rx_index++] = NULL; progress = true; continue;
@@ -865,10 +1390,51 @@ int main(int argc, char **argv)
                     if (result && result != -ENOBUFS) { status = 1; break; }
                     rx_index++; progress = true; continue;
                 }
+                /* The private decision lease is limited to frames that the
+                 * existing exception policy already sends to local Linux.
+                 * It never changes host/shared exception routing. */
+                if (rx_decision_enabled && route == KER_EXCEPTION_NATIVE) {
+                    if (!rx_decision_authorized[rx_index]) {
+                        uint32_t decision = 0;
+                        int decided = rx_decision_lease(&rx_decision, packet,
+                            rx_queue_id[rx_index], (uint16_t)queues, (uint16_t)mtu,
+                            &decision, &rx_decision_stopping);
+                        if (decided) {
+                            fprintf(stderr, "ker: RX decision lease failed closed: %s\n",
+                                strerror(-decided));
+                            status = 1;
+                            break;
+                        }
+                        rx_decision_leases++;
+                        if (decision == KER_RX_DECISION_DROP) {
+                            rx_decision_drops++;
+                            rx_dropped++;
+                            rte_pktmbuf_free(packet);
+                            rx[rx_index++] = NULL;
+                            progress = true;
+                            continue;
+                        }
+                        /* A timely LOCAL authorization belongs to this exact
+                         * retained mbuf until packet_fd accepts it. */
+                        rx_decision_authorized[rx_index] = true;
+                        rx_decision_authorized_id[rx_index] = rx_decision.packet_id;
+                        rx_decision_local++;
+                    }
+                }
                 struct ker_packet_header header = {0};
                 struct iovec vectors[] = {{&header, sizeof(header)}, {(void *)bytes, length}};
                 struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
-                ssize_t count = sendmsg(packet_fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+                ssize_t count;
+#ifdef KER_RX_DECISION_TESTING
+                if (rx_test_eagain_once && rx_decision_authorized[rx_index]) {
+                    rx_test_eagain_once = false;
+                    rx_test_eagain_id = rx_decision_authorized_id[rx_index];
+                    rx_test_eagain_injected++;
+                    errno = EAGAIN;
+                    count = -1;
+                } else
+#endif
+                count = sendmsg(packet_fd, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
                 if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
                     rx_retries++; break; /* Retain the complete FIFO suffix. */
                 }
@@ -879,6 +1445,22 @@ int main(int argc, char **argv)
                     break;
                 }
                 if (count != (ssize_t)(length + sizeof(header))) { status = 1; break; }
+                if (rx_decision_authorized[rx_index]) {
+                    if (!rx_decision_authorized_id[rx_index]) { status = 1; break; }
+                    rx_decision_forwarded++;
+#ifdef KER_RX_DECISION_TESTING
+                    if (rx_test_eagain_id) {
+                        if (rx_test_eagain_id != rx_decision_authorized_id[rx_index]) {
+                            status = 1;
+                            break;
+                        }
+                        rx_test_eagain_same_id++;
+                        rx_test_eagain_id = 0;
+                    }
+#endif
+                }
+                rx_decision_authorized[rx_index] = false;
+                rx_decision_authorized_id[rx_index] = 0;
                 if (packet->nb_segs > 1) rx_multiseg++;
                 received++;
                 received_bytes += length;
@@ -888,6 +1470,41 @@ int main(int argc, char **argv)
             progress = true;
         }
         if (status) break;
+        /* Consumer shutdown closes only the RX decision path. Quiesce the
+         * pollers and settle its bounded leases, but keep the worker's TX,
+         * MTU and control services alive until the independent native-run
+         * shutdown request arrives. */
+        if (rx_decision_stopping && !rx_decision_settled) {
+            uint64_t abandoned = 0;
+            if (!rx_pollers_stopped) {
+                int stopped = ker_worker_rx_lcores_stop(&rx_workers, &abandoned,
+                    rx_capture.file ? &rx_capture : NULL);
+                rx_pollers_stopped = true;
+                rx_shutdown_discarded += abandoned;
+                if (stopped) { status = 1; break; }
+            }
+            rx_shutdown_discarded += rx_count - rx_index;
+            while (rx_index < rx_count) {
+                if (rx_decision_authorized[rx_index])
+                    rx_decision_local_cancelled++;
+                rte_pktmbuf_free(rx[rx_index]);
+                rx[rx_index] = NULL;
+                rx_decision_authorized[rx_index] = false;
+                rx_decision_authorized_id[rx_index] = 0;
+                rx_index++;
+            }
+            int settled = rx_decision_send_settled(&rx_decision);
+            if (settled) {
+                fprintf(stderr, "ker: RX decision settlement failed: %s\n",
+                    strerror(-settled));
+                status = 1;
+                break;
+            }
+            rx_decision_settled = true;
+            close(rx_decision.fd);
+            rx_decision.fd = -1;
+            rx_decision_fd = -1;
+        }
         if (!progress) {
             short packet_events;
             int wait_us;
@@ -899,7 +1516,7 @@ int main(int argc, char **argv)
                 int remaining_us = ker_worker_tx_wait_us(&batch, tx_delay_us, tx_now);
                 if (wait_us > remaining_us) wait_us = remaining_us;
             }
-            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}, {rx_workers.notify_fd, POLLIN, 0}};
+            struct pollfd fds[] = {{control_fd, POLLIN, 0}, {packet_fd, packet_events, 0}, {mtu_fd, POLLIN, 0}, {exception.fd, POLLIN, 0}, {rx_workers.notify_fd, POLLIN, 0}, {rx_decision_enabled ? rx_decision.fd : -1, POLLIN, 0}};
             /* Ethernet PMD RX has no channel readiness notification. Idle
              * channel TX and control wake ppoll; retained work uses bounded
              * retries and RX suffixes watch channel writability. Linux owns
@@ -907,7 +1524,7 @@ int main(int argc, char **argv)
             if (bond_policy && wait_us > 10000) wait_us = 10000;
             struct timespec timeout = {.tv_nsec = (long)wait_us * 1000};
             idle_waits++;
-            int result = ppoll(fds, 5, &timeout, NULL);
+            int result = ppoll(fds, 6, &timeout, NULL);
             if (!result) idle_timeouts++;
             else if (result < 0 && errno != EINTR) { perror("ker: idle wait"); status = 1; break; }
         }
@@ -939,7 +1556,14 @@ cleanup:
     if (pending_tx) rte_pktmbuf_free(pending_tx);
     ker_worker_tx_discard(&batch);
     rx_shutdown_discarded += rx_count - rx_index;
-    while (rx_index < rx_count) rte_pktmbuf_free(rx[rx_index++]);
+    while (rx_index < rx_count) {
+        if (rx_decision_authorized[rx_index]) rx_decision_local_cancelled++;
+        rte_pktmbuf_free(rx[rx_index]);
+        rx[rx_index] = NULL;
+        rx_decision_authorized[rx_index] = false;
+        rx_decision_authorized_id[rx_index] = 0;
+        rx_index++;
+    }
     if (ker_worker_exception_close(&exception)) { fprintf(stderr, "ker: exception TAP cleanup failed\n"); status = 1; }
     bool had_host_receive_mode = receive_mode.socket_fd >= 0;
     if (ker_worker_receive_mode_restore(&receive_mode)) {
@@ -956,8 +1580,19 @@ cleanup:
         fprintf(stderr, "ker: %u packet buffers still owned after ethdev shutdown\n", outstanding);
         status = 1;
     } else if (pool) rte_mempool_free(pool);
-    printf("KER_IO_DONE {\"rx_reconfigure_discarded\":%llu,\"rx_pollers\":[",
-        (unsigned long long)rx_reconfigure_discarded);
+    printf("KER_IO_DONE {\"rx_reconfigure_discarded\":%llu,\"rx_decision_enabled\":%s,\"rx_decision_leases\":%llu,\"rx_decision_drops\":%llu,\"rx_decision_local\":%llu,\"rx_decision_forwarded\":%llu,\"rx_decision_local_cancelled\":%llu",
+        (unsigned long long)rx_reconfigure_discarded, rx_decision_enabled ? "true" : "false",
+        (unsigned long long)rx_decision_leases, (unsigned long long)rx_decision_drops,
+        (unsigned long long)rx_decision_local, (unsigned long long)rx_decision_forwarded,
+        (unsigned long long)rx_decision_local_cancelled);
+#ifdef KER_RX_DECISION_TESTING
+    printf(",\"rx_decision_test_eagain_injected\":%llu,\"rx_decision_test_eagain_same_id\":%llu,\"rx_decision_test_data_marked\":%s",
+        (unsigned long long)rx_test_eagain_injected,
+        (unsigned long long)rx_test_eagain_same_id,
+        rx_decision.test_data_marked ? "true" : "false");
+#endif
+    printf(",\"rx_decision_settled\":%s,\"rx_pollers\":[",
+        rx_decision_settled ? "true" : "false");
     for (uint16_t q = 0; q < rx_workers.queues; q++) {
         const struct ker_rx_poll_queue *poller = &rx_workers.queue[q];
         printf("%s{\"queue\":%u,\"owner\":%u,\"lcore\":%u,\"cpu\":%d,\"packets\":%llu,\"polls\":%llu,\"stalled\":%llu,\"shutdown\":%llu,\"reconfigured\":%llu,\"starts\":%llu}",
@@ -1003,6 +1638,9 @@ cleanup:
     if (log_dir && ker_worker_log(RTE_LOG_INFO, log.type, "ker.io stopped status=%d\n", status) < 0) status = 1;
     if (ker_worker_log_close(&log)) { perror("ker: close worker log"); status = 1; }
     if (rte_eal_cleanup()) status = 1;
+    if (rx_decision.consumer.pidfd >= 0) close(rx_decision.consumer.pidfd);
+    if (rx_decision.supervisor.pidfd >= 0) close(rx_decision.supervisor.pidfd);
+    if (rx_decision_fd >= 0) close(rx_decision_fd);
     close(packet_fd);
     close(control_fd);
     if (mtu_fd >= 0) close(mtu_fd);

@@ -52,7 +52,7 @@ endif()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
     src/posix/posix-stdio.c
-    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
+    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/rx-decision-consumer.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
     src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
     src/posix/ff-owner-requests-diag.c src/posix/ff-owner-requests-parse.c
     src/posix/ff-admission-request-identity.c
@@ -77,9 +77,21 @@ if(BUILD_TESTING)
     target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1
         KER_C28_CUTOVER_TESTING=1)
 endif()
+set(ker_posix_exports_map "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+if(BUILD_TESTING)
+    # The shutdown barrier is a test-only private entry point used by the
+    # uninstalled RX decision fixture. Never expose it from tests-OFF builds.
+    file(READ "${PROJECT_SOURCE_DIR}/src/posix/exports.map" ker_posix_test_exports)
+    string(REPLACE "local: *;"
+        "ker_posix_run_test_set_shutdown_barrier; ker_posix_rx_decision_test_shutdown_ebusy_once; local: *;"
+        ker_posix_test_exports "${ker_posix_test_exports}")
+    set(ker_posix_exports_map "${CMAKE_CURRENT_BINARY_DIR}/rx-decision-test-exports.map")
+    file(WRITE "${ker_posix_exports_map}" "${ker_posix_test_exports}")
+endif()
 target_link_options(ker-posix PRIVATE -Wl,--no-undefined
-    "-Wl,--version-script=${PROJECT_SOURCE_DIR}/src/posix/exports.map")
-set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS "${PROJECT_SOURCE_DIR}/src/posix/exports.map")
+    "-Wl,--version-script=${ker_posix_exports_map}")
+set_property(TARGET ker-posix APPEND PROPERTY LINK_DEPENDS
+    "${PROJECT_SOURCE_DIR}/src/posix/exports.map" "${ker_posix_exports_map}")
 target_link_libraries(ker-posix PRIVATE "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
 target_sources(ker-posix PRIVATE src/posix/tcp-request-revoke.c)
 
@@ -399,6 +411,19 @@ target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_p
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
+    add_executable(ker-rx-decision-consumer-test
+        tests/posix/rx-decision-consumer.c src/posix/rx-decision-consumer.c)
+    target_include_directories(ker-rx-decision-consumer-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-rx-decision-consumer-test PRIVATE c_std_11)
+    target_compile_options(ker-rx-decision-consumer-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-rx-decision-consumer-test PRIVATE Threads::Threads)
+    foreach(case positive wrong-role bad-sequence expired bad-bounds bad-flags replay wrong-thread no-handler)
+        add_test(NAME rx-decision-consumer-${case}
+            COMMAND "$<TARGET_FILE:ker-rx-decision-consumer-test>" "${case}")
+        set_tests_properties(rx-decision-consumer-${case} PROPERTIES
+            LABELS "rx-decision;seqpacket;credentials;lifecycle" TIMEOUT 5)
+    endforeach()
     add_test(NAME native-linux-builder-wiring
         COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tests/unit/test_native_linux_builder_wiring.py")
@@ -573,8 +598,12 @@ install(TARGETS ker-io-worker ker-app
 file(RELATIVE_PATH KER_POSIX_LIB_FROM_BIN
     "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
 configure_file(tools/ker-run.py "${PROJECT_BINARY_DIR}/ker-run" @ONLY)
+configure_file(tools/rx_decision_wire.py
+    "${PROJECT_BINARY_DIR}/rx_decision_wire.py" COPYONLY)
 install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT fstack-nginx-runtime)
+install(FILES "${PROJECT_BINARY_DIR}/rx_decision_wire.py"
+    DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
 install(FILES "${ker_native_manifest}"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME build.json)
 install(FILES config/native-launcher.example.ini DESTINATION ${CMAKE_INSTALL_DATADIR}/ker)
@@ -1673,6 +1702,10 @@ if(BUILD_TESTING)
     set_tests_properties(native-ker-run-boundaries PROPERTIES TIMEOUT 60 LABELS fstack)
     add_test(NAME native-ker-run-exit-status
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run.py")
+    add_test(NAME native-ker-run-generated-bundle
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_ker_run_bundle.py"
+            --launcher "${PROJECT_BINARY_DIR}/ker-run")
+    set_tests_properties(native-ker-run-generated-bundle PROPERTIES TIMEOUT 15 LABELS fstack)
     add_test(NAME native-linux-fetch-lock
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/test_native_linux_fetch.py")
     set_tests_properties(native-linux-fetch-lock PROPERTIES TIMEOUT 40 LABELS fstack)
@@ -2593,3 +2626,4 @@ include(cmake/FStackOwnerRequestsTests.cmake)
 if(BUILD_TESTING)
     ker_add_ff_owner_requests_tests()
 endif()
+include("${PROJECT_SOURCE_DIR}/cmake/RxDecisionForwardTests.cmake")

@@ -28,5 +28,14 @@ int ker_fd_host_dup(struct ker_fd *entry);
 void ker_fd_host_put(int fd);
 int ker_fd_epoll_host_create(int flags);
 void ker_fd_close_all(void);
+/* Permanently rejects new native fd exports before the shutdown scan. */
+void ker_fd_native_shutdown_begin(void);
+#ifdef KER_C31_FD_TABLE_TESTING
+typedef void (*ker_fd_table_test_hook)(void *context);
+void ker_fd_table_test_set_export_locked_hook(ker_fd_table_test_hook hook,
+    void *context);
+void ker_fd_table_test_set_shutdown_lock_hook(ker_fd_table_test_hook hook,
+    void *context);
+#endif
 bool ker_native_ready(void);
 #endif
