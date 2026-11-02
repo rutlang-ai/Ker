@@ -613,6 +613,7 @@ class RuntimeServiceSupervisor:
                 if self._delegation_intent is not None and self._delegation_intent['parent'] == self._identity_key(actor):
                     self._delegation_intent = None
             else:
+                self._clear_delegation_intent_for_actor_locked(actor)
                 self._delegated_actors.pop(actor['role'], None)
             self._claim_consumed = True
             actor['released'] = True

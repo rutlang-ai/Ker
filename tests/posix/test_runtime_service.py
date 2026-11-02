@@ -167,6 +167,14 @@ def create_child(sock, sequence, lease, child_role):
                 time.monotonic() < deadline):
             time.sleep(0.002)
         assert os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']), 'test did not release actor after intent'
+    abandon_role = os.environ.get('KER_TEST_ABANDON_INTENT_ROLE')
+    if abandon_role and int(abandon_role) == child_role:
+        status, _, _ = rpc(sock, w.RELEASE, sequence + 1, lease)
+        assert status == 0, 'actor failed to release after abandoning its child intent'
+        status, _, _ = rpc(sock, w.RELEASE, sequence + 2, lease)
+        assert status == 0, 'duplicate RELEASE lost its exact stage1 tombstone'
+        atomic_content_marker(os.environ['KER_TEST_INTENT_RELEASED'], str(os.getpid()))
+        os._exit(0)
     child_env = dict(env)
     child_env['KER_TEST_EXPECTED_PARENT_PID'] = str(os.getpid())
     read_fd, write_fd = os.pipe()
@@ -237,6 +245,14 @@ def create_child(sock, sequence, lease, child_role):
                 time.monotonic() < deadline):
             time.sleep(0.002)
         assert os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']), 'test did not release actor after intent'
+    abandon_role = os.environ.get('KER_TEST_ABANDON_INTENT_ROLE')
+    if abandon_role and int(abandon_role) == child_role:
+        status, _, _ = rpc(sock, w.RELEASE, sequence + 1, lease)
+        assert status == 0, 'actor failed to release after abandoning its child intent'
+        status, _, _ = rpc(sock, w.RELEASE, sequence + 2, lease)
+        assert status == 0, 'duplicate RELEASE lost its exact stage1 tombstone'
+        atomic_content_marker(os.environ['KER_TEST_INTENT_RELEASED'], str(os.getpid()))
+        os._exit(0)
     child_env = dict(env)
     child_env['KER_TEST_EXPECTED_PARENT_PID'] = str(os.getpid())
     read_fd, write_fd = os.pipe()
@@ -503,6 +519,107 @@ class RuntimeServiceDelegationWireTest(unittest.TestCase):
 
 
 class RuntimeServiceDelegationChainTest(unittest.TestCase):
+    def test_stage1_release_clears_its_unbound_primary_intent(self):
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-abandoned-intent-') as directory:
+            root = Path(directory)
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            service = None
+            continue_intent = root / 'continue-intent'
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                app_hash = runtime_service.sha256_file(sys.executable)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    root / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-abandoned-intent-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                intent_ready = root / 'intent-ready'
+                intent_released = root / 'intent-released'
+                error_log = root / 'actor-stderr'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['PYTHONPATH'] = os.pathsep.join((str(TESTS), str(TOOLS)))
+                env.update({
+                    'KER_TEST_FINAL_CLAIMED': str(root / 'final-claimed'),
+                    'KER_TEST_FINAL_RELEASE': str(root / 'final-release'),
+                    'KER_TEST_PAUSE_INTENT_ROLE': str(wire.ROLE_SLIM_PRIMARY),
+                    'KER_TEST_ABANDON_INTENT_ROLE': str(wire.ROLE_SLIM_PRIMARY),
+                    'KER_TEST_INTENT_READY': str(intent_ready),
+                    'KER_TEST_INTENT_CONTINUE': str(continue_intent),
+                    'KER_TEST_INTENT_RELEASED': str(intent_released),
+                })
+                with error_log.open('w') as error_stream:
+                    actor = subprocess.Popen([sys.executable, '-c', DELEGATION_CHAIN_ACTOR],
+                        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=error_stream)
+                    actor_pidfd = os.pidfd_open(actor.pid, 0)
+                    service.bind_actor(actor, actor_pidfd)
+                    deadline = time.monotonic() + 8
+                    while not intent_ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.002)
+                    self.assertTrue(intent_ready.exists(),
+                        'stage1 did not reach synchronized primary INTENT: ' +
+                        error_log.read_text())
+                    with service._condition:
+                        intent = service._delegation_intent
+                        self.assertIsNotNone(intent, 'stage1 did not create a primary intent')
+                        self.assertEqual(intent['role'], wire.ROLE_SLIM_PRIMARY)
+                        stage1 = service._delegated_actors[wire.ROLE_SLIM_STAGE1]
+                        self.assertEqual(intent['parent'],
+                            runtime_service.RuntimeServiceSupervisor._identity_key(stage1))
+                    continue_intent.touch()
+                    deadline = time.monotonic() + 8
+                    while not intent_released.exists() and time.monotonic() < deadline:
+                        time.sleep(0.002)
+                    self.assertTrue(intent_released.exists(),
+                        'stage1 did not release after abandoning its primary intent')
+                    stdout, stderr = actor.communicate(timeout=8)
+                    self.assertEqual(actor.returncode, 0,
+                        stderr.decode(errors='replace') if stderr else '')
+                    actor = None
+                    with service._condition:
+                        service._reap_locked()
+                        self.assertIsNone(service._delegation_intent,
+                            'released stage1 left its primary intent pinned')
+                        self.assertIsNone(service._actor,
+                            'direct actor remained active after its RELEASE')
+                        self.assertFalse(service._delegated_actors,
+                            'stage1 remained active after its RELEASE')
+                        self.assertFalse(service._delegated_grants,
+                            'abandoned primary intent left a bound grant')
+                    self.assertEqual(service.active_count, 0)
+                    self.assertTrue(service.wait_for_release(0.0),
+                        'worker release remained blocked after all actors and intents cleared')
+                    self.assertTrue(service.prepare_worker_shutdown(0.1))
+                    self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                continue_intent.touch(exist_ok=True)
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
     def test_dead_direct_intent_owner_clears_its_own_pending_intent(self):
         with tempfile.TemporaryDirectory(prefix='ker-runtime-service-intent-owner-death-') as directory:
             root = Path(directory)
