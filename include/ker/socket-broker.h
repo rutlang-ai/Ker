@@ -24,7 +24,8 @@ enum ker_socket_broker_kind {
     KER_SOCKET_BROKER_EPOLL = 2,
     KER_SOCKET_BROKER_REUSEPORT_GROUP = 3,
     KER_SOCKET_BROKER_TCP_OBSERVER = 4,
-    KER_SOCKET_BROKER_MEMBER_CENSUS = 5
+    KER_SOCKET_BROKER_MEMBER_CENSUS = 5,
+    KER_SOCKET_BROKER_FF_OWNER = 6
 };
 
 #define KER_SOCKET_BROKER_TCP_STATES 14
@@ -198,6 +199,17 @@ int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,
     int census_cap, struct ker_socket_member_census_snapshot *snapshot);
 int ker_socket_client_member_payload_snapshot(struct ker_socket_client *client,
     int census_cap, struct ker_socket_member_payload_snapshot *snapshot);
+
+/* Narrow F-Stack runtime owner context. The broker binds this opaque
+ * capability to the authenticated process; callers cannot select a mark or
+ * process identity. These calls are intended for the FF runtime adapter. */
+int ker_socket_client_ff_owner_create(struct ker_socket_client *client);
+int ker_socket_client_ff_owner_socket(struct ker_socket_client *client,
+    int owner_cap, int domain, int type, int protocol);
+int ker_socket_client_ff_owner_match(struct ker_socket_client *client,
+    int owner_cap, int socket_cap);
+int ker_socket_client_ff_owner_payload_snapshot(struct ker_socket_client *client,
+    int owner_cap, struct ker_socket_member_payload_snapshot *snapshot);
 
 #ifdef __cplusplus
 }

@@ -513,6 +513,235 @@ def run_payload_snapshot_wire_probe(args, eal, root):
         capture.close(); listener.close(); sack_listener.close()
 
 
+def run_ff_owner_payload_probe(args, rpc_path, capabilities):
+    ports = (43901, 43902, 43903, 43904)
+    lengths = (1200, 700, 900, 1100)
+    seeds = (3, 19, 31, 47)
+    table = f'ker_ff_owner_{os.getpid()}'
+    listeners = []
+    peers = []
+    processes = []
+    capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    table_created = False
+    try:
+        for port in ports:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('198.18.0.1', port)); listener.listen(1); listener.settimeout(20)
+            listeners.append(listener)
+        capture.bind(('kerhost', 0)); capture.settimeout(0.25)
+        census_nft('add', 'table', 'inet', table); table_created = True
+        census_nft('add', 'chain', 'inet', table, 'output', '{', 'type', 'filter',
+            'hook', 'output', 'priority', 'filter;', 'policy', 'accept;', '}')
+        for port in ports:
+            census_nft('add', 'rule', 'inet', table, 'output', 'oifname', 'kerhost',
+                'ip', 'saddr', '198.18.0.1', 'ip', 'daddr', '198.18.0.2',
+                'tcp', 'sport', str(port), 'tcp', 'flags', '&',
+                '(fin', '|', 'syn', '|', 'rst', '|', 'ack)', '==', 'ack', 'counter', 'drop')
+
+        environment = os.environ | {
+            'LD_PRELOAD': f'{args.fstack_runtime.resolve()}:{args.preload_library.resolve()}',
+            'KER_SOCKET_BROKER_PATH': str(rpc_path),
+            'PYTHONDONTWRITEBYTECODE': '1',
+        }
+        legacy = subprocess.run([str(args.ff_owner_payload_client), '--legacy-history'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=20)
+        require(legacy.returncode == 0 and
+            b'OWNER_BEGIN_REFUSED_AFTER_LEGACY_HISTORY\n' in legacy.stdout,
+            f'owner begin accepted closed legacy socket history: rc={legacy.returncode}; '
+            f'stdout={legacy.stdout!r}; stderr={legacy.stderr!r}')
+        foreign = subprocess.run([str(args.ff_owner_payload_client), '--foreign-history'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, timeout=20)
+        require(foreign.returncode == -signal.SIGABRT and
+            b'ker fstack payload snapshot failed:' in foreign.stderr,
+            f'owner pending gate accepted closed generic socket history: '
+            f'rc={foreign.returncode}; stdout={foreign.stdout!r}; stderr={foreign.stderr!r}')
+        exec_history = subprocess.run([str(args.ff_owner_payload_client),
+            '--foreign-history-exec'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, timeout=20)
+        require(exec_history.returncode == 0 and
+            b'OWNER_REBEGIN_REFUSED_AFTER_EXEC_HISTORY\n' in exec_history.stdout,
+            f'owner re-begin forgot broker-side history across exec/reconnect: '
+            f'rc={exec_history.returncode}; stdout={exec_history.stdout!r}; '
+            f'stderr={exec_history.stderr!r}')
+        for port, size, seed in zip(ports[:2], lengths[:2], seeds[:2]):
+            process = subprocess.Popen([str(args.ff_owner_payload_client),
+                '--owner-payload', str(port), str(size), str(seed)], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, bufsize=0)
+            processes.append(process)
+        exec_process = subprocess.Popen([str(args.ff_owner_payload_client),
+            '--owner-reexec', str(ports[2]), str(lengths[2]), str(seeds[2])],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, bufsize=0)
+        processes.append(exec_process)
+        legacy_process = subprocess.Popen([str(args.ff_owner_payload_client),
+            '--legacy-payload-reexec', str(ports[3]), str(lengths[3]), str(seeds[3])],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, bufsize=0)
+        processes.append(legacy_process)
+        for port in ports:
+            listeners[ports.index(port)].settimeout(1)
+            deadline = time.monotonic() + 20
+            while True:
+                try:
+                    peer, _ = listeners[ports.index(port)].accept()
+                    break
+                except TimeoutError:
+                    dead = [process for process in processes if process.poll() is not None]
+                    if dead:
+                        details = []
+                        for process in dead:
+                            output, errors = process.communicate()
+                            details.append((process.returncode, output, errors))
+                        raise RuntimeError(f'FF owner process exited before connect: {details!r}')
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('FF owner process did not connect within 20 seconds')
+            peer.settimeout(10); peers.append(peer)
+        for process in processes[:2]:
+            require(read_line(process.stdout, 30, process) == 'OWNER_READY',
+                'FF owner client did not close its last application descriptor')
+        require(read_line(exec_process.stdout, 30, exec_process) == 'OWNER_EXEC_READY',
+            'FF owner exec client did not close its application descriptor before exec')
+        require(read_line(legacy_process.stdout, 30, legacy_process) ==
+            'OWNER_LEGACY_EXEC_READY',
+            'legacy generic client did not close its application descriptor before exec')
+        require(read_line(legacy_process.stdout, 20, legacy_process) ==
+            'OWNER_REBEGIN_REFUSED_AFTER_EXEC_HISTORY',
+            'owner re-begin did not reject legacy payload history after exec')
+        for fd in capabilities:
+            os.close(fd)
+        capabilities.clear()
+
+        synacks = {}
+        data_segments = {port: {} for port in ports}
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and any(
+                not synacks.get(port) or sum(len(packet['payload'])
+                    for packet in data_segments[port].values()) < lengths[index]
+                for index, port in enumerate(ports)):
+            try:
+                frame, _ = capture.recvfrom(65535)
+            except TimeoutError:
+                continue
+            packet = ipv4_tcp_frame(frame)
+            if not packet:
+                continue
+            for port in ports:
+                if packet['src'] == '198.18.0.1' and packet['dst'] == '198.18.0.2' and \
+                        packet['sport'] == port and packet['flags'] & 0x12 == 0x12:
+                    synacks[port] = packet
+                if packet['src'] == '198.18.0.2' and packet['dst'] == '198.18.0.1' and \
+                        packet['dport'] == port and packet['payload']:
+                    data_segments[port][packet['seq']] = packet
+        for index, port in enumerate(ports):
+            segments = sorted(data_segments[port].values(),
+                key=lambda item: (item['seq'] - synacks[port]['ack']) & 0xffffffff)
+            require(port in synacks and sum(len(packet['payload']) for packet in segments) == lengths[index],
+                f'owner {index} did not emit its complete TCP payload: {segments!r}')
+            observed = b''.join(packet['payload'] for packet in segments)
+            expected = bytes((offset * 17 + seeds[index] * 29 + 3) & 0xff
+                for offset in range(lengths[index]))
+            require(observed == expected, f'owner {index} wire payload differs from source bytes')
+            require(recv_exact(peers[index], lengths[index]) == expected,
+                f'host peer did not receive owner {index} original-Linux stream')
+
+        legacy_output, legacy_errors = legacy_process.communicate(timeout=10)
+        require(legacy_process.returncode == 0,
+            f'legacy payload re-begin failed: rc={legacy_process.returncode}; '
+            f'stdout={legacy_output!r}; stderr={legacy_errors!r}')
+
+        rule_text = census_nft('list', 'chain', 'inet', table, 'output')
+        counters = re.findall(r'counter packets (\d+) bytes (\d+)', rule_text)
+        require(len(counters) == len(ports) and all(int(item[0]) > 0 for item in counters),
+            f'ACK suppression did not count real packets for every owner: {rule_text!r}')
+
+        ack_sockets = []
+        owner_processes = processes[:3]
+        try:
+            for _ in ports:
+                ack = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+                ack.bind(('kerhost', 0)); ack_sockets.append(ack)
+            first = min(data_segments[ports[0]].values(), key=lambda p: (p['seq'] - synacks[ports[0]]['ack']) & 0xffffffff)
+            second = min(data_segments[ports[1]].values(), key=lambda p: (p['seq'] - synacks[ports[1]]['ack']) & 0xffffffff)
+            ack_sockets[0].send(inject_tcp_ack(first, synacks[ports[0]],
+                (first['seq'] + 137) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = []
+            for process in owner_processes:
+                line = read_line(process.stdout, 15, process)
+                require(line.startswith('OWNER_SNAPSHOT '), f'unexpected owner snapshot response: {line!r}')
+                values.append(int(line.split()[1]))
+            require(values == [lengths[0] - 137, lengths[1], lengths[2]],
+                f'FF owner mark snapshots were not process-isolated after partial ACK: {values!r}')
+
+            ack_sockets[0].send(inject_tcp_ack(first, synacks[ports[0]],
+                (first['seq'] + lengths[0]) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, lengths[1], lengths[2]],
+                f'first process full ACK changed another process owner snapshot: {values!r}')
+
+            ack_sockets[1].send(inject_tcp_ack(second, synacks[ports[1]],
+                (second['seq'] + lengths[1]) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, 0, lengths[2]],
+                f'second process full ACK changed exec-owner payload: {values!r}')
+
+            third = min(data_segments[ports[2]].values(),
+                key=lambda p: (p['seq'] - synacks[ports[2]]['ack']) & 0xffffffff)
+            ack_sockets[2].send(inject_tcp_ack(third, synacks[ports[2]],
+                (third['seq'] + 100) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, 0, lengths[2] - 100],
+                f'owner payload was lost or cross-counted across exec reinitialization: {values!r}')
+            ack_sockets[2].send(inject_tcp_ack(third, synacks[ports[2]],
+                (third['seq'] + lengths[2]) & 0xffffffff))
+            for process in owner_processes:
+                process.stdin.write(b'S'); process.stdin.flush()
+            values = [int(read_line(process.stdout, 15, process).split()[1])
+                for process in owner_processes]
+            require(values == [0, 0, 0],
+                f'full ACK did not clear exec-owner payload after re-begin: {values!r}')
+            legacy_packet = min(data_segments[ports[3]].values(),
+                key=lambda p: (p['seq'] - synacks[ports[3]]['ack']) & 0xffffffff)
+            ack_sockets[3].send(inject_tcp_ack(legacy_packet, synacks[ports[3]],
+                (legacy_packet['seq'] + lengths[3]) & 0xffffffff))
+        finally:
+            for ack in ack_sockets:
+                ack.close()
+
+        for process in owner_processes:
+            process.stdin.write(b'E'); process.stdin.flush()
+        for process in owner_processes:
+            output, errors = process.communicate(timeout=20)
+            require(process.returncode == 0 and b'OWNER_DONE\n' in output,
+                f'FF owner process failed: rc={process.returncode}; stdout={output!r}; stderr={errors!r}')
+        print(f'C12_FF_OWNER_PAYLOAD_OK owner_pids={[p.pid for p in processes]} '
+            f'partial_ack=137 exec_rebegin=true snapshots={values!r} descriptorless=true '
+            f'ack_drop_packets={[item[0] for item in counters]}')
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill(); process.wait()
+        for peer in peers:
+            peer.close()
+        if table_created:
+            try: census_nft('delete', 'table', 'inet', table)
+            except (OSError, subprocess.SubprocessError, RuntimeError): pass
+        capture.close()
+        for listener in listeners:
+            listener.close()
+
+
 def parse_census_line(line):
     fields = {}
     for item in line.split()[2:]:
@@ -2120,6 +2349,20 @@ def inside(args):
                 broker_line = read_line(broker.stdout, 15, broker)
                 require(broker_line == 'BROKER_READY', f'broker failed to enter its request loop: {broker_line}')
 
+                if args.ff_owner_payload_client:
+                    run_ff_owner_payload_probe(args, rpc_path, cap_fds)
+                    cap_fds.clear()
+                    output, errors = broker.communicate(timeout=30)
+                    require(broker.returncode == 0 and b'BROKER_DONE' in output,
+                        f'FF owner broker did not release all metadata: '
+                        f'stdout={output!r}; stderr={errors.decode(errors="replace")}')
+                    stats = json.loads(stats_path.read_text())
+                    require(stats.get('tx', 0) > 0 and stats.get('rx', 0) > 0 and
+                        stats.get('outstanding') == 0 and
+                        stats.get('native', {}).get('active_opens', 0) >= 2,
+                        f'FF owner traffic or cleanup evidence missing: {stats!r}')
+                    return 0
+
                 if args.reuseport_group_client:
                     run_reuseport_group_client(args, rpc_path, broker, cap_fds[0])
                     cap_fds.clear()
@@ -2382,6 +2625,7 @@ def main():
     parser.add_argument('--member-census-client', type=Path)
     parser.add_argument('--member-census-runtime-test', type=Path)
     parser.add_argument('--member-census-test-library', type=Path)
+    parser.add_argument('--ff-owner-payload-client', type=Path)
     parser.add_argument('--generation-broker', type=Path)
     parser.add_argument('--generation-worker', type=Path)
     parser.add_argument('--generation-controller', type=Path)
@@ -2396,6 +2640,8 @@ def main():
         parser.error('generation handoff test requires broker factory and SDK controller')
     if args.member_census_runtime_test and not args.member_census_test_library:
         parser.error('member census runtime test requires its noninstalled isolated runtime')
+    if args.ff_owner_payload_client and not (args.fstack_runtime and args.preload_library):
+        parser.error('FF owner payload test requires the F-Stack runtime and preload library')
     if args.fstack_worker_shim and not (args.nginx_binary and args.fstack_runtime and
         args.preload_library and args.nginx_workers == 2):
         parser.error('F-Stack worker shim requires nginx, runtime, preload, and --nginx-workers=2')
@@ -2446,6 +2692,8 @@ def main():
         if args.member_census_test_library:
             command += ['--member-census-test-library',
                 str(args.member_census_test_library.resolve())]
+        if args.ff_owner_payload_client:
+            command += ['--ff-owner-payload-client', str(args.ff_owner_payload_client.resolve())]
         if args.generation_broker:
             command += ['--generation-broker', str(args.generation_broker.resolve())]
         if args.generation_worker:

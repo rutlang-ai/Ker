@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -46,7 +47,9 @@ int ff_socket(int domain, int type, int protocol)
     int base = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (base != SOCK_STREAM || (protocol && protocol != IPPROTO_TCP))
         return unsupported();
-    int fd = ker_sb_posix_socket(family, type, protocol);
+    int fd = ker_sb_preload_ff_owner_managed() ?
+        ker_sb_preload_ff_owner_socket(family, type, protocol) :
+        ker_sb_posix_socket(family, type, protocol);
     FF_TRACE(-1, fd);
     return fd;
 }
@@ -82,6 +85,21 @@ int ff_socket_drain_count(void)
         abort();
     }
     return count;
+}
+
+int ff_socket_snd_pending(void)
+{
+    struct ker_socket_member_payload_snapshot snapshot = {0};
+    if (ker_sb_preload_ff_owner_payload(&snapshot) < 0) {
+        char message[160];
+        int length = snprintf(message, sizeof(message),
+            "ker fstack payload snapshot failed: errno=%d\n", errno);
+        if (length > 0)
+            (void)syscall(SYS_write, STDERR_FILENO, message,
+                (size_t)length < sizeof(message) ? (size_t)length : sizeof(message));
+        abort();
+    }
+    return snapshot.payload_bytes > INT_MAX ? INT_MAX : (int)snapshot.payload_bytes;
 }
 
 int ff_shutdown(int fd, int how)

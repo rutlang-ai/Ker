@@ -105,8 +105,22 @@ walks the whole process fd table, counts each IPv4/IPv6 socket alias including
 UDP, and excludes sockets whose live `SO_ACCEPTCONN` is set. Ker's adapter only
 counts authenticated broker capabilities registered in this process; direct
 FF/POSIX UDP creation and raw, unregistered fd bypasses remain unsupported.
-Reload state remains unsupported. Flow-map, dispatcher, syncache, and
-send-pending hooks abort with an explicit diagnostic if reached.
+Reload state remains unsupported. Flow-map, dispatcher, and syncache hooks
+abort with an explicit diagnostic if reached. The runtime supplies a bounded
+`ff_socket_snd_pending` adapter for ordinary ready-copy TCP sockets created
+through its authenticated per-process FF owner context. The broker binds a
+unique owner mark to the caller's authenticated PID, process start time, and
+pidfd; duplicated sockets retain that owner and accepted sockets inherit it.
+The owner record survives session close and `exec` while that process remains
+alive, so reinitialization cannot rotate the mark and forget descriptorless
+queues. Owner initialization refuses any earlier generic/unowned network
+socket history; later generic, inherited, or foreign broker sockets make the
+pending query fail closed, even after their descriptors close. Failures abort
+with an errno diagnostic because the upstream hook has no error result
+channel. Successful byte counts are clamped to the upstream `int` range. This
+reports the C9 original-Linux ready-copy payload snapshot; sendfile is outside
+the profile, and the hook does not enable graceful promotion. See the
+[remaining graceful-reload limits](fstack-graceful-reload-gap.md).
 
 The bounded FF socket bridge implements `ff_dup` for registered application
 INET/INET6 sockets by dispatching to the namespaced preload `F_DUPFD` path. It

@@ -632,6 +632,54 @@ def read_expected_frame_commit(worker, ready, payload, max_unrelated=8):
     raise RuntimeError('producer emitted too many unrelated frames before the exact U2 commit')
 
 
+def active_consumer_deferred_counts(committed, unrelated_committed, unrelated_drained,
+                                    producer_output):
+    """Derive the held-consumer TX/pool baseline from exact frame identities."""
+    if (not isinstance(committed, dict) or not isinstance(unrelated_committed, list) or
+            not isinstance(unrelated_drained, list) or not isinstance(producer_output, str)):
+        return None
+    trailing = []
+    try:
+        for line in producer_output.splitlines():
+            if line.startswith('KER_SESSION_FRAME_COMMITTED '):
+                record = json.loads(line.removeprefix('KER_SESSION_FRAME_COMMITTED '))
+                validate_unrelated_handoff_commit(record)
+                trailing.append(record)
+    except (json.JSONDecodeError, RuntimeError):
+        return None
+    commits = [committed, *unrelated_committed, *trailing]
+    if (len(unrelated_committed) > 8 or len(unrelated_drained) != len(unrelated_committed) or
+            any(not isinstance(record, dict) for record in commits)):
+        return None
+    def identity(record, drained=False):
+        lease_field = 'lease_id' if drained else 'tx_lease_id'
+        fields = ('object_index', 'pool_tag', lease_field, 'packet_pointer')
+        if (type(record.get(fields[0])) is not int or record[fields[0]] < 0 or
+                type(record.get(fields[1])) is not int or record[fields[1]] <= 0 or
+                type(record.get(fields[2])) is not int or record[fields[2]] <= 0 or
+                not valid_frame_pointer(record.get('packet_pointer'))):
+            return None
+        physical = tuple(record[field] for field in fields)
+        if drained:
+            return physical
+        if (type(record.get('generation')) is not int or record['generation'] != 0 or
+                type(record.get('queue')) is not int or record['queue'] != 0):
+            return None
+        return (record['generation'], record['queue'], *physical)
+    identities = [identity(record) for record in commits]
+    drained = [identity(record, True) for record in unrelated_drained]
+    if (any(item is None for item in identities + drained) or
+            len(set(identities)) != len(identities) or
+            len(set(drained)) != len(drained) or
+            any(item not in [candidate[2:] for candidate in identities[1:1 + len(unrelated_committed)]
+                if candidate is not None] for item in drained)):
+        return None
+    drained_count = len(drained)
+    # The active consumer has already dequeued U2 and every unrelated frame
+    # recorded before it. Later producer commits remain queued at this barrier.
+    return len(commits) - drained_count - 1, len(commits) - drained_count
+
+
 def valid_frame_pointer(value):
     return (isinstance(value, str) and value.startswith('0x') and len(value) > 2 and
         value[2] in '123456789abcdef' and all(char in '0123456789abcdef' for char in value[2:]))
@@ -1905,11 +1953,17 @@ def _run_session_impl(args, api):
                 dead_output,_=worker.communicate(timeout=10)
                 if worker.returncode!=-signal.SIGKILL or not select.select([worker_pidfd],[],[],0)[0]:
                     raise RuntimeError('active-dequeue producer did not die on its captured pidfd')
+                producer_output=dead_output.decode(errors='replace')
+                expected_preflight=active_consumer_deferred_counts(
+                    committed,unrelated_commits,unrelated_drained,producer_output)
+                if expected_preflight is None:
+                    raise RuntimeError('could not derive exact held-consumer preflight counts from committed frame identities')
                 metrics['handoff_frame_death_waiting']=dict(stage='producer-dead-active-consumer',
                     producer_pid=worker.pid,consumer_pid=peer_worker.pid,producer_status=worker.returncode,
                     producer_pidfd_dead=True,consumer_pidfd_dead=False,committed=committed,
                     unrelated_committed=unrelated_commits,unrelated_drained=unrelated_drained,
-                    producer_output=dead_output.decode(errors='replace'))
+                    expected_preflight=dict(tx=expected_preflight[0],pool=expected_preflight[1]),
+                    producer_output=producer_output)
                 publish()
                 deadline=time.monotonic()+10
                 while time.monotonic()<deadline:

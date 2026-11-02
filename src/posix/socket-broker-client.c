@@ -242,7 +242,9 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_REUSEPORT_GROUP_CREATE ||
         operation == KER_SB_REUSEPORT_GROUP_MEMBER ||
         operation == KER_SB_TCP_OBSERVER_CREATE ||
-        operation == KER_SB_MEMBER_CENSUS_CREATE;
+        operation == KER_SB_MEMBER_CENSUS_CREATE ||
+        operation == KER_SB_FF_OWNER_CREATE ||
+        operation == KER_SB_FF_OWNER_SOCKET;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -253,7 +255,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
     requires_zero = requires_zero || operation == KER_SB_REUSEPORT_GROUP_SELECT ||
         operation == KER_SB_TCP_OBSERVER_SNAPSHOT ||
         operation == KER_SB_MEMBER_CENSUS_SNAPSHOT ||
-        operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT;
+        operation == KER_SB_MEMBER_PAYLOAD_SNAPSHOT ||
+        operation == KER_SB_FF_OWNER_PAYLOAD;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -672,6 +675,58 @@ int ker_socket_client_member_payload_snapshot(struct ker_socket_client *client,
     struct ker_socket_member_payload_snapshot completed = {
         .payload_bytes = wire.payload_bytes,
         .sampled_sockets = wire.sampled_sockets};
+    *snapshot = completed;
+    return 0;
+}
+
+int ker_socket_client_ff_owner_create(struct ker_socket_client *client)
+{
+    int owner_cap = -1;
+    if (socket_call(client, -1, KER_SB_FF_OWNER_CREATE, NULL, 0,
+            NULL, 0, &owner_cap, NULL) < 0) return -1;
+    return owner_cap;
+}
+
+int ker_socket_client_ff_owner_socket(struct ker_socket_client *client,
+    int owner_cap, int domain, int type, int protocol)
+{
+    struct ker_sb_socket_args args = {.domain = domain, .type = type, .protocol = protocol};
+    int fd = -1;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_SOCKET, &args,
+            sizeof(args), NULL, 0, &fd, NULL) < 0) return -1;
+    int descriptor_flags = (type & SOCK_CLOEXEC) ? FD_CLOEXEC : 0;
+    if (syscall(SYS_fcntl, fd, F_SETFD, descriptor_flags) < 0) {
+        int error = errno; (void)syscall(SYS_close, fd); return fail(error);
+    }
+    return fd;
+}
+
+int ker_socket_client_ff_owner_match(struct ker_socket_client *client,
+    int owner_cap, int socket_cap)
+{
+    int rights[2] = {owner_cap, socket_cap};
+    int64_t result = 0;
+    size_t reply_length = 0;
+    if (rpc(client, KER_SB_FF_OWNER_MATCH, NULL, 0, rights, 2, NULL, 0, 0,
+            NULL, &result, &reply_length)) return -1;
+    if (reply_length) return fail(EPROTO);
+    if (result < 0) return fail(result >= -4095 ? (int)-result : EPROTO);
+    if (result > 1) return fail(EPROTO);
+    return (int)result;
+}
+
+int ker_socket_client_ff_owner_payload_snapshot(struct ker_socket_client *client,
+    int owner_cap, struct ker_socket_member_payload_snapshot *snapshot)
+{
+    if (!snapshot) return fail(EINVAL);
+    struct ker_sb_member_payload_snapshot wire = {0};
+    int received = 0;
+    if (socket_call(client, owner_cap, KER_SB_FF_OWNER_PAYLOAD, NULL, 0,
+            &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire) || wire.sampled_sockets > 4096 ||
+        (wire.payload_bytes && !wire.sampled_sockets)) return fail(EPROTO);
+    struct ker_socket_member_payload_snapshot completed = {
+        .payload_bytes = wire.payload_bytes, .sampled_sockets = wire.sampled_sockets};
     *snapshot = completed;
     return 0;
 }

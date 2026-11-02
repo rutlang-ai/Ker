@@ -49,6 +49,17 @@ def active_consumer_kept_handoff_owner(proof, handoff):
     return same_owner_snapshot(proof.get('final_owner'), handoff.get('resident'))
 
 
+def active_consumer_deferred_snapshot_matches(deferred, expected):
+    return (isinstance(expected, dict) and set(expected) == {'tx', 'pool'} and
+        type(expected.get('tx')) is int and expected['tx'] >= 0 and
+        type(expected.get('pool')) is int and expected['pool'] == expected['tx'] + 1 and
+        isinstance(deferred, dict) and deferred.get('status') == -errno.EBUSY and
+        deferred.get('full_reap_attempts') == 0 and deferred.get('preflight_only') is True and
+        deferred.get('tx_before') == deferred.get('tx_after') == expected['tx'] and
+        deferred.get('pool_before') == deferred.get('pool_after') == expected['pool'] and
+        deferred.get('counters_before') == deferred.get('counters_after'))
+
+
 def same_owner_snapshot(actual, expected):
     """Compare the exact PMD owner while allowing each STATUS read's sequence."""
     if (not isinstance(actual, dict) or not isinstance(expected, dict) or
@@ -1758,15 +1769,12 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 committed=after['handoff_frame_death_waiting'].get('committed',{})
                 unrelated_committed=after['handoff_frame_death_waiting'].get('unrelated_committed',[])
                 unrelated_drained=after['handoff_frame_death_waiting'].get('unrelated_drained',[])
+                expected_preflight=after['handoff_frame_death_waiting'].get('expected_preflight',{})
                 deferred=record(primary,'KER_SESSION_TEST_REAP_DEFERRED')
                 require(committed.get('generation')==0 and committed.get('queue')==0 and
                     isinstance(committed.get('object_index'),int) and deferred.get('generation')==0 and
                     deferred.get('pid')==before['attached']['pid'] and
-                    deferred.get('status')==-errno.EBUSY and deferred.get('full_reap_attempts')==0 and
-                    deferred.get('preflight_only') is True and deferred.get('tx_before')==0 and
-                    deferred.get('tx_after')==0 and deferred.get('pool_before')==1 and
-                    deferred.get('pool_after')==1 and
-                    deferred.get('counters_before')==deferred.get('counters_after'),
+                    active_consumer_deferred_snapshot_matches(deferred,expected_preflight),
                     'dead-producer readiness changed state or entered full reap while peer held the committed packet: '+repr(deferred))
                 snapshot=api.Connection(control_path)
                 try:held_census=snapshot.request(api.STATUS);held_owner=snapshot.request(api.PMD_STATUS)

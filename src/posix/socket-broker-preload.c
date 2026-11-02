@@ -73,6 +73,97 @@
 extern char **environ;
 static _Thread_local unsigned ff_dispatch_depth;
 static _Thread_local int ff_dispatch_fds[16];
+static int ff_owner_capability = -1;
+static pid_t ff_owner_pid;
+static bool ff_owner_context_started;
+static bool unowned_network_activity;
+
+bool ker_sb_preload_ff_owner_active_locked(void)
+{
+    return ff_owner_context_started && ff_owner_capability >= 0 &&
+        ff_owner_pid == getpid();
+}
+
+int ker_sb_preload_ff_owner_capability_locked(void)
+{ return ker_sb_preload_ff_owner_active_locked() ? ff_owner_capability : -1; }
+
+bool ker_sb_preload_ff_owner_managed(void)
+{ return ff_owner_context_started; }
+
+void ker_sb_preload_note_unowned_network_locked(void)
+{
+    unowned_network_activity = true;
+}
+
+int ker_sb_preload_ff_owner_begin(void)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    if (ff_owner_context_started) {
+        ker_sb_preload_unlock();
+        if (ff_owner_pid == getpid()) return 0;
+        errno = EOPNOTSUPP; return -1;
+    }
+    if (unowned_network_activity || ker_sb_preload_network_registry_empty_locked() != 0) {
+        int error = unowned_network_activity ? EOPNOTSUPP : errno;
+        ker_sb_preload_unlock(); errno = error; return -1;
+    }
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int capability = client ? ker_socket_client_ff_owner_create(client) : -1;
+    if (capability < 0) {
+        int error = errno; ker_sb_preload_unlock(); errno = error; return -1;
+    }
+    if (ker_sb_preload_track_private_fd_locked(capability)) {
+        int error = errno; (void)syscall(SYS_close, capability);
+        ker_sb_preload_unlock(); errno = error; return -1;
+    }
+    ff_owner_capability = capability;
+    ff_owner_pid = getpid();
+    ff_owner_context_started = true;
+    ker_sb_preload_unlock();
+    return 0;
+}
+
+int ker_sb_preload_ff_owner_socket(int domain, int type, int protocol)
+{
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    if (!ker_sb_preload_ff_owner_active_locked()) {
+        ker_sb_preload_unlock();
+        errno = ff_owner_context_started ? EOPNOTSUPP : ENOTCONN;
+        return -1;
+    }
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int fd = client ? ker_socket_client_ff_owner_socket(client,
+        ff_owner_capability, domain, type, protocol) : -1;
+    int registration_status = fd >= 0 ? ker_sb_preload_register_network_locked(fd) : 0;
+    if (registration_status) {
+        int error = errno; (void)syscall(SYS_close, fd); fd = -1; errno = error;
+    }
+    ker_sb_preload_unlock();
+    return fd;
+}
+
+int ker_sb_preload_ff_owner_payload(struct ker_socket_member_payload_snapshot *snapshot)
+{
+    if (!snapshot) { errno = EINVAL; return -1; }
+    if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    ker_sb_preload_lock();
+    if (!ker_sb_preload_ff_owner_active_locked()) {
+        int error = ff_owner_context_started ? EOPNOTSUPP : ENOTCONN;
+        ker_sb_preload_unlock(); errno = error; return -1;
+    }
+    struct ker_socket_client *client = ker_sb_preload_client_locked();
+    int result = -1;
+    if (unowned_network_activity) errno = EOPNOTSUPP;
+    else if (client && !ker_sb_preload_ff_owner_matches_locked(ff_owner_capability, client))
+        result = ker_socket_client_ff_owner_payload_snapshot(client,
+            ff_owner_capability, snapshot);
+    int saved = errno;
+    ker_sb_preload_unlock();
+    errno = saved;
+    return result;
+}
 
 int ker_sb_preload_ff_dispatch_begin(int fd)
 {
@@ -433,9 +524,31 @@ int accept4(int fd, struct sockaddr *address, socklen_t *length, int flags)
         output_capacity = local_length;
     }
     struct ker_socket_client *client = ker_sb_preload_client_locked();
+    bool ff_owner_accept = ff_dispatch_active(fd) && ff_owner_context_started;
+    if (ff_owner_accept) {
+        if (!ker_sb_preload_ff_owner_active_locked() || !client) {
+            ker_sb_preload_unlock(); errno = EOPNOTSUPP; return -1;
+        }
+        int matches = ker_socket_client_ff_owner_match(client, ff_owner_capability, cap);
+        if (matches != 1) {
+            int error = matches < 0 ? errno : EXDEV;
+            ker_sb_preload_note_unowned_network_locked();
+            ker_sb_preload_unlock(); errno = error; return -1;
+        }
+    }
     int accepted = client ? ker_socket_client_accept4(client, cap,
         address ? (struct sockaddr *)&local : NULL,
         address ? &local_length : NULL, flags) : -1;
+    if (accepted >= 0 && ff_owner_accept) {
+        int matches = ff_owner_pid == getpid() && client ?
+            ker_socket_client_ff_owner_match(client, ff_owner_capability, accepted) : -1;
+        if (matches != 1) {
+            int error = matches < 0 ? (errno ? errno : EOPNOTSUPP) : EXDEV;
+            ker_sb_preload_note_unowned_network_locked();
+            (void)syscall(SYS_close, accepted); accepted = -1; errno = error;
+        } else {
+        }
+    }
     if (accepted >= 0 && ker_sb_preload_register_network_locked(accepted)) {
         int error = errno; (void)syscall(SYS_close, accepted); accepted = -1; errno = error;
     }
@@ -1008,8 +1121,25 @@ int fcntl(int fd, int command, ...)
             (int)syscall(SYS_fcntl, fd, command);
         break;
     case F_DUPFD: case F_DUPFD_CLOEXEC:
-        result = ker_sb_preload_duplicate_network_locked(fd, (int)argument,
-            command == F_DUPFD_CLOEXEC);
+        if (ff_dispatch_active(fd) && ff_owner_context_started) {
+            if (!ker_sb_preload_ff_owner_active_locked()) {
+                errno = EOPNOTSUPP;
+                result = -1;
+                break;
+            }
+            int matches = ker_socket_client_ff_owner_match(client,
+                ff_owner_capability, cap);
+            if (matches != 1) {
+                if (matches == 0) errno = EXDEV;
+                result = -1;
+                break;
+            }
+            result = ker_sb_preload_duplicate_network_locked(fd, (int)argument,
+                command == F_DUPFD_CLOEXEC);
+        } else {
+            result = ker_sb_preload_duplicate_network_locked(fd, (int)argument,
+                command == F_DUPFD_CLOEXEC);
+        }
         break;
     default: errno = EOPNOTSUPP; result = -1; break;
     }
