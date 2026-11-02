@@ -1290,6 +1290,11 @@ def run_member_census_client(args, rpc_path, broker, capability):
         pending.settimeout(10); fresh.settimeout(10)
         receive_pressure_pattern(pending, sent0)
         receive_pressure_pattern(fresh, sent1)
+        finwait2 = census_observation(args, rpc_path, census_fds)
+        require(all(values.get('finwait2', 0) >= 1 and
+                values.get('timewait', 0) == 0 for values in finwait2),
+            f'closed accepted sockets were not counted as FIN_WAIT2 while peers stayed open: {finwait2!r}')
+        print(f'MEMBER_CENSUS_FIN_WAIT2 retained_peer=true rows={finwait2!r}', flush=True)
         pending.close(); peers.remove(pending)
         fresh.close(); peers.remove(fresh)
 

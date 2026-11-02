@@ -80,7 +80,7 @@ static int validate_nested_attributes(const unsigned char *bytes, size_t length,
 }
 
 static int parse_attributes(const unsigned char *bytes, size_t length,
-    uint32_t expected_mark, bool sparse_state)
+    uint32_t expected_mark, bool sparse_state, bool finwait2_timewait)
 {
     bool found_mark = false;
     bool found_shutdown = false;
@@ -149,6 +149,7 @@ static int parse_attributes(const unsigned char *bytes, size_t length,
         length -= aligned;
     }
     if (!found_mark || found_shutdown != found_sockopt) return -EPROTO;
+    if (finwait2_timewait && (found_shutdown || found_sockopt)) return -EPROTO;
     return (found_shutdown && found_sockopt) || sparse_state ? 0 : -EPROTO;
 }
 
@@ -226,10 +227,15 @@ int ker_member_census_parse_datagram(struct ker_member_census_accumulator *state
         if (message.family != 2 /* AF_INET */ || message.state == 0 ||
             message.state >= KER_SOCKET_BROKER_TCP_STATES ||
             message.source_port != htons(state->local_port)) return -ESTALE;
+        bool finwait2_timewait =
+            message.state == KER_MEMBER_CENSUS_TCP_FIN_WAIT2 &&
+            message.timer == KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT &&
+            message.inode == 0;
         int attr_status = parse_attributes(payload + sizeof(message),
             payload_length - sizeof(message), state->mark,
             message.state == KER_MEMBER_CENSUS_TCP_SYN_RECV ||
-                message.state == KER_MEMBER_CENSUS_TCP_TIME_WAIT);
+                message.state == KER_MEMBER_CENSUS_TCP_TIME_WAIT ||
+                finwait2_timewait, finwait2_timewait);
         if (attr_status) return attr_status;
         int identity_status = remember_cookie(state, &message);
         if (identity_status) return identity_status;
