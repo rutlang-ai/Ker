@@ -758,8 +758,67 @@ static int staged_activation_wire(struct ker_socket_client *client, unsigned por
     close(activated); close(member); close(group);
     close(slot); close(plan); close(owner);
     memset(&snapshot, 0, sizeof(snapshot));
-    CHECK(ker_socket_client_member_census_snapshot(client, census, &snapshot) == 0 &&
-        snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 0);
+    struct timespec census_started, census_deadline, census_now;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &census_started) == 0);
+    census_deadline = census_started;
+    census_deadline.tv_sec += 1;
+    unsigned census_attempt;
+    int census_status = 0;
+    bool census_empty = false;
+    for (census_attempt = 0; census_attempt < 100; ++census_attempt) {
+        CHECK(clock_gettime(CLOCK_MONOTONIC, &census_now) == 0);
+        if (census_now.tv_sec > census_deadline.tv_sec ||
+            (census_now.tv_sec == census_deadline.tv_sec &&
+                census_now.tv_nsec >= census_deadline.tv_nsec)) {
+            break;
+        }
+        memset(&snapshot, 0, sizeof(snapshot));
+        census_status = ker_socket_client_member_census_snapshot(client, census,
+            &snapshot);
+        if (census_status != 0) break;
+        CHECK(clock_gettime(CLOCK_MONOTONIC, &census_now) == 0);
+        bool census_timed_out = census_now.tv_sec > census_deadline.tv_sec ||
+            (census_now.tv_sec == census_deadline.tv_sec &&
+                census_now.tv_nsec >= census_deadline.tv_nsec);
+        if (snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 0 &&
+            !census_timed_out) {
+            census_empty = true;
+            break;
+        }
+        if (census_timed_out) {
+            break;
+        }
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
+        pause.tv_sec = census_deadline.tv_sec - census_now.tv_sec;
+        pause.tv_nsec = census_deadline.tv_nsec - census_now.tv_nsec;
+        if (pause.tv_nsec < 0) {
+            --pause.tv_sec;
+            pause.tv_nsec += 1000000000;
+        }
+        if (pause.tv_sec > 0 || pause.tv_nsec > 10000000) {
+            pause.tv_sec = 0;
+            pause.tv_nsec = 10000000;
+        }
+        while (nanosleep(&pause, &pause) && errno == EINTR) {}
+    }
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &census_now) == 0);
+    bool census_timed_out = census_now.tv_sec > census_deadline.tv_sec ||
+        (census_now.tv_sec == census_deadline.tv_sec &&
+            census_now.tv_nsec >= census_deadline.tv_nsec);
+    if (census_status != 0 || !census_empty) {
+        int census_error = census_status != 0 ? errno :
+            census_timed_out ? ETIMEDOUT : EAGAIN;
+        long elapsed_ms = (census_now.tv_sec - census_started.tv_sec) * 1000 +
+            (census_now.tv_nsec - census_started.tv_nsec) / 1000000;
+        fprintf(stderr,
+            "staged activation cleanup census status=%d errno=%d total=%llu "
+            "listen=%llu elapsed_ms=%ld attempts=%u timed_out=%d\n",
+            census_status, census_error, (unsigned long long)snapshot.total,
+            (unsigned long long)snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN],
+            elapsed_ms, census_attempt, census_timed_out);
+        errno = census_error;
+        return -1;
+    }
     int reuse_probe = ker_socket_client_socket(client, AF_INET, SOCK_STREAM, IPPROTO_TCP);
     CHECK(reuse_probe >= 0);
     int reuse_address = 1;
