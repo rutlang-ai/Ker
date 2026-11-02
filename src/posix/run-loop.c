@@ -4,6 +4,7 @@
 #include "fd-table.h"
 #include "ff-admission-task.h"
 #include "ff-ingress-controller.h"
+#include "rx-decision-consumer.h"
 #include <ker/posix.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -22,6 +23,7 @@ static bool running, stopping;
 static bool cleanup_pending;
 static ker_posix_loop_func pending_loop;
 static void *pending_argument;
+static int pending_error;
 static int control_fd = -1;
 
 int ker_run_control_init(int fd)
@@ -79,6 +81,7 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
 {
     pthread_mutex_lock(&lock);
     if (running || !ker_native_ready() || control_fd < 0 ||
+        (!loop && ker_rx_decision_consumer_registered()) ||
         (cleanup_pending && (loop != pending_loop || argument != pending_argument))) {
         int error = running ? EBUSY : (!ker_native_ready() ? ENETDOWN : EOPNOTSUPP);
         if (cleanup_pending) error = EBUSY;
@@ -87,27 +90,65 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
         return -1;
     }
     bool cleanup_only = cleanup_pending;
+    int run_error = cleanup_only ? pending_error : 0;
     running = true;
     if (!cleanup_only) {
         pending_loop = loop;
         pending_argument = argument;
         stopping = false;
+        pthread_mutex_unlock(&lock);
+        int start_error = ker_rx_decision_consumer_start();
+        if (start_error == -EPERM) {
+            pthread_mutex_lock(&lock);
+            running = false;
+            pending_loop = NULL;
+            pending_argument = NULL;
+            pthread_mutex_unlock(&lock);
+            errno = EPERM;
+            return -1;
+        }
+        if (start_error) run_error = start_error;
+        pthread_mutex_lock(&lock);
         for (;;) {
             if (stopping) break;
+            if (run_error) break;
             if (!loop) {
                 pthread_cond_wait(&changed, &lock);
                 continue;
             }
             pthread_mutex_unlock(&lock);
+            int pump = ker_rx_decision_consumer_pump();
+            if (pump) run_error = pump;
+            if (run_error) {
+                pthread_mutex_lock(&lock);
+                break;
+            }
             (void)loop(argument); /* Same ignored return-value contract as ff_run. */
+            pump = ker_rx_decision_consumer_pump();
+            if (pump) run_error = pump;
             pthread_mutex_lock(&lock);
         }
     }
     pthread_mutex_unlock(&lock);
+    int rx = ker_rx_decision_consumer_prepare_runtime_shutdown();
+    if (rx < 0) {
+        pthread_mutex_lock(&lock);
+        cleanup_pending = true;
+        pending_error = run_error;
+        running = false;
+        pthread_mutex_unlock(&lock);
+        errno = EBUSY;
+        return -1;
+    }
+    if (rx > 0 && !run_error) {
+        run_error = ker_rx_decision_consumer_error();
+        if (!run_error) run_error = -EPIPE;
+    }
     int ingress = ker_posix_ff_ingress_controller_prepare_runtime_shutdown();
     if (ingress) {
         pthread_mutex_lock(&lock);
         cleanup_pending = true;
+        pending_error = run_error;
         running = false;
         pthread_mutex_unlock(&lock);
         /* Preserve the live runtime for a cleanup-only continuation. The
@@ -121,11 +162,13 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
     int workers = stop_workers();
     ker_run_control_close();
     if (!result) result = workers;
+    if (!result && run_error) result = run_error;
     pthread_mutex_lock(&lock);
     running = false;
     cleanup_pending = false;
     pending_loop = NULL;
     pending_argument = NULL;
+    pending_error = 0;
     pthread_mutex_unlock(&lock);
     if (result) { errno = -result; return -1; }
     return 0;

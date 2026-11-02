@@ -24,6 +24,14 @@
 #define KER_RX_DECISION_HELLO_CONTROL_ID UINT64_C(2)
 #define KER_RX_DECISION_STOP_CONTROL_ID UINT64_C(3)
 
+/* Initial DPDK RX metadata profile: IP and L4 checksum status may be UNKNOWN
+ * or GOOD independently. BAD/NONE and non-checksum flags are unsupported. */
+#define KER_RX_DECISION_RX_IP_CKSUM_MASK UINT64_C(0x90)
+#define KER_RX_DECISION_RX_IP_CKSUM_GOOD UINT64_C(0x80)
+#define KER_RX_DECISION_RX_L4_CKSUM_MASK UINT64_C(0x108)
+#define KER_RX_DECISION_RX_L4_CKSUM_GOOD UINT64_C(0x100)
+#define KER_RX_DECISION_RX_KNOWN_CKSUM_MASK UINT64_C(0x198)
+
 enum ker_rx_decision_type {
     KER_RX_DECISION_BOOTSTRAP = 1,
     KER_RX_DECISION_HELLO = 2,

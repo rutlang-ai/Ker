@@ -52,7 +52,7 @@ endif()
 add_library(ker-posix SHARED src/posix/lkl-channel.c src/posix/extra-interfaces.c src/posix/ipv6-route.c src/posix/vlan.c src/posix/packet-device.c
     src/posix/fd-table.c src/posix/posix-socket.c src/posix/mtu-control.c src/posix/posix-poll.c src/posix/posix-stat.c src/posix/posix-file.c src/posix/posix-transfer.c src/posix/posix-fortify.c src/posix/posix-interface.c src/posix/posix-statvfs.c src/posix/posix-process.c
     src/posix/posix-stdio.c
-    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
+    src/posix/lifecycle.c src/posix/native-buffer.c src/posix/run-loop.c src/posix/rx-decision-consumer.c src/posix/diagnostics.c src/posix/host-memory.c src/posix/host-usercopy.c src/posix/host-thread.c src/posix/host-clock.c src/posix/host-timer.c src/posix/host-entropy.c src/posix/realtime-clock.c src/posix/current-time.c
     src/posix/member-census-diag.c src/posix/member-census-diag-parse.c
     src/posix/ff-owner-requests-diag.c src/posix/ff-owner-requests-parse.c
     src/posix/ff-admission-request-identity.c
@@ -399,6 +399,19 @@ target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_p
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
+    add_executable(ker-rx-decision-consumer-test
+        tests/posix/rx-decision-consumer.c src/posix/rx-decision-consumer.c)
+    target_include_directories(ker-rx-decision-consumer-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-rx-decision-consumer-test PRIVATE c_std_11)
+    target_compile_options(ker-rx-decision-consumer-test PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-rx-decision-consumer-test PRIVATE Threads::Threads)
+    foreach(case positive wrong-role bad-sequence expired bad-bounds bad-flags replay wrong-thread no-handler)
+        add_test(NAME rx-decision-consumer-${case}
+            COMMAND "$<TARGET_FILE:ker-rx-decision-consumer-test>" "${case}")
+        set_tests_properties(rx-decision-consumer-${case} PROPERTIES
+            LABELS "rx-decision;seqpacket;credentials;lifecycle" TIMEOUT 5)
+    endforeach()
     add_test(NAME native-linux-builder-wiring
         COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tests/unit/test_native_linux_builder_wiring.py")
