@@ -343,6 +343,7 @@ class RuntimeServiceSupervisor:
             try:
                 if (_pidfd_dead(actor['pidfd']) or
                         now - actor['last_seen'] > self.ttl_seconds):
+                    self._clear_delegation_intent_for_actor_locked(actor)
                     os.close(actor['pidfd'])
                     del self._delegated_actors[role]
             except OSError:
@@ -355,11 +356,11 @@ class RuntimeServiceSupervisor:
                     if not self.delegation_enabled:
                         self._revoke_locked('actor-dead')
                         return
+                    self._clear_delegation_intent_for_actor_locked(self._actor)
                     os.close(self._actor['pidfd'])
                     self._actor = None
                     os.close(target['pidfd'])
                     self._actor_target = None
-                    self._delegation_intent = None
             except OSError:
                 self._revoke_locked('actor-identity-error')
                 return
@@ -369,12 +370,14 @@ class RuntimeServiceSupervisor:
         try:
             if _pidfd_dead(actor['pidfd']):
                 if self.delegation_enabled:
+                    self._clear_delegation_intent_for_actor_locked(actor)
                     os.close(actor['pidfd'])
                     self._actor = None
                 else:
                     self._revoke_locked('actor-dead')
             elif self.clock() - actor['last_seen'] > self.ttl_seconds:
                 if self.delegation_enabled:
+                    self._clear_delegation_intent_for_actor_locked(actor)
                     os.close(actor['pidfd'])
                     self._actor = None
                 else:
@@ -385,8 +388,6 @@ class RuntimeServiceSupervisor:
             if self._actor_target is not None:
                 os.close(self._actor_target['pidfd'])
                 self._actor_target = None
-            if self._delegation_intent is not None and self._delegation_intent['role'] == wire.ROLE_SLIM_STAGE1:
-                self._delegation_intent = None
 
     def _peer_identity(self, connection):
         raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _UCRED.size)
@@ -622,6 +623,12 @@ class RuntimeServiceSupervisor:
     @staticmethod
     def _identity_key(actor):
         return actor['pid'], actor['uid'], actor['gid'], actor['start'], actor['exe_hash']
+
+    def _clear_delegation_intent_for_actor_locked(self, actor):
+        intent = self._delegation_intent
+        if (intent is not None and intent['parent'] == self._identity_key(actor) and
+                hmac.compare_digest(intent['parent_lease'], actor['lease_id'])):
+            self._delegation_intent = None
 
     @classmethod
     def _same_identity(cls, left, right):

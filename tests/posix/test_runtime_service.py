@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import select
+import signal
 import socket
 import subprocess
 import sys
@@ -154,6 +155,15 @@ def create_child(sock, sequence, lease, child_role):
         w.pack_delegate_intent(secrets.token_bytes(16), child_role))
     assert status == 0
     intent = w.unpack_intent_result(body)
+    pause_role = os.environ.get('KER_TEST_PAUSE_INTENT_ROLE')
+    if pause_role and int(pause_role) == child_role:
+        with open(os.environ['KER_TEST_INTENT_READY'], 'w') as marker:
+            marker.write(str(os.getpid()))
+        deadline = time.monotonic() + 8
+        while (not os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']) and
+                time.monotonic() < deadline):
+            time.sleep(0.002)
+        assert os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']), 'test did not release actor after intent'
     child_env = dict(env)
     child_env['KER_TEST_EXPECTED_PARENT_PID'] = str(os.getpid())
     read_fd, write_fd = os.pipe()
@@ -215,6 +225,15 @@ def create_child(sock, sequence, lease, child_role):
         w.pack_delegate_intent(os.urandom(16), child_role))
     assert status == 0
     intent = w.unpack_intent_result(body)
+    pause_role = os.environ.get('KER_TEST_PAUSE_INTENT_ROLE')
+    if pause_role and int(pause_role) == child_role:
+        with open(os.environ['KER_TEST_INTENT_READY'], 'w') as marker:
+            marker.write(str(os.getpid()))
+        deadline = time.monotonic() + 8
+        while (not os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']) and
+                time.monotonic() < deadline):
+            time.sleep(0.002)
+        assert os.path.exists(os.environ['KER_TEST_INTENT_CONTINUE']), 'test did not release actor after intent'
     child_env = dict(env)
     child_env['KER_TEST_EXPECTED_PARENT_PID'] = str(os.getpid())
     read_fd, write_fd = os.pipe()
@@ -304,6 +323,12 @@ stage1_pid, next_sequence = create_child(master, 2, master_lease,
 status, _, _ = rpc(master, w.DELEGATE_INTENT, next_sequence, master_lease, body=
     w.pack_delegate_intent(secrets.token_bytes(16), w.ROLE_SLIM_STAGE1))
 assert status == 13, 'master replacement stage1 grant was unexpectedly accepted'
+if env.get('KER_TEST_HOLD_MASTER'):
+    deadline = time.monotonic() + 10
+    while (not os.path.exists(env['KER_TEST_MASTER_EXIT']) and
+            time.monotonic() < deadline):
+        time.sleep(0.002)
+    assert os.path.exists(env['KER_TEST_MASTER_EXIT']), 'test did not release direct actor'
 if env.get('KER_TEST_MASTER_HOLD'):
     status, _, _ = rpc(master, w.RELEASE, next_sequence + 1, master_lease)
     assert status == 0
@@ -475,6 +500,202 @@ class RuntimeServiceDelegationWireTest(unittest.TestCase):
 
 
 class RuntimeServiceDelegationChainTest(unittest.TestCase):
+    def test_dead_direct_intent_owner_clears_its_own_pending_intent(self):
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-intent-owner-death-') as directory:
+            root = Path(directory)
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            service = None
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                app_hash = runtime_service.sha256_file(sys.executable)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    root / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-intent-owner-death-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                intent_ready = root / 'intent-ready'
+                continue_bind = root / 'continue-bind'
+                error_log = root / 'actor-stderr'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['PYTHONPATH'] = str(TOOLS)
+                env.update({
+                    'KER_TEST_FINAL_CLAIMED': str(root / 'final-claimed'),
+                    'KER_TEST_FINAL_RELEASE': str(root / 'final-release'),
+                    'KER_TEST_PAUSE_INTENT_ROLE': str(wire.ROLE_SLIM_STAGE1),
+                    'KER_TEST_INTENT_READY': str(intent_ready),
+                    'KER_TEST_INTENT_CONTINUE': str(continue_bind),
+                })
+                with error_log.open('w') as error_stream:
+                    actor = subprocess.Popen([sys.executable, '-c', DELEGATION_CHAIN_ACTOR],
+                        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=error_stream)
+                    actor_pidfd = os.pidfd_open(actor.pid, 0)
+                    service.bind_actor(actor, actor_pidfd)
+                    deadline = time.monotonic() + 8
+                    while not intent_ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.002)
+                    self.assertTrue(intent_ready.exists(),
+                        'direct actor did not reach its synchronized INTENT: ' +
+                        error_log.read_text())
+                    self.assertIsNone(actor.poll(), 'direct actor exited before intent-owner death')
+                    with service._condition:
+                        intent = service._delegation_intent
+                        self.assertIsNotNone(intent, 'direct actor did not create an intent')
+                        self.assertEqual(intent['parent'],
+                            runtime_service.RuntimeServiceSupervisor._identity_key(service._actor))
+                        self.assertEqual(intent['parent_lease'], service._actor['lease_id'])
+                    actor.kill()
+                    actor.wait(timeout=5)
+                    with service._condition:
+                        service._reap_locked()
+                        self.assertIsNone(service._delegation_intent,
+                            'dead actor retained an intent owned by its exact lease')
+                        self.assertIsNone(service._actor,
+                            'dead direct actor remained active after pidfd reaping')
+                    self.assertEqual(service.active_count, 0,
+                        'dead direct actor intent continued pinning the service')
+                    self.assertTrue(service.wait_for_release(1.0))
+                    self.assertTrue(service.prepare_worker_shutdown(0.1))
+                    self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                continue_bind.touch(exist_ok=True)
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (actor_pidfd, worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
+    def test_live_stage1_intent_survives_direct_actor_exit_before_bind(self):
+        with tempfile.TemporaryDirectory(prefix='ker-runtime-service-intent-parent-exit-') as directory:
+            root = Path(directory)
+            worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+            worker_pidfd = os.pidfd_open(worker.pid, 0)
+            control_read, control_write = os.pipe2(os.O_CLOEXEC)
+            actor = None
+            actor_pidfd = -1
+            stage_pidfd = -1
+            service = None
+            try:
+                ready = {'process_type': 'primary', 'mbuf_pool_count': 4,
+                    'queues': 1, 'memory_bytes': 65536, 'port': 'test-port'}
+                app_hash = runtime_service.sha256_file(sys.executable)
+                service = runtime_service.RuntimeServiceSupervisor(
+                    root / 'service.sock', worker, worker_pidfd,
+                    runtime_service.process_start_ticks(worker.pid),
+                    runtime_service.process_executable_hash(worker.pid), ready,
+                    app_hash, hashlib.sha256(b'ff-slim-intent-parent-exit-v1').digest(),
+                    control_write, ttl_seconds=30, max_clients=4,
+                    delegation_enabled=True)
+                os.close(control_write)
+                control_write = -1
+                service.start()
+                intent_ready = root / 'stage1-intent-ready'
+                continue_bind = root / 'continue-bind'
+                claimed = root / 'final-claimed'
+                release = root / 'final-release'
+                error_log = root / 'delegation-stderr'
+                env = os.environ.copy()
+                env.update(service.env)
+                env['PYTHONPATH'] = str(TOOLS)
+                env.update({
+                    'KER_TEST_FINAL_CLAIMED': str(claimed),
+                    'KER_TEST_FINAL_RELEASE': str(release),
+                    'KER_TEST_PAUSE_INTENT_ROLE': str(wire.ROLE_SLIM_PRIMARY),
+                    'KER_TEST_INTENT_READY': str(intent_ready),
+                    'KER_TEST_INTENT_CONTINUE': str(continue_bind),
+                    'KER_TEST_HOLD_MASTER': '1',
+                    'KER_TEST_MASTER_EXIT': str(root / 'master-exit'),
+                })
+                with error_log.open('w') as error_stream:
+                    actor = subprocess.Popen([sys.executable, '-c', DELEGATION_CHAIN_ACTOR],
+                        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=error_stream)
+                    actor_pidfd = os.pidfd_open(actor.pid, 0)
+                    service.bind_actor(actor, actor_pidfd)
+                    deadline = time.monotonic() + 8
+                    while not intent_ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.002)
+                    self.assertTrue(intent_ready.exists(),
+                        'stage1 did not pause after creating its primary intent: ' +
+                        error_log.read_text())
+                    self.assertIsNone(actor.poll(),
+                        'direct actor exited before the stage1 INTENT barrier')
+                    stage_pid = int(intent_ready.read_text())
+                    stage_pidfd = os.pidfd_open(stage_pid, 0)
+                    self.assertFalse(select.select([stage_pidfd], [], [], 0)[0],
+                        'stage1 exited before the synchronized BIND point')
+                    actor.kill()
+                    actor.wait(timeout=5)
+                    self.assertFalse(select.select([stage_pidfd], [], [], 0)[0],
+                        'stage1 died with its direct actor')
+                    continue_bind.touch()
+                    deadline = time.monotonic() + 8
+                    while not claimed.exists() and time.monotonic() < deadline:
+                        time.sleep(0.002)
+                    self.assertTrue(claimed.exists(),
+                        'stage1 BIND/primary CLAIM failed after direct actor exit: ' +
+                        error_log.read_text())
+                    self.assertGreater(service.active_count, 0,
+                        'bound or claimed stage1-owned primary role lost its resource pin')
+                    release.touch()
+                    deadline = time.monotonic() + 5
+                    while service.active_count and time.monotonic() < deadline:
+                        time.sleep(0.005)
+                    self.assertEqual(service.active_count, 0,
+                        'delegated roles did not settle after final RELEASE')
+                    self.assertTrue(service.wait_for_release(1.0))
+                    self.assertTrue(service.prepare_worker_shutdown(0.1))
+                    self.assertEqual(os.read(control_read, 1), b'')
+            finally:
+                if 'continue_bind' in locals():
+                    continue_bind.touch(exist_ok=True)
+                if 'release' in locals():
+                    release.touch(exist_ok=True)
+                if actor is not None and actor.poll() is None:
+                    actor.kill()
+                    actor.wait()
+                if stage_pidfd >= 0 and not select.select([stage_pidfd], [], [], 0)[0]:
+                    try:
+                        signal.pidfd_send_signal(stage_pidfd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                for pidfd in (actor_pidfd, stage_pidfd):
+                    if pidfd >= 0:
+                        os.close(pidfd)
+                if service is not None:
+                    service.close()
+                if worker.poll() is None:
+                    worker.terminate()
+                    try:
+                        worker.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        worker.kill()
+                        worker.wait()
+                for descriptor in (worker_pidfd, control_read, control_write):
+                    if descriptor >= 0:
+                        os.close(descriptor)
+
     def test_two_stage_pidfd_grants_survive_parent_exit_and_pin_worker(self):
         with tempfile.TemporaryDirectory(prefix='ker-runtime-service-delegation-') as directory:
             worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
