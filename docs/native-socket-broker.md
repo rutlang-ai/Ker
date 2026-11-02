@@ -138,13 +138,15 @@ close only the candidate listener and preserve member 0. The initial listener
 identity, mark, bound tuple, and `SO_ACCEPTCONN` state are revalidated before
 candidate socket effects.
 
-Admission-prepared actors are explicitly unsupported in this staged profile.
-Initial publication returns `EOPNOTSUPP` before creating a listener; a prepared
-candidate returns `EOPNOTSUPP`, consumes its one attempt, and leaves member 0
-serving. The focused harness does not qualify admission READY gating for a
-staged candidate; admission support requires a separate real READY-before-
-listen and wire qualification. These SDK controls do not qualify Nginx
-`graceful_reload=1`, a full F-Stack lifecycle, or a graceful-reload FSM.
+Initial publication requires an unprepared actor. A prepared candidate returns
+`EAGAIN` before socket effects while its admission task is starting or in a
+retryable window transition; this does not consume the candidate attempt. Once
+the task is `READY`, the broker sets the candidate mark, binds it, registers
+that exact native listener with the admission task, and only then calls
+`listen()`. Terminal or quarantined task states fail closed and consume the
+attempt, preserving member 0 and its selector. These SDK controls do not
+qualify Nginx `graceful_reload=1`, a full F-Stack lifecycle, or a graceful-reload
+FSM.
 
 ## Reuseport member census
 
@@ -156,6 +158,12 @@ unique, nonzero `SO_MARK` before publication. The broker attaches a fixed local
 netlink request, pointer, or descriptor. Snapshot results contain raw TCP
 state counts, the immutable listener cookie, and no queue metrics or F-Stack
 syncache/syncounter aliases.
+
+For a claimed staged member 1 that is not published yet, census creation is
+also permitted. Its snapshot uses the already reserved member mark with
+`listener_cookie=0`; a successful snapshot must have zero `LISTEN` rows. Any
+unexpected listener under that mark fails the snapshot. This lets callers
+verify the candidate has not begun listening while its owner is still starting.
 
 The kind-5 census capability has no TCP descriptor, group reference, or member
 handle. It remains valid after all group/member handles close: snapshots may

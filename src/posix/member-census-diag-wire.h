@@ -96,6 +96,7 @@ struct ker_member_census_accumulator {
     uint32_t sequence;
     uint32_t local_port_id;
     uint64_t listener_cookie;
+    bool expect_no_listener;
     uint64_t rows;
     uint64_t total;
     uint64_t state_counts[KER_SOCKET_BROKER_TCP_STATES];

@@ -200,7 +200,6 @@ int ker_socket_client_reuseport_group_member(struct ker_socket_client *client,
     int group_cap, unsigned index);
 int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
     int group_cap, unsigned index);
-
 /* Deferred owner-aware fixed two-member IPv4 reuseport group. The plan
  * reserves a tuple but creates no listener until both distinct FF owner
  * actors claim their one delegated index. Each slot can be issued once and
@@ -215,9 +214,10 @@ int ker_socket_client_owner_group_plan(struct ker_socket_client *client,
  * initial publication, but its candidate publish is one-shot. An actual
  * candidate attempt that reaches preflight is terminal on rejection; missing
  * claims or an unpublished initial member return EAGAIN without consuming it.
- * This staged profile does not support admission-prepared actors; initial
- * publication returns EOPNOTSUPP before socket effects, and a prepared
- * candidate returns EOPNOTSUPP and consumes the candidate attempt. */
+ * Initial publication requires an unprepared actor. A prepared candidate
+ * retries with EAGAIN until its admission task is READY; once ready, its
+ * listener is registered with that task before listen. Failed or quarantined
+ * tasks consume the candidate attempt and fail closed. */
 int ker_socket_client_owner_group_staged_plan(struct ker_socket_client *client,
     const struct sockaddr_in *address, int backlog, uint32_t group_rights);
 int ker_socket_client_owner_group_slot(struct ker_socket_client *client,
@@ -236,7 +236,9 @@ int ker_socket_client_owner_group_member(struct ker_socket_client *client,
 /* A census capability copies immutable group-member metadata, but retains no
  * group or TCP descriptor. Creation and reads require CONTROL and READ rights
  * respectively. The broker requires preexisting NET_ADMIN authority for its
- * private fixed INET_DIAG query; it never elevates credentials. */
+ * private fixed INET_DIAG query; it never elevates credentials. A staged
+ * group's claimed but unpublished member 1 also supports census: its cookie is
+ * zero and snapshots verify the reserved mark has no LISTEN row yet. */
 int ker_socket_client_member_census_create(struct ker_socket_client *client,
     int group_cap, unsigned index);
 int ker_socket_client_member_census_snapshot(struct ker_socket_client *client,

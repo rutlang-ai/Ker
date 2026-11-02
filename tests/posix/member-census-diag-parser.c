@@ -445,5 +445,28 @@ int main(void)
     CHECK(length && parse_expect(&state, packet, length, -EAGAIN, false, 0,
         &snapshot) == 0);
 
+    /* The explicit pending staged-candidate identity accepts an empty
+     * mark-scoped dump, but rejects any LISTEN row. Ordinary census identity
+     * still requires a nonzero immutable listener cookie. */
+    state = initial_state();
+    state.listener_cookie = 0;
+    state.expect_no_listener = true;
+    length = append_done(packet, sizeof(packet), 0);
+    CHECK(length && parse_expect(&state, packet, length, 0, true, 0,
+        &snapshot) == 0 && snapshot.listener_cookie == 0 &&
+        snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 0);
+    state = initial_state();
+    state.listener_cookie = 0;
+    length = append_done(packet, sizeof(packet), 0);
+    CHECK(length && parse_expect(&state, packet, length, -EPROTO, false, 0,
+        &snapshot) == 0);
+    state = initial_state();
+    state.listener_cookie = 0;
+    state.expect_no_listener = true;
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_LISTEN,
+        full_attrs, sizeof(full_attrs) / sizeof(full_attrs[0]));
+    CHECK(length && parse_expect(&state, packet, length, -ESTALE, false, 0,
+        &snapshot) == 0);
+
     return 0;
 }

@@ -40,6 +40,7 @@ int ff_flow_map_lookup(const struct ff_flow_key *key);
 
 static void *reload_state;
 static int listener_fd = -1;
+static int staged_slot_fd = -1;
 static int retired_probe_fd = -1;
 static int epoll_fd = -1;
 static int initialized;
@@ -51,6 +52,8 @@ static int owner_probe_mode;
 static int product_smoke_mode;
 static int window_cycles_mode;
 static int window_cancel_mode;
+static int staged_candidate_mode;
+static int staged_candidate_hold_mode;
 static int window_initial_reported;
 static volatile sig_atomic_t window_is_retired;
 static struct ff_flow_key window_cancel_key;
@@ -66,6 +69,20 @@ static int window_rearming;
 static int recursive_wait_checked;
 static const char *setup_stage = "map bootstrap";
 static uint64_t monotonic_ns(void);
+
+static int staged_slot_select_rejected(int slot_cap)
+{
+	const char *path = getenv("KER_SOCKET_BROKER_PATH");
+	struct ker_socket_client probe;
+	if (!path || !*path || ker_socket_client_open(&probe, path)) return -1;
+	errno = 0;
+	int selected = ker_socket_client_reuseport_group_select(&probe, slot_cap, 1);
+	int error = errno;
+	ker_socket_client_close(&probe);
+	if (selected == -1 && error == ENOTSOCK) return 0;
+	errno = error ? error : EPROTO;
+	return -1;
+}
 
 static void request_snapshot_signal(int signal_number)
 {
@@ -349,34 +366,69 @@ static void setup_owner(void)
 	ff_flow_map_open();
 	if (!ff_flow_map_active() || !ff_reload_state_attached() ||
 	    !ff_global_cfg.dpdk.graceful_reload) goto fail;
+	if (staged_candidate_mode) {
+		setup_stage = "staged candidate slot claim";
+		if (ker_sb_preload_ff_staged_group_claim(staged_slot_fd)) goto fail;
+		if (staged_slot_select_rejected(staged_slot_fd)) goto fail;
+		static const char authority[] = "C20_STAGED_SLOT_CANNOT_SELECT\n";
+		(void)syscall(SYS_write, STDOUT_FILENO, authority, sizeof(authority) - 1);
+		static const char claimed[] = "C20_STAGED_CLAIMED\n";
+		(void)syscall(SYS_write, STDOUT_FILENO, claimed, sizeof(claimed) - 1);
+	}
 	const struct ker_ff_admission_map_ops ops = {
 		.context_live = map_context_live, .active = map_active,
 		.admit = map_admit, .revoke = map_revoke,
 		.retire = map_retire, .rearm = map_rearm};
 	setup_stage = "broker admission attach";
 	if (ker_sb_preload_ff_owner_admission_attach(&ops)) goto fail;
-	setup_stage = "FF listener creation";
-	listener_fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
-		IPPROTO_TCP);
-	if (listener_fd < 0) goto fail;
-	if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
-	setup_stage = "FF listener bind";
-	struct sockaddr_in address = {.sin_family = AF_INET,
-		.sin_port = htons(8080)};
-	if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) goto fail;
-	if (ff_bind(listener_fd, (struct linux_sockaddr *)&address, sizeof(address))) goto fail;
-	setup_stage = "FF listener listen";
-	if (ff_listen(listener_fd, 128)) goto fail;
-	if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
+	if (staged_candidate_mode) {
+		setup_stage = "staged candidate publication wait";
+		static const char ready[] = "C20_STAGED_TASK_READY_UNPUBLISHED\n";
+		(void)syscall(SYS_write, STDOUT_FILENO, ready, sizeof(ready) - 1);
+		if (staged_candidate_hold_mode) {
+		} else {
+			uint64_t deadline = monotonic_ns() + UINT64_C(5000000000);
+			for (;;) {
+				int pump_status = ker_sb_preload_owner_pump();
+				if (pump_status) {
+					errno = pump_status < 0 ? -pump_status : EPROTO;
+					goto fail;
+				}
+				listener_fd = ker_sb_preload_ff_staged_group_member(staged_slot_fd);
+				if (listener_fd >= 0) break;
+				if (errno != EAGAIN || monotonic_ns() >= deadline) goto fail;
+				struct timespec pause = {.tv_nsec = 1000000};
+				(void)nanosleep(&pause, NULL);
+			}
+			static const char candidate[] = "C20_STAGED_CANDIDATE_PUBLISHED\n";
+			(void)syscall(SYS_write, STDOUT_FILENO, candidate, sizeof(candidate) - 1);
+		}
+	} else {
+		setup_stage = "FF listener creation";
+		listener_fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
+			IPPROTO_TCP);
+		if (listener_fd < 0) goto fail;
+		if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
+		setup_stage = "FF listener bind";
+		struct sockaddr_in address = {.sin_family = AF_INET,
+			.sin_port = htons(8080)};
+		if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) goto fail;
+		if (ff_bind(listener_fd, (struct linux_sockaddr *)&address, sizeof(address))) goto fail;
+		setup_stage = "FF listener listen";
+		if (ff_listen(listener_fd, 128)) goto fail;
+		if (admission_listener_rejects_fastopen(listener_fd)) goto fail;
+	}
 	if (window_cycles_mode) {
 		setup_stage = "retired-window probe socket creation";
 		retired_probe_fd = ff_socket(AF_INET,
 			SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
 		if (retired_probe_fd < 0) goto fail;
 	}
-	static const char tfo_guard[] =
-		"C16_TFO_GUARD_PASS enabled=0 prebind=EOPNOTSUPP postlisten=EOPNOTSUPP\n";
-	(void)syscall(SYS_write, STDOUT_FILENO, tfo_guard, sizeof(tfo_guard) - 1);
+	if (!staged_candidate_mode) {
+		static const char tfo_guard[] =
+			"C16_TFO_GUARD_PASS enabled=0 prebind=EOPNOTSUPP postlisten=EOPNOTSUPP\n";
+		(void)syscall(SYS_write, STDOUT_FILENO, tfo_guard, sizeof(tfo_guard) - 1);
+	}
 	setup_stage = "FF epoll creation";
 	epoll_fd = ker_sb_posix_epoll_create1(EPOLL_CLOEXEC);
 	if (epoll_fd < 0) goto fail;
@@ -391,13 +443,17 @@ static void setup_owner(void)
 	}
 	setup_stage = "FF listener epoll registration";
 	struct epoll_event event = {.events = EPOLLIN, .data.fd = listener_fd};
-	if (ker_sb_posix_epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listener_fd, &event)) goto fail;
+	if (listener_fd >= 0 &&
+	    ker_sb_posix_epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listener_fd, &event)) goto fail;
 	if (!pump_failure_mode && !owner_probe_mode && !product_smoke_mode &&
+	    !staged_candidate_mode &&
 	    !window_cycles_mode && !window_cancel_mode) {
 		setup_stage = "owner wait contract checks";
 		if (owner_wait_contract_checks()) goto fail;
 	}
-	const char *ready = product_smoke_mode ?
+	const char *ready = staged_candidate_hold_mode ?
+		"C20_STAGED_APP_READY_UNPUBLISHED\n" : staged_candidate_mode ?
+		"C20_STAGED_APP_READY admission=ready listener=registered\n" : product_smoke_mode ?
 		"C16_APP_READY product_smoke=1 tfo_guard=ok\n" : getenv("KER_C16_TEST_PREPARE_ONCE") ?
 		"C16_APP_READY pump_timeout=retained host_only=eopnotsupp one_use=ealready tfo_guard=ok\n" :
 		"C16_APP_READY pump_timeout=retained host_only=eopnotsupp tfo_guard=ok\n";
@@ -578,8 +634,11 @@ static int owner_loop(void *unused)
 	if (!ready) return 0;
 	if (event.data.fd == listener_fd) {
 		for (;;) {
-			int accepted = ff_accept4(listener_fd, NULL, NULL,
-				SOCK_NONBLOCK | SOCK_CLOEXEC);
+			int accepted = staged_candidate_mode ?
+				ker_sb_posix_accept4(listener_fd, NULL, NULL,
+					SOCK_NONBLOCK | SOCK_CLOEXEC) :
+				ff_accept4(listener_fd, NULL, NULL,
+					SOCK_NONBLOCK | SOCK_CLOEXEC);
 			if (accepted < 0) {
 				if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) break;
 				_exit(4);
@@ -594,12 +653,18 @@ static int owner_loop(void *unused)
 	} else {
 		int accepted = event.data.fd;
 		char data[32];
-		ssize_t count = ff_read(accepted, data, sizeof(data));
+		ssize_t count = staged_candidate_mode ?
+			ker_sb_posix_read(accepted, data, sizeof(data)) :
+			ff_read(accepted, data, sizeof(data));
 		if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
 			return 0;
-		if (count <= 0 || write_all(accepted, data, (size_t)count)) _exit(5);
+		if (count <= 0) _exit(5);
+		if (staged_candidate_mode) {
+			ssize_t written = ker_sb_posix_write(accepted, data, (size_t)count);
+			if (written != count) _exit(5);
+		} else if (write_all(accepted, data, (size_t)count)) _exit(5);
 		if (ker_sb_posix_epoll_ctl(epoll_fd, EPOLL_CTL_DEL, accepted, NULL) ||
-		    ff_close(accepted)) _exit(5);
+		    (staged_candidate_mode ? ker_sb_posix_close(accepted) : ff_close(accepted))) _exit(5);
 		++completed_count;
 	}
 	return 0;
@@ -623,6 +688,22 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "window-cancel")) {
 		window_cancel_mode = 1;
 		requested_count = 0;
+	} else if (!strcmp(argv[1], "staged-candidate")) {
+		staged_candidate_mode = 1;
+		requested_count = 1;
+		const char *slot_text = getenv("KER_C20_STAGED_SLOT_FD");
+		char *end = NULL;
+		long slot = slot_text ? strtol(slot_text, &end, 10) : -1;
+		if (!slot_text || !end || *end || slot < 0 || slot > INT_MAX) return 2;
+		staged_slot_fd = (int)slot;
+	} else if (!strcmp(argv[1], "staged-candidate-hold")) {
+		staged_candidate_mode = staged_candidate_hold_mode = 1;
+		requested_count = 0;
+		const char *slot_text = getenv("KER_C20_STAGED_SLOT_FD");
+		char *end = NULL;
+		long slot = slot_text ? strtol(slot_text, &end, 10) : -1;
+		if (!slot_text || !end || *end || slot < 0 || slot > INT_MAX) return 2;
+		staged_slot_fd = (int)slot;
 	} else {
 	char *end = NULL;
 	unsigned long count = strtoul(argv[1], &end, 10);
@@ -665,7 +746,10 @@ int main(int argc, char **argv)
 	if (sigaction(SIGHUP, &rearm_action, NULL)) return 2;
 	ff_run(owner_loop, NULL);
 	(void)syscall(SYS_unlinkat, AT_FDCWD, config_path, 0);
-	if (listener_fd >= 0) (void)ff_close(listener_fd);
+	if (listener_fd >= 0) {
+		if (staged_candidate_mode) (void)ker_sb_posix_close(listener_fd);
+		else (void)ff_close(listener_fd);
+	}
 	if (retired_probe_fd >= 0) (void)ff_close(retired_probe_fd);
 	if (epoll_fd >= 0) (void)ff_close(epoll_fd);
 	ff_flow_map_close();

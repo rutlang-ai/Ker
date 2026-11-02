@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Broker-process/LKL and separate FF owner admission smoke over TAP."""
 import argparse
+import array
 import errno
 import json
 import os
@@ -22,6 +23,244 @@ import time
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def recv_exact_tcp(connection, length):
+    result = bytearray()
+    while len(result) < length:
+        chunk = connection.recv(length - len(result))
+        if not chunk:
+            raise RuntimeError(f'TCP peer closed after {len(result)} of {length} bytes')
+        result.extend(chunk)
+    return bytes(result)
+
+
+def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
+        broker, app_environment):
+    transfer_parent, transfer_child = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    helper = app = None
+    peers = []
+    received_caps = []
+    try:
+        helper = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path),
+            str(transfer_child.fileno()), '4108', '0', '--staged-admission-initial'],
+            pass_fds=(transfer_child.fileno(),), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        transfer_child.close()
+        transfer_parent.settimeout(10)
+        message, ancillary, flags, _ = transfer_parent.recvmsg(1,
+            socket.CMSG_SPACE(array.array('i').itemsize))
+        if message != b'C' or flags & socket.MSG_CTRUNC:
+            helper_output, helper_errors = helper.communicate(timeout=2)
+            raise RuntimeError('initial SDK actor did not transfer the candidate slot: '
+                f'rc={helper.returncode}; stdout={helper_output!r}; '
+                f'stderr={helper_errors!r}')
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                values = array.array('i')
+                values.frombytes(data[:len(data) - len(data) % values.itemsize])
+                received_caps.extend(values)
+        require(len(received_caps) == 1,
+            f'expected only the delegated candidate slot, received {received_caps!r}')
+        require('KER_C20_STAGED_PLAN_FD' not in app_environment,
+            'candidate FF actor must not receive coordinator plan authority')
+        slot_fd, = received_caps
+        require('C20_STAGED_INITIAL_READY' in wait_line(helper,
+            'C20_STAGED_INITIAL_READY', 5),
+            'initial SDK actor did not publish a live listener')
+
+        def helper_command(command, marker):
+            helper.stdin.write((command + '\n').encode()); helper.stdin.flush()
+            return wait_line(helper, marker, 10)
+
+        def exchange(command, port, payload, expected, marker):
+            helper.stdin.write((command + '\n').encode()); helper.stdin.flush()
+            peer = socket.create_connection(('198.18.0.2', port), timeout=10)
+            peer.settimeout(10); peers.append(peer)
+            peer.sendall(payload)
+            require(recv_exact_tcp(peer, len(expected)) == expected,
+                f'{command} flow returned an unexpected payload')
+            require(marker in wait_line(helper, marker, 10),
+                f'initial owner did not complete {command} exchange')
+            return peer
+
+        initial = exchange('INITIAL', 4108, b'INIT-000', b'INIT-ACK',
+            'C20_STAGED_INITIAL_ECHO')
+        app_environment = dict(app_environment)
+        app_environment.pop('KER_C20_STAGED_PLAN_FD', None)
+        app_environment = app_environment | {
+            'KER_C20_STAGED_SLOT_FD': str(slot_fd),
+            'KER_C20_TEST_PAUSE_AFTER_PREPARE_MS': '3000',
+            'KER_C16_TEST_PAUSE_AFTER_PREPARE': '1',
+        }
+        app = subprocess.Popen([str(args.client), 'staged-candidate'],
+            pass_fds=(slot_fd,), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=app_environment,
+            bufsize=0, preexec_fn=disable_core_dumps)
+        wait_line(app, 'C20_STAGED_SLOT_CANNOT_SELECT', 20)
+        require('C20_STAGED_CLAIMED' in wait_line(app, 'C20_STAGED_CLAIMED', 20),
+            'fresh C16 actor did not claim slot 1 before network creation')
+        wait_line(app, 'C16_ATTACH_ENDPOINT path=', 5)
+        helper_command('EARLYPUBLISH', 'C20_STAGED_EARLY_CANDIDATE_EAGAIN')
+        helper_command('CENSUS1', 'C20_STAGED_CANDIDATE_NO_LISTEN')
+        preflip = exchange('PREFLIP', 4108, b'PRE-FLIP', b'OLD-ACK!',
+            'C20_STAGED_PREFLIP_ECHO')
+        wait_line(app, 'C20_STAGED_TASK_READY_UNPUBLISHED', 10)
+        helper_command('CENSUS1', 'C20_STAGED_CANDIDATE_NO_LISTEN')
+        helper_command('PUBLISH', 'C20_STAGED_COORDINATOR_PUBLISHED')
+        wait_line(app, 'C20_STAGED_CANDIDATE_PUBLISHED', 20)
+        wait_line(app, 'C20_STAGED_APP_READY', 10)
+        helper_command('CENSUS_READY', 'C20_STAGED_CANDIDATE_LISTEN_CENSUS')
+        registered = wait_line(broker, 'C20_STAGED REGISTERED', 10)
+        listening = wait_line(broker, 'C20_STAGED LISTEN', 10)
+        register_match = re.search(r'fd=(\d+) mark=(\d+)', registered)
+        listen_match = re.search(r'fd=(\d+) mark=(\d+)', listening)
+        require(register_match and listen_match and
+            register_match.groups() == listen_match.groups(),
+            f'admission registration did not precede listen on the exact fd/mark: '
+            f'{registered!r}; {listening!r}')
+        os.kill(app.pid, signal.SIGUSR1)
+        before_flip = wait_line(app, 'C16_REQUESTS', 5)
+        require(re.search(r'inserted=0\b', before_flip),
+            f'pre-flip fresh member-0 traffic entered candidate map: {before_flip!r}')
+
+        helper_command('FLIP', 'C20_STAGED_SELECTOR1')
+        candidate = socket.create_connection(('198.18.0.2', 4108), timeout=10)
+        candidate.settimeout(10); peers.append(candidate)
+        candidate.sendall(b'CAND-001')
+        require(recv_exact_tcp(candidate, 8) == b'CAND-001',
+            'selected candidate flow did not complete original-Linux SYNACK/accept/echo')
+        os.kill(app.pid, signal.SIGUSR1)
+        after_candidate = wait_line(app, 'C16_REQUESTS', 5)
+        require(re.search(r'inserted=1\b', after_candidate),
+            f'candidate TCP flow was not inserted into the original FF map: {after_candidate!r}')
+        helper.stdin.write(b'OLD\n'); helper.stdin.flush()
+        initial.sendall(b'HELD-OLD')
+        require(recv_exact_tcp(initial, 8) == b'OLD-ACK!',
+            'held original member-0 stream did not survive selector change')
+        wait_line(helper, 'C20_STAGED_OLD_STREAM_ECHO', 10)
+        # Retire the completed admission window before task release. A normal
+        # close intentionally leaves the kernel gate armed, so a later actor
+        # must not be used to imply that teardown disabled it.
+        os.kill(app.pid, signal.SIGWINCH)
+        retired = wait_line(app, 'C17_WINDOW_RETIRED', 10)
+        require(re.search(r'active=0\b', retired),
+            f'C17 retirement did not drain the candidate map: {retired!r}')
+        os.kill(app.pid, signal.SIGUSR2)
+        app_output, app_errors = collect_output(app, timeout=15)
+        require(app.returncode == 0 and 'C16_APP_DONE accepted=1 inserted=1' in app_output,
+            f'C16 candidate actor did not cleanly finish its admitted flow: '
+            f'rc={app.returncode}; stdout={app_output!r}; stderr={app_errors!r}')
+        helper.stdin.write(b'STOP\n'); helper.stdin.flush()
+        helper_output, helper_errors = helper.communicate(timeout=10)
+        require(helper.returncode == 0,
+            f'initial owner fixture failed: {helper_output!r}; {helper_errors!r}')
+        transfer_parent.close()
+        for peer in peers:
+            peer.close()
+        peers.clear()
+        for capability in received_caps:
+            os.close(capability)
+        received_caps.clear()
+
+        # A READY admission owner can die before its one-shot candidate
+        # attempt. The broker must reject that stale actor without changing
+        # member 0 identity, selector, or service.
+        dead_parent, dead_child = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        dead_helper = subprocess.Popen([str(args.reuseport_group_client),
+            str(rpc_path), str(dead_child.fileno()), '4109', '0',
+            '--staged-admission-initial'], pass_fds=(dead_child.fileno(),),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            bufsize=0)
+        dead_child.close()
+        message, ancillary, flags, _ = dead_parent.recvmsg(1,
+            socket.CMSG_SPACE(array.array('i').itemsize))
+        require(message == b'C' and not flags & socket.MSG_CTRUNC,
+            'death fixture failed to transfer candidate slot')
+        dead_caps = []
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                values = array.array('i')
+                values.frombytes(data[:len(data) - len(data) % values.itemsize])
+                dead_caps.extend(values)
+        require(len(dead_caps) == 1, f'invalid dead candidate caps: {dead_caps!r}')
+        received_caps.extend(dead_caps)
+        dead_slot, = dead_caps
+        wait_line(dead_helper, 'C20_STAGED_INITIAL_READY', 5)
+        dead_helper.stdin.write(b'INITIAL\n'); dead_helper.stdin.flush()
+        dead_initial = socket.create_connection(('198.18.0.2', 4109), timeout=10)
+        dead_initial.settimeout(10); peers.append(dead_initial)
+        dead_initial.sendall(b'INIT-000')
+        require(recv_exact_tcp(dead_initial, 8) == b'INIT-ACK',
+            'death fixture initial listener failed before candidate attach')
+        wait_line(dead_helper, 'C20_STAGED_INITIAL_ECHO', 10)
+        dead_environment = dict(app_environment)
+        dead_environment.pop('KER_C20_TEST_PAUSE_AFTER_PREPARE_MS', None)
+        dead_environment.pop('KER_C16_TEST_PAUSE_AFTER_PREPARE', None)
+        dead_environment.update({'KER_C20_STAGED_SLOT_FD': str(dead_slot)})
+        dead_app = subprocess.Popen([str(args.client), 'staged-candidate-hold'],
+            pass_fds=(dead_slot,), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=dead_environment,
+            bufsize=0, preexec_fn=disable_core_dumps)
+        app = dead_app
+        wait_line(dead_app, 'C20_STAGED_CLAIMED', 20)
+        wait_line(dead_app, 'C20_STAGED_TASK_READY_UNPUBLISHED', 20)
+        dead_app.kill()
+        require(dead_app.wait(timeout=5) == -signal.SIGKILL,
+            'candidate actor did not die at the pre-publish barrier')
+
+        def dead_command(command, marker):
+            dead_helper.stdin.write((command + '\n').encode()); dead_helper.stdin.flush()
+            return wait_line(dead_helper, marker, 10)
+
+        dead_command('DEADPUBLISH', 'C20_STAGED_DEAD_CANDIDATE_REJECTED')
+        dead_command('SELECT1', 'C20_STAGED_SELECTOR1_REFUSED')
+        dead_command('RETAIN0', 'C20_STAGED_MEMBER0_IDENTITY_RETAINED')
+        dead_helper.stdin.write(b'FRESH\n'); dead_helper.stdin.flush()
+        fresh = socket.create_connection(('198.18.0.2', 4109), timeout=10)
+        fresh.settimeout(10); peers.append(fresh); fresh.sendall(b'AFTER-01')
+        require(recv_exact_tcp(fresh, 8) == b'OLD-ACK!',
+            'member 0 did not serve a fresh flow after candidate actor death')
+        wait_line(dead_helper, 'C20_STAGED_FRESH_INITIAL_SERVICE', 10)
+        dead_helper.stdin.write(b'OLD\n'); dead_helper.stdin.flush()
+        dead_initial.sendall(b'HELD-OLD')
+        require(recv_exact_tcp(dead_initial, 8) == b'OLD-ACK!',
+            'member 0 held stream did not survive candidate actor death')
+        wait_line(dead_helper, 'C20_STAGED_OLD_STREAM_ECHO', 10)
+        dead_helper.stdin.write(b'STOP\n'); dead_helper.stdin.flush()
+        dead_output, dead_errors = dead_helper.communicate(timeout=10)
+        require(dead_helper.returncode == 0,
+            f'dead candidate initial owner fixture failed: {dead_output!r}; {dead_errors!r}')
+        dead_parent.close()
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+            stop.sendto(b'STOP', str(stop_path))
+        broker_output, broker_errors = collect_output(broker, timeout=35)
+        require(broker.returncode == 0 and 'C16_BROKER_DONE' in broker_output,
+            f'broker did not finalize after staged admission: '
+            f'rc={broker.returncode}; stdout={broker_output!r}; stderr={broker_errors!r}')
+        report = json.loads(stats.read_text())
+        require(report.get('outstanding') == 0 and report.get('tx', 0) > 0 and
+            report.get('rx', 0) > 0,
+            f'staged admission runtime leaked or omitted native packet evidence: {report!r}')
+        print('C20_STAGED_ADMISSION_PASS child=slot-only/coordinator-plan '
+            'preREADY=EAGAIN/mark-LISTEN0 '
+            'register-before-listen=1 preflip-map=0 selected-original-map=1 '
+            'held-old-stream=1 death=ESRCH/member0-cookie-mark-selector0/pool=0')
+        return 0
+    finally:
+        for peer in peers:
+            peer.close()
+        for cap in received_caps:
+            try: os.close(cap)
+            except OSError: pass
+        transfer_parent.close()
+        if app is not None and app.poll() is None:
+            app.kill(); app.wait()
+        if helper is not None and helper.poll() is None:
+            helper.kill(); helper.wait()
 
 
 def wait_line(process, expected, timeout=30):
@@ -330,6 +569,9 @@ def inside(args):
                 'LD_PRELOAD': str(args.preload),
                 'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root),
             }
+            if args.staged_admission_only:
+                return run_c20_staged_admission(args, rpc_path, stop_path,
+                    stats, root, broker, app_env)
             finalized_fifo = root / 'finalized.release'
             if args.finalized_timeout_only:
                 os.mkfifo(finalized_fifo, 0o600)
@@ -1119,6 +1361,8 @@ def main():
     parser.add_argument('--broker', type=Path, required=True)
     parser.add_argument('--client', type=Path, required=True)
     parser.add_argument('--progress-client', type=Path, required=True)
+    parser.add_argument('--reuseport-group-client', type=Path)
+    parser.add_argument('--staged-admission-only', action='store_true')
     parser.add_argument('--pump-failure-only', action='store_true')
     parser.add_argument('--registration-negative-only', action='store_true')
     parser.add_argument('--malformed-owner-hello-only', action='store_true')
@@ -1134,10 +1378,16 @@ def main():
     args = parser.parse_args()
     if args.inside:
         return inside(args)
+    if args.staged_admission_only and not args.reuseport_group_client:
+        parser.error('--staged-admission-only requires --reuseport-group-client')
     command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
     for name in ('launcher', 'library', 'worker', 'dpdk_plugin_dir', 'preload',
                  'broker', 'client', 'progress_client'):
         command += ['--' + name.replace('_', '-'), str(getattr(args, name).resolve())]
+    if args.reuseport_group_client:
+        command += ['--reuseport-group-client', str(args.reuseport_group_client.resolve())]
+    if args.staged_admission_only:
+        command.append('--staged-admission-only')
     if args.pump_failure_only:
         command.append('--pump-failure-only')
     if args.registration_negative_only:
