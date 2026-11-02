@@ -1419,6 +1419,7 @@ def main():
     def stop_broker_for_signal():
         nonlocal exit_code, preserve_signal, signal_exit_code, stop_deadline
         nonlocal pending_shutdown_signal
+        nonlocal containment_unresolved, infrastructure_failure
         if (pending_shutdown_signal is None or broker_readiness_channel is None or
                 not broker_readiness_channel.ready or broker_readiness_channel.stopped):
             return
@@ -1427,6 +1428,13 @@ def main():
         preserve_signal = True
         signal_exit_code = 128 + signum
         exit_code = signal_exit_code
+        if (nginx_companion_server is not None and nginx_companion_server.started and
+                not nginx_companion_server.settled):
+            nginx_companion_server.stop()
+            if nginx_companion_server.unresolved or not nginx_companion_server.settled:
+                containment_unresolved = True
+                infrastructure_failure = True
+                raise RuntimeError('Nginx companion did not settle before broker STOP')
         stop_deadline = time.monotonic() + 10.0
         broker_readiness_channel.stop()
 

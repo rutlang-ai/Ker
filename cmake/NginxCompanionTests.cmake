@@ -24,3 +24,29 @@ add_test(NAME native-nginx-companion-process-ownership
         --helper "${PROJECT_BINARY_DIR}/ker-nginx-companion")
 set_tests_properties(native-nginx-companion-process-ownership PROPERTIES
     TIMEOUT 30 LABELS "native;socket-broker;nginx-companion;process-ownership")
+
+if(KER_BUILD_FSTACK_NGINX_RUNTIME AND KER_FSTACK_NGINX_BINARY)
+    foreach(signal_name IN ITEMS term int)
+        foreach(retention_mode IN ITEMS healthy unresolved)
+            set(test_name "native-nginx-companion-real-gr0-${signal_name}-${retention_mode}")
+            set(test_args)
+            if(retention_mode STREQUAL "unresolved")
+                list(APPEND test_args --break-helper)
+            endif()
+            add_test(NAME ${test_name}
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-companion-tap.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+                    --nginx "${KER_FSTACK_NGINX_BINARY}"
+                    --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --shutdown-signal ${signal_name} ${test_args})
+            set_tests_properties(${test_name} PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;fstack;socket-broker;nginx-companion;real-nginx")
+        endforeach()
+    endforeach()
+endif()
