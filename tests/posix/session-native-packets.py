@@ -1234,6 +1234,14 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 diagnostic = dict(mode=mode, reason=reason, latest_stats=latest,
                     latest_stats_raw=latest_raw,
                     forwarding_network_setup=forwarding_network_setup,
+                    generation_forwarding=(dict(armed=forwarding_state['armed'],
+                        client_port=forwarding_state['client_port'],
+                        intercepted_frames=[frame[:2048].hex() for frame in forwarding_state['intercepted'][:64]],
+                        intercepted_truncated=len(forwarding_state['intercepted'])>64,
+                        acknowledged_forwarded=forwarding_state['forwarded'],
+                        fin_ack_sequence=forwarding_state['fin_ack_sequence'],
+                        fin_ack_forwarded=forwarding_state['fin_ack_forwarded'])
+                        if mode=='generation-forward-tcp' else None),
                     wire=dict(frame_count=wire_failure_count,frames_hex=wire_failure_frames,
                         frames_truncated=wire_failure_count>len(wire_failure_frames),errors=wire_failure_errors),
                     actors=dict(app=dict(pid=(latest or {}).get('app_pid'), returncode=(latest or {}).get('app_code')),
@@ -1523,11 +1531,23 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 requests=(b'KER-C29-OLD-TCP-1\n',b'KER-C29-OLD-TCP-2\n')
                 responses=(b'KER-C29-OLD-REPLY-1\n',b'KER-C29-OLD-REPLY-2\n')
                 signal.pidfd_send_signal(app_pidfd,signal.SIGUSR1)
-                for request,response in zip(requests,responses):
+                for exchange,(request,response) in enumerate(zip(requests,responses),start=1):
                     old_tcp_stream.sendall(request)
                     received=bytearray()
                     while len(received)<len(response):
-                        chunk=old_tcp_stream.recv(len(response)-len(received))
+                        try:
+                            chunk=old_tcp_stream.recv(len(response)-len(received))
+                        except TimeoutError as error:
+                            raise startup_failure(
+                                'old original-Linux TCP response timed out after generation handoff: ' +
+                                json.dumps(dict(exchange=exchange,request=request.decode().rstrip(),
+                                    expected_response=response.decode().rstrip(),
+                                    received=bytes(received).hex(),
+                                    client_port=forwarding_state['client_port'],
+                                    acknowledged_forwarded=forwarding_state['forwarded'],
+                                    intercepted=len(forwarding_state['intercepted']),
+                                    wire_frame_count=len(wire_frames),
+                                    wire_thread_errors=list(wire_errors)),sort_keys=True)) from error
                         if not chunk:break
                         received.extend(chunk)
                     require(bytes(received)==response,'old original-Linux TCP stream did not return its exact response')
