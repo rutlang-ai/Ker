@@ -614,9 +614,298 @@ static int owner_group_dead_owner_rejection(struct ker_socket_client *client,
     return 0;
 }
 
+static int staged_candidate_actor(struct ker_socket_client *inherited_client,
+    const char *rpc_path, int owner0, int slot0, int plan, int group, int member0,
+    int census0, int slot1, int control)
+{
+    ker_socket_client_close(inherited_client);
+    close(owner0); close(slot0); close(plan); close(group); close(member0);
+    close(census0);
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 60;
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot1)) return 61;
+    errno = 0;
+    if (ker_socket_client_owner_group_member(&client, owner, slot1) != -1 ||
+        errno != EAGAIN) return 61;
+    if (send(control, "C", 1, MSG_NOSIGNAL) != 1) return 62;
+    char token = 0;
+    if (recv(control, &token, 1, 0) != 1 || token != 'P') return 63;
+    int member = ker_socket_client_owner_group_member(&client, owner, slot1);
+    if (member < 0 || owner_accept_exchange(&client, owner, member,
+            "CAND-001", "CAND-ACK", NULL)) return 64;
+    close(member); close(owner); close(slot1); ker_socket_client_close(&client);
+    return send(control, "D", 1, MSG_NOSIGNAL) == 1 ? 0 : 65;
+}
+
+static int staged_owner_group_wire(struct ker_socket_client *client,
+    const char *rpc_path)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4103)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int owner = ker_socket_client_ff_owner_create(client);
+    int plan = ker_socket_client_owner_group_staged_plan(client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL);
+    if (owner < 0 || plan < 0) return -1;
+    int slot0 = ker_socket_client_owner_group_slot(client, plan, 0);
+    if (slot0 < 0) return -1;
+    errno = 0;
+    if (ker_socket_client_owner_group_publish_initial(client, plan) != -1 ||
+        errno != EAGAIN) { errno = EPROTO; return -1; }
+    if (ker_socket_client_ff_owner_group_claim(client, owner, slot0)) return -1;
+    int group = ker_socket_client_owner_group_publish_initial(client, plan);
+    if (group < 0) return -1;
+    errno = 0;
+    if (ker_socket_client_owner_group_publish_initial(client, plan) != -1 ||
+        errno != EALREADY) { errno = EPROTO; return -1; }
+    errno = 0;
+    if (ker_socket_client_owner_group_publish(client, plan) != -1 ||
+        errno != EOPNOTSUPP) { errno = EPROTO; return -1; }
+    int member0 = ker_socket_client_owner_group_member(client, owner, slot0);
+    if (member0 < 0) return -1;
+    errno = 0;
+    if (ker_socket_client_reuseport_group_select(client, group, 1) != -1 ||
+        errno != EAGAIN) { errno = EPROTO; return -1; }
+    errno = 0;
+    if (ker_socket_client_owner_group_slot(client, plan, 0) != -1 ||
+        errno != EALREADY) { errno = EPROTO; return -1; }
+    int census0 = ker_socket_client_member_census_create(client, group, 0);
+    if (census0 < 0) return -1;
+    struct ker_socket_member_census_snapshot census = {0};
+    if (ker_socket_client_member_census_snapshot(client, census0, &census) ||
+        census.total != 1 || census.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1) {
+        errno = EPROTO; return -1;
+    }
+    errno = 0;
+    if (ker_socket_client_member_census_create(client, group, 1) != -1 ||
+        errno != EAGAIN) { errno = EPROTO; return -1; }
+    puts("STAGED_INITIAL_READY"); fflush(stdout);
+    int held = -1;
+    if (owner_accept_exchange(client, owner, member0, "INIT-000", "INIT-ACK", &held))
+        return -1;
+    puts("STAGED_INITIAL_ECHO_OK"); fflush(stdout);
+    char command[32] = {0};
+    if (!fgets(command, sizeof(command), stdin) || strcmp(command, "CANDIDATE\n")) {
+        errno = EPROTO; return -1;
+    }
+    int slot1 = ker_socket_client_owner_group_slot(client, plan, 1);
+    if (slot1 < 0) return -1;
+    int control[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, control)) return -1;
+    struct timeval timeout = {.tv_sec = 15};
+    (void)setsockopt(control[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    (void)setsockopt(control[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        close(control[0]);
+        int result = staged_candidate_actor(client, rpc_path, owner, slot0, plan,
+            group, member0, census0, slot1, control[1]);
+        _exit(result);
+    }
+    close(control[1]);
+    char token = 0;
+    if (recv(control[0], &token, 1, 0) != 1 || token != 'C') {
+        errno = EPROTO; return -1;
+    }
+    puts("STAGED_CANDIDATE_CLAIMED"); fflush(stdout);
+    if (ker_socket_client_owner_group_publish_candidate(client, plan)) return -1;
+    errno = 0;
+    if (ker_socket_client_owner_group_publish_candidate(client, plan) != -1 ||
+        errno != EALREADY) { errno = EPROTO; return -1; }
+    /* The newly joined listener is not selected until this explicit flip. */
+    if (owner_accept_exchange(client, owner, member0, "PRE-FLIP", "OLD-ACK!", NULL))
+        return -1;
+    puts("STAGED_PRE_FLIP_ECHO_OK"); fflush(stdout);
+    if (ker_socket_client_reuseport_group_select(client, group, 1) ||
+        send(control[0], "P", 1, MSG_NOSIGNAL) != 1) return -1;
+    puts("STAGED_CANDIDATE_SELECTED"); fflush(stdout);
+    if (recv(control[0], &token, 1, 0) != 1 || token != 'D') {
+        errno = EPROTO; return -1;
+    }
+    int child_status = 0;
+    while (waitpid(child, &child_status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(child_status) || WEXITSTATUS(child_status)) {
+        errno = ECHILD; return -1;
+    }
+    puts("STAGED_CANDIDATE_ECHO_OK"); fflush(stdout);
+    if (owner_echo_held(client, held, "HELD-OLD", "OLD-ACK!")) return -1;
+    close(held);
+    puts("STAGED_OLD_STREAM_SURVIVED"); fflush(stdout);
+    close(control[0]); close(census0); close(member0); close(slot0); close(slot1);
+    close(group); close(plan); close(owner);
+    puts("STAGED_OWNER_GROUP_OK"); fflush(stdout);
+    return 0;
+}
+
+static int staged_failure_actor(struct ker_socket_client *inherited,
+    const char *rpc_path, int slot, int control, bool poison)
+{
+    ker_socket_client_close(inherited);
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 70;
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot)) return 71;
+    if (poison) {
+        int socket_cap = ker_socket_client_socket(&client, AF_INET,
+            SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+        if (socket_cap < 0 || close(socket_cap)) return 72;
+    }
+    if (send(control, "C", 1, MSG_NOSIGNAL) != 1) return 73;
+    char token = 0;
+    if (poison && (recv(control, &token, 1, 0) != 1 || token != 'R')) return 74;
+    close(owner); ker_socket_client_close(&client);
+    return 0;
+}
+
+static int staged_replacement_probe(struct ker_socket_client *inherited,
+    const char *rpc_path, int slot)
+{
+    ker_socket_client_close(inherited);
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 75;
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0) return 76;
+    errno = 0;
+    int result = ker_socket_client_ff_owner_group_claim(&client, owner, slot);
+    int status = result == -1 && errno == EALREADY ? 0 : 77;
+    close(owner); ker_socket_client_close(&client);
+    return status;
+}
+
+static int staged_candidate_failure_wire(struct ker_socket_client *client,
+    const char *rpc_path, bool poison)
+{
+    const unsigned port = poison ? 4104 : 4105;
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int owner = ker_socket_client_ff_owner_create(client);
+    int plan = ker_socket_client_owner_group_staged_plan(client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL);
+    if (owner < 0 || plan < 0) return -1;
+    int slot0 = ker_socket_client_owner_group_slot(client, plan, 0);
+    if (slot0 < 0 || ker_socket_client_ff_owner_group_claim(client, owner, slot0)) return -1;
+    int group = ker_socket_client_owner_group_publish_initial(client, plan);
+    if (group < 0) return -1;
+    int member0 = ker_socket_client_owner_group_member(client, owner, slot0);
+    if (member0 < 0) return -1;
+    puts(poison ? "STAGED_HISTORY_INITIAL_READY" : "STAGED_DEATH_INITIAL_READY");
+    fflush(stdout);
+    const char *initial = poison ? "HIST-000" : "DEAD-000";
+    if (owner_accept_exchange(client, owner, member0, initial, "FAIL-ACK", NULL)) {
+        return -1;
+    }
+    puts(poison ? "STAGED_HISTORY_FIRST_ECHO_OK" : "STAGED_DEATH_FIRST_ECHO_OK");
+    fflush(stdout);
+    char command[32] = {0};
+    if (!fgets(command, sizeof(command), stdin) || strcmp(command, "ATTEMPT\n")) {
+        errno = EPROTO; return -1;
+    }
+    int slot1 = ker_socket_client_owner_group_slot(client, plan, 1);
+    if (slot1 < 0) return -1;
+    int control[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, control)) return -1;
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        close(control[0]);
+        close(owner); close(plan); close(slot0); close(group); close(member0);
+        int result = staged_failure_actor(client, rpc_path, slot1, control[1],
+            poison);
+        _exit(result);
+    }
+    close(control[1]);
+    char token = 0;
+    if (recv(control[0], &token, 1, 0) != 1 || token != 'C') {
+        errno = EPROTO; return -1;
+    }
+    if (!poison) {
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) { errno = ECHILD; return -1; }
+    }
+    errno = 0;
+    int result = ker_socket_client_owner_group_publish_candidate(client, plan);
+    int expected = poison ? EOPNOTSUPP : ESRCH;
+    if (result != -1 || errno != expected) { errno = EPROTO; return -1; }
+    errno = 0;
+    if (ker_socket_client_owner_group_publish_candidate(client, plan) != -1 ||
+        errno != ECANCELED) { errno = EPROTO; return -1; }
+    errno = 0;
+    if (ker_socket_client_reuseport_group_select(client, group, 1) != -1 ||
+        errno != EAGAIN) { errno = EPROTO; return -1; }
+    errno = 0;
+    if (ker_socket_client_member_census_create(client, group, 1) != -1 ||
+        errno != EAGAIN) { errno = EPROTO; return -1; }
+    struct ker_socket_member_census_snapshot snapshot = {0};
+    int census = ker_socket_client_member_census_create(client, group, 0);
+    uint64_t listener_cookie = 0;
+    socklen_t cookie_length = sizeof(listener_cookie);
+    if (census < 0 || ker_socket_client_getsockopt(client, member0, SOL_SOCKET,
+            SO_COOKIE, &listener_cookie, &cookie_length) ||
+        cookie_length != sizeof(listener_cookie) ||
+        ker_socket_client_member_census_snapshot(client, census, &snapshot) ||
+        snapshot.total < 1 || snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1 ||
+        snapshot.listener_cookie != listener_cookie) {
+        errno = EPROTO; return -1;
+    }
+    pid_t replacement = fork();
+    if (replacement < 0) return -1;
+    if (!replacement) {
+        int status = staged_replacement_probe(client, rpc_path, slot1);
+        _exit(status);
+    }
+    int replacement_status = 0;
+    while (waitpid(replacement, &replacement_status, 0) < 0)
+        if (errno != EINTR) return -1;
+    if (!WIFEXITED(replacement_status) || WEXITSTATUS(replacement_status)) {
+        errno = EPROTO; return -1;
+    }
+    puts(poison ? "STAGED_HISTORY_FAILURE_RETAINED" : "STAGED_DEATH_FAILURE_RETAINED");
+    fflush(stdout);
+    if (owner_accept_exchange(client, owner, member0, "RETAIN-1", "FAIL-ACK", NULL))
+        return -1;
+    if (poison) {
+        if (send(control[0], "R", 1, MSG_NOSIGNAL) != 1) return -1;
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) { errno = ECHILD; return -1; }
+    } else close(control[0]);
+    puts(poison ? "STAGED_HISTORY_SECOND_ECHO_OK" : "STAGED_DEATH_SECOND_ECHO_OK");
+    puts(poison ? "STAGED_HISTORY_DONE" : "STAGED_DEATH_DONE");
+    fflush(stdout);
+    if (poison) close(control[0]);
+    close(census); close(member0); close(slot0); close(slot1); close(group); close(plan);
+    close(owner);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 5) { fprintf(stderr, "usage: client <rpc-path> <read-only-group-cap> <inherited-probe> <preload-library>\n"); return 2; }
+    if (argc == 6 && !strcmp(argv[5], "--staged")) {
+        char *end = NULL; long parsed = strtol(argv[2], &end, 10);
+        if (!argv[2][0] || !end || *end || parsed < 0 || parsed > INT32_MAX) return 2;
+        struct ker_socket_client client;
+        if (ker_socket_client_open(&client, argv[1])) return 2;
+        int result = staged_owner_group_wire(&client, argv[1]);
+        int error = errno;
+        ker_socket_client_close(&client);
+        if (result) { errno = error; perror("staged owner group wire"); return 1; }
+        return 0;
+    }
+    if (argc == 6 && (!strcmp(argv[5], "--staged-history") ||
+            !strcmp(argv[5], "--staged-death"))) {
+        struct ker_socket_client client;
+        if (ker_socket_client_open(&client, argv[1])) return 2;
+        int result = staged_candidate_failure_wire(&client, argv[1],
+            !strcmp(argv[5], "--staged-history"));
+        int error = errno;
+        ker_socket_client_close(&client);
+        if (result) { errno = error; perror("staged candidate failure wire"); return 1; }
+        return 0;
+    }
+
+    if (argc != 5) { fprintf(stderr, "usage: client <rpc-path> <read-only-group-cap> <inherited-probe> <preload-library> [--staged]\n"); return 2; }
     char *end = NULL; long parsed = strtol(argv[2], &end, 10);
     if (!argv[2][0] || !end || *end || parsed < 0 || parsed > INT32_MAX) return 2;
     int denied_group = (int)parsed;

@@ -209,11 +209,26 @@ int ker_socket_client_reuseport_group_select(struct ker_socket_client *client,
  * delegation authority. Publish is also one-shot. */
 int ker_socket_client_owner_group_plan(struct ker_socket_client *client,
     const struct sockaddr_in *address, int backlog, uint32_t group_rights);
+/* Staged groups publish slot 0 as a live serving group before slot 1 exists.
+ * This is a distinct immutable plan mode; the atomic owner_group_plan/publish
+ * contract above remains unchanged. Slot 1 may be claimed before or after
+ * initial publication, but its candidate publish is one-shot. An actual
+ * candidate attempt that reaches preflight is terminal on rejection; missing
+ * claims or an unpublished initial member return EAGAIN without consuming it.
+ * This staged profile does not support admission-prepared actors; initial
+ * publication returns EOPNOTSUPP before socket effects, and a prepared
+ * candidate returns EOPNOTSUPP and consumes the candidate attempt. */
+int ker_socket_client_owner_group_staged_plan(struct ker_socket_client *client,
+    const struct sockaddr_in *address, int backlog, uint32_t group_rights);
 int ker_socket_client_owner_group_slot(struct ker_socket_client *client,
     int plan_cap, unsigned index);
 int ker_socket_client_ff_owner_group_claim(struct ker_socket_client *client,
     int owner_cap, int slot_cap);
 int ker_socket_client_owner_group_publish(struct ker_socket_client *client,
+    int plan_cap);
+int ker_socket_client_owner_group_publish_initial(struct ker_socket_client *client,
+    int plan_cap);
+int ker_socket_client_owner_group_publish_candidate(struct ker_socket_client *client,
     int plan_cap);
 int ker_socket_client_owner_group_member(struct ker_socket_client *client,
     int owner_cap, int claimed_slot_cap);
