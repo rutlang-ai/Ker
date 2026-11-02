@@ -93,6 +93,11 @@ def verify_result(endpoint, broker_pid, expected_sequence, watch_fd, nonce, epoc
 
 
 def receive_verify_result(endpoint, broker_pid, expected_sequence, nonce, epoch):
+    packet = receive_verify_result_packet(endpoint, broker_pid, expected_sequence, nonce, epoch)
+    return struct.unpack_from('<I', packet, 12)[0], struct.unpack_from('<I', packet, 124)[0]
+
+
+def receive_verify_result_packet(endpoint, broker_pid, expected_sequence, nonce, epoch):
     packet, credentials = receive_record(endpoint, 128, 6)
     require(credentials[0] == broker_pid,
         f'watch result came from unexpected process credentials: {credentials!r}')
@@ -102,7 +107,7 @@ def receive_verify_result(endpoint, broker_pid, expected_sequence, nonce, epoch)
     require(packet[16:32] == nonce and struct.unpack_from('<Q', packet, 32)[0] == epoch and
         struct.unpack_from('<Q', packet, 40)[0] == expected_sequence,
         'watch result identity/sequence mismatch')
-    return struct.unpack_from('<I', packet, 12)[0], struct.unpack_from('<I', packet, 124)[0]
+    return packet
 
 
 def load_ker_run(path):
@@ -291,6 +296,16 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                             watch_fd, manager.nonce, manager.epoch)
                         require(status == errno.EBUSY and state_code == 0,
                             f'live owner was not denied retirement: status={status}, state={state_code}')
+                        if args.mode == 'generation-watch':
+                            reserved = subprocess.run([str(actor_path),
+                                '--expect-port-reserved', str(args.rpc_path), str(port)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, close_fds=True, timeout=10)
+                            require(reserved.returncode == 0,
+                                'live non-metadata owner stopped reserving its port: '
+                                f'rc={reserved.returncode}, out={reserved.stdout!r}, '
+                                f'err={reserved.stderr.decode(errors="replace")!r}')
+                            control_result['live_port_reservation_retained'] = True
                         channel.sendall(b'C')
                         require(channel.recv(1) == b'C',
                             'actor did not confirm closing every listener alias')
@@ -462,10 +477,49 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
                                 watch_fd, manager.nonce, manager.epoch)
                             require(status == 0 and state_code == 1,
                                 f'reaped owner did not reach OLD_RETIRED: {status}, {state_code}')
-                            status, state_code = verify_result(manager.parent, app.pid, 4,
-                                watch_fd, manager.nonce, manager.epoch)
+                            send_test_packet(manager.parent,
+                                verify_request(manager.nonce, manager.epoch, 4), (watch_fd,))
+                            terminal_record = receive_verify_result_packet(
+                                manager.parent, app.pid, 4, manager.nonce, manager.epoch)
+                            status = struct.unpack_from('<I', terminal_record, 12)[0]
+                            state_code = struct.unpack_from('<I', terminal_record, 124)[0]
                             require(status == 0 and state_code == 1,
                                 'terminal retirement query was not idempotent')
+                            if args.mode == 'generation-watch':
+                                reuse_path = args.rpc_path.with_name(
+                                    args.rpc_path.stem + '.same-port-owner.sock')
+                                with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as reuse_listener:
+                                    reuse_listener.bind(str(reuse_path))
+                                    os.chmod(reuse_path, 0o600)
+                                    reuse_listener.listen(1)
+                                    reuse_actor = subprocess.Popen([str(actor_path),
+                                        '--same-port-owner', str(args.rpc_path), str(reuse_path),
+                                        str(port)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, close_fds=True)
+                                    state['watch_actor'] = reuse_actor
+                                    reuse_listener.settimeout(10)
+                                    reuse_channel, _ = reuse_listener.accept()
+                                    with reuse_channel:
+                                        reuse_channel.settimeout(10)
+                                        require(reuse_channel.recv(1) == b'R',
+                                            'same-port replacement owner did not bind/listen')
+                                        send_test_packet(manager.parent,
+                                            verify_request(manager.nonce, manager.epoch, 5),
+                                            (watch_fd,))
+                                        replacement_record = receive_verify_result_packet(
+                                            manager.parent, app.pid, 5, manager.nonce, manager.epoch)
+                                        require(struct.unpack_from('<I', replacement_record, 12)[0] == 0 and
+                                            struct.unpack_from('<I', replacement_record, 124)[0] == 1 and
+                                            replacement_record[48:128] == terminal_record[48:128],
+                                            'new same-port owner contaminated the retained OLD_RETIRED receipt')
+                                        reuse_channel.sendall(b'C')
+                                    reuse_output, reuse_errors = reuse_actor.communicate(timeout=10)
+                                    require(reuse_actor.returncode == 0,
+                                        'same-port replacement owner failed to settle: '
+                                        f'rc={reuse_actor.returncode}, out={reuse_output!r}, '
+                                        f'err={reuse_errors.decode(errors="replace")!r}')
+                                    state.pop('watch_actor', None)
+                                control_result['same_port_reused_old_receipt_stable'] = True
                         if args.mode == 'generation-watch-replay':
                             send_test_packet(manager.parent,
                                 verify_request(manager.nonce, manager.epoch, 4), (watch_fd,))
@@ -658,6 +712,9 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
             (args.mode != 'generation-watch-rights' or control_result.get('ancillary_rejected')) and
             (args.mode != 'generation-watch-close-cancel' or
                 control_result.get('replacement_watch_unaffected')) and
+            (args.mode != 'generation-watch' or
+                (control_result.get('same_port_reused_old_receipt_stable') and
+                    control_result.get('live_port_reservation_retained'))) and
             stats and stats.get('outstanding') == 0,
             f'generation watch did not enforce retirement evidence: {result!r}')
     return 0

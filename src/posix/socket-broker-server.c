@@ -2061,14 +2061,15 @@ static int socket_cookie(int fd, uint64_t *cookie)
 static bool group_port_reserved(const struct ker_socket_broker_server *server, uint16_t port)
 {
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
-        if (server->groups[i].live && server->groups[i].port == port) return true;
+        if (server->groups[i].live && !server->groups[i].metadata_only &&
+            server->groups[i].port == port) return true;
     return false;
 }
 
 static bool any_live_group(const struct ker_socket_broker_server *server)
 {
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
-        if (server->groups[i].live) return true;
+        if (server->groups[i].live && !server->groups[i].metadata_only) return true;
     return false;
 }
 

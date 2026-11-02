@@ -98,6 +98,62 @@ static int describe_watch_actor(const char *rpc_path, const char *control_path)
     return result;
 }
 
+static int same_port_owner_actor(const char *rpc_path, const char *control_path,
+    uint16_t port)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    if (inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1) return 2;
+    struct ker_socket_client client;
+    int owner = -1, plan = -1, slot = -1, activated = -1, control = -1;
+    int result = 1;
+    if (ker_socket_client_open(&client, rpc_path)) goto done;
+    owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0) goto close_client;
+    plan = ker_socket_client_owner_group_staged_plan(&client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    if (plan < 0) goto close_client;
+    slot = ker_socket_client_owner_group_slot(&client, plan, 0);
+    if (slot < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot))
+        goto close_client;
+    activated = ker_socket_client_owner_group_activate_initial(&client, owner, slot);
+    if (activated < 0 || ker_socket_client_bind(&client, activated,
+            (const struct sockaddr *)&address, sizeof(address)) ||
+        ker_socket_client_listen(&client, activated, 8)) goto close_client;
+    control = connect_control(control_path);
+    if (control < 0 || send(control, "R", 1, MSG_NOSIGNAL) != 1) goto close_client;
+    char command = 0;
+    if (recv(control, &command, 1, 0) != 1 || command != 'C') goto close_client;
+    result = 0;
+
+close_client:
+    if (control >= 0) close(control);
+    if (activated >= 0) close(activated);
+    if (slot >= 0) close(slot);
+    if (plan >= 0) close(plan);
+    if (owner >= 0) close(owner);
+    ker_socket_client_close(&client);
+done:
+    return result;
+}
+
+static int expect_port_reserved_actor(const char *rpc_path, uint16_t port)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    if (inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1) return 2;
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 1;
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0) { ker_socket_client_close(&client); return 1; }
+    errno = 0;
+    int plan = ker_socket_client_owner_group_staged_plan(&client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    int result = plan < 0 && errno == EADDRINUSE ? 0 : 1;
+    if (plan >= 0) close(plan);
+    close(owner);
+    ker_socket_client_close(&client);
+    return result;
+}
+
 #define REQUIRE(call) do { if (!(call)) { \
     fprintf(stderr, "generation watch actor:%d: %s: %s\n", __LINE__, #call, strerror(errno)); \
     goto fail; } } while (0)
@@ -106,6 +162,18 @@ int main(int argc, char **argv)
 {
     if (argc == 4 && strcmp(argv[1], "--describe-watch") == 0)
         return describe_watch_actor(argv[2], argv[3]);
+    if (argc == 5 && strcmp(argv[1], "--same-port-owner") == 0) {
+        char *end = NULL;
+        unsigned long port = strtoul(argv[4], &end, 10);
+        if (!end || *end || !port || port > UINT16_MAX) return 2;
+        return same_port_owner_actor(argv[2], argv[3], (uint16_t)port);
+    }
+    if (argc == 4 && strcmp(argv[1], "--expect-port-reserved") == 0) {
+        char *end = NULL;
+        unsigned long port = strtoul(argv[3], &end, 10);
+        if (!end || *end || !port || port > UINT16_MAX) return 2;
+        return expect_port_reserved_actor(argv[2], (uint16_t)port);
+    }
     if (argc != 3) { fprintf(stderr, "usage: generation-watch-actor <rpc-path> <control-path>\n"); return 2; }
     const uint16_t port = 4127;
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
