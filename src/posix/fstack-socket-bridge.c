@@ -61,7 +61,16 @@ int ff_connect(int fd, const struct linux_sockaddr *address, socklen_t length)
 { FF_DISPATCH_RETURN(int, ker_sb_posix_connect(fd, (const struct sockaddr *)address, length)); }
 
 int ff_listen(int fd, int backlog)
-{ FF_DISPATCH_RETURN(int, ker_sb_posix_listen(fd, backlog)); }
+{
+    if (ker_sb_preload_ff_dispatch_begin(fd)) return -1;
+    int result = ker_sb_posix_listen(fd, backlog);
+    int saved_errno = errno;
+    if (!result) ker_sb_preload_trace_initial_listener(fd);
+    FF_TRACE(fd, result);
+    ker_sb_preload_ff_dispatch_end();
+    errno = saved_errno;
+    return result;
+}
 
 int ff_accept4(int fd, struct linux_sockaddr *address, socklen_t *length, int flags)
 { FF_DISPATCH_RETURN(int, ker_sb_posix_accept4(fd, (struct sockaddr *)address, length, flags)); }

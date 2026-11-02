@@ -304,6 +304,35 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     install(FILES "${PROJECT_BINARY_DIR}/fstack-nginx-worker-shim-manifest.json"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-nginx-runtime
         RENAME nginx-worker-shim-build.json COMPONENT fstack-nginx-runtime)
+    set_target_properties(ker-socket-client ker-ini PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    add_library(ker-fstack-nginx-owner-activation MODULE
+        src/posix/fstack-nginx-owner-activation-module.c)
+    set_target_properties(ker-fstack-nginx-owner-activation PROPERTIES
+        PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation")
+    target_include_directories(ker-fstack-nginx-owner-activation PRIVATE
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
+        "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix"
+        "${KER_FSTACK_NGINX_BUILD_DIR}"
+        "${PROJECT_SOURCE_DIR}/include"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+    target_compile_features(ker-fstack-nginx-owner-activation PRIVATE c_std_11)
+    target_compile_options(ker-fstack-nginx-owner-activation PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(ker-fstack-nginx-owner-activation PRIVATE
+        ker-socket-client ker-ini ${CMAKE_DL_LIBS})
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/fstack-nginx-owner-activation-module.c"
+        ker_fstack_nginx_owner_activation_source_sha256)
+    configure_file(cmake/fstack-nginx-owner-activation-manifest.json.in
+        "${PROJECT_BINARY_DIR}/fstack-nginx-owner-activation-manifest.json" @ONLY)
+    install(TARGETS ker-fstack-nginx-owner-activation
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/ker/fstack-nginx-runtime
+        COMPONENT fstack-nginx-runtime)
+    install(FILES "${PROJECT_BINARY_DIR}/fstack-nginx-owner-activation-manifest.json"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/fstack-nginx-runtime
+        RENAME nginx-owner-activation-build.json
+        COMPONENT fstack-nginx-runtime)
     if(BUILD_TESTING)
         add_executable(ker-fstack-nginx-worker-shim-abi-test
             tests/posix/fstack-nginx-worker-shim-abi-test.c)
@@ -874,6 +903,77 @@ if(BUILD_TESTING)
         set_tests_properties(native-nginx-fstack-runtime-lifecycle PROPERTIES
             TIMEOUT 420 LABELS "native-tcp;fstack;socket-broker;nginx;runtime-profile")
         if(TARGET ker-fstack-nginx-worker-shim)
+            if(TARGET ker-fstack-nginx-owner-activation)
+                add_test(NAME native-nginx-fstack-owner-activation
+                    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                        --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                        --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                        --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                        --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                        --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                        --fstack-worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                        --nginx-owner-activation-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                        --nginx-workers 1
+                        --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}")
+                set_tests_properties(native-nginx-fstack-owner-activation PROPERTIES
+                    TIMEOUT 300 LABELS "native-tcp;fstack;socket-broker;nginx;staged-owner-activation")
+                add_test(NAME native-nginx-fstack-owner-activation-rejects-profile
+                    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                        --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                        --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                        --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                        --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                        --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                        --fstack-worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                        --nginx-owner-activation-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                        --nginx-workers 1 --nginx-test-unsupported-option
+                        --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}")
+                set_tests_properties(native-nginx-fstack-owner-activation-rejects-profile PROPERTIES
+                    TIMEOUT 60 LABELS "native-tcp;fstack;socket-broker;nginx;failure-boundary")
+                add_test(NAME native-nginx-fstack-owner-activation-requires-shim
+                    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                        --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                        --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                        --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                        --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                        --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                        --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                        --nginx-owner-activation-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                        --nginx-owner-activation-missing-helper --nginx-workers 1
+                        --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                        --dpdk-plugin-dir "${ker_session_pmd_dir}")
+                set_tests_properties(native-nginx-fstack-owner-activation-requires-shim PROPERTIES
+                    TIMEOUT 60 LABELS "native-tcp;fstack;socket-broker;nginx;failure-boundary")
+                foreach(ker_nginx_negative_profile IN ITEMS
+                    two-workers extra-listener missing-listener ipv6 graceful-one
+                    rcvbuf keepalive ini-env-mismatch)
+                    set(ker_nginx_negative_workers 1)
+                    if(ker_nginx_negative_profile STREQUAL "two-workers")
+                        set(ker_nginx_negative_workers 2)
+                    endif()
+                    add_test(NAME "native-nginx-fstack-owner-activation-${ker_nginx_negative_profile}"
+                        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+                            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                            --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                            --fstack-worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                            --nginx-owner-activation-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                            --nginx-workers "${ker_nginx_negative_workers}"
+                            --nginx-test-negative-profile "${ker_nginx_negative_profile}"
+                            --nginx-binary "${KER_FSTACK_NGINX_BINARY}"
+                            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+                    set_tests_properties(
+                        "native-nginx-fstack-owner-activation-${ker_nginx_negative_profile}" PROPERTIES
+                        TIMEOUT 60 LABELS "native-tcp;fstack;socket-broker;nginx;failure-boundary")
+                endforeach()
+            endif()
             add_test(NAME native-nginx-fstack-runtime-multiworker-lifecycle
                 COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
                     --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"

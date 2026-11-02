@@ -659,6 +659,9 @@ static int staged_activation_foreign_actor_probe(struct ker_socket_client *clien
         if (ker_socket_client_bind(&foreign, activated,
                 (const struct sockaddr *)address, sizeof(*address)) != -1 ||
             errno != EXDEV) _exit(4);
+        errno = 0;
+        if (ker_socket_client_listen(&foreign, activated, 8) != -1 ||
+            errno != EXDEV) _exit(5);
         ker_socket_client_close(&foreign);
         _exit(0);
     }
@@ -737,6 +740,13 @@ static int staged_activation_wire(struct ker_socket_client *client, unsigned por
     CHECK(member >= 0);
     group = ker_socket_client_owner_group_control(client, plan);
     CHECK(group >= 0);
+    /* The pinned Nginx path calls listen once while opening the listener and
+     * again while configuring it. Reproduce that call through the same
+     * authenticated activation descriptor and verify native identity is
+     * retained; a mismatched second backlog must fail before listen(). */
+    errno = 0;
+    CHECK(ker_socket_client_listen(client, activated, 7) == -1 && errno == EINVAL);
+    CHECK(ker_socket_client_listen(client, activated, 8) == 0);
     int group_alias = ker_socket_client_owner_group_control(client, plan);
     CHECK(group_alias >= 0);
     close(group_alias);
@@ -747,6 +757,12 @@ static int staged_activation_wire(struct ker_socket_client *client, unsigned por
     CHECK(snapshot.total == 1 &&
         snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1 &&
         snapshot.listener_cookie != 0);
+    uint64_t activation_cookie = 0;
+    socklen_t activation_cookie_length = sizeof(activation_cookie);
+    CHECK(ker_socket_client_getsockopt(client, activated, SOL_SOCKET, SO_COOKIE,
+        &activation_cookie, &activation_cookie_length) == 0 &&
+        activation_cookie_length == sizeof(activation_cookie) &&
+        activation_cookie == snapshot.listener_cookie);
     errno = 0;
     CHECK(ker_socket_client_reuseport_group_select(client, group, 1) == -1 &&
         errno == EAGAIN);
@@ -785,9 +801,7 @@ static int staged_activation_wire(struct ker_socket_client *client, unsigned por
             census_empty = true;
             break;
         }
-        if (census_timed_out) {
-            break;
-        }
+        if (census_timed_out) break;
         struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
         pause.tv_sec = census_deadline.tv_sec - census_now.tv_sec;
         pause.tv_nsec = census_deadline.tv_nsec - census_now.tv_nsec;
@@ -811,9 +825,9 @@ static int staged_activation_wire(struct ker_socket_client *client, unsigned por
         long elapsed_ms = (census_now.tv_sec - census_started.tv_sec) * 1000 +
             (census_now.tv_nsec - census_started.tv_nsec) / 1000000;
         fprintf(stderr,
-            "staged activation cleanup census status=%d errno=%d total=%llu "
+            "staged activation cleanup port=%u census status=%d errno=%d total=%llu "
             "listen=%llu elapsed_ms=%ld attempts=%u timed_out=%d\n",
-            census_status, census_error, (unsigned long long)snapshot.total,
+            port, census_status, census_error, (unsigned long long)snapshot.total,
             (unsigned long long)snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN],
             elapsed_ms, census_attempt, census_timed_out);
         errno = census_error;
@@ -839,6 +853,110 @@ static int staged_activation_wire(struct ker_socket_client *client, unsigned por
     close(reuse_probe);
     close(census);
     puts("STAGED_ACTIVATION_DONE"); fflush(stdout);
+    return 0;
+}
+
+static int staged_dead_owner_receipt(struct ker_socket_client *inherited,
+    const char *rpc_path)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(4110)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int plan = ker_socket_client_owner_group_staged_plan(inherited, &address, 8,
+        KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    if (plan < 0) return -1;
+    int slot = ker_socket_client_owner_group_slot(inherited, plan, 0);
+    if (slot < 0) return -1;
+    int channel[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, channel)) return -1;
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        close(channel[0]);
+        ker_socket_client_close(inherited);
+        close(plan);
+        struct ker_socket_client client;
+        if (ker_socket_client_open(&client, rpc_path)) _exit(1);
+        int owner = ker_socket_client_ff_owner_create(&client);
+        if (owner < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot))
+            _exit(2);
+        int activated = ker_socket_client_owner_group_activate_initial(&client,
+            owner, slot);
+        if (activated < 0) _exit(3);
+        int one = 1;
+        if (ker_socket_client_setsockopt(&client, activated, SOL_SOCKET,
+                SO_REUSEADDR, &one, sizeof(one)) ||
+            ker_socket_client_setsockopt(&client, activated, SOL_SOCKET,
+                SO_REUSEPORT, &one, sizeof(one)) ||
+            ker_socket_client_bind(&client, activated,
+                (const struct sockaddr *)&address, sizeof(address)) ||
+            ker_socket_client_listen(&client, activated, 8)) _exit(4);
+        char byte = 'O';
+        struct iovec vector = {.iov_base = &byte, .iov_len = 1};
+        union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(int))]; } control = {0};
+        struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
+            .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes)};
+        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+        header->cmsg_level = SOL_SOCKET;
+        header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(sizeof(owner));
+        memcpy(CMSG_DATA(header), &owner, sizeof(owner));
+        if (sendmsg(channel[1], &message, MSG_NOSIGNAL) != 1) _exit(5);
+        char acknowledgement = 0;
+        if (recv(channel[1], &acknowledgement, 1, 0) != 1 ||
+            acknowledgement != 'A') _exit(6);
+        close(activated);
+        close(owner);
+        close(slot);
+        ker_socket_client_close(&client);
+        _exit(0);
+    }
+    close(channel[1]);
+    char byte = 0;
+    int dead_owner = -1;
+    struct iovec vector = {.iov_base = &byte, .iov_len = 1};
+    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(int))]; } control = {0};
+    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
+        .msg_control = control.bytes, .msg_controllen = sizeof(control.bytes)};
+    if (recvmsg(channel[0], &message, 0) != 1 || byte != 'O') return -1;
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    if (!header || header->cmsg_level != SOL_SOCKET ||
+        header->cmsg_type != SCM_RIGHTS ||
+        header->cmsg_len != CMSG_LEN(sizeof(dead_owner))) return -1;
+    memcpy(&dead_owner, CMSG_DATA(header), sizeof(dead_owner));
+    errno = 0;
+    if (ker_socket_client_owner_group_control_after_exit(inherited, plan) != -1 ||
+        errno != EAGAIN) { errno = EPROTO; return -1; }
+    char acknowledgement = 'A';
+    if (send(channel[0], &acknowledgement, 1, MSG_NOSIGNAL) != 1) return -1;
+    close(channel[0]);
+    int child_status = 0;
+    while (waitpid(child, &child_status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(child_status) || WEXITSTATUS(child_status)) {
+        errno = ECHILD; return -1;
+    }
+    errno = 0;
+    if (ker_socket_client_owner_group_control(inherited, plan) != -1 ||
+        errno != ESRCH) { errno = EPROTO; return -1; }
+    int group = ker_socket_client_owner_group_control_after_exit(inherited, plan);
+    if (group < 0) return -1;
+    errno = 0;
+    if (ker_socket_client_reuseport_group_select(inherited, group, 0) != -1 ||
+        errno != ESRCH) { errno = EPROTO; return -1; }
+    errno = 0;
+    if (ker_socket_client_owner_group_member(inherited, dead_owner, slot) != -1 ||
+        errno != EXDEV) { errno = EPROTO; return -1; }
+    int census = ker_socket_client_member_census_create(inherited, group, 0);
+    struct ker_socket_member_census_snapshot snapshot = {0};
+    if (census < 0 || ker_socket_client_member_census_snapshot(inherited,
+            census, &snapshot) || snapshot.total != 1 ||
+        snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] != 1 ||
+        snapshot.listener_cookie == 0) return -1;
+    close(census);
+    close(dead_owner);
+    close(group);
+    close(slot);
+    close(plan);
+    puts("STAGED_DEAD_OWNER_ADMIN_RECEIPT_OK"); fflush(stdout);
     return 0;
 }
 
@@ -1338,6 +1456,7 @@ int main(int argc, char **argv)
         unsigned long parsed = strtoul(argv[6], &end, 10);
         if (!argv[6][0] || !end || *end || parsed > UINT_MAX) return 2;
         int result = staged_activation_wire(&client, (unsigned)parsed);
+        if (!result) result = staged_dead_owner_receipt(&client, client.path);
         int error = errno;
         ker_socket_client_close(&client);
         if (result) { errno = error; perror("staged activation wire"); return 1; }
