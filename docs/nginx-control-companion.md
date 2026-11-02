@@ -23,6 +23,17 @@ A reload result confirms that the helper delivered SIGHUP to the pinned master;
 it is not evidence that the new worker accepted traffic or that a graceful
 reload generation was selected.
 
+Before each SIGHUP, the helper rechecks the pinned Nginx executable, config,
+INI, and derived profile, then verifies the one-worker and
+`graceful_reload=0` constraints again. A changed profile is denied before the
+signal and the helper fails closed. The supported profile rejects top-level
+Nginx `include` directives. The supervisor must keep the pinned binary, config,
+INI, and referenced preload DSOs immutable while the companion runs. These
+checks detect changes to the binary, config, and INI before the helper sends
+SIGHUP; they do not prevent a privileged writer from racing
+the check and Nginx's later config read. Such concurrent mutation is outside
+the supported profile.
+
 The broker READY/STOP exchange is separate from Nginx startup and cleanup.
 `ker-run` advances its existing worker/application loop while waiting for
 broker READY. On shutdown it settles the Nginx subtree first, then asks the

@@ -124,6 +124,10 @@ class NginxCompanion:
                 poller.poll(max(1, int(remaining * 1000)))
 
     def _receive(self, expected_size, deadline, rights_count):
+        expected_sizes = ((expected_size,) if isinstance(expected_size, int)
+            else tuple(expected_size))
+        if not expected_sizes or any(size <= 0 for size in expected_sizes):
+            raise ValueError('invalid expected helper record sizes')
         poller = select.poll()
         poller.register(self.channel.fileno(), select.POLLIN | select.POLLHUP |
             select.POLLERR | select.POLLNVAL)
@@ -137,7 +141,7 @@ class NginxCompanion:
             if (events[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL) and
                     not events[0][1] & select.POLLIN):
                 raise ConnectionError('Nginx helper control channel closed')
-            packet, ancillary, flags, _ = self.channel.recvmsg(expected_size + 1,
+            packet, ancillary, flags, _ = self.channel.recvmsg(max(expected_sizes) + 1,
                 socket.CMSG_SPACE(_UCRED.size) + socket.CMSG_SPACE(8 * 4),
                 getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
             credentials = None
@@ -165,7 +169,7 @@ class NginxCompanion:
                 if credentials != (self.helper.pid, os.getuid(), os.getgid()):
                     raise PermissionError(f'helper credentials {credentials!r} did not match '
                         f'pinned Popen child {(self.helper.pid, os.getuid(), os.getgid())!r}')
-                if len(packet) != expected_size or len(fds) != rights_count:
+                if len(packet) not in expected_sizes or len(fds) != rights_count:
                     raise ValueError('helper record length or descriptor count mismatch')
                 if time.monotonic() > deadline:
                     raise TimeoutError('Nginx helper record arrived after deadline')
@@ -268,7 +272,7 @@ class NginxCompanion:
             if fields[0] != 0:
                 raise OSError(fields[0], 'Nginx reload failed')
         self._request(wire.RELOAD, (wire.RELOAD_RESULT,),
-            wire.RELOAD_RESULT_BYTES, timeout, validate)
+            (wire.RELOAD_RESULT_BYTES, wire.ERROR_BYTES), timeout, validate)
 
     def check(self):
         """Raise immediately for an unsolicited pinned-master/helper failure."""

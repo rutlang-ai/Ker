@@ -53,6 +53,12 @@ def pidfd_pid(fd):
     raise OSError(9, 'invalid pidfd')
 
 
+def process_alive(pidfd):
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+    return not poller.poll(0)
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with open(path, 'rb') as stream:
@@ -358,6 +364,34 @@ def run(args):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
     if test.returncode:
         raise RuntimeError('pinned Nginx config test failed')
+
+    def revalidate_reload_profile():
+        if master is None or master.poll() is not None:
+            raise PermissionError('pinned Nginx master exited before reload')
+        if not process_alive(master_pidfd):
+            raise PermissionError('pinned Nginx master identity is no longer live')
+        current_binary_hash = sha256_file(binary)
+        current_config_hash = sha256_file(config)
+        current_ini_hash = sha256_file(ini_path)
+        current_profile = wire.profile_hash(current_binary_hash,
+            current_config_hash, current_ini_hash, str(prefix), args.nginx_env)
+        if (current_binary_hash != actual_binary_hash or
+                current_config_hash != actual_config_hash or
+                current_ini_hash != actual_ini_hash or current_profile != profile):
+            raise PermissionError('pinned Nginx binary/configuration/INI profile changed before HUP')
+        if sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash:
+            raise PermissionError('running Nginx executable differs from pinned profile')
+        current_config_lines = [line.split(b'#', 1)[0].strip()
+            for line in config.read_bytes().splitlines()]
+        if (any(line.startswith(b'include ') for line in current_config_lines) or
+                sum(line == b'daemon off;' for line in current_config_lines) != 1 or
+                sum(line == b'master_process on;' for line in current_config_lines) != 1 or
+                sum(line == b'worker_processes 1;' for line in current_config_lines) != 1):
+            raise PermissionError('Nginx reload configuration left the pinned one-worker profile')
+        if not broker_ini_matches(Path(ini_path),
+                args.nginx_env['KER_SOCKET_BROKER_PATH']):
+            raise PermissionError('Nginx reload INI left the pinned graceful_reload=0 profile')
+
     master = None
     master_pidfd = -1
     master_ticks = 0
@@ -457,6 +491,7 @@ def run(args):
             if record_type == wire.RELOAD:
                 if len(data) != wire.RELOAD_BYTES:
                     raise ValueError('invalid RELOAD size')
+                revalidate_reload_profile()
                 signal.pidfd_send_signal(master_pidfd, signal.SIGHUP)
                 body = wire.RELOAD_RESULT_BODY.pack(0, 0, master_ticks, profile)
                 send_record(channel, wire.pack_record(wire.RELOAD_RESULT, body,

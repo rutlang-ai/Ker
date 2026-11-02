@@ -20,6 +20,15 @@ def require(value, message):
         raise RuntimeError(message)
 
 
+def wait_marker_count(path, expected, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists() and path.read_bytes().count(b'HUP\n') >= expected:
+            return path.read_bytes().count(b'HUP\n')
+        time.sleep(0.01)
+    return path.read_bytes().count(b'HUP\n') if path.exists() else 0
+
+
 def load_module(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -83,6 +92,32 @@ def new_manager(supervisor, server, helper_path, config, prefix, environment):
     manager.helper_script_hash = supervisor._sha256(helper_path)
     manager.start(timeout=5)
     return manager
+
+
+def exercise_profile_mutation(supervisor, server, helper_path, config, prefix,
+                              environment, ini, mutate, label):
+    marker = prefix / 'hup-observed'
+    marker.unlink(missing_ok=True)
+    manager = new_manager(supervisor, server, helper_path, config, prefix,
+        environment)
+    try:
+        mutate(config, ini)
+        denied = False
+        try:
+            manager.reload(timeout=5)
+        except (OSError, RuntimeError, ValueError, PermissionError):
+            denied = True
+        require(denied and manager.unresolved and not manager.settled,
+            f'{label} mutation was not rejected as an unresolved profile change')
+        require(not marker.exists() or marker.read_bytes() == b'',
+            f'{label} profile mutation delivered SIGHUP before denial')
+        manager.helper.wait(timeout=5)
+        require(manager.helper.returncode != 0,
+            f'{label} profile mutation did not fail closed')
+        require(wait_dead(manager.master_pidfd, 0.1),
+            f'{label} profile rejection did not stop the pinned master')
+    finally:
+        cleanup_manager(manager)
 
 
 def signal_and_reap_master(manager, master_pidfd):
@@ -176,18 +211,45 @@ def main():
             'KER_FSTACK_NGINX_INI': str(ini),
         }
         helper_path = args.helper.resolve(strict=True)
+        config_text = 'daemon off;\nmaster_process on;\nworker_processes 1;\n'
+        ini_text = (f'[ker_socket_broker]\nversion=1\npath={broker_path}\n'
+            '[dpdk]\ngraceful_reload=0\n')
         good = None
         try:
             good = new_manager(supervisor, args.server, helper_path, config,
                 prefix, environment)
             good.check()
             good.reload(timeout=5)
+            require(wait_marker_count(prefix / 'hup-observed', 1) == 1,
+                'first healthy reload did not deliver exactly one SIGHUP')
             good.reload(timeout=5)
+            require(wait_marker_count(prefix / 'hup-observed', 2) == 2,
+                'second healthy reload did not deliver exactly two SIGHUP signals')
             good.stop(timeout=5)
             require(good.started and good.settled and not good.unresolved,
                 'valid START, consecutive RELOAD, STOP did not settle exactly')
         finally:
             cleanup_manager(good)
+
+        def change_worker_count(changed_config, _changed_ini):
+            changed_config.write_text(
+                'daemon off;\nmaster_process on;\nworker_processes 2;\n',
+                encoding='utf-8')
+
+        exercise_profile_mutation(supervisor, args.server, helper_path, config,
+            prefix, environment, ini, change_worker_count, 'worker_processes=2')
+        config.write_text(config_text, encoding='utf-8')
+        (prefix / 'hup-observed').unlink(missing_ok=True)
+
+        def change_graceful_reload(_changed_config, changed_ini):
+            changed_ini.write_text(ini_text.replace('graceful_reload=0',
+                'graceful_reload=1'), encoding='utf-8')
+
+        exercise_profile_mutation(supervisor, args.server, helper_path, config,
+            prefix, environment, ini, change_graceful_reload, 'graceful_reload=1')
+        config.write_text(config_text, encoding='utf-8')
+        ini.write_text(ini_text, encoding='utf-8')
+        (prefix / 'hup-observed').unlink(missing_ok=True)
 
         crashed = new_manager(supervisor, args.server, helper_path, config,
             prefix, environment)
