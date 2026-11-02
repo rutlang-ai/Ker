@@ -43,8 +43,11 @@ int ker_rx_decision_consumer_prepare_runtime_shutdown(void);
 int ker_rx_decision_consumer_registered(void);
 int ker_rx_decision_consumer_error(void);
 #ifdef KER_C31_RX_DECISION_TESTING
+#ifndef KER_C31_TEST_API
+#define KER_C31_TEST_API __attribute__((visibility("default")))
+#endif
 /* Make one shutdown call return EBUSY before sending STOP. */
-void ker_posix_rx_decision_test_shutdown_ebusy_once(void);
+KER_C31_TEST_API void ker_posix_rx_decision_test_shutdown_ebusy_once(void);
 #endif
 
 #endif
