@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/filter.h>
 #include <poll.h>
 #include <stdbool.h>
@@ -639,6 +640,283 @@ static int staged_candidate_actor(struct ker_socket_client *inherited_client,
     return send(control, "D", 1, MSG_NOSIGNAL) == 1 ? 0 : 65;
 }
 
+static int staged_activation_foreign_actor_probe(struct ker_socket_client *client,
+    const char *rpc_path, int owner, int slot, int activated,
+    const struct sockaddr_in *address)
+{
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        ker_socket_client_close(client);
+        struct ker_socket_client foreign;
+        if (ker_socket_client_open(&foreign, rpc_path)) _exit(2);
+        errno = 0;
+        int result = ker_socket_client_owner_group_activate_initial(&foreign, owner, slot);
+        if (result != -1 || errno != EXDEV) {
+            _exit(3);
+        }
+        errno = 0;
+        if (ker_socket_client_bind(&foreign, activated,
+                (const struct sockaddr *)address, sizeof(*address)) != -1 ||
+            errno != EXDEV) _exit(4);
+        ker_socket_client_close(&foreign);
+        _exit(0);
+    }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+        errno = ECHILD;
+        return -1;
+    }
+    return 0;
+}
+
+static int staged_activation_poison_wire(struct ker_socket_client *client,
+    const char *rpc_path, unsigned port);
+
+static int staged_activation_wire(struct ker_socket_client *client, unsigned port)
+{
+    if (port < 1024 || port > 64000) { errno = EINVAL; return -1; }
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int owner = ker_socket_client_ff_owner_create(client);
+    int plan = ker_socket_client_owner_group_staged_plan(client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL | KER_SOCKET_BROKER_READ);
+    if (owner < 0 || plan < 0) return -1;
+    int slot = ker_socket_client_owner_group_slot(client, plan, 0);
+    if (slot < 0 || ker_socket_client_ff_owner_group_claim(client, owner, slot)) return -1;
+    int activated = ker_socket_client_owner_group_activate_initial(client, owner, slot);
+    if (activated < 0) return -1;
+    enum ker_socket_broker_kind kind = KER_SOCKET_BROKER_EPOLL;
+    int flags = -1;
+    CHECK(ker_socket_client_describe(client, activated, &kind, &flags) == 0);
+    CHECK(kind == KER_SOCKET_BROKER_SOCKET && (flags & O_NONBLOCK));
+    struct sockaddr_in local = {0}; socklen_t local_length = sizeof(local);
+    CHECK(ker_socket_client_getsockname(client, activated,
+        (struct sockaddr *)&local, &local_length) == 0);
+    CHECK(local_length == sizeof(local) && local.sin_family == AF_INET &&
+        local.sin_port == 0);
+    int enabled = 1;
+    CHECK(ker_socket_client_setsockopt(client, activated, SOL_SOCKET, SO_REUSEADDR,
+        &enabled, sizeof(enabled)) == 0);
+    CHECK(ker_socket_client_setsockopt(client, activated, SOL_SOCKET, SO_REUSEPORT,
+        &enabled, sizeof(enabled)) == 0);
+    uint32_t forbidden_mark = UINT32_C(0x7ffffffe);
+    errno = 0;
+    CHECK(ker_socket_client_setsockopt(client, activated, SOL_SOCKET, SO_MARK,
+        &forbidden_mark, sizeof(forbidden_mark)) == -1 && errno == EOPNOTSUPP);
+    int member = ker_socket_client_owner_group_member(client, owner, slot);
+    CHECK(member == -1 && errno == EAGAIN);
+    int group = ker_socket_client_owner_group_control(client, plan);
+    CHECK(group == -1 && errno == EAGAIN);
+    errno = 0;
+    CHECK(ker_socket_client_owner_group_publish_initial(client, plan) == -1 &&
+        errno == EALREADY);
+    errno = 0;
+    CHECK(ker_socket_client_owner_group_publish(client, plan) == -1 &&
+        errno == EALREADY);
+    CHECK(staged_activation_foreign_actor_probe(client, client->path,
+        owner, slot, activated, &address) == 0);
+
+    struct sockaddr_in wrong = address;
+    wrong.sin_port = htons(4106);
+    errno = 0;
+    CHECK(ker_socket_client_bind(client, activated,
+        (struct sockaddr *)&wrong, sizeof(wrong)) == -1 && errno == EADDRNOTAVAIL);
+    errno = 0;
+    CHECK(ker_socket_client_listen(client, activated, 8) == -1 && errno == EALREADY);
+    CHECK(ker_socket_client_bind(client, activated,
+        (struct sockaddr *)&address, sizeof(address)) == 0);
+    errno = 0;
+    CHECK(ker_socket_client_bind(client, activated,
+        (struct sockaddr *)&address, sizeof(address)) == -1 && errno == EALREADY);
+    errno = 0;
+    CHECK(ker_socket_client_listen(client, activated, 7) == -1 && errno == EINVAL);
+    CHECK(ker_socket_client_listen(client, activated, 8) == 0);
+    member = ker_socket_client_owner_group_member(client, owner, slot);
+    CHECK(member >= 0);
+    group = ker_socket_client_owner_group_control(client, plan);
+    CHECK(group >= 0);
+    int group_alias = ker_socket_client_owner_group_control(client, plan);
+    CHECK(group_alias >= 0);
+    close(group_alias);
+    int census = ker_socket_client_member_census_create(client, group, 0);
+    CHECK(census >= 0);
+    struct ker_socket_member_census_snapshot snapshot = {0};
+    CHECK(ker_socket_client_member_census_snapshot(client, census, &snapshot) == 0);
+    CHECK(snapshot.total == 1 &&
+        snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1 &&
+        snapshot.listener_cookie != 0);
+    errno = 0;
+    CHECK(ker_socket_client_reuseport_group_select(client, group, 1) == -1 &&
+        errno == EAGAIN);
+    puts("STAGED_ACTIVATION_READY"); fflush(stdout);
+    CHECK(owner_accept_exchange(client, owner, activated,
+        "ACTV-000", "ACTV-ACK", NULL) == 0);
+    puts("STAGED_ACTIVATION_ECHO_OK"); fflush(stdout);
+    CHECK(staged_activation_poison_wire(client, client->path, port + 1) == 0);
+    close(activated); close(member); close(group);
+    close(slot); close(plan); close(owner);
+    memset(&snapshot, 0, sizeof(snapshot));
+    struct timespec census_started, census_deadline, census_now;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &census_started) == 0);
+    census_deadline = census_started;
+    census_deadline.tv_sec += 1;
+    unsigned census_attempt;
+    int census_status = 0;
+    bool census_empty = false;
+    for (census_attempt = 0; census_attempt < 100; ++census_attempt) {
+        CHECK(clock_gettime(CLOCK_MONOTONIC, &census_now) == 0);
+        if (census_now.tv_sec > census_deadline.tv_sec ||
+            (census_now.tv_sec == census_deadline.tv_sec &&
+                census_now.tv_nsec >= census_deadline.tv_nsec)) {
+            break;
+        }
+        memset(&snapshot, 0, sizeof(snapshot));
+        census_status = ker_socket_client_member_census_snapshot(client, census,
+            &snapshot);
+        if (census_status != 0) break;
+        CHECK(clock_gettime(CLOCK_MONOTONIC, &census_now) == 0);
+        bool census_timed_out = census_now.tv_sec > census_deadline.tv_sec ||
+            (census_now.tv_sec == census_deadline.tv_sec &&
+                census_now.tv_nsec >= census_deadline.tv_nsec);
+        if (snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 0 &&
+            !census_timed_out) {
+            census_empty = true;
+            break;
+        }
+        if (census_timed_out) {
+            break;
+        }
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
+        pause.tv_sec = census_deadline.tv_sec - census_now.tv_sec;
+        pause.tv_nsec = census_deadline.tv_nsec - census_now.tv_nsec;
+        if (pause.tv_nsec < 0) {
+            --pause.tv_sec;
+            pause.tv_nsec += 1000000000;
+        }
+        if (pause.tv_sec > 0 || pause.tv_nsec > 10000000) {
+            pause.tv_sec = 0;
+            pause.tv_nsec = 10000000;
+        }
+        while (nanosleep(&pause, &pause) && errno == EINTR) {}
+    }
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &census_now) == 0);
+    bool census_timed_out = census_now.tv_sec > census_deadline.tv_sec ||
+        (census_now.tv_sec == census_deadline.tv_sec &&
+            census_now.tv_nsec >= census_deadline.tv_nsec);
+    if (census_status != 0 || !census_empty) {
+        int census_error = census_status != 0 ? errno :
+            census_timed_out ? ETIMEDOUT : EAGAIN;
+        long elapsed_ms = (census_now.tv_sec - census_started.tv_sec) * 1000 +
+            (census_now.tv_nsec - census_started.tv_nsec) / 1000000;
+        fprintf(stderr,
+            "staged activation cleanup census status=%d errno=%d total=%llu "
+            "listen=%llu elapsed_ms=%ld attempts=%u timed_out=%d\n",
+            census_status, census_error, (unsigned long long)snapshot.total,
+            (unsigned long long)snapshot.state_counts[KER_SOCKET_TCP_STATE_LISTEN],
+            elapsed_ms, census_attempt, census_timed_out);
+        errno = census_error;
+        return -1;
+    }
+    int reuse_probe = ker_socket_client_socket(client, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    CHECK(reuse_probe >= 0);
+    int reuse_address = 1;
+    CHECK(ker_socket_client_setsockopt(client, reuse_probe, SOL_SOCKET, SO_REUSEADDR,
+        &reuse_address, sizeof(reuse_address)) == 0);
+    int reuse_port = -1; socklen_t reuse_port_length = sizeof(reuse_port);
+    CHECK(ker_socket_client_getsockopt(client, reuse_probe, SOL_SOCKET, SO_REUSEPORT,
+        &reuse_port, &reuse_port_length) == 0 && reuse_port_length == sizeof(reuse_port) &&
+        reuse_port == 0);
+    CHECK(ker_socket_client_bind(client, reuse_probe,
+        (const struct sockaddr *)&address, sizeof(address)) == 0);
+    CHECK(ker_socket_client_listen(client, reuse_probe, 8) == 0);
+    int accepting = 0; socklen_t accepting_length = sizeof(accepting);
+    CHECK(ker_socket_client_getsockopt(client, reuse_probe, SOL_SOCKET, SO_ACCEPTCONN,
+        &accepting, &accepting_length) == 0 && accepting_length == sizeof(accepting) &&
+        accepting == 1);
+    puts("STAGED_ACTIVATION_REBOUND_READY"); fflush(stdout);
+    close(reuse_probe);
+    close(census);
+    puts("STAGED_ACTIVATION_DONE"); fflush(stdout);
+    return 0;
+}
+
+static int staged_activation_poison_actor(struct ker_socket_client *inherited,
+    const char *rpc_path, int slot, int notify_fd, unsigned port)
+{
+    ker_socket_client_close(inherited);
+    struct ker_socket_client client;
+    if (ker_socket_client_open(&client, rpc_path)) return 81;
+    int owner = ker_socket_client_ff_owner_create(&client);
+    if (owner < 0 || ker_socket_client_ff_owner_group_claim(&client, owner, slot)) return 82;
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return 83;
+    int activated = ker_socket_client_owner_group_activate_initial(&client, owner, slot);
+    if (activated < 0) return 84;
+    int unowned = ker_socket_client_socket(&client, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (unowned < 0) return 85;
+    close(unowned);
+    errno = 0;
+    if (ker_socket_client_bind(&client, activated, (struct sockaddr *)&address,
+            sizeof(address)) != -1 || errno != EOPNOTSUPP) return 86;
+    errno = 0;
+    if (ker_socket_client_listen(&client, activated, 8) != -1 ||
+        errno != EOPNOTSUPP) return 87;
+    int accepting = 1; socklen_t accepting_length = sizeof(accepting);
+    if (ker_socket_client_getsockopt(&client, activated, SOL_SOCKET, SO_ACCEPTCONN,
+            &accepting, &accepting_length) || accepting_length != sizeof(accepting) ||
+        accepting != 0) return 88;
+    close(activated); close(owner); close(slot); ker_socket_client_close(&client);
+    return write(notify_fd, "P", 1) == 1 ? 0 : 89;
+}
+
+static int staged_activation_poison_wire(struct ker_socket_client *client,
+    const char *rpc_path, unsigned port)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons(port)};
+    if (inet_pton(AF_INET, "198.18.0.2", &address.sin_addr) != 1) return -1;
+    int plan = ker_socket_client_owner_group_staged_plan(client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL);
+    if (plan < 0) return -1;
+    int slot = ker_socket_client_owner_group_slot(client, plan, 0);
+    if (slot < 0) return -1;
+    int notify[2];
+    if (pipe2(notify, O_CLOEXEC)) return -1;
+    pid_t child = fork();
+    if (child < 0) { close(notify[0]); close(notify[1]); return -1; }
+    if (!child) {
+        close(notify[0]);
+        _exit(staged_activation_poison_actor(client, rpc_path, slot, notify[1], port));
+    }
+    close(notify[1]);
+    char ready = 0;
+    ssize_t amount;
+    do { amount = read(notify[0], &ready, 1); } while (amount < 0 && errno == EINTR);
+    close(notify[0]);
+    int child_status = 0;
+    while (waitpid(child, &child_status, 0) < 0) if (errno != EINTR) return -1;
+    if (amount != 1 || ready != 'P' || !WIFEXITED(child_status) ||
+        WEXITSTATUS(child_status)) { errno = ECHILD; return -1; }
+    errno = 0;
+    CHECK(ker_socket_client_owner_group_staged_plan(client, &address, 8,
+        KER_SOCKET_BROKER_CONTROL) == -1 && errno == EADDRINUSE);
+    close(slot); close(plan);
+    struct timespec pause = {.tv_sec = 0, .tv_nsec = 10000000};
+    int replacement = -1;
+    for (unsigned attempt = 0; attempt < 300; ++attempt) {
+        replacement = ker_socket_client_owner_group_staged_plan(client, &address, 8,
+            KER_SOCKET_BROKER_CONTROL);
+        if (replacement >= 0) break;
+        if (errno != EADDRINUSE) return -1;
+        (void)nanosleep(&pause, NULL);
+    }
+    CHECK(replacement >= 0);
+    close(replacement);
+    puts("STAGED_ACTIVATION_POISON_OK"); fflush(stdout);
+    return 0;
+}
+
 static int staged_owner_group_wire(struct ker_socket_client *client,
     const char *rpc_path)
 {
@@ -1051,6 +1329,18 @@ int main(int argc, char **argv)
         int error = errno;
         ker_socket_client_close(&client);
         if (result) { errno = error; perror("staged admission initial"); return 1; }
+        return 0;
+    }
+    if (argc == 7 && !strcmp(argv[5], "--staged-activation")) {
+        struct ker_socket_client client;
+        if (ker_socket_client_open(&client, argv[1])) return 2;
+        char *end = NULL;
+        unsigned long parsed = strtoul(argv[6], &end, 10);
+        if (!argv[6][0] || !end || *end || parsed > UINT_MAX) return 2;
+        int result = staged_activation_wire(&client, (unsigned)parsed);
+        int error = errno;
+        ker_socket_client_close(&client);
+        if (result) { errno = error; perror("staged activation wire"); return 1; }
         return 0;
     }
     if (argc == 6 && (!strcmp(argv[5], "--staged-history") ||

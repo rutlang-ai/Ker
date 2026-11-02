@@ -1044,14 +1044,20 @@ def run_member_census_client(args, rpc_path, broker, capability):
 
 def run_reuseport_group_client(args, rpc_path, broker, capability):
     staged_capability = os.dup(capability)
-    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
-        str(args.inherited_group_probe), str(args.preload_library)],
-        pass_fds=(capability,), stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-    os.close(capability)
+    staged_owner_capability = -1
+    staged_failure_capability = -1
+    staged_death_capability = -1
+    client = None
     owner_table = f'ker_c18_{os.getpid()}'
     owner_table_created = False
     try:
+        client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), str(capability),
+            str(args.inherited_group_probe), str(args.preload_library)],
+            pass_fds=(capability,), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        input_capability = capability
+        capability = -1
+        os.close(input_capability)
         require(read_line(client.stdout, 20, client) == 'OWNER_GROUP_READY_0',
             'owner group did not select its first claimed listener')
         first_owner = socket.create_connection(('198.18.0.2', 4100), timeout=10)
@@ -1207,29 +1213,70 @@ def run_reuseport_group_client(args, rpc_path, broker, capability):
             f'reuseport group client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
         print(f'REUSEPORT_GROUP selector0/1/0 delivered exact streams; accepted TCP survived final listener close; '
             f'fresh-connect attempts={attempts}')
-        staged_to_transfer = staged_capability
+        staged_owner_capability = os.dup(staged_capability)
         staged_failure_capability = os.dup(staged_capability)
         staged_death_capability = os.dup(staged_capability)
+        try:
+            run_staged_owner_group(args, rpc_path, staged_owner_capability)
+        finally:
+            capability_to_close = staged_owner_capability
+            staged_owner_capability = -1
+            os.close(capability_to_close)
+        try:
+            run_staged_candidate_failure(args, rpc_path, staged_failure_capability, 'history')
+        finally:
+            capability_to_close = staged_failure_capability
+            staged_failure_capability = -1
+            os.close(capability_to_close)
+        try:
+            run_staged_candidate_failure(args, rpc_path, staged_death_capability, 'death')
+        finally:
+            capability_to_close = staged_death_capability
+            staged_death_capability = -1
+            os.close(capability_to_close)
+        # Keep one broker capability across the empty-owner gap. The explicit
+        # idle interval proves the next client is not winning a startup race
+        # against stop_when_empty or the Unix-socket unlink.
+        time.sleep(0.25)
+        require(broker.poll() is None and os.path.exists(rpc_path),
+            'staged broker stopped despite the retained bootstrap capability')
+        run_staged_activation(args, rpc_path)
+        keeper_to_close = staged_capability
         staged_capability = -1
-        run_staged_owner_group(args, rpc_path, staged_to_transfer)
-        run_staged_candidate_failure(args, rpc_path, staged_failure_capability, 'history')
-        staged_failure_capability = -1
-        run_staged_candidate_failure(args, rpc_path, staged_death_capability, 'death')
-        staged_death_capability = -1
+        os.close(keeper_to_close)
     except BaseException as error:
         if owner_table_created:
             try: census_nft('delete', 'table', 'inet', owner_table)
             except (OSError, subprocess.SubprocessError, RuntimeError): pass
-        if client.poll() is None:
+        if client is not None and client.poll() is None:
             client.kill(); client.wait()
-        if staged_capability >= 0:
-            os.close(staged_capability)
-        for extra_capability in (locals().get('staged_failure_capability', -1),
-                locals().get('staged_death_capability', -1),
-                locals().get('staged_death_capability', -1)):
-            if extra_capability >= 0:
-                try: os.close(extra_capability)
-                except OSError: pass
+        if capability >= 0:
+            input_capability = capability
+            capability = -1
+            try: os.close(input_capability)
+            except OSError: pass
+        extra_capability = staged_owner_capability
+        staged_owner_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        extra_capability = staged_failure_capability
+        staged_failure_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        extra_capability = staged_death_capability
+        staged_death_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        extra_capability = staged_capability
+        staged_capability = -1
+        if extra_capability >= 0:
+            try: os.close(extra_capability)
+            except OSError: pass
+        if client is None:
+            raise
         if not hasattr(client, 'communicate'):
             raise
         output, errors = client.communicate(timeout=5)
@@ -1249,7 +1296,6 @@ def run_staged_owner_group(args, rpc_path, capability):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     except OSError as error:
         raise RuntimeError(f'staged client launch failed with capability fd {capability}: {error}')
-    os.close(capability)
     first = None
     try:
         require(read_line(client.stdout, 20, client) == 'STAGED_INITIAL_READY',
@@ -1298,6 +1344,42 @@ def run_staged_owner_group(args, rpc_path, capability):
             f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
 
 
+def run_staged_activation(args, rpc_path):
+    activation_port = 42000 + os.getpid() % 10000
+    client = subprocess.Popen([str(args.reuseport_group_client), str(rpc_path), '0',
+        str(args.inherited_group_probe), str(args.preload_library), '--staged-activation',
+        str(activation_port)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    peer = None
+    try:
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_READY',
+            'owner-scoped activation did not publish after original-Linux listen')
+        peer = socket.create_connection(('198.18.0.2', activation_port), timeout=10)
+        peer.settimeout(10); peer.sendall(b'ACTV-000')
+        require(recv_exact(peer, 8) == b'ACTV-ACK',
+            'activated original-Linux member did not serve real TCP')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_ECHO_OK',
+            'activated owner failed its accepted stream exchange')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_POISON_OK',
+            'unowned socket history did not poison unbound activation and release its reservation')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_REBOUND_READY',
+            'original tuple could not be rebound and listened after activation capability cleanup')
+        require(read_line(client.stdout, 20, client) == 'STAGED_ACTIVATION_DONE',
+            'activation owner did not close capabilities after stream proof')
+        output, errors = client.communicate(timeout=10)
+        require(client.returncode == 0,
+            f'staged activation client failed: stdout={output!r}; stderr={errors.decode(errors="replace")}')
+        peer.close(); peer = None
+        print('STAGED_OWNER_ACTIVATION exact-bind/listen/owner-claim/history-guard/census/real-TCP/port-reuse PASS')
+    except BaseException as error:
+        if peer is not None: peer.close()
+        if client.poll() is None:
+            client.kill(); client.wait()
+        output, errors = client.communicate(timeout=5)
+        raise RuntimeError(f'{error}; staged activation client rc={client.returncode}; '
+            f'stdout={output!r}; stderr={errors.decode(errors="replace")}') from error
+
+
 def run_staged_candidate_failure(args, rpc_path, capability, case):
     mode = f'--staged-{case}'
     prefix = f'STAGED_{case.upper()}'
@@ -1305,7 +1387,6 @@ def run_staged_candidate_failure(args, rpc_path, capability, case):
         str(args.inherited_group_probe), str(args.preload_library), mode],
         pass_fds=(capability,), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-    os.close(capability)
     port = {'history': 4104, 'death': 4105}[case]
     first = second = None
     try:
