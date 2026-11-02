@@ -26,7 +26,11 @@ _WIRE_SPEC.loader.exec_module(wire)
 SO_PEERPIDFD = getattr(socket, 'SO_PEERPIDFD', 77)
 UCRED = struct.Struct('=3i')
 ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
-    'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE'))
+    'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE',
+    'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
+    'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
+    'KER_NGINX_CYCLE_WORKER_PROFILE_SHA256',
+    'KER_NGINX_CYCLE_OUTER_EXE_SHA256'))
 START_PHASE = 1
 RELOAD_PHASE = 2
 STOP_PHASE = 3
@@ -608,6 +612,25 @@ def run(args):
             args.nginx_env['KER_SOCKET_BROKER_PATH']):
         raise ValueError('C34 requires graceful_reload=0 profile')
     nginx_env = {'PATH': '/usr/bin:/bin', **args.nginx_env}
+    cycle_env_keys = {key for key in args.nginx_env if key.startswith('KER_NGINX_CYCLE_')}
+    required_cycle_keys = {'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
+        'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
+        'KER_NGINX_CYCLE_WORKER_PROFILE_SHA256', 'KER_NGINX_CYCLE_OUTER_EXE_SHA256'}
+    if cycle_env_keys and cycle_env_keys != required_cycle_keys:
+        raise ValueError('incomplete serial Nginx cycle-control environment')
+    if (args.cycle_control_fd is None) != (not cycle_env_keys):
+        raise ValueError('cycle-control endpoint and environment must be supplied together')
+    if args.cycle_control_fd is not None:
+        if (int(args.nginx_env['KER_NGINX_CYCLE_FD'], 10) != args.cycle_control_fd or
+                args.cycle_control_fd < 3):
+            raise ValueError('cycle-control descriptor does not match environment')
+        cycle_socket_type = socket.socket(fileno=os.dup(args.cycle_control_fd))
+        try:
+            if (cycle_socket_type.family != socket.AF_UNIX or
+                    cycle_socket_type.type & 0xF != socket.SOCK_SEQPACKET):
+                raise ValueError('cycle-control endpoint must be Unix SOCK_SEQPACKET')
+        finally:
+            cycle_socket_type.close()
     test = subprocess.run([str(binary), '-t', '-p', str(prefix) + '/',
         '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
@@ -658,10 +681,15 @@ def run(args):
     master_ticks = 0
     started_sent = False
     try:
+        master_pass_fds = (() if args.cycle_control_fd is None else
+            (args.cycle_control_fd,))
         master = subprocess.Popen([str(binary), '-p', str(prefix) + '/',
             '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, start_new_session=False)
+            close_fds=True, pass_fds=master_pass_fds, start_new_session=False)
+        if args.cycle_control_fd is not None:
+            os.close(args.cycle_control_fd)
+            args.cycle_control_fd = None
         master_pidfd = os.pidfd_open(master.pid, 0)
         master_ticks = start_ticks(master.pid)
         signal_ready_deadline = time.monotonic() + SIGNAL_HANDLER_READY_TIMEOUT
@@ -821,6 +849,7 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--control-fd', type=int, required=True)
+    parser.add_argument('--cycle-control-fd', type=int)
     parser.add_argument('--nonce', type=lambda value: bytes.fromhex(value), required=True)
     parser.add_argument('--epoch', type=int, required=True)
     parser.add_argument('--binary', required=True)
@@ -846,6 +875,13 @@ def main(argv=None):
     except BaseException as error:
         print(f'ker-nginx-companion: {error}', file=sys.stderr)
         return 2
+    finally:
+        cycle_fd = getattr(args, 'cycle_control_fd', None)
+        if cycle_fd is not None:
+            try:
+                os.close(cycle_fd)
+            except OSError:
+                pass
 
 
 if __name__ == '__main__':

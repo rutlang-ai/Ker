@@ -19,6 +19,7 @@ import shlex
 import signal
 import socket
 import struct
+import stat
 import subprocess
 import sys
 import time
@@ -31,6 +32,15 @@ if _WIRE_SPEC is None or _WIRE_SPEC.loader is None:
     raise ImportError('cannot load private ker-run relay wire codec')
 wire = importlib.util.module_from_spec(_WIRE_SPEC)
 _WIRE_LOADER.exec_module(wire)
+_CYCLE_CONTROL_PATH = Path(__file__).resolve().with_name('nginx_cycle_control.py')
+_CYCLE_CONTROL_LOADER = importlib.machinery.SourceFileLoader(
+    '_ker_serial_nginx_cycle_control', str(_CYCLE_CONTROL_PATH))
+_CYCLE_CONTROL_SPEC = importlib.util.spec_from_loader(
+    _CYCLE_CONTROL_LOADER.name, _CYCLE_CONTROL_LOADER)
+if _CYCLE_CONTROL_SPEC is None or _CYCLE_CONTROL_SPEC.loader is None:
+    raise ImportError('cannot load private Nginx cycle control module')
+cycle_control = importlib.util.module_from_spec(_CYCLE_CONTROL_SPEC)
+_CYCLE_CONTROL_LOADER.exec_module(cycle_control)
 
 _HANDOFF = struct.Struct('<IHHIIIIIIQHHHH16s')
 _HANDOFF_MAGIC = 0x314F574B  # KWO1
@@ -89,6 +99,7 @@ class InnerLaunch:
     root: Path
     address: str = '198.18.0.2/24'
     port_name: str = 'net_tap0'
+    rpc_path: Path | None = None
 
 
 @dataclass
@@ -139,12 +150,36 @@ class OwnerWatch:
     closed: bool = False
 
 
+@dataclass
+class ExternalOwnerWatch:
+    inner: InnerContext
+    actor_identity: ProcessIdentity
+    actor_pidfd: int
+    watch_identity: tuple
+    port: int
+    address: bytes
+    receipt: bytes
+    last_result: bytes
+    closed: bool = False
+
+
 @dataclass(frozen=True)
 class VerifiedOwnerRetired:
     inner: InnerContext
-    watch: OwnerWatch
+    watch: object
     claim_receipt: bytes
     terminal_result: bytes
+    _seal: object
+    companion_shutdown: bool = False
+
+
+@dataclass(frozen=True)
+class VerifiedCompanionShutdown:
+    inner: InnerContext
+    watch: ExternalOwnerWatch
+    companion: object
+    master_identity: tuple
+    settled_record: bytes
     _seal: object
 
 
@@ -194,6 +229,14 @@ def _sha256_proc_exe(pid):
                 break
             digest.update(block)
     return digest.digest()
+
+
+def _external_watch_identity(fd):
+    info = os.fstat(fd)
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    if not stat.S_ISFIFO(info.st_mode) or flags & os.O_ACCMODE != os.O_WRONLY:
+        raise ProtocolError('external generation watch is not a broker write-only capability pipe')
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_rdev, info.st_size)
 
 
 def _sha256_file(path):
@@ -401,6 +444,8 @@ class SerialGenerationController:
         self._proof_seal = object()
         self._verified_proofs = {}
         self._settled_proofs = {}
+        self._external_live_watches = {}
+        self._companion_shutdown_proofs = {}
         self._old_context = None
         self._new_context = None
         self._advance_key = object()
@@ -429,7 +474,8 @@ class SerialGenerationController:
         root = self.launch.root / label
         root.mkdir(parents=True, exist_ok=False)
         stats = root / 'worker-stats.json'
-        rpc = root / 'rpc.sock'
+        rpc = (Path(self.launch.rpc_path) if self.launch.rpc_path is not None
+            else root / 'rpc.sock')
         relay_parent, relay_child = socket.socketpair(socket.AF_UNIX,
             socket.SOCK_SEQPACKET | getattr(socket, 'SOCK_CLOEXEC', 0))
         relay_parent.setblocking(False)
@@ -484,10 +530,15 @@ class SerialGenerationController:
             'exe_sha256': context.executable_hash.hex()})
         return context
 
-    def receive_ready(self, context, timeout=20):
+    def receive_ready(self, context, timeout=20, deadline=None):
         if context.ready is not None or context.closed or context.unresolved_reason is not None:
             raise ProtocolError('inner READY already consumed or context closed')
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if deadline is None else deadline
+        if time.monotonic() >= deadline:
+            context.unresolved_reason = 'INNER_READY deadline expired before receive'
+            if context.label == 'new':
+                context.failure_state = 'NEW_FAILED'
+            raise DeadlineExpired(context.unresolved_reason)
         packet = _receive_packet(context.relay, wire.READY.size,
             context.process.pid, deadline)
         app_pidfd = worker_pidfd = -1
@@ -593,6 +644,8 @@ class SerialGenerationController:
                 pass
 
     def prove_owner_payload(self, watch, generation_tag, nonce, timeout=8):
+        if not isinstance(watch, OwnerWatch):
+            raise ProtocolError('TCP payload operation requires an SDK owner actor watch')
         if generation_tag not in ('A', 'B') or not nonce:
             raise ValueError('invalid application fixture request')
         request = struct.pack('!4sIQ', b'KSG1', ord(generation_tag) - ord('A') + 1,
@@ -630,6 +683,8 @@ class SerialGenerationController:
         return request, bytes(response)
 
     def close_owner_listener(self, watch, timeout=5):
+        if not isinstance(watch, OwnerWatch):
+            raise ProtocolError('listener close requires an SDK owner actor watch')
         if watch.closed or watch.actor.poll() is not None:
             raise ProtocolError('cannot close listener on an exited owner')
         deadline = time.monotonic() + timeout
@@ -655,6 +710,8 @@ class SerialGenerationController:
         return raw
 
     def exit_owner(self, watch, timeout=5):
+        if not isinstance(watch, OwnerWatch):
+            raise ProtocolError('owner exit requires an SDK owner actor watch')
         if watch.closed or watch.actor.poll() is not None:
             raise ProtocolError('owner actor already exited')
         deadline = time.monotonic() + timeout
@@ -677,6 +734,8 @@ class SerialGenerationController:
             'start_ticks': watch.actor_identity.start_ticks})
 
     def _verify(self, watch, timeout=8, deadline=None):
+        if not isinstance(watch, OwnerWatch):
+            raise ProtocolError('SDK owner VERIFY requires an actor watch')
         context = watch.inner
         if (watch.closed or context.closed or context.ready is None or
                 context.unresolved_reason is not None or context.settled):
@@ -724,6 +783,8 @@ class SerialGenerationController:
                 os.close(duplicate)
 
     def capture_claim_receipt(self, watch):
+        if not isinstance(watch, OwnerWatch):
+            raise ProtocolError('claim receipt requires an SDK owner actor watch')
         if watch.receipt is not None:
             raise ProtocolError('claim receipt already captured')
         if watch.actor.poll() is not None or _pidfd_is_dead(watch.actor_pidfd):
@@ -748,6 +809,8 @@ class SerialGenerationController:
         return raw
 
     def verify_owner_retired(self, watch, receipt):
+        if not isinstance(watch, OwnerWatch):
+            raise ProtocolError('SDK owner retirement requires an actor watch')
         if watch.receipt is None or receipt != watch.receipt:
             raise RetirementMismatch('caller receipt is not controller-captured claim receipt')
         if watch.actor.poll() is None or not _pidfd_is_dead(watch.actor_pidfd):
@@ -768,13 +831,16 @@ class SerialGenerationController:
                 struct.unpack_from('<Q', receipt, 40)[0], 'terminal': raw.hex()})
         return proof
 
-    def stop_inner(self, context, retired, timeout=30):
+    def stop_inner(self, context, retired, timeout=30, deadline=None):
         if (not isinstance(retired, VerifiedOwnerRetired) or retired.inner is not context or
-                retired.watch.inner is not context or retired.watch.closed or
+                retired.watch.inner is not context or
                 self._verified_proofs.get(id(retired)) is not retired or context.settled or
                 context.unresolved_reason is not None):
             raise SettlementError('STOP requires this inner context’s verified retirement')
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if deadline is None else deadline
+        if time.monotonic() >= deadline:
+            context.unresolved_reason = 'old runtime settlement deadline expired before STOP'
+            raise DeadlineExpired(context.unresolved_reason)
         context.relay_sequence += 1
         sequence = context.relay_sequence
         stop_sent = False
@@ -824,6 +890,282 @@ class SerialGenerationController:
         self._settled_proofs[id(proof)] = proof
         return proof
 
+    def verify_external_watch(self, context, watch_fd, companion, cycle_channel,
+            timeout=12, require_retired=False, live_watch=None, deadline=None):
+        """Verify a C22-created watch through this inner's authenticated relay."""
+        if (context is not self._old_context and context is not self._new_context) or context.ready is None:
+            raise ProtocolError('external watch requires a registered ready inner')
+        if context.unresolved_reason is not None or context.settled:
+            raise ProtocolError('external watch VERIFY on unresolved/settled inner')
+        current_watch_identity = _external_watch_identity(watch_fd)
+        expected_runtime = (context.ready[2], context.ready[3], context.ready[4])
+        expected_master = (companion.master_pid, os.getuid(), os.getgid(),
+            companion.master_start, bytes(companion.binary_hash))
+        if (tuple(cycle_channel.runtime) != expected_runtime or
+                cycle_channel.master_identity != expected_master or
+                cycle_channel.unresolved):
+            context.unresolved_reason = 'KNGC channel does not match this ready inner and companion'
+            raise AuthenticationError(context.unresolved_reason)
+        registered = None
+        if require_retired:
+            registered = (None if live_watch is None else
+                self._external_live_watches.get(id(live_watch)))
+            if (live_watch is None or not isinstance(live_watch, ExternalOwnerWatch) or
+                    registered is None or registered.get('watch') is not live_watch or
+                    registered.get('inner') is not context or live_watch.inner is not context or
+                    current_watch_identity != registered.get('watch_identity') or
+                    current_watch_identity != live_watch.watch_identity or
+                    registered.get('receipt') != live_watch.receipt or live_watch.closed):
+                raise ProtocolError('terminal Nginx watch VERIFY requires this context’s registered authority')
+        if deadline is None:
+            deadline = getattr(cycle_channel, 'transition_deadline', None)
+        deadline = time.monotonic() + timeout if deadline is None else deadline
+        if time.monotonic() >= deadline:
+            context.unresolved_reason = 'external-watch transition deadline already expired'
+            raise DeadlineExpired(context.unresolved_reason)
+        result = None
+        raw = None
+        status = None
+        while time.monotonic() < deadline:
+            context.relay_sequence += 1
+            sequence = context.relay_sequence
+            packet = wire.pack_verify(context.nonce, context.epoch, sequence)
+            duplicate = -1
+            try:
+                duplicate = fcntl.fcntl(watch_fd, fcntl.F_DUPFD_CLOEXEC, 0)
+                if time.monotonic() >= deadline:
+                    raise DeadlineExpired('external-watch VERIFY expired before send')
+                sent = context.relay.sendmsg([packet], [(socket.SOL_SOCKET,
+                    socket.SCM_RIGHTS, struct.pack('i', duplicate))],
+                    getattr(socket, 'MSG_NOSIGNAL', 0))
+                if sent != wire.VERIFY_REQUEST.size:
+                    raise ProtocolError('short external-watch VERIFY send')
+                os.close(duplicate)
+                duplicate = -1
+                reply = _receive_packet(context.relay,
+                    wire.VERIFY_REPLY_PREFIX.size + 128, context.process.pid, deadline)
+                status, raw = wire.unpack_verify_result(reply, context.nonce,
+                    context.epoch, sequence, context.ready[2], context.ready[3], context.ready[4])
+                result = wire._unpack_broker_result(raw, sequence)
+                if time.monotonic() >= deadline:
+                    raise DeadlineExpired('external-watch VERIFY validation exceeded its deadline')
+            except BaseException as exc:
+                context.unresolved_reason = f'external watch VERIFY uncertain: {exc}'
+                raise
+            finally:
+                if duplicate >= 0:
+                    os.close(duplicate)
+            if require_retired or status != errno.EAGAIN:
+                break
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        if result is None:
+            raise DeadlineExpired('external owner publication did not arrive before deadline')
+        if not require_retired:
+            if status != errno.EBUSY or result[0] != errno.EBUSY or result[-1] != 0:
+                context.unresolved_reason = 'external watch did not prove a live published owner'
+                raise OwnerStillLive(f'expected published-owner EBUSY, got {status}/{result[-1]}')
+            owner_pid, owner_start = result[4], result[5]
+            owner_pidfd = -1
+            try:
+                master_identity = _proc_identity(companion.master_pid)
+                if (master_identity.start_ticks != companion.master_start or
+                        _sha256_proc_exe(companion.master_pid) != companion.binary_hash or
+                        _pidfd_is_dead(companion.master_pidfd)):
+                    raise AuthenticationError('STARTED master identity changed during owner pinning')
+                owner_identity = _proc_identity(owner_pid)
+                if (_proc_parent(owner_pid) != companion.master_pid or
+                        owner_identity.start_ticks != owner_start or
+                        (owner_identity.uid, owner_identity.gid) !=
+                            (master_identity.uid, master_identity.gid) or
+                        _sha256_proc_exe(owner_pid) != companion.binary_hash):
+                    raise AuthenticationError('broker owner is not a pinned Nginx worker child')
+                owner_pidfd = os.pidfd_open(owner_pid, 0)
+                if (_proc_identity(owner_pid) != owner_identity or
+                        _proc_parent(owner_pid) != companion.master_pid or
+                        _sha256_proc_exe(owner_pid) != companion.binary_hash or
+                        _proc_identity(companion.master_pid) != master_identity or
+                        _pidfd_is_dead(owner_pidfd) or _pidfd_is_dead(companion.master_pidfd) or
+                        time.monotonic() >= deadline):
+                    raise AuthenticationError('Nginx worker/master identity changed before pidfd pin')
+            except BaseException as exc:
+                if owner_pidfd >= 0:
+                    os.close(owner_pidfd)
+                context.unresolved_reason = f'Nginx owner identity pin failed: {exc}'
+                raise
+            master_pidfd_ref = -1
+            try:
+                master_pidfd_ref = os.dup(companion.master_pidfd)
+                os.set_inheritable(master_pidfd_ref, False)
+                if time.monotonic() >= deadline or _pidfd_is_dead(master_pidfd_ref):
+                    raise DeadlineExpired('external watch registration exceeded its deadline')
+                owner_watch = ExternalOwnerWatch(context, owner_identity,
+                    owner_pidfd, current_watch_identity, self.port,
+                    socket.inet_aton(self.address), raw, raw)
+                master_identity_record = (companion.master_pid, master_identity.uid,
+                    master_identity.gid, master_identity.start_ticks,
+                    bytes(companion.binary_hash))
+                self._external_live_watches[id(owner_watch)] = {
+                    'watch': owner_watch, 'inner': context,
+                    'companion': companion, 'cycle_channel': cycle_channel,
+                    'watch_identity': current_watch_identity, 'receipt': raw,
+                    'owner_identity': owner_identity,
+                    'owner_pidfd': owner_pidfd, 'master_identity': master_identity_record,
+                    'master_pidfd': master_pidfd_ref,
+                    'master_executable_hash': bytes(companion.binary_hash)}
+                owner_pidfd = master_pidfd_ref = -1
+            except BaseException as exc:
+                if owner_pidfd >= 0:
+                    os.close(owner_pidfd)
+                if master_pidfd_ref >= 0:
+                    os.close(master_pidfd_ref)
+                context.unresolved_reason = f'external watch registration failed: {exc}'
+                raise
+            context.events.append({'event': context.label.upper() + '_NGINX_OWNER_LIVE',
+                'monotonic_ns': time.monotonic_ns(), 'pid': owner_pid,
+                'start_ticks': owner_start, 'cookie': result[9], 'receipt': raw.hex()})
+            return owner_watch
+        if status != 0 or result[0] != 0 or result[-1] != 1:
+            context.unresolved_reason = 'terminal Nginx VERIFY did not prove retirement'
+            raise RetirementMismatch('broker did not return OLD_RETIRED for Nginx owner')
+        claim = wire._unpack_broker_result(live_watch.receipt,
+            struct.unpack_from('<Q', live_watch.receipt, 40)[0])
+        if (result[4:11] != claim[4:11] or
+                result[4:6] != (registered['owner_identity'].pid,
+                    registered['owner_identity'].start_ticks) or
+                not _pidfd_is_dead(registered['owner_pidfd']) or
+                _pidfd_is_dead(registered['master_pidfd']) or
+                _proc_identity(registered['master_identity'][0]).start_ticks !=
+                    registered['master_identity'][3] or
+                _sha256_proc_exe(registered['master_identity'][0]) !=
+                    registered['master_executable_hash'] or
+                time.monotonic() >= deadline):
+            context.unresolved_reason = 'Nginx retirement changed owner or owner pidfd is live'
+            raise RetirementMismatch('terminal receipt does not match dead Nginx owner')
+        proof = VerifiedOwnerRetired(context, live_watch, live_watch.receipt,
+            raw, self._proof_seal, False)
+        self._verified_proofs[id(proof)] = proof
+        del self._external_live_watches[id(live_watch)]
+        if registered['master_pidfd'] >= 0:
+            os.close(registered['master_pidfd'])
+            registered['master_pidfd'] = -1
+        context.events.append({'event': context.label.upper() + '_NGINX_OWNER_RETIRED',
+            'monotonic_ns': time.monotonic_ns(), 'owner_pid': result[4],
+            'owner_start': result[5], 'terminal': raw.hex()})
+        return proof
+
+    def record_companion_shutdown(self, context, live_watch, companion, cycle_channel):
+        """Seal an authenticated final helper SETTLED plus pinned master death."""
+        registered = self._external_live_watches.get(id(live_watch))
+        if (context is not self._old_context and context is not self._new_context) or \
+                context.ready is None or context.unresolved_reason is not None or \
+                registered is None or registered.get('watch') is not live_watch or \
+                registered.get('inner') is not context or live_watch.inner is not context or \
+                registered.get('companion') is not companion or \
+                registered.get('cycle_channel') is not cycle_channel or \
+                companion.unresolved or not companion.started or not companion.stop_attempted or \
+                not companion.settled or not companion.settled_record or \
+                companion.helper is None or companion.helper.returncode != 0 or \
+                cycle_channel.unresolved or cycle_channel.last_request is not None or \
+                cycle_channel.transition_deadline is not None or \
+                cycle_channel.master_identity != registered.get('master_identity') or \
+                not _pidfd_is_dead(registered['master_pidfd']) or \
+                cycle_channel.master_pidfd < 0 or not _pidfd_is_dead(cycle_channel.master_pidfd):
+            raise SettlementError('companion shutdown is not authenticated and fully settled')
+        if (companion.master_pid != registered['master_identity'][0] or
+                companion.master_start != registered['master_identity'][3] or
+                bytes(companion.binary_hash) != registered['master_executable_hash']):
+            raise AuthenticationError('settled companion changed pinned master identity')
+        proof = VerifiedCompanionShutdown(context, live_watch, companion,
+            registered['master_identity'], bytes(companion.settled_record), self._proof_seal)
+        self._companion_shutdown_proofs[id(proof)] = proof
+        context.events.append({'event': context.label.upper() + '_NGINX_COMPANION_SETTLED',
+            'monotonic_ns': time.monotonic_ns(),
+            'master_pid': proof.master_identity[0],
+            'master_start': proof.master_identity[3],
+            'record': proof.settled_record.hex()})
+        return proof
+
+    def verify_external_shutdown_watch(self, context, watch_fd, shutdown, timeout=12):
+        """Verify final owner retirement after exact companion SETTLED/master death."""
+        if (not isinstance(shutdown, VerifiedCompanionShutdown) or
+                shutdown._seal is not self._proof_seal or
+                self._companion_shutdown_proofs.get(id(shutdown)) is not shutdown or
+                shutdown.inner is not context or context.ready is None or
+                context.unresolved_reason is not None or context.settled):
+            raise ProtocolError("final retirement requires this controller's companion shutdown proof")
+        live_watch = shutdown.watch
+        registered = self._external_live_watches.get(id(live_watch))
+        if (registered is None or registered.get('watch') is not live_watch or
+                registered.get('inner') is not context or live_watch.inner is not context or
+                registered.get('companion') is not shutdown.companion or
+                registered.get('master_identity') != shutdown.master_identity or
+                registered.get('cycle_channel').master_identity != shutdown.master_identity or
+                not live_watch.receipt or live_watch.closed):
+            raise ProtocolError('final retirement watch no longer matches settled companion proof')
+        if _external_watch_identity(watch_fd) != registered.get('watch_identity'):
+            raise ProtocolError('final retirement descriptor is not the registered watch capability')
+        companion = shutdown.companion
+        cycle_channel = registered['cycle_channel']
+        if (not companion.settled or companion.unresolved or companion.helper.returncode != 0 or
+                bytes(companion.settled_record) != shutdown.settled_record or
+                not _pidfd_is_dead(registered['master_pidfd']) or
+                cycle_channel.master_pidfd < 0 or not _pidfd_is_dead(cycle_channel.master_pidfd)):
+            raise SettlementError('companion SETTLED/master-death proof changed before VERIFY')
+        deadline = time.monotonic() + timeout
+        context.relay_sequence += 1
+        sequence = context.relay_sequence
+        packet = wire.pack_verify(context.nonce, context.epoch, sequence)
+        duplicate = -1
+        try:
+            duplicate = fcntl.fcntl(watch_fd, fcntl.F_DUPFD_CLOEXEC, 0)
+            if time.monotonic() >= deadline:
+                raise DeadlineExpired('final retirement VERIFY expired before send')
+            sent = context.relay.sendmsg([packet], [(socket.SOL_SOCKET,
+                socket.SCM_RIGHTS, struct.pack('i', duplicate))],
+                getattr(socket, 'MSG_NOSIGNAL', 0))
+            if sent != wire.VERIFY_REQUEST.size:
+                raise ProtocolError('short final retirement VERIFY send')
+            os.close(duplicate)
+            duplicate = -1
+            reply = _receive_packet(context.relay,
+                wire.VERIFY_REPLY_PREFIX.size + 128, context.process.pid, deadline)
+            status, raw = wire.unpack_verify_result(reply, context.nonce,
+                context.epoch, sequence, context.ready[2], context.ready[3], context.ready[4])
+            result = wire._unpack_broker_result(raw, sequence)
+            claim = wire._unpack_broker_result(live_watch.receipt,
+                struct.unpack_from('<Q', live_watch.receipt, 40)[0])
+            if (time.monotonic() >= deadline or status != 0 or result[0] != 0 or
+                    result[-1] != 1 or result[4:11] != claim[4:11] or
+                    result[4:6] != (registered['owner_identity'].pid,
+                        registered['owner_identity'].start_ticks) or
+                    not _pidfd_is_dead(registered['owner_pidfd']) or
+                    not companion.settled or companion.unresolved or
+                    bytes(companion.settled_record) != shutdown.settled_record or
+                    not _pidfd_is_dead(registered['master_pidfd']) or
+                    not _pidfd_is_dead(cycle_channel.master_pidfd) or
+                    time.monotonic() >= deadline):
+                raise RetirementMismatch('terminal result does not match settled companion retirement')
+        except BaseException as exc:
+            context.unresolved_reason = f'final companion retirement VERIFY uncertain: {exc}'
+            raise
+        finally:
+            if duplicate >= 0:
+                os.close(duplicate)
+        proof = VerifiedOwnerRetired(context, live_watch, live_watch.receipt,
+            raw, self._proof_seal, True)
+        self._verified_proofs[id(proof)] = proof
+        del self._companion_shutdown_proofs[id(shutdown)]
+        del self._external_live_watches[id(live_watch)]
+        for key in ('master_pidfd',):
+            fd = registered.get(key, -1)
+            if fd >= 0:
+                os.close(fd)
+                registered[key] = -1
+        context.events.append({'event': context.label.upper() + '_NGINX_OWNER_RETIRED_AFTER_SHUTDOWN',
+            'monotonic_ns': time.monotonic_ns(), 'owner_pid': result[4],
+            'owner_start': result[5], 'terminal': raw.hex()})
+        return proof
+
     def record_successor_tcp_failure(self, context, error):
         if (context is not self._new_context or context.label != 'new' or
                 context.closed or context.settled or context.unresolved_reason is not None or
@@ -851,6 +1193,7 @@ class SerialGenerationController:
                 settled.inner is not old or retired.watch.inner is not old or
                 retired._seal is not self._proof_seal or
                 settled._seal is not self._proof_seal or
+                retired.companion_shutdown or
                 self._verified_proofs.get(id(retired)) is not retired or
                 self._settled_proofs.get(id(settled)) is not settled):
             raise SettlementError('advance requires retirement and settlement from the same live context')
@@ -865,6 +1208,18 @@ class SerialGenerationController:
 
     def close_watch(self, watch):
         if watch.closed:
+            return
+        if isinstance(watch, ExternalOwnerWatch):
+            registered = self._external_live_watches.pop(id(watch), None)
+            if registered is not None and registered.get('watch') is watch:
+                master_pidfd = registered.get('master_pidfd', -1)
+                if master_pidfd >= 0:
+                    os.close(master_pidfd)
+                    registered['master_pidfd'] = -1
+            if watch.actor_pidfd >= 0:
+                os.close(watch.actor_pidfd)
+                watch.actor_pidfd = -1
+            watch.closed = True
             return
         os.close(watch.watch_fd)
         os.close(watch.actor_pidfd)

@@ -63,11 +63,21 @@ def _close_fds(fds):
 
 class NginxCompanion:
     """Own one helper and one exact pinned non-daemon Nginx master subtree."""
-    def __init__(self, binary, config, prefix, nginx_env):
+    def __init__(self, binary, config, prefix, nginx_env, cycle_control_fd=None):
         self.binary = Path(binary).resolve(strict=True)
         self.config = Path(config).resolve(strict=True)
         self.prefix = Path(prefix).resolve(strict=True)
         self.nginx_env = dict(nginx_env)
+        self.cycle_control_fd = cycle_control_fd
+        cycle_keys = {key for key in self.nginx_env if key.startswith('KER_NGINX_CYCLE_')}
+        required_cycle_keys = {'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
+            'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
+            'KER_NGINX_CYCLE_WORKER_PROFILE_SHA256', 'KER_NGINX_CYCLE_OUTER_EXE_SHA256'}
+        if ((bool(cycle_keys) != (cycle_control_fd is not None)) or
+                (cycle_keys and cycle_keys != required_cycle_keys)):
+            raise ValueError('cycle-control fd and complete serial Nginx profile must be supplied together')
+        if cycle_control_fd is not None and int(self.nginx_env['KER_NGINX_CYCLE_FD'], 10) != cycle_control_fd:
+            raise ValueError('cycle-control descriptor differs from pinned Nginx environment')
         self.binary_hash = _sha256(self.binary)
         self.config_hash = _sha256(self.config)
         self.ini_hash = _sha256(self.nginx_env['KER_FSTACK_NGINX_INI'])
@@ -96,6 +106,7 @@ class NginxCompanion:
         self.started = False
         self.stop_attempted = False
         self.settled = False
+        self.settled_record = None
         self.unresolved = False
 
     def _send(self, packet, rights, deadline):
@@ -190,12 +201,16 @@ class NginxCompanion:
             '--epoch', str(self.epoch), '--binary', str(self.binary),
             '--config', str(self.config), '--prefix', str(self.prefix),
             '--helper-sha256', self.helper_script_hash.hex()]
+        helper_pass_fds = [child.fileno()]
+        if self.cycle_control_fd is not None:
+            command += ['--cycle-control-fd', str(self.cycle_control_fd)]
+            helper_pass_fds.append(self.cycle_control_fd)
         for key, value in sorted(self.nginx_env.items()):
             command += ['--nginx-env', f'{key}={value}']
         env = {'PATH': '/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'}
         try:
             self.helper = subprocess.Popen(command, env=env,
-                pass_fds=(child.fileno(),), close_fds=True,
+                pass_fds=tuple(helper_pass_fds), close_fds=True,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=None, start_new_session=True)
         finally:
@@ -326,6 +341,7 @@ class NginxCompanion:
                 self.profile)
             if fields[0] != 0:
                 raise RuntimeError(f'Nginx settlement failed: {fields!r}')
+            self.settled_record = bytes(packet)
         self._request(wire.STOP, (wire.SETTLED, wire.ERROR),
             wire.SETTLED_BYTES, timeout, validate)
         try:
