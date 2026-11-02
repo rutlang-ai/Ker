@@ -36,6 +36,7 @@
 #include "worker-offload.h"
 #include "worker-receive-mode.h"
 #include "worker-exception.h"
+#include "io-worker-rx-metadata.h"
 #include "worker-device.h"
 #include <rte_log.h>
 #include <rte_lcore.h>
@@ -643,24 +644,6 @@ static bool frame_size_supported(const unsigned char *bytes, size_t length, int 
     size_t header = RTE_ETHER_HDR_LEN + (tagged ? RTE_VLAN_HLEN : 0);
     return length >= header && length <= (size_t)mtu + header;
 }
-static bool metadata_supported(const struct rte_mbuf *packet)
-{
-    const uint64_t changed = RTE_MBUF_F_RX_VLAN_STRIPPED | RTE_MBUF_F_RX_QINQ_STRIPPED |
-        RTE_MBUF_F_RX_LRO | RTE_MBUF_F_RX_SEC_OFFLOAD | RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED;
-    return !(packet->ol_flags & changed) &&
-        (packet->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK) != RTE_MBUF_F_RX_IP_CKSUM_NONE &&
-        (packet->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK) != RTE_MBUF_F_RX_L4_CKSUM_NONE;
-}
-static bool rx_decision_metadata_supported(const struct rte_mbuf *packet)
-{
-    const uint64_t allowed = RTE_MBUF_F_RX_IP_CKSUM_MASK | RTE_MBUF_F_RX_L4_CKSUM_MASK;
-    const uint64_t ip = packet->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
-    const uint64_t l4 = packet->ol_flags & RTE_MBUF_F_RX_L4_CKSUM_MASK;
-    return !(packet->ol_flags & ~allowed) &&
-        (!ip || ip == RTE_MBUF_F_RX_IP_CKSUM_GOOD) &&
-        (!l4 || l4 == RTE_MBUF_F_RX_L4_CKSUM_GOOD) && !packet->vlan_tci;
-}
-
 static uint16_t tx_burst(void *context, struct rte_mbuf **packets, uint16_t count)
 {
     return rte_eth_tx_burst(*(uint16_t *)context, 0, packets, count);
@@ -1371,12 +1354,19 @@ int main(int argc, char **argv)
             struct rte_mbuf *packet = rx[rx_index];
             uint32_t length = packet->pkt_len;
             const void *bytes = NULL;
-            bool supported_metadata = rx_decision_enabled ?
-                rx_decision_metadata_supported(packet) : metadata_supported(packet);
+            bool supported_metadata = ker_io_worker_metadata_supported(packet);
             if (length >= RTE_ETHER_HDR_LEN && length <= (uint32_t)mtu + RTE_ETHER_HDR_LEN + RTE_VLAN_HLEN && supported_metadata)
                 bytes = rte_pktmbuf_read(packet, 0, length, rx_bytes);
             if (bytes && frame_size_supported(bytes, length, mtu)) {
                 enum ker_exception_route route = ker_worker_exception_route(&exception, packet);
+                if (!ker_io_worker_route_metadata_supported(packet, route,
+                        rx_decision_enabled)) {
+                    rx_dropped++;
+                    rte_pktmbuf_free(packet);
+                    rx[rx_index++] = NULL;
+                    progress = true;
+                    continue;
+                }
                 if (route == KER_EXCEPTION_DROP) {
                     exception.fragment_dropped++; rx_dropped++;
                     rte_pktmbuf_free(rx[rx_index]); rx[rx_index++] = NULL; progress = true; continue;

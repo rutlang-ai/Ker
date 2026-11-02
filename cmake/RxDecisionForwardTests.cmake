@@ -2,6 +2,25 @@ if(NOT BUILD_TESTING)
     return()
 endif()
 
+add_executable(ker-io-worker-rx-metadata-test
+    tests/posix/io-worker-rx-metadata.c
+    src/posix/worker-exception.c
+    src/posix/worker-exception-filter.c)
+target_include_directories(ker-io-worker-rx-metadata-test PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/posix")
+target_compile_features(ker-io-worker-rx-metadata-test PRIVATE c_std_11)
+target_compile_options(ker-io-worker-rx-metadata-test PRIVATE
+    -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+target_link_options(ker-io-worker-rx-metadata-test PRIVATE
+    -Wl,--gc-sections -Wl,--disable-new-dtags)
+set_target_properties(ker-io-worker-rx-metadata-test PROPERTIES
+    BUILD_RPATH "${DPDK_LIBRARY_DIRS}")
+target_link_libraries(ker-io-worker-rx-metadata-test PRIVATE PkgConfig::DPDK)
+add_test(NAME native-io-worker-rx-metadata-routing
+    COMMAND "$<TARGET_FILE:ker-io-worker-rx-metadata-test>")
+set_tests_properties(native-io-worker-rx-metadata-routing PROPERTIES
+    TIMEOUT 5 LABELS "rx-decision;metadata;routing")
+
 target_compile_definitions(ker-posix PRIVATE
     KER_C31_RX_DECISION_TESTING=1 KER_C31_FD_TABLE_TESTING=1)
 
