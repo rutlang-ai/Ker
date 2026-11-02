@@ -61,6 +61,8 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     int control, int registration_fd, int resident_pidfd, _Atomic uint64_t *owner, uint64_t expected_owner,
     struct rte_mbuf *tx_packet, struct rte_mbuf *rx_packet,
     struct ker_worker_exception *exception, const volatile sig_atomic_t *stopping,
+    struct ker_generation_rings *generation_rings,
+    const struct ker_generation_identity *generation_identity,
     ker_session_heartbeat_fn heartbeat_tick, ker_session_heartbeat_fn heartbeat_pump,
     void *heartbeat_context,
 #ifdef KER_SESSION_TEST_HOOKS
@@ -77,6 +79,8 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         rte_eth_dev_get_mtu(port, &actual_mtu) || actual_mtu != 1500) return -EUCLEAN;
     bool tx_queued = false, tx_pending = false, tx_output = false;
     struct rte_mbuf *tx_output_packet = NULL;
+    struct rte_mbuf *generation_rx_packet = NULL, *generation_peer_tx_packet = NULL;
+    uint64_t generation_rx_sent = 0, generation_peer_tx_sent = 0;
     bool exception_reply_queued = false;
     bool rx_queued = false, rx_pending = false, rx_output = false, exception_pending = false;
     bool shared_native_pending = false, shared_native_queued = false;
@@ -100,8 +104,11 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         if (heartbeat_status < 0) { status = heartbeat_status; break; }
         if (!alive(resident_pidfd)) _Exit(125);
         if (atomic_load_explicit(owner, memory_order_acquire) != expected_owner) { status = -ESTALE; break; }
-        short packet_events = (!tx_pending && !tx_queued && !tx_output ? POLLIN : 0) | (rx_output ? POLLOUT : 0);
-        short wire_events = (!rx_pending && !rx_queued && !rx_output && !exception_pending && !tx_queued && !tx_output && !exception->session_busy ? POLLIN : 0) | (tx_output ? POLLOUT : 0);
+        short packet_events = (!tx_pending && !tx_queued && !tx_output ? POLLIN : 0) |
+            ((rx_output || generation_rx_packet) ? POLLOUT : 0);
+        short wire_events = (!rx_pending && !rx_queued && !rx_output && !exception_pending &&
+            !tx_queued && !tx_output && !exception->session_busy ? POLLIN : 0) |
+            ((tx_output || generation_peer_tx_packet) ? POLLOUT : 0);
         struct pollfd fds[] = {{.fd = control, .events = POLLIN},
 #ifdef KER_SESSION_TEST_HOOKS
             {.fd = registration_fd, .events = test_hold_handoff_heartbeat ? 0 : POLLIN},
@@ -114,6 +121,10 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         int ready = poll(fds, 6, 0);
         if (ready < 0) { if (errno == EINTR) continue; status = -errno; break; }
         if (fds[5].revents) _Exit(125);
+        if ((generation_rx_packet && (fds[2].revents & (POLLERR|POLLHUP|POLLNVAL))) ||
+            (generation_peer_tx_packet && (fds[3].revents & (POLLERR|POLLHUP|POLLNVAL)))) {
+            status=-EPIPE;break;
+        }
         if (fds[0].revents) {
             char command=0;
             ssize_t count=(fds[0].revents&POLLIN)?read(control,&command,1):0;
@@ -128,8 +139,31 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
 #endif
             else break;
         }
+        bool generation_queues_idle=true;
+        if(handoff_requested&&generation_rings) {
+            if(!generation_identity||!generation_identity->epoch||!generation_identity->pid) {
+                status=-EINVAL;break;
+            }
+            bool generation_dequeue_busy=false;
+            if(!generation_rx_packet) {
+                int dequeued=ker_generation_rx_dequeue(generation_rings,generation_identity,
+                    0,0,&generation_rx_packet);
+                if(dequeued==-EBUSY)generation_dequeue_busy=true;
+                else if(dequeued<0){status=dequeued;break;}
+            }
+            if(!generation_peer_tx_packet) {
+                int dequeued=ker_generation_tx_dequeue_peer(generation_rings,generation_identity,
+                    0,0,&generation_peer_tx_packet);
+                if(dequeued==-EBUSY)generation_dequeue_busy=true;
+                else if(dequeued<0){status=dequeued;break;}
+            }
+            generation_queues_idle=!generation_dequeue_busy&&!generation_rx_packet&&
+                !generation_peer_tx_packet;
+        }
         if (handoff_requested) {
             bool local_idle=!tx_pending&&!tx_queued&&!tx_output&&!rx_pending&&!rx_queued&&!rx_output&&
+                !generation_rx_packet&&!generation_peer_tx_packet&&
+                generation_queues_idle&&
                 !exception_pending&&!exception_reply_queued&&!shared_native_pending&&!shared_native_queued&&
                 !exception->session_busy&&!exception->session_tx_pending&&!exception->session_native_pending&&
                 !exception->session_to_native&&(!exception->session_phase||
@@ -173,6 +207,23 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
         }
         if (fds[4].revents & (POLLHUP | POLLERR | POLLNVAL)) break;
         bool progress = false;
+        if (generation_rings) {
+            if (!generation_identity || !generation_identity->pid || !generation_identity->epoch) {
+                status = -EINVAL; break;
+            }
+            if (!rx_output) {
+                int delivered_rx = ker_session_generation_rx_deliver(packet_fd, generation_rings,
+                    generation_identity, &generation_rx_packet);
+                if (delivered_rx < 0) { status = delivered_rx; break; }
+                if (delivered_rx) { progress = true; generation_rx_sent++; }
+            }
+            if (!tx_output) {
+                int delivered_tx = ker_session_generation_peer_tx_deliver(wire_fd, generation_rings,
+                    generation_identity, &generation_peer_tx_packet);
+                if (delivered_tx < 0) { status = delivered_tx; break; }
+                if (delivered_tx) { progress = true; generation_peer_tx_sent++; }
+            }
+        } else if (generation_identity) { status = -EINVAL; break; }
         if (!tx_pending && !tx_queued && !tx_output && (fds[2].revents & POLLIN)) {
             uint8_t bytes[sizeof(struct ker_packet_header) + 1518];
             ssize_t n = recv(packet_fd, bytes, sizeof(bytes), MSG_DONTWAIT | MSG_TRUNC);
@@ -301,15 +352,26 @@ int ker_session_packet_loop(uint16_t port, int packet_fd, int wire_fd, int mtu_f
     }
     if (rte_eth_stats_get(port, &after) || after.opackets - before.opackets != sent ||
         after.ipackets - before.ipackets != received) status = -EUCLEAN;
+    if (generation_rx_packet && ker_generation_packet_release(generation_rings,
+        generation_identity, generation_rx_packet)) status = -EUCLEAN;
+    if (generation_peer_tx_packet && ker_generation_packet_release(generation_rings,
+        generation_identity, generation_peer_tx_packet)) status = -EUCLEAN;
+    if (generation_rings) {
+        printf("KER_SESSION_GENERATION_FORWARD {\"generation\":%u,\"rx_to_linux\":%llu,\"peer_tx_to_wire\":%llu,\"status\":%d}\n",
+            generation_identity->generation, (unsigned long long)generation_rx_sent,
+            (unsigned long long)generation_peer_tx_sent, status);
+        fflush(stdout);
+    }
     if (stats) *stats=(struct ker_session_packet_stats){.tx=sent,.rx=received,.to_wire=to_wire,
         .from_wire=from_wire,.exception_to_wire=exception_to_wire,.exception_from_wire=exception_from_wire,
         .exception_to_native=exception_to_native,.fragment_to_native=fragment_to_native,
         .exception_endpoint_owner_key=expected_owner,
         .retained=(unsigned)(tx_pending + tx_queued + tx_output + rx_pending + rx_queued + rx_output +
-            exception_pending + exception_reply_queued + exception->session_busy + shared_native_pending),.status=status};
+            exception_pending + exception_reply_queued + exception->session_busy + shared_native_pending +
+            (generation_rx_packet!=NULL) + (generation_peer_tx_packet!=NULL)),.status=status};
     printf("KER_SESSION_PACKET_DONE {\"tx\":%llu,\"rx\":%llu,\"to_wire\":%llu,\"from_wire\":%llu,\"exception_to_wire\":%llu,\"exception_from_wire\":%llu,\"exception_to_native\":%llu,\"fragment_to_native\":%llu,\"exception_endpoint_owner_key\":%llu,\"retained\":%u,\"status\":%d}\n",
         (unsigned long long)sent, (unsigned long long)received, (unsigned long long)to_wire,
         (unsigned long long)from_wire, (unsigned long long)exception_to_wire, (unsigned long long)exception_from_wire,
-        (unsigned long long)exception_to_native, (unsigned long long)fragment_to_native, (unsigned long long)expected_owner, (unsigned)(tx_pending + tx_queued + tx_output + rx_pending + rx_queued + rx_output + exception_pending + exception_reply_queued + exception->session_busy + shared_native_pending), status); fflush(stdout);
+        (unsigned long long)exception_to_native, (unsigned long long)fragment_to_native, (unsigned long long)expected_owner, (unsigned)(tx_pending + tx_queued + tx_output + rx_pending + rx_queued + rx_output + exception_pending + exception_reply_queued + exception->session_busy + shared_native_pending + (generation_rx_packet!=NULL) + (generation_peer_tx_packet!=NULL)), status); fflush(stdout);
     return status;
 }

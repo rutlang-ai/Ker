@@ -1290,10 +1290,32 @@ def run_member_census_client(args, rpc_path, broker, capability):
         pending.settimeout(10); fresh.settimeout(10)
         receive_pressure_pattern(pending, sent0)
         receive_pressure_pattern(fresh, sent1)
-        finwait2 = census_observation(args, rpc_path, census_fds)
-        require(all(values.get('finwait2', 0) >= 1 and
-                values.get('timewait', 0) == 0 for values in finwait2),
-            f'closed accepted sockets were not counted as FIN_WAIT2 while peers stayed open: {finwait2!r}')
+        # The peer has read the server's FIN and sent its ACK, but Linux may
+        # complete the FIN_WAIT1 -> FIN_WAIT2 transition just after that host
+        # read returns. Poll fresh broker snapshots under a fixed deadline;
+        # only an exact FIN_WAIT2 row with the original listener identity is
+        # accepted as proof. The peers remain open throughout this wait.
+        finwait2 = None
+        finwait2_deadline = time.monotonic() + 5
+        last_finwait2 = None
+        while time.monotonic() < finwait2_deadline:
+            last_finwait2 = census_observation(args, rpc_path, census_fds)
+            # A census request can begin before the deadline and return after
+            # it. Do not let a late snapshot extend the bounded wait.
+            if time.monotonic() >= finwait2_deadline:
+                break
+            if all(values.get('total') == 1 and values.get('listen') == 0 and
+                    values.get('finwait1', 0) == 0 and values.get('finwait2') == 1 and
+                    values.get('closing', 0) == 0 and values.get('lastack', 0) == 0 and
+                    values.get('timewait', 0) == 0 and
+                    values.get('cookie') == initial.get('cookie')
+                    for values, initial in zip(last_finwait2, [first_values, second_values])):
+                finwait2 = last_finwait2
+                break
+            time.sleep(min(0.01, max(0.0, finwait2_deadline - time.monotonic())))
+        require(finwait2 is not None,
+            f'closed accepted sockets did not reach exact FIN_WAIT2 while peers stayed open '
+            f'within the bounded kernel-transition wait: {last_finwait2!r}')
         print(f'MEMBER_CENSUS_FIN_WAIT2 retained_peer=true rows={finwait2!r}', flush=True)
         pending.close(); peers.remove(pending)
         fresh.close(); peers.remove(fresh)

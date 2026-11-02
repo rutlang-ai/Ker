@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -88,6 +89,8 @@ class NativeTestSelectorTests(unittest.TestCase):
                 lines.append("KER_SESSION_FRAME_PROFILE_EVIDENCE " + json.dumps(evidence, sort_keys=True))
             else:
                 lines.append(native_tests._legacy_profile_success_marker(mode))
+        if "generation-forward-tcp" in profiles:
+            lines.append("KER_SESSION_GENERATION_FORWARD_TCP_PASS {\"orderly_fin\":true}")
         lines += [native_tests._legacy_profile_success_marker("positive"),
                   native_tests._legacy_profile_success_marker("frame-positive")]
         return lines
@@ -181,6 +184,19 @@ class NativeTestSelectorTests(unittest.TestCase):
                  mock.patch.object(native_tests.subprocess, "run", side_effect=run), \
                  mock.patch.object(native_tests, "summary"):
                 native_tests.run_full_ctest(Path("build"), junit)
+
+    def test_generation_forward_sink_is_isolated_from_orderly_detach_sentinel(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-generation-rings.c"
+        code = source.read_text(encoding="utf-8")
+        primary = code[code.index("static int primary("):]
+        selector = Path(__file__).resolve().with_name("native_tests.py")
+        self.assertIn("m=packet(pool,0x45)", code)
+        self.assertIn("rte_ring_count(reaper_tx)!=1", primary)
+        self.assertIn('"native-fstack-session-generation-forward-sink"',
+                      selector.read_text(encoding="utf-8"))
+        self.assertNotIn("generation_forward_sink_test(r,pool,&id0,&id1)", primary)
+        self.assertIn("generation_forward_sink_test(rings,pool,&producer,&consumer)", code)
+        self.assertIn('else if(!strcmp(mode,"forward-only"))rc=generation_forward_nohuge_test();', code)
 
     def test_resident_component_regressions_are_mandatory_inventory(self):
         cmake = Path(__file__).resolve().parents[2] / "cmake/NativeLinux.cmake"
@@ -418,7 +434,9 @@ class NativeTestSelectorTests(unittest.TestCase):
     def test_checked_in_session_fixture_inventory_matches_classifier_negative_profiles(self):
         source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
         expected, structured = native_tests.expected_session_profiles(source)
-        self.assertEqual(expected, native_tests.MANDATORY_SESSION_PROFILES | native_tests.FRAME_RECOVERY_PROFILES)
+        self.assertEqual(expected, native_tests.MANDATORY_SESSION_PROFILES |
+                         native_tests.FRAME_RECOVERY_PROFILES |
+                         native_tests.GENERATION_TRANSPORT_PROFILES)
         self.assertTrue(structured)
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
         main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
@@ -428,6 +446,89 @@ class NativeTestSelectorTests(unittest.TestCase):
                              "bad-capability" in native_tests._literal_profile_tuple(node.iter))
         self.assertEqual(native_tests._literal_profile_tuple(negative_loop.iter),
                          native_tests.MANDATORY_NEGATIVE_PROFILES)
+
+    def test_generation_transport_requires_real_success_marker_and_rejects_skip(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
+        expected, structured = native_tests.expected_session_profiles(source)
+        self.assertTrue(structured)
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "session.log"
+            lines = self.session_log(expected, structured)
+            log.write_text("\n".join(lines), encoding="utf-8")
+            native_tests.verify_session_profiles(log, source)
+            missing = [line for line in lines if not line.startswith("KER_SESSION_GENERATION_FORWARD_TCP_PASS ")]
+            log.write_text("\n".join(missing), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "lacks the real generation-forward TCP success marker"):
+                native_tests.verify_session_profiles(log, source)
+            log.write_text("SKIP: huge pages unavailable\n" + "\n".join(lines), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "cannot be qualified by a skipped runtime"):
+                native_tests.verify_session_profiles(log, source)
+
+    def test_generation_forward_fixture_waits_for_launcher_consumption_receipt(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
+        spec = importlib.util.spec_from_file_location("ker_session_native_packets_ack", source)
+        self.assertIsNotNone(spec)
+        fixture = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, str(source.parent))
+        try:
+            spec.loader.exec_module(fixture)
+        finally:
+            sys.path.pop(0)
+        expected_frames = [b"frame-1", b"frame-2", b"frame-3", b"frame-4"]
+        enqueue_records = [dict(producer_generation=1, target_generation=0,
+            length=len(frame), frame_hex=frame.hex()) for frame in expected_frames]
+        child_code = (
+            "import os, sys\n"
+            "import json\n"
+            "records = " + repr(enqueue_records) + "\n"
+            "print('READY {\"waiting\":true}', flush=True)\n"
+            "if os.read(0, 1) != b'Z': raise SystemExit(2)\n"
+            "print('Z_QUEUED {\"consumed\":false}', flush=True)\n"
+            "if os.read(0, 1) != b'P': raise SystemExit(3)\n"
+            "for record in records: print('KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED ' + json.dumps(record, sort_keys=True), flush=True)\n"
+            "print('KER_SESSION_GENERATION_FORWARD_COMPLETE "
+            "{\"complete\":true,\"forwarded_frames\":4,\"handoff_seen\":true,"
+            "\"tcp_accepted\":true}', flush=True)\n"
+        )
+        child = subprocess.Popen([sys.executable, "-c", child_code], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        started = threading.Event()
+        completed = threading.Event()
+        result = {}
+        try:
+            self.assertEqual(fixture.record(child, "READY"), {"waiting": True})
+            child.stdin.write(b"Z")
+            child.stdin.flush()
+            self.assertEqual(fixture.record(child, "Z_QUEUED"), {"consumed": False})
+
+            def wait_for_receipt():
+                started.set()
+                try:
+                    result["value"] = fixture.wait_generation_forward_complete(
+                        child, expected_frames, timeout=3)
+                except BaseException as error:
+                    result["error"] = error
+                finally:
+                    completed.set()
+
+            waiter = threading.Thread(target=wait_for_receipt)
+            waiter.start()
+            self.assertTrue(started.wait(1))
+            self.assertFalse(completed.is_set(), "fixture treated the queued Z write as launcher completion")
+            child.stdin.write(b"P")
+            child.stdin.flush()
+            self.assertTrue(completed.wait(3), "fixture did not receive the launcher's completion receipt")
+            waiter.join(timeout=1)
+            self.assertNotIn("error", result)
+            self.assertEqual(result["value"]["forwarded_frames"], 4)
+            self.assertEqual(child.wait(timeout=3), 0)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=3)
+            child.stdin.close()
+            child.stdout.close()
+            child.stderr.close()
 
     def test_legacy_fixed_profile_markers_match_checked_in_fixture_literals(self):
         source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"

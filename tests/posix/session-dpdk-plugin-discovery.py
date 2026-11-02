@@ -350,6 +350,42 @@ def active_consumer_reap_oracle_checks(native, runner):
         'legacy baseline incorrectly accepted the observed 1/2 state')
 
 
+def generation_forward_frame_reader_checks(runner):
+    frame = bytes(range(14))
+
+    def read_record(data):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, data)
+            os.close(write_fd)
+            write_fd = -1
+            return runner.read_bounded_generation_frame(read_fd)
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+
+    header, actual = read_record(len(frame).to_bytes(2, 'big') + frame)
+    require(header == b'\x00\x0e' and actual == frame,
+        'generation forward reader did not preserve the bounded network-order frame')
+    for invalid_length in (13, 1519):
+        try:
+            read_record(invalid_length.to_bytes(2, 'big'))
+        except RuntimeError as error:
+            require('outside the bounded Ethernet profile' in str(error),
+                'invalid generation frame length failed for an unrelated reason')
+        else:
+            raise RuntimeError('out-of-range generation frame length was accepted')
+    for truncated in (b'\x00', b'\x00\x0e' + frame[:-1]):
+        try:
+            read_record(truncated)
+        except RuntimeError as error:
+            require('ended before' in str(error),
+                'truncated generation frame failed for an unrelated reason')
+        else:
+            raise RuntimeError('truncated generation frame command was accepted')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--configured-dir', type=Path, required=True)
@@ -362,6 +398,7 @@ def main():
     drain_peer = load_fixture('drain_peer_fixture', Path(__file__).with_name('session-drain-peer.py'))
     runner = load_fixture('ker_session_run_fixture', runner_script_path())
     active_consumer_reap_oracle_checks(native, runner)
+    generation_forward_frame_reader_checks(runner)
     configured = args.configured_dir.resolve(strict=True)
 
     native_paths = native.resolve_dpdk_plugin_paths(configured, ('mempool_ring',), {})

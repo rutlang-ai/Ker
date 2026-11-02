@@ -140,3 +140,28 @@ packet dispatch/drain、既有 flow continuity、物理设备 handover 和完整
 
 
 In the paired profile, the resident binds the session wire/exception endpoint to the same owner key as the fixed packet queues. The granted secondary checks both keys before polling and rejects a mismatch. The control resident does not relay packet data.
+
+## Explicit generation-ring transport qualification
+
+The opt-in `--generation-forwarding` profile exercises bounded RX and TX mbuf
+leases between two distinct Linux-kernel session processes. A parked generation
+can deliver an already selected frame to its own original Linux packet endpoint;
+the active endpoint can drain the opposite generation's TX lease to its wire
+endpoint. Complete datagrams are retained on backpressure and released only
+after a complete send. Unsupported mbuf metadata and malformed/multisegment
+frames fail closed. This profile does not implement a packet classifier or
+choose a destination generation.
+
+The `generation-forward-tcp` TAP fixture is an explicit test producer: after
+handoff it selects the one previously accepted host TCP tuple, copies each
+captured host frame unchanged into the generation-0 RX ring, and suppresses
+normal forwarding only after the generation-1 worker acknowledges enqueue. It
+checks two request/reply exchanges and FIN on that old Linux socket. It uses
+separate Linux session processes and does not prove physical RX classification,
+the production C25 broker topology, original F-Stack callback integration, or
+Nginx graceful reload. The local in-process sink test does not qualify the
+multiprocess EAL wire path; local hugepage capacity is unavailable, so this path
+is `NOT_RUN` locally. It requires a hosted run with provisioned huge pages and
+the explicit `KER_SESSION_GENERATION_FORWARD_TCP_PASS` marker. The CI profile
+verifier requires that marker and rejects a skip; unavailable huge pages are
+not a pass.

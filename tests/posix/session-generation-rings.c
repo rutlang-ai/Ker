@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #define _GNU_SOURCE
 #include "session-generation-rings.h"
+#include "session-packet.h"
+#include "packet-channel.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -13,9 +15,11 @@
 #include <sys/pidfd.h>
 #include <sys/wait.h>
 #include <sys/syscall.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #include <rte_eal.h>
+#include <rte_errno.h>
 #include <rte_memzone.h>
 #include <rte_mempool.h>
 #include <rte_ring.h>
@@ -225,6 +229,184 @@ static struct rte_mbuf *packet(struct rte_mempool*pool,uint8_t value)
 {
     struct rte_mbuf*m=rte_pktmbuf_alloc(pool);if(!m)return NULL;
     uint8_t*p=(uint8_t*)rte_pktmbuf_append(m,1);if(!p){rte_pktmbuf_free(m);return NULL;}*p=value;return m;
+}
+static int generation_forward_sink_test(struct ker_generation_rings *rings,
+    struct rte_mempool *pool,const struct ker_generation_identity *producer,
+    const struct ker_generation_identity *consumer)
+{
+    int pair[2]={-1,-1};
+#define SINK_FAIL() do { fprintf(stderr,"NR29 sink failure line=%d errno=%d\n",__LINE__,errno); goto fail; } while(0)
+    if(socketpair(AF_UNIX,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0,pair))return -1;
+    uint8_t filler[1]={0x5a},discard[2048];unsigned filled=0;
+    while(send(pair[0],filler,sizeof(filler),MSG_DONTWAIT|MSG_NOSIGNAL)==sizeof(filler))filled++;
+    if(errno!=EAGAIN&&errno!=EWOULDBLOCK)SINK_FAIL();
+    if(!filled)SINK_FAIL();
+    struct rte_mbuf *first=rte_pktmbuf_alloc(pool),*second=rte_pktmbuf_alloc(pool);
+    if(!first||!second){if(first)rte_pktmbuf_free(first);if(second)rte_pktmbuf_free(second);SINK_FAIL();}
+    uint8_t *first_bytes=(uint8_t *)rte_pktmbuf_append(first,60),
+        *second_bytes=(uint8_t *)rte_pktmbuf_append(second,60);
+    if(!first_bytes||!second_bytes){rte_pktmbuf_free(first);rte_pktmbuf_free(second);SINK_FAIL();}
+    for(unsigned i=0;i<60;i++){first_bytes[i]=(uint8_t)(0x20U+i);second_bytes[i]=(uint8_t)(0xa0U+i);}
+    if(ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,first)||
+        ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,second))SINK_FAIL();
+    struct rte_mbuf *pending=NULL;
+    unsigned delivered_count=UINT_MAX;
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=0||!pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=1)SINK_FAIL();
+    struct rte_mbuf *same=pending;
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=0||pending!=same)SINK_FAIL();
+    while(recv(pair[1],discard,sizeof(discard),MSG_DONTWAIT)>=0){}
+    if(errno!=EAGAIN&&errno!=EWOULDBLOCK)SINK_FAIL();
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=2||pending)SINK_FAIL();
+    uint8_t received[256];
+    ssize_t n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+    const size_t header_size=sizeof(struct ker_packet_header);
+    if(n!=(ssize_t)(header_size+60)){fprintf(stderr,"NR29 sink: first RX datagram length=%zd\n",n);SINK_FAIL();}
+    for(size_t i=0;i<header_size;i++)if(received[i])SINK_FAIL();
+    for(unsigned i=0;i<60;i++)if(received[header_size+i]!=(uint8_t)(0x20U+i))SINK_FAIL();
+    n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+    if(n!=(ssize_t)(header_size+60))SINK_FAIL();
+    for(size_t i=0;i<header_size;i++)if(received[i])SINK_FAIL();
+    for(unsigned i=0;i<60;i++)if(received[header_size+i]!=(uint8_t)(0xa0U+i))SINK_FAIL();
+    struct rte_mbuf *authorized=rte_pktmbuf_alloc(pool);
+    if(!authorized||!rte_pktmbuf_append(authorized,60)){if(authorized)rte_pktmbuf_free(authorized);SINK_FAIL();}
+    if(ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,authorized)){
+        rte_pktmbuf_free(authorized);SINK_FAIL();
+    }
+    struct ker_generation_identity forged=*consumer;
+    forged.epoch++;
+    if(ker_session_generation_rx_deliver(pair[0],rings,&forged,&pending)!=-EINVAL||pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=1)SINK_FAIL();
+    if(setenv("KER_SESSION_TEST_RX_DEQUEUE_EBUSY","1",1)||
+        ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=0||pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=1)SINK_FAIL();
+    unsetenv("KER_SESSION_TEST_RX_DEQUEUE_EBUSY");
+    if(ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=1||pending)SINK_FAIL();
+    n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+    if(n!=(ssize_t)(header_size+60))SINK_FAIL();
+    struct rte_mbuf *metadata=rte_pktmbuf_alloc(pool);
+    if(!metadata||!rte_pktmbuf_append(metadata,60)){if(metadata)rte_pktmbuf_free(metadata);SINK_FAIL();}
+    metadata->ol_flags=RTE_MBUF_F_RX_VLAN_STRIPPED;
+    if(ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,metadata)){
+        rte_pktmbuf_free(metadata);SINK_FAIL();
+    }
+    if(ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending)!=-EOPNOTSUPP||
+        !pending||ker_generation_packet_release(rings,consumer,pending))SINK_FAIL();
+    pending=NULL;
+    struct rte_mbuf *malformed=rte_pktmbuf_alloc(pool);
+    if(!malformed||!rte_pktmbuf_append(malformed,60)){if(malformed)rte_pktmbuf_free(malformed);SINK_FAIL();}
+    if(ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,malformed)){
+        rte_pktmbuf_free(malformed);SINK_FAIL();
+    }
+    /* Corrupt only after the normal authenticated enqueue so the forwarding
+     * boundary itself must reject inconsistent segment metadata. */
+    malformed->pkt_len++;
+    int malformed_result=ker_session_generation_rx_deliver(pair[0],rings,consumer,&pending);
+    if(malformed_result!=-EUCLEAN||!pending)SINK_FAIL();
+    malformed->pkt_len--;
+    if(ker_generation_packet_release(rings,consumer,pending))SINK_FAIL();
+    pending=NULL;
+    n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+    if(n>=0||(errno!=EAGAIN&&errno!=EWOULDBLOCK))SINK_FAIL();
+    /* Queue more than one bounded batch. The shared helper used by the
+     * parked owner must stop at the batch limit, leaving ordered leases for
+     * the next control/heartbeat check, then drain the suffix without an
+     * intervening sleep. */
+    enum { BATCH_TEST_PACKETS = KER_SESSION_GENERATION_RX_BATCH_MAX + 8 };
+    for(unsigned index=0;index<BATCH_TEST_PACKETS;index++) {
+        struct rte_mbuf *burst=rte_pktmbuf_alloc(pool);
+        uint8_t *bytes=burst?(uint8_t *)rte_pktmbuf_append(burst,60):NULL;
+        if(!bytes){if(burst)rte_pktmbuf_free(burst);SINK_FAIL();}
+        memset(bytes,(int)(index+1),60);
+        if(ker_generation_rx_enqueue(rings,producer,0,0,consumer->generation,burst)) {
+            rte_pktmbuf_free(burst);SINK_FAIL();
+        }
+    }
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=KER_SESSION_GENERATION_RX_BATCH_MAX||pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=8)SINK_FAIL();
+    if(ker_session_generation_rx_wait_timeout_ms(delivered_count)!=0||
+        ker_session_generation_rx_wait_timeout_ms(delivered_count-1)!=
+            (int)KER_SESSION_GENERATION_RX_IDLE_WAIT_MS)SINK_FAIL();
+    int control_pipe[2]={-1,-1};
+    if(pipe2(control_pipe,O_NONBLOCK|O_CLOEXEC)||write(control_pipe[1],"H",1)!=1)SINK_FAIL();
+    struct pollfd control_event={.fd=control_pipe[0],.events=POLLIN};
+    if(poll(&control_event,1,ker_session_generation_rx_wait_timeout_ms(delivered_count))!=1||
+        !(control_event.revents&POLLIN))SINK_FAIL();
+    close(control_pipe[0]);close(control_pipe[1]);
+    if(ker_session_generation_rx_drain_batch(pair[0],rings,consumer,&pending,
+            &delivered_count)||delivered_count!=8||pending||
+        rte_ring_count(rte_ring_lookup("drain_rx_p0_q0_g1"))!=0)SINK_FAIL();
+    for(unsigned index=0;index<BATCH_TEST_PACKETS;index++) {
+        n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+        if(n!=(ssize_t)(header_size+60))SINK_FAIL();
+        for(size_t offset=0;offset<header_size;offset++)if(received[offset])SINK_FAIL();
+        for(unsigned offset=0;offset<60;offset++)
+            if(received[header_size+offset]!=(uint8_t)(index+1))SINK_FAIL();
+    }
+    n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+    if(n>=0||(errno!=EAGAIN&&errno!=EWOULDBLOCK))SINK_FAIL();
+    struct rte_mbuf *tx=rte_pktmbuf_alloc(pool);if(!tx)SINK_FAIL();
+    uint8_t *tx_bytes=(uint8_t *)rte_pktmbuf_append(tx,60);
+    if(!tx_bytes){rte_pktmbuf_free(tx);SINK_FAIL();}
+    for(unsigned i=0;i<60;i++)tx_bytes[i]=(uint8_t)(0x70U+i);
+    if(ker_generation_tx_enqueue(rings,producer,0,0,tx))SINK_FAIL();
+    if(setenv("KER_SESSION_TEST_TX_DEQUEUE_EBUSY","1",1)||
+        ker_session_generation_peer_tx_deliver(pair[0],rings,consumer,&pending)!=0||pending||
+        rte_ring_count(rte_ring_lookup("drain_tx_p0_q0_g0"))!=1)SINK_FAIL();
+    unsetenv("KER_SESSION_TEST_TX_DEQUEUE_EBUSY");
+    while(send(pair[0],filler,sizeof(filler),MSG_DONTWAIT|MSG_NOSIGNAL)==sizeof(filler))filled++;
+    if(errno!=EAGAIN&&errno!=EWOULDBLOCK)SINK_FAIL();
+    if(ker_session_generation_peer_tx_deliver(pair[0],rings,consumer,&pending)!=0||!pending||
+        rte_ring_count(rte_ring_lookup("drain_tx_p0_q0_g0")))SINK_FAIL();
+    while(recv(pair[1],discard,sizeof(discard),MSG_DONTWAIT)>=0){}
+    if(errno!=EAGAIN&&errno!=EWOULDBLOCK)SINK_FAIL();
+    if(ker_session_generation_peer_tx_deliver(pair[0],rings,consumer,&pending)!=1||pending||
+        ker_session_generation_peer_tx_deliver(pair[0],rings,consumer,&pending)!=0||pending)SINK_FAIL();
+    n=recv(pair[1],received,sizeof(received),MSG_DONTWAIT);
+    if(n!=60||received[0]!=0x70||received[59]!=(uint8_t)(0x70U+59))SINK_FAIL();
+    close(pair[0]);close(pair[1]);
+    puts("NR29_GENERATION_FORWARD_SINK_PASS rx_header_exact=true rx_ordered=true rx_batch32_ordered=true rx_batch_rechecks=true control_poll_zero_wait=true idle_poll_100ms=true tx_raw_frame=true eagain_lease_retained=true dequeue_ebusy_retry=true metadata_rejected=true malformed_chain_rejected=true");
+    return 0;
+fail:
+    close(pair[0]);close(pair[1]);
+    return -1;
+#undef SINK_FAIL
+}
+static int generation_forward_nohuge_test(void)
+{
+    uint64_t session=((uint64_t)(uint32_t)getpid()<<32)|UINT64_C(0x4e5232);
+    struct rte_mempool *pool=rte_pktmbuf_pool_create("ker_nr29_forward_pool",256,0,0,
+        RTE_MBUF_DEFAULT_BUF_SIZE,SOCKET_ID_ANY);
+    struct ker_generation_rings *rings=NULL;
+    int pidfd=-1, result=1;
+    if(!pool){fprintf(stderr,"NR29 forward-only: message pool failed rte_errno=%d\n",rte_errno);return 1;}
+    int rc=ker_generation_rings_create(session,1,1,pool,&rings);
+    if(rc){fprintf(stderr,"NR29 forward-only: ring create rc=%d\n",rc);goto out;}
+    pidfd=(int)syscall(SYS_pidfd_open,getpid(),0);
+    if(pidfd<0){perror("NR29 forward-only: pidfd_open");goto out;}
+    struct ker_generation_identity producer={.session=session,.epoch=1,.slot=1,
+        .generation=0,.process=0,.pid=(uint32_t)getpid()};
+    struct ker_generation_identity consumer={.session=session,.epoch=2,.slot=2,
+        .generation=1,.process=0,.pid=(uint32_t)getpid()};
+    rc=ker_generation_admit(rings,&producer,pidfd);
+    if(rc){fprintf(stderr,"NR29 forward-only: producer admit rc=%d\n",rc);goto out;}
+    rc=ker_generation_admit(rings,&consumer,pidfd);
+    if(rc){fprintf(stderr,"NR29 forward-only: consumer admit rc=%d\n",rc);goto out;}
+    if(generation_forward_sink_test(rings,pool,&producer,&consumer)){
+        fprintf(stderr,"NR29 forward-only: sink test failed\n");goto out;}
+    if(ker_generation_packet_pool_in_use(rings)||rte_mempool_in_use_count(pool)){
+        fprintf(stderr,"NR29 forward-only: packet pool leak packet=%u message=%u\n",
+            ker_generation_packet_pool_in_use(rings),rte_mempool_in_use_count(pool));goto out;}
+    result=0;
+out:
+    if(pidfd>=0)close(pidfd);
+    /* This private one-process test exits immediately after verifying empty
+     * leases; the generation registry has no live-owner destroy operation. */
+    return result;
 }
 static int ring_snapshot_verify(struct rte_ring *ring,unsigned count,
     struct rte_mbuf *const *expected,const uint8_t *values,const uint16_t *lengths)
@@ -1254,7 +1436,8 @@ int main(int argc,char**argv)
     if(!strcmp(mode,"primary")){
         const char*prefix=NULL;for(int i=1;i<argc;i++)if(!strncmp(argv[i],"--file-prefix=",14))prefix=argv[i]+14;
         if(!prefix)rc=2;else{char exe[PATH_MAX];if(!realpath(argv[0],exe))rc=2;else rc=primary(prefix,exe);}
-    }else if(!strcmp(mode,"0")||!strcmp(mode,"1"))rc=secondary((unsigned)atoi(mode),0);
+    }else if(!strcmp(mode,"forward-only"))rc=generation_forward_nohuge_test();
+    else if(!strcmp(mode,"0")||!strcmp(mode,"1"))rc=secondary((unsigned)atoi(mode),0);
     else if(!strcmp(mode,"r"))rc=secondary(1,1);
     else if(!strncmp(mode,"packet-worker-",14))rc=secondary_packet_worker((unsigned)atoi(mode+14));
     else if(!strcmp(mode,"producer-enqueue")||!strcmp(mode,"producer-pre")||!strcmp(mode,"producer-pre-tx")||
