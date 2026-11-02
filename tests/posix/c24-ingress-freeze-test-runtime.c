@@ -2,6 +2,7 @@
 #include "fd-table.h"
 #include "ff-admission-queue.h"
 #include "ff-ingress-freeze-queue.h"
+#include "ff-ingress-controller.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -586,6 +587,7 @@ out:
 	if (second_listener >= 0) (void)lkl_sys_close((unsigned int)second_listener);
 	if (listener_fd >= 0) (void)close(listener_fd);
 	if (listener) ker_fd_put(listener);
+	if (!result) result = ker_posix_ff_ingress_controller_test_registry_race();
 	if (result) {
 		(void)snprintf(state, sizeof(state), "FAILED stage=%s error=%d fd=%d",
 			failure_stage, result, listener_fd);

@@ -7,6 +7,7 @@
 #include <linux/netfilter/nfnetlink_queue.h>
 #include <linux/netfilter_ipv4.h>
 #include <lkl/linux/netlink.h>
+#include <lkl/asm/syscalls.h>
 #include <lkl/linux/if_ether.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
@@ -74,8 +75,77 @@ static struct wire_packet make_packet(uint8_t hook, uint32_t queue,
 	return wire;
 }
 
+static size_t make_ack(unsigned char *bytes, uint32_t portid, uint32_t sequence,
+		       uint16_t type, uint16_t flags, uint32_t request_length,
+		       int error_code)
+{
+	struct lkl_nlmsghdr header = {.nlmsg_len = LKL_NLMSG_HDRLEN +
+		sizeof(struct lkl_nlmsgerr), .nlmsg_type = LKL_NLMSG_ERROR,
+		.nlmsg_seq = sequence, .nlmsg_pid = portid};
+	struct lkl_nlmsgerr error = {.error = error_code,
+		.msg = {.nlmsg_len = request_length, .nlmsg_type = type,
+			.nlmsg_flags = flags, .nlmsg_seq = sequence, .nlmsg_pid = portid}};
+	memcpy(bytes, &header, sizeof(header));
+	memcpy(bytes + LKL_NLMSG_HDRLEN, &error, sizeof(error));
+	return header.nlmsg_len;
+}
+
+static int test_verdict_ack(void)
+{
+	const uint32_t portid = 1234, sequence = 9, request_length = 44;
+	const uint16_t request_type = 0x602, request_flags = 0x5;
+	unsigned char bytes[128];
+	int ack_error = -1;
+	size_t length = make_ack(bytes, portid, sequence, request_type,
+		request_flags, request_length, 0);
+#define PARSE_ACK(data, size, family, pid, groups, expected_port, expected_seq, \
+		request_t, request_f, request_l) \
+	ker_ff_ingress_parse_verdict_ack(data, size, sizeof(struct lkl_sockaddr_nl), \
+		family, pid, groups, expected_port, expected_seq, request_t, request_f, \
+		request_l, &ack_error)
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == 1);
+	CHECK(ack_error == 0);
+	length = make_ack(bytes, portid, sequence, request_type, request_flags,
+		request_length, -ECONNRESET);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == 1);
+	CHECK(ack_error == -ECONNRESET);
+	CHECK(PARSE_ACK(bytes, length - 1, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == -EPROTO);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 77, 0, portid, sequence,
+		request_type, request_flags, request_length) == -EPROTO);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 1, portid, sequence,
+		request_type, request_flags, request_length) == -EPROTO);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence + 1,
+		request_type, request_flags, request_length) == 0);
+	length = make_ack(bytes, portid, sequence + 1, request_type, request_flags,
+		request_length, 0);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == 0);
+	length = make_ack(bytes, portid, sequence, request_type + 1, request_flags,
+		request_length, 0);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == -EPROTO);
+	length = make_ack(bytes, portid, sequence, request_type, request_flags + 1,
+		request_length, 0);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == -EPROTO);
+	length = make_ack(bytes, portid, sequence, request_type, request_flags,
+		request_length + 1, 0);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == -EPROTO);
+	length = make_ack(bytes, portid, sequence, request_type, request_flags,
+		request_length, 1);
+	CHECK(PARSE_ACK(bytes, length, LKL_AF_NETLINK, 0, 0, portid, sequence,
+		request_type, request_flags, request_length) == -EPROTO);
+#undef PARSE_ACK
+	return 0;
+}
+
 int main(void)
 {
+	CHECK(test_verdict_ack() == 0);
 	const uint32_t local = htonl(0x0a000001);
 	struct ker_ff_ingress_packet packet;
 	struct wire_packet valid = make_packet(NF_INET_LOCAL_IN, 88, local, 0, 0);

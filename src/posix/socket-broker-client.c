@@ -258,6 +258,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE ||
         operation == KER_SB_FF_OWNER_GROUP_CONTROL ||
         operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT;
+    requires_cap = requires_cap ||
+        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -273,7 +275,9 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
         operation == KER_SB_FF_OWNER_REQUESTS ||
         operation == KER_SB_FF_OWNER_GROUP_CLAIM;
     requires_zero = requires_zero ||
-        operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE;
+        operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE ||
+        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT ||
+        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -484,7 +488,8 @@ int ker_socket_client_describe(struct ker_socket_client *client, int cap_fd,
          output.kind != KER_SOCKET_BROKER_MEMBER_CENSUS &&
          output.kind != KER_SOCKET_BROKER_FF_OWNER &&
          output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN &&
-         output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT))
+         output.kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT &&
+         output.kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER))
         return fail(EPROTO);
     *kind = (enum ker_socket_broker_kind)output.kind;
     *status_flags = output.flags;
@@ -829,6 +834,56 @@ int ker_socket_client_owner_group_control_after_exit(
     if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT,
             NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
     return group;
+}
+
+int ker_socket_client_owner_group_cutover_begin(
+    struct ker_socket_client *client, int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int capability = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN,
+            NULL, 0, NULL, 0, &capability, NULL) < 0) return -1;
+    return capability;
+}
+
+static int owner_group_cutover_request(struct ker_socket_client *client,
+    int cutover_cap, uint16_t operation)
+{
+    if (!client || cutover_cap < 0) return fail(EINVAL);
+    return socket_call(client, cutover_cap, operation, NULL, 0,
+        NULL, 0, NULL, NULL);
+}
+
+int ker_socket_client_owner_group_cutover_commit(
+    struct ker_socket_client *client, int cutover_cap)
+{
+    return owner_group_cutover_request(client, cutover_cap,
+        KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT);
+}
+
+int ker_socket_client_owner_group_cutover_abort(
+    struct ker_socket_client *client, int cutover_cap)
+{
+    return owner_group_cutover_request(client, cutover_cap,
+        KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT);
+}
+
+int ker_socket_client_owner_group_cutover_poll(
+    struct ker_socket_client *client, int cutover_cap,
+    struct ker_socket_group_cutover_status *status)
+{
+    if (!client || cutover_cap < 0 || !status) return fail(EINVAL);
+    struct ker_sb_group_cutover_status wire = {0};
+    int received = 0;
+    if (socket_call(client, cutover_cap, KER_SB_FF_OWNER_GROUP_CUTOVER_POLL,
+            NULL, 0, &wire, sizeof(wire), NULL, &received) < 0) return -1;
+    if (received != sizeof(wire)) return fail(EPROTO);
+    status->lease = wire.lease;
+    status->phase = wire.phase;
+    status->result = wire.result;
+    status->received_packets = wire.received_packets;
+    status->accepted_packets = wire.accepted_packets;
+    return 0;
 }
 
 int ker_socket_client_member_census_create(struct ker_socket_client *client,

@@ -40,6 +40,12 @@ int ker_socket_broker_server_reuseport_group_create(struct ker_socket_broker_ser
 int ker_socket_broker_server_run(struct ker_socket_broker_server *server,
     int stop_when_empty);
 void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server);
+/* Error-reporting teardown variant. If a fail-closed ingress quarantine
+ * cannot be confirmed, returns -1/errno and retains the server and its pinned
+ * descriptors so the caller may retry teardown; no healthy release is
+ * implied. */
+int ker_socket_broker_server_destroy_checked(
+    struct ker_socket_broker_server *server);
 
 #ifdef __cplusplus
 }

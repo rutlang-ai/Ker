@@ -15,6 +15,17 @@
         ker_posix_ff_admission_task_window_action;
         ker_posix_ff_admission_task_poll_window;
         ker_posix_ff_admission_task_release;
+        ker_posix_ff_ingress_controller_start;
+        ker_posix_ff_ingress_controller_start_poll;
+        ker_posix_ff_ingress_controller_check;
+        ker_posix_ff_ingress_controller_receive;
+        ker_posix_ff_ingress_controller_disarm;
+        ker_posix_ff_ingress_controller_counts;
+        ker_posix_ff_ingress_controller_drain;
+        ker_posix_ff_ingress_controller_accept_begin;
+        ker_posix_ff_ingress_controller_accept_poll;
+        ker_posix_ff_ingress_controller_quarantine;
+        ker_posix_ff_ingress_controller_close;
         ker_posix_buffer_alloc; ker_posix_buffer_free; ker_posix_buffer_realloc; ker_posix_buffer_write;
         ker_posix_buffer_writer_create; ker_posix_buffer_writer_create_segmented; ker_posix_buffer_writer_segment; ker_posix_buffer_writer_append;
         ker_posix_buffer_writer_view; ker_posix_buffer_writer_destroy; ker_posix_buffer_writer_send;

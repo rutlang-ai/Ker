@@ -46,7 +46,11 @@ enum ker_sb_operation {
     KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL = 60,
     KER_SB_FF_OWNER_GROUP_CONTROL = 61,
     KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT = 62,
-    KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE = 63
+    KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE = 63,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN = 64,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT = 65,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT = 66,
+    KER_SB_FF_OWNER_GROUP_CUTOVER_POLL = 67
 };
 
 struct ker_sb_header {
@@ -71,6 +75,13 @@ struct ker_sb_describe { int32_t kind, flags; } __attribute__((packed));
 struct ker_sb_io { int32_t flags; uint32_t length; } __attribute__((packed));
 struct ker_sb_reuseport_group_create { unsigned char address[sizeof(struct sockaddr_in)]; int32_t backlog; } __attribute__((packed));
 struct ker_sb_reuseport_group_member { uint32_t index; } __attribute__((packed));
+struct ker_sb_group_cutover_status {
+    uint64_t lease;
+    uint32_t phase;
+    int32_t result;
+    uint32_t received_packets;
+    uint32_t accepted_packets;
+} __attribute__((packed));
 struct ker_sb_tcp_observer_snapshot {
     uint64_t cookie;
     uint32_t receive_queue;

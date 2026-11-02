@@ -30,10 +30,41 @@
 #include "member-census-runtime.h"
 #include "ff-owner-admission-control.h"
 #include "ff-admission-task.h"
+#include "ff-ingress-controller.h"
 
 #ifndef SO_PEERPIDFD
 #define SO_PEERPIDFD 77
 #endif
+
+struct sb_group_cutover {
+    uint32_t phase;
+    int32_t result;
+    uint64_t group_incarnation;
+    uint64_t owner_token[2];
+    pid_t owner_pid[2];
+    uint64_t owner_start_time[2];
+    uint64_t claim_generation[2];
+    uint32_t member_mark[2];
+    uint64_t member_cookie[2];
+    struct ker_ff_admission_task *candidate_task;
+    int candidate_task_fd;
+    uint64_t candidate_registration_id;
+    uint64_t candidate_task_lease;
+    uint64_t lease;
+    uint64_t deadline_ns;
+    struct ker_posix_ff_ingress_controller *controller;
+    uint32_t packet_ids[64];
+    uint32_t packet_count;
+    uint32_t accepted_count;
+    uint64_t attempts;
+    uint64_t expired;
+    uint64_t inventory_errors;
+    bool selector_changed;
+    bool decision_started;
+    bool disarmed;
+    bool drained;
+    bool accept_pending;
+};
 
 struct sb_group {
     bool live;
@@ -42,6 +73,11 @@ struct sb_group {
     bool materialized;
     bool failed;
     bool member_present[2];
+    uint8_t selected_member;
+    bool cutover_started;
+    bool cutover_orphaned;
+    int cutover_object_slot;
+    struct sb_group_cutover cutover;
     enum { SB_MEMBER_ACTIVATION_NONE, SB_MEMBER_ACTIVATION_UNBOUND,
         SB_MEMBER_ACTIVATION_BOUND, SB_MEMBER_ACTIVATION_PUBLISHED,
         SB_MEMBER_ACTIVATION_FAILED } activation_state[2];
@@ -169,6 +205,9 @@ struct ker_socket_broker_server {
 
 static void owner_group_activation_poison(struct ker_socket_broker_server *server,
     struct sb_group *group, struct sb_object *activation);
+static void advance_group_cutovers(struct ker_socket_broker_server *server);
+static bool group_cutover_terminal(uint32_t phase);
+static void group_cutover_quarantine(struct sb_group *group, int result);
 
 static int host_close(int fd)
 {
@@ -344,6 +383,10 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_FF_OWNER_GROUP_ACTIVATE_CANDIDATE:
     case KER_SB_FF_OWNER_GROUP_CONTROL:
     case KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT:
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN:
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT:
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT:
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_POLL:
         return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_GROUP_CLAIM:
     case KER_SB_FF_OWNER_GROUP_MEMBER:
@@ -387,6 +430,22 @@ static void close_object(struct ker_socket_broker_server *server, struct sb_obje
             owner->admission_failed = true;
         }
     }
+    if (object->kind == KER_SOCKET_BROKER_FF_OWNER_CUTOVER &&
+        object->group_slot >= 0) {
+        struct sb_group *group = &server->groups[object->group_slot];
+        if (group->live && group->incarnation == object->group_incarnation) {
+            if (!group_cutover_terminal(group->cutover.phase))
+                group_cutover_quarantine(group, -ECANCELED);
+            group->cutover_object_slot = -1;
+            if (group->cutover.controller) group->cutover_orphaned = true;
+#ifdef KER_C28_CUTOVER_TESTING
+            if (getenv("KER_C28_TEST_CONTROLLER_TRACE")) {
+                static const char marker[] = "C28_CONTROLLER_CAP_CLOSED\n";
+                (void)syscall(SYS_write, STDOUT_FILENO, marker, sizeof(marker) - 1);
+            }
+#endif
+        }
+    }
     /* Do not retain the adopted descriptor through epoll metadata. The final
      * capability close is the final userspace fd close; original Linux applies
      * its own epoll/OFD close semantics. */
@@ -413,6 +472,14 @@ static void close_object(struct ker_socket_broker_server *server, struct sb_obje
             }
         }
         if (group && group->live && group->handles && --group->handles == 0) {
+            if (group->cutover.controller) {
+                group_cutover_quarantine(group, -ECANCELED);
+                if (group->cutover.controller) {
+                    group->cutover_orphaned = true;
+                    group->handles++;
+                    return;
+                }
+            }
             if (group->owner_aware) {
                 for (unsigned i = 0; i < 2; ++i) {
                     struct sb_owner *owner = owner_by_token(server,
@@ -435,7 +502,7 @@ static void close_object(struct ker_socket_broker_server *server, struct sb_obje
             if (group->base_fd[0] >= 0) (void)close(group->base_fd[0]);
             if (group->base_fd[1] >= 0) (void)close(group->base_fd[1]);
             *group = (struct sb_group){.base_fd = {-1, -1},
-                .activation_task_fd = {-1, -1}};
+                .activation_task_fd = {-1, -1}, .cutover_object_slot = -1};
         }
     }
     (void)host_close(object->capability_read_fd);
@@ -561,6 +628,14 @@ static int reuseport_filter(int fd, unsigned index)
     struct sock_filter instruction = BPF_STMT(BPF_RET | BPF_K, index);
     struct sock_fprog program = {.len = 1, .filter = &instruction};
     return setsockopt(fd, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &program, sizeof(program));
+}
+
+static int group_set_selector(struct sb_group *group, unsigned index)
+{
+    if (!group || index > 1 || group->base_fd[0] < 0) return -EINVAL;
+    if (reuseport_filter(group->base_fd[0], index)) return -errno;
+    group->selected_member = (uint8_t)index;
+    return 0;
 }
 
 static int native_net_admin_present(void)
@@ -2113,6 +2188,352 @@ static int owner_group_candidate_validate_context(struct ker_socket_broker_serve
     return 0;
 }
 
+static bool group_cutover_terminal(uint32_t phase)
+{
+    return phase == KER_SOCKET_GROUP_CUTOVER_COMMITTED ||
+        phase == KER_SOCKET_GROUP_CUTOVER_ABORTED ||
+        phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED ||
+        phase == KER_SOCKET_GROUP_CUTOVER_FAILED;
+}
+
+static int group_cutover_candidate_listener_validate(const struct sb_group *group)
+{
+    int fd = group->base_fd[1];
+    int domain = 0, type = 0, protocol = 0, mark = 0, accepting = 0, reuseport = 0;
+    socklen_t length = sizeof(int);
+    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &length)) return -errno;
+    if (length != sizeof(domain)) return -EPROTO;
+    length = sizeof(int);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length)) return -errno;
+    if (length != sizeof(type)) return -EPROTO;
+    length = sizeof(int);
+    if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &protocol, &length)) return -errno;
+    if (length != sizeof(protocol)) return -EPROTO;
+    length = sizeof(int);
+    if (getsockopt(fd, SOL_SOCKET, SO_MARK, &mark, &length)) return -errno;
+    if (length != sizeof(mark)) return -EPROTO;
+    length = sizeof(int);
+    if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &length)) return -errno;
+    if (length != sizeof(accepting)) return -EPROTO;
+    length = sizeof(int);
+    if (getsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuseport, &length)) return -errno;
+    if (length != sizeof(reuseport)) return -EPROTO;
+    uint64_t cookie = 0;
+    if (socket_cookie(fd, &cookie)) return -errno;
+    struct sockaddr_in local = {0};
+    socklen_t local_length = sizeof(local);
+    if (getsockname(fd, (struct sockaddr *)&local, &local_length)) return -errno;
+    if (domain != AF_INET || type != SOCK_STREAM || protocol != IPPROTO_TCP ||
+        !accepting || !reuseport || (uint32_t)mark != group->member_mark[1] ||
+        cookie != group->member_cookie[1] || local_length != sizeof(local) ||
+        local.sin_family != AF_INET || local.sin_port != group->address.sin_port ||
+        local.sin_addr.s_addr != group->address.sin_addr.s_addr) return -ESTALE;
+    return 0;
+}
+
+static int group_cutover_validate(struct ker_socket_broker_server *server,
+    struct sb_group *group)
+{
+    struct sb_group_cutover *cutover = &group->cutover;
+    if (!group->live || !group->owner_aware || !group->staged_owner_group ||
+        group->incarnation != cutover->group_incarnation || group->failed ||
+        group->staged_state != SB_STAGED_BOTH_PUBLISHED ||
+        !group->member_present[0] || !group->member_present[1] ||
+        group->base_fd[0] < 0 || group->base_fd[1] < 0 ||
+        group->selected_member > 1) return -ESTALE;
+    for (unsigned index = 0; index < 2; ++index) {
+        struct sb_owner *owner = owner_by_token(server, cutover->owner_token[index]);
+        if (!owner || owner->token != group->member_owner_token[index] ||
+            owner->pid != cutover->owner_pid[index] ||
+            owner->start_time != cutover->owner_start_time[index] ||
+            owner->mark != cutover->member_mark[index] ||
+            group->member_owner_pid[index] != cutover->owner_pid[index] ||
+            group->member_owner_start_time[index] != cutover->owner_start_time[index] ||
+            group->claim_generation[index] != cutover->claim_generation[index] ||
+            group->member_mark[index] != cutover->member_mark[index] ||
+            group->member_cookie[index] != cutover->member_cookie[index]) return -ESTALE;
+        int status = owner_identity_alive(owner);
+        if (status) return status;
+    }
+    int status = owner_group_staged_initial_listener_validate(group);
+    if (status) return status;
+    struct sb_owner *candidate = owner_by_token(server, cutover->owner_token[1]);
+    if (!candidate || !candidate->admission_prepared || !candidate->admission_task ||
+        candidate->admission_task != cutover->candidate_task ||
+        candidate->admission_registration_id != cutover->candidate_registration_id ||
+        candidate->admission_listener_native_fd != cutover->candidate_task_fd ||
+        (group->activation_state[1] == SB_MEMBER_ACTIVATION_PUBLISHED ?
+            group->activation_task_fd[1] != cutover->candidate_task_fd :
+            (group->activation_state[1] != SB_MEMBER_ACTIVATION_NONE ||
+             cutover->candidate_task_fd != group->base_fd[1])))
+        return -ESTALE;
+    uint64_t task_lease = 0;
+    int task_state = ker_posix_ff_admission_task_poll(candidate->admission_task,
+        &task_lease);
+    if (task_state != KER_FF_ADMISSION_TASK_READY ||
+        task_lease != cutover->candidate_task_lease) return -EAGAIN;
+    return group_cutover_candidate_listener_validate(group);
+}
+
+static void group_cutover_quarantine(struct sb_group *group, int result)
+{
+    struct sb_group_cutover *cutover = &group->cutover;
+    int status = 0;
+    if (cutover->controller) {
+        status = ker_posix_ff_ingress_controller_quarantine(&cutover->controller);
+    }
+    if (!result) result = status ? status : -EUCLEAN;
+    cutover->phase = status ? KER_SOCKET_GROUP_CUTOVER_QUARANTINING :
+        KER_SOCKET_GROUP_CUTOVER_QUARANTINED;
+    cutover->result = result;
+    group->failed = true;
+}
+
+static int group_cutover_create(struct ker_socket_broker_server *server,
+    struct sb_object *plan, int *capability)
+{
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
+        return -ENOTSOCK;
+    struct sb_group *group = &server->groups[plan->group_slot];
+    if (!group->live || !group->staged_owner_group ||
+        plan->group_incarnation != group->incarnation) return -ESTALE;
+    if (group->cutover_started) return -EALREADY;
+    if (group->selected_member != 0 || group->staged_state != SB_STAGED_BOTH_PUBLISHED)
+        return -EAGAIN;
+    int status;
+    struct sb_owner *candidate = owner_by_token(server, group->member_owner_token[1]);
+    uint64_t task_lease = 0;
+    if (!candidate || !candidate->admission_task ||
+        ker_posix_ff_admission_task_poll(candidate->admission_task, &task_lease) !=
+            KER_FF_ADMISSION_TASK_READY || !task_lease) return -EAGAIN;
+    struct sb_group_cutover cutover = {
+        .phase = KER_SOCKET_GROUP_CUTOVER_STARTING,
+        .group_incarnation = group->incarnation,
+        .candidate_task = candidate->admission_task,
+        .candidate_task_fd = candidate->admission_listener_native_fd,
+        .candidate_registration_id = candidate->admission_registration_id,
+        .candidate_task_lease = task_lease};
+    for (unsigned index = 0; index < 2; ++index) {
+        cutover.owner_token[index] = group->member_owner_token[index];
+        cutover.owner_pid[index] = group->member_owner_pid[index];
+        cutover.owner_start_time[index] = group->member_owner_start_time[index];
+        cutover.claim_generation[index] = group->claim_generation[index];
+        cutover.member_mark[index] = group->member_mark[index];
+        cutover.member_cookie[index] = group->member_cookie[index];
+    }
+    group->cutover = cutover;
+    status = group_cutover_validate(server, group);
+    if (status) {
+        group->cutover = (struct sb_group_cutover){0};
+        return status;
+    }
+    group->cutover_started = true;
+    status = ker_posix_ff_ingress_controller_start(group->base_fd[0],
+        group->base_fd[1], candidate->admission_listener_native_fd,
+        group->member_mark[0], group->member_cookie[0],
+        group->member_mark[1], group->member_cookie[1], &cutover.controller);
+    if (status) {
+        /* ARM may have succeeded before a later queue setup error. With no
+         * retained queue handle, fail this group closed and forbid SELECT. */
+        group->cutover = cutover;
+        if (cutover.controller) group_cutover_quarantine(group, status);
+        else {
+            group->failed = true;
+            group->cutover.phase = KER_SOCKET_GROUP_CUTOVER_FAILED;
+            group->cutover.result = status;
+        }
+        return status;
+    }
+    group->cutover = cutover;
+    size_t object_slot = KER_SB_OBJECTS;
+    int cap = make_capability(server, -1, KER_SOCKET_BROKER_FF_OWNER_CUTOVER,
+        KER_SOCKET_BROKER_CONTROL, &object_slot);
+    if (cap < 0) {
+        group_cutover_quarantine(group, -errno);
+        return -errno;
+    }
+    struct sb_object *object = &server->objects[object_slot];
+    object->group_slot = plan->group_slot;
+    object->group_incarnation = group->incarnation;
+    object->group_claim_generation = group->claim_generation[0];
+    object->group_index = 0;
+    group->cutover_object_slot = (int)object_slot;
+    group->handles++;
+    *capability = cap;
+    return 0;
+}
+
+static int group_cutover_request(struct ker_socket_broker_server *server,
+    int cap_fd, bool commit)
+{
+    struct sb_object *object = lookup_cap(server, cap_fd);
+    if (!object || object->kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER ||
+        object->group_slot < 0) return -ENOTSOCK;
+    struct sb_group *group = &server->groups[object->group_slot];
+    if (!group->live || object->group_incarnation != group->incarnation ||
+        group->cutover_object_slot < 0) return -ESTALE;
+    struct sb_group_cutover *cutover = &group->cutover;
+    uint32_t requested = commit ? KER_SOCKET_GROUP_CUTOVER_COMMITTING :
+        KER_SOCKET_GROUP_CUTOVER_ABORTING;
+    if (group_cutover_terminal(cutover->phase))
+        return cutover->phase == (commit ? KER_SOCKET_GROUP_CUTOVER_COMMITTED :
+            KER_SOCKET_GROUP_CUTOVER_ABORTED) ? 0 : -EALREADY;
+    if (cutover->phase == requested) return 0;
+    if (cutover->phase != KER_SOCKET_GROUP_CUTOVER_PREPARED &&
+        cutover->phase != KER_SOCKET_GROUP_CUTOVER_STARTING) return -EALREADY;
+    if (!commit && group->selected_member != 0) return -EALREADY;
+    cutover->phase = requested;
+    return 0;
+}
+
+static void group_cutover_advance(struct ker_socket_broker_server *server,
+    struct sb_group *group)
+{
+    struct sb_group_cutover *cutover = &group->cutover;
+    if (!group->cutover_started) return;
+    if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINING) {
+        if (cutover->controller && !cutover->lease) {
+            uint64_t ignored_lease = 0, ignored_deadline = 0;
+            int arm_succeeded = 0;
+            int start_status = ker_posix_ff_ingress_controller_start_poll(
+                cutover->controller, &ignored_lease, &ignored_deadline,
+                &arm_succeeded);
+            if (!start_status) return;
+            if (start_status < 0 && !arm_succeeded) {
+                int cleanup = ker_posix_ff_ingress_controller_quarantine(
+                    &cutover->controller);
+                if (cleanup) return;
+                cutover->phase = KER_SOCKET_GROUP_CUTOVER_FAILED;
+                group->failed = true;
+                return;
+            }
+        }
+        if (cutover->controller) group_cutover_quarantine(group, cutover->result);
+        else if (cutover->phase != KER_SOCKET_GROUP_CUTOVER_FAILED)
+            cutover->phase = KER_SOCKET_GROUP_CUTOVER_QUARANTINED;
+        return;
+    }
+    if (group_cutover_terminal(cutover->phase)) {
+        if (cutover->controller)
+            group_cutover_quarantine(group, cutover->result);
+        return;
+    }
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+        group_cutover_quarantine(group, -errno); return;
+    }
+    uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
+    int status = 0;
+    if (cutover->controller && !cutover->lease) {
+        uint64_t lease = 0, deadline_ns = 0;
+        int arm_succeeded = 0;
+        status = ker_posix_ff_ingress_controller_start_poll(cutover->controller,
+            &lease, &deadline_ns, &arm_succeeded);
+        if (!status) return;
+        if (status < 0 && !arm_succeeded) {
+            int cleanup = ker_posix_ff_ingress_controller_quarantine(
+                &cutover->controller);
+            group->failed = true;
+            cutover->phase = cleanup ? KER_SOCKET_GROUP_CUTOVER_QUARANTINING :
+                KER_SOCKET_GROUP_CUTOVER_FAILED;
+            cutover->result = status;
+            return;
+        }
+        if (status < 0 || !lease || !deadline_ns) {
+            group_cutover_quarantine(group, status < 0 ? status : -EPROTO);
+            return;
+        }
+        cutover->lease = lease;
+        cutover->deadline_ns = deadline_ns;
+        if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_STARTING)
+            cutover->phase = KER_SOCKET_GROUP_CUTOVER_PREPARED;
+        return;
+    }
+    if (now_ns >= cutover->deadline_ns) {
+        group_cutover_quarantine(group, -ETIMEDOUT); return;
+    }
+    status = group_cutover_validate(server, group);
+    if (status) { group_cutover_quarantine(group, status); return; }
+    if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_PREPARED) return;
+    if (!cutover->decision_started) {
+        if (group->selected_member != 0) {
+            group_cutover_quarantine(group, -ESTALE); return;
+        }
+        status = ker_posix_ff_ingress_controller_check(cutover->controller);
+        if (status) { group_cutover_quarantine(group, status); return; }
+        if (cutover->phase == KER_SOCKET_GROUP_CUTOVER_COMMITTING) {
+            status = group_set_selector(group, 1);
+            if (status) { group_cutover_quarantine(group, status); return; }
+            cutover->selector_changed = true;
+        }
+        cutover->decision_started = true;
+        return;
+    }
+    if (!cutover->disarmed) {
+        status = ker_posix_ff_ingress_controller_disarm(cutover->controller);
+        if (status) { group_cutover_quarantine(group, status); return; }
+        cutover->disarmed = true;
+        status = ker_posix_ff_ingress_controller_counts(cutover->controller,
+            &cutover->attempts, &cutover->expired, &cutover->inventory_errors);
+        if (status) { group_cutover_quarantine(group, status); return; }
+        return;
+    }
+    if (!cutover->drained) {
+        struct ker_ff_ingress_packet packet = {0};
+        status = ker_posix_ff_ingress_controller_drain(cutover->controller, &packet);
+        if (status < 0) { group_cutover_quarantine(group, status); return; }
+        if (status > 0) {
+            if (packet.lease != cutover->lease ||
+                packet.deadline_ns != cutover->deadline_ns ||
+                packet.local_port != htons(group->port) || !packet.id ||
+                cutover->packet_count >= 64) {
+                group_cutover_quarantine(group, -EPROTO); return;
+            }
+            cutover->packet_ids[cutover->packet_count++] = packet.id;
+            return;
+        }
+        if (cutover->attempts != cutover->packet_count || cutover->expired ||
+            cutover->inventory_errors) {
+            group_cutover_quarantine(group, -EUCLEAN); return;
+        }
+        cutover->drained = true;
+        return;
+    }
+    if (cutover->accepted_count < cutover->packet_count) {
+        if (!cutover->accept_pending) {
+            int sent = 0;
+            status = ker_posix_ff_ingress_controller_accept_begin(
+                cutover->controller, cutover->lease, cutover->deadline_ns,
+                cutover->packet_ids[cutover->accepted_count], &sent);
+            if (status || !sent) {
+                group_cutover_quarantine(group, status ? status : -EIO); return;
+            }
+            cutover->accept_pending = true;
+            return;
+        }
+        status = ker_posix_ff_ingress_controller_accept_poll(cutover->controller);
+        if (status < 0) { group_cutover_quarantine(group, status); return; }
+        if (!status) return;
+        cutover->accept_pending = false;
+        cutover->accepted_count++;
+        return;
+    }
+    status = ker_posix_ff_ingress_controller_close(cutover->controller);
+    if (status) { group_cutover_quarantine(group, status); return; }
+    cutover->controller = NULL;
+    cutover->phase = cutover->selector_changed ?
+        KER_SOCKET_GROUP_CUTOVER_COMMITTED : KER_SOCKET_GROUP_CUTOVER_ABORTED;
+    cutover->result = 0;
+}
+
+static void advance_group_cutovers(struct ker_socket_broker_server *server)
+{
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
+        if (server->groups[i].live && server->groups[i].cutover_started)
+            group_cutover_advance(server, &server->groups[i]);
+}
+
 static int owner_group_candidate_bind(struct ker_socket_broker_server *server,
     struct sb_client *client, struct sb_object *object,
     const struct ker_sb_address *args)
@@ -2799,8 +3220,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         else if (request->operation == KER_SB_FF_OWNER_GROUP_SLOT ||
             request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH ||
             request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL ||
-            request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE)
+            request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE ||
+            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
+        else if (request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT ||
+            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT ||
+            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_POLL)
+            expected_kind = KER_SOCKET_BROKER_FF_OWNER_CUTOVER;
         else if (request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
         else if (request->operation == KER_SB_TCP_OBSERVER_SNAPSHOT)
@@ -2930,6 +3356,39 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT);
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        int capability = -1;
+        status = group_cutover_create(server, lookup_cap(server, fds[0]),
+            &capability);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT:
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        status = group_cutover_request(server, fds[0],
+            request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT);
+        if (status) return status;
+        *result = 0; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_CUTOVER_POLL: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        struct sb_object *object = lookup_cap(server, fds[0]);
+        if (!object || object->kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER ||
+            object->group_slot < 0) return -ENOTSOCK;
+        struct sb_group *group = &server->groups[object->group_slot];
+        if (!group->live || object->group_incarnation != group->incarnation ||
+            group->cutover_object_slot < 0) return -ESTALE;
+        struct ker_sb_group_cutover_status response = {
+            .lease = group->cutover.lease,
+            .phase = group->cutover.phase,
+            .result = group->cutover.result,
+            .received_packets = group->cutover.packet_count,
+            .accepted_packets = group->cutover.accepted_count};
+        memcpy(output, &response, sizeof(response));
+        *output_length = sizeof(response); *result = 0; return 0;
     }
     case KER_SB_FF_OWNER_ADMISSION_PREPARE: {
         if (input_length || fd_count != 1) return -EPROTO;
@@ -3064,6 +3523,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct sb_group *group = &server->groups[object->group_slot];
         if (!group->live) return -EBADF;
         if (object->group_incarnation != group->incarnation) return -ESTALE;
+        if (group->cutover_started) {
+            if (!group_cutover_terminal(group->cutover.phase)) return -EBUSY;
+            if (group->cutover.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED)
+                return -ECANCELED;
+            if (args.index != group->selected_member) return -EOPNOTSUPP;
+            *result = 0; return 0;
+        }
         if (group->owner_aware) {
             if (group->failed || !group->member_present[args.index]) return -EAGAIN;
             struct sb_owner *owner = owner_by_token(server,
@@ -3088,7 +3554,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
                 }
             }
         }
-        if (reuseport_filter(group->base_fd[0], args.index)) return -errno;
+        status = group_set_selector(group, args.index);
+        if (status) return status;
         *result = 0; return 0;
     }
     case KER_SB_MEMBER_CENSUS_CREATE: {
@@ -3112,7 +3579,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             object->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT &&
             object->kind != KER_SOCKET_BROKER_MEMBER_CENSUS &&
             object->kind != KER_SOCKET_BROKER_TCP_OBSERVER &&
-            object->kind != KER_SOCKET_BROKER_FF_OWNER) {
+            object->kind != KER_SOCKET_BROKER_FF_OWNER &&
+            object->kind != KER_SOCKET_BROKER_FF_OWNER_CUTOVER) {
             flags = fcntl(object->native_fd, F_GETFL);
             if (flags < 0) return -errno;
         }
@@ -3139,6 +3607,7 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (object->kind == KER_SOCKET_BROKER_REUSEPORT_GROUP) return -EOPNOTSUPP;
         if (object->kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
             object->kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_SLOT) return -EOPNOTSUPP;
+        if (object->kind == KER_SOCKET_BROKER_FF_OWNER_CUTOVER) return -EOPNOTSUPP;
         if (object->kind == KER_SOCKET_BROKER_MEMBER_CENSUS) return -EOPNOTSUPP;
 
         if (object->kind == KER_SOCKET_BROKER_TCP_OBSERVER) return -EOPNOTSUPP;
@@ -3864,6 +4333,7 @@ static int broker_pump(void *argument)
     }
     reap_dead(server);
     pump_owner_admission_endpoints(server);
+    advance_group_cutovers(server);
     finish_member_census_jobs(server);
     bool should_stop = server->failure || (server->stop_when_empty &&
         !object_count(server) && !client_count(server));
@@ -3961,9 +4431,20 @@ int ker_socket_broker_server_run(struct ker_socket_broker_server *server, int st
     return 0;
 }
 
-void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server)
+int ker_socket_broker_server_destroy_checked(struct ker_socket_broker_server *server)
 {
-    if (!server) return;
+    if (!server) { errno = EINVAL; return -1; }
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
+        struct sb_group *group = &server->groups[i];
+        if (group->live && group->cutover.controller) {
+            group_cutover_quarantine(group, -ECANCELED);
+            if (group->cutover.controller) {
+                group->cutover_orphaned = true;
+                errno = EBUSY;
+                return -1;
+            }
+        }
+    }
     for (size_t i = 0; i < KER_SB_CLIENTS; ++i) close_client(server, &server->clients[i]);
     for (size_t i = 0; i < KER_SB_CENSUS_JOBS; ++i) {
         struct sb_census_job *job = &server->census_jobs[i];
@@ -3990,4 +4471,11 @@ void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server)
     }
     release_runtime_lease(server);
     free(server);
+    return 0;
+}
+
+void ker_socket_broker_server_destroy(struct ker_socket_broker_server *server)
+{
+    if (!server) return;
+    (void)ker_socket_broker_server_destroy_checked(server);
 }

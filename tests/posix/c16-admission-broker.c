@@ -6,11 +6,14 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 struct stop_context { int fd; };
@@ -54,7 +57,57 @@ int main(int argc, char **argv)
 	(void)pthread_join(stop_thread, NULL);
 	(void)syscall(SYS_close, stop_fd);
 	(void)syscall(SYS_unlinkat, AT_FDCWD, argv[2], 0);
-	ker_socket_broker_server_destroy(server);
+	if (getenv("KER_C28_TEST_CHECKED_DESTROY")) {
+		if (getenv("KER_C28_TEST_PREARM_FAILURE")) {
+			if (result != 0 || ker_socket_broker_server_destroy_checked(server) != 0) {
+				fprintf(stderr, "C28 pre-ARM failure did not clean up: %s\n",
+					strerror(errno));
+				return 1;
+			}
+			puts("C28_PREARM_FAILURE_CLEAN no-arm/no-pins");
+			fflush(stdout);
+			puts("C16_BROKER_DONE");
+			return 0;
+		}
+		if (result != -1 || saved != EBUSY) {
+			fprintf(stderr, "C28 expected run shutdown to retain a live runtime: %s\n",
+				strerror(saved));
+			return 1;
+		}
+		if (ker_socket_broker_server_destroy_checked(server) != -1 || errno != EBUSY) {
+			fprintf(stderr, "C28 checked destroy failed to retain unresolved quarantine: %s\n",
+				strerror(errno));
+			return 1;
+		}
+		puts("C28_DESTROY_EBUSY controller-and-fd-pins-retained");
+		fflush(stdout);
+		const char *release = getenv("KER_C28_TEST_QUARANTINE_GATE");
+		struct timespec pause = {.tv_nsec = 10000000};
+		unsigned attempt;
+		for (attempt = 0; release && attempt < 1000 &&
+			syscall(SYS_access, release, F_OK) != 0;
+			++attempt) {
+			while (nanosleep(&pause, &pause) && errno == EINTR) { }
+			pause.tv_nsec = 10000000;
+		}
+		if (!release || syscall(SYS_access, release, F_OK) != 0) {
+			fprintf(stderr, "C28 quarantine retry gate was not released\n");
+			return 1;
+		}
+		/* Same callback/context is a cleanup-only continuation after the first
+		 * run retained the live kernel because quarantine was unconfirmed. */
+		if (ker_socket_broker_server_run(server, 0) != 0 ||
+			ker_socket_broker_server_destroy_checked(server) != 0) {
+			fprintf(stderr, "C28 checked destroy retry did not confirm quarantine: %s\n",
+				strerror(errno));
+			return 1;
+		}
+		puts("C28_DESTROY_RETRY_OK quarantine-confirmed/pins-released");
+		fflush(stdout);
+		result = 0;
+	} else {
+		ker_socket_broker_server_destroy(server);
+	}
 	if (result) {
 		errno = saved;
 		fprintf(stderr, "broker run: %s\n", strerror(errno));

@@ -17,6 +17,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -99,6 +100,14 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
             app_environment |= {'KER_C25_TEST_CANDIDATE_ACTIVATION': '1',
                 'KER_C25_CANDIDATE_PORT': '4108',
                 'KER_C25_ACTIVATION_RELEASE': str(activation_release)}
+        if args.cutover_abort_only:
+            app_environment['KER_C28_TEST_ABORT_ONLY'] = '1'
+        if args.cutover_lifetime_only:
+            app_environment['KER_C28_TEST_ABORT_ONLY'] = '1'
+            controller_start_gate = Path(app_environment['KER_C28_TEST_START_GATE'])
+            quarantine_gate = Path(app_environment['KER_C28_TEST_QUARANTINE_GATE'])
+        if args.cutover_prearm_failure_only:
+            app_environment['KER_C28_TEST_ABORT_ONLY'] = '1'
         app = subprocess.Popen([str(args.client), 'staged-candidate'],
             pass_fds=(slot_fd,), stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=app_environment,
@@ -139,16 +148,133 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
         require(re.search(r'inserted=0\b', before_flip),
             f'pre-flip fresh member-0 traffic entered candidate map: {before_flip!r}')
 
-        helper_command('FLIP', 'C20_STAGED_SELECTOR1')
-        candidate = socket.create_connection(('198.18.0.2', 4108), timeout=10)
-        candidate.settimeout(10); peers.append(candidate)
-        candidate.sendall(b'CAND-001')
-        require(recv_exact_tcp(candidate, 8) == b'CAND-001',
-            'selected candidate flow did not complete original-Linux SYNACK/accept/echo')
-        os.kill(app.pid, signal.SIGUSR1)
-        after_candidate = wait_line(app, 'C16_REQUESTS', 5)
-        require(re.search(r'inserted=1\b', after_candidate),
-            f'candidate TCP flow was not inserted into the original FF map: {after_candidate!r}')
+        if args.cutover_lifetime_only:
+            helper_command('CUTOVER_CANCEL_START',
+                'C28_CUTOVER_CANCELED_DURING_STARTING capability-closed')
+            wait_line(broker, 'C28_CONTROLLER_CAP_CLOSED', 5)
+            controller_start_gate.write_text('release\n')
+            wait_line(broker, 'C28_WORKER_QUARANTINE_ATTEMPTED', 8)
+            os.kill(app.pid, signal.SIGUSR2)
+            app_output, app_errors = collect_output(app, timeout=15)
+            require(app.returncode == 0 and 'C16_APP_DONE accepted=0 inserted=0' in app_output,
+                f'no-flow candidate app did not stop after canceled startup: '
+                f'rc={app.returncode}; stdout={app_output!r}; stderr={app_errors!r}')
+            helper.stdin.write(b'STOP\n'); helper.stdin.flush()
+            helper_output, helper_errors = helper.communicate(timeout=10)
+            require(helper.returncode == 0,
+                f'cancel-start helper failed: {helper_output!r}; {helper_errors!r}')
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                stop.sendto(b'STOP', str(stop_path))
+            wait_line(broker, 'C28_DESTROY_EBUSY controller-and-fd-pins-retained', 10)
+            quarantine_gate.write_text('release\n')
+            wait_line(broker, 'C28_DESTROY_RETRY_OK quarantine-confirmed/pins-released', 10)
+            broker_output, broker_errors = collect_output(broker, timeout=10)
+            require(broker.returncode == 0 and 'C16_BROKER_DONE' in broker_output,
+                f'broker checked destroy retry failed: {broker_output!r}; {broker_errors!r}')
+            report = json.loads(stats.read_text())
+            require(report.get('outstanding') == 0 and report.get('tx', 0) > 0 and
+                report.get('rx', 0) > 0,
+                f'canceled startup did not clean up packet runtime: {report!r}')
+            print('C28_CANCELED_START_QUARANTINE_RETRY_PASS '
+                'cap-close-during-STARTING=1 post-ARM-quarantine-fault=1 '
+                'destroy=EBUSY-retains-controller/fd-pins retry=confirmed/released pool=0')
+            return 0
+
+        if args.cutover_prearm_failure_only:
+            helper_command('CUTOVER_CANCEL_START',
+                'C28_CUTOVER_CANCELED_DURING_STARTING capability-closed')
+            wait_line(broker, 'C28_CONTROLLER_CAP_CLOSED', 5)
+            os.kill(app.pid, signal.SIGUSR2)
+            app_output, app_errors = collect_output(app, timeout=15)
+            require(app.returncode == 0 and 'C16_APP_DONE accepted=0 inserted=0' in app_output,
+                f'pre-ARM candidate app did not stop cleanly: '
+                f'rc={app.returncode}; stdout={app_output!r}; stderr={app_errors!r}')
+            helper.stdin.write(b'STOP\n'); helper.stdin.flush()
+            helper_output, helper_errors = helper.communicate(timeout=10)
+            require(helper.returncode == 0,
+                f'pre-ARM helper failed: {helper_output!r}; {helper_errors!r}')
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+                stop.sendto(b'STOP', str(stop_path))
+            wait_line(broker, 'C28_PREARM_FAILURE_CLEAN no-arm/no-pins', 10)
+            broker_output, broker_errors = collect_output(broker, timeout=10)
+            require(broker.returncode == 0 and 'C16_BROKER_DONE' in broker_output,
+                f'pre-ARM cleanup failed: {broker_output!r}; {broker_errors!r}')
+            report = json.loads(stats.read_text())
+            require(report.get('outstanding') == 0 and report.get('tx', 0) > 0 and
+                report.get('rx', 0) > 0,
+                f'pre-ARM failure left runtime resources: {report!r}')
+            print('C28_PREARM_FAILURE_CLEAN_PASS injected-config-failure/no-ARM/no-pins')
+            return 0
+
+        candidate = None
+        if args.cutover_coordinator:
+            helper_command('CUTOVER_BEGIN', 'C28_CUTOVER_PREPARED_SELECT_BLOCKED')
+            if args.cutover_abort_only:
+                connected = []
+                connect_errors = []
+                def connect_while_aborting():
+                    try:
+                        peer = socket.create_connection(('198.18.0.2', 4108), timeout=10)
+                        peer.settimeout(10)
+                        peer.sendall(b'AFTER-01')
+                        connected.append(peer)
+                    except BaseException as error:
+                        connect_errors.append(error)
+                connect_thread = threading.Thread(target=connect_while_aborting, daemon=True)
+                connect_thread.start()
+                helper.stdin.write(b'CUTOVER_ABORT\n'); helper.stdin.flush()
+                abort_line = wait_line(helper, 'C28_CUTOVER_ABORTED', 12)
+                counts = re.search(r'received=(\d+) accepted=(\d+) selector=0', abort_line)
+                require(counts and counts.groups() == ('1', '1'),
+                    f'abort did not reconcile exactly one held SYN to member 0: {abort_line!r}')
+                connect_thread.join(timeout=12)
+                require(not connect_thread.is_alive() and not connect_errors and
+                    len(connected) == 1,
+                    f'aborted held SYN did not complete: {connect_errors!r}')
+                candidate, = connected
+                peers.append(candidate)
+                helper.stdin.write(b'FRESH\n'); helper.stdin.flush()
+                wait_line(helper, 'C20_STAGED_FRESH_INITIAL_SERVICE', 10)
+                require(recv_exact_tcp(candidate, 8) == b'OLD-ACK!',
+                    'aborted original SYN did not reach member 0 accept/echo')
+            else:
+                connected = []
+                connect_errors = []
+                def connect_while_frozen():
+                    try:
+                        peer = socket.create_connection(('198.18.0.2', 4108), timeout=10)
+                        peer.settimeout(10)
+                        peer.sendall(b'CAND-001')
+                        connected.append(peer)
+                    except BaseException as error:
+                        connect_errors.append(error)
+                connect_thread = threading.Thread(target=connect_while_frozen, daemon=True)
+                connect_thread.start()
+                helper.stdin.write(b'CUTOVER_COMMIT\n'); helper.stdin.flush()
+                cutover_line = wait_line(helper, 'C28_CUTOVER_COMMITTED', 12)
+                counts = re.search(r'received=(\d+) accepted=(\d+)', cutover_line)
+                require(counts and counts.groups() == ('1', '1'),
+                    f'cutover did not reconcile exactly one held SYN: {cutover_line!r}')
+                connect_thread.join(timeout=12)
+                require(not connect_thread.is_alive() and not connect_errors and
+                    len(connected) == 1,
+                    f'held SYN did not complete after cutover: {connect_errors!r}')
+                candidate, = connected
+                peers.append(candidate)
+        else:
+            helper_command('FLIP', 'C20_STAGED_SELECTOR1')
+            candidate = socket.create_connection(('198.18.0.2', 4108), timeout=10)
+            candidate.settimeout(10); peers.append(candidate)
+            candidate.sendall(b'CAND-001')
+        if candidate is not None:
+            if not args.cutover_abort_only:
+                require(recv_exact_tcp(candidate, 8) == b'CAND-001',
+                    'selected candidate flow did not complete original-Linux SYNACK/accept/echo')
+            os.kill(app.pid, signal.SIGUSR1)
+            after_candidate = wait_line(app, 'C16_REQUESTS', 5)
+            expected_inserted = 0 if args.cutover_abort_only else 1
+            require(re.search(rf'inserted={expected_inserted}\b', after_candidate),
+                f'candidate TCP flow was not inserted into the original FF map: {after_candidate!r}')
         helper.stdin.write(b'OLD\n'); helper.stdin.flush()
         initial.sendall(b'HELD-OLD')
         require(recv_exact_tcp(initial, 8) == b'OLD-ACK!',
@@ -163,16 +289,19 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
             f'C17 retirement did not drain the candidate map: {retired!r}')
         os.kill(app.pid, signal.SIGUSR2)
         app_output, app_errors = collect_output(app, timeout=15)
-        require(app.returncode == 0 and 'C16_APP_DONE accepted=1 inserted=1' in app_output,
+        expected_app_done = ('C16_APP_DONE accepted=0 inserted=0' if args.cutover_abort_only else
+            'C16_APP_DONE accepted=1 inserted=1')
+        require(app.returncode == 0 and expected_app_done in app_output,
             f'C16 candidate actor did not cleanly finish its admitted flow: '
             f'rc={app.returncode}; stdout={app_output!r}; stderr={app_errors!r}')
-        if candidate_activation:
+        if candidate_activation and candidate is not None:
             candidate.close()
             peers.remove(candidate)
-            helper_command('CHECK_CLOSED', 'C25_LAST_ALIAS_CLOSED_LISTEN0')
-            helper_command('FLIP0', 'C25_SELECTOR0_RESTORED')
-            exchange('FRESH', 4108, b'AFTER-01', b'OLD-ACK!',
-                'C20_STAGED_FRESH_INITIAL_SERVICE')
+            if not args.cutover_coordinator:
+                helper_command('CHECK_CLOSED', 'C25_LAST_ALIAS_CLOSED_LISTEN0')
+                helper_command('FLIP0', 'C25_SELECTOR0_RESTORED')
+                exchange('FRESH', 4108, b'AFTER-01', b'OLD-ACK!',
+                    'C20_STAGED_FRESH_INITIAL_SERVICE')
         helper.stdin.write(b'STOP\n'); helper.stdin.flush()
         helper_output, helper_errors = helper.communicate(timeout=10)
         require(helper.returncode == 0,
@@ -266,10 +395,21 @@ def run_c20_staged_admission(args, rpc_path, stop_path, stats, root,
         require(report.get('outstanding') == 0 and report.get('tx', 0) > 0 and
             report.get('rx', 0) > 0,
             f'staged admission runtime leaked or omitted native packet evidence: {report!r}')
-        print('C20_STAGED_ADMISSION_PASS child=slot-only/coordinator-plan '
-            'preREADY=EAGAIN/mark-LISTEN0 '
-            'register-before-listen=1 preflip-map=0 selected-original-map=1 '
-            'held-old-stream=1 death=ESRCH/member0-cookie-mark-selector0/pool=0')
+        if args.cutover_coordinator:
+            if args.cutover_abort_only:
+                print('C28_BROKER_CUTOVER_ABORT_PASS plan-held-by-coordinator '
+                    'async-READY-before-abort held-SYN=1 received=1 accepted=1 selector=0 '
+                    'original-member0-accept-echo=1 old-stream=1 map-inserted=0 pool=0')
+            else:
+                print('C28_BROKER_CUTOVER_PASS plan-held-by-coordinator '
+                    'candidate-slot-only async-READY-before-commit '
+                    'SELECT-Ebusy held-original-SYN=1 received=1 accepted=1 '
+                    'original-C20-map-inserted=1 old-stream=1 pool=0')
+        else:
+            print('C20_STAGED_ADMISSION_PASS child=slot-only/coordinator-plan '
+                'preREADY=EAGAIN/mark-LISTEN0 '
+                'register-before-listen=1 preflip-map=0 selected-original-map=1 '
+                'held-old-stream=1 death=ESRCH/member0-cookie-mark-selector0/pool=0')
         return 0
     finally:
         for peer in peers:
@@ -574,6 +714,15 @@ def inside(args):
             str(args.broker), str(rpc_path), str(stop_path)]
         environment = os.environ | {'PYTHONDONTWRITEBYTECODE': '1',
             'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root)}
+        controller_start_gate = root / 'c28-controller-start.release'
+        quarantine_gate = root / 'c28-quarantine.release'
+        if args.cutover_lifetime_only:
+            environment.update({
+                'KER_C28_TEST_START_GATE': str(controller_start_gate),
+                'KER_C28_TEST_QUARANTINE_GATE': str(quarantine_gate),
+                'KER_C28_TEST_CHECKED_DESTROY': '1',
+                'KER_C28_TEST_CONTROLLER_TRACE': '1',
+            })
         quarantine_barrier = root / 'quarantine'
         if args.quarantine_release_race_only:
             environment |= {
@@ -590,6 +739,13 @@ def inside(args):
                 'LD_PRELOAD': str(args.preload),
                 'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root),
             }
+            if args.cutover_lifetime_only:
+                app_env.update({
+                    'KER_C28_TEST_START_GATE': str(controller_start_gate),
+                    'KER_C28_TEST_QUARANTINE_GATE': str(quarantine_gate),
+                    'KER_C28_TEST_CHECKED_DESTROY': '1',
+                    'KER_C28_TEST_CONTROLLER_TRACE': '1',
+                })
             if args.staged_admission_only:
                 return run_c20_staged_admission(args, rpc_path, stop_path,
                     stats, root, broker, app_env, args.candidate_activation_only)
@@ -1385,6 +1541,10 @@ def main():
     parser.add_argument('--reuseport-group-client', type=Path)
     parser.add_argument('--staged-admission-only', action='store_true')
     parser.add_argument('--candidate-activation-only', action='store_true')
+    parser.add_argument('--cutover-coordinator', action='store_true')
+    parser.add_argument('--cutover-abort-only', action='store_true')
+    parser.add_argument('--cutover-lifetime-only', action='store_true')
+    parser.add_argument('--cutover-prearm-failure-only', action='store_true')
     parser.add_argument('--pump-failure-only', action='store_true')
     parser.add_argument('--registration-negative-only', action='store_true')
     parser.add_argument('--malformed-owner-hello-only', action='store_true')
@@ -1404,6 +1564,14 @@ def main():
         parser.error('--staged-admission-only requires --reuseport-group-client')
     if args.candidate_activation_only and not args.staged_admission_only:
         parser.error('--candidate-activation-only requires --staged-admission-only')
+    if args.cutover_coordinator and not args.candidate_activation_only:
+        parser.error('--cutover-coordinator requires --candidate-activation-only')
+    if args.cutover_abort_only and not args.cutover_coordinator:
+        parser.error('--cutover-abort-only requires --cutover-coordinator')
+    if args.cutover_lifetime_only and not args.cutover_coordinator:
+        parser.error('--cutover-lifetime-only requires --cutover-coordinator')
+    if args.cutover_prearm_failure_only and not args.cutover_coordinator:
+        parser.error('--cutover-prearm-failure-only requires --cutover-coordinator')
     command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()), '--inside']
     for name in ('launcher', 'library', 'worker', 'dpdk_plugin_dir', 'preload',
                  'broker', 'client', 'progress_client'):
@@ -1414,6 +1582,14 @@ def main():
         command.append('--staged-admission-only')
     if args.candidate_activation_only:
         command.append('--candidate-activation-only')
+    if args.cutover_coordinator:
+        command.append('--cutover-coordinator')
+    if args.cutover_abort_only:
+        command.append('--cutover-abort-only')
+    if args.cutover_lifetime_only:
+        command.append('--cutover-lifetime-only')
+    if args.cutover_prearm_failure_only:
+        command.append('--cutover-prearm-failure-only')
     if args.pump_failure_only:
         command.append('--pump-failure-only')
     if args.registration_negative_only:

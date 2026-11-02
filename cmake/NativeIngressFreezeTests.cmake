@@ -10,6 +10,13 @@ if(BUILD_TESTING)
 		ker_c24_ingress_freeze_export_map "${ker_c24_ingress_freeze_export_map}")
 	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
 		"${ker_c24_ingress_freeze_export_map}")
+	file(READ "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
+		ker_c28_race_export_map)
+	string(REPLACE "ker_ff_admission_request_identity_test_parse; local: *;"
+		"ker_ff_admission_request_identity_test_parse; ker_posix_ff_ingress_controller_test_registry_race; local: *;"
+		ker_c28_race_export_map "${ker_c28_race_export_map}")
+	file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/member-census-test-exports.map"
+		"${ker_c28_race_export_map}")
 	add_executable(ker-c24-ingress-freeze-tap-client
 		"${PROJECT_SOURCE_DIR}/tests/posix/c24-ingress-freeze-tap-client.c")
 	target_compile_features(ker-c24-ingress-freeze-tap-client PRIVATE c_std_11)
