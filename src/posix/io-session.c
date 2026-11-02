@@ -14,6 +14,7 @@
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/random.h>
+#include <arpa/inet.h>
 #include <sys/time.h>
 #include <stdbool.h>
 #include <poll.h>
@@ -161,6 +162,7 @@ enum { HANDOFF_NONE, HANDOFF_PREPARED, HANDOFF_PARKED };
 static struct rte_mbuf *pmd_packet, *pmd_rx_packet;
 static struct rte_ring *packet_rx, *packet_tx;
 static bool generation_rings_enabled;
+static bool generation_forwarding_enabled;
 static struct ker_generation_rings *generation_rings;
 /* Live ownership transfer is proven only for the one-queue net_ring port
  * created by ker_session_packet_create(). Other PMDs need their own stop and
@@ -755,11 +757,71 @@ struct generation_frame_drain_context {
     struct ker_generation_rings *rings;
     struct ker_generation_identity identity;
     struct rte_mempool *message_pool;
+    int control_fd;
     struct rte_mbuf *packet;
     bool nonframe_reap;
     bool active_u2_seen;
     unsigned unrelated_count;
 };
+static int generation_test_read_control(int fd,void *buffer,size_t length)
+{
+    uint8_t *bytes=buffer;
+    while(length) {
+        ssize_t count=read(fd,bytes,length);
+        if(count>0) { bytes+=(size_t)count;length-=(size_t)count;continue; }
+        if(count<0&&errno==EINTR)continue;
+        if(count<0&&(errno==EAGAIN||errno==EWOULDBLOCK)) {
+            struct pollfd wait={.fd=fd,.events=POLLIN};
+            int ready;do ready=poll(&wait,1,3000);while(ready<0&&errno==EINTR);
+            if(ready==0)return -ETIMEDOUT;
+            if(ready<0)return -errno;
+            if(wait.revents&(POLLERR|POLLHUP|POLLNVAL))return -ECANCELED;
+            continue;
+        }
+        return count==0?-ECONNRESET:-errno;
+    }
+    return 0;
+}
+static int generation_test_forward_frame(char command,struct generation_frame_drain_context *context)
+{
+#ifdef KER_SESSION_TEST_HOOKS
+    /* Explicit TAP test producer only. This is not an ingress classifier: the
+     * fixture selects one captured host frame and the fixed target is the
+     * parked generation zero ring. */
+    if(command!='I'||!getenv("KER_SESSION_TEST_GENERATION_FORWARD_PRODUCER"))return 0;
+    if(!context||!context->rings||!context->message_pool||context->control_fd<0||
+        context->identity.generation!=1||context->identity.process!=0)return -EPERM;
+    uint16_t encoded_length=0;
+    int status=generation_test_read_control(context->control_fd,&encoded_length,sizeof(encoded_length));
+    if(status)return status;
+    unsigned length=ntohs(encoded_length);
+    if(length<14||length>1518)return -EMSGSIZE;
+    uint8_t frame[1518];
+    status=generation_test_read_control(context->control_fd,frame,length);
+    if(status)return status;
+    struct rte_mbuf *packet=rte_pktmbuf_alloc(context->message_pool);
+    if(!packet)return -ENOMEM;
+    uint8_t *data=(uint8_t *)rte_pktmbuf_append(packet,(uint16_t)length);
+    if(!data) { rte_pktmbuf_free(packet);return -ENOBUFS; }
+    memcpy(data,frame,length);
+    if(packet->nb_segs!=1||packet->data_len!=length||packet->pkt_len!=length||packet->ol_flags) {
+        rte_pktmbuf_free(packet);return -EOPNOTSUPP;
+    }
+    status=ker_generation_rx_enqueue(context->rings,&context->identity,0,0,0,packet);
+    if(status) { rte_pktmbuf_free(packet);return status; }
+    char frame_hex[1518*2+1];static const char hex[]="0123456789abcdef";
+    for(unsigned i=0;i<length;i++) {
+        frame_hex[i*2]=hex[frame[i]>>4];frame_hex[i*2+1]=hex[frame[i]&15];
+    }
+    frame_hex[length*2]='\0';
+    printf("KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED {\"producer_generation\":1,\"target_generation\":0,\"length\":%u,\"frame_hex\":\"%s\"}\n",length,frame_hex);
+    fflush(stdout);
+    return 1;
+#else
+    (void)command;(void)context;
+    return 0;
+#endif
+}
 static bool generation_frame_is_expected_u2(const struct rte_mbuf *packet)
 {
     if(!packet||packet->pkt_len!=68)return false;
@@ -954,6 +1016,8 @@ static int generation_frame_drain_control(char command, void *opaque)
 {
     struct generation_frame_drain_context *context=opaque;
     if(!context||!context->rings)return -EINVAL;
+    int forwarded=generation_test_forward_frame(command,context);
+    if(forwarded)return forwarded;
     if(command=='K')return generation_test_nonframe_drain_dispatch(command,context->nonframe_reap,
         generation_test_hold_started,
         atomic_load_explicit(&generation_test_hold_completed,memory_order_acquire),
@@ -2548,7 +2612,7 @@ static int handle(unsigned i, const struct ker_session_message *request,
         if ((client->peer_only && (!generation_rings_enabled || !request->capability ||
                 request->capability!=client->peer_capability)) ||
             (!client->peer_only && request->capability)) return -EPROTO;
-        if (generation_rings_enabled && !client->peer_only) {
+        if (generation_rings_enabled && (!client->peer_only || generation_forwarding_enabled)) {
             if (!generation_rings || client->process != 0) return -EOPNOTSUPP;
             struct ker_generation_identity identity=generation_identity(client);
             int result=ker_generation_admit(generation_rings,&identity,client->pidfd);
@@ -3276,46 +3340,59 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
     const struct ker_session_message *identity,uint64_t *sequence,uint64_t capability,
     struct worker_heartbeat *heartbeat,struct ker_generation_rings *rings)
 {
+    struct rte_mbuf *generation_rx_pending=NULL;
+    struct ker_generation_identity generation_identity={.session=identity->session,
+        .epoch=identity->epoch,.slot=(uint32_t)identity->slot,
+        .generation=(uint32_t)identity->generation,.process=(uint32_t)identity->process,
+        .pid=(uint32_t)getpid()};
+#define PARKED_RETURN(value) do { \
+        int parked_result=(value); \
+        if(generation_rx_pending&&rings&&ker_generation_packet_release(rings, \
+            &generation_identity,generation_rx_pending)) return -EUCLEAN; \
+        generation_rx_pending=NULL; \
+        return parked_result; \
+    } while(0)
     printf("KER_SESSION_PMD_PARKED {\"pid\":%ld,\"owner_key\":%llu}\n",
         (long)getpid(),(unsigned long long)atomic_load_explicit(&directory->pmd_owner,memory_order_acquire)); fflush(stdout);
     while(!stopping) {
         require_resident_alive(resident);
         int tick=heartbeat_tick(fd,identity,sequence,resident,heartbeat);
-        if(tick<0)return tick;
+        if(tick<0)PARKED_RETURN(tick);
         if(dead(resident))_Exit(125);
         struct pollfd waiters[]={{.fd=control,.events=POLLIN},{.fd=fd,.events=POLLIN},
-            {.fd=resident,.events=POLLIN},{.fd=packet_fd,.events=POLLIN}};
+            {.fd=resident,.events=POLLIN},{.fd=packet_fd,.events=(short)(POLLIN|
+                (generation_rx_pending?POLLOUT:0))}};
         int ready=poll(waiters,4,100);
-        if(ready<0){if(errno==EINTR)continue;return -errno;}
+        if(ready<0){if(errno==EINTR)continue;PARKED_RETURN(-errno);}
         if(waiters[2].revents)_Exit(125);
         if(waiters[1].revents) {
             int ack;
             if(heartbeat->pending) {
                 ack=pump_worker_heartbeat(fd,heartbeat,resident);
-                if(ack<0)return ack;
+                if(ack<0)PARKED_RETURN(ack);
                 if(!ack||heartbeat->pending)continue; /* exact stale frame replay or no complete ACK yet */
             } else {
                 struct ker_session_message replay;
                 ssize_t n=recv(fd,&replay,sizeof(replay),MSG_DONTWAIT|MSG_TRUNC);
                 if(n==sizeof(replay)&&heartbeat->frame_reply_valid&&
                     !memcmp(&replay,&heartbeat->frame_reply,sizeof(replay))) continue;
-                return -EPROTO; /* unsolicited non-frame data */
+                PARKED_RETURN(-EPROTO); /* unsolicited non-frame data */
             }
         }
         if(waiters[0].revents) {
-            if(waiters[0].revents&(POLLHUP|POLLERR|POLLNVAL))return 0;
+            if(waiters[0].revents&(POLLHUP|POLLERR|POLLNVAL))PARKED_RETURN(0);
             if(waiters[0].revents&POLLIN) {
                 char command; ssize_t count=read(control,&command,1);
-                if(count==0)return 0;
+                if(count==0)PARKED_RETURN(0);
                 if(count<0&&errno==EINTR)continue;
 #ifdef KER_SESSION_TEST_HOOKS
                 if(count==1&&command=='F'&&generation_frame_source_test) {
                     int drained=drain_worker_heartbeat_after_command(fd,heartbeat,resident,control);
-                    if(drained)return drained;
+                    if(drained)PARKED_RETURN(drained);
                     struct frame_full_fill_result proof;
                     int fill=parked_frame_fill_tx_capacity(fd,resident,control,identity,sequence,
                         capability,heartbeat,rings,&proof);
-                    if(fill)return fill;
+                    if(fill)PARKED_RETURN(fill);
                     char record[8192];
                     int used=snprintf(record,sizeof(record),
                         "KER_SESSION_FRAME_FULL_FILLED {\"count\":%u,\"capacity\":%u,\"pool_before\":%u,\"pool_after\":%u,\"counters_before\":[%llu,%llu,%llu,%llu,%llu],\"counters_after\":[%llu,%llu,%llu,%llu,%llu],\"objects\":[",
@@ -3330,32 +3407,38 @@ static int parked_owner_wait(int control,int packet_fd,int fd,int resident,
                         (unsigned long long)proof.counters_after.tx_drop,
                         (unsigned long long)proof.counters_after.packet_drop,
                         (unsigned long long)proof.counters_after.packet_full);
-                    if(used<0||(size_t)used>=sizeof(record))return -EOVERFLOW;
+                    if(used<0||(size_t)used>=sizeof(record))PARKED_RETURN(-EOVERFLOW);
                     for(uint32_t i=0;i<proof.capacity;i++) {
                         int added=snprintf(record+used,sizeof(record)-(size_t)used,
                             "%s{\"ordinal\":%u,\"index\":%u,\"pointer\":\"%p\"}",
                             i?",":"",i,proof.objects[i].index,(void *)proof.objects[i].address);
-                        if(added<0||(size_t)added>=sizeof(record)-(size_t)used)return -EOVERFLOW;
+                        if(added<0||(size_t)added>=sizeof(record)-(size_t)used)PARKED_RETURN(-EOVERFLOW);
                         used+=added;
                     }
                     int closed=snprintf(record+used,sizeof(record)-(size_t)used,"]}\n");
-                    if(closed<0||(size_t)closed>=sizeof(record)-(size_t)used)return -EOVERFLOW;
+                    if(closed<0||(size_t)closed>=sizeof(record)-(size_t)used)PARKED_RETURN(-EOVERFLOW);
                     printf("%s",record);fflush(stdout);
                     if(getenv("KER_SESSION_TEST_FRAME_DEATH_QUEUED"))raise(SIGSTOP);
                     continue;
                 }
 #endif
-                return -EPROTO; /* Parked workers accept no device/control commands. */
+                PARKED_RETURN(-EPROTO); /* Parked workers accept no device/control commands. */
             }
         }
-        if (waiters[3].revents & (POLLERR|POLLHUP|POLLNVAL)) return -EPIPE;
+        if(rings&&(!generation_rx_pending||(waiters[3].revents&POLLOUT))) {
+            int delivered=ker_session_generation_rx_deliver(packet_fd,rings,
+                &generation_identity,&generation_rx_pending);
+            if(delivered<0)PARKED_RETURN(delivered);
+        }
+        if (waiters[3].revents & (POLLERR|POLLHUP|POLLNVAL)) PARKED_RETURN(-EPIPE);
         if (waiters[3].revents & POLLIN) {
             int frame=parked_frame_datagram(packet_fd,fd,resident,control,identity,sequence,
                 capability,heartbeat,rings);
-            if (frame<0) return frame;
+            if (frame<0) PARKED_RETURN(frame);
         }
     }
-    return 0;
+    PARKED_RETURN(0);
+#undef PARKED_RETURN
 }
 #ifdef KER_SESSION_TEST_HOOKS
 static int worker_detach_request(int fd,const struct ker_session_message *identity,
@@ -4423,7 +4506,8 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         || generation_test
 #endif
         )) goto cleanup;
-    if (generation_rings_enabled && !peer_only && ker_generation_rings_attach(d->session,1,2,pool,&generation_rings)) goto cleanup;
+    if (generation_rings_enabled && (!peer_only || generation_forwarding_enabled) &&
+        ker_generation_rings_attach(d->session,1,2,pool,&generation_rings)) goto cleanup;
 #ifdef KER_SESSION_TEST_HOOKS
     if(nonframe_reap_requested) {
         if(ring_pmd!=2||!generation_rings_enabled||!generation_rings||peer_only||
@@ -4633,14 +4717,20 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
         if (!known_object(rx_packet) || rx_packet == device_packet || rx_packet == leased_packet || rx_packet->pool != pool) goto cleanup;
         uint64_t key = 1 + (message.slot * KER_SESSION_GENERATIONS + generation) * KER_SESSION_PROCESSES + process;
         struct ker_session_packet_stats packet_stats={0};
+        struct ker_generation_identity packet_identity={.session=message.session,.epoch=message.epoch,
+            .slot=(uint32_t)message.slot,.generation=generation,.process=process,
+            .pid=(uint32_t)getpid()};
 #ifdef KER_SESSION_TEST_HOOKS
         struct generation_frame_drain_context frame_drain_context={.rings=generation_rings,
             .identity={.session=message.session,.epoch=message.epoch,.slot=(uint32_t)message.slot,
                 .generation=generation,.process=process,.pid=(uint32_t)getpid()},.message_pool=pool,
+            .control_fd=control,
             .nonframe_reap=nonframe_reap_active&&generation==0};
 #endif
         int packet_result=ker_session_packet_loop(pmd_port,packet_fd,wire_fd,mtu_fd,control,fd,peer,
             &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
+            generation_forwarding_enabled?generation_rings:NULL,
+            generation_forwarding_enabled?&packet_identity:NULL,
             service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,
 #ifdef KER_SESSION_TEST_HOOKS
             (generation_frame_drain_test||nonframe_reap_active)?generation_frame_drain_control:NULL,
@@ -4680,6 +4770,8 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
                     struct ker_session_packet_stats resumed_stats={0};
                     int resumed=ker_session_packet_loop(pmd_port,packet_fd,wire_fd,mtu_fd,control,fd,peer,
                         &directory->pmd_owner,key,device_packet,rx_packet,&exception_bridge,&stopping,
+                        generation_forwarding_enabled?generation_rings:NULL,
+                        generation_forwarding_enabled?&packet_identity:NULL,
                         service_worker_heartbeat,pump_worker_heartbeat_context,&heartbeat_context,
 #ifdef KER_SESSION_TEST_HOOKS
                         (generation_frame_drain_test||nonframe_reap_active)?generation_frame_drain_control:NULL,
@@ -4735,7 +4827,7 @@ static int secondary(const char *path, int control, int ticket, unsigned generat
             printf("KER_SESSION_PMD_PARKED {\"pid\":%ld,\"old_owner_key\":%llu,\"successor_slot\":%u,\"successor_generation\":%u,\"commit\":\"resident-quiesced\"}\n",
                 (long)getpid(),(unsigned long long)key,successor_slot,successor_generation); fflush(stdout);
             int parked_result=parked_owner_wait(control,packet_fd,fd,peer,&message,&message.sequence,
-                    capability,&heartbeat,generation_rings);
+                    capability,&heartbeat,generation_forwarding_enabled?generation_rings:NULL);
 #ifdef KER_SESSION_TEST_HOOKS
             if(getenv("KER_SESSION_TEST_FRAME_DRAIN")) {
                 printf("KER_SESSION_PARKED_OWNER_EXIT {\"pid\":%ld,\"result\":%d,\"stopping\":%s,\"generation\":%llu,\"process\":%llu}\n",
@@ -5064,7 +5156,7 @@ int main(int argc, char **argv)
     int directory_test_gate_fd = -1;
     bool generation_rings_test_replay = false;
 #endif
-    bool generation_rings = false, coordinate_probe = false;
+    bool generation_rings = false, generation_forwarding = false, coordinate_probe = false;
     bool cleanup_rx_set=false, cleanup_tx_set=false;
     uint64_t cleanup_rx_mask=0, cleanup_tx_mask=0;
 #ifdef KER_SESSION_TEST_HOOKS
@@ -5075,6 +5167,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--")) { split = i; break; }
         if (!strcmp(argv[i], "--standby")) { standby = true; continue; }
         if (!strcmp(argv[i], "--generation-rings")) { generation_rings = true; continue; }
+        if (!strcmp(argv[i], "--generation-forwarding")) { generation_forwarding = true; continue; }
         if (!strcmp(argv[i], "--generation-cleanup-rx-mask")) {
             if (i+1>=argc || cleanup_rx_set || queue_mask_number(argv[++i],&cleanup_rx_mask)) return 2;
             cleanup_rx_set=true; continue;
@@ -5134,6 +5227,7 @@ int main(int argc, char **argv)
     }
 #endif
     if ((standby && (!ring_pmd || probe_only || !role || strcmp(role, "secondary"))) ||
+        (generation_forwarding && (!generation_rings || ring_pmd!=2)) ||
         (coordinate_probe && (!role || strcmp(role, "secondary") || ring_pmd || standby || probe_only || probe_count || generation || process)) ||
         probe_count < 0 || probe_count > 4096 || (probe_only && !probe_count)) return 2;
     if (!path || !role || control < 0 || split < 0 || generation < 0 || process < 0 ||
@@ -5181,6 +5275,7 @@ int main(int argc, char **argv)
         perror("ker session control descriptor"); return 2;
     }
     generation_rings_enabled=generation_rings;
+    generation_forwarding_enabled=generation_forwarding;
 #ifdef KER_SESSION_TEST_HOOKS
     if((generation_test||generation_detach_test||generation_tx_full_test)&&(!generation_rings||strcmp(role,"secondary")))return 2;
     if(generation_tx_full_test&&(generation_test||generation_detach_test||generation_empty_cleanup_test))return 2;

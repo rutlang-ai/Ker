@@ -363,6 +363,7 @@ def main():
     parser.add_argument('--eal', default='')
     parser.add_argument('--standby', action='store_true', help='keep a refused consumer attached; lease retries on P, run retries before application launch')
     parser.add_argument('--generation-rings', action='store_true', help='enable the resident-authenticated two-generation DPDK packet-ring adapter')
+    parser.add_argument('--generation-forwarding', action='store_true', help='opt in to authenticated generation RX/TX ring forwarding on a paired original-Linux session')
     parser.add_argument('--generation-cleanup-rx-mask', type=bounded_generation_cleanup_mask)
     parser.add_argument('--generation-cleanup-tx-mask', type=bounded_generation_cleanup_mask)
     parser.add_argument('--peer-only', action='store_true', help='request a resident-authorized peer-selector-only worker reservation')
@@ -403,6 +404,8 @@ def main():
         parser.error('directory test gate fd must be nonnegative')
     if args.generation_rings and args.action not in ('serve','lease','run'):
         parser.error('--generation-rings is only supported by serve, lease, and run')
+    if args.generation_forwarding and (not args.generation_rings or args.action not in ('serve','run') or not args.paired_pmd):
+        parser.error('--generation-forwarding requires --generation-rings and --paired-pmd on serve or run')
     cleanup_masks = (args.generation_cleanup_rx_mask, args.generation_cleanup_tx_mask)
     if any(mask is not None for mask in cleanup_masks):
         if args.action != 'serve' or not args.generation_rings or any(mask is None for mask in cleanup_masks):
@@ -438,6 +441,7 @@ def main():
                     '--generation-cleanup-tx-mask', str(args.generation_cleanup_tx_mask)]
             os.execv(worker, [worker, '--role', 'primary', '--socket', str(args.socket),
                 '--control-fd', str(sys.stdin.fileno()), *(['--generation-rings'] if args.generation_rings else []),
+                *(['--generation-forwarding'] if args.generation_forwarding else []),
                 *cleanup_args, *(['--ring-pmd'] if args.ring_pmd else []),
                 *(['--paired-pmd'] if args.paired_pmd else []), '--',
                 *role_arguments(args.eal, 'primary', args.ring_pmd, args.paired_pmd)])

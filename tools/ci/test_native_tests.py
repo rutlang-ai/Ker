@@ -88,6 +88,8 @@ class NativeTestSelectorTests(unittest.TestCase):
                 lines.append("KER_SESSION_FRAME_PROFILE_EVIDENCE " + json.dumps(evidence, sort_keys=True))
             else:
                 lines.append(native_tests._legacy_profile_success_marker(mode))
+        if "generation-forward-tcp" in profiles:
+            lines.append("KER_SESSION_GENERATION_FORWARD_TCP_PASS {\"orderly_fin\":true}")
         lines += [native_tests._legacy_profile_success_marker("positive"),
                   native_tests._legacy_profile_success_marker("frame-positive")]
         return lines
@@ -418,7 +420,9 @@ class NativeTestSelectorTests(unittest.TestCase):
     def test_checked_in_session_fixture_inventory_matches_classifier_negative_profiles(self):
         source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
         expected, structured = native_tests.expected_session_profiles(source)
-        self.assertEqual(expected, native_tests.MANDATORY_SESSION_PROFILES | native_tests.FRAME_RECOVERY_PROFILES)
+        self.assertEqual(expected, native_tests.MANDATORY_SESSION_PROFILES |
+                         native_tests.FRAME_RECOVERY_PROFILES |
+                         native_tests.GENERATION_TRANSPORT_PROFILES)
         self.assertTrue(structured)
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
         main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
@@ -428,6 +432,23 @@ class NativeTestSelectorTests(unittest.TestCase):
                              "bad-capability" in native_tests._literal_profile_tuple(node.iter))
         self.assertEqual(native_tests._literal_profile_tuple(negative_loop.iter),
                          native_tests.MANDATORY_NEGATIVE_PROFILES)
+
+    def test_generation_transport_requires_real_success_marker_and_rejects_skip(self):
+        source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"
+        expected, structured = native_tests.expected_session_profiles(source)
+        self.assertTrue(structured)
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "session.log"
+            lines = self.session_log(expected, structured)
+            log.write_text("\n".join(lines), encoding="utf-8")
+            native_tests.verify_session_profiles(log, source)
+            missing = [line for line in lines if not line.startswith("KER_SESSION_GENERATION_FORWARD_TCP_PASS ")]
+            log.write_text("\n".join(missing), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "lacks the real generation-forward TCP success marker"):
+                native_tests.verify_session_profiles(log, source)
+            log.write_text("SKIP: huge pages unavailable\n" + "\n".join(lines), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "cannot be qualified by a skipped runtime"):
+                native_tests.verify_session_profiles(log, source)
 
     def test_legacy_fixed_profile_markers_match_checked_in_fixture_literals(self):
         source = Path(__file__).resolve().parents[2] / "tests/posix/session-native-packets.py"

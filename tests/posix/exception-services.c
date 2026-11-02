@@ -139,6 +139,43 @@ static int handoff_udp_trigger(int control_fd,int udp_fd,const sigset_t *wait_ma
         perror("wait for application SIGTERM");return 1;
     }
 }
+static void transfer(int fd,char *bytes,size_t size,int sending);
+static int handoff_tcp_trigger(int listener,const sigset_t *wait_mask)
+{
+    int connection=accept(listener,NULL,NULL);
+    check(connection>=0,"accept original Linux handoff TCP stream");
+    static const char accepted[]="KER_HANDOFF_TCP_ACCEPTED\n";
+    int startup_fd=parse_startup_fd();
+    check(startup_fd>=0,"validate TCP handoff startup descriptor");
+    int ack=write_startup_ack(startup_fd,accepted,sizeof(accepted)-1);
+    check(ack==0,"publish accepted TCP handoff stream");
+    int trigger=wait_for_udp_trigger(wait_mask);
+    if(trigger<0){errno=-trigger;perror("wait for TCP handoff trigger");return 1;}
+    if(trigger==0)return 128+SIGTERM;
+    udp_trigger_requested=0;
+    static const char *requests[]={"KER-C29-OLD-TCP-1\n","KER-C29-OLD-TCP-2\n"};
+    static const char *responses[]={"KER-C29-OLD-REPLY-1\n","KER-C29-OLD-REPLY-2\n"};
+    for(unsigned exchange=0;exchange<2;exchange++){
+        size_t request_length=strlen(requests[exchange]);
+        char received[32];check(request_length<=sizeof(received),"TCP test request bound");
+        transfer(connection,received,request_length,0);
+        check(!memcmp(received,requests[exchange],request_length),"original Linux handoff TCP request bytes");
+        transfer(connection,(char *)responses[exchange],strlen(responses[exchange]),1);
+    }
+    char end;
+    ssize_t eof;
+    do eof=recv(connection,&end,1,0);while(eof<0&&errno==EINTR);
+    check(eof==0,"original Linux handoff TCP FIN reached the accepted stream");
+    check(!close(connection),"close original Linux handoff TCP stream");
+    for(;;){
+        int terminating=termination_pending();
+        if(terminating<0){perror("check pending SIGTERM");return 1;}
+        if(terminating)return 128+SIGTERM;
+        int result=sigsuspend(wait_mask);
+        if(result<0&&errno==EINTR)continue;
+        perror("wait for application SIGTERM");return 1;
+    }
+}
 
 static void transfer(int fd,char *bytes,size_t size,int sending)
 {
@@ -168,18 +205,19 @@ int main(int argc,char **argv)
 {
     int signal_ready=argc==2&&!strcmp(argv[1],"--signal-ready");
     int udp_trigger=argc==2&&!strcmp(argv[1],"--handoff-udp-trigger");
+    int tcp_trigger=argc==2&&!strcmp(argv[1],"--handoff-tcp-trigger");
     int fixed=argc==2&&!strcmp(argv[1],"--fixed-mtu");
     int live=argc==2&&!strcmp(argv[1],"--live-mtu");
     int rollback=argc==2&&!strcmp(argv[1],"--rollback-mtu");
-    check(argc==1||signal_ready||udp_trigger||fixed||live||rollback,"service test arguments");
+    check(argc==1||signal_ready||udp_trigger||tcp_trigger||fixed||live||rollback,"service test arguments");
     struct sigaction action={.sa_handler=request_stop};sigemptyset(&action.sa_mask);
     sigset_t trigger_signals,wait_mask;
-    if(udp_trigger){
+    if(udp_trigger||tcp_trigger){
         sigemptyset(&trigger_signals);sigaddset(&trigger_signals,SIGUSR1);sigaddset(&trigger_signals,SIGTERM);
         check(!sigprocmask(SIG_BLOCK,&trigger_signals,NULL),"block UDP trigger signals during setup");
     }
     check(!sigaction(SIGTERM,&action,NULL),"install application SIGTERM handler");
-    if(udp_trigger){
+    if(udp_trigger||tcp_trigger){
         struct sigaction trigger_action={.sa_handler=request_udp_trigger};sigemptyset(&trigger_action.sa_mask);
         check(!sigaction(SIGUSR1,&trigger_action,NULL),"install application SIGUSR1 handler");
         struct sigaction pipe_action={.sa_handler=SIG_IGN};sigemptyset(&pipe_action.sa_mask);
@@ -201,6 +239,11 @@ int main(int argc,char **argv)
         check(!bind(fd,(void*)&address,length),"native service bind");if(tcp)check(!listen(fd,4),"native listen");
     }
     puts("READY");fflush(stdout);
+    if(tcp_trigger){
+        int result=handoff_tcp_trigger(sockets[0][1],&wait_mask);
+        for(unsigned family=0;family<2;family++)for(unsigned tcp=0;tcp<2;tcp++)close(sockets[family][tcp]);
+        return result;
+    }
     if(udp_trigger){
         int result=handoff_udp_trigger(startup_fd,sockets[0][0],&wait_mask);
         for(unsigned family=0;family<2;family++)for(unsigned tcp=0;tcp<2;tcp++)close(sockets[family][tcp]);

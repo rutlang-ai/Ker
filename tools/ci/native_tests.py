@@ -159,6 +159,7 @@ FRAME_RECOVERY_PROFILES = frozenset({
     "frame-death-consumer-writing", "frame-death-queued",
     "frame-death-producer-active-consumer",
 })
+GENERATION_TRANSPORT_PROFILES = frozenset({"generation-forward-tcp"})
 
 # These component tests use real EAL with --no-huge and no TAP device. RX queue
 # ownership additionally requires at least two CPUs in the runner's cpuset.
@@ -404,9 +405,17 @@ def expected_session_profiles(source_path: Path) -> tuple[set[str], bool]:
             "missing": sorted(FRAME_RECOVERY_PROFILES - recovery),
         }))
     expected = explicit | negative
-    if expected != MANDATORY_SESSION_PROFILES and expected != (MANDATORY_SESSION_PROFILES | FRAME_RECOVERY_PROFILES):
+    recognized = (
+        MANDATORY_SESSION_PROFILES,
+        MANDATORY_SESSION_PROFILES | FRAME_RECOVERY_PROFILES,
+        MANDATORY_SESSION_PROFILES | GENERATION_TRANSPORT_PROFILES,
+        MANDATORY_SESSION_PROFILES | FRAME_RECOVERY_PROFILES | GENERATION_TRANSPORT_PROFILES,
+    )
+    if expected not in recognized:
         raise RuntimeError("fixture profile inventory is not a recognized complete set: " + repr(sorted(expected)))
     structured = "KER_SESSION_FRAME_PROFILE_EVIDENCE" in source
+    if GENERATION_TRANSPORT_PROFILES <= expected and not structured:
+        raise RuntimeError("generation transport profile requires structured pass evidence")
     if recovery and not structured:
         raise RuntimeError("frame-recovery profiles require structured per-profile evidence records")
     return expected, structured
@@ -488,15 +497,20 @@ def verify_session_profiles(log_path: Path, source_path: Path) -> None:
             "missing": sorted(expected_profiles - set(cleanup_profiles)),
             "unexpected": sorted(set(cleanup_profiles) - expected_profiles),
         }))
-    if "KER_SESSION_HANDOFF_HUGEPAGE_CLEANUP_REFUSED " in log_path.read_text(errors="replace"):
+    text = log_path.read_text(errors="replace")
+    if "KER_SESSION_HANDOFF_HUGEPAGE_CLEANUP_REFUSED " in text:
         raise RuntimeError("native session runtime reported private hugepage cleanup refusal")
+    if GENERATION_TRANSPORT_PROFILES <= expected_profiles:
+        if any(line.startswith("SKIP:") for line in text.splitlines()):
+            raise RuntimeError("generation transport profile cannot be qualified by a skipped runtime")
+        if not any(line.startswith("KER_SESSION_GENERATION_FORWARD_TCP_PASS ") for line in text.splitlines()):
+            raise RuntimeError("native session runtime lacks the real generation-forward TCP success marker")
     if structured and (len(observed) != len(set(observed)) or set(observed) != expected_profiles):
         raise RuntimeError("native session profile set mismatch: " + repr({
             "expected": sorted(expected_profiles), "observed": observed,
             "missing": sorted(expected_profiles - set(observed)),
             "unexpected": sorted(set(observed) - expected_profiles),
         }))
-    text = log_path.read_text(errors="replace")
     if not structured:
         if observed:
             raise RuntimeError("legacy profile output unexpectedly contains structured evidence records")

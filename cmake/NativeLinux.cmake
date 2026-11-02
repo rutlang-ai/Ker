@@ -393,7 +393,7 @@ find_library(ker_session_ring_pmd NAMES rte_net_ring HINTS ${DPDK_LIBRARY_DIRS} 
 if(NOT ker_session_ring_pmd)
     message(FATAL_ERROR "Resident packet sessions require the original net_ring PMD")
 endif()
-add_executable(ker-io-session src/posix/io-session.c src/posix/session-packet.c src/posix/session-generation-rings.c src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c)
+add_executable(ker-io-session src/posix/io-session.c src/posix/session-packet.c src/posix/session-generation-forward.c src/posix/session-generation-rings.c src/posix/worker-exception.c src/posix/worker-exception-filter.c src/posix/worker-mbuf.c src/posix/pcap.c)
 target_include_directories(ker-io-session PRIVATE "${PROJECT_SOURCE_DIR}/third_party/dpdk/drivers/net/ring")
 target_compile_features(ker-io-session PRIVATE c_std_11)
 target_compile_options(ker-io-session PRIVATE -Wall -Wextra -Werror)
@@ -1219,7 +1219,8 @@ if(BUILD_TESTING)
     set_tests_properties(native-fstack-session-registration PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77
         LABELS "fstack;session")
     add_executable(ker-session-generation-rings-test
-        tests/posix/session-generation-rings.c src/posix/session-generation-rings.c)
+        tests/posix/session-generation-rings.c src/posix/session-generation-rings.c
+        src/posix/session-generation-forward.c)
     target_include_directories(ker-session-generation-rings-test PRIVATE src/posix)
     target_compile_features(ker-session-generation-rings-test PRIVATE c_std_11)
     target_compile_definitions(ker-session-generation-rings-test PRIVATE KER_SESSION_TEST_HOOKS=1)
@@ -1232,6 +1233,11 @@ if(BUILD_TESTING)
             --test "$<TARGET_FILE:ker-session-generation-rings-test>")
     set_tests_properties(native-fstack-session-generation-rings PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77
         LABELS "fstack;session;dpdk")
+    add_test(NAME native-fstack-session-generation-forward-sink
+        COMMAND "$<TARGET_FILE:ker-session-generation-rings-test>"
+            --no-pci --no-huge --no-shconf -- forward-only)
+    set_tests_properties(native-fstack-session-generation-forward-sink PROPERTIES TIMEOUT 30
+        LABELS "native-tcp;fstack;session;generation-forwarding;sink")
     add_executable(ker-session-ring-namespaces-test tests/posix/session-ring-namespaces.c)
     target_include_directories(ker-session-ring-namespaces-test PRIVATE src/posix tests)
     target_compile_options(ker-session-ring-namespaces-test PRIVATE -Wall -Wextra -Werror)

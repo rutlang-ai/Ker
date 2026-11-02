@@ -461,6 +461,8 @@ FRAME_U2_TRIGGER_MODES = frozenset({
 
 def handoff_trigger_complete(mode, handoff_seen, udp_sequence):
     """Whether this profile consumed its complete H/U trigger sequence."""
+    if mode == 'generation-forward-tcp':
+        return False
     return bool(handoff_seen and (mode not in FRAME_U2_TRIGGER_MODES or udp_sequence >= 2))
 
 
@@ -872,7 +874,7 @@ def _run_session_impl(args, api):
     library = args.library.resolve(strict=True)
     handoff_fd = getattr(args, 'test_live_handoff_fd', None)
     handoff_mode = os.environ.get('KER_SESSION_TEST_HANDOFF_MODE')
-    handoff_modes = {'positive', 'frame-positive', 'nonframe-active-reap', 'frame-full', 'frame-death-prepared', 'frame-death-queued', 'frame-death-producer-active-consumer', 'frame-death-consumer-prepared', 'frame-death-consumer-writing', 'frame-death-both-prepared', 'frame-lost-prepare-reply', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
+    handoff_modes = {'positive', 'frame-positive', 'generation-forward-tcp', 'nonframe-active-reap', 'frame-full', 'frame-death-prepared', 'frame-death-queued', 'frame-death-producer-active-consumer', 'frame-death-consumer-prepared', 'frame-death-consumer-writing', 'frame-death-both-prepared', 'frame-lost-prepare-reply', 'bad-capability', 'bad-tx-lease', 'bad-rx-lease', 'peer-death', 'timeout',
         'handoff-control-hup',
         'prepare-enoent', 'prepare-ebusy', 'prepare-eperm', 'bad-prepare-error',
         'bad-prepare-error-token', 'bad-prepare-error-capability', 'bad-prepare-error-tx-lease',
@@ -1097,7 +1099,11 @@ def _run_session_impl(args, api):
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', '1', '--process', str(args.process), '--packet-fd', str(peer_packet_worker.fileno()),
             '--generation-rings']
+        if getattr(args, 'generation_forwarding', False):
+            peer_arguments.append('--generation-forwarding')
         if os.environ.get('KER_SESSION_TEST_FRAME_DRAIN') == '1':
+            peer_arguments.append('--test-generation-frame-drain')
+        if os.environ.get('KER_SESSION_TEST_GENERATION_FORWARD_PRODUCER') == '1':
             peer_arguments.append('--test-generation-frame-drain')
         if handoff_mode == 'nonframe-active-reap':
             peer_arguments.append('--generation-detach-test')
@@ -1332,7 +1338,7 @@ def _run_session_impl(args, api):
             publish()
             raise RuntimeError('resident failed closed after the expected invalid QUIESCED')
         if handoff_mode not in (None, 'positive', 'frame-positive', 'frame-full',
-                'frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer','frame-death-consumer-prepared',
+                'generation-forward-tcp','frame-death-prepared','frame-death-queued','frame-death-producer-active-consumer','frame-death-consumer-prepared',
                 'frame-death-consumer-writing','frame-death-both-prepared','frame-lost-prepare-reply'):
             raise RuntimeError('test handoff mode is not a fatal profile')
         parked = wait_marker(worker, 'KER_SESSION_PMD_PARKED')
@@ -1556,6 +1562,7 @@ def _run_session_impl(args, api):
             '--socket', str(args.socket), '--control-fd', str(control_r), '--ticket-fd', str(ticket_r),
             '--generation', str(args.generation), '--process', str(args.process),
             *(['--generation-rings'] if getattr(args, 'generation_rings', False) else []),
+            *(['--generation-forwarding'] if getattr(args, 'generation_forwarding', False) else []),
             *(['--generation-detach-test'] if handoff_mode == 'nonframe-active-reap' and args.generation == 0 else []),
             *(['--test-generation-frame-source'] if os.environ.get('KER_SESSION_TEST_FRAME_FULL')=='1' or
                 os.environ.get('KER_SESSION_TEST_FRAME_DEATH_PREPARED')=='1' or
@@ -1639,6 +1646,9 @@ def _run_session_impl(args, api):
                 startup += data
                 if len(startup) > 65536:
                     raise RuntimeError('native startup/control output exceeded its bound')
+            if handoff_mode == 'generation-forward-tcp' and b'KER_HANDOFF_TCP_ACCEPTED\n' in startup and not metrics.get('handoff_tcp_accepted'):
+                metrics['handoff_tcp_accepted'] = True
+                publish()
 
         def trigger_handoff_udp():
             nonlocal handoff_udp_sequence, frame_death_complete, frame_death_worker_expected_code, peer_control_w
@@ -2067,6 +2077,42 @@ def _run_session_impl(args, api):
                         close(handoff_fd); handoff_fd = None
                         reject_handoff_trigger_eof(handoff_mode, handoff_seen, handoff_udp_sequence)
                     action = handoff_trigger_action(data)
+                    if data == b'I':
+                        if (handoff_mode != 'generation-forward-tcp' or peer_worker is None or
+                                peer_control_w < 0 or metrics.get('stage') != 'handoff-complete' or
+                                metrics.get('handoff',{}).get('peer_worker_pid') != peer_worker.pid or
+                                os.environ.get('KER_SESSION_TEST_GENERATION_FORWARD_PRODUCER') != '1'):
+                            raise RuntimeError('generation test frame injection is outside its explicit profile')
+                        header = bytearray()
+                        while len(header) < 2:
+                            part = os.read(handoff_fd, 2-len(header))
+                            if not part: raise RuntimeError('generation test frame command ended before its length')
+                            header.extend(part)
+                        frame_length = struct.unpack('!H', header)[0]
+                        if not 14 <= frame_length <= 1518:
+                            raise RuntimeError('generation test frame length is outside the bounded Ethernet profile')
+                        frame = bytearray()
+                        while len(frame) < frame_length:
+                            part = os.read(handoff_fd, frame_length-len(frame))
+                            if not part: raise RuntimeError('generation test frame command ended before its payload')
+                            frame.extend(part)
+                        command = b'I' + bytes(header) + bytes(frame)
+                        offset = 0; deadline = time.monotonic() + 3
+                        while offset < len(command):
+                            try: offset += os.write(peer_control_w, command[offset:])
+                            except BlockingIOError:
+                                if time.monotonic() >= deadline: raise RuntimeError('active worker control pipe stayed full')
+                                select.select([], [peer_control_w], [], min(0.02, deadline-time.monotonic()))
+                        forwarded = ready('KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED', process=peer_worker)
+                        if forwarded != dict(producer_generation=1, target_generation=0,
+                                length=frame_length, frame_hex=bytes(frame).hex()):
+                            raise RuntimeError('active worker did not acknowledge the exact explicit old-generation frame')
+                        print('KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED ' +
+                            json.dumps(forwarded, sort_keys=True), flush=True)
+                        ack_fd = int(os.environ.get('KER_SESSION_TEST_GENERATION_FORWARD_ACK_FD', '-1'))
+                        if ack_fd < 0 or os.write(ack_fd, b'A') != 1:
+                            raise RuntimeError('could not acknowledge exact generation frame to TAP bridge')
+                        continue
                     if action == 'udp':
                         trigger_handoff_udp()
                         handoff_fd = close_completed_handoff_trigger(
@@ -2080,7 +2126,7 @@ def _run_session_impl(args, api):
                         close(handoff_fd); handoff_fd = None
                     elif action == 'handoff':
                         if (handoff_mode not in FRAME_U2_TRIGGER_MODES and
-                                handoff_mode != 'frame-death-queued'):
+                                handoff_mode not in ('frame-death-queued', 'generation-forward-tcp')):
                             close(handoff_fd); handoff_fd = None
                         perform_test_handoff()
                         handoff_seen = True
