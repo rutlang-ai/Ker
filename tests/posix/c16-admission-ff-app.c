@@ -7,10 +7,10 @@
 #include <ff_api.h>
 #include <ff_config.h>
 #include <ff_reload.h>
-#include <ker/reload.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -70,6 +70,34 @@ static int window_rearming;
 static int recursive_wait_checked;
 static const char *setup_stage = "map bootstrap";
 static uint64_t monotonic_ns(void);
+
+static int attach_test_reload_state(void)
+{
+	struct ff_reload_state *state = reload_state;
+	memset(state, 0, sizeof(*state));
+	state->magic = FF_RELOAD_STATE_MAGIC;
+	state->version = FF_RELOAD_STATE_VERSION;
+	state->len = sizeof(*state);
+	state->epoch = 1;
+	state->active_gen = 0;
+	state->target_gen = 0;
+	state->kni_owner_gen = 0;
+	state->rx_owner_gen = 0;
+	if (!ff_reload_state_valid(state, sizeof(*state))) return -1;
+	ff_global_cfg.dpdk.graceful_reload = 1;
+	ff_reload_set_epoch(1);
+	ff_reload_set_gen(0);
+	ff_reload_attach_state(state);
+	return ff_reload_state_attached() ? 0 : -1;
+}
+
+static void detach_test_reload_state(void)
+{
+	ff_reload_attach_state(NULL);
+	ff_reload_set_epoch(0);
+	ff_reload_set_gen(0);
+	ff_global_cfg.dpdk.graceful_reload = 0;
+}
 
 static int staged_slot_select_rejected(int slot_cap)
 {
@@ -360,10 +388,9 @@ static void setup_owner(void)
 	bool candidate_no_task_refused = false;
 	ff_global_cfg.dpdk.graceful_reload = 1;
 	setup_stage = "reload state allocation/bind";
-	size_t state_size = ker_reload_state_size();
-	reload_state = calloc(1, state_size);
-	if (!reload_state || ker_reload_state_init(reload_state, state_size, 0) ||
-	    ker_reload_bind_state(reload_state, state_size, 1, 0)) goto fail;
+	reload_state = calloc(1, sizeof(struct ff_reload_state));
+	if (!reload_state) goto fail;
+	if (attach_test_reload_state()) goto fail;
 	ff_flow_map_cap_set(64);
 	ff_flow_map_open();
 	if (!ff_flow_map_active() || !ff_reload_state_attached() ||
@@ -819,7 +846,7 @@ int main(int argc, char **argv)
 	if (retired_probe_fd >= 0) (void)ff_close(retired_probe_fd);
 	if (epoll_fd >= 0) (void)ff_close(epoll_fd);
 	ff_flow_map_close();
-	ker_reload_unbind_state();
+	detach_test_reload_state();
 	free(reload_state);
 	return 0;
 }

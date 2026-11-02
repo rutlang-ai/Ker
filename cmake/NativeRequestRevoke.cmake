@@ -94,8 +94,8 @@ if(BUILD_TESTING)
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 
     # C16 separates the original-Linux broker process from the FF owner
-    # process. The latter links the unchanged flow-map/reload sources and
-    # talks to the broker through the opt-in owner capability.
+    # process. The FF owner resolves the unchanged flow-map/reload code from
+    # its runtime DSO and talks to the broker through the opt-in capability.
     add_executable(ker-c16-admission-broker
         "${PROJECT_SOURCE_DIR}/tests/posix/c16-admission-broker.c")
     target_link_libraries(ker-c16-admission-broker PRIVATE ker::socket-broker-server)
@@ -120,20 +120,34 @@ if(BUILD_TESTING)
             "C16 native admission tests require the FF runtime or its BUILD_TESTING-only target")
     endif()
     if(ker_c16_fstack_runtime_target)
+        add_executable(ker-fstack-flow-map-runtime-test
+            "${PROJECT_SOURCE_DIR}/tests/posix/fstack-flow-map-runtime.c")
+        target_include_directories(ker-fstack-flow-map-runtime-test PRIVATE
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
+        target_include_directories(ker-fstack-flow-map-runtime-test SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
+        target_compile_features(ker-fstack-flow-map-runtime-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-flow-map-runtime-test PRIVATE -Wall -Wextra -Werror -fPIC)
+        target_link_libraries(ker-fstack-flow-map-runtime-test PRIVATE
+            ${ker_c16_fstack_runtime_target} ${CMAKE_DL_LIBS})
+        add_test(NAME fstack-flow-map-runtime-dso
+            COMMAND "$<TARGET_FILE:ker-fstack-flow-map-runtime-test>")
+        set_tests_properties(fstack-flow-map-runtime-dso PROPERTIES
+            TIMEOUT 10 LABELS "fstack;flow-map;runtime-dso;original-source")
+
         add_executable(ker-c16-admission-ff-app
-            "${PROJECT_SOURCE_DIR}/tests/posix/c16-admission-ff-app.c"
-            "${PROJECT_SOURCE_DIR}/src/compat/reload.c"
-            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map/ff_flow_map.c")
+            "${PROJECT_SOURCE_DIR}/tests/posix/c16-admission-ff-app.c")
         target_include_directories(ker-c16-admission-ff-app PRIVATE
             "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/posix"
-            "${PROJECT_SOURCE_DIR}/src/compat"
             "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
             "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
             "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
             "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
         target_include_directories(ker-c16-admission-ff-app SYSTEM PRIVATE ${DPDK_INCLUDE_DIRS})
         target_compile_features(ker-c16-admission-ff-app PRIVATE c_std_11)
-        target_compile_options(ker-c16-admission-ff-app PRIVATE -Wall -Wextra -Werror)
+        target_compile_options(ker-c16-admission-ff-app PRIVATE -Wall -Wextra -Werror -fPIC)
         target_link_options(ker-c16-admission-ff-app PRIVATE -Wl,-E)
         target_link_libraries(ker-c16-admission-ff-app PRIVATE
             ker::ipc PkgConfig::DPDK "${ker_controller_ring_pmd}"
