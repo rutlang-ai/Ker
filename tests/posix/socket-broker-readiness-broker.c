@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include <ker/socket-broker-server.h>
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
 #include "socket-broker-readiness-test.h"
+#endif
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
@@ -49,7 +51,11 @@ int main(int argc, char **argv)
 {
     (void)signal(SIGPIPE, SIG_IGN);
     bool skip_bootstrap = argc == 3 && strcmp(argv[2], "--skip-bootstrap") == 0;
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
     bool verify_barrier = argc == 4 && strcmp(argv[2], "--verify-barrier") == 0;
+#else
+    bool verify_barrier = false;
+#endif
     if (argc != 2 && !skip_bootstrap && !verify_barrier) {
         fprintf(stderr, "usage: broker-readiness <rpc-path> [--skip-bootstrap|--verify-barrier <path>]\n");
         return 2;
@@ -72,6 +78,7 @@ int main(int argc, char **argv)
     CHECK(ker_socket_broker_server_readiness_attach(server, control_fd,
         nonce, epoch, profile, parent_start) == 0);
     CHECK(syscall(SYS_close, control_fd) == 0);
+#ifdef KER_SOCKET_BROKER_VERIFY_BARRIER_TESTING
     if (verify_barrier) {
         int barrier_fd = (int)syscall(SYS_socket, AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
         CHECK(barrier_fd >= 0);
@@ -84,6 +91,7 @@ int main(int argc, char **argv)
             server, barrier_fd) == 0);
         CHECK(syscall(SYS_close, barrier_fd) == 0);
     }
+#endif
     if (!skip_bootstrap)
         CHECK(ker_socket_broker_server_bootstrap_complete_empty(server) == 0);
     puts("BROKER_ENTER");
