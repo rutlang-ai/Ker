@@ -53,7 +53,8 @@ def wire_ker_builtin_adapters(source):
     """
     makefile = Path(source) / 'arch/lkl/kernel/Makefile'
     text = makefile.read_text()
-    objects = ('ker_tcp_payload.o', 'ker_tcp_request_revoke.o')
+    objects = ('ker_tcp_payload.o', 'ker_tcp_request_revoke.o',
+        'ker_ff_admission_queue.o')
     for object_name in objects:
         if text.count(object_name):
             raise RuntimeError('generated LKL Makefile already wires ' + object_name)

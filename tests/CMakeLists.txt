@@ -11,6 +11,66 @@ target_link_libraries(ker-refcount-test PRIVATE ker_port_headers ker_linux_port 
 add_test(NAME refcount COMMAND ker-refcount-test)
 
 if(KER_WITH_DPDK)
+    add_executable(ker-fstack-c15-map-bootstrap fstack-c15-map-bootstrap.c)
+    target_include_directories(ker-fstack-c15-map-bootstrap PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/compat"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+    target_link_libraries(ker-fstack-c15-map-bootstrap PRIVATE
+        ker::ipc PkgConfig::DPDK "${ker_controller_ring_pmd}")
+    target_compile_options(ker-fstack-c15-map-bootstrap PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-c15-map-bootstrap PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-c15-real-map-bootstrap COMMAND ker-fstack-c15-map-bootstrap)
+    set_tests_properties(fstack-c15-real-map-bootstrap PROPERTIES TIMEOUT 30 LABELS "fstack;flow-map")
+
+    add_executable(ker-fstack-c15-admission-channel
+        fstack-c15-admission-channel.c "${PROJECT_SOURCE_DIR}/src/posix/ff-admission-channel.c")
+    target_include_directories(ker-fstack-c15-admission-channel PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/src/compat"
+        "${PROJECT_SOURCE_DIR}/src/posix"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+    target_link_libraries(ker-fstack-c15-admission-channel PRIVATE
+        ker::ipc PkgConfig::DPDK "${ker_controller_ring_pmd}" Threads::Threads)
+    target_compile_options(ker-fstack-c15-admission-channel PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(ker-fstack-c15-admission-channel PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-c15-admission-owner-channel COMMAND ker-fstack-c15-admission-channel)
+    set_tests_properties(fstack-c15-admission-owner-channel PROPERTIES
+        TIMEOUT 10 LABELS "fstack;flow-map;admission")
+
+    if(KER_WITH_NATIVE_TCP)
+    add_executable(ker-fstack-c15-admission-wire
+        fstack-c15-admission-wire.c
+        "${PROJECT_SOURCE_DIR}/src/posix/ff-admission-queue.c"
+        "${PROJECT_SOURCE_DIR}/src/posix/ff-admission-channel.c"
+        "${PROJECT_SOURCE_DIR}/src/posix/ff-owner-requests-diag.c"
+        "${PROJECT_SOURCE_DIR}/src/posix/ff-owner-requests-parse.c")
+    target_include_directories(ker-fstack-c15-admission-wire SYSTEM PRIVATE
+        "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
+    target_include_directories(ker-fstack-c15-admission-wire PRIVATE
+        "${PROJECT_SOURCE_DIR}/include" "${PROJECT_BINARY_DIR}/ipc-include"
+        "${PROJECT_SOURCE_DIR}/src/compat" "${PROJECT_SOURCE_DIR}/src/posix"
+        "${PROJECT_SOURCE_DIR}/src/posix/lkl-overlay/arch/lkl/include"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-reload"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+    target_link_libraries(ker-fstack-c15-admission-wire PRIVATE
+        ker::ipc PkgConfig::DPDK "${ker_native_tools}/liblkl.a"
+        Threads::Threads ${CMAKE_DL_LIBS} rt)
+    target_compile_options(ker-fstack-c15-admission-wire PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(ker-fstack-c15-admission-wire PRIVATE KER_C15_TEST_ACK_LOSS=1)
+    set_target_properties(ker-fstack-c15-admission-wire PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS OFF)
+    add_test(NAME fstack-c15-original-lkl-loopback-admission-smoke
+        COMMAND ker-fstack-c15-admission-wire)
+    set_tests_properties(fstack-c15-original-lkl-loopback-admission-smoke PROPERTIES
+        TIMEOUT 30 LABELS "native-lkl;loopback;smoke;flow-map;admission;nfqueue")
+    endif()
+
     add_executable(ker-fstack-generation-config-test fstack-generation-config.c)
     target_include_directories(ker-fstack-generation-config-test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc")
     target_link_libraries(ker-fstack-generation-config-test PRIVATE ker-example-fstack-config ker::reload)

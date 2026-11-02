@@ -1798,13 +1798,32 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     require(runner.poll() is None,'runner exited before active-consumer recovery completed')
                     time.sleep(0.005)
                 proof=after.get('handoff_frame_death') or {};drain=proof.get('drain',{})
+                unrelated_committed=proof.get('unrelated_committed',[])
+                unrelated_drained=proof.get('unrelated_drained',[])
+                waiting_proof=after.get('handoff_frame_death_waiting') or {}
+                prior_committed=waiting_proof.get('unrelated_committed',[])
+                prior_drained=waiting_proof.get('unrelated_drained',[])
+                trailing_committed=[]
+                try:
+                    for output_line in proof.get('producer_output','').splitlines():
+                        if output_line.startswith('KER_SESSION_FRAME_COMMITTED '):
+                            trailing_committed.append(json.loads(
+                                output_line.removeprefix('KER_SESSION_FRAME_COMMITTED ')))
+                except (AttributeError, TypeError, json.JSONDecodeError):
+                    trailing_committed=None
                 require(proof.get('stage')=='producer-active-consumer' and
                     proof.get('producer_pidfd_dead') is True and proof.get('producer_status')==-signal.SIGKILL and
                     proof.get('consumer_still_live') is True and proof.get('consumer_status') is None and
                     drain.get('object_index')==committed.get('object_index') and
                     drain.get('packet_pointer')==committed.get('packet_pointer') and
                     drain.get('frame_hex')==committed.get('frame_hex') and drain.get('tx_after')==0 and
+                    isinstance(unrelated_committed,list) and isinstance(unrelated_drained,list) and
                     len(unrelated_committed)==len(unrelated_drained)<=8 and
+                    isinstance(prior_committed,list) and isinstance(prior_drained,list) and
+                    trailing_committed is not None and
+                    unrelated_committed==prior_committed+trailing_committed and
+                    unrelated_drained[:len(prior_drained)]==prior_drained and
+                    len(unrelated_drained[len(prior_drained):])==len(trailing_committed) and
                     all(commit.get('frame_hex')==drained.get('frame_hex') and
                         commit.get('object_index')==drained.get('object_index') and
                         commit.get('pool_tag')==drained.get('pool_tag') and
@@ -1813,8 +1832,8 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                         commit.get('tx_lease_id')==drained.get('lease_id')
                         for commit,drained in zip(unrelated_committed,unrelated_drained)) and
                     drain.get('unrelated_count')==len(unrelated_committed) and
-                    drain.get('tx_before')==len(unrelated_committed)+1 and
-                    drain.get('pool_in_use_after',-1)+len(unrelated_committed)+1==drain.get('pool_in_use_before') and
+                    drain.get('tx_resume')==len(trailing_committed) and
+                    drain.get('pool_in_use_after',-1)+len(trailing_committed)+1==drain.get('pool_in_use_resume') and
                     proof.get('final_census',{}).get('process')==1 and
                     active_consumer_kept_handoff_owner(proof,after['handoff']),
                     'active live consumer did not retain and release the exact committed packet: '+repr(proof))

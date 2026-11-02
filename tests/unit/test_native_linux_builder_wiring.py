@@ -26,12 +26,14 @@ class NativeLinuxBuilderWiringTests(unittest.TestCase):
             builder.wire_ker_builtin_adapters(self.root)
         self.assertEqual(self.makefile.read_text(),
             'obj-y = setup.o misc.o \\\n\tconsole.o\nobj-y += ker_tcp_payload.o\n'
-            'obj-y += ker_tcp_request_revoke.o\n')
+            'obj-y += ker_tcp_request_revoke.o\n'
+            'obj-y += ker_ff_admission_queue.o\n')
         git.assert_called_once_with(self.root, 'add', '--',
             'arch/lkl/kernel/Makefile')
 
     def test_refuses_duplicate_generated_wiring_for_each_adapter(self):
-        for object_name in ('ker_tcp_payload.o', 'ker_tcp_request_revoke.o'):
+        for object_name in ('ker_tcp_payload.o', 'ker_tcp_request_revoke.o',
+                            'ker_ff_admission_queue.o'):
             with self.subTest(object_name=object_name):
                 self.makefile.write_text('obj-y = setup.o misc.o\nobj-y += ' +
                     object_name + '\n')
