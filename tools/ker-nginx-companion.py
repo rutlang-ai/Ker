@@ -33,6 +33,9 @@ STOP_PHASE = 3
 MAX_CONFIG_BYTES = 4 * 1024 * 1024
 MAX_CONFIG_TOKEN_BYTES = 4096
 MAX_CONFIG_DIRECTIVES = 65536
+SIGNAL_HANDLER_READY_TIMEOUT = 5.0
+REQUIRED_MASTER_SIGNALS = ((1 << (signal.SIGHUP - 1)) |
+    (1 << (signal.SIGQUIT - 1)))
 
 
 def start_ticks(pid):
@@ -60,6 +63,49 @@ def process_alive(pidfd):
     poller = select.poll()
     poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
     return not poller.poll(0)
+
+
+def caught_signals(pid):
+    """Return /proc SigCgt, the kernel's installed-handler bitset."""
+    try:
+        for line in Path(f'/proc/{pid}/status').read_text(encoding='ascii').splitlines():
+            if line.startswith('SigCgt:\t'):
+                value = int(line.split('\t', 1)[1], 16)
+                if value < 0:
+                    break
+                return value
+    except (OSError, UnicodeError, ValueError):
+        pass
+    raise RuntimeError('cannot read a valid Nginx master SigCgt status')
+
+
+def wait_for_master_signal_handlers(master, master_pidfd, master_start,
+        binary_hash, supervisor_pid, supervisor_start, supervisor_pidfd,
+        supervisor_hash, deadline):
+    """Publish no STARTED receipt until the pinned master catches HUP/QUIT."""
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Nginx master signal-handler readiness timed out')
+        if (master.poll() is not None or not process_alive(master_pidfd) or
+                start_ticks(master.pid) != master_start or
+                sha256_file(f'/proc/{master.pid}/exe') != binary_hash):
+            raise ProcessLookupError('Nginx master exited or changed before handler readiness')
+        if (not process_alive(supervisor_pidfd) or
+                start_ticks(supervisor_pid) != supervisor_start or
+                sha256_file(f'/proc/{supervisor_pid}/exe') != supervisor_hash):
+            raise ProcessLookupError('companion supervisor exited before handler readiness')
+        if caught_signals(master.pid) & REQUIRED_MASTER_SIGNALS == REQUIRED_MASTER_SIGNALS:
+            # Recheck all pinned identities immediately before STARTED.
+            if (master.poll() is None and process_alive(master_pidfd) and
+                    start_ticks(master.pid) == master_start and
+                    sha256_file(f'/proc/{master.pid}/exe') == binary_hash and
+                    process_alive(supervisor_pidfd) and
+                    start_ticks(supervisor_pid) == supervisor_start and
+                    sha256_file(f'/proc/{supervisor_pid}/exe') == supervisor_hash):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Nginx signal-handler readiness timed out')
+                return
+        time.sleep(0.01)
 
 
 def sha256_file(path):
@@ -521,6 +567,12 @@ def run(args):
             raise PermissionError('pinned Nginx master exited before reload')
         if not process_alive(master_pidfd):
             raise PermissionError('pinned Nginx master identity is no longer live')
+        if caught_signals(master.pid) & REQUIRED_MASTER_SIGNALS != REQUIRED_MASTER_SIGNALS:
+            raise PermissionError('pinned Nginx master signal handlers are not installed')
+        if (not process_alive(supervisor_pidfd) or
+                start_ticks(expected_parent_pid) != expected_parent_start or
+                sha256_file(f'/proc/{expected_parent_pid}/exe') != expected_parent_hash):
+            raise PermissionError('companion supervisor identity is no longer live')
         current_binary_hash = sha256_file(binary)
         current_config_bytes = read_bounded_config(config)
         current_config_hash = hashlib.sha256(current_config_bytes).digest()
@@ -552,8 +604,22 @@ def run(args):
             close_fds=True, start_new_session=False)
         master_pidfd = os.pidfd_open(master.pid, 0)
         master_ticks = start_ticks(master.pid)
+        signal_ready_deadline = time.monotonic() + SIGNAL_HANDLER_READY_TIMEOUT
         if sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash:
             raise PermissionError('executed Nginx binary identity differs')
+        wait_for_master_signal_handlers(master, master_pidfd, master_ticks,
+            actual_binary_hash, expected_parent_pid, expected_parent_start,
+            supervisor_pidfd, expected_parent_hash, signal_ready_deadline)
+        if (time.monotonic() >= signal_ready_deadline or
+                caught_signals(master.pid) & REQUIRED_MASTER_SIGNALS !=
+                REQUIRED_MASTER_SIGNALS or not process_alive(master_pidfd) or
+                start_ticks(master.pid) != master_ticks or
+                sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash or
+                not process_alive(supervisor_pidfd) or
+                start_ticks(expected_parent_pid) != expected_parent_start or
+                sha256_file(f'/proc/{expected_parent_pid}/exe') != expected_parent_hash or
+                time.monotonic() >= signal_ready_deadline):
+            raise PermissionError('pinned Nginx signal readiness changed before STARTED')
         started_body = wire.STARTED_BODY.pack(master.pid, os.getuid(), os.getgid(),
             0, master_ticks, actual_binary_hash, profile)
         send_record(channel, wire.pack_record(wire.STARTED, started_body,

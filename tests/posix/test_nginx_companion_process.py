@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -39,6 +40,15 @@ def wait_handler_ready(path, timeout=2.0):
     raise RuntimeError('test server did not publish its installed signal handlers')
 
 
+def wait_for_path(path, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.005)
+    raise RuntimeError(f'test fixture did not create {path.name}')
+
+
 def load_module(path, name):
     loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(name, loader)
@@ -53,6 +63,10 @@ def wait_dead(pidfd, timeout):
     poller = select.poll()
     poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
     return bool(poller.poll(int(timeout * 1000)))
+
+
+def process_alive(pidfd):
+    return not wait_dead(pidfd, 0)
 
 
 def close_manager(manager):
@@ -105,6 +119,13 @@ def new_manager(supervisor, server, helper_path, config, prefix, environment):
     manager.start(timeout=5)
     wait_handler_ready(prefix / 'hup-observed')
     return manager
+
+
+def _capture_start(manager, errors):
+    try:
+        manager.start(timeout=12)
+    except BaseException as error:
+        errors.append(error)
 
 
 def exercise_profile_mutation(supervisor, server, helper_path, config, prefix,
@@ -259,6 +280,104 @@ def main():
         config_text = 'daemon off;\nmaster_process on;\nworker_processes 1;\n'
         ini_text = (f'[ker_socket_broker]\nversion=1\npath={broker_path}\n'
             '[dpdk]\ngraceful_reload=0\n')
+
+        # Delay the test master's signal-handler installation. The helper must
+        # withhold STARTED until the kernel reports HUP/QUIT as caught.
+        delayed_prefix = root / 'delayed-prefix'
+        delayed_prefix.mkdir()
+        (delayed_prefix / 'delay-signal-handlers').touch()
+        delayed_config = root / 'delayed-nginx.conf'
+        delayed_config.write_text(config_text, encoding='utf-8')
+        delayed_ini = root / 'delayed-fstack.ini'
+        delayed_ini.write_text(ini_text, encoding='utf-8')
+        delayed_environment = dict(environment,
+            KER_FSTACK_NGINX_INI=str(delayed_ini))
+        delayed = supervisor.NginxCompanion(args.server, delayed_config,
+            delayed_prefix, delayed_environment)
+        delayed.helper_path = args.helper.resolve(strict=True)
+        delayed.helper_script_hash = supervisor._sha256(delayed.helper_path)
+        delayed_errors = []
+        start_thread = threading.Thread(target=lambda: _capture_start(
+            delayed, delayed_errors), daemon=True)
+        start_thread.start()
+        try:
+            wait_for_path(delayed_prefix / 'signal-handler-waiting')
+            delayed_master_pid = int((delayed_prefix /
+                'signal-handler-waiting').read_text(encoding='ascii'))
+            delayed_master_pidfd = os.pidfd_open(delayed_master_pid, 0)
+            poller = select.poll()
+            poller.register(delayed.channel.fileno(), select.POLLIN)
+            require(not poller.poll(100) and not delayed.started,
+                'helper published STARTED before test-master signal handlers were installed')
+            require(process_alive(delayed_master_pidfd),
+                'delayed test master exited before handler release')
+            require(not (delayed_prefix / 'hup-observed').exists(),
+                'test master received HUP before its handlers were installed')
+            (delayed_prefix / 'release-signal-handlers').touch()
+            start_thread.join(timeout=8)
+            require(not start_thread.is_alive() and not delayed_errors and delayed.started,
+                'helper did not publish STARTED after signal handlers became ready')
+            delayed.reload(timeout=5)
+            require(wait_marker_count(delayed_prefix / 'hup-observed', 1) == 1 and
+                    process_alive(delayed.master_pidfd),
+                'immediate post-STARTED reload did not reach a live handled master')
+            delayed.stop(timeout=5)
+            require(delayed.settled and not delayed.unresolved,
+                'delayed-handler profile did not settle after STOP')
+        finally:
+            (delayed_prefix / 'release-signal-handlers').touch()
+            start_thread.join(timeout=8)
+            cleanup_manager(delayed)
+            if 'delayed_master_pidfd' in locals():
+                os.close(delayed_master_pidfd)
+
+        # A master that never installs the required handlers must fail within
+        # the fixed startup deadline and be reaped without a success receipt.
+        never_prefix = root / 'never-ready-prefix'
+        never_prefix.mkdir()
+        (never_prefix / 'delay-signal-handlers').touch()
+        never_config = root / 'never-ready-nginx.conf'
+        never_config.write_text(config_text, encoding='utf-8')
+        never_ini = root / 'never-ready-fstack.ini'
+        never_ini.write_text(ini_text, encoding='utf-8')
+        never_environment = dict(environment, KER_FSTACK_NGINX_INI=str(never_ini))
+        never = supervisor.NginxCompanion(args.server, never_config,
+            never_prefix, never_environment)
+        never.helper_path = args.helper.resolve(strict=True)
+        never.helper_script_hash = supervisor._sha256(never.helper_path)
+        never_errors = []
+        never_thread = threading.Thread(target=lambda: _capture_start(
+            never, never_errors), daemon=True)
+        never_thread.start()
+        never_master_pidfd = -1
+        try:
+            wait_for_path(never_prefix / 'signal-handler-waiting')
+            never_master_pid = int((never_prefix /
+                'signal-handler-waiting').read_text(encoding='ascii'))
+            never_master_pidfd = os.pidfd_open(never_master_pid, 0)
+            poller = select.poll()
+            poller.register(never.channel.fileno(), select.POLLIN)
+            require(not poller.poll(100) and not never.started,
+                'never-ready master produced a STARTED receipt')
+            never_thread.join(timeout=12)
+            require(not never_thread.is_alive() and bool(never_errors) and
+                    never.unresolved and not never.started,
+                'never-ready master was not rejected before STARTED')
+            require(never_master_pidfd >= 0 and wait_dead(never_master_pidfd, 0.1),
+                'never-ready master was not reaped within the bounded startup failure')
+            require(not (never_prefix / 'hup-observed').exists(),
+                'never-ready master received HUP')
+            if never.helper is not None:
+                never.helper.wait(timeout=8)
+                require(never.helper.returncode != 0,
+                    'never-ready helper returned success')
+        finally:
+            (never_prefix / 'release-signal-handlers').touch()
+            never_thread.join(timeout=8)
+            cleanup_manager(never)
+            if never_master_pidfd >= 0:
+                os.close(never_master_pidfd)
+
         good = None
         try:
             good = new_manager(supervisor, args.server, helper_path, config,

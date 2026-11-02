@@ -19,6 +19,12 @@ subtree leaves `ker-run` in a retained-failure state with the native broker and
 worker resources still held; explicit termination of that state is not a
 successful cleanup proof.
 
+The helper sends STARTED only after `/proc/<master>/status` reports installed
+SIGHUP and SIGQUIT handlers for the exact pinned master process. This proves
+the signal dispositions are installed; it does not prove the master event loop,
+worker, or HTTP service is ready. Reload results continue to mean only that the
+helper delivered SIGHUP to the pinned master.
+
 A reload result confirms that the helper delivered SIGHUP to the pinned master;
 it is not evidence that the new worker accepted traffic or that a graceful
 reload generation was selected.
