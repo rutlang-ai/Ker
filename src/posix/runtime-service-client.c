@@ -22,7 +22,7 @@
 #endif
 
 #define RESPONSE_MAX (sizeof(struct ker_runtime_service_header) + \
-    sizeof(struct ker_runtime_service_claim_result))
+    sizeof(struct ker_runtime_service_delegate_bind_result))
 /* One monotonic bound covers connect, send and receive for each RPC. */
 #ifdef KER_RUNTIME_SERVICE_CLIENT_TESTING
 static uint64_t rpc_timeout_ns = UINT64_C(2000000000);
@@ -277,7 +277,7 @@ static void close_owned_fd(struct ker_runtime_service_client *client)
 }
 
 static int open_channel(struct ker_runtime_service_client *client,
-    const struct rpc_deadline *deadline)
+    const struct rpc_deadline *deadline, bool allow_reparented)
 {
     if (client->path[0] != '/') { errno = EINVAL; return -1; }
     size_t path_length = strnlen(client->path, sizeof(client->path));
@@ -347,7 +347,7 @@ static int open_channel(struct ker_runtime_service_client *client,
         return -1;
     }
     if (!client->supervisor_pid || peer.pid != client->supervisor_pid ||
-        peer.pid != getppid()) {
+        (!allow_reparented && peer.pid != getppid())) {
         (void)syscall(SYS_close, fd);
         errno = EACCES;
         return -1;
@@ -484,6 +484,7 @@ static void initialize_header(struct ker_runtime_service_client *client,
 static int rpc(struct ker_runtime_service_client *client, uint16_t operation,
     const uint8_t lease_id[KER_RUNTIME_SERVICE_LEASE_BYTES],
     const void *body, size_t body_length, bool claim_response,
+    int send_fd, void *response_body, size_t response_body_length,
     uint8_t response_lease[KER_RUNTIME_SERVICE_LEASE_BYTES],
     int *late_reply,
     const struct rpc_deadline *deadline)
@@ -498,7 +499,18 @@ static int rpc(struct ker_runtime_service_client *client, uint16_t operation,
         {.iov_base = &request, .iov_len = sizeof(request)},
         {.iov_base = (void *)body, .iov_len = body_length}
     };
+    char ancillary[CMSG_SPACE(sizeof(int))] = {0};
     struct msghdr message = {.msg_iov = vectors, .msg_iovlen = body_length ? 2 : 1};
+    if (send_fd >= 0) {
+        message.msg_control = ancillary;
+        message.msg_controllen = sizeof(ancillary);
+        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+        if (!header) { errno = EIO; return -1; }
+        header->cmsg_level = SOL_SOCKET;
+        header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(header), &send_fd, sizeof(send_fd));
+    }
     ssize_t sent;
     for (;;) {
         int ready = wait_ready(client->fd, POLLOUT, deadline);
@@ -599,8 +611,8 @@ static int rpc(struct ker_runtime_service_client *client, uint16_t operation,
     }
     struct ker_runtime_service_header reply;
     memcpy(&reply, packet, sizeof(reply));
-    size_t expected_body = claim_response && reply.status == 0 ?
-        sizeof(struct ker_runtime_service_claim_result) : 0;
+    size_t expected_body = reply.status == 0 ? (claim_response ?
+        sizeof(struct ker_runtime_service_claim_result) : response_body_length) : 0;
     if (reply.magic != KER_RUNTIME_SERVICE_MAGIC ||
         reply.version != KER_RUNTIME_SERVICE_VERSION ||
         reply.operation != operation || reply.packet_length != (uint32_t)received ||
@@ -627,6 +639,9 @@ static int rpc(struct ker_runtime_service_client *client, uint16_t operation,
         if (response_lease) memcpy(response_lease, reply.lease_id, sizeof(reply.lease_id));
         memcpy(client->worker_profile_hash, packet + sizeof(reply),
             sizeof(client->worker_profile_hash));
+    } else if (response_body_length) {
+        if (!response_body) { client->failed = 1; errno = EINVAL; return -1; }
+        memcpy(response_body, packet + sizeof(reply), response_body_length);
     }
     return 0;
 }
@@ -638,6 +653,16 @@ void ker_runtime_service_client_init(struct ker_runtime_service_client *client)
     client->fd = -1;
     client->initialized = 1;
 }
+
+static int claim_common(struct ker_runtime_service_client *client,
+    const char *path, const uint8_t run_nonce[KER_RUNTIME_SERVICE_NONCE_BYTES],
+    uint64_t service_epoch, const uint8_t ticket[KER_RUNTIME_SERVICE_TICKET_BYTES],
+    uint32_t role,
+    const uint8_t role_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    const uint8_t expected_worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    int32_t supervisor_pid, uint64_t supervisor_start_time,
+    const uint8_t supervisor_exe_sha256[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    bool delegated);
 
 static int validate_owner(struct ker_runtime_service_client *client)
 {
@@ -663,6 +688,21 @@ int ker_runtime_service_claim(struct ker_runtime_service_client *client,
     int32_t supervisor_pid, uint64_t supervisor_start_time,
     const uint8_t supervisor_exe_sha256[KER_RUNTIME_SERVICE_PROFILE_BYTES])
 {
+    return claim_common(client, path, run_nonce, service_epoch, ticket, 0,
+        role_profile_hash, expected_worker_profile_hash, supervisor_pid,
+        supervisor_start_time, supervisor_exe_sha256, false);
+}
+
+static int claim_common(struct ker_runtime_service_client *client,
+    const char *path, const uint8_t run_nonce[KER_RUNTIME_SERVICE_NONCE_BYTES],
+    uint64_t service_epoch, const uint8_t ticket[KER_RUNTIME_SERVICE_TICKET_BYTES],
+    uint32_t role,
+    const uint8_t role_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    const uint8_t expected_worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    int32_t supervisor_pid, uint64_t supervisor_start_time,
+    const uint8_t supervisor_exe_sha256[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    bool delegated)
+{
     if (!client || !path || !run_nonce || !ticket || !role_profile_hash ||
         !expected_worker_profile_hash || !supervisor_exe_sha256 || supervisor_pid <= 0 ||
         !bytes_nonzero(run_nonce, KER_RUNTIME_SERVICE_NONCE_BYTES) ||
@@ -672,7 +712,11 @@ int ker_runtime_service_claim(struct ker_runtime_service_client *client,
         !supervisor_start_time) {
         errno = EINVAL; return -1;
     }
-    if (!client->initialized) { errno = EINVAL; return -1; }
+    if (!client->initialized || (delegated && role !=
+            KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1 && role !=
+            KER_RUNTIME_SERVICE_ROLE_SLIM_PRIMARY) || (!delegated && role)) {
+        errno = EINVAL; return -1;
+    }
     if (client->lease_valid) { errno = EALREADY; return -1; }
     client->cleanup_only = 0;
     size_t path_length = strnlen(path, KER_RUNTIME_SERVICE_PATH_MAX + 1);
@@ -693,18 +737,20 @@ int ker_runtime_service_claim(struct ker_runtime_service_client *client,
     client->owner_start_time = start_time;
     client->supervisor_pid = supervisor_pid;
     client->supervisor_start_time = supervisor_start_time;
+    client->delegated_actor = delegated;
+    client->actor_role = role;
     memcpy(client->supervisor_exe_sha256, supervisor_exe_sha256,
         sizeof(client->supervisor_exe_sha256));
     client->failed = 0;
     struct rpc_deadline deadline;
-    if (start_deadline(&deadline) || open_channel(client, &deadline)) return -1;
+    if (start_deadline(&deadline) || open_channel(client, &deadline, delegated)) return -1;
     struct ker_runtime_service_claim body;
     memcpy(body.ticket, ticket, sizeof(body.ticket));
     memcpy(body.profile_hash, role_profile_hash, sizeof(body.profile_hash));
     uint8_t lease[KER_RUNTIME_SERVICE_LEASE_BYTES];
     int late_reply = 0;
     if (rpc(client, KER_RUNTIME_SERVICE_CLAIM, NULL, &body, sizeof(body), true,
-            lease, &late_reply, &deadline)) {
+            -1, NULL, 0, lease, &late_reply, &deadline)) {
         close_owned_fd(client);
         return -1;
     }
@@ -716,7 +762,7 @@ int ker_runtime_service_claim(struct ker_runtime_service_client *client,
         int release_late = 0;
         if (!start_deadline(&release_deadline) &&
             !rpc(client, KER_RUNTIME_SERVICE_RELEASE, client->lease_id, NULL, 0,
-                false, NULL, &release_late, &release_deadline)) {
+                false, -1, NULL, 0, NULL, &release_late, &release_deadline)) {
             client->lease_valid = 0;
             memset(client->lease_id, 0, sizeof(client->lease_id));
             close_owned_fd(client);
@@ -732,6 +778,136 @@ int ker_runtime_service_claim(struct ker_runtime_service_client *client,
     return 0;
 }
 
+int ker_runtime_service_claim_delegated(struct ker_runtime_service_client *client,
+    const char *path, const uint8_t run_nonce[KER_RUNTIME_SERVICE_NONCE_BYTES],
+    uint64_t service_epoch, const uint8_t ticket[KER_RUNTIME_SERVICE_TICKET_BYTES],
+    uint32_t role,
+    const uint8_t role_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    const uint8_t expected_worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    int32_t supervisor_pid, uint64_t supervisor_start_time,
+    const uint8_t supervisor_exe_sha256[KER_RUNTIME_SERVICE_PROFILE_BYTES])
+{
+    return claim_common(client, path, run_nonce, service_epoch, ticket, role,
+        role_profile_hash, expected_worker_profile_hash, supervisor_pid,
+        supervisor_start_time, supervisor_exe_sha256, true);
+}
+
+static int fill_random_bytes(uint8_t *bytes, size_t length)
+{
+    size_t offset = 0;
+    while (offset < length) {
+        ssize_t count = (ssize_t)syscall(SYS_getrandom, bytes + offset,
+            length - offset, 0);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) { if (!count) errno = EIO; return -1; }
+        offset += (size_t)count;
+    }
+    return bytes_nonzero(bytes, length) ? 0 : (errno = EIO, -1);
+}
+
+int ker_runtime_service_delegate_intent(struct ker_runtime_service_client *client,
+    uint32_t child_role,
+    uint8_t intent_id[KER_RUNTIME_SERVICE_INTENT_BYTES])
+{
+    if (intent_id) memset(intent_id, 0, KER_RUNTIME_SERVICE_INTENT_BYTES);
+    if (validate_owner(client)) return -1;
+    if (!intent_id || !client->lease_valid || client->failed ||
+        client->delegation_terminal ||
+        client->cleanup_only) { errno = ENOTCONN; return -1; }
+    if ((client->actor_role == 0 && child_role !=
+            KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1) ||
+        (client->actor_role == KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1 &&
+            child_role != KER_RUNTIME_SERVICE_ROLE_SLIM_PRIMARY) ||
+        (client->actor_role != 0 && client->actor_role !=
+            KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (client->delegation_intent_valid) { errno = EALREADY; return -1; }
+    struct ker_runtime_service_delegate_intent body = {0};
+    body.role = child_role;
+    if (fill_random_bytes(body.request_nonce, sizeof(body.request_nonce))) return -1;
+    struct ker_runtime_service_delegate_intent_result result = {0};
+    struct rpc_deadline deadline;
+    if (start_deadline(&deadline)) return -1;
+    int late_reply = 0;
+    if (rpc(client, KER_RUNTIME_SERVICE_DELEGATE_INTENT, client->lease_id,
+            &body, sizeof(body), false, -1, &result, sizeof(result), NULL,
+            &late_reply, &deadline)) {
+        client->delegation_terminal = 1;
+        return -1;
+    }
+    if (late_reply || !bytes_nonzero(result.intent_id, sizeof(result.intent_id))) {
+        client->delegation_terminal = 1;
+        client->failed = 1;
+        errno = late_reply ? ETIMEDOUT : EPROTO;
+        return -1;
+    }
+    memcpy(client->delegation_intent_id, result.intent_id, sizeof(result.intent_id));
+    client->delegation_role = child_role;
+    client->delegation_intent_valid = 1;
+    memcpy(intent_id, result.intent_id, sizeof(result.intent_id));
+    return 0;
+}
+
+int ker_runtime_service_delegate_bind(struct ker_runtime_service_client *client,
+    const uint8_t intent_id[KER_RUNTIME_SERVICE_INTENT_BYTES], int child_pidfd,
+    uint8_t ticket[KER_RUNTIME_SERVICE_TICKET_BYTES], uint32_t *child_role)
+{
+    if (ticket) memset(ticket, 0, KER_RUNTIME_SERVICE_TICKET_BYTES);
+    if (child_role) *child_role = 0;
+    if (validate_owner(client)) return -1;
+    if (!intent_id || !ticket || !child_role || child_pidfd < 0 ||
+        !client->lease_valid || client->failed || client->cleanup_only) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (client->delegation_terminal) { errno = ESTALE; return -1; }
+    if (!client->delegation_intent_valid ||
+        memcmp(intent_id, client->delegation_intent_id, sizeof(client->delegation_intent_id))) {
+        errno = ESTALE;
+        return -1;
+    }
+#ifdef SYS_pidfd_send_signal
+    if (syscall(SYS_pidfd_send_signal, child_pidfd, 0, NULL, 0)) return -1;
+#else
+    errno = EOPNOTSUPP;
+    return -1;
+#endif
+    struct ker_runtime_service_delegate_bind body = {0};
+    memcpy(body.intent_id, intent_id, sizeof(body.intent_id));
+    struct ker_runtime_service_delegate_bind_result result = {0};
+    struct rpc_deadline deadline;
+    if (start_deadline(&deadline)) return -1;
+    int late_reply = 0;
+    int rpc_result = rpc(client, KER_RUNTIME_SERVICE_DELEGATE_BIND,
+        client->lease_id, &body, sizeof(body), false, child_pidfd, &result,
+        sizeof(result), NULL, &late_reply, &deadline);
+    if (rpc_result) {
+        client->delegation_terminal = 1;
+        return -1;
+    }
+    if (late_reply) {
+        client->delegation_terminal = 1;
+        client->failed = 1;
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (result.role != client->delegation_role ||
+        !bytes_nonzero(result.ticket, sizeof(result.ticket))) {
+        client->delegation_terminal = 1;
+        client->failed = 1;
+        errno = EPROTO;
+        return -1;
+    }
+    memcpy(ticket, result.ticket, sizeof(result.ticket));
+    *child_role = result.role;
+    client->delegation_intent_valid = 0;
+    memset(client->delegation_intent_id, 0, sizeof(client->delegation_intent_id));
+    client->delegation_role = 0;
+    return 0;
+}
+
 int ker_runtime_service_check(struct ker_runtime_service_client *client)
 {
     if (validate_owner(client)) return -1;
@@ -741,7 +917,7 @@ int ker_runtime_service_check(struct ker_runtime_service_client *client)
     if (start_deadline(&deadline)) return -1;
     int late_reply = 0;
     int result = rpc(client, KER_RUNTIME_SERVICE_CHECK, client->lease_id, NULL, 0,
-        false, NULL, &late_reply, &deadline);
+        false, -1, NULL, 0, NULL, &late_reply, &deadline);
     if (!result && late_reply) { errno = ETIMEDOUT; return -1; }
     return result;
 }
@@ -754,7 +930,7 @@ int ker_runtime_service_release(struct ker_runtime_service_client *client)
     if (start_deadline(&deadline)) return -1;
     int late_reply = 0;
     if (rpc(client, KER_RUNTIME_SERVICE_RELEASE, client->lease_id, NULL, 0,
-            false, NULL, &late_reply, &deadline)) return -1;
+            false, -1, NULL, 0, NULL, &late_reply, &deadline)) return -1;
     client->lease_valid = 0;
     memset(client->lease_id, 0, sizeof(client->lease_id));
     close_owned_fd(client);
@@ -771,11 +947,12 @@ int ker_runtime_service_reconnect(struct ker_runtime_service_client *client)
     forget_fd(client);
     client->failed = 0;
     struct rpc_deadline deadline;
-    if (start_deadline(&deadline) || open_channel(client, &deadline)) return -1;
+    if (start_deadline(&deadline) || open_channel(client, &deadline,
+            client->delegated_actor != 0)) return -1;
     if (client->cleanup_only) return 0;
     int late_reply = 0;
     int result = rpc(client, KER_RUNTIME_SERVICE_CHECK, client->lease_id, NULL, 0,
-        false, NULL, &late_reply, &deadline);
+        false, -1, NULL, 0, NULL, &late_reply, &deadline);
     if (!result && late_reply) { errno = ETIMEDOUT; return -1; }
     return result;
 }

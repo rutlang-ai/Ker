@@ -6,12 +6,14 @@
 #include <fcntl.h>
 #include <openssl/evp.h>
 #include <pthread.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -43,6 +45,7 @@ static const uint8_t worker_profile_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES] = {
 };
 static int server_error;
 static int wrong_profile_case;
+static int late_delegation_case;
 static char server_path[KER_RUNTIME_SERVICE_PATH_MAX + 1];
 static int server_listener = -1;
 
@@ -220,6 +223,214 @@ fail: {
     }
 }
 
+static int receive_bind_with_pidfd(int fd, uint8_t *packet, size_t capacity,
+    size_t expected)
+{
+    struct iovec iov = {.iov_base = packet, .iov_len = capacity};
+    char control[CMSG_SPACE(sizeof(int) * 4)] = {0};
+    struct msghdr message = {.msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    ssize_t size = recvmsg(fd, &message, MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    int received_fd = -1;
+    unsigned rights = 0;
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message); cmsg;
+         cmsg = CMSG_NXTHDR(&message, cmsg)) {
+        if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS &&
+            cmsg->cmsg_len >= CMSG_LEN(0)) {
+            size_t bytes = cmsg->cmsg_len - CMSG_LEN(0);
+            size_t count = bytes / sizeof(int);
+            const int *fds = (const int *)CMSG_DATA(cmsg);
+            for (size_t i = 0; i < count; ++i) {
+                ++rights;
+                if (received_fd < 0) received_fd = fds[i];
+                else (void)close(fds[i]);
+            }
+        }
+    }
+    if (size < 0) return -1;
+    if ((size_t)size != expected || (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+        rights != 1) {
+        if (received_fd >= 0) close(received_fd);
+        errno = EPROTO;
+        return -1;
+    }
+    close(received_fd);
+    return 0;
+}
+
+static void *late_delegation_service_thread(void *unused)
+{
+    (void)unused;
+    uint8_t packet[sizeof(struct ker_runtime_service_header) +
+        sizeof(struct ker_runtime_service_claim)];
+    int fd = accept_one(server_listener);
+    if (fd < 0) { server_fail(errno); return NULL; }
+    size_t claim_size = sizeof(struct ker_runtime_service_header) +
+        sizeof(struct ker_runtime_service_claim);
+    if (receive_one(fd, packet, sizeof(packet), claim_size)) goto fail;
+    struct ker_runtime_service_header request;
+    memcpy(&request, packet, sizeof(request));
+    struct ker_runtime_service_claim claim;
+    memcpy(&claim, packet + sizeof(request), sizeof(claim));
+    if (request.operation != KER_RUNTIME_SERVICE_CLAIM || request.sequence != 1 ||
+        request.status || request.service_epoch != 9 ||
+        memcmp(request.run_nonce, nonce, sizeof(nonce)) ||
+        memcmp(claim.ticket, ticket, sizeof(ticket)) ||
+        memcmp(claim.profile_hash, role_hash, sizeof(role_hash))) {
+        errno = EPROTO; goto fail;
+    }
+    if (send_header(fd, KER_RUNTIME_SERVICE_CLAIM, 1, lease_id,
+            worker_profile_hash, sizeof(worker_profile_hash))) goto fail;
+
+    size_t intent_size = sizeof(struct ker_runtime_service_header) +
+        sizeof(struct ker_runtime_service_delegate_intent);
+    if (receive_one(fd, packet, sizeof(packet), intent_size)) goto fail;
+    memcpy(&request, packet, sizeof(request));
+    struct ker_runtime_service_delegate_intent intent;
+    memcpy(&intent, packet + sizeof(request), sizeof(intent));
+    if (request.operation != KER_RUNTIME_SERVICE_DELEGATE_INTENT ||
+        request.sequence != 2 || request.status || request.service_epoch != 9 ||
+        memcmp(request.run_nonce, nonce, sizeof(nonce)) ||
+        memcmp(request.lease_id, lease_id, sizeof(lease_id)) ||
+        intent.role != KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1 || intent.reserved ||
+        !memcmp(intent.request_nonce, (uint8_t[KER_RUNTIME_SERVICE_NONCE_BYTES]){0},
+            KER_RUNTIME_SERVICE_NONCE_BYTES)) {
+        errno = EPROTO; goto fail;
+    }
+
+    if (late_delegation_case == 2) {
+        struct ker_runtime_service_delegate_intent_result intent_result = {0};
+        memset(intent_result.intent_id, 0x6b, sizeof(intent_result.intent_id));
+        if (send_header(fd, KER_RUNTIME_SERVICE_DELEGATE_INTENT, 2, lease_id,
+                (const uint8_t *)&intent_result, sizeof(intent_result))) goto fail;
+        size_t bind_size = sizeof(struct ker_runtime_service_header) +
+            sizeof(struct ker_runtime_service_delegate_bind);
+        if (receive_bind_with_pidfd(fd, packet, sizeof(packet), bind_size)) goto fail;
+        memcpy(&request, packet, sizeof(request));
+        struct ker_runtime_service_delegate_bind bind;
+        memcpy(&bind, packet + sizeof(request), sizeof(bind));
+        if (request.operation != KER_RUNTIME_SERVICE_DELEGATE_BIND ||
+            request.sequence != 3 || request.status || request.service_epoch != 9 ||
+            memcmp(request.run_nonce, nonce, sizeof(nonce)) ||
+            memcmp(request.lease_id, lease_id, sizeof(lease_id)) ||
+            memcmp(bind.intent_id, intent_result.intent_id, sizeof(bind.intent_id))) {
+            errno = EPROTO; goto fail;
+        }
+    }
+
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 250000000};
+    while (nanosleep(&delay, &delay) && errno == EINTR) {}
+    if (late_delegation_case == 1) {
+        struct ker_runtime_service_delegate_intent_result result = {0};
+        memset(result.intent_id, 0x7c, sizeof(result.intent_id));
+        if (send_header(fd, KER_RUNTIME_SERVICE_DELEGATE_INTENT, 2, lease_id,
+                (const uint8_t *)&result, sizeof(result))) goto fail;
+    } else {
+        struct ker_runtime_service_delegate_bind_result result = {0};
+        memset(result.ticket, 0x9d, sizeof(result.ticket));
+        result.role = KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1;
+        if (send_header(fd, KER_RUNTIME_SERVICE_DELEGATE_BIND, 3, lease_id,
+                (const uint8_t *)&result, sizeof(result))) goto fail;
+    }
+    /* A timed-out attempt is terminal locally; a second mutation must never
+     * reach the supervisor. Give the caller enough time to try and close. */
+    struct pollfd poll_fd = {.fd = fd, .events = POLLIN};
+    int ready;
+    do { ready = poll(&poll_fd, 1, 300); } while (ready < 0 && errno == EINTR);
+    if (ready > 0 && (poll_fd.revents & POLLIN)) {
+        uint8_t unexpected[128];
+        ssize_t count = recv(fd, unexpected, sizeof(unexpected), MSG_DONTWAIT);
+        if (count > 0) {
+            errno = EPROTO;
+            goto fail;
+        }
+    }
+    if (ready < 0) {
+        goto fail;
+    }
+    close(fd);
+    return NULL;
+
+fail: {
+        int error = errno;
+        close(fd);
+        server_fail(error);
+        return NULL;
+    }
+}
+
+static int run_late_delegation_client(pid_t supervisor_pid,
+    uint64_t supervisor_start,
+    const uint8_t supervisor_exe_hash[KER_RUNTIME_SERVICE_PROFILE_BYTES],
+    int late_bind)
+{
+    struct ker_runtime_service_client client;
+    ker_runtime_service_client_init(&client);
+    ker_runtime_service_client_test_configure(UINT64_C(1000000000), 0);
+    if (ker_runtime_service_claim(&client, server_path, nonce, 9, ticket, role_hash,
+            worker_profile_hash, supervisor_pid, supervisor_start,
+            supervisor_exe_hash)) {
+        perror("late delegation claim");
+        return 51;
+    }
+    ker_runtime_service_client_test_configure(UINT64_C(100000000), 0);
+    uint8_t intent_id[KER_RUNTIME_SERVICE_INTENT_BYTES] = {0};
+    int intent_result = ker_runtime_service_delegate_intent(&client,
+        KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1, intent_id);
+    if (!late_bind) {
+        bool intent_output_clear = true;
+        for (size_t i = 0; i < sizeof(intent_id); ++i)
+            if (intent_id[i]) intent_output_clear = false;
+        if (intent_result == 0 || errno != ETIMEDOUT ||
+            !client.delegation_terminal || client.delegation_intent_valid ||
+            !intent_output_clear) {
+            fprintf(stderr, "late INTENT was not quarantined (errno=%d)\n", errno);
+            return 52;
+        }
+        if (ker_runtime_service_delegate_intent(&client,
+                KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1, intent_id) == 0) {
+            fprintf(stderr, "late INTENT allowed another mutation\n");
+            return 56;
+        }
+        struct pollfd late = {.fd = client.fd, .events = POLLIN};
+        if (poll(&late, 1, 1000) <= 0 || !(late.revents & POLLIN)) return 57;
+        uint8_t discard[sizeof(struct ker_runtime_service_header) +
+            sizeof(struct ker_runtime_service_delegate_intent_result)];
+        if (recv(client.fd, discard, sizeof(discard), 0) != (ssize_t)sizeof(discard))
+            return 58;
+    } else {
+        if (intent_result) { perror("delegation intent"); return 52; }
+        int child_pidfd = (int)syscall(SYS_pidfd_open, getpid(), 0);
+        if (child_pidfd < 0) return 53;
+        uint8_t bind_ticket[KER_RUNTIME_SERVICE_TICKET_BYTES];
+        memset(bind_ticket, 0xa5, sizeof(bind_ticket));
+        uint32_t child_role = 99;
+        int result = ker_runtime_service_delegate_bind(&client, intent_id,
+            child_pidfd, bind_ticket, &child_role);
+        close(child_pidfd);
+        bool ticket_was_cleared = true;
+        for (size_t i = 0; i < sizeof(bind_ticket); ++i)
+            if (bind_ticket[i]) ticket_was_cleared = false;
+        if (result == 0 || errno != ETIMEDOUT || !client.delegation_terminal ||
+            !client.failed || !client.delegation_intent_valid ||
+            !ticket_was_cleared || child_role != 0) {
+            fprintf(stderr, "late BIND exposed or reused a grant (errno=%d)\n", errno);
+            return 54;
+        }
+        if (ker_runtime_service_delegate_bind(&client, intent_id, -1,
+                bind_ticket, &child_role) == 0 || !client.delegation_terminal)
+            return 55;
+        struct pollfd late = {.fd = client.fd, .events = POLLIN};
+        if (poll(&late, 1, 1000) <= 0 || !(late.revents & POLLIN)) return 57;
+        uint8_t discard[sizeof(struct ker_runtime_service_header) +
+            sizeof(struct ker_runtime_service_delegate_bind_result)];
+        if (recv(client.fd, discard, sizeof(discard), 0) != (ssize_t)sizeof(discard))
+            return 58;
+    }
+    ker_runtime_service_client_close(&client);
+    return 0;
+}
+
 static int check_child_does_not_close_reused_fd(
     const struct ker_runtime_service_client *parent_client)
 {
@@ -369,9 +580,14 @@ static int run_client(pid_t supervisor_pid, uint64_t supervisor_start,
 
 int main(int argc, char **argv)
 {
-    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--late-profile-mismatch")))
+    if (argc > 2)
         return 2;
-    wrong_profile_case = argc == 2;
+    if (argc == 2) {
+        if (!strcmp(argv[1], "--late-profile-mismatch")) wrong_profile_case = 1;
+        else if (!strcmp(argv[1], "--late-delegation-intent")) late_delegation_case = 1;
+        else if (!strcmp(argv[1], "--late-delegation-bind")) late_delegation_case = 2;
+        else return 2;
+    }
     char directory[] = "/dev/shm/ker-runtime-service-client-XXXXXX";
     if (!mkdtemp(directory)) { perror("mkdtemp"); return 1; }
     if (snprintf(server_path, sizeof(server_path), "%s/service", directory) < 0) {
@@ -387,7 +603,8 @@ int main(int argc, char **argv)
         perror("bind/listen"); close(server_listener); rmdir(directory); return 1;
     }
     pthread_t thread;
-    if (pthread_create(&thread, NULL, service_thread, NULL)) {
+    if (pthread_create(&thread, NULL, late_delegation_case ?
+            late_delegation_service_thread : service_thread, NULL)) {
         close(server_listener); rmdir(directory); return 1;
     }
     uint64_t supervisor_start;
@@ -398,8 +615,10 @@ int main(int argc, char **argv)
     }
     pid_t client_pid = fork();
     if (client_pid < 0) { perror("fork client"); return 1; }
-    if (!client_pid) _exit(run_client(getppid(), supervisor_start, supervisor_hash,
-        wrong_profile_case));
+    if (!client_pid) _exit(late_delegation_case ?
+        run_late_delegation_client(getppid(), supervisor_start, supervisor_hash,
+            late_delegation_case == 2) :
+        run_client(getppid(), supervisor_start, supervisor_hash, wrong_profile_case));
     int child_status = 0;
     if (waitpid(client_pid, &child_status, 0) != client_pid ||
         !WIFEXITED(child_status) || WEXITSTATUS(child_status)) {
