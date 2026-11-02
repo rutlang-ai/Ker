@@ -4,6 +4,10 @@ configure_file(tools/broker_readiness_supervisor.py
     "${PROJECT_BINARY_DIR}/broker_readiness_supervisor.py" COPYONLY)
 configure_file(tools/broker_readiness_wire.py
     "${PROJECT_BINARY_DIR}/broker_readiness_wire.py" COPYONLY)
+configure_file(tools/ker_run_control.py
+    "${PROJECT_BINARY_DIR}/ker_run_control.py" COPYONLY)
+configure_file(tools/ker_run_control_wire.py
+    "${PROJECT_BINARY_DIR}/ker_run_control_wire.py" COPYONLY)
 configure_file(tools/nginx_companion_supervisor.py
     "${PROJECT_BINARY_DIR}/nginx_companion_supervisor.py" COPYONLY)
 configure_file(tools/nginx_companion_wire.py
@@ -13,6 +17,8 @@ configure_file(tools/ker-nginx-companion.py
 install(FILES
     "${PROJECT_BINARY_DIR}/broker_readiness_supervisor.py"
     "${PROJECT_BINARY_DIR}/broker_readiness_wire.py"
+    "${PROJECT_BINARY_DIR}/ker_run_control.py"
+    "${PROJECT_BINARY_DIR}/ker_run_control_wire.py"
     "${PROJECT_BINARY_DIR}/nginx_companion_supervisor.py"
     "${PROJECT_BINARY_DIR}/nginx_companion_wire.py"
     DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)

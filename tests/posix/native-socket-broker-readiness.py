@@ -23,6 +23,10 @@ WIRE_PATH = Path(__file__).resolve().parents[2] / 'tools' / 'broker_readiness_wi
 WIRE_SPEC = importlib.util.spec_from_file_location('_c34_broker_wire', WIRE_PATH)
 wire = importlib.util.module_from_spec(WIRE_SPEC)
 WIRE_SPEC.loader.exec_module(wire)
+RELAY_WIRE_PATH = Path(__file__).resolve().parents[2] / 'tools' / 'ker_run_control_wire.py'
+RELAY_WIRE_SPEC = importlib.util.spec_from_file_location('_c36_relay_wire', RELAY_WIRE_PATH)
+relay_wire = importlib.util.module_from_spec(RELAY_WIRE_SPEC)
+RELAY_WIRE_SPEC.loader.exec_module(relay_wire)
 
 
 def require(value, message):
@@ -129,6 +133,10 @@ def build_eal(args):
 
 
 def supervisor(args, notify_fd=-1, retain_endpoint=False):
+    if args.mode == 'generation-watch-relay-no-bootstrap':
+        return supervisor_relay_startup_failure(args, notify_fd)
+    if args.mode in ('generation-watch-relay-close-cancel', 'generation-watch-relay-happy'):
+        return supervisor_relay_close_cancel(args, notify_fd)
     ker_run = load_ker_run(args.launcher)
     state = {'manager': None, 'app': None, 'retainer_pid': -1}
     original_manager = ker_run.broker_readiness.BrokerReadiness
@@ -719,6 +727,372 @@ def supervisor(args, notify_fd=-1, retain_endpoint=False):
             f'generation watch did not enforce retirement evidence: {result!r}')
     return 0
 
+
+def supervisor_relay_startup_failure(args, notify_fd=-1):
+    """Pre-READY broker death retains resources and never publishes settlement."""
+    outer, child_channel = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET | getattr(socket, 'SOCK_CLOEXEC', 0))
+    outer.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    nonce = os.urandom(16)
+    while not any(nonce):
+        nonce = os.urandom(16)
+    epoch = int.from_bytes(os.urandom(8), 'little') or 1
+    env = os.environ.copy()
+    env.update(KER_RUN_CONTROL_FD=str(child_channel.fileno()),
+        KER_RUN_CONTROL_NONCE=nonce.hex(), KER_RUN_CONTROL_EPOCH=str(epoch),
+        PYTHONUNBUFFERED='1')
+    command = [sys.executable, str(args.launcher.resolve()),
+        '--library', str(args.library.resolve()), '--io-worker', str(args.worker.resolve()),
+        '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', build_eal(args),
+        '--runtime-service', '--broker-readiness', '--stats', str(args.stats), '--',
+        str(args.broker.resolve()), str(args.rpc_path), '--skip-bootstrap']
+    log_path = args.stats.with_name('generation-watch-relay-no-bootstrap.inner.log')
+    evidence_path = Path('/dev/shm') / f'c36-relay-startup-failure-{os.getpid()}.log'
+    result_path = Path('/dev/shm') / f'c36-relay-startup-failure-{os.getpid()}.json'
+    log_file = log_path.open('wb')
+    inner = None
+    worker_pid = app_pid = None
+    inner_pidfd = worker_pidfd = app_pidfd = -1
+    result = None
+
+    def pin_direct_child(executable, role, deadline):
+        expected = executable.resolve()
+        while time.monotonic() < deadline and inner.poll() is None:
+            try:
+                children = [int(item) for item in Path(
+                    f'/proc/{inner.pid}/task/{inner.pid}/children').read_text().split()]
+            except (FileNotFoundError, ProcessLookupError):
+                children = []
+            for candidate in children:
+                try:
+                    stat = Path(f'/proc/{candidate}/stat').read_text(encoding='ascii')
+                    close = stat.rfind(')')
+                    fields = stat[close + 2:].split() if close >= 0 else ()
+                    if (len(fields) <= 1 or int(fields[1], 10) != inner.pid or
+                            Path(f'/proc/{candidate}/exe').resolve() != expected):
+                        continue
+                    ticks = start_ticks(candidate)
+                    pidfd = os.pidfd_open(candidate, 0)
+                    if start_ticks(candidate) == ticks and process_alive(pidfd):
+                        return candidate, ticks, pidfd
+                    os.close(pidfd)
+                except (FileNotFoundError, ProcessLookupError, PermissionError):
+                    continue
+            time.sleep(0.005)
+        raise RuntimeError(f'could not pin exact direct-child {role} before deadline')
+
+    try:
+        inner = subprocess.Popen(command, env=env, pass_fds=(child_channel.fileno(),),
+            stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            close_fds=True, start_new_session=True)
+        inner_pidfd = os.pidfd_open(inner.pid, 0)
+        child_channel.close()
+        if notify_fd >= 0:
+            os.write(notify_fd, (json.dumps({'event': 'STARTED', 'pid': inner.pid}) + '\n').encode())
+        deadline = time.monotonic() + 15
+        worker_pid, worker_start, worker_pidfd = pin_direct_child(args.worker,
+            'physical DPDK worker', deadline)
+        app_pid, app_start, app_pidfd = pin_direct_child(args.broker,
+            'broker application', deadline)
+        require(process_alive(inner_pidfd) and process_alive(worker_pidfd) and
+            process_alive(app_pidfd), 'pinned process identity died before failure injection')
+        readable, _, _ = select.select([outer], [], [], 0)
+        require(not readable, 'relay published READY before broker readiness')
+        # The fixture was launched without bootstrap. Kill only its pinned
+        # process identity and inspect the real retained-resource outcome.
+        signal.pidfd_send_signal(app_pidfd, signal.SIGKILL)
+        app_poller = select.poll()
+        app_poller.register(app_pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        require(app_poller.poll(5000), 'killed broker app did not exit via its pinned pidfd')
+        # A missing broker READY makes continuation unsafe. The expected result
+        # is an unresolved inner that retains its worker and the parent channel.
+        wait_deadline = time.monotonic() + 10
+        diagnostic = ''
+        while time.monotonic() < wait_deadline:
+            log_file.flush()
+            diagnostic = log_path.read_text(errors='replace')
+            if 'companion shutdown UNRESOLVED; retaining native broker and worker resources' in diagnostic:
+                break
+            require(process_alive(inner_pidfd) and process_alive(worker_pidfd),
+                f'inner/worker exited instead of retaining unresolved resources: {diagnostic!r}')
+            time.sleep(0.01)
+        require('companion shutdown UNRESOLVED; retaining native broker and worker resources' in diagnostic,
+            f'pre-READY failure did not enter unresolved retention: {diagnostic!r}')
+        require(process_alive(inner_pidfd) and process_alive(worker_pidfd) and inner.poll() is None,
+            'unresolved relay did not keep the inner and physical worker alive')
+        readable, _, _ = select.select([outer], [], [], 0)
+        require(not readable,
+            'pre-READY failure emitted INNER_READY, STOP_ACCEPTED, SETTLED, or EOF')
+        # Exact identity data is retained as proof; cleanup below is test-owned
+        # forced process cleanup and is explicitly not a normal settlement.
+        result = {'event': 'RESULT', 'mode': args.mode,
+            'inner_returncode_before_cleanup': None, 'worker_pid': worker_pid,
+            'worker_start_ticks': worker_start, 'broker_pid': app_pid,
+            'broker_start_ticks': app_start, 'ready_absent': True,
+            'stop_accepted_absent': True, 'settled_absent': True,
+            'worker_live_unresolved': True, 'replacement_permission': False,
+            'outer_channel_had_no_record_or_eof': True,
+            'cleanup_unqualified': True,
+            'cleanup': 'test-owned SIGKILL via exact pidfds; not qualified settlement',
+            'diagnostic_log': str(evidence_path), 'result_path': str(result_path)}
+        log_file.flush()
+        evidence_path.write_text(diagnostic, encoding='utf-8')
+        result_path.write_text(json.dumps(result, sort_keys=True) + '\n', encoding='utf-8')
+        if notify_fd >= 0:
+            os.write(notify_fd, (json.dumps(result) + '\n').encode())
+        return 0
+    finally:
+        outer.close()
+        child_channel.close()
+        # This is explicit test-owned cleanup of the deliberately unresolved
+        # state; none of these SIGKILLs count as a normal shutdown proof.
+        for pidfd in (app_pidfd, inner_pidfd, worker_pidfd):
+            if pidfd >= 0:
+                try:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        if inner is not None:
+            try:
+                inner.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                if inner_pidfd >= 0:
+                    signal.pidfd_send_signal(inner_pidfd, signal.SIGKILL)
+                inner.wait(timeout=5)
+        for label, pidfd in (('broker app', app_pidfd), ('worker', worker_pidfd)):
+            if pidfd >= 0:
+                poller = select.poll()
+                poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+                if not poller.poll(5000):
+                    raise RuntimeError(f'test-owned {label} pidfd cleanup did not complete')
+        for pidfd in (app_pidfd, inner_pidfd, worker_pidfd):
+            if pidfd >= 0:
+                os.close(pidfd)
+        if inner is not None and inner.returncode == -signal.SIGKILL:
+            for pid in (app_pid, worker_pid):
+                if pid is None:
+                    continue
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    pass
+        log_file.close()
+
+
+def supervisor_relay_close_cancel(args, notify_fd=-1):
+    """Exercise real relay capability lifetime and retirement outcomes."""
+    cancel_mode = args.mode == 'generation-watch-relay-close-cancel'
+    barrier_path = args.rpc_path.with_name(args.rpc_path.stem + '.relay-verify-barrier.sock')
+    barrier_listener = None
+    if cancel_mode:
+        barrier_listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        barrier_listener.bind(str(barrier_path))
+        os.chmod(barrier_path, 0o600)
+        barrier_listener.listen(1)
+        barrier_listener.settimeout(10)
+    barrier_channel = None
+    cap_listener = None
+    actor = None
+    watch_fd = -1
+    inner = None
+    control_parent = None
+    control_child = None
+    log_file = None
+    try:
+        control_parent, control_child = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_SEQPACKET | getattr(socket, 'SOCK_CLOEXEC', 0))
+        control_parent.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        nonce = os.urandom(16)
+        while not any(nonce):
+            nonce = os.urandom(16)
+        epoch = int.from_bytes(os.urandom(8), 'little') or 1
+        env = os.environ.copy()
+        env.update(KER_RUN_CONTROL_FD=str(control_child.fileno()),
+            KER_RUN_CONTROL_NONCE=nonce.hex(), KER_RUN_CONTROL_EPOCH=str(epoch))
+        inner_args = [sys.executable, str(args.launcher.resolve()),
+            '--library', str(args.library.resolve()), '--io-worker', str(args.worker.resolve()),
+            '--address', '198.18.0.2/24', '--port', 'net_tap0', '--eal', build_eal(args),
+            '--runtime-service', '--broker-readiness', '--stats', str(args.stats), '--',
+            str(args.broker.resolve()), str(args.rpc_path)]
+        if cancel_mode:
+            inner_args += ['--verify-barrier', str(barrier_path)]
+        log_path = args.stats.with_name('generation-watch-relay-close-cancel.inner.log')
+        log_file = log_path.open('wb')
+        inner = subprocess.Popen(inner_args, env=env, pass_fds=(control_child.fileno(),),
+            stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            close_fds=True, start_new_session=True)
+        control_child.close()
+        control_child = None
+
+        def recv_inner(expected_size, timeout=20):
+            packet, credentials = receive_record(control_parent, expected_size, timeout)
+            require(credentials == (inner.pid, os.getuid(), os.getgid()),
+                f'relay response credentials mismatch: {credentials!r}')
+            return packet
+
+        ready_packet = recv_inner(relay_wire.READY.size)
+        ready = relay_wire.unpack_ready(ready_packet)
+        require(ready[0] == nonce and ready[1] == epoch,
+            'INNER_READY relay context mismatch')
+        broker_nonce, broker_epoch, profile = ready[2], ready[3], ready[4]
+        app_identity, worker_identity = ready[7], ready[8]
+        require(app_identity[0] > 0 and worker_identity[0] > 0 and
+            start_ticks(app_identity[0]) == app_identity[3] and
+            start_ticks(worker_identity[0]) == worker_identity[3],
+            'INNER_READY did not identify the actual app and worker processes')
+        if notify_fd >= 0:
+            os.write(notify_fd, (json.dumps({'event': 'READY', 'pid': inner.pid,
+                'app_pid': app_identity[0], 'worker_pid': worker_identity[0]}) + '\n').encode())
+
+        actor_path = args.generation_watch_actor.resolve()
+        watch_path = args.rpc_path.with_name(args.rpc_path.stem + '.relay-watch.sock')
+        cap_listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        cap_listener.bind(str(watch_path))
+        os.chmod(watch_path, 0o600)
+        cap_listener.listen(1)
+        cap_listener.settimeout(15)
+        actor = subprocess.Popen([str(actor_path), str(args.rpc_path), str(watch_path)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            close_fds=True)
+        channel, _ = cap_listener.accept()
+        with channel:
+            channel.settimeout(10)
+            payload, ancillary, flags, _ = channel.recvmsg(32,
+                socket.CMSG_SPACE(struct.calcsize('i')))
+            watch_fds = []
+            for level, kind, data in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    watch_fds.extend(struct.unpack(
+                        f'{len(data) // struct.calcsize("i")}i', data))
+            require(not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) and
+                len(payload) == 12 and len(watch_fds) == 1,
+                'actor did not transfer exactly one generation-watch alias')
+            magic, actor_pid, port, reserved = struct.unpack('<IIHH', payload)
+            require(magic == 0x57415443 and actor_pid == actor.pid and
+                port == 4127 and reserved == 0,
+                'actor generation-watch identity mismatch')
+            watch_fd = watch_fds.pop()
+
+            def relay_verify(sequence):
+                passed_fd = os.dup(watch_fd)
+                try:
+                    sent = control_parent.sendmsg(
+                        [relay_wire.pack_verify(nonce, epoch, sequence)],
+                        [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack('i', passed_fd))],
+                        getattr(socket, 'MSG_NOSIGNAL', 0))
+                    require(sent == relay_wire.VERIFY_REQUEST.size,
+                        'short outer relay VERIFY send')
+                finally:
+                    os.close(passed_fd)
+                packet = recv_inner(relay_wire.VERIFY_REPLY_PREFIX.size + 128, 8)
+                status, broker_result = relay_wire.unpack_verify_result(packet, nonce,
+                    epoch, sequence, broker_nonce, broker_epoch, profile)
+                return status, relay_wire._unpack_broker_result(broker_result, sequence)
+
+            observed_identity = None
+            if not cancel_mode:
+                status, first_result = relay_verify(1)
+                require(status == errno.EBUSY and first_result[0] == errno.EBUSY and
+                    first_result[-1] == 0 and first_result[4] == actor.pid,
+                    f'live generation owner was not rejected with its identity: {first_result!r}')
+                observed_identity = first_result[4:10] + (first_result[10],)
+
+            channel.sendall(b'C')
+            require(channel.recv(1) == b'C',
+                'actor did not close its listener and watch aliases')
+            if not cancel_mode:
+                status, second_result = relay_verify(2)
+                require(status == errno.EBUSY and second_result[0] == errno.EBUSY and
+                    second_result[-1] == 0 and
+                    (second_result[4:10] + (second_result[10],)) == observed_identity,
+                    'closed listener changed the live generation owner identity')
+            os.kill(actor.pid, signal.SIGKILL)
+            actor.wait(timeout=5)
+            require(actor.returncode == -signal.SIGKILL,
+                'watch owner actor was not reaped')
+
+            # Close each transport duplicate after handoff, but retain the
+            # outer's public alias until the broker confirms the query is
+            # actually pending at its private progress barrier.
+            if cancel_mode:
+                passed_fd = os.dup(watch_fd)
+                sent = control_parent.sendmsg(
+                    [relay_wire.pack_verify(nonce, epoch, 1)],
+                    [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack('i', passed_fd))],
+                    getattr(socket, 'MSG_NOSIGNAL', 0))
+                require(sent == relay_wire.VERIFY_REQUEST.size,
+                    'short outer relay VERIFY send')
+                os.close(passed_fd)
+                barrier_channel, _ = barrier_listener.accept()
+                barrier_channel.settimeout(8)
+                require(barrier_channel.recv(1) == b'P',
+                    'real inner broker did not reach pending census barrier')
+                os.close(watch_fd)
+                watch_fd = -1
+                packet = recv_inner(relay_wire.VERIFY_REPLY_PREFIX.size + 128, 8)
+                status, _ = relay_wire.unpack_verify_result(packet, nonce, epoch, 1,
+                    broker_nonce, broker_epoch, profile)
+                require(status == errno.ECANCELED,
+                    f'closing final public alias did not cancel relay VERIFY: {status}')
+                barrier_channel.close()
+                barrier_channel = None
+                stop_sequence = 2
+            else:
+                status, retired_result = relay_verify(3)
+                require(status == 0 and retired_result[0] == 0 and
+                    retired_result[-1] == 1 and
+                    (retired_result[4:10] + (retired_result[10],)) == observed_identity,
+                    f'owner retirement did not preserve exact broker identity: {retired_result!r}')
+                os.close(watch_fd)
+                watch_fd = -1
+                stop_sequence = 4
+
+            sent = control_parent.send(relay_wire.pack_stop(nonce, epoch, stop_sequence))
+            require(sent == relay_wire.STOP_REQUEST.size, 'short relay STOP send')
+            accepted_packet = recv_inner(relay_wire.STOP_REPLY.size, 10)
+            relay_wire.unpack_stop_reply(accepted_packet, relay_wire.STOP_ACCEPTED,
+                nonce, epoch, stop_sequence)
+            settled_packet = recv_inner(relay_wire.SETTLED_RECORD.size, 20)
+            relay_wire.unpack_settled(settled_packet, ready, nonce, epoch, stop_sequence)
+
+        inner.wait(timeout=10)
+        log_file.flush()
+        require(inner.returncode == 0,
+            f'inner ker-run did not settle after relay STOP: {inner.returncode}; '
+            f'{log_path.read_text(errors="replace")!r}')
+        stats = json.loads(args.stats.read_text())
+        require(stats.get('outstanding') == 0 and stats.get('run_shutdown') is True and
+            stats.get('run_shutdown_ack') is True,
+            f'inner native runtime did not report completed shutdown: {stats!r}')
+        record = {'event': 'RESULT', 'mode': args.mode,
+            'relay_verify_canceled': cancel_mode,
+            'relay_old_retired': not cancel_mode,
+            'settled': True, 'inner_returncode': inner.returncode, 'stats': stats}
+        if notify_fd >= 0:
+            os.write(notify_fd, (json.dumps(record) + '\n').encode())
+        return 0
+    finally:
+        if watch_fd >= 0:
+            os.close(watch_fd)
+        if actor is not None and actor.poll() is None:
+            actor.kill()
+            actor.wait(timeout=5)
+        if inner is not None and inner.poll() is None:
+            inner.kill()
+            inner.wait(timeout=5)
+        if control_parent is not None:
+            control_parent.close()
+        if control_child is not None:
+            control_child.close()
+        if barrier_channel is not None:
+            barrier_channel.close()
+        if barrier_listener is not None:
+            barrier_listener.close()
+        if cap_listener is not None:
+            cap_listener.close()
+        if log_file is not None:
+            log_file.close()
+
 def enable_subreaper():
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:
@@ -751,7 +1125,8 @@ def spawn_supervisor(args, mode, timeout=45):
     command += ['--stats', str(args.root / f'{mode}.json'),
         '--rpc-path', str(args.root / f'{mode}.sock')]
     if mode in ('generation-watch', 'generation-watch-replay', 'generation-watch-rights',
-                'generation-watch-stop-cancel', 'generation-watch-close-cancel'):
+                'generation-watch-stop-cancel', 'generation-watch-close-cancel',
+                'generation-watch-relay-close-cancel', 'generation-watch-relay-happy'):
         command += ['--generation-watch-actor', str(args.generation_watch_actor.resolve())]
     retain = mode == 'parent-death'
     log_path = args.root / f'{mode}.supervisor.log'
@@ -832,6 +1207,15 @@ def spawn_supervisor(args, mode, timeout=45):
         diagnostics = log_path.read_text(errors='replace')
         require(process.returncode == 0,
             f'{mode} helper failed: records={output_tail!r}; diagnostics={diagnostics!r}')
+        if mode == 'generation-watch-relay-no-bootstrap':
+            result = next((record for record in output_tail
+                if record.get('event') == 'RESULT'), None)
+            require(result is not None and result.get('ready_absent') and
+                result.get('stop_accepted_absent') and result.get('settled_absent') and
+                result.get('worker_live_unresolved') and
+                result.get('replacement_permission') is False and
+                'test-owned SIGKILL' in result.get('cleanup', ''),
+                f'pre-READY broker failure was misreported as settled/reusable: {result!r}')
     finally:
         try:
             os.close(notify_read)
@@ -880,7 +1264,8 @@ def main():
         'truncated-stop',
         'no-bootstrap', 'parent-death', 'generation-watch', 'generation-watch-replay',
         'generation-watch-rights', 'generation-watch-stop-cancel',
-        'generation-watch-close-cancel'), default='healthy')
+        'generation-watch-close-cancel', 'generation-watch-relay-close-cancel',
+        'generation-watch-relay-happy', 'generation-watch-relay-no-bootstrap'), default='healthy')
     parser.add_argument('--notify-fd', type=int, default=-1)
     args = parser.parse_args()
     if args.supervisor:
@@ -901,11 +1286,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ker-broker-readiness-') as directory:
         args.root = Path(directory)
         modes = ('healthy', 'healthy-sigint', 'bad-stop', 'rights-stop', 'truncated-stop',
-            'parent-death', 'no-bootstrap')
+            'parent-death', 'no-bootstrap', 'generation-watch-relay-no-bootstrap')
         if args.generation_watch_actor:
             modes += ('generation-watch', 'generation-watch-replay',
                 'generation-watch-rights', 'generation-watch-stop-cancel',
-                'generation-watch-close-cancel')
+                'generation-watch-close-cancel', 'generation-watch-relay-close-cancel',
+                'generation-watch-relay-happy')
         for mode in modes:
             spawn_supervisor(args, mode)
     print('BROKER_READINESS_TAP_OK authenticated_READY_STOP no-bootstrap malformed_STOP parent_pidfd_death')

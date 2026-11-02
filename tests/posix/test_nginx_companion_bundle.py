@@ -13,7 +13,10 @@ def main():
     parser.add_argument('--companion', type=Path, required=True)
     parser.add_argument('--tools', type=Path, required=True)
     args = parser.parse_args()
-    for name in ('broker_readiness_supervisor.py', 'broker_readiness_wire.py',
+    for name in ('rx_decision_wire.py', 'runtime_service.py',
+                 'runtime_service_wire.py',
+                 'broker_readiness_supervisor.py', 'broker_readiness_wire.py',
+                 'ker_run_control.py', 'ker_run_control_wire.py',
                  'nginx_companion_supervisor.py', 'nginx_companion_wire.py'):
         if not (args.tools / name).is_file():
             raise RuntimeError(f'generated sibling module is missing: {name}')
