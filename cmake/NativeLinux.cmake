@@ -666,6 +666,12 @@ if(BUILD_TESTING)
         ker-socket-client)
     target_compile_options(ker-socket-broker-generation-watch-actor PRIVATE
         -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-serial-generation-actor
+        tests/posix/socket-broker-serial-generation-actor.c)
+    target_link_libraries(ker-socket-broker-serial-generation-actor PRIVATE
+        ker-socket-client)
+    target_compile_options(ker-socket-broker-serial-generation-actor PRIVATE
+        -Wall -Wextra -Werror)
     add_test(NAME native-socket-broker-readiness-wire
         COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tests/posix/test_broker_readiness_wire.py")
@@ -687,6 +693,18 @@ if(BUILD_TESTING)
             --dpdk-plugin-dir "${ker_session_pmd_dir}")
     set_tests_properties(native-socket-broker-readiness PROPERTIES
         TIMEOUT 180 LABELS "native-tcp;socket-broker;readiness;tap"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;TMPDIR=/dev/shm")
+    add_test(NAME native-socket-broker-serial-generation
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker-serial-generation.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+            --actor "$<TARGET_FILE:ker-socket-broker-serial-generation-actor>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}"
+            --result "${PROJECT_BINARY_DIR}/serial-generation-result.json")
+    set_tests_properties(native-socket-broker-serial-generation PROPERTIES
+        TIMEOUT 300 LABELS "native-tcp;socket-broker;serial-generation;tap"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;TMPDIR=/dev/shm")
     add_executable(ker-socket-broker-client-test tests/posix/socket-broker-client.c)
     target_include_directories(ker-socket-broker-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
