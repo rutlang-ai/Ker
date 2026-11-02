@@ -20,6 +20,9 @@
 #define KER_RX_DECISION_MAX_PENDING UINT32_C(1)
 #define KER_RX_DECISION_DEADLINE_NS UINT64_C(100000000)
 #define KER_RX_DECISION_NONCE_BYTES 16
+#define KER_RX_DECISION_BOOTSTRAP_CONTROL_ID UINT64_C(1)
+#define KER_RX_DECISION_HELLO_CONTROL_ID UINT64_C(2)
+#define KER_RX_DECISION_STOP_CONTROL_ID UINT64_C(3)
 
 enum ker_rx_decision_type {
     KER_RX_DECISION_BOOTSTRAP = 1,
@@ -42,8 +45,9 @@ enum ker_rx_decision_bootstrap_role {
 };
 
 /* 64-byte common header. packet_id is zero except DATA/RESULT; control_id is
- * zero except BOOTSTRAP/HELLO/READY/STOP/SETTLED. deadline_ns is nonzero only
- * on DATA and is an absolute CLOCK_MONOTONIC timestamp. */
+ * zero except control messages. BOOTSTRAP uses id 1, HELLO and READY both use
+ * id 2, and STOP and SETTLED both use id 3. deadline_ns is nonzero only on
+ * DATA and is an absolute CLOCK_MONOTONIC timestamp. */
 struct __attribute__((packed)) ker_rx_decision_header {
     uint32_t magic;
     uint16_t version;
