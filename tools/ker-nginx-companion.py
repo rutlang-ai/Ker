@@ -132,6 +132,7 @@ def validate_control_nginx_config(config_bytes):
     if not isinstance(config_bytes, bytes) or len(config_bytes) > MAX_CONFIG_BYTES:
         raise ValueError('Nginx configuration exceeds the bounded profile size')
     directives = []
+    fstack_conf_values = []
     arguments = []
     token = bytearray()
     token_started = False
@@ -160,6 +161,15 @@ def validate_control_nginx_config(config_bytes):
             raise ValueError('empty Nginx directive')
         if arguments[0] == b'include':
             raise ValueError('Nginx include directives are unsupported in the pinned profile')
+        if arguments[0] == b'fstack_conf':
+            if block_depth != 0:
+                raise ValueError('fstack_conf must be a top-level directive')
+            if (len(arguments) != 2 or not arguments[1] or
+                    b'\0' in arguments[1] or b'$' in arguments[1]):
+                raise ValueError('fstack_conf must have one literal path argument')
+            fstack_conf_values.append(arguments[1])
+            if len(fstack_conf_values) != 1:
+                raise ValueError('duplicate fstack_conf directives are unsupported')
         directives.append(tuple(arguments))
         if len(directives) > MAX_CONFIG_DIRECTIVES:
             raise ValueError('Nginx configuration has too many directives')
@@ -266,7 +276,47 @@ def validate_control_nginx_config(config_bytes):
         (b'worker_processes', b'1'))
     if any(directives.count(item) != 1 for item in required):
         raise ValueError('C34 requires daemon-off, master-on, one-worker config')
+    if len(fstack_conf_values) != 1:
+        raise ValueError('C34 requires exactly one top-level fstack_conf directive')
     return tuple(directives)
+
+
+def effective_fstack_ini(config_path, directives, environment_path):
+    """Resolve the sole literal fstack_conf as pinned Nginx does for `-c`.
+
+    Nginx sets conf_prefix to the active config file's directory and its
+    fstack_conf setter uses ngx_conf_full_name(..., 1). Compare canonical
+    identities as well as device/inode, then return the selected path that is
+    actually hashed and validated.
+    """
+    selected = [directive[1] for directive in directives
+        if directive and directive[0] == b'fstack_conf']
+    if len(selected) != 1:
+        raise ValueError('C34 requires exactly one effective fstack_conf path')
+    raw = selected[0]
+    if not raw or b'\0' in raw or b'$' in raw:
+        raise ValueError('dynamic or invalid fstack_conf path is unsupported')
+    raw_path = os.fsdecode(raw)
+    if os.path.isabs(raw_path):
+        configured = Path(raw_path)
+    else:
+        # ngx_get_full_name concatenates conf_prefix and the relative name.
+        # Do not resolve relative to the launcher working directory.
+        config_dir = os.fsencode(Path(config_path).resolve(strict=True).parent)
+        configured = Path(os.fsdecode(config_dir + b'/' + raw))
+    try:
+        selected_path = configured.resolve(strict=True)
+        environment = Path(environment_path).resolve(strict=True)
+        selected_stat = selected_path.stat()
+        environment_stat = environment.stat()
+    except (OSError, RuntimeError) as error:
+        raise ValueError('effective fstack_conf or environment INI cannot be resolved') from error
+    if (not selected_path.is_file() or not environment.is_file() or
+            (selected_stat.st_dev, selected_stat.st_ino) !=
+                (environment_stat.st_dev, environment_stat.st_ino) or
+            selected_path != environment):
+        raise ValueError('KER_FSTACK_NGINX_INI does not name the effective fstack_conf file')
+    return selected_path, (selected_stat.st_dev, selected_stat.st_ino)
 
 
 def broker_ini_matches(path, expected_broker):
@@ -544,15 +594,17 @@ def run(args):
     ini_path = args.nginx_env.get('KER_FSTACK_NGINX_INI')
     if not ini_path:
         raise ValueError('C34 requires an F-Stack INI profile')
-    actual_ini_hash = sha256_file(ini_path)
     if actual_binary_hash != expected_binary_hash or actual_config_hash != expected_config_hash:
         raise PermissionError('Nginx binary/configuration hash mismatch')
-    profile = wire.profile_hash(actual_binary_hash, actual_config_hash,
-        actual_ini_hash, str(prefix), args.nginx_env)
     if not config.is_file() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('invalid pinned Nginx profile files')
-    validate_control_nginx_config(config_bytes)
-    if not broker_ini_matches(Path(ini_path),
+    directives = validate_control_nginx_config(config_bytes)
+    effective_ini_path, effective_ini_identity = effective_fstack_ini(
+        config, directives, ini_path)
+    actual_ini_hash = sha256_file(effective_ini_path)
+    profile = wire.profile_hash(actual_binary_hash, actual_config_hash,
+        actual_ini_hash, str(prefix), args.nginx_env)
+    if not broker_ini_matches(effective_ini_path,
             args.nginx_env['KER_SOCKET_BROKER_PATH']):
         raise ValueError('C34 requires graceful_reload=0 profile')
     nginx_env = {'PATH': '/usr/bin:/bin', **args.nginx_env}
@@ -577,10 +629,18 @@ def run(args):
         current_config_bytes = read_bounded_config(config)
         current_config_hash = hashlib.sha256(current_config_bytes).digest()
         try:
-            validate_control_nginx_config(current_config_bytes)
+            current_directives = validate_control_nginx_config(current_config_bytes)
         except ValueError as exc:
             raise PermissionError('Nginx reload configuration left the pinned one-worker profile') from exc
-        current_ini_hash = sha256_file(ini_path)
+        try:
+            current_effective_ini, current_ini_identity = effective_fstack_ini(
+                config, current_directives, ini_path)
+        except ValueError as exc:
+            raise PermissionError('Nginx reload changed the effective fstack_conf selection') from exc
+        if (current_effective_ini != effective_ini_path or
+                current_ini_identity != effective_ini_identity):
+            raise PermissionError('Nginx reload changed the pinned effective fstack_conf file')
+        current_ini_hash = sha256_file(current_effective_ini)
         current_profile = wire.profile_hash(current_binary_hash,
             current_config_hash, current_ini_hash, str(prefix), args.nginx_env)
         if (current_binary_hash != actual_binary_hash or
@@ -589,7 +649,7 @@ def run(args):
             raise PermissionError('pinned Nginx binary/configuration/INI profile changed before HUP')
         if sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash:
             raise PermissionError('running Nginx executable differs from pinned profile')
-        if not broker_ini_matches(Path(ini_path),
+        if not broker_ini_matches(current_effective_ini,
                 args.nginx_env['KER_SOCKET_BROKER_PATH']):
             raise PermissionError('Nginx reload INI left the pinned graceful_reload=0 profile')
 
