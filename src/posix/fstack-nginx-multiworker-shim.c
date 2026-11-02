@@ -28,6 +28,12 @@
 #ifndef KER_FSTACK_NGINX_EXPECTED_BUILD_ID
 #error "build the shim with the selected Nginx ELF build ID"
 #endif
+#ifndef KER_FSTACK_NGINX_RESPAWN_FORK_RETURN_PC
+#error "build the shim with the pinned Nginx worker-respawn fork return PC"
+#endif
+#ifndef KER_FSTACK_NGINX_WORKER_PROCESS_ADDRESS
+#error "build the shim with the pinned Nginx worker process function address"
+#endif
 
 #if !NGX_HAVE_FSTACK || !NGX_HAVE_REUSEPORT
 #error "the multiworker shim requires the pinned FF and reuseport build"
@@ -166,6 +172,81 @@ main_binary_matches_pinned_build(void)
         return -1;
     }
     return 0;
+}
+
+int
+ker_fstack_nginx_owner_activation_abi_matches(void)
+{
+    return main_binary_matches_pinned_build();
+}
+
+/* Nginx 1.28.0's pinned ngx_spawn_process has one fork callsite. Only a
+ * reaped worker in its existing respawn slot needs a new owner claim. Other
+ * fork users, including first start and HUP cycles, pass straight through. */
+pid_t
+fork(void)
+{
+    typedef int (*respawn_prepare_fn)(void);
+    typedef void (*respawn_finish_fn)(void);
+    typedef pid_t (*fork_fn)(void);
+    uintptr_t caller_pc = (uintptr_t)__builtin_return_address(0);
+    fork_fn real_fork = (fork_fn)dlsym(RTLD_NEXT, "fork");
+    respawn_prepare_fn prepare;
+    respawn_finish_fn commit, abort;
+    ngx_int_t *process_slot, *last_process;
+    ngx_uint_t *process_kind;
+    ngx_process_t *processes;
+    ngx_process_t *entry;
+
+    if (!real_fork) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (caller_pc != (uintptr_t)KER_FSTACK_NGINX_RESPAWN_FORK_RETURN_PC)
+        return real_fork();
+
+    prepare = (respawn_prepare_fn)dlsym(RTLD_DEFAULT,
+        "ker_fstack_nginx_owner_activation_respawn_prepare");
+    if (!prepare) return real_fork();
+    if (main_binary_matches_pinned_build() != 0) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    process_slot = (ngx_int_t *)dlsym(RTLD_DEFAULT, "ngx_process_slot");
+    last_process = (ngx_int_t *)dlsym(RTLD_DEFAULT, "ngx_last_process");
+    process_kind = (ngx_uint_t *)dlsym(RTLD_DEFAULT, "ngx_process");
+    processes = (ngx_process_t *)dlsym(RTLD_DEFAULT, "ngx_processes");
+    if (!process_slot || !last_process || !process_kind || !processes) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    if (*process_kind != NGX_PROCESS_MASTER || *process_slot < 0 ||
+        *process_slot >= *last_process || *process_slot >= NGX_MAX_PROCESSES)
+        return real_fork();
+
+    entry = &processes[*process_slot];
+    if (!entry->name || strcmp(entry->name, "worker process") != 0 ||
+        (uintptr_t)entry->proc != (uintptr_t)KER_FSTACK_NGINX_WORKER_PROCESS_ADDRESS ||
+        entry->pid <= 0 || !entry->exited || !entry->respawn || entry->exiting)
+        return real_fork();
+
+    if (prepare() != 0) {
+        if (!errno) errno = EAGAIN;
+        return -1;
+    }
+    pid_t result = real_fork();
+    if (result > 0) {
+        commit = (respawn_finish_fn)dlsym(RTLD_DEFAULT,
+            "ker_fstack_nginx_owner_activation_respawn_commit");
+        if (commit) commit();
+    } else if (result < 0) {
+        int error = errno;
+        abort = (respawn_finish_fn)dlsym(RTLD_DEFAULT,
+            "ker_fstack_nginx_owner_activation_respawn_abort");
+        if (abort) abort();
+        errno = error;
+    }
+    return result;
 }
 
 static int
@@ -391,8 +472,10 @@ ff_init(int argc, char * const argv[])
 {
     typedef int (*preflight_fn)(int, char * const []);
     typedef int (*commit_fn)(void);
+    typedef int (*initial_owner_prepare_fn)(ngx_cycle_t *);
     preflight_fn runtime_preflight;
     commit_fn runtime_commit;
+    initial_owner_prepare_fn initial_owner_prepare;
     ngx_cycle_t *cycle;
     ngx_listening_t *listeners;
     ngx_uint_t worker, worker_count;
@@ -417,6 +500,22 @@ ff_init(int argc, char * const argv[])
     if (runtime_preflight(argc, argv) != 0) {
         secondary_authorization_active = 0;
         return -1;
+    }
+
+    /* The optional pinned C22 dynamic module reserves the initial listener
+     * before fork and exposes only slot 0 to this worker. Its helper runs
+     * after runtime_preflight established the authenticated FF owner, but
+     * before Nginx's first ff_socket call in ngx_open_listening_sockets(). */
+    initial_owner_prepare = (initial_owner_prepare_fn)dlsym(RTLD_DEFAULT,
+        "ker_fstack_nginx_owner_activation_worker_prepare");
+    if (initial_owner_prepare == NULL &&
+        getenv("KER_FSTACK_NGINX_INI") != NULL)
+        return unsupported("C22 owner activation module helper is unavailable");
+    if (initial_owner_prepare != NULL) {
+        if (worker != 0 || worker_count != 1 || initial_owner_prepare(cycle) != 0) {
+            secondary_authorization_active = 0;
+            return unsupported("initial owner activation requires the validated one-worker profile");
+        }
     }
 
     /* The upstream socket-open loop honors ignore. Its later configure pass

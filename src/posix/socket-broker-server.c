@@ -338,6 +338,7 @@ static uint32_t required_right(uint16_t operation)
         return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL:
     case KER_SB_FF_OWNER_GROUP_CONTROL:
+    case KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT:
         return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_GROUP_CLAIM:
     case KER_SB_FF_OWNER_GROUP_MEMBER:
@@ -621,6 +622,22 @@ static int owner_identity_alive(struct sb_owner *owner)
     uint64_t current_start = 0;
     if (process_start_time(owner->pid, &current_start)) return -errno;
     return current_start == owner->start_time ? 0 : -ESTALE;
+}
+
+/* Return 1 only when the authenticated owner's pidfd is readable as a
+ * confirmed-death notification. Procfs errors and unusual poll results are
+ * deliberately not converted into dead-owner authorization. */
+static int owner_pidfd_confirmed_dead(struct sb_owner *owner)
+{
+    if (!owner || !owner->live || owner->pidfd < 0) return -ESTALE;
+    struct pollfd pidfd = {.fd = owner->pidfd, .events = POLLIN};
+    int ready = (int)syscall(SYS_poll, &pidfd, 1, 0);
+    if (ready < 0) return -errno;
+    if (!ready) return 0;
+    if (pidfd.revents & POLLNVAL) return -EBADF;
+    if (pidfd.revents & POLLERR) return -EIO;
+    if (pidfd.revents & POLLIN) return 1;
+    return -EIO;
 }
 
 static struct sb_owner *owner_for_client(struct ker_socket_broker_server *server,
@@ -1870,8 +1887,37 @@ static int owner_group_activation_validate_native(const struct sb_group *group,
     return 0;
 }
 
+static void owner_group_activation_poison(struct ker_socket_broker_server *server,
+    struct sb_group *group, struct sb_object *activation)
+{
+    int group_slot = (int)(group - server->groups);
+    group->activation_state[0] = SB_MEMBER_ACTIVATION_FAILED;
+    group->activation_cookie[0] = 0;
+    group->member_present[0] = false;
+    group->member_cookie[0] = 0;
+    group->failed = true;
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
+        struct sb_object *alias = &server->objects[i];
+        if (!alias->live || alias->kind != KER_SOCKET_BROKER_SOCKET ||
+            alias->group_slot != group_slot ||
+            alias->group_incarnation != group->incarnation ||
+            alias->group_index != 0 || alias->native_fd < 0)
+            continue;
+        (void)close(alias->native_fd);
+        alias->native_fd = -1;
+    }
+    if (group->base_fd[0] >= 0) {
+        (void)close(group->base_fd[0]);
+        group->base_fd[0] = -1;
+    }
+    if (activation && activation->native_fd >= 0) {
+        (void)close(activation->native_fd);
+        activation->native_fd = -1;
+    }
+}
+
 static int owner_group_control_create(struct ker_socket_broker_server *server,
-    struct sb_object *plan, int *group_capability)
+    struct sb_object *plan, int *group_capability, bool require_owner_exit)
 {
     if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
         plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
@@ -1888,7 +1934,12 @@ static int owner_group_control_create(struct ker_socket_broker_server *server,
         owner->start_time != group->member_owner_start_time[0] ||
         owner->mark != group->member_mark[0]) return -ESTALE;
     int status = owner_identity_alive(owner);
-    if (status) return status;
+    if (require_owner_exit) {
+        if (!status) return -EAGAIN;
+        if (status != -ESRCH) return status;
+        int dead = owner_pidfd_confirmed_dead(owner);
+        if (dead != 1) return dead < 0 ? dead : status;
+    } else if (status) return status;
     status = owner_group_staged_initial_listener_validate(group);
     if (status) return status;
     int capability = group_handle(server, plan->group_slot, -1,
@@ -1973,40 +2024,39 @@ static int owner_group_activation_listen(struct ker_socket_broker_server *server
     if (owner->unowned_network_history) return -EOPNOTSUPP;
     if (object->group_claim_generation != group->claim_generation[0] ||
         group->member_owner_token[0] != object->owner_token) return -ESTALE;
-    if (group->activation_state[0] != SB_MEMBER_ACTIVATION_BOUND)
+    bool repeated = group->activation_state[0] == SB_MEMBER_ACTIVATION_PUBLISHED;
+    if (group->activation_state[0] != SB_MEMBER_ACTIVATION_BOUND && !repeated)
         return -EALREADY;
-    if (group->staged_state != SB_STAGED_INITIAL_RESERVED ||
-        group->base_fd[0] >= 0 || backlog < 0 || backlog != group->backlog)
+    if ((!repeated && (group->staged_state != SB_STAGED_INITIAL_RESERVED ||
+        group->base_fd[0] >= 0)) ||
+        (repeated && (group->staged_state != SB_STAGED_INITIAL_PUBLISHED ||
+        !group->member_present[0] || group->base_fd[0] < 0)) ||
+        backlog < 0 || backlog != group->backlog)
         return -EINVAL;
     status = owner_identity_alive(owner);
     if (status) return status;
-    status = owner_group_activation_validate_native(group, object, owner, false);
+    status = owner_group_activation_validate_native(group, object, owner, repeated);
     if (status) {
-        group->activation_state[0] = SB_MEMBER_ACTIVATION_FAILED;
-        group->activation_cookie[0] = 0;
-        group->failed = true;
-        (void)close(object->native_fd);
-        object->native_fd = -1;
+        owner_group_activation_poison(server, group, object);
         return status;
     }
     if (owner->admission_prepared) return -EOPNOTSUPP;
     if (listen(object->native_fd, backlog)) {
         int error = errno;
-        group->activation_state[0] = SB_MEMBER_ACTIVATION_FAILED;
-        group->failed = true;
-        (void)close(object->native_fd);
-        object->native_fd = -1;
+        if (!repeated) {
+            group->activation_state[0] = SB_MEMBER_ACTIVATION_FAILED;
+            group->failed = true;
+            (void)close(object->native_fd);
+            object->native_fd = -1;
+        }
         return -error;
     }
     status = owner_group_activation_validate_native(group, object, owner, true);
     if (status) {
-        group->activation_state[0] = SB_MEMBER_ACTIVATION_FAILED;
-        group->activation_cookie[0] = 0;
-        group->failed = true;
-        (void)close(object->native_fd);
-        object->native_fd = -1;
+        owner_group_activation_poison(server, group, object);
         return status;
     }
+    if (repeated) return 0;
     int group_fd = fcntl(object->native_fd, F_DUPFD_CLOEXEC, 0);
     if (group_fd < 0) {
         int error = errno;
@@ -2382,7 +2432,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         request->operation != KER_SB_FF_OWNER_GROUP_CLAIM &&
         request->operation != KER_SB_FF_OWNER_GROUP_MEMBER &&
         request->operation != KER_SB_FF_OWNER_GROUP_ACTIVATE_INITIAL &&
-        request->operation != KER_SB_FF_OWNER_GROUP_CONTROL) {
+        request->operation != KER_SB_FF_OWNER_GROUP_CONTROL &&
+        request->operation != KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT) {
         struct sb_object *object;
         enum ker_socket_broker_kind expected_kind = KER_SOCKET_BROKER_SOCKET;
         if (request->operation == KER_SB_EPOLL_WAIT) expected_kind = KER_SOCKET_BROKER_EPOLL;
@@ -2397,6 +2448,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH ||
             request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH_INITIAL ||
             request->operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE)
+            expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
+        else if (request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
         else if (request->operation == KER_SB_TCP_OBSERVER_SNAPSHOT)
             expected_kind = KER_SOCKET_BROKER_TCP_OBSERVER;
@@ -2508,11 +2561,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
     }
-    case KER_SB_FF_OWNER_GROUP_CONTROL: {
+    case KER_SB_FF_OWNER_GROUP_CONTROL:
+    case KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT: {
         if (input_length || fd_count != 1) return -EPROTO;
         struct sb_object *plan = lookup_cap(server, fds[0]);
         int capability = -1;
-        status = owner_group_control_create(server, plan, &capability);
+        status = owner_group_control_create(server, plan, &capability,
+            request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT);
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
     }
