@@ -389,7 +389,8 @@ target_compile_features(ker-socket-broker-server PUBLIC c_std_11)
 target_compile_options(ker-socket-broker-server PRIVATE -Wall -Wextra -Werror)
 if(BUILD_TESTING)
     target_compile_definitions(ker-socket-broker-server PRIVATE
-        KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1)
+        KER_C16_ADMISSION_TEST_TRACE=1 KER_C28_CUTOVER_TESTING=1
+        KER_SOCKET_BROKER_READINESS_TESTING=1)
 endif()
 target_link_libraries(ker-socket-broker-server PRIVATE ker-posix)
 add_library(ker::socket-broker-server ALIAS ker-socket-broker-server)
@@ -633,6 +634,30 @@ if(BUILD_TESTING)
     target_link_libraries(ker-socket-broker-fixture PRIVATE ker-socket-broker-server)
     add_dependencies(ker-socket-broker-fixture ker-app ker-io-worker)
     target_compile_options(ker-socket-broker-fixture PRIVATE -Wall -Wextra -Werror)
+    add_executable(ker-socket-broker-readiness-fixture
+        tests/posix/socket-broker-readiness-broker.c)
+    target_link_libraries(ker-socket-broker-readiness-fixture PRIVATE
+        ker-socket-broker-server)
+    add_dependencies(ker-socket-broker-readiness-fixture ker-app ker-io-worker)
+    target_compile_options(ker-socket-broker-readiness-fixture PRIVATE
+        -Wall -Wextra -Werror)
+    target_compile_definitions(ker-socket-broker-readiness-fixture PRIVATE
+        KER_SOCKET_BROKER_READINESS_TESTING=1)
+    add_test(NAME native-socket-broker-readiness-wire
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/test_broker_readiness_wire.py")
+    set_tests_properties(native-socket-broker-readiness-wire PROPERTIES
+        TIMEOUT 10 LABELS "native-tcp;socket-broker;readiness;unit")
+    add_test(NAME native-socket-broker-readiness
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker-readiness.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>" --worker "$<TARGET_FILE:ker-io-worker>"
+            --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+            --dpdk-plugin-dir "${ker_session_pmd_dir}")
+    set_tests_properties(native-socket-broker-readiness PROPERTIES
+        TIMEOUT 180 LABELS "native-tcp;socket-broker;readiness;tap"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;TMPDIR=/dev/shm")
     add_executable(ker-socket-broker-client-test tests/posix/socket-broker-client.c)
     target_include_directories(ker-socket-broker-client-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     target_link_libraries(ker-socket-broker-client-test PRIVATE ker-socket-client)
@@ -2639,3 +2664,4 @@ endif()
 include("${PROJECT_SOURCE_DIR}/cmake/RxDecisionForwardTests.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceSupervisorTests.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceClientTests.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/NginxCompanion.cmake")

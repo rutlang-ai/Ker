@@ -42,6 +42,14 @@ if _RUNTIME_SERVICE_SPEC is None or _RUNTIME_SERVICE_SPEC.loader is None:
 runtime_service = importlib.util.module_from_spec(_RUNTIME_SERVICE_SPEC)
 _RUNTIME_SERVICE_SPEC.loader.exec_module(runtime_service)
 
+_BROKER_READINESS_SPEC = importlib.util.spec_from_file_location(
+    '_ker_broker_readiness_supervisor',
+    Path(__file__).resolve().with_name('broker_readiness_supervisor.py'))
+if _BROKER_READINESS_SPEC is None or _BROKER_READINESS_SPEC.loader is None:
+    raise ImportError('cannot load private socket-broker readiness supervisor')
+broker_readiness = importlib.util.module_from_spec(_BROKER_READINESS_SPEC)
+_BROKER_READINESS_SPEC.loader.exec_module(broker_readiness)
+
 
 class Interrupted(Exception):
     def __init__(self, signum):
@@ -637,6 +645,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     parser.add_argument('--stats', type=Path, help='write Ethernet I/O counters at shutdown')
     parser.add_argument('--rx-decision', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--runtime-service', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--broker-readiness', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     supplied = parser.parse_args(argv)
     values = dict(CONFIG_DEFAULTS)
@@ -656,6 +665,7 @@ def parse_arguments(argv=None, *, defer_worker_limits=False):
     values.update(vars(supplied))
     values.setdefault('rx_decision', False)
     values.setdefault('runtime_service', False)
+    values.setdefault('broker_readiness', False)
     values['sysctls'] = sysctls
     args = argparse.Namespace(**values)
     missing = [name for name in ('address', 'port', 'eal') if getattr(args, name) is None]
@@ -1287,6 +1297,7 @@ def main():
     runtime_actor_pidfd = -1
     runtime_service_server = None
     runtime_service_directory = None
+    broker_readiness_channel = None
     decision_nonce = None
     decision_epoch = 0
     supervisor_identity = None
@@ -1315,7 +1326,18 @@ def main():
             print(f'ker-run: RX decision setup is unavailable: {error}', file=sys.stderr)
             return 125
     worker_finished = run_finished = False
-    signal.signal(signal.SIGTERM, interrupted)
+    pending_shutdown_signal = None
+    def handle_shutdown_signal(signum, frame):
+        nonlocal pending_shutdown_signal
+        if args.broker_readiness:
+            if pending_shutdown_signal is None:
+                pending_shutdown_signal = signum
+        else:
+            interrupted(signum, frame)
+
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    if args.broker_readiness:
+        signal.signal(signal.SIGINT, handle_shutdown_signal)
     worker = app = None
     additional = []
     exit_code = 125
@@ -1324,6 +1346,23 @@ def main():
     startup_status = b""
     infrastructure_failure = False
     preserve_signal = False
+    signal_exit_code = None
+    stop_deadline = None
+
+    def stop_broker_for_signal():
+        nonlocal exit_code, preserve_signal, signal_exit_code, stop_deadline
+        nonlocal pending_shutdown_signal
+        if (pending_shutdown_signal is None or broker_readiness_channel is None or
+                not broker_readiness_channel.ready or broker_readiness_channel.stopped):
+            return
+        signum = pending_shutdown_signal
+        pending_shutdown_signal = None
+        preserve_signal = True
+        signal_exit_code = 128 + signum
+        exit_code = signal_exit_code
+        stop_deadline = time.monotonic() + 10.0
+        broker_readiness_channel.stop()
+
     try:
         vlan_ipv6 = any(value.version == 6 for _, entries in args.vlans for value in entries)
         multicast_options = ['--all-multicast'] if args.all_multicast or args.address6 is not None or vlan_ipv6 else []
@@ -1384,6 +1423,9 @@ def main():
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
         info = worker_ready_record(ready)
         app_command = args.command
+        if args.broker_readiness:
+            if not args.runtime_service or args.rx_decision:
+                raise ValueError('broker readiness requires the authenticated runtime-service actor profile')
         if args.rx_decision:
             worker_pidfd = os.pidfd_open(worker.pid, 0)
             worker_identity = rx_decision_identity(worker.pid, worker_pidfd)
@@ -1406,12 +1448,16 @@ def main():
                 runtime_service.process_executable_hash(worker.pid), info,
                 app_executable_hash, app_profile_hash, control_write)
             runtime_service_server.start()
+        if args.broker_readiness:
+            broker_readiness_channel = broker_readiness.BrokerReadiness(
+                worker_path, info, runtime_service_server.worker_profile_hash)
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
             extra_worker.start(worker_path, args)
         env = {key: value for key, value in os.environ.items()
-            if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_'))}
+            if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_',
+                                   'KER_BROKER_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_NATIVE_TX_FEATURES=str(info['tx_offload_features']), KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
@@ -1422,6 +1468,8 @@ def main():
             env['KER_RX_DECISION_FD'] = str(decision_app.fileno())
         if runtime_service_server is not None:
             env.update(runtime_service_server.env)
+        if broker_readiness_channel is not None:
+            env.update(broker_readiness_channel.environment())
         if additional:
             env['KER_PACKET_INTERFACES'] = ';'.join(extra.native_settings() for extra in additional)
         env.pop('KER_NATIVE_VLANS', None)
@@ -1460,8 +1508,13 @@ def main():
             *(fd for extra in additional for fd in extra.app_fds())]
         if args.rx_decision:
             app_pass_fds.append(decision_app.fileno())
+        if broker_readiness_channel is not None:
+            app_pass_fds.append(broker_readiness_channel.child_fd())
         app = subprocess.Popen([str(app_guard), *app_command], env=env,
             pass_fds=tuple(app_pass_fds))
+        if broker_readiness_channel is not None:
+            broker_readiness_channel.child_started(app,
+                runtime_service_server.app_executable_hash)
         if runtime_service_server is not None:
             runtime_actor_pidfd = os.pidfd_open(app.pid, 0)
             runtime_service_server.bind_actor(app, runtime_actor_pidfd)
@@ -1499,7 +1552,21 @@ def main():
         stopping_at = None
         while True:
             try:
-                exit_code = app.wait(timeout=0.25)
+                if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                    raise TimeoutError('broker-requested native shutdown timed out')
+                stop_broker_for_signal()
+                app_returncode = app.wait(timeout=0.25)
+                if preserve_signal:
+                    if app_returncode != 0:
+                        infrastructure_failure = True
+                    exit_code = signal_exit_code
+                else:
+                    exit_code = app_returncode
+                stop_broker_for_signal()
+                if (broker_readiness_channel is not None and
+                        (not broker_readiness_channel.ready or
+                         not broker_readiness_channel.stopped)):
+                    raise RuntimeError('broker application exited outside authenticated READY/STOP lifecycle')
                 if exit_code < 0:
                     preserve_signal = True
                 elif not run_finished:
@@ -1525,6 +1592,11 @@ def main():
                             raise RuntimeError(failure)
                 break
             except subprocess.TimeoutExpired:
+                if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                    raise TimeoutError('broker-requested native shutdown timed out')
+                stop_broker_for_signal()
+                if broker_readiness_channel is not None and not broker_readiness_channel.ready:
+                    broker_readiness_channel.poll_ready()
                 try:
                     startup_status += os.read(startup_read, 4096)
                 except BlockingIOError:
@@ -1594,7 +1666,19 @@ def main():
         preserve_signal = True
         signum = interruption.signum if isinstance(interruption, Interrupted) else signal.SIGINT
         exit_code = 128 + signum
-        if app and app.poll() is None:
+        if broker_readiness_channel is not None and broker_readiness_channel.ready and app and app.poll() is None:
+            try:
+                broker_readiness_channel.stop()
+                app.wait(timeout=10)
+                if app.returncode != 0:
+                    raise RuntimeError(f'broker application exited with status {app.returncode} after STOP')
+                startup_status = drain_startup_status(startup_read, startup_status)
+                if not normal_native_shutdown_markers(startup_status):
+                    raise RuntimeError('broker STOP did not produce normal native shutdown markers')
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+                infrastructure_failure = True
+                print(f'ker-run: broker STOP failed: {error}', file=sys.stderr)
+        elif app and app.poll() is None:
             app.send_signal(signum)
             try:
                 app.wait(timeout=5)
@@ -1602,6 +1686,8 @@ def main():
                 pass
     except (OSError, ValueError, RuntimeError) as error:
         print(f'ker-run: {error}', file=sys.stderr)
+        if broker_readiness_channel is not None:
+            infrastructure_failure = True
     finally:
         if app and app.poll() is None:
             app.terminate()
@@ -1623,6 +1709,9 @@ def main():
                 print(f'ker-run: runtime-service directory cleanup: {error}', file=sys.stderr)
                 infrastructure_failure = True
             runtime_service_directory = None
+        if broker_readiness_channel is not None:
+            broker_readiness_channel.close()
+            broker_readiness_channel = None
         channel_app.close()
         channel_io.close()
         mtu_app.close()
@@ -1710,6 +1799,8 @@ def main():
                 except (OSError, ValueError, TypeError) as error:
                     print(f'ker-run: statistics output: {error}', file=sys.stderr)
                     infrastructure_failure = True
+    if signal_exit_code is not None and infrastructure_failure:
+        preserve_signal = False
     return resolve_exit_code(exit_code, app.returncode if app else None,
         infrastructure_failure, preserve_signal)
 
