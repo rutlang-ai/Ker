@@ -10,6 +10,7 @@ import select
 import selectors
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -493,6 +494,26 @@ def handoff_trigger_action(data):
     if data == b'H':
         return 'handoff'
     return 'invalid'
+
+
+def read_bounded_generation_frame(fd):
+    """Read one length-prefixed Ethernet frame from the explicit test pipe."""
+    header = bytearray()
+    while len(header) < 2:
+        part = os.read(fd, 2 - len(header))
+        if not part:
+            raise RuntimeError('generation test frame command ended before its length')
+        header.extend(part)
+    frame_length = struct.unpack('!H', header)[0]
+    if not 14 <= frame_length <= 1518:
+        raise RuntimeError('generation test frame length is outside the bounded Ethernet profile')
+    frame = bytearray()
+    while len(frame) < frame_length:
+        part = os.read(fd, frame_length - len(frame))
+        if not part:
+            raise RuntimeError('generation test frame command ended before its payload')
+        frame.extend(part)
+    return bytes(header), bytes(frame)
 
 
 def handoff_successor_owner_key(metrics):
@@ -2095,20 +2116,9 @@ def _run_session_impl(args, api):
                                 metrics.get('handoff',{}).get('peer_worker_pid') != peer_worker.pid or
                                 os.environ.get('KER_SESSION_TEST_GENERATION_FORWARD_PRODUCER') != '1'):
                             raise RuntimeError('generation test frame injection is outside its explicit profile')
-                        header = bytearray()
-                        while len(header) < 2:
-                            part = os.read(handoff_fd, 2-len(header))
-                            if not part: raise RuntimeError('generation test frame command ended before its length')
-                            header.extend(part)
-                        frame_length = struct.unpack('!H', header)[0]
-                        if not 14 <= frame_length <= 1518:
-                            raise RuntimeError('generation test frame length is outside the bounded Ethernet profile')
-                        frame = bytearray()
-                        while len(frame) < frame_length:
-                            part = os.read(handoff_fd, frame_length-len(frame))
-                            if not part: raise RuntimeError('generation test frame command ended before its payload')
-                            frame.extend(part)
-                        command = b'I' + bytes(header) + bytes(frame)
+                        header, frame = read_bounded_generation_frame(handoff_fd)
+                        frame_length = len(frame)
+                        command = b'I' + header + frame
                         offset = 0; deadline = time.monotonic() + 3
                         while offset < len(command):
                             try: offset += os.write(peer_control_w, command[offset:])
@@ -2117,7 +2127,7 @@ def _run_session_impl(args, api):
                                 select.select([], [peer_control_w], [], min(0.02, deadline-time.monotonic()))
                         forwarded = ready('KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED', process=peer_worker)
                         if forwarded != dict(producer_generation=1, target_generation=0,
-                                length=frame_length, frame_hex=bytes(frame).hex()):
+                                length=frame_length, frame_hex=frame.hex()):
                             raise RuntimeError('active worker did not acknowledge the exact explicit old-generation frame')
                         print('KER_SESSION_TEST_GENERATION_FORWARD_ENQUEUED ' +
                             json.dumps(forwarded, sort_keys=True), flush=True)
