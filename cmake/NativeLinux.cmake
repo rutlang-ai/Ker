@@ -212,6 +212,14 @@ set(KER_FSTACK_NGINX_SOURCE_ROOT "" CACHE PATH
     "Pinned F-Stack source checkout used to build the FF-enabled nginx executable")
 set(KER_FSTACK_NGINX_BUILD_DIR "" CACHE PATH
     "Generated objs directory for the pinned FF-enabled nginx build")
+option(KER_ENABLE_C23_SOURCE_RELOAD_PROBES
+    "Opt in to the 330-second unchanged upstream baseline plus measured graceful_reload=0 probe" OFF)
+set(KER_C23_INSTALL_PREFIX "" CACHE PATH
+    "Normal installed Ker prefix used by the long C23 original-source reload probes")
+set(KER_C23_NGINX_BINARY "" CACHE FILEPATH
+    "Pinned FF-enabled Nginx binary for the C23 original-source reload probes")
+set(KER_C23_SOURCE_PROBE_ROOT "${PROJECT_SOURCE_DIR}/tests/upstream/fstack/tests/integration" CACHE PATH
+    "Unmodified pinned F-Stack integration probe directory for C23")
 
 if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     if(NOT KER_BUILD_FSTACK_NGINX_RUNTIME OR NOT KER_FSTACK_NGINX_BINARY OR
@@ -921,6 +929,46 @@ if(BUILD_TESTING)
                         --dpdk-plugin-dir "${ker_session_pmd_dir}")
                 set_tests_properties(native-nginx-fstack-owner-activation PROPERTIES
                     TIMEOUT 300 LABELS "native-tcp;fstack;socket-broker;nginx;staged-owner-activation")
+                if(KER_ENABLE_C23_SOURCE_RELOAD_PROBES)
+                    if(NOT KER_C23_INSTALL_PREFIX OR NOT KER_C23_NGINX_BINARY OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/share/ker/native-linux/build.json" OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/bin/ker-run" OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/bin/ker-io-worker" OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/lib64/libker-posix.so" OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/lib64/libker-socket-preload.so" OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/lib64/libfstack.so" OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/lib64/libker-fstack-nginx-worker-shim.so" OR
+                       NOT EXISTS "${KER_C23_INSTALL_PREFIX}/lib64/ker/fstack-nginx-runtime/ker-fstack-nginx-owner-activation.so" OR
+                       NOT EXISTS "${KER_C23_SOURCE_PROBE_ROOT}/common/reload_checks.py" OR
+                       NOT EXISTS "${KER_C23_SOURCE_PROBE_ROOT}/common/reload_probes/m4_lc.py" OR
+                       NOT EXISTS "${KER_C23_SOURCE_PROBE_ROOT}/common/reload_probes/m4_outage.py" OR
+                       NOT EXISTS "${KER_C23_SOURCE_PROBE_ROOT}/common/reload_probes/http_probe.py" OR
+                       NOT EXISTS "${KER_C23_SOURCE_PROBE_ROOT}/test_graceful_reload.sh")
+                        message(FATAL_ERROR
+                            "C23 requires the normal installed Ker prefix, pinned Nginx binary, and unchanged source probes")
+                    endif()
+                    add_test(NAME native-nginx-fstack-source-baseline
+                        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
+                            --launcher "${KER_C23_INSTALL_PREFIX}/bin/ker-run"
+                            --library "${KER_C23_INSTALL_PREFIX}/lib64/libker-posix.so"
+                            --worker "${KER_C23_INSTALL_PREFIX}/bin/ker-io-worker"
+                            --broker "$<TARGET_FILE:ker-socket-broker-fixture>"
+                            --client "$<TARGET_FILE:ker-socket-broker-client-test>"
+                            --preload-library "${KER_C23_INSTALL_PREFIX}/lib64/libker-socket-preload.so"
+                            --fstack-runtime "${KER_C23_INSTALL_PREFIX}/lib64/libfstack.so"
+                            --fstack-worker-shim "${KER_C23_INSTALL_PREFIX}/lib64/libker-fstack-nginx-worker-shim.so"
+                            --nginx-owner-activation-module "${KER_C23_INSTALL_PREFIX}/lib64/ker/fstack-nginx-runtime/ker-fstack-nginx-owner-activation.so"
+                            --nginx-workers 1
+                            --nginx-binary "${KER_C23_NGINX_BINARY}"
+                            --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                            --source-reload-probes "${KER_C23_SOURCE_PROBE_ROOT}"
+                            --source-reload-mode baseline
+                            --source-reload-output "${CMAKE_CURRENT_BINARY_DIR}/c23-source-reload-evidence"
+                            --c23-ker-manifest "${KER_C23_INSTALL_PREFIX}/share/ker/native-linux/build.json")
+                    set_tests_properties(native-nginx-fstack-source-baseline PROPERTIES
+                        TIMEOUT 600 LABELS "native-tcp;fstack;socket-broker;nginx;source-reload;long-running"
+                        ENVIRONMENT "LD_LIBRARY_PATH=${KER_C23_INSTALL_PREFIX}/lib64:${ker_session_pmd_dir};TMPDIR=/dev/shm")
+                endif()
                 add_test(NAME native-nginx-fstack-owner-activation-rejects-profile
                     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-socket-broker.py"
                         --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"

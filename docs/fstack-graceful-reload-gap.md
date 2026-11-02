@@ -171,6 +171,23 @@ bind/listen effects, capability cleanup, and reuse of the released tuple by a
 fresh non-reuseport listener. This is an SDK prerequisite, not a graceful
 reload qualification; the source inventory entry remains blocked.
 
+The opt-in C23 source baseline runs unchanged pinned `m4_lc.py` against the
+installed C22 Nginx runtime on `198.18.0.2:80`: 24 persistent connections plus
+one fresh-request worker, 330 seconds, 0.5-second intervals, and a 2-second
+timeout. The source oracle passed with 15,840 persistent requests, 660 fresh
+requests, and zero failures or reconnects. This is a baseline qualification
+only. The separate manual `gr0` mode runs unchanged 25-second `m4_outage.py`,
+sends the real Nginx HUP at the source harness's five-second anchor, and applies
+the unchanged oracle and zero-FSM-log check. In the recorded run it observed
+one 0.028-second refusal window, below the source oracle's 0.3-second minimum;
+`gr0` therefore remains unqualified. The evidence records exact probe
+arguments and hashes, the installed Ker manifest, Nginx/module/runtime hashes,
+probe logs, and original-Linux broker statistics. The config preserves the
+source probe's `/` index response and 300-second keepalive settings. The
+baseline CTest is opt-in because it takes more than five minutes; manual `gr0`
+and composite modes return nonzero when the unchanged oracle rejects a run.
+This work does not advance the source-case inventory or qualify graceful reload.
+
 The opt-in runtime now provides `ff_socket_snd_pending` for ordinary
 ready-copy TCP sockets created through the authenticated FF owner context. Each
 process receives a distinct broker-owned mark bound to its host PID, process
