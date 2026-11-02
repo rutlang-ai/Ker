@@ -5,6 +5,7 @@ import array
 import concurrent.futures
 import contextlib
 import configparser
+import importlib.util
 import ipaddress
 import json
 import os
@@ -21,7 +22,16 @@ import time
 from types import SimpleNamespace
 import secrets
 
-import rx_decision_wire
+# This launcher is also loaded by path (for example from CTest's generated
+# selector tests). Load its private codec by sibling path so neither the
+# caller's sys.path nor a cached module with the same public name can override it.
+_RX_DECISION_WIRE_PATH = Path(__file__).resolve().with_name('rx_decision_wire.py')
+_RX_DECISION_WIRE_SPEC = importlib.util.spec_from_file_location(
+    '_ker_run_rx_decision_wire', _RX_DECISION_WIRE_PATH)
+if _RX_DECISION_WIRE_SPEC is None or _RX_DECISION_WIRE_SPEC.loader is None:
+    raise ImportError(f'cannot load private RX decision codec: {_RX_DECISION_WIRE_PATH}')
+rx_decision_wire = importlib.util.module_from_spec(_RX_DECISION_WIRE_SPEC)
+_RX_DECISION_WIRE_SPEC.loader.exec_module(rx_decision_wire)
 
 
 class Interrupted(Exception):
