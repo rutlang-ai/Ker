@@ -15,6 +15,7 @@ from pathlib import Path
 import selectors
 import shlex
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -101,6 +102,32 @@ def wait_startup_marker(fd, data, marker, timeout, description):
                 raise RuntimeError(f'{description} exited before readiness marker')
             data += chunk
     return data
+
+
+def resolve_runtime_service_app_executable(command, search_path=None):
+    """Resolve the exact direct ELF that ker-app will execute.
+
+    execvp searches PATH for a bare command name; Path.resolve alone would
+    incorrectly look for that name in the current working directory.
+    """
+    if not command:
+        raise RuntimeError('runtime-service caller command is empty')
+    if os.sep in command or (os.altsep is not None and os.altsep in command):
+        candidate = command
+    else:
+        candidate = shutil.which(command, path=search_path)
+        if candidate is None:
+            raise RuntimeError('runtime-service caller executable was not found on PATH')
+    try:
+        executable = Path(candidate).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError('runtime-service caller executable cannot be resolved') from exc
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise RuntimeError('runtime-service caller must be an executable file')
+    with executable.open('rb') as executable_stream:
+        if executable_stream.read(4) != b'\x7fELF':
+            raise RuntimeError('runtime-service phase one requires a direct ELF application')
+    return executable
 
 
 def resolve_exit_code(exit_code, app_returncode, infrastructure_failure, preserve_signal):
@@ -1356,18 +1383,18 @@ def main():
                 stats = worker_done_record(ready)
             raise RuntimeError('DPDK worker failed before packet I/O became ready: ' + ready)
         info = worker_ready_record(ready)
+        app_command = args.command
         if args.rx_decision:
             worker_pidfd = os.pidfd_open(worker.pid, 0)
             worker_identity = rx_decision_identity(worker.pid, worker_pidfd)
         if args.runtime_service:
             if worker_pidfd < 0:
                 worker_pidfd = os.pidfd_open(worker.pid, 0)
-            app_executable = Path(args.command[0]).resolve(strict=True)
-            if not app_executable.is_file() or not os.access(app_executable, os.X_OK):
-                raise RuntimeError('runtime-service caller must be an executable file')
-            with app_executable.open('rb') as executable_stream:
-                if executable_stream.read(4) != b'\x7fELF':
-                    raise RuntimeError('runtime-service phase one requires a direct ELF application')
+            app_executable = resolve_runtime_service_app_executable(
+                args.command[0], os.environ.get('PATH'))
+            # Pass the resolved ELF path through ker-app so hashing and the
+            # eventual exec use the same file, including for bare PATH names.
+            app_command = [str(app_executable), *args.command[1:]]
             app_executable_hash = runtime_service.sha256_file(app_executable)
             runtime_service_directory = tempfile.mkdtemp(prefix='ker-runtime-service-')
             os.chmod(runtime_service_directory, 0o700)
@@ -1433,7 +1460,7 @@ def main():
             *(fd for extra in additional for fd in extra.app_fds())]
         if args.rx_decision:
             app_pass_fds.append(decision_app.fileno())
-        app = subprocess.Popen([str(app_guard), *args.command], env=env,
+        app = subprocess.Popen([str(app_guard), *app_command], env=env,
             pass_fds=tuple(app_pass_fds))
         if runtime_service_server is not None:
             runtime_actor_pidfd = os.pidfd_open(app.pid, 0)

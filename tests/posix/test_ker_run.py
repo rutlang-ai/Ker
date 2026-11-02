@@ -110,9 +110,45 @@ class KerRunMainTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tempdir.cleanup()
 
+    def test_runtime_service_resolves_bare_command_through_path(self):
+        with tempfile.TemporaryDirectory(prefix='ker-run-path-') as directory:
+            command = Path(directory) / 'python-runtime-service'
+            command.symlink_to(sys.executable)
+            resolved = ker_run.resolve_runtime_service_app_executable(
+                command.name, directory)
+            self.assertEqual(resolved, Path(sys.executable).resolve())
+
+    def test_runtime_service_launches_path_resolved_elf(self):
+        with tempfile.TemporaryDirectory(prefix='ker-run-launch-path-') as directory:
+            command = Path(directory) / 'python-runtime-service'
+            command.symlink_to(sys.executable)
+            result = self.run_launcher(0, native_done=True,
+                command=[command.name, '-c', 'import sys; sys.exit(0)'],
+                runtime_service_enabled=True,
+                extra_env={'PATH': directory, 'FAKE_RUNTIME_SERVICE_READY': '1',
+                    'PYTHONPATH': str(MODULE_PATH.parent)})
+            self.assertEqual(result, 0)
+
+    def test_runtime_service_resolves_explicit_path(self):
+        resolved = ker_run.resolve_runtime_service_app_executable(sys.executable)
+        self.assertEqual(resolved, Path(sys.executable).resolve())
+
+    def test_runtime_service_resolves_explicit_symlink_to_executed_elf(self):
+        with tempfile.TemporaryDirectory(prefix='ker-run-explicit-link-') as directory:
+            command = Path(directory) / 'python-link'
+            command.symlink_to(sys.executable)
+            resolved = ker_run.resolve_runtime_service_app_executable(str(command))
+            self.assertEqual(resolved, Path(sys.executable).resolve())
+
+    def test_runtime_service_rejects_missing_path_command(self):
+        with tempfile.TemporaryDirectory(prefix='ker-run-empty-path-') as directory:
+            with self.assertRaisesRegex(RuntimeError, 'not found on PATH'):
+                ker_run.resolve_runtime_service_app_executable(
+                    'missing-runtime-service-app', directory)
+
     def run_launcher(self, app_code, *, native_done, worker_code=0, signal_app=False,
                      config=None, app_source=None, extra_env=None, capture_stderr=False,
-                     runtime_service_enabled=False):
+                     runtime_service_enabled=False, command=None):
         env = os.environ.copy()
         env.update(FAKE_NATIVE_DONE='1' if native_done else '0',
                    FAKE_WORKER_EXIT=str(worker_code))
@@ -124,11 +160,12 @@ class KerRunMainTests(unittest.TestCase):
             app = 'import os, signal; os.kill(os.getpid(), signal.SIGTERM)'
         else:
             app = f'import sys; sys.exit({app_code})'
+        app_command = command if command is not None else [sys.executable, '-c', app]
         argv = ['ker-run.py', '--address', '192.0.2.2/24', '--port', 'fake0',
                 '--eal', '', '--library', str(self.library), '--io-worker', str(self.worker),
                 *(('--runtime-service',) if runtime_service_enabled else ()),
                 *(('--config', str(config)) if config else ()),
-                '--', sys.executable, '-c', app]
+                '--', *app_command]
         with (io.StringIO() if capture_stderr else open(os.devnull, 'w')) as stderr, \
                 mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(sys, 'argv', argv), \
