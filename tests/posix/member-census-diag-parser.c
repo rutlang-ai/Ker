@@ -125,6 +125,15 @@ static size_t append_row(uint8_t *out, size_t capacity, uint8_t state,
     return used;
 }
 
+static void set_row_timer_inode(uint8_t *out, uint8_t timer, uint32_t inode)
+{
+    size_t message = sizeof(struct ker_member_census_nlmsghdr);
+    memcpy(out + message + offsetof(struct ker_member_census_diag_msg, timer),
+        &timer, sizeof(timer));
+    memcpy(out + message + offsetof(struct ker_member_census_diag_msg, inode),
+        &inode, sizeof(inode));
+}
+
 static size_t append_done(uint8_t *out, size_t capacity, int32_t status)
 {
     if (capacity < sizeof(struct done_wire)) return 0;
@@ -220,6 +229,69 @@ int main(void)
     CHECK(length != 0);
     CHECK(parse_expect(&state, packet, length, 0, false, 0, &snapshot) == 0);
     CHECK(state.total == 1 && state.state_counts[3] == 1);
+
+    /* Linux 6.12.113 inet_diag represents an orphaned FIN_WAIT2 timewait
+     * object with timer=TIMEWAIT, inode=0, original cookie, and MARK only. */
+    state = initial_state();
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        request_attrs, 1);
+    CHECK(length);
+    set_row_timer_inode(packet, KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT, 0);
+    CHECK(parse_expect(&state, packet, length, 0, false, 0, &snapshot) == 0);
+    CHECK(state.total == 1 &&
+        state.state_counts[KER_MEMBER_CENSUS_TCP_FIN_WAIT2] == 1);
+
+    /* Sparse state-5 rows are accepted only for the exact timewait shape. */
+    state = initial_state();
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        request_attrs, 1);
+    CHECK(length);
+    set_row_timer_inode(packet, 0, 0);
+    CHECK(parse_expect(&state, packet, length, -EPROTO, false, 0, &snapshot) == 0);
+    state = initial_state();
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        request_attrs, 1);
+    CHECK(length);
+    set_row_timer_inode(packet, KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT, 1);
+    CHECK(parse_expect(&state, packet, length, -EPROTO, false, 0, &snapshot) == 0);
+    state = initial_state();
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        NULL, 0);
+    CHECK(length);
+    set_row_timer_inode(packet, KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT, 0);
+    CHECK(parse_expect(&state, packet, length, -EPROTO, false, 0, &snapshot) == 0);
+    state = initial_state();
+    const struct test_attribute wrong_mark_only[] = {
+        {KER_MEMBER_CENSUS_IN_DIAG_MARK, &wrong_mark, sizeof(wrong_mark)}};
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        wrong_mark_only, 1);
+    CHECK(length);
+    set_row_timer_inode(packet, KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT, 0);
+    CHECK(parse_expect(&state, packet, length, -ESTALE, false, 0, &snapshot) == 0);
+    state = initial_state();
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        request_attrs, 1);
+    CHECK(length);
+    set_row_timer_inode(packet, KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT, 0);
+    uint32_t zero_cookie[2] = {0};
+    memcpy(packet + sizeof(struct ker_member_census_nlmsghdr) +
+        offsetof(struct ker_member_census_diag_msg, cookie), zero_cookie,
+        sizeof(zero_cookie));
+    CHECK(parse_expect(&state, packet, length, -EPROTO, false, 0, &snapshot) == 0);
+    state = initial_state();
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        full_attrs, sizeof(full_attrs) / sizeof(full_attrs[0]));
+    CHECK(length);
+    set_row_timer_inode(packet, KER_MEMBER_CENSUS_IDIAG_TIMER_TIMEWAIT, 0);
+    CHECK(parse_expect(&state, packet, length, -EPROTO, false, 0, &snapshot) == 0);
+    state = initial_state();
+    length = append_row(packet, sizeof(packet), KER_MEMBER_CENSUS_TCP_FIN_WAIT2,
+        full_attrs, sizeof(full_attrs) / sizeof(full_attrs[0]));
+    CHECK(length);
+    set_row_timer_inode(packet, 0, 0);
+    CHECK(parse_expect(&state, packet, length, 0, false, 0, &snapshot) == 0);
+    CHECK(state.total == 1 &&
+        state.state_counts[KER_MEMBER_CENSUS_TCP_FIN_WAIT2] == 1);
 
     /* Unknown but structurally valid attributes do not alter the census. */
     state = initial_state();

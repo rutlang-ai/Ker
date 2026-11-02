@@ -196,10 +196,16 @@ Linux send queue until `EAGAIN` while the host delays reads. A separate
 existing TCP observer capability records a positive send-queue value; it is
 not added to the census result. The native worker then closes its accepted,
 member, and group descriptors and exits before the host drains the queued
-bytes. The host verifies every byte and orderly FIN while retaining only
-metadata capabilities; the census observes closing/TIME_WAIT states and
-confirms both listener rows disappear. The test does not synthesize TCP
-packets or claim a full-table census outside this bounded two-member group.
+bytes. The host verifies every byte and orderly FIN while keeping both peer
+sockets open; the census observes the resulting `FIN_WAIT2` rows, then the
+host closes the peers and the census observes `TIME_WAIT`. On Linux 6.12.113,
+an orphaned `FIN_WAIT2` may already be represented by a timewait object. Its
+inet-diag row retains the `FIN_WAIT2` state and socket cookie but has timer
+`TIMEWAIT`, inode zero, and only the mark attribute. The parser accepts this
+sparse form only for that exact state/timer/inode combination while still
+requiring the member mark and unique nonzero cookie. It also confirms both
+listener rows disappear. The test does not synthesize TCP packets or claim a
+full-table census outside this bounded two-member group.
 
 Adding these typed operations advances the private broker wire protocol to
 version 2; client and broker must be built from compatible API versions.

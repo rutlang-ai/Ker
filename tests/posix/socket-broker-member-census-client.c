@@ -56,12 +56,13 @@ static int print_snapshot(struct ker_socket_client *client, int cap, unsigned in
     struct ker_socket_member_census_snapshot value;
     if (snapshot(client, cap, &value)) return -1;
     printf("SNAP %u total=%llu listen=%llu synrecv=%llu established=%llu \
-        finwait1=%llu closing=%llu lastack=%llu timewait=%llu cookie=%llu\n",
+        finwait1=%llu finwait2=%llu closing=%llu lastack=%llu timewait=%llu cookie=%llu\n",
         index, (unsigned long long)value.total,
         (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_LISTEN],
         (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_SYN_RECV],
         (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED],
         (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_FIN_WAIT1],
+        (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_FIN_WAIT2],
         (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_CLOSING],
         (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_LAST_ACK],
         (unsigned long long)value.state_counts[KER_SOCKET_TCP_STATE_TIME_WAIT],
