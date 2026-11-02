@@ -30,6 +30,9 @@ ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
 START_PHASE = 1
 RELOAD_PHASE = 2
 STOP_PHASE = 3
+MAX_CONFIG_BYTES = 4 * 1024 * 1024
+MAX_CONFIG_TOKEN_BYTES = 4096
+MAX_CONFIG_DIRECTIVES = 65536
 
 
 def start_ticks(pid):
@@ -65,6 +68,159 @@ def sha256_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     return digest.digest()
+
+
+def read_bounded_config(path):
+    with open(path, 'rb') as stream:
+        return stream.read(MAX_CONFIG_BYTES + 1)
+
+
+def validate_control_nginx_config(config_bytes):
+    """Tokenize the pinned profile with ngx_conf_read_token-style boundaries.
+
+    This is deliberately a bounded profile validator, not a replacement for
+    Nginx's parser. Nginx -t remains authoritative for syntax and directive
+    semantics. Reject include at the directive-name token anywhere so startup
+    and reload cannot escape the hashed top-level file.
+    """
+    if not isinstance(config_bytes, bytes) or len(config_bytes) > MAX_CONFIG_BYTES:
+        raise ValueError('Nginx configuration exceeds the bounded profile size')
+    directives = []
+    arguments = []
+    token = bytearray()
+    token_started = False
+    quote = 0
+    after_quote = False
+    variable_depth = 0
+    block_depth = 0
+    index = 0
+
+    def append_byte(value):
+        if len(token) >= MAX_CONFIG_TOKEN_BYTES:
+            raise ValueError('Nginx configuration token exceeds the bounded profile size')
+        token.append(value)
+
+    def finish_token():
+        nonlocal token_started
+        if token_started:
+            arguments.append(bytes(token))
+            if len(arguments) > 8:
+                raise ValueError('directive exceeds the bounded profile argument limit')
+            token.clear()
+            token_started = False
+
+    def finish_directive():
+        if not arguments:
+            raise ValueError('empty Nginx directive')
+        if arguments[0] == b'include':
+            raise ValueError('Nginx include directives are unsupported in the pinned profile')
+        directives.append(tuple(arguments))
+        if len(directives) > MAX_CONFIG_DIRECTIVES:
+            raise ValueError('Nginx configuration has too many directives')
+        arguments.clear()
+
+    while index < len(config_bytes):
+        ch = config_bytes[index]
+        index += 1
+
+        if quote:
+            if ch == ord('\\'):
+                if index >= len(config_bytes):
+                    raise ValueError('unterminated Nginx configuration escape')
+                escaped = config_bytes[index]
+                index += 1
+                decoded = {ord('"'): ord('"'), ord("'"): ord("'"),
+                    ord('\\'): ord('\\'), ord('t'): 9, ord('r'): 13,
+                    ord('n'): 10}.get(escaped)
+                if decoded is None:
+                    append_byte(ord('\\'))
+                    append_byte(escaped)
+                else:
+                    append_byte(decoded)
+                continue
+            if ch == quote:
+                quote = 0
+                after_quote = True
+                continue
+            append_byte(ch)
+            continue
+
+        if after_quote:
+            if ch in (32, 9, 10, 13):
+                finish_token()
+                after_quote = False
+                continue
+            if ch not in (ord(';'), ord('{'), ord('}')):
+                raise ValueError('unsupported text adjacent to a quoted Nginx token')
+            after_quote = False
+
+        if ch in (32, 9, 10, 13):
+            finish_token()
+            continue
+
+        if ch == ord('#') and not token_started:
+            while index < len(config_bytes) and config_bytes[index] not in (10, 13):
+                index += 1
+            continue
+
+        if ch in (ord('"'), ord("'")) and not token_started:
+            token_started = True
+            quote = ch
+            continue
+
+        if ch == ord('\\'):
+            if index >= len(config_bytes):
+                raise ValueError('unterminated Nginx configuration escape')
+            escaped = config_bytes[index]
+            index += 1
+            decoded = {ord('"'): ord('"'), ord("'"): ord("'"),
+                ord('\\'): ord('\\'), ord('t'): 9, ord('r'): 13,
+                ord('n'): 10}.get(escaped)
+            if decoded is None:
+                append_byte(ord('\\'))
+                append_byte(escaped)
+            else:
+                append_byte(decoded)
+            token_started = True
+            continue
+
+        if ch == ord('$'):
+            append_byte(ch)
+            token_started = True
+            continue
+        if ch == ord('{') and token.endswith(b'$'):
+            append_byte(ch)
+            variable_depth += 1
+            token_started = True
+            continue
+        if ch == ord('}') and variable_depth:
+            append_byte(ch)
+            variable_depth -= 1
+            token_started = True
+            continue
+
+        if ch in (ord(';'), ord('{'), ord('}')) and not variable_depth:
+            finish_token()
+            if ch == ord('}'):
+                if arguments or block_depth <= 0:
+                    raise ValueError('unbalanced Nginx configuration block')
+                block_depth -= 1
+                continue
+            finish_directive()
+            if ch == ord('{'):
+                block_depth += 1
+            continue
+
+        append_byte(ch)
+        token_started = True
+
+    if quote or after_quote or token_started or arguments or variable_depth or block_depth:
+        raise ValueError('incomplete or unbalanced Nginx configuration')
+    required = ((b'daemon', b'off'), (b'master_process', b'on'),
+        (b'worker_processes', b'1'))
+    if any(directives.count(item) != 1 for item in required):
+        raise ValueError('C34 requires daemon-off, master-on, one-worker config')
+    return tuple(directives)
 
 
 def broker_ini_matches(path, expected_broker):
@@ -337,7 +493,8 @@ def run(args):
     config = Path(args.config).resolve(strict=True)
     prefix = Path(args.prefix).resolve(strict=True)
     actual_binary_hash = sha256_file(binary)
-    actual_config_hash = sha256_file(config)
+    config_bytes = read_bounded_config(config)
+    actual_config_hash = hashlib.sha256(config_bytes).digest()
     ini_path = args.nginx_env.get('KER_FSTACK_NGINX_INI')
     if not ini_path:
         raise ValueError('C34 requires an F-Stack INI profile')
@@ -348,13 +505,7 @@ def run(args):
         actual_ini_hash, str(prefix), args.nginx_env)
     if not config.is_file() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('invalid pinned Nginx profile files')
-    config_lines = [line.split(b'#', 1)[0].strip()
-        for line in config.read_bytes().splitlines()]
-    if (any(line.startswith(b'include ') for line in config_lines) or
-            sum(line == b'daemon off;' for line in config_lines) != 1 or
-            sum(line == b'master_process on;' for line in config_lines) != 1 or
-            sum(line == b'worker_processes 1;' for line in config_lines) != 1):
-        raise ValueError('C34 requires daemon-off, master-on, one-worker config')
+    validate_control_nginx_config(config_bytes)
     if not broker_ini_matches(Path(ini_path),
             args.nginx_env['KER_SOCKET_BROKER_PATH']):
         raise ValueError('C34 requires graceful_reload=0 profile')
@@ -371,7 +522,12 @@ def run(args):
         if not process_alive(master_pidfd):
             raise PermissionError('pinned Nginx master identity is no longer live')
         current_binary_hash = sha256_file(binary)
-        current_config_hash = sha256_file(config)
+        current_config_bytes = read_bounded_config(config)
+        current_config_hash = hashlib.sha256(current_config_bytes).digest()
+        try:
+            validate_control_nginx_config(current_config_bytes)
+        except ValueError as exc:
+            raise PermissionError('Nginx reload configuration left the pinned one-worker profile') from exc
         current_ini_hash = sha256_file(ini_path)
         current_profile = wire.profile_hash(current_binary_hash,
             current_config_hash, current_ini_hash, str(prefix), args.nginx_env)
@@ -381,13 +537,6 @@ def run(args):
             raise PermissionError('pinned Nginx binary/configuration/INI profile changed before HUP')
         if sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash:
             raise PermissionError('running Nginx executable differs from pinned profile')
-        current_config_lines = [line.split(b'#', 1)[0].strip()
-            for line in config.read_bytes().splitlines()]
-        if (any(line.startswith(b'include ') for line in current_config_lines) or
-                sum(line == b'daemon off;' for line in current_config_lines) != 1 or
-                sum(line == b'master_process on;' for line in current_config_lines) != 1 or
-                sum(line == b'worker_processes 1;' for line in current_config_lines) != 1):
-            raise PermissionError('Nginx reload configuration left the pinned one-worker profile')
         if not broker_ini_matches(Path(ini_path),
                 args.nginx_env['KER_SOCKET_BROKER_PATH']):
             raise PermissionError('Nginx reload INI left the pinned graceful_reload=0 profile')

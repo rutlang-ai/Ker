@@ -208,6 +208,35 @@ def main():
         '_test_nginx_companion_supervisor')
     wire = load_module(args.tools / 'nginx_companion_wire.py',
         '_test_nginx_companion_wire')
+    helper_module = load_module(args.tools / 'ker-nginx-companion.py',
+        '_test_ker_nginx_companion')
+    valid_profiles = (
+        b'daemon off; master_process on; worker_processes 1; # include ignored\n',
+        b'daemon off; master_process on; worker_processes 1; events { worker_connections 4; }\n',
+        b'daemon off; master_process on; worker_processes 1; set $name "include";\n',
+        b'daemon off; master_process on; worker_processes 1; set $name include;\n',
+    )
+    for profile_bytes in valid_profiles:
+        helper_module.validate_control_nginx_config(profile_bytes)
+    for profile_bytes in (
+            b'daemon off; master_process on; worker_processes 1;\ninclude\t/escape.conf;\n',
+            b'daemon off; master_process on; worker_processes 1; include /escape.conf;\n',
+            b'daemon off; master_process on; worker_processes 1; "include" "/escape.conf";\n',
+            b'daemon off; master_process on; worker_processes 1; "include" "/escape\\t.conf";\n'):
+        try:
+            helper_module.validate_control_nginx_config(profile_bytes)
+        except ValueError as exc:
+            require('include' in str(exc), 'include rejection did not identify unsupported directive')
+        else:
+            raise RuntimeError('Nginx include syntax escaped the bounded profile validator')
+    try:
+        helper_module.validate_control_nginx_config(
+            b'daemon off; master_process on; worker_processes 1;\n' +
+            b'#' + b'x' * helper_module.MAX_CONFIG_BYTES)
+    except ValueError as exc:
+        require('bounded profile size' in str(exc), 'oversize profile rejection was not bounded')
+    else:
+        raise RuntimeError('oversize Nginx profile escaped the bounded validator')
     with tempfile.TemporaryDirectory(prefix='ker-nginx-companion-test-') as directory:
         root = Path(directory)
         prefix = root / 'prefix'
@@ -266,6 +295,43 @@ def main():
             prefix, environment, ini, change_graceful_reload, 'graceful_reload=1')
         config.write_text(config_text, encoding='utf-8')
         ini.write_text(ini_text, encoding='utf-8')
+        (prefix / 'hup-observed').unlink(missing_ok=True)
+
+        for label, include_config in (
+                ('tab include', config_text + 'include\t/escape.conf;\n'),
+                ('inline include', config_text.rstrip() + ' include /escape.conf;\n'),
+                ('quoted include', config_text + '"include" "/escape.conf";\n')):
+            def add_include(changed_config, _changed_ini, text=include_config):
+                changed_config.write_text(text, encoding='utf-8')
+            exercise_profile_mutation(supervisor, args.server, helper_path,
+                config, prefix, environment, ini, add_include, label)
+            config.write_text(config_text, encoding='utf-8')
+            (prefix / 'hup-observed').unlink(missing_ok=True)
+
+        for label, include_config in (
+                ('startup tab include', config_text + 'include\t/escape.conf;\n'),
+                ('startup inline include', config_text.rstrip() + ' include /escape.conf;\n'),
+                ('startup quoted include', config_text + '"include" "/escape.conf";\n')):
+            config.write_text(include_config, encoding='utf-8')
+            startup = supervisor.NginxCompanion(args.server, config, prefix, environment)
+            startup.helper_path = helper_path
+            startup.helper_script_hash = supervisor._sha256(helper_path)
+            failed = False
+            try:
+                startup.start(timeout=5)
+            except (OSError, RuntimeError, ValueError, PermissionError):
+                failed = True
+            require(failed and startup.unresolved,
+                f'{label} was not rejected during helper startup')
+            require(not (prefix / 'hup-observed').exists() or
+                (prefix / 'hup-observed').read_bytes() == b'',
+                f'{label} delivered a signal before startup rejection')
+            if startup.helper is not None:
+                startup.helper.wait(timeout=5)
+                require(startup.helper.returncode != 0,
+                    f'{label} did not fail closed in the helper')
+            close_manager(startup)
+        config.write_text(config_text, encoding='utf-8')
         (prefix / 'hup-observed').unlink(missing_ok=True)
 
         crashed = new_manager(supervisor, args.server, helper_path, config,
