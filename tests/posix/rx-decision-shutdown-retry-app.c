@@ -4,12 +4,14 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -19,6 +21,9 @@
 
 struct retry_context {
     int socket_fd;
+    int mode;
+    FILE *buffered_stream;
+    char *stdio_buffer;
     bool connect_started;
     bool connected;
     bool ready_reported;
@@ -26,9 +31,27 @@ struct retry_context {
     bool failed;
     uint64_t loop_calls;
     uint64_t decision_calls;
+    uint64_t decision_calls_at_stop;
     uint64_t bytes_sent;
     uint32_t notsent_bytes;
 };
+
+struct wrong_thread_result {
+    struct retry_context *context;
+    int result;
+    int error;
+};
+
+static int retry_loop(void *opaque);
+
+static void *wrong_thread_retry(void *opaque)
+{
+    struct wrong_thread_result *result = opaque;
+    errno = 0;
+    result->result = ker_posix_run(retry_loop, result->context);
+    result->error = errno;
+    return NULL;
+}
 
 static int decision_handler(const struct ker_rx_decision_packet *packet,
     void *opaque)
@@ -157,6 +180,37 @@ static int retry_loop(void *opaque)
     }
     if (has_unsent_bytes(context)) {
         context->pending_proven = true;
+        if (context->mode == 1) {
+            struct linger linger = {.l_onoff = 1, .l_linger = 5};
+            if (setsockopt(context->socket_fd, SOL_SOCKET, SO_LINGER,
+                    &linger, sizeof(linger))) context->failed = true;
+        } else if (context->mode == 2) {
+            context->stdio_buffer = malloc(2 * 1024 * 1024);
+            if (!context->stdio_buffer) context->failed = true;
+            else {
+                context->buffered_stream = fdopen(context->socket_fd, "w");
+                if (!context->buffered_stream || setvbuf(context->buffered_stream,
+                        context->stdio_buffer, _IOFBF, 2 * 1024 * 1024)) {
+                    context->failed = true;
+                } else {
+                    unsigned char block[65536];
+                    memset(block, 0x6b, sizeof(block));
+                    for (unsigned i = 0; i < 16; ++i)
+                        if (fwrite(block, 1, sizeof(block), context->buffered_stream) != sizeof(block)) {
+                            context->failed = true;
+                            break;
+                        }
+                }
+            }
+        }
+        int flags = fcntl(context->socket_fd, F_GETFL);
+        if (flags < 0 || fcntl(context->socket_fd, F_SETFL, flags & ~O_NONBLOCK) < 0)
+            context->failed = true;
+        if (context->failed) {
+            ker_posix_stop_run();
+            return 0;
+        }
+        context->decision_calls_at_stop = context->decision_calls;
         ker_posix_stop_run();
         return 0;
     }
@@ -175,25 +229,31 @@ static void report(const char *marker, uint64_t first_calls,
 {
     char line[256];
     int length = snprintf(line, sizeof(line),
-        "%s loop_calls=%llu first_calls=%llu pending=%u notsent=%u bytes=%llu error=%d wrong_context_rejected=1\n",
+        "%s loop_calls=%llu first_calls=%llu pending=%u notsent=%u bytes=%llu decisions=%llu decisions_at_stop=%llu error=%d wrong_context_rejected=1\n",
         marker, (unsigned long long)context->loop_calls,
         (unsigned long long)first_calls, context->pending_proven ? 1U : 0U,
-        context->notsent_bytes, (unsigned long long)context->bytes_sent, error);
+        context->notsent_bytes, (unsigned long long)context->bytes_sent,
+        (unsigned long long)context->decision_calls,
+        (unsigned long long)context->decision_calls_at_stop, error);
     if (length > 0 && (size_t)length < sizeof(line))
         (void)syscall(SYS_write, STDOUT_FILENO, line, (size_t)length);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    int mode = 0;
+    if (argc == 2 && !strcmp(argv[1], "linger")) mode = 1;
+    else if (argc == 2 && !strcmp(argv[1], "stdio")) mode = 2;
+    else if (argc != 1) return 2;
     const char *value = getenv("KER_RX_DECISION_FD");
     char *end = NULL;
     errno = 0;
     long fd = value ? strtol(value, &end, 10) : -1;
     if (!value || errno || end == value || *end || fd < 0 || fd > INT32_MAX)
         return 2;
-    struct retry_context context = {.socket_fd = -1};
+    struct retry_context context = {.socket_fd = -1, .mode = mode};
     if (ker_posix_rx_decision_register((int)fd, decision_handler, &context)) return 3;
-    ker_posix_rx_decision_test_shutdown_ebusy_once();
+    if (!mode) ker_posix_rx_decision_test_shutdown_ebusy_once();
 
     int first = ker_posix_run(retry_loop, &context);
     int first_error = errno;
@@ -202,6 +262,18 @@ int main(void)
         !context.pending_proven) {
         report("C31_RETRY_FIRST_FAILED", first_calls, &context, first_error);
         return 4;
+    }
+
+    struct wrong_thread_result wrong_thread = {.context = &context};
+    uint64_t calls_before_wrong_thread = context.loop_calls;
+    pthread_t wrong_thread_id;
+    if (pthread_create(&wrong_thread_id, NULL, wrong_thread_retry, &wrong_thread) ||
+        pthread_join(wrong_thread_id, NULL) || wrong_thread.result != -1 ||
+        wrong_thread.error != EBUSY ||
+        context.loop_calls != calls_before_wrong_thread) {
+        report("C31_RETRY_WRONG_THREAD_FAILED", first_calls, &context,
+            wrong_thread.error);
+        return 5;
     }
 
     struct retry_context wrong_context = context;
@@ -216,9 +288,14 @@ int main(void)
         return 5;
     }
 
+    if (mode) report("C31_BLOCKING_CLOSE_WAIT", first_calls, &context, first_error);
     int second = ker_posix_run(retry_loop, &context);
     int second_error = errno;
     report("C31_RETRY_PROOF", first_calls, &context, second_error);
+    if (mode) report("C31_BLOCKING_CLOSE_DONE", first_calls, &context, second_error);
+    if (mode)
+        return second == 0 && !context.failed && context.pending_proven &&
+            context.loop_calls == first_calls ? 0 : 5;
     return second == -1 && second_error == ETIMEDOUT && !context.failed &&
         context.pending_proven && context.loop_calls == first_calls ? 0 : 5;
 }

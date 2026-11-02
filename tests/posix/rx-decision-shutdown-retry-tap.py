@@ -74,6 +74,8 @@ def inside(args):
                 "--io-worker", str(args.worker), "--address", "198.18.0.2/24",
                 "--port", "net_tap0", "--eal", eal, "--stats", str(stats_path),
                 "--rx-decision", "--", str(args.app)]
+            if args.mode != "retry":
+                command.append(args.mode)
             env = os.environ | {"PYTHONDONTWRITEBYTECODE": "1",
                 "RUNTIME_DIRECTORY": str(root), "TMPDIR": str(root),
                 "KER_SHUTDOWN_TIMEOUT_MS": "1"}
@@ -83,10 +85,16 @@ def inside(args):
             ready = wait_line(process, "C31_RETRY_APP_READY", 30)
             require(ready == "C31_RETRY_APP_READY", f"unexpected app ready line: {ready!r}")
             peer, _ = listener.accept()
-            peer.settimeout(1)
-            proof = wait_line(process, "C31_RETRY_PROOF", 45)
-            require("pending=1" in proof and "error=110" in proof,
-                f"retry did not preserve the actual pending send queue timeout: {proof!r}")
+            peer.settimeout(10 if args.mode != "retry" else 1)
+            proof = wait_line(process,
+                "C31_BLOCKING_CLOSE_WAIT" if args.mode != "retry" else "C31_RETRY_PROOF",
+                10 if args.mode != "retry" else 45)
+            if args.mode == "retry":
+                require("pending=1" in proof and "error=110" in proof,
+                    f"retry did not preserve the actual pending send queue timeout: {proof!r}")
+            else:
+                require("pending=1" in proof and "error=16" in proof,
+                    f"cleanup helper did not hit its bounded wait with a blocked {args.mode}: {proof!r}")
             require("wrong_context_rejected=1" in proof,
                 f"cleanup-only retry accepted a different context: {proof!r}")
             fields = dict(item.split("=", 1) for item in proof.split()[1:] if "=" in item)
@@ -94,9 +102,25 @@ def inside(args):
                 f"same-context cleanup retry re-entered the business callback: {proof!r}")
             require(int(fields.get("notsent", "0")) > 0 and int(fields.get("bytes", "0")) > 0,
                 f"fixture did not prove original Linux had unsent TCP bytes: {proof!r}")
+            if args.mode != "retry":
+                received = 0
+                while True:
+                    chunk = peer.recv(65536)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                expected = int(fields["bytes"]) + (1024 * 1024 if args.mode == "stdio" else 0)
+                require(received == expected,
+                    f"host did not receive exact stream bytes through cleanup: {received} != {expected}")
+                done = wait_line(process, "C31_BLOCKING_CLOSE_DONE", 15)
+                done_fields = dict(item.split("=", 1) for item in done.split() if "=" in item)
+                require(done_fields.get("error") == "0" and
+                    int(done_fields.get("decisions", "0")) >
+                    int(done_fields.get("decisions_at_stop", "0")),
+                    f"owner thread did not pump RX decisions while cleanup blocked: {done!r}")
             output, errors = process.communicate(timeout=30)
-            require(process.returncode != 0,
-                "ker-run unexpectedly reported normal native shutdown despite retained ETIMEDOUT")
+            require((process.returncode != 0 if args.mode == "retry" else process.returncode == 0),
+                f"unexpected ker-run status for {args.mode}: {process.returncode}")
             require(stats_path.is_file(), "ker-run did not write worker settlement stats")
             stats = json.loads(stats_path.read_text())
             require(stats.get("rx_decision_enabled") is True and
@@ -107,10 +131,11 @@ def inside(args):
                 stats.get("rx_decision_local") == stats.get("rx_decision_forwarded"),
                 f"worker did not settle after cleanup retry: {stats!r}; "
                 f"stdout={output!r}; stderr={errors!r}")
-            require(b"KER_NATIVE_INCOMPLETE" in errors or
-                b"invalid native run shutdown marker sequence" in errors,
-                f"expected bounded native drain failure was not recorded: {errors!r}")
-            print(f"C31_RETRY_TAP_OK proof={proof} stats={stats!r}")
+            if args.mode == "retry":
+                require(b"KER_NATIVE_INCOMPLETE" in errors or
+                    b"invalid native run shutdown marker sequence" in errors,
+                    f"expected bounded native drain failure was not recorded: {errors!r}")
+            print(f"C31_{args.mode.upper()}_TAP_OK proof={proof} stats={stats!r}")
     finally:
         if peer:
             peer.close()
@@ -134,6 +159,7 @@ def main():
     parser.add_argument("--worker", type=Path, required=True)
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--dpdk-plugin-dir", type=Path, required=True)
+    parser.add_argument("--mode", choices=("retry", "linger", "stdio"), default="retry")
     parser.add_argument("--inside", action="store_true")
     args = parser.parse_args()
     if args.inside:
@@ -141,6 +167,7 @@ def main():
     command = ["unshare", "-Urn", sys.executable, str(Path(__file__).resolve()), "--inside"]
     for name in ("launcher", "library", "worker", "app", "dpdk_plugin_dir"):
         command += ["--" + name.replace("_", "-"), str(getattr(args, name).resolve())]
+    command += ["--mode", args.mode]
     return subprocess.run(command).returncode
 
 

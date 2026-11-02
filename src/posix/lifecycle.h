@@ -10,7 +10,13 @@ int ker_native_drain_with_progress(unsigned int timeout_ms,
     ker_native_drain_progress_fn progress, void *context);
 /* Run shutdown once: flush/close app descriptors and drain native send queues.
  * Return is the preparation status (zero means PREPARED); drain_result carries
- * a retained drain/flush error that finish reports after completing teardown. */
+ * a retained drain/flush error that finish reports after completing teardown.
+ * With a non-NULL progress hook, potentially blocking census/stdio/fd cleanup
+ * runs on one tracked helper while this caller remains the sole progress owner.
+ * The hook must be bounded and must not wait on stdio or application locks that
+ * cleanup may hold. An EBUSY retry must use the exact same hook and context;
+ * cleanup continues on the helper until it is joined and preparation completes.
+ * A NULL hook retains synchronous cleanup. */
 int ker_native_finalize_prepare(ker_native_drain_progress_fn progress,
     void *context, int *drain_result);
 /* Halt the native stack after prepare and any external consumer settlement.

@@ -102,3 +102,15 @@ add_test(NAME native-rx-decision-shutdown-retry-tap
         --dpdk-plugin-dir "${ker_rx_decision_dpdk_plugin_dir}")
 set_tests_properties(native-rx-decision-shutdown-retry-tap PROPERTIES
     TIMEOUT 90 LABELS "native-tcp;rx-decision;dpdk-tap;original-linux;shutdown-retry")
+foreach(blocking_mode IN ITEMS linger stdio)
+    add_test(NAME native-rx-decision-blocking-${blocking_mode}-tap
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/rx-decision-shutdown-retry-tap.py"
+            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+            --library "$<TARGET_FILE:ker-posix>"
+            --worker "$<TARGET_FILE:ker-io-worker>"
+            --app "$<TARGET_FILE:ker-rx-decision-shutdown-retry-app>"
+            --dpdk-plugin-dir "${ker_rx_decision_dpdk_plugin_dir}"
+            --mode "${blocking_mode}")
+    set_tests_properties(native-rx-decision-blocking-${blocking_mode}-tap PROPERTIES
+        TIMEOUT 90 LABELS "native-tcp;rx-decision;dpdk-tap;original-linux;blocking-cleanup")
+endforeach()

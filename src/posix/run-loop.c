@@ -23,6 +23,8 @@ static bool running, stopping;
 static bool cleanup_pending;
 static ker_posix_loop_func pending_loop;
 static void *pending_argument;
+static pthread_t cleanup_owner;
+static bool cleanup_owner_valid;
 static int pending_error;
 static int control_fd = -1;
 #ifdef KER_C31_RX_DECISION_TESTING
@@ -166,7 +168,8 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
     pthread_mutex_lock(&lock);
     if (running || !ker_native_ready() || control_fd < 0 ||
         (!loop && ker_rx_decision_consumer_registered()) ||
-        (cleanup_pending && (loop != pending_loop || argument != pending_argument))) {
+        (cleanup_pending && (loop != pending_loop || argument != pending_argument ||
+            !cleanup_owner_valid || !pthread_equal(pthread_self(), cleanup_owner)))) {
         int error = running ? EBUSY : (!ker_native_ready() ? ENETDOWN : EOPNOTSUPP);
         if (cleanup_pending) error = EBUSY;
         pthread_mutex_unlock(&lock);
@@ -179,6 +182,8 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
     if (!cleanup_only) {
         pending_loop = loop;
         pending_argument = argument;
+        cleanup_owner = pthread_self();
+        cleanup_owner_valid = true;
         stopping = false;
         pthread_mutex_unlock(&lock);
         int start_error = ker_rx_decision_consumer_start();
@@ -280,6 +285,7 @@ int ker_posix_run(ker_posix_loop_func loop, void *argument)
     cleanup_pending = false;
     pending_loop = NULL;
     pending_argument = NULL;
+    cleanup_owner_valid = false;
     pending_error = 0;
     pthread_mutex_unlock(&lock);
     if (result) { errno = -result; return -1; }
