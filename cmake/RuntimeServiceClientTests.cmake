@@ -32,4 +32,12 @@ if(BUILD_TESTING)
     set_tests_properties(native-runtime-service-client-late-delegation-intent
         native-runtime-service-client-late-delegation-bind
         PROPERTIES TIMEOUT 15 LABELS "runtime-service;delegation;deadline;fail-closed")
+    add_test(NAME native-runtime-service-delegation-worker-lifetime
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/runtime-service-delegation-worker-lifetime.py"
+            --worker "$<TARGET_FILE:ker-io-worker>"
+            --actor "$<TARGET_FILE:ker-runtime-service-delegation-actor>"
+            --dpdk-plugin-dir "${ker_rx_decision_dpdk_plugin_dir}")
+    set_tests_properties(native-runtime-service-delegation-worker-lifetime
+        PROPERTIES TIMEOUT 90 LABELS "runtime-service;delegation;dpdk;worker-lifetime")
 endif()

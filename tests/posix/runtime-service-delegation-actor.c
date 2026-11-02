@@ -196,11 +196,39 @@ static int delegated_main(uint32_t expected_role)
             while (syscall(SYS_nanosleep, &pause, &pause) && errno == EINTR) {}
             if (i == 499) { errno = ETIMEDOUT; fail("stage parent did not exit"); }
         }
+        const char *delay_text = getenv("KER_TEST_DELAY_FINAL_CLAIM_MS");
+        if (delay_text && *delay_text) {
+            char *end = NULL;
+            errno = 0;
+            unsigned long delay_ms = strtoul(delay_text, &end, 10);
+            if (errno || end == delay_text || *end || delay_ms > 15000) {
+                errno = EINVAL;
+                fail("final claim delay");
+            }
+            struct timespec delay = {
+                .tv_sec = (time_t)(delay_ms / 1000),
+                .tv_nsec = (long)(delay_ms % 1000) * 1000000L
+            };
+            while (syscall(SYS_nanosleep, &delay, &delay) && errno == EINTR) {}
+        }
     }
 
     struct ker_runtime_service_client client;
     ker_runtime_service_client_init(&client);
-    if (claim_grant(&client, &settings, &grant)) fail("delegated CLAIM");
+    if (claim_grant(&client, &settings, &grant)) {
+        int claim_error = errno;
+        if (expected_role == KER_RUNTIME_SERVICE_ROLE_SLIM_PRIMARY &&
+            getenv("KER_TEST_EXPECT_FINAL_CLAIM_FAILURE") && claim_error == ESTALE) {
+            char pid_text[32];
+            int count = snprintf(pid_text, sizeof(pid_text), "%ld", (long)getpid());
+            if (count <= 0 || (size_t)count >= sizeof(pid_text) ||
+                marker("KER_TEST_FINAL_CLAIM_FAILED", pid_text))
+                fail("expired grant marker");
+            return 0;
+        }
+        errno = claim_error;
+        fail("delegated CLAIM");
+    }
     if (ker_runtime_service_check(&client)) fail("delegated CHECK");
     if (expected_role == KER_RUNTIME_SERVICE_ROLE_SLIM_STAGE1) {
         char parent_pid[32];
@@ -223,6 +251,13 @@ static int delegated_main(uint32_t expected_role)
             execve("/proc/self/exe", args, environ);
             _exit(127);
         }
+        char child_pid_text[32];
+        int child_pid_length = snprintf(child_pid_text, sizeof(child_pid_text),
+            "%ld", (long)child);
+        if (child_pid_length <= 0 || (size_t)child_pid_length >= sizeof(child_pid_text) ||
+            (getenv("KER_TEST_PRIMARY_PID") &&
+                marker("KER_TEST_PRIMARY_PID", child_pid_text)))
+            fail("primary PID marker");
         close(stage_pipe[0]);
         int pidfd = (int)syscall(SYS_pidfd_open, child, 0);
         if (pidfd < 0) fail("primary pidfd");
@@ -282,6 +317,13 @@ static int spawn_stage1(void)
         execve("/proc/self/exe", args, environ);
         _exit(127);
     }
+    char child_pid_text[32];
+    int child_pid_length = snprintf(child_pid_text, sizeof(child_pid_text),
+        "%ld", (long)child);
+    if (child_pid_length <= 0 || (size_t)child_pid_length >= sizeof(child_pid_text) ||
+        (getenv("KER_TEST_STAGE1_PID") &&
+            marker("KER_TEST_STAGE1_PID", child_pid_text)))
+        fail("stage1 PID marker");
     close(pipefd[0]);
     int pidfd = (int)syscall(SYS_pidfd_open, child, 0);
     if (pidfd < 0) fail("stage pidfd");
