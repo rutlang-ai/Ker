@@ -394,7 +394,7 @@ int ker_ff_ingress_freeze_queue_check(
 		.version = KER_FF_ADMISSION_QUEUE_VERSION,
 		.operation = KER_FF_INGRESS_FREEZE_CHECK,
 	};
-	if (!queue || !queue->state.armed) return -EINVAL;
+	if (!queue || queue->state.quarantined || queue->released) return -EINVAL;
 	request.lease = queue->lease;
 	int fd = queue_control_fd();
 	if (fd < 0) return fd;
@@ -465,9 +465,10 @@ static int queue_verdict(struct ker_ff_ingress_freeze_queue *queue,
 	uint16_t request_flags = LKL_NLM_F_REQUEST | LKL_NLM_F_ACK;
 	uint64_t ack_deadline_ns;
 	if (sent_to_kernel) *sent_to_kernel = 0;
-	if (!queue || !sent_to_kernel || lease != queue->lease ||
-	    (accept != 0 && accept != 1) || deadline_ns != queue->deadline_ns)
+	if (!queue || !sent_to_kernel || (accept != 0 && accept != 1))
 		return -EINVAL;
+	if (lease != queue->lease || deadline_ns != queue->deadline_ns)
+		return -ESTALE;
 	message.header.nlmsg_type = (NFNL_SUBSYS_QUEUE << 8) | NFQNL_MSG_VERDICT;
 	message.header.nlmsg_flags = request_flags;
 	message.header.nlmsg_seq = ++queue->sequence;
@@ -510,8 +511,9 @@ int ker_ff_ingress_freeze_queue_accept(struct ker_ff_ingress_freeze_queue *queue
 				   uint64_t lease, uint64_t deadline_ns,
 				   uint32_t packet_id, int *sent_to_kernel)
 {
-	if (!queue || lease != queue->lease || deadline_ns != queue->deadline_ns)
-		return -EINVAL;
+	if (!queue) return -EINVAL;
+	if (lease != queue->lease || deadline_ns != queue->deadline_ns)
+		return -ESTALE;
 	struct timespec now;
 	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -errno;
 	uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
@@ -534,6 +536,18 @@ int ker_ff_ingress_freeze_queue_disarm(struct ker_ff_ingress_freeze_queue *queue
 			queue->state.attempt_count, queue->state.expired_count,
 			queue->state.inventory_error_count);
 	return status;
+}
+
+int ker_ff_ingress_freeze_queue_counts(
+	const struct ker_ff_ingress_freeze_queue *queue, uint64_t *attempts,
+	uint64_t *expired, uint64_t *inventory_errors)
+{
+	if (!queue || !attempts || !expired || !inventory_errors) return -EINVAL;
+	if (queue->state.armed) return -EBUSY;
+	*attempts = queue->state.attempt_count;
+	*expired = queue->state.expired_count;
+	*inventory_errors = queue->state.inventory_error_count;
+	return 0;
 }
 
 int ker_ff_ingress_freeze_queue_drain(struct ker_ff_ingress_freeze_queue *queue,

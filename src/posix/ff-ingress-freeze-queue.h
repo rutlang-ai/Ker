@@ -31,6 +31,10 @@ int ker_ff_ingress_freeze_queue_receive(struct ker_ff_ingress_freeze_queue *queu
  * ingress gate. Drain reads any already-enqueued original packet and proves
  * the bounded q88 notification socket empty before ACCEPT/close. */
 int ker_ff_ingress_freeze_queue_disarm(struct ker_ff_ingress_freeze_queue *queue);
+/* Kernel attempt counters returned by DISARM; valid only after cutoff. */
+int ker_ff_ingress_freeze_queue_counts(
+	const struct ker_ff_ingress_freeze_queue *queue, uint64_t *attempts,
+	uint64_t *expired, uint64_t *inventory_errors);
 int ker_ff_ingress_freeze_queue_drain(struct ker_ff_ingress_freeze_queue *queue,
 				      struct ker_ff_ingress_packet *packet);
 /* Disable only the exact ingress lease. Any queued packet remains the original

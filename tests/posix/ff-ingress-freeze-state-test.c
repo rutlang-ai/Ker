@@ -82,10 +82,29 @@ static int test_ack_loss_and_disarmed_quarantine(void)
 	return 0;
 }
 
+static int test_id_capacity(void)
+{
+	struct ker_ff_ingress_freeze_state state;
+	CHECK(ker_ff_ingress_state_init(&state, 41, 12000) == 0);
+	for (uint32_t id = 1; id <= KER_FF_INGRESS_STATE_MAX_IDS; id++)
+		CHECK(ker_ff_ingress_state_record(&state, id) == 0);
+	CHECK(state.packet_count == KER_FF_INGRESS_STATE_MAX_IDS);
+	CHECK(ker_ff_ingress_state_record(&state,
+		KER_FF_INGRESS_STATE_MAX_IDS + 1) == -EINVAL);
+	CHECK(state.packet_count == KER_FF_INGRESS_STATE_MAX_IDS);
+	CHECK(ker_ff_ingress_state_disarm(&state, KER_FF_INGRESS_STATE_MAX_IDS + 1,
+		0, 0) == 0);
+	CHECK(ker_ff_ingress_state_prove_drained(&state) == -EUCLEAN);
+	CHECK(state.quarantined);
+	CHECK(!ker_ff_ingress_state_can_close(&state));
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(test_healthy_cutoff() == 0);
 	CHECK(test_mismatch_and_terminal_quarantine() == 0);
 	CHECK(test_ack_loss_and_disarmed_quarantine() == 0);
+	CHECK(test_id_capacity() == 0);
 	return 0;
 }

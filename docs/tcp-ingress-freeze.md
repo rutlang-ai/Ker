@@ -46,8 +46,12 @@ The source audit used the existing baseline artifact at
 `7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e`, manifest fingerprint
 `399c02b3aa05a7ee2a35c13fca64a279198c0d0675a8dc218eddc07399525b8d`, and
 config SHA-256 `c9589a31cd1cf9a46a43465a39742aeb9150fd801242a8ae04b28fcec8f86e6d`.
-This is source/config evidence only; the C24 overlay has not yet been built or
-qualified. The code rejects unsupported profiles: SMP, preemptible kernels,
+The C24 overlay was built as artifact fingerprint
+`22813a0c8cdd737a714a131d519098a62cb3df90a63d50c3eb4fc7f29b737327`; its
+source tree is `c03361ebd67b3f425062b170a2b0945da4f6d935`, and its `liblkl`
+hash begins `45118e82`. The original Linux `net/` and `include/net/` source
+trees and pinned config are unchanged from the baseline. This fingerprint is
+required for the C24 claims below. The code rejects unsupported profiles: SMP, preemptible kernels,
 modules, nftables, iptables, conntrack, IPVS, and BPF syscall hooks. In the
 pinned profile the runtime LOCAL_IN inventory must contain exactly the Ker q88
 hook; ARM, CHECK, DISARM, RELEASE, and every matching SYN revalidate that list.
@@ -65,7 +69,34 @@ LISTEN branch lines 2346-2348. The normal request path remains
 handling in `net/ipv4/tcp_input.c`. Ker only holds and later reinjects the
 original skb.
 
-This phase is a kernel/UAPI/controller primitive. It has no Nginx caller,
-master/worker orchestration, held-stream continuity claim, or actual F-Stack
-callback registration proof. A successful build or q88 unit check must not be
-presented as graceful reload support.
+The focused `native-c24-ingress-freeze-tap` test passed against that built
+artifact. It drives real TCP packets through TAP and original Linux: q88 holds
+an exact initial SYN and prevents SYN-ACK; the test changes the original Linux
+SO_REUSEPORT cBPF selector from member 0 to member 1 while q88 remains armed;
+after the gate releases the unchanged packet, Linux completes the handshake
+and the request is accepted and echoed on member 1. An established member-0
+stream echoes before and after cutover. In the same LKL instance, the existing
+C20 q87 adapter receives the real generated SYN-ACK, validates its queue
+notification, accepts that exact q87 packet ID, then disables and retires q87.
+This verifies raw q87/q88 queue coexistence without PF-wide bind/unbind. A
+separate TAP case exercises lease expiry, terminal quarantine, and drops a
+later matching SYN while preserving the established stream; another exercises
+an explicit abort after serialized DISARM and drain, before selector change,
+then proves the held and future SYNs are dropped. A fourth case sends 65
+distinct real host SYNs while q88 is armed: it records at most 64 exact q88
+IDs, verifies the kernel attempt count exceeds 64, rejects healthy drain, and
+enters terminal quarantine while the old stream remains live. Every case
+checks its own ker-run statistics for zero outstanding resources and a
+successful worker exit, and saves its packet IDs, verdict/counter evidence,
+and statistics under `/dev/shm/ker-c24-case-*-evidence.json`.
+
+State tests cover duplicate IDs, the 64-ID capacity, attempt-count mismatch,
+expiry, ACK uncertainty, and quarantine after disarm. The overflow TAP case
+forces the real NFQUEUE ID limit with 65 actual SYNs; it does not simulate a
+lost q88 verdict ACK. The raw q87 coexistence case does not run the C20
+F-Stack flow-map admission worker.
+This phase remains a private kernel/UAPI/controller primitive: there is no
+typed broker selector, production F-Stack packet callback registration, Nginx
+caller, master/worker orchestration, or graceful reload qualification. A
+successful build or TAP primitive test must not be presented as graceful
+reload support.
