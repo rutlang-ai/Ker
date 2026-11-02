@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -82,20 +83,34 @@ class RuntimeServiceSupervisor:
     def __init__(self, path, worker, worker_pidfd, worker_start_ticks,
                  worker_executable_hash, ready_record, app_executable_hash,
                  app_profile_hash, control_fd, ttl_seconds=30.0,
-                 clock=time.monotonic):
-        if len(worker_executable_hash) != 32 or len(app_executable_hash) != 32:
+                 clock=time.monotonic, max_clients=4, io_timeout=5.0):
+        if (not isinstance(worker_executable_hash, bytes) or
+                not isinstance(app_executable_hash, bytes) or
+                len(worker_executable_hash) != 32 or len(app_executable_hash) != 32):
             raise ValueError('runtime-service executable hashes must be SHA256')
-        if len(app_profile_hash) != 32:
+        if not isinstance(app_profile_hash, bytes) or len(app_profile_hash) != 32:
             raise ValueError('runtime-service app profile must be SHA256')
         if not isinstance(ready_record, dict) or ready_record.get('process_type') != 'primary':
             raise ValueError('runtime service requires a validated primary KER_IO_READY record')
-        if not isinstance(ready_record.get('mbuf_pool_count'), int) or ready_record['mbuf_pool_count'] <= 0:
+        if type(ready_record.get('mbuf_pool_count')) is not int or ready_record['mbuf_pool_count'] <= 0:
             raise ValueError('runtime service requires a live worker mbuf pool')
-        if not isinstance(ready_record.get('queues'), int) or ready_record['queues'] <= 0:
+        if type(ready_record.get('queues')) is not int or ready_record['queues'] <= 0:
             raise ValueError('runtime service requires configured worker queues')
         if control_fd < 0:
             raise ValueError('runtime service requires the worker shutdown channel')
-        self.path = os.path.abspath(os.fspath(path))
+        if worker_pidfd < 0 or worker is None or worker.pid <= 0:
+            raise ValueError('runtime service requires a live worker process and pidfd')
+        if (not isinstance(ttl_seconds, (int, float)) or
+                not math.isfinite(ttl_seconds) or ttl_seconds <= 0 or ttl_seconds > 300):
+            raise ValueError('runtime-service lease TTL must be in (0, 300] seconds')
+        if not isinstance(max_clients, int) or max_clients < 1 or max_clients > 16:
+            raise ValueError('runtime-service max_clients must be in 1..16')
+        if not isinstance(io_timeout, (int, float)) or not math.isfinite(io_timeout) or io_timeout <= 0 or io_timeout > 30:
+            raise ValueError('runtime-service I/O timeout must be in (0, 30] seconds')
+        path = os.fspath(path)
+        if not isinstance(path, str):
+            raise ValueError('runtime-service path must be text')
+        self.path = os.path.abspath(path)
         if len(os.fsencode(self.path)) >= 108:
             raise ValueError('runtime-service socket path exceeds sun_path')
         self.worker = worker
@@ -119,11 +134,14 @@ class RuntimeServiceSupervisor:
         self.epoch = secrets.randbits(64) or 1
         self.ttl_seconds = ttl_seconds
         self.clock = clock
+        self.max_clients = max_clients
+        self.io_timeout = float(io_timeout)
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._listener = None
         self._thread = None
         self._clients = set()
+        self._accepted_connections = set()
         self._connection_threads = set()
         self._actor = None
         self._actor_target = None
@@ -165,15 +183,25 @@ class RuntimeServiceSupervisor:
                 raise FileExistsError(self.path)
             listener = socket.socket(socket.AF_UNIX,
                 socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
-            listener.bind(self.path)
-            os.chmod(self.path, 0o600)
-            listener.listen(4)
-            listener.settimeout(0.1)
-            self._listener = listener
-            self._thread = threading.Thread(target=self._serve,
-                name='ker-runtime-service', daemon=True)
-            self._thread.start()
+            try:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+                listener.bind(self.path)
+                os.chmod(self.path, 0o600)
+                listener.listen(4)
+                listener.settimeout(0.1)
+                self._listener = listener
+                thread = threading.Thread(target=self._serve,
+                    name='ker-runtime-service', daemon=True)
+                thread.start()
+                self._thread = thread
+            except BaseException:
+                listener.close()
+                self._listener = None
+                try:
+                    os.unlink(self.path)
+                except FileNotFoundError:
+                    pass
+                raise
 
     def bind_actor(self, process, pidfd, timeout=5.0):
         """Bind CLAIM to the exact direct child created by ker-run.
@@ -201,6 +229,7 @@ class RuntimeServiceSupervisor:
                 if self._actor_target is not None or self._closed or self._revoked:
                     raise RuntimeError('runtime-service actor binding is not available')
                 self._actor_target = {'pid': process.pid, 'uid': os.geteuid(),
+                    'gid': os.getegid(),
                     'start': start, 'pidfd': pinned_pidfd,
                     'exe_hash': exe_hash}
                 pinned_pidfd = -1
@@ -261,7 +290,7 @@ class RuntimeServiceSupervisor:
         target = self._actor_target
         if target is not None:
             try:
-                if _pidfd_dead(target['pidfd']):
+                if _pidfd_dead(target['pidfd']) and self._actor is not None:
                     self._revoke_locked('actor-dead')
                     return
             except OSError:
@@ -283,7 +312,7 @@ class RuntimeServiceSupervisor:
         if len(raw) != _UCRED.size:
             raise OSError(71, 'invalid peer credentials')
         pid, uid, gid = _UCRED.unpack(raw)
-        if pid <= 0 or uid != os.geteuid():
+        if pid <= 0 or uid != os.geteuid() or gid != os.getegid():
             raise OSError(13, 'runtime-service peer is not authorized')
         try:
             pidfd_raw = connection.getsockopt(socket.SOL_SOCKET, SO_PEERPIDFD, 4)
@@ -335,6 +364,7 @@ class RuntimeServiceSupervisor:
                 if (not hmac.compare_digest(ticket, self.ticket) or
                         not hmac.compare_digest(profile_hash, self.role_profile_hash) or
                         peer['pid'] != target['pid'] or peer['uid'] != target['uid'] or
+                        peer['gid'] != target['gid'] or
                         peer['start'] != target['start'] or
                         not hmac.compare_digest(peer['exe_hash'], target['exe_hash']) or
                         _pidfd_dead(target['pidfd'])):
@@ -375,29 +405,45 @@ class RuntimeServiceSupervisor:
             self._condition.notify_all()
             return self._response(operation, sequence, lease_id, 0), sequence
 
+    def _revoke_bound_actor(self, peer, reason):
+        with self._condition:
+            target = self._actor_target
+            if (target is not None and peer['pid'] == target['pid'] and
+                    peer['start'] == target['start'] and
+                    hmac.compare_digest(peer['exe_hash'], target['exe_hash'])):
+                self._revoke_locked(reason)
+
     def _serve_connection(self, connection):
+        peer = None
         try:
             peer = self._peer_identity(connection)
             connection.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            connection.settimeout(self.io_timeout)
         except (OSError, RuntimeError, ValueError):
+            if peer is not None:
+                os.close(peer['pidfd'])
             connection.close()
+            with self._lock:
+                self._accepted_connections.discard(connection)
+                self._connection_threads.discard(threading.current_thread())
             return
         with self._lock:
-            if self._closed:
+            if self._closed or connection not in self._accepted_connections:
                 os.close(peer['pidfd'])
                 connection.close()
+                self._accepted_connections.discard(connection)
+                self._connection_threads.discard(threading.current_thread())
                 return
+            self._accepted_connections.discard(connection)
             self._clients.add(connection)
-            self._connection_threads.add(threading.current_thread())
         last_sequence = 0
         try:
             while True:
                 packet, ancillary, message_flags, _ = connection.recvmsg(
                     wire.HEADER.size + wire.CLAIM_BODY.size + 1,
-                    socket.CMSG_SPACE(_CREDENTIAL.size) + socket.CMSG_SPACE(16 * 4))
-                if not packet:
-                    return
-                if message_flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+                    socket.CMSG_SPACE(_CREDENTIAL.size) + socket.CMSG_SPACE(16 * 4),
+                    getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
+                if not packet and not ancillary and not message_flags:
                     return
                 credentials = []
                 unexpected = False
@@ -409,12 +455,14 @@ class RuntimeServiceSupervisor:
                             credentials.append(_CREDENTIAL.unpack(data))
                     elif level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                         usable = len(data) // 4 * 4
+                        if usable != len(data):
+                            unexpected = True
                         for descriptor in struct.unpack('=' + 'i' * (usable // 4), data[:usable]):
                             os.close(descriptor)
                         unexpected = True
                     else:
                         unexpected = True
-                if (unexpected or len(credentials) != 1 or
+                if (len(credentials) != 1 or
                         credentials[0] != (peer['pid'], peer['uid'], peer['gid'])):
                     # SO_PEERCRED is fixed at connect time. Per-message
                     # credentials reject a forked sibling using an inherited
@@ -431,9 +479,19 @@ class RuntimeServiceSupervisor:
                 if (current['start'] != peer['start'] or
                         not hmac.compare_digest(current['exe_hash'], peer['exe_hash'])):
                     return
+                if message_flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+                    self._revoke_bound_actor(current, 'actor-malformed-message')
+                    return
+                if unexpected:
+                    self._revoke_bound_actor(current, 'actor-unexpected-ancillary')
+                    return
+                if not packet:
+                    self._revoke_bound_actor(current, 'actor-empty-message')
+                    return
                 response, last_sequence = self._handle(connection, current, packet,
                     last_sequence)
                 if response is None:
+                    self._revoke_bound_actor(current, 'actor-protocol-violation')
                     return
                 connection.sendall(response)
         except (OSError, RuntimeError):
@@ -463,9 +521,21 @@ class RuntimeServiceSupervisor:
                     if self._closed:
                         return
                 continue
-            thread = threading.Thread(target=self._serve_connection,
-                args=(connection,), name='ker-runtime-service-client', daemon=True)
-            thread.start()
+            with self._lock:
+                if self._closed or len(self._connection_threads) >= self.max_clients:
+                    connection.close()
+                    continue
+                thread = threading.Thread(target=self._serve_connection,
+                    args=(connection,), name='ker-runtime-service-client', daemon=True)
+                self._accepted_connections.add(connection)
+                self._connection_threads.add(thread)
+                try:
+                    thread.start()
+                except BaseException:
+                    self._accepted_connections.discard(connection)
+                    self._connection_threads.discard(thread)
+                    connection.close()
+                    raise
 
     def wait_for_release(self, timeout):
         deadline = self.clock() + timeout
@@ -483,6 +553,17 @@ class RuntimeServiceSupervisor:
         with self._condition:
             self._revoke_locked(reason)
 
+    def prepare_worker_shutdown(self, timeout):
+        """Revoke the role and drop the held control writer before worker stop."""
+        released = self.wait_for_release(timeout)
+        with self._condition:
+            self._revoke_locked('explicit-worker-shutdown')
+            control_fd = self.control_fd
+            self.control_fd = -1
+        if control_fd >= 0:
+            os.close(control_fd)
+        return released
+
     def close(self):
         with self._condition:
             if self._closed:
@@ -493,6 +574,8 @@ class RuntimeServiceSupervisor:
             self._listener = None
             thread = self._thread
             clients = list(self._clients)
+            clients.extend(self._accepted_connections)
+            self._accepted_connections.clear()
             connection_threads = list(self._connection_threads)
             self._condition.notify_all()
         if listener is not None:
@@ -516,4 +599,3 @@ class RuntimeServiceSupervisor:
             os.unlink(self.path)
         except FileNotFoundError:
             pass
-

@@ -8,9 +8,11 @@ import tempfile
 
 def run_launcher(launcher):
     launcher = Path(launcher).resolve(strict=True)
-    codec = launcher.with_name('rx_decision_wire.py')
-    if not codec.is_file():
-        raise AssertionError(f'ker-run sibling codec is missing: {codec}')
+    siblings = ('rx_decision_wire.py', 'runtime_service.py',
+        'runtime_service_wire.py')
+    for name in siblings:
+        if not launcher.with_name(name).is_file():
+            raise AssertionError(f'ker-run sibling module is missing: {launcher.with_name(name)}')
     with tempfile.TemporaryDirectory(prefix='ker-run-bundle-cwd-') as cwd:
         result = subprocess.run([sys.executable, '-I', str(launcher), '--help'],
             cwd=cwd, text=True, capture_output=True, timeout=5)

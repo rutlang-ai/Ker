@@ -36,7 +36,10 @@ if port == 'aux0' and os.environ.get('FAKE_AUX_SIGNAL') == '1':
     signal.signal(signal.SIGTERM, stop)
     print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:02', 'tx_offload_features': 0}}), flush=True)
     while True: signal.pause()
-print('KER_IO_READY ' + json.dumps({{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}), flush=True)
+ready_record = {{'mac': '02:00:00:00:00:01', 'tx_offload_features': 0}}
+if os.environ.get('FAKE_RUNTIME_SERVICE_READY') == '1':
+    ready_record.update(process_type='primary', mbuf_pool_count=4, queues=1)
+print('KER_IO_READY ' + json.dumps(ready_record), flush=True)
 if port == 'aux0' and os.environ.get('FAKE_AUX_PID_FILE'):
     Path(os.environ['FAKE_AUX_PID_FILE']).write_text(str(os.getpid()))
 if os.environ.get('FAKE_PRIMARY_PID_FILE'):
@@ -106,7 +109,8 @@ class KerRunMainTests(unittest.TestCase):
         cls.tempdir.cleanup()
 
     def run_launcher(self, app_code, *, native_done, worker_code=0, signal_app=False,
-                     config=None, app_source=None, extra_env=None, capture_stderr=False):
+                     config=None, app_source=None, extra_env=None, capture_stderr=False,
+                     runtime_service_enabled=False):
         env = os.environ.copy()
         env.update(FAKE_NATIVE_DONE='1' if native_done else '0',
                    FAKE_WORKER_EXIT=str(worker_code))
@@ -120,6 +124,7 @@ class KerRunMainTests(unittest.TestCase):
             app = f'import sys; sys.exit({app_code})'
         argv = ['ker-run.py', '--address', '192.0.2.2/24', '--port', 'fake0',
                 '--eal', '', '--library', str(self.library), '--io-worker', str(self.worker),
+                *(('--runtime-service',) if runtime_service_enabled else ()),
                 *(('--config', str(config)) if config else ()),
                 '--', sys.executable, '-c', app]
         with (io.StringIO() if capture_stderr else open(os.devnull, 'w')) as stderr, \
@@ -138,6 +143,39 @@ class KerRunMainTests(unittest.TestCase):
 
     def test_successful_backend_preserves_nonzero_app_exit(self):
         self.assertEqual(self.run_launcher(7, native_done=True), 7)
+
+    def test_runtime_service_claim_releases_worker_control_pin(self):
+        app = r'''import os, socket
+import runtime_service_wire as wire
+path = os.environ['KER_RUNTIME_SERVICE_PATH']
+nonce = bytes.fromhex(os.environ['KER_RUNTIME_SERVICE_NONCE'])
+epoch = int(os.environ['KER_RUNTIME_SERVICE_EPOCH'])
+ticket = bytes.fromhex(os.environ['KER_RUNTIME_SERVICE_TICKET'])
+role = bytes.fromhex(os.environ['KER_RUNTIME_SERVICE_PROFILE'])
+expected_worker = bytes.fromhex(os.environ['KER_RUNTIME_SERVICE_WORKER_PROFILE'])
+assert int(os.environ['KER_RUNTIME_SERVICE_SUPERVISOR_PID']) == os.getppid()
+assert int(os.environ['KER_RUNTIME_SERVICE_SUPERVISOR_START_TICKS']) > 0
+channel = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+channel.connect(path)
+def rpc(operation, sequence, lease=b'\0' * wire.LEASE_BYTES, body=b''):
+    packet = wire.pack_header(operation, sequence, epoch, nonce, lease,
+        packet_length=wire.HEADER.size + len(body)) + body
+    channel.sendall(packet)
+    response = channel.recv(wire.HEADER.size + wire.CLAIM_RESULT.size)
+    op, status, seq, got_epoch, got_nonce, got_lease = wire.unpack_header(response)
+    assert (op, seq, got_epoch, got_nonce) == (operation, sequence, epoch, nonce)
+    return status, got_lease, response[wire.HEADER.size:]
+status, lease, body = rpc(wire.CLAIM, 1,
+    body=wire.CLAIM_BODY.pack(ticket, role))
+assert status == 0 and body == wire.CLAIM_RESULT.pack(expected_worker)
+assert rpc(wire.CHECK, 2, lease)[0] == 0
+assert rpc(wire.RELEASE, 3, lease)[0] == 0
+channel.close()
+'''
+        result = self.run_launcher(0, native_done=True, app_source=app,
+            runtime_service_enabled=True, extra_env={'FAKE_RUNTIME_SERVICE_READY': '1',
+                'PYTHONPATH': str(MODULE_PATH.parent)})
+        self.assertEqual(result, 0)
 
     def test_missing_done_overrides_ordinary_143_exit(self):
         self.assertEqual(self.run_launcher(143, native_done=False), 125)

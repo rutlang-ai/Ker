@@ -1365,6 +1365,9 @@ def main():
             app_executable = Path(args.command[0]).resolve(strict=True)
             if not app_executable.is_file() or not os.access(app_executable, os.X_OK):
                 raise RuntimeError('runtime-service caller must be an executable file')
+            with app_executable.open('rb') as executable_stream:
+                if executable_stream.read(4) != b'\x7fELF':
+                    raise RuntimeError('runtime-service phase one requires a direct ELF application')
             app_executable_hash = runtime_service.sha256_file(app_executable)
             runtime_service_directory = tempfile.mkdtemp(prefix='ker-runtime-service-')
             os.chmod(runtime_service_directory, 0o700)
@@ -1373,14 +1376,15 @@ def main():
             runtime_service_server = runtime_service.RuntimeServiceSupervisor(
                 Path(runtime_service_directory) / 'service.sock', worker,
                 worker_pidfd, runtime_service.process_start_ticks(worker.pid),
-                runtime_service.sha256_file(worker_path), info,
+                runtime_service.process_executable_hash(worker.pid), info,
                 app_executable_hash, app_profile_hash, control_write)
             runtime_service_server.start()
         for interface in args.interfaces:
             extra_worker = AdditionalWorker(interface)
             additional.append(extra_worker)
             extra_worker.start(worker_path, args)
-        env = {key: value for key, value in os.environ.items() if not key.startswith(('LKL_', 'KER_PACKET_'))}
+        env = {key: value for key, value in os.environ.items()
+            if not key.startswith(('LKL_', 'KER_PACKET_', 'KER_RUNTIME_SERVICE_'))}
         env.update(KER_PRELOAD_LIBRARY=(env.pop('LD_PRELOAD') + ':' if env.get('LD_PRELOAD') else '') + str(library),
             KER_NATIVE_TX_FEATURES=str(info['tx_offload_features']), KER_RUN_FD=str(run_app.fileno()), KER_STARTUP_FD=str(startup_write), KER_SHUTDOWN_TIMEOUT_MS=str(args.shutdown_timeout_ms),
             KER_PACKET_CONTROL_FD=str(mtu_app.fileno()), KER_PACKET_MAX_MTU=str(args.max_mtu),
@@ -1517,7 +1521,7 @@ def main():
                         raise RuntimeError('run requested EAL teardown before native kernel teardown')
                     lease_release_ok = True
                     if runtime_service_server is not None:
-                        lease_release_ok = runtime_service_server.wait_for_release(1.0)
+                        lease_release_ok = runtime_service_server.prepare_worker_shutdown(1.0)
                         if not lease_release_ok:
                             print('ker-run: runtime-service lease was not released before worker shutdown',
                                 file=sys.stderr)
@@ -1531,7 +1535,8 @@ def main():
                     worker_finished = True
                     failed = not lease_release_ok
                     if not isinstance(reaped[0], Exception):
-                        stats, failed = reaped[0]
+                        stats, worker_failed = reaped[0]
+                        failed |= worker_failed
                     for result in reaped[1:]:
                         failed |= result if isinstance(result, bool) else True
                     if not normal_native_shutdown_markers(startup_status):
@@ -1578,6 +1583,19 @@ def main():
             except subprocess.TimeoutExpired:
                 app.kill()
                 app.wait()
+        if runtime_service_server is not None:
+            if runtime_service_server.active_count:
+                infrastructure_failure = True
+                runtime_service_server.revoke('ker-run explicit shutdown')
+            runtime_service_server.close()
+            runtime_service_server = None
+        if runtime_service_directory is not None:
+            try:
+                os.rmdir(runtime_service_directory)
+            except OSError as error:
+                print(f'ker-run: runtime-service directory cleanup: {error}', file=sys.stderr)
+                infrastructure_failure = True
+            runtime_service_directory = None
         channel_app.close()
         channel_io.close()
         mtu_app.close()
@@ -1586,7 +1604,7 @@ def main():
             decision_app.close()
         if decision_io is not None:
             decision_io.close()
-        for pidfd in (supervisor_pidfd, worker_pidfd, app_pidfd):
+        for pidfd in (supervisor_pidfd, worker_pidfd, app_pidfd, runtime_actor_pidfd):
             if pidfd >= 0:
                 os.close(pidfd)
         if control_read >= 0:

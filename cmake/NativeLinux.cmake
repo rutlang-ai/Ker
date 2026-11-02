@@ -600,9 +600,16 @@ file(RELATIVE_PATH KER_POSIX_LIB_FROM_BIN
 configure_file(tools/ker-run.py "${PROJECT_BINARY_DIR}/ker-run" @ONLY)
 configure_file(tools/rx_decision_wire.py
     "${PROJECT_BINARY_DIR}/rx_decision_wire.py" COPYONLY)
+configure_file(tools/runtime_service.py
+    "${PROJECT_BINARY_DIR}/runtime_service.py" COPYONLY)
+configure_file(tools/runtime_service_wire.py
+    "${PROJECT_BINARY_DIR}/runtime_service_wire.py" COPYONLY)
 install(PROGRAMS "${PROJECT_BINARY_DIR}/ker-run" DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT fstack-nginx-runtime)
 install(FILES "${PROJECT_BINARY_DIR}/rx_decision_wire.py"
+    DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
+install(FILES "${PROJECT_BINARY_DIR}/runtime_service.py"
+    "${PROJECT_BINARY_DIR}/runtime_service_wire.py"
     DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT fstack-nginx-runtime)
 install(FILES "${ker_native_manifest}"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/ker/native-linux RENAME build.json)
@@ -2627,3 +2634,4 @@ if(BUILD_TESTING)
     ker_add_ff_owner_requests_tests()
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/RxDecisionForwardTests.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/RuntimeServiceSupervisorTests.cmake")
