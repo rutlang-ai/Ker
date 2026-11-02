@@ -949,6 +949,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
             wire.setblocking(False)
             host_mac=bytes.fromhex('024b45520001')
             forwarding_tap=-1
+            forwarding_network_setup={}
             forwarding_state=dict(armed=False,intercepted=[],client_port=None,forwarded=0,
                 fin_ack_sequence=None,fin_ack_forwarded=False)
             forwarding_complete_requested=threading.Event()
@@ -961,6 +962,28 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 for command in (['link','set','kerfwd0','address','02:4b:45:52:00:01','mtu','1500'],
                         ['addr','add','198.18.0.1/24','dev','kerfwd0'],['link','set','kerfwd0','up']):
                     subprocess.run(['ip',*command],check=True)
+                # This fixture exercises TCP forwarding, not host ARP discovery.
+                # Read the MAC from the launcher assignment so the permanent
+                # neighbor cannot drift from the actual original-Linux device.
+                launcher = Path(__file__).resolve().parents[2] / 'tools' / 'ker_session_run.py'
+                launcher_source = launcher.read_text()
+                configured_macs = re.findall(r"LKL_HIJACK_NET_MAC='([0-9a-f:]{17})'", launcher_source)
+                require(len(configured_macs) == 1,
+                    'could not identify one original-Linux MAC assignment in ker_session_run.py')
+                lkl_mac=configured_macs[0]
+                route = subprocess.run(['ip','-4','route','get','198.18.0.2'],
+                    check=True,capture_output=True,text=True).stdout.strip()
+                require('dev kerfwd0' in route and 'src 198.18.0.1' in route,
+                    'host route to original Linux does not use the forwarding TAP: '+route)
+                subprocess.run(['ip','-4','neigh','replace','198.18.0.2','lladdr',lkl_mac,
+                    'nud','permanent','dev','kerfwd0'],check=True)
+                neighbor = subprocess.run(['ip','-4','neigh','show','to','198.18.0.2',
+                    'dev','kerfwd0'],check=True,capture_output=True,text=True).stdout.strip()
+                require('lladdr '+lkl_mac in neighbor and 'PERMANENT' in neighbor,
+                    'forwarding TAP neighbor does not match the configured original Linux MAC: '+neighbor)
+                forwarding_network_setup=dict(route=route,neighbor=neighbor,
+                    neighbor_policy='permanent entry uses configured original-Linux MAC; host ARP discovery is outside this profile')
+                evidence['forwarding_network_setup']=forwarding_network_setup
             def tcp4_fields(frame):
                 if len(frame)<54 or frame[12:14]!=b'\x08\x00' or frame[14]>>4!=4 or frame[23]!=6:
                     return None
@@ -1147,6 +1170,7 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                     reason += '; EAL multiprocess diagnostics: ' + repr(mp_errors)
                 diagnostic = dict(mode=mode, reason=reason, latest_stats=latest,
                     latest_stats_raw=latest_raw,
+                    forwarding_network_setup=forwarding_network_setup,
                     wire=dict(frame_count=wire_failure_count,frames_hex=wire_failure_frames,
                         frames_truncated=wire_failure_count>len(wire_failure_frames),errors=wire_failure_errors),
                     actors=dict(app=dict(pid=(latest or {}).get('app_pid'), returncode=(latest or {}).get('app_code')),
@@ -1358,7 +1382,10 @@ def _run_live_handoff_profile_impl(args, api, plugin_paths, mode, evidence):
                 except RuntimeError as error: raise startup_failure(str(error)) from error
             old_tcp_stream=None
             if mode=='generation-forward-tcp':
-                old_tcp_stream=socket.create_connection(('198.18.0.2',45000),timeout=10)
+                try:
+                    old_tcp_stream=socket.create_connection(('198.18.0.2',45000),timeout=10)
+                except OSError as error:
+                    raise startup_failure('initial original-Linux TCP connect failed after verified forwarding route/neighbor: '+repr(error)) from error
                 old_tcp_stream.settimeout(10)
                 accept_deadline=time.monotonic()+10
                 while time.monotonic()<accept_deadline:
