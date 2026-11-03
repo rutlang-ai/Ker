@@ -347,3 +347,34 @@ settlements reporting zero outstanding mbufs. These qualify this bounded
 original `gr0` probe over the serial caller path, not the complete original
 shell entrypoint or `graceful_reload=1`. The migration catalog remains
 362 scenario-adapted, zero partial and one blocked entry.
+
+## Bounded repeated serial cycles
+
+The private `SerialGenerationController` accepts an explicit
+`max_generations` between two and nine; its default remains two. Each advance
+must refer to the current generation and consumes that generation's original
+broker retirement and runtime settlement proofs exactly once. Old broker,
+worker and launcher pidfds must all report death before the next launch.
+Successor artifact directories are distinct (`new`, `new-2`, and so on), and
+reaching the configured limit rejects further launches. Terminal companion
+shutdown still cannot authorize a successor.
+
+The real Nginx fixture accepts `--reloads 1..8`; the original `--source-gr0`
+mode continues to require exactly one reload. The registered
+`native-nginx-fstack-repeated-serial-cycle` test performs three HUPs through
+four runtimes under the same Nginx master. Each cycle verifies HTTP service,
+distinct worker PID and runtime nonce/epoch, inherited-descriptor isolation,
+old runtime settlement before successor READY, rejection of consumed proofs,
+and final zero-outstanding-buffer settlement. The configured generation cap
+is also checked without launching another runtime.
+
+```sh
+ctest --test-dir build -R '^native-nginx-fstack-repeated-serial-cycle$' --output-on-failure
+```
+
+This extends the serial lifetime adapter only. It does not qualify upstream
+`rv9`: that case requires the production `graceful_reload=1` FSM, its original
+counters, continuous fresh traffic and resource-trend gates over the original
+round count. Serial runtime replacement still has an outage and does not
+preserve active TCP streams across kernel-instance retirement. The complete
+shell entrypoint therefore remains blocked.

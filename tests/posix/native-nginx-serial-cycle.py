@@ -17,7 +17,10 @@ parser.add_argument('--nginx', type=Path, required=True)
 parser.add_argument('--broker', type=Path, required=True)
 parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
 parser.add_argument('--source-gr0', action='store_true', help='Run the unchanged 25-second source outage probe and oracle')
+parser.add_argument('--reloads', type=int, default=1, help='One to eight authenticated serial reloads')
 args = parser.parse_args()
+if not 1 <= args.reloads <= 8 or (args.source_gr0 and args.reloads != 1):
+ parser.error('reloads must be one to eight; the original gr0 probe requires exactly one')
 if not args.inside:
  command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
      '--launcher', str(args.launcher.resolve()), '--library', str(args.library.resolve()),
@@ -25,7 +28,7 @@ if not args.inside:
      '--preload-library', str(args.preload_library.resolve()), '--worker-shim', str(args.worker_shim.resolve()),
      '--owner-module', str(args.owner_module.resolve()), '--dpdk-plugin-dir', str(args.dpdk_plugin_dir.resolve()),
      '--nginx', str(args.nginx.resolve()), '--broker', str(args.broker.resolve()), '--inside',
-     *(['--source-gr0'] if args.source_gr0 else [])]
+     '--reloads', str(args.reloads), *(['--source-gr0'] if args.source_gr0 else [])]
  raise SystemExit(subprocess.run(command, env=os.environ | {'PYTHONDONTWRITEBYTECODE':'1'}).returncode)
 S=Path(__file__).resolve().parents[2]
 def load(name,path):
@@ -52,7 +55,7 @@ http {{ access_log off; sendfile off; tcp_nopush off; keepalive_timeout {300 if 
 server {{ listen 198.18.0.2:80 reuseport; server_name ker.test; root {pre}/html; index index.html; }} }}
 ''')
 launch=ctlmod.InnerLaunch(args.launcher.resolve(),args.library.resolve(),args.worker.resolve(),args.broker.resolve(),args.dpdk_plugin_dir.resolve(),r,rpc_path=rpc)
-ctl=ctlmod.SerialGenerationController(launch,port=80);contexts=[];comp=None;cycle=None;fds=[];watches=[];out={'root':str(r),'events':[],'status':'FAIL'};helperfd=-1
+ctl=ctlmod.SerialGenerationController(launch,port=80,max_generations=args.reloads+1);contexts=[];comp=None;cycle=None;fds=[];watches=[];out={'root':str(r),'events':[],'status':'FAIL','reloads':args.reloads};helperfd=-1
 probe=None;probe_log=None;probe_ok=True
 def mark(name,**kw):out['events'].append({'event':name,'monotonic_ns':time.monotonic_ns(),**kw});print(name,kw,flush=True)
 def process_fds(pid):
@@ -120,6 +123,24 @@ try:
  assert_child_fd_isolation(comp.master_pid,bw.actor_identity.pid,cycle_inode,outer_pid)
  if br[2]==ar[2] or br[3]==ar[3]:raise RuntimeError('B reused A runtime nonce/epoch')
  mark('HTTP_B',worker=bw.actor_identity.pid,master=comp.master_pid,fd_isolation='PASS')
+ for reload_number in range(2,args.reloads+1):
+  previous,previous_ready,previous_fd,previous_watch=b,br,bf,bw
+  comp.reload();cycle.receive_drained();deadline=cycle.transition_deadline
+  mark('REPEATED_CYCLE_DRAINED',reload=reload_number,cycle=cycle.cycle,sequence=cycle.last_request[0])
+  receipt=ctl.verify_external_watch(previous,previous_fd,comp,cycle,require_retired=True,live_watch=previous_watch,deadline=deadline)
+  os.close(previous_fd);fds.remove(previous_fd)
+  settlement=ctl.stop_inner(previous,receipt,deadline=deadline)
+  mark('REPEATED_RUNTIME_SETTLED',reload=reload_number,outstanding=settlement.stats.get('outstanding'),control_eof=settlement.stats.get('control_eof'))
+  b=ctl.start_next(previous,receipt,settlement);contexts.append(b);br=ctl.receive_ready(b,deadline=deadline)
+  mark('REPEATED_RUNTIME_READY',reload=reload_number,pid=b.process.pid,nonce=br[2].hex(),epoch=br[3])
+  try:ctl.start_next(previous,receipt,settlement)
+  except ctlmod.SettlementError:mark('REPEATED_RECEIPT_REPLAY_REJECTED',reload=reload_number)
+  else:raise RuntimeError('consumed prior-generation proofs authorized another launch')
+  cycle.send_ready(br[2:5]);bf=cycle.accept_successor_watch(br[2:5]);fds.append(bf);bw=ctl.verify_external_watch(b,bf,comp,cycle);watches.append(bw);tap.wait_http()
+  if bw.actor_identity.pid in [watch.actor_identity.pid for watch in watches[:-1]] or tap.child_pids(comp.master_pid)!=[bw.actor_identity.pid]:raise RuntimeError('repeated cycle reused a worker or changed the Nginx master')
+  if any(br[2]==context.ready[2] or br[3]==context.ready[3] for context in contexts[:-1]):raise RuntimeError('repeated cycle reused a runtime nonce or epoch')
+  assert_child_fd_isolation(comp.master_pid,bw.actor_identity.pid,cycle_inode,outer_pid)
+  mark('REPEATED_HTTP_READY',reload=reload_number,worker=bw.actor_identity.pid,master=comp.master_pid,nonce=br[2].hex(),epoch=br[3],fd_isolation='PASS')
  if args.source_gr0:
   rc=probe.wait(timeout=35);probe_log.close();text=(r/'gr0-outage.log').read_text();oracle=subprocess.run([sys.executable,str(checker),'summary','outage'],input=text,text=True,capture_output=True)
   graceful_lines=[line for line in (pre/'logs/error.log').read_text().splitlines() if re.search(r'graceful reload complete|graceful reload fsm:',line)]
@@ -127,12 +148,17 @@ try:
   probe_ok=rc==0 and oracle.returncode==0 and not graceful_lines
   out['gr0'].update(status='PASS' if probe_ok else 'UNQUALIFIED',exit_code=rc,oracle_exit_code=oracle.returncode,oracle_stdout=oracle.stdout,oracle_stderr=oracle.stderr,summary_lines=[line for line in text.splitlines() if line.startswith('OUTAGE_SUMMARY ')],graceful_log_lines=graceful_lines)
   mark('GR0_PROBE_COMPLETE',qualified=probe_ok,oracle_exit_code=oracle.returncode)
+ try:ctl.start_next(b,retired,settled)
+ except ctlmod.SettlementError as error:
+  if str(error)!='serial generation limit reached':raise
+  mark('GENERATION_LIMIT_REJECTED',generations=args.reloads+1)
+ else:raise RuntimeError('serial controller exceeded its configured generation limit')
  comp.stop();mark('COMPANION_SETTLED',master=comp.master_pid,helper_exit=comp.helper.returncode);shutdown=ctl.record_companion_shutdown(b,bw,comp,cycle);last=ctl.verify_external_shutdown_watch(b,bf,shutdown);os.close(bf);fds.remove(bf);settled_b=ctl.stop_inner(b,last);ctl.close_watch(bw);ctl.close_context(b,'settled');comp.close();cycle.close();out['status']='PASS';mark('B_SETTLED',outstanding=settled_b.stats.get('outstanding'),control_eof=settled_b.stats.get('control_eof'))
  names=[x['event'] for x in out['events']]
  expected=['A_READY','NGINX_STARTED','HTTP_A','CYCLE_DRAINED','A_RETIRED','A_SETTLED','B_READY','HTTP_B','COMPANION_SETTLED','B_SETTLED','ALL_SETTLED']
  positions=[names.index(name) for name in expected[:-1]]
  if positions!=sorted(positions):raise RuntimeError(f'physical lifecycle event order invalid: {names!r}')
- mark('ALL_SETTLED',event_order='PASS',worker_pids=[aw.actor_identity.pid,bw.actor_identity.pid],same_master=comp.master_pid)
+ mark('ALL_SETTLED',event_order='PASS',worker_pids=[watch.actor_identity.pid for watch in watches],same_master=comp.master_pid)
  if not probe_ok:out['status']='UNQUALIFIED'
 except BaseException as e:
  out.update(status='FAIL',error=repr(e));mark('FAIL',error=repr(e))

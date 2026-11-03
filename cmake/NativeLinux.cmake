@@ -1073,8 +1073,12 @@ if(BUILD_TESTING)
                             --dpdk-plugin-dir "${ker_session_pmd_dir}"
                             --nginx "${KER_FSTACK_NGINX_BINARY}")
                     add_test(NAME native-nginx-fstack-serial-cycle COMMAND ${ker_serial_cycle_command})
+                    add_test(NAME native-nginx-fstack-repeated-serial-cycle
+                        COMMAND ${ker_serial_cycle_command} --reloads 3)
                     set_tests_properties(native-nginx-fstack-serial-cycle PROPERTIES
                         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle")
+                    set_tests_properties(native-nginx-fstack-repeated-serial-cycle PROPERTIES
+                        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle;repeated-generation")
                     if(KER_ENABLE_NGINX_SERIAL_GR0)
                         add_test(NAME native-nginx-fstack-serial-gr0
                             COMMAND ${ker_serial_cycle_command} --source-gr0)
