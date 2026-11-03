@@ -433,14 +433,19 @@ def _send_actor_control(channel, value, deadline):
 
 
 class SerialGenerationController:
-    """Bounded two-generation coordinator; one-use advance is internal state."""
+    """Bounded serial coordinator; every advance consumes its own proofs."""
 
-    def __init__(self, launch: InnerLaunch, port=4127, address='198.18.0.2'):
+    def __init__(self, launch: InnerLaunch, port=4127, address='198.18.0.2', max_generations=2):
+        if type(max_generations) is not int or not 2 <= max_generations <= 9:
+            raise ValueError('serial generation limit must be between two and nine')
         self.launch = launch
         self.port = port
         self.address = address
         self.address_bytes = socket.inet_aton(address)
         self._generation_counter = 0
+        self._max_generations = max_generations
+        self._runtime_nonces = set()
+        self._runtime_epochs = set()
         self._proof_seal = object()
         self._verified_proofs = {}
         self._settled_proofs = {}
@@ -471,7 +476,8 @@ class SerialGenerationController:
                 not self._old_context.advanced):
             raise SettlementError('new generation requires the controller’s one-use advance')
         self._generation_counter += 1
-        root = self.launch.root / label
+        root_name = label if self._generation_counter <= 2 else f'new-{self._generation_counter - 1}'
+        root = self.launch.root / root_name
         root.mkdir(parents=True, exist_ok=False)
         stats = root / 'worker-stats.json'
         rpc = (Path(self.launch.rpc_path) if self.launch.rpc_path is not None
@@ -577,6 +583,10 @@ class SerialGenerationController:
             context.rpc_inode = (st.st_dev, st.st_ino)
             if time.monotonic() >= deadline:
                 raise DeadlineExpired('INNER_READY commit exceeded its absolute deadline')
+            if ready[2] in self._runtime_nonces or ready[3] in self._runtime_epochs:
+                raise AuthenticationError('INNER_READY reused a retired runtime nonce or epoch')
+            self._runtime_nonces.add(ready[2])
+            self._runtime_epochs.add(ready[3])
             context.app_identity = app_id
             context.worker_identity = worker_id
             context.app_pidfd = app_pidfd
@@ -1180,8 +1190,11 @@ class SerialGenerationController:
         return NewGenerationError(context.unresolved_reason)
 
     def start_next(self, old, retired, settled, launch=None):
-        if (old is not self._old_context or old.closed or old.advanced):
+        current = self._new_context if self._new_context is not None else self._old_context
+        if (old is not current or old.closed or old.advanced):
             raise SettlementError('advance is not available for this old context')
+        if self._generation_counter >= self._max_generations:
+            raise SettlementError('serial generation limit reached')
         if old.process.poll() is None or not _pidfd_is_dead(old.pidfd):
             raise SettlementError('old inner process is not dead')
         if not _pidfd_is_dead(old.app_pidfd) or not _pidfd_is_dead(old.worker_pidfd):
@@ -1202,6 +1215,10 @@ class SerialGenerationController:
         del self._settled_proofs[id(settled)]
         self.close_watch(retired.watch)
         self.close_context(old, 'settled')
+        # Only the just-retired current generation may authorize the next
+        # launch. Consumed receipts and older closed contexts stay unusable.
+        self._old_context = old
+        self._new_context = None
         if launch is not None:
             self.launch = launch
         return self._start_inner('new', self._advance_key)

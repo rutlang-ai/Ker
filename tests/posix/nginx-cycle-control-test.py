@@ -286,6 +286,8 @@ def companion_shutdown_controls():
         controller = object.__new__(serial.SerialGenerationController)
         controller._old_context = None
         controller._new_context = None
+        controller._generation_counter = 2
+        controller._max_generations = 3
         controller._external_live_watches = {}
         controller._companion_shutdown_proofs = {}
         controller._verified_proofs = {}
