@@ -456,3 +456,17 @@ See [abort scope and reproduction](fstack-nginx-runtime.md#queued-syn-abort-with
 This qualifies the abort prerequisite before the selector changes. It does not execute
 the original FSM's failure policy or certify post-commit rollback, repeated
 attempts or the complete shell matrix; the migration entry remains blocked.
+
+
+### Original keepalive probe over explicit overlap
+
+The real old/new Nginx profile now consumes the unchanged 180-second original
+LC probe and summary oracle in both commit and abort modes. It preserves the
+source progress anchor, the perf oracle's bounded closure rule for handover,
+and the stricter zero-failure/reconnect rule for abort. This workload also
+exposed the single-packet admission queue limit and interrupted identity checks;
+the host adapters now retain a bounded notification FIFO and an unverified
+received record until identity validation finishes. See [LC scope and runtime
+qualification](fstack-nginx-runtime.md#original-keepalive-probe-through-commit-and-abort).
+The original same-master FSM, performance comparison and complete shell matrix
+remain unqualified; inventory remains 362 scenario-adapted, 0 partial, 1 blocked.

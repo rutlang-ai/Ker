@@ -103,6 +103,71 @@ static struct ker_ff_admission_result receive_command(
 	}
 }
 
+static void burst_admission(struct ker_ff_admission_queue *queue,
+    struct ker_ff_admission_channel *channel, unsigned listener,
+    const struct sockaddr_in *address, uint64_t lease, unsigned round)
+{
+    enum { COUNT = 12 };
+    int clients[COUNT];
+    uint16_t ports[COUNT];
+    int seen[COUNT] = {0};
+    uint64_t until = deadline_after_ms(500);
+    for (unsigned i = 0; i < COUNT; ++i) {
+        clients[i] = (int)lkl_sys_socket(LKL_AF_INET,
+            LKL_SOCK_STREAM | LKL_O_NONBLOCK | LKL_O_CLOEXEC, 0);
+        CHECK(clients[i] >= 0);
+        CHECK(lkl_sys_connect((unsigned)clients[i], (struct lkl_sockaddr *)address,
+            sizeof(*address)) == -LKL_EINPROGRESS);
+        struct sockaddr_in local;
+        int length = sizeof(local);
+        CHECK(!lkl_sys_getsockname((unsigned)clients[i], (struct lkl_sockaddr *)&local, &length));
+        ports[i] = local.sin_port;
+    }
+    for (unsigned i = 0; i < COUNT; ++i) {
+        struct lkl_pollfd fd = {.fd = clients[i], .events = LKL_POLLOUT};
+        CHECK(!lkl_sys_poll(&fd, 1, 0));
+    }
+    for (unsigned i = 0; i < COUNT; ++i) {
+        struct ker_ff_admission_packet packet;
+        CHECK(ker_ff_admission_queue_receive(queue, &packet, 10) == 1);
+        unsigned index = 0;
+        while (index < COUNT && ports[index] != packet.remote_port) ++index;
+        CHECK(index < COUNT && !seen[index]);
+        seen[index] = 1;
+        struct ker_ff_admission_request request = {
+            .lease = lease, .command_id = 2 + round * COUNT + i, .packet_id = packet.id,
+            .deadline_ns = packet.deadline_ns,
+            .key = {.source = {packet.remote_address}, .destination = {packet.local_address},
+                .source_port = packet.remote_port, .destination_port = packet.local_port}};
+        CHECK(!ker_ff_admission_channel_send_admit(channel, &request));
+        struct ker_ff_admission_result result = receive_command(channel,
+            KER_FF_ADMISSION_RESULT, packet.deadline_ns);
+        CHECK(!result.status && result.allowed == 1 && result.created == 1);
+        CHECK(!ker_ff_admission_channel_send_control(channel,
+            KER_FF_ADMISSION_PREPARE_ACCEPT, request.command_id, packet.id));
+        result = receive_command(channel, KER_FF_ADMISSION_PREPARED, packet.deadline_ns);
+        CHECK(!result.status);
+        int sent = 0;
+        CHECK(!ker_ff_admission_queue_verdict(queue, packet.lease, packet.deadline_ns,
+            packet.id, 1, &sent) && sent == 1);
+        CHECK(!ker_ff_admission_channel_send_control(channel,
+            KER_FF_ADMISSION_FINALIZE, request.command_id, packet.id));
+        result = receive_command(channel, KER_FF_ADMISSION_FINALIZED, until);
+        CHECK(!result.status);
+        struct lkl_pollfd fd = {.fd = clients[index], .events = LKL_POLLOUT};
+        CHECK(lkl_sys_poll(&fd, 1, 10) == 1 && (fd.revents & LKL_POLLOUT));
+        long accepted = lkl_sys_accept(listener, NULL, NULL);
+        CHECK(accepted >= 0);
+        char byte = (char)(index + 1), received = 0;
+        CHECK(lkl_sys_write((unsigned)clients[index], &byte, 1) == 1);
+        CHECK(lkl_sys_read((unsigned)accepted, &received, 1) == 1 && received == byte);
+        CHECK(!lkl_sys_close((unsigned)accepted));
+        CHECK(!lkl_sys_close((unsigned)clients[index]));
+        CHECK(deadline_after_ms(0) < until);
+    }
+    printf("C15_BURST_PASS batch=%u clients=12 admitted=12 payloads=12\n", round + 1);
+}
+
 int main(void)
 {
 	int endpoints[2], ready_pipe[2];
@@ -149,7 +214,7 @@ int main(void)
 		.sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
 	CHECK(lkl_sys_bind((unsigned)listener, (struct lkl_sockaddr *)&address,
 		sizeof(address)) == 0);
-	CHECK(lkl_sys_listen((unsigned)listener, 8) == 0);
+	CHECK(lkl_sys_listen((unsigned)listener, 32) == 0);
 	int address_length = sizeof(address);
 	CHECK(lkl_sys_getsockname((unsigned)listener, (struct lkl_sockaddr *)&address,
 		&address_length) == 0 && address_length == sizeof(address) && address.sin_port);
@@ -213,6 +278,9 @@ int main(void)
 	accepted = -1;
 	CHECK(lkl_sys_close((unsigned)client) == 0);
 	client = -1;
+	for (unsigned round = 0; round < 6; ++round) {
+		burst_admission(queue, channel, (unsigned)listener, &address, lease, round);
+	}
 	client = lkl_sys_socket(LKL_AF_INET,
 		LKL_SOCK_STREAM | LKL_O_NONBLOCK | LKL_O_CLOEXEC, 0);
 	CHECK(client >= 0);

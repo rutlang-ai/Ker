@@ -483,8 +483,8 @@ deadline. No record is resent after successful transfer, authentication still
 runs on received records, and other errors retain their existing fail-closed
 handling. Nginx signal handling, timers and all upstream sources are unchanged.
 
-`admission-channel-eintr` injects EINTR at eleven syscall sites in the exact
-channel source, including empty receive, command send, request receive,
+The initial `admission-channel-eintr` qualification injected EINTR at eleven
+syscall sites in the exact channel source, including empty receive, command send, request receive,
 result/PREPARED response send, controller receive, FINALIZE receive and
 cancellation reply. Uninterrupted operations use real credential-checked
 SOCK_SEQPACKET I/O. Its callbacks count effects rather
@@ -501,3 +501,88 @@ responses with zero integrity failures, stalls and worker errors, and both
 brokers ended with outstanding=0. The deterministic channel test also passed
 GCC and Clang with C11, -Wall -Wextra -Werror; the existing original-map channel
 and original-LKL admission checks passed unchanged.
+
+### Original keepalive probe through commit and abort
+
+`native-nginx-overlap-source-lc-tap` and
+`native-nginx-overlap-abort-source-lc-tap` run the unchanged imported
+`m4_lc.py`/`http_probe.py` with the source harness's performance-form defaults:
+12 persistent connections, 180 seconds, 0.1-second persistent request interval,
+0.5-second fresh-request interval and a two-second socket timeout. The TAP
+address/port adaptation remains 198.18.0.2:4108. The Nginx profile also retains
+the original shell's keepalive_timeout=300 and keepalive_requests=100000; the
+normal request cap must not create unrelated closures during this run.
+
+Handoff waits for an actual `LC_PROGRESS` line with elapsed>=3 seconds,
+n>=200 and no failures, then checks the old member's mark-scoped ESTABLISHED
+population. The separate queued-SYN transaction and distinct old/new HTTP body
+checks remain active. The probe must stay alive after old-worker retirement
+(commit) or candidate retirement (abort), and later source progress must prove
+requests continued after that event. All 13 source workers, including the fresh
+request worker, must finish and report activity without worker errors.
+
+The original `reload_runtime.sh` explicitly uses `reload_checks.py`'s `perf`
+LC criterion after successful handover: old keepalive connections may each
+close once, so the strict probe can exit 1 while the unchanged summary oracle
+passes. This fixture preserves that distinction and records both the actual
+exit code and oracle mode. Fresh failures always fail; failure/reconnect
+counts above 12, malformed/duplicate summaries, worker failures and abnormal
+process exits are rejected. The abort profile uses the stricter original LC
+oracle and requires exit 0 with zero failures and reconnects. The six pure
+`native-nginx-source-lc-oracle` controls guard this boundary.
+
+JSON evidence includes the original probe command/source hashes, complete
+output, the actual anchor and post-retirement progress lines, Nginx logs,
+broker output and cleanup statistics. Broker output is drained during the
+whole run so a full diagnostic pipe cannot block admission progress.
+
+This qualifies the original LC traffic/oracle over explicit two-master broker
+decisions. It does not run the original same-master generation FSM, rt31 CPU
+sampling or performance comparison, repeated rounds, or the full shell matrix.
+The migration entry remains blocked.
+
+### Bounded admission notification bursts
+
+The LC probe exposed an actual capacity boundary: the admission NFQUEUE was
+configured for a single queued packet, causing concurrent SYNACK notifications
+to be dropped while one admission transaction was active. The host adapter now
+uses a bounded 64-packet NFQUEUE backlog and retains up to 64 complete kernel
+notifications in a FIFO while matching an exact verdict ACK. Merely enlarging
+the kernel queue is insufficient: the former single deferred-notification slot
+also rejected a burst arriving ahead of the ACK.
+
+Map commands still execute one at a time on the authenticated owner thread;
+original Linux remains the TCP and packet authority. Sender/framing and verdict
+ACK checks are unchanged, deferred notifications keep their first-receipt
+250ms deadlines, and overflow is explicit ENOBUFS. No fail-open policy, source
+probe timeout or original TCP timer is relaxed. Retirement/disarm remains
+blocked until both the active packet and every deferred notification settle.
+The original-LKL admission smoke now runs six real 12-client bursts, verifies
+all 72 admissions and byte payloads, and exercises FIFO reuse. The old capacity
+and the enlarged-queue/single-slot variant both fail that regression.
+
+### Interrupted identity validation after receive
+
+A longer LC run exposed an interruption after recvmsg had already consumed a
+record, inside pidfd/process-image validation. The channel now retains that
+credential-checked record and retries identity validation on a later step;
+it does not read its successor or execute a map callback until validation
+succeeds. Peer death and permanent identity/framing errors remain fatal.
+Original command IDs and deadlines are retained.
+
+The extended deterministic channel test injects 18 interruptions across I/O
+and identity checks. It proves exactly two admits and one revoke, rejects a
+request that expires while identity validation is pending, and rejects a
+cached record after the actual authenticated peer exits. The earlier
+pre-transfer EINTR handling remains in place. The original flow-map and
+LKL channel tests provide independent semantics coverage.
+
+The recorded LC commit and abort runs each recorded 21588 persistent request
+attempts and 360 fresh requests with all 13 workers active and complete. Commit observed
+the permitted 12 old-connection closures/reconnects and strict probe exit 1;
+abort observed zero failures/reconnects and exit 0. Both had fresh_fail=0,
+worker_errors=0 and final broker outstanding=0. The source anchor was the
+actual `LC_PROGRESS elapsed=3.0 n=360 fail=0` line. The six oracle controls,
+twelve related native regressions (including the original long-stream probe,
+identity rejection, cancellation/quarantine and retirement cycles), and three
+channel/LKL checks passed. Earlier failed runs remain separately archived.

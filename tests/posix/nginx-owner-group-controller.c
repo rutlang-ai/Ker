@@ -102,7 +102,7 @@ int main(int argc, char **argv)
             } while (now_ns() < deadline);
             CHECK(!result);
             CHECK(!ker_socket_client_owner_group_retire_initial_listener(&client, plan));
-        } else if (!strcmp(command, "STREAMS0\n")) {
+        } else if (!strcmp(command, "STREAMS0\n") || !strcmp(command, "ACTIVE0\n")) {
             struct ker_socket_member_census_snapshot state;
             uint64_t deadline = now_ns() + UINT64_C(10000000000);
             do {

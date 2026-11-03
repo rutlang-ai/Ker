@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -57,6 +58,45 @@ static void interrupt_next(long number, unsigned count)
     interrupt_budget = count;
 }
 
+static void cached_peer_exit(const struct ker_ff_admission_map_ops *ops,
+                             struct ker_ff_admission_request request)
+{
+    int endpoints[2], ready[2], release[2];
+    CHECK(!ker_ff_admission_channel_pair(endpoints));
+    CHECK(!pipe(ready) && !pipe(release));
+    pid_t parent = getpid(), child = fork();
+    CHECK(child >= 0);
+    if (!child) {
+        close(endpoints[0]); close(ready[0]); close(release[1]);
+        struct ker_ff_admission_channel *sender = NULL;
+        CHECK(!ker_ff_admission_channel_open(endpoints[1], parent, getuid(), getgid(), 1, &sender));
+        struct timespec now;
+        CHECK(!clock_gettime(CLOCK_MONOTONIC, &now));
+        request.deadline_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec + UINT64_C(5000000000);
+        request.command_id = 1;
+        CHECK(!ker_ff_admission_channel_send_admit(sender, &request));
+        CHECK(write(ready[1], "R", 1) == 1);
+        char byte;
+        CHECK(read(release[0], &byte, 1) == 0);
+        ker_ff_admission_channel_close(sender);
+        _exit(0);
+    }
+    close(endpoints[1]); close(ready[1]); close(release[0]);
+    struct ker_ff_admission_channel *receiver = NULL;
+    CHECK(!ker_ff_admission_channel_open(endpoints[0], child, getuid(), getgid(), 1, &receiver));
+    char byte;
+    CHECK(read(ready[0], &byte, 1) == 1 && byte == 'R');
+    unsigned before = admits;
+    interrupt_next(SYS_poll, 1);
+    CHECK(ker_ff_admission_channel_owner_step(receiver, ops) == -EAGAIN && admits == before);
+    close(release[1]);
+    int status;
+    CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status));
+    CHECK(ker_ff_admission_channel_owner_step(receiver, ops) == -ESRCH && admits == before);
+    ker_ff_admission_channel_close(receiver);
+    close(ready[0]);
+}
+
 int main(void)
 {
     int endpoints[2];
@@ -84,10 +124,19 @@ int main(void)
     CHECK(!ker_ff_admission_channel_send_admit(controller, &request));
     interrupt_next(SYS_recvmsg, 1);
     CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && !admits);
+    interrupt_next(SYS_poll, 2);
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && !admits && interrupt_budget == 1);
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && !admits && !interrupt_budget);
+    interrupt_next(SYS_newfstatat, 1);
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && !admits);
+    interrupt_next(SYS_openat, 1);
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && !admits);
     interrupt_next(SYS_sendmsg, 1);
     CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && admits == 1);
     CHECK(!ker_ff_admission_channel_owner_step(owner, &ops) && admits == 1);
     interrupt_next(SYS_recvmsg, 1);
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == -EAGAIN);
+    interrupt_next(SYS_poll, 1);
     CHECK(ker_ff_admission_channel_receive(controller, &result) == -EAGAIN);
     CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_RESULT);
     CHECK(!result.status && result.allowed == 1 && result.created == 1);
@@ -119,10 +168,29 @@ int main(void)
     CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && revokes == 1);
     CHECK(!ker_ff_admission_channel_owner_step(owner, &ops) && revokes == 1);
     CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_CANCELLED && !result.status);
-    CHECK(admits == 2 && revokes == 1 && !interrupt_budget && interrupt_count == 11);
+    CHECK(admits == 2 && revokes == 1 && !interrupt_budget && interrupt_count == 16);
+    CHECK(!clock_gettime(CLOCK_MONOTONIC, &now));
+    request.command_id = 3; request.packet_id = 3;
+    request.deadline_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec + UINT64_C(50000000);
+    CHECK(!ker_ff_admission_channel_send_admit(controller, &request));
+    interrupt_next(SYS_poll, 1);
+    CHECK(ker_ff_admission_channel_owner_step(owner, &ops) == -EAGAIN && admits == 2);
+    do {
+        struct timespec pause = {.tv_nsec = 1000000};
+        nanosleep(&pause, NULL);
+        CHECK(!clock_gettime(CLOCK_MONOTONIC, &now));
+    } while ((uint64_t)now.tv_sec * UINT64_C(1000000000) + now.tv_nsec < request.deadline_ns);
+    CHECK(!ker_ff_admission_channel_owner_step(owner, &ops));
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_RESULT);
+    CHECK(result.status == -ETIMEDOUT && !result.allowed && !result.created && admits == 2);
+    CHECK(!ker_ff_admission_channel_send_control(controller, KER_FF_ADMISSION_CANCEL, 3, 3));
+    CHECK(!ker_ff_admission_channel_owner_step(owner, &ops));
+    CHECK(ker_ff_admission_channel_receive(controller, &result) == KER_FF_ADMISSION_CANCELLED);
+    CHECK(!result.status && revokes == 1);
     ker_ff_admission_channel_close(controller);
     ker_ff_admission_channel_close(owner);
-    close(endpoints[0]); close(endpoints[1]);
-    puts("ADMISSION_EINTR_PASS interrupts=11 admits=2 revokes=1");
+    cached_peer_exit(&ops, request);
+    CHECK(interrupt_count == 18 && !interrupt_budget && admits == 2 && revokes == 1);
+    puts("ADMISSION_EINTR_PASS interrupts=18 admits=2 revokes=1 expired=1 dead_peer=1");
     return 0;
 }
