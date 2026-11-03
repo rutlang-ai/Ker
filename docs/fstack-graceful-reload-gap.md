@@ -285,3 +285,26 @@ are exercised end to end, the source entry
 remains `blocked`. Neither an F-Stack-only run, pure Nginx FSM tests, the no-FF
 Nginx lifecycle, the bounded graceful-off Nginx profile, nor the single-process
 caller controller or bounded two-member broker census completes it.
+
+## Packet-channel retirement and worker control lifetime
+
+The standalone I/O worker now treats a retired native packet endpoint as a
+data-path retirement, independently of its control owner's lifetime. A failed
+RX send with `ECONNREFUSED`, `EPIPE`, or `ENOTCONN` stops RX pollers, releases
+retained RX mbufs, and drains already accepted TX using the existing bounds.
+Once quiescent, the worker waits for its control command or control EOF before
+exiting. Signals and genuine drain failures retain their existing failure and
+cleanup behavior. No Linux or DPDK protocol implementation changes.
+
+`native-worker-packet-retirement-command` and
+`native-worker-packet-retirement-eof` use a real DPDK TAP PMD in an isolated
+network namespace. They first verify a received Ethernet frame, close the
+packet endpoint while more frames arrive, require the worker to remain alive
+beyond the existing drain bound, and then stop it through the independent
+control channel. Final statistics must show explicit control retirement,
+discarded retired-path RX, and zero outstanding mbufs. The old worker fails
+this regression by exiting before control retirement.
+
+This qualifies the worker lifetime prerequisite only. It does not qualify the
+original 25-second `gr0` outage oracle, `gr1`, or the complete reload matrix;
+the source migration entry remains `blocked` until those run end to end.
