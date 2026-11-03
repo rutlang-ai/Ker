@@ -74,6 +74,16 @@ if(ker_ff_admission_window_serialized_lkl)
         KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL=1)
 endif()
 if(BUILD_TESTING)
+    add_executable(ker-nginx-cycle-wire-test tests/posix/nginx-cycle-wire-test.c)
+    target_include_directories(ker-nginx-cycle-wire-test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/posix")
+    target_compile_features(ker-nginx-cycle-wire-test PRIVATE c_std_11)
+    target_compile_options(ker-nginx-cycle-wire-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME nginx-cycle-wire-contract COMMAND ker-nginx-cycle-wire-test)
+    add_test(NAME nginx-cycle-control-contract
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/posix/nginx-cycle-control-test.py")
+
     target_compile_definitions(ker-posix PRIVATE KER_C16_ADMISSION_TEST_TRACE=1
         KER_C28_CUTOVER_TESTING=1)
 endif()
@@ -350,7 +360,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     target_compile_features(ker-fstack-nginx-owner-activation PRIVATE c_std_11)
     target_compile_options(ker-fstack-nginx-owner-activation PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-fstack-nginx-owner-activation PRIVATE
-        ker-socket-client ker-ini ${CMAKE_DL_LIBS})
+        ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/fstack-nginx-owner-activation-module.c"
         ker_fstack_nginx_owner_activation_source_sha256)
     configure_file(cmake/fstack-nginx-owner-activation-manifest.json.in
@@ -1047,6 +1057,22 @@ if(BUILD_TESTING)
                         --dpdk-plugin-dir "${ker_session_pmd_dir}")
                 set_tests_properties(native-nginx-fstack-owner-activation PROPERTIES
                     TIMEOUT 300 LABELS "native-tcp;fstack;socket-broker;nginx;staged-owner-activation")
+                if(TARGET ker-socket-broker-readiness-fixture)
+                    add_test(NAME native-nginx-fstack-serial-cycle
+                        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-serial-cycle.py"
+                            --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                            --library "$<TARGET_FILE:ker-posix>"
+                            --worker "$<TARGET_FILE:ker-io-worker>"
+                            --broker "$<TARGET_FILE:ker-socket-broker-readiness-fixture>"
+                            --fstack-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                            --preload-library "$<TARGET_FILE:ker-socket-preload>"
+                            --worker-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                            --owner-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                            --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                            --nginx "${KER_FSTACK_NGINX_BINARY}")
+                    set_tests_properties(native-nginx-fstack-serial-cycle PROPERTIES
+                        TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle")
+                endif()
                 if(KER_ENABLE_C23_SOURCE_RELOAD_PROBES)
                     if(NOT KER_C23_INSTALL_PREFIX OR NOT KER_C23_NGINX_BINARY OR
                        NOT EXISTS "${KER_C23_INSTALL_PREFIX}/share/ker/native-linux/build.json" OR

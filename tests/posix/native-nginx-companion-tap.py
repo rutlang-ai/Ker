@@ -118,7 +118,7 @@ def run(args):
         logs.mkdir(parents=True)
         html.mkdir()
         (html / 'index.html').write_bytes(BODY)
-        ini = root / 'fstack.ini'
+        ini = prefix / 'fstack.ini'
         ini.write_text(f'[ker_socket_broker]\nversion=1\npath={rpc_path}\n\n'
             '[dpdk]\ngraceful_reload=0\n', encoding='utf-8')
         config = prefix / 'nginx.conf'
@@ -126,7 +126,7 @@ def run(args):
 master_process on;
 worker_processes 1;
 user root;
-fstack_conf {ini};
+fstack_conf "fstack.ini";
 timer_resolution 1ms;
 pid {logs / 'nginx.pid'};
 error_log {logs / 'error.log'} notice;

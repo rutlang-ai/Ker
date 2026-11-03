@@ -234,24 +234,35 @@ def main():
     helper_module = load_module(args.helper,
         '_test_ker_nginx_companion')
     valid_profiles = (
-        b'daemon off; master_process on; worker_processes 1; # include ignored\n',
-        b'daemon off; master_process on; worker_processes 1; events { worker_connections 4; }\n',
-        b'daemon off; master_process on; worker_processes 1; set $name "include";\n',
-        b'daemon off; master_process on; worker_processes 1; set $name include;\n',
+        b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; # include ignored\n',
+        b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; events { worker_connections 4; }\n',
+        b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; set $name "include";\n',
+        b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; set $name include;\n',
     )
     for profile_bytes in valid_profiles:
         helper_module.validate_control_nginx_config(profile_bytes)
     for profile_bytes in (
-            b'daemon off; master_process on; worker_processes 1;\ninclude\t/escape.conf;\n',
-            b'daemon off; master_process on; worker_processes 1; include /escape.conf;\n',
-            b'daemon off; master_process on; worker_processes 1; "include" "/escape.conf";\n',
-            b'daemon off; master_process on; worker_processes 1; "include" "/escape\\t.conf";\n'):
+            b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini;\ninclude\t/escape.conf;\n',
+            b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; include /escape.conf;\n',
+            b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; "include" "/escape.conf";\n',
+            b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/fstack.ini; "include" "/escape\\t.conf";\n'):
         try:
             helper_module.validate_control_nginx_config(profile_bytes)
         except ValueError as exc:
             require('include' in str(exc), 'include rejection did not identify unsupported directive')
         else:
             raise RuntimeError('Nginx include syntax escaped the bounded profile validator')
+    for label, profile_bytes in (
+            ('missing', b'daemon off; master_process on; worker_processes 1;'),
+            ('duplicate', b'daemon off; master_process on; worker_processes 1; fstack_conf /tmp/a.ini; fstack_conf /tmp/b.ini;'),
+            ('nested', b'daemon off; master_process on; worker_processes 1; events { fstack_conf /tmp/a.ini; }'),
+            ('dynamic', b'daemon off; master_process on; worker_processes 1; fstack_conf $ini;')):
+        try:
+            helper_module.validate_control_nginx_config(profile_bytes)
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(f'{label} fstack_conf selection was accepted')
     try:
         helper_module.validate_control_nginx_config(
             b'daemon off; master_process on; worker_processes 1;\n' +
@@ -265,7 +276,8 @@ def main():
         prefix = root / 'prefix'
         prefix.mkdir()
         config = root / 'nginx.conf'
-        config.write_text('daemon off;\nmaster_process on;\nworker_processes 1;\n',
+        config.write_text('daemon off;\nmaster_process on;\nworker_processes 1;\n'
+            'fstack_conf "fstack.ini";\n',
             encoding='utf-8')
         ini = root / 'fstack.ini'
         broker_path = root / 'socket-broker.sock'
@@ -276,8 +288,36 @@ def main():
             'KER_SOCKET_BROKER_PATH': str(broker_path),
             'KER_FSTACK_NGINX_INI': str(ini),
         }
+        directives = helper_module.validate_control_nginx_config(config.read_bytes())
+        selected, selected_identity = helper_module.effective_fstack_ini(
+            config, directives, ini)
+        require(selected == ini.resolve() and selected_identity ==
+            (ini.stat().st_dev, ini.stat().st_ino),
+            'quoted relative fstack_conf did not resolve from the -c config directory')
+        alias = root / 'fstack-alias.ini'
+        alias.symlink_to(ini)
+        alias_config = root / 'alias-nginx.conf'
+        alias_config.write_text('daemon off;\nmaster_process on;\n'
+            'worker_processes 1;\nfstack_conf fstack-alias.ini;\n',
+            encoding='utf-8')
+        alias_directives = helper_module.validate_control_nginx_config(
+            alias_config.read_bytes())
+        alias_selected, alias_identity = helper_module.effective_fstack_ini(
+            alias_config, alias_directives, ini)
+        require(alias_selected == ini.resolve() and alias_identity == selected_identity,
+            'same-file symlink alias was not canonicalized to the pinned INI')
+        other_ini = root / 'other.ini'
+        other_ini.write_text('[ker_socket_broker]\nversion=1\n'
+            f'path={broker_path}\n[dpdk]\ngraceful_reload=1\n', encoding='utf-8')
+        try:
+            helper_module.effective_fstack_ini(config, directives, other_ini)
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError('different fstack_conf/env INI identities were accepted')
         helper_path = args.helper.resolve(strict=True)
-        config_text = 'daemon off;\nmaster_process on;\nworker_processes 1;\n'
+        config_text = ('daemon off;\nmaster_process on;\nworker_processes 1;\n'
+            'fstack_conf "fstack.ini";\n')
         ini_text = (f'[ker_socket_broker]\nversion=1\npath={broker_path}\n'
             '[dpdk]\ngraceful_reload=0\n')
 
@@ -287,7 +327,8 @@ def main():
         delayed_prefix.mkdir()
         (delayed_prefix / 'delay-signal-handlers').touch()
         delayed_config = root / 'delayed-nginx.conf'
-        delayed_config.write_text(config_text, encoding='utf-8')
+        delayed_config.write_text(config_text.replace('fstack.ini',
+            'delayed-fstack.ini'), encoding='utf-8')
         delayed_ini = root / 'delayed-fstack.ini'
         delayed_ini.write_text(ini_text, encoding='utf-8')
         delayed_environment = dict(environment,
@@ -337,7 +378,8 @@ def main():
         never_prefix.mkdir()
         (never_prefix / 'delay-signal-handlers').touch()
         never_config = root / 'never-ready-nginx.conf'
-        never_config.write_text(config_text, encoding='utf-8')
+        never_config.write_text(config_text.replace('fstack.ini',
+            'never-ready-fstack.ini'), encoding='utf-8')
         never_ini = root / 'never-ready-fstack.ini'
         never_ini.write_text(ini_text, encoding='utf-8')
         never_environment = dict(environment, KER_FSTACK_NGINX_INI=str(never_ini))
@@ -400,7 +442,8 @@ def main():
 
         def change_worker_count(changed_config, _changed_ini):
             changed_config.write_text(
-                'daemon off;\nmaster_process on;\nworker_processes 2;\n',
+                'daemon off;\nmaster_process on;\nworker_processes 2;\n'
+                'fstack_conf "fstack.ini";\n',
                 encoding='utf-8')
 
         exercise_profile_mutation(supervisor, args.server, helper_path, config,
@@ -414,6 +457,18 @@ def main():
 
         exercise_profile_mutation(supervisor, args.server, helper_path, config,
             prefix, environment, ini, change_graceful_reload, 'graceful_reload=1')
+        config.write_text(config_text, encoding='utf-8')
+        ini.write_text(ini_text, encoding='utf-8')
+        (prefix / 'hup-observed').unlink(missing_ok=True)
+
+        def switch_effective_ini(changed_config, _changed_ini):
+            changed_config.write_text(config_text.replace(
+                'fstack_conf "fstack.ini";',
+                f'fstack_conf "{other_ini}";'), encoding='utf-8')
+
+        exercise_profile_mutation(supervisor, args.server, helper_path, config,
+            prefix, environment, ini, switch_effective_ini,
+            'effective fstack_conf changed to different graceful_reload=1 INI')
         config.write_text(config_text, encoding='utf-8')
         ini.write_text(ini_text, encoding='utf-8')
         (prefix / 'hup-observed').unlink(missing_ok=True)
@@ -452,6 +507,32 @@ def main():
                 require(startup.helper.returncode != 0,
                     f'{label} did not fail closed in the helper')
             close_manager(startup)
+        config.write_text(config_text, encoding='utf-8')
+        (prefix / 'hup-observed').unlink(missing_ok=True)
+
+        startup_mismatch_config = config_text.replace('fstack.ini',
+            str(other_ini))
+        config.write_text(startup_mismatch_config, encoding='utf-8')
+        startup_mismatch = supervisor.NginxCompanion(args.server, config,
+            prefix, environment)
+        startup_mismatch.helper_path = helper_path
+        startup_mismatch.helper_script_hash = supervisor._sha256(helper_path)
+        mismatch_failed = False
+        try:
+            startup_mismatch.start(timeout=5)
+        except (OSError, RuntimeError, ValueError, PermissionError):
+            mismatch_failed = True
+        require(mismatch_failed and startup_mismatch.unresolved and
+                not startup_mismatch.started,
+            'alternate effective fstack_conf was not rejected before STARTED')
+        require(not (prefix / 'hup-observed').exists() or
+                (prefix / 'hup-observed').read_bytes() == b'',
+            'alternate startup fstack_conf emitted a signal')
+        if startup_mismatch.helper is not None:
+            startup_mismatch.helper.wait(timeout=5)
+            require(startup_mismatch.helper.returncode != 0,
+                'alternate startup fstack_conf failed open')
+        close_manager(startup_mismatch)
         config.write_text(config_text, encoding='utf-8')
         (prefix / 'hup-observed').unlink(missing_ok=True)
 

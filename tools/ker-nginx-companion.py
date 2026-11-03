@@ -26,7 +26,11 @@ _WIRE_SPEC.loader.exec_module(wire)
 SO_PEERPIDFD = getattr(socket, 'SO_PEERPIDFD', 77)
 UCRED = struct.Struct('=3i')
 ENV_KEYS = frozenset(('LD_PRELOAD', 'KER_SOCKET_BROKER_PATH',
-    'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE'))
+    'KER_FSTACK_NGINX_INI', 'KER_FSTACK_RUNTIME_TRACE',
+    'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
+    'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
+    'KER_NGINX_CYCLE_WORKER_PROFILE_SHA256',
+    'KER_NGINX_CYCLE_OUTER_EXE_SHA256'))
 START_PHASE = 1
 RELOAD_PHASE = 2
 STOP_PHASE = 3
@@ -132,6 +136,7 @@ def validate_control_nginx_config(config_bytes):
     if not isinstance(config_bytes, bytes) or len(config_bytes) > MAX_CONFIG_BYTES:
         raise ValueError('Nginx configuration exceeds the bounded profile size')
     directives = []
+    fstack_conf_values = []
     arguments = []
     token = bytearray()
     token_started = False
@@ -160,6 +165,15 @@ def validate_control_nginx_config(config_bytes):
             raise ValueError('empty Nginx directive')
         if arguments[0] == b'include':
             raise ValueError('Nginx include directives are unsupported in the pinned profile')
+        if arguments[0] == b'fstack_conf':
+            if block_depth != 0:
+                raise ValueError('fstack_conf must be a top-level directive')
+            if (len(arguments) != 2 or not arguments[1] or
+                    b'\0' in arguments[1] or b'$' in arguments[1]):
+                raise ValueError('fstack_conf must have one literal path argument')
+            fstack_conf_values.append(arguments[1])
+            if len(fstack_conf_values) != 1:
+                raise ValueError('duplicate fstack_conf directives are unsupported')
         directives.append(tuple(arguments))
         if len(directives) > MAX_CONFIG_DIRECTIVES:
             raise ValueError('Nginx configuration has too many directives')
@@ -266,7 +280,47 @@ def validate_control_nginx_config(config_bytes):
         (b'worker_processes', b'1'))
     if any(directives.count(item) != 1 for item in required):
         raise ValueError('C34 requires daemon-off, master-on, one-worker config')
+    if len(fstack_conf_values) != 1:
+        raise ValueError('C34 requires exactly one top-level fstack_conf directive')
     return tuple(directives)
+
+
+def effective_fstack_ini(config_path, directives, environment_path):
+    """Resolve the sole literal fstack_conf as pinned Nginx does for `-c`.
+
+    Nginx sets conf_prefix to the active config file's directory and its
+    fstack_conf setter uses ngx_conf_full_name(..., 1). Compare canonical
+    identities as well as device/inode, then return the selected path that is
+    actually hashed and validated.
+    """
+    selected = [directive[1] for directive in directives
+        if directive and directive[0] == b'fstack_conf']
+    if len(selected) != 1:
+        raise ValueError('C34 requires exactly one effective fstack_conf path')
+    raw = selected[0]
+    if not raw or b'\0' in raw or b'$' in raw:
+        raise ValueError('dynamic or invalid fstack_conf path is unsupported')
+    raw_path = os.fsdecode(raw)
+    if os.path.isabs(raw_path):
+        configured = Path(raw_path)
+    else:
+        # ngx_get_full_name concatenates conf_prefix and the relative name.
+        # Do not resolve relative to the launcher working directory.
+        config_dir = os.fsencode(Path(config_path).resolve(strict=True).parent)
+        configured = Path(os.fsdecode(config_dir + b'/' + raw))
+    try:
+        selected_path = configured.resolve(strict=True)
+        environment = Path(environment_path).resolve(strict=True)
+        selected_stat = selected_path.stat()
+        environment_stat = environment.stat()
+    except (OSError, RuntimeError) as error:
+        raise ValueError('effective fstack_conf or environment INI cannot be resolved') from error
+    if (not selected_path.is_file() or not environment.is_file() or
+            (selected_stat.st_dev, selected_stat.st_ino) !=
+                (environment_stat.st_dev, environment_stat.st_ino) or
+            selected_path != environment):
+        raise ValueError('KER_FSTACK_NGINX_INI does not name the effective fstack_conf file')
+    return selected_path, (selected_stat.st_dev, selected_stat.st_ino)
 
 
 def broker_ini_matches(path, expected_broker):
@@ -544,18 +598,39 @@ def run(args):
     ini_path = args.nginx_env.get('KER_FSTACK_NGINX_INI')
     if not ini_path:
         raise ValueError('C34 requires an F-Stack INI profile')
-    actual_ini_hash = sha256_file(ini_path)
     if actual_binary_hash != expected_binary_hash or actual_config_hash != expected_config_hash:
         raise PermissionError('Nginx binary/configuration hash mismatch')
-    profile = wire.profile_hash(actual_binary_hash, actual_config_hash,
-        actual_ini_hash, str(prefix), args.nginx_env)
     if not config.is_file() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError('invalid pinned Nginx profile files')
-    validate_control_nginx_config(config_bytes)
-    if not broker_ini_matches(Path(ini_path),
+    directives = validate_control_nginx_config(config_bytes)
+    effective_ini_path, effective_ini_identity = effective_fstack_ini(
+        config, directives, ini_path)
+    actual_ini_hash = sha256_file(effective_ini_path)
+    profile = wire.profile_hash(actual_binary_hash, actual_config_hash,
+        actual_ini_hash, str(prefix), args.nginx_env)
+    if not broker_ini_matches(effective_ini_path,
             args.nginx_env['KER_SOCKET_BROKER_PATH']):
         raise ValueError('C34 requires graceful_reload=0 profile')
     nginx_env = {'PATH': '/usr/bin:/bin', **args.nginx_env}
+    cycle_env_keys = {key for key in args.nginx_env if key.startswith('KER_NGINX_CYCLE_')}
+    required_cycle_keys = {'KER_NGINX_CYCLE_FD', 'KER_NGINX_CYCLE_NONCE',
+        'KER_NGINX_CYCLE_RUNTIME_NONCE', 'KER_NGINX_CYCLE_RUNTIME_EPOCH',
+        'KER_NGINX_CYCLE_WORKER_PROFILE_SHA256', 'KER_NGINX_CYCLE_OUTER_EXE_SHA256'}
+    if cycle_env_keys and cycle_env_keys != required_cycle_keys:
+        raise ValueError('incomplete serial Nginx cycle-control environment')
+    if (args.cycle_control_fd is None) != (not cycle_env_keys):
+        raise ValueError('cycle-control endpoint and environment must be supplied together')
+    if args.cycle_control_fd is not None:
+        if (int(args.nginx_env['KER_NGINX_CYCLE_FD'], 10) != args.cycle_control_fd or
+                args.cycle_control_fd < 3):
+            raise ValueError('cycle-control descriptor does not match environment')
+        cycle_socket_type = socket.socket(fileno=os.dup(args.cycle_control_fd))
+        try:
+            if (cycle_socket_type.family != socket.AF_UNIX or
+                    cycle_socket_type.type & 0xF != socket.SOCK_SEQPACKET):
+                raise ValueError('cycle-control endpoint must be Unix SOCK_SEQPACKET')
+        finally:
+            cycle_socket_type.close()
     test = subprocess.run([str(binary), '-t', '-p', str(prefix) + '/',
         '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
@@ -577,10 +652,18 @@ def run(args):
         current_config_bytes = read_bounded_config(config)
         current_config_hash = hashlib.sha256(current_config_bytes).digest()
         try:
-            validate_control_nginx_config(current_config_bytes)
+            current_directives = validate_control_nginx_config(current_config_bytes)
         except ValueError as exc:
             raise PermissionError('Nginx reload configuration left the pinned one-worker profile') from exc
-        current_ini_hash = sha256_file(ini_path)
+        try:
+            current_effective_ini, current_ini_identity = effective_fstack_ini(
+                config, current_directives, ini_path)
+        except ValueError as exc:
+            raise PermissionError('Nginx reload changed the effective fstack_conf selection') from exc
+        if (current_effective_ini != effective_ini_path or
+                current_ini_identity != effective_ini_identity):
+            raise PermissionError('Nginx reload changed the pinned effective fstack_conf file')
+        current_ini_hash = sha256_file(current_effective_ini)
         current_profile = wire.profile_hash(current_binary_hash,
             current_config_hash, current_ini_hash, str(prefix), args.nginx_env)
         if (current_binary_hash != actual_binary_hash or
@@ -589,7 +672,7 @@ def run(args):
             raise PermissionError('pinned Nginx binary/configuration/INI profile changed before HUP')
         if sha256_file(f'/proc/{master.pid}/exe') != actual_binary_hash:
             raise PermissionError('running Nginx executable differs from pinned profile')
-        if not broker_ini_matches(Path(ini_path),
+        if not broker_ini_matches(current_effective_ini,
                 args.nginx_env['KER_SOCKET_BROKER_PATH']):
             raise PermissionError('Nginx reload INI left the pinned graceful_reload=0 profile')
 
@@ -598,10 +681,15 @@ def run(args):
     master_ticks = 0
     started_sent = False
     try:
+        master_pass_fds = (() if args.cycle_control_fd is None else
+            (args.cycle_control_fd,))
         master = subprocess.Popen([str(binary), '-p', str(prefix) + '/',
             '-c', str(config)], env=nginx_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, start_new_session=False)
+            close_fds=True, pass_fds=master_pass_fds, start_new_session=False)
+        if args.cycle_control_fd is not None:
+            os.close(args.cycle_control_fd)
+            args.cycle_control_fd = None
         master_pidfd = os.pidfd_open(master.pid, 0)
         master_ticks = start_ticks(master.pid)
         signal_ready_deadline = time.monotonic() + SIGNAL_HANDLER_READY_TIMEOUT
@@ -761,6 +849,7 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--control-fd', type=int, required=True)
+    parser.add_argument('--cycle-control-fd', type=int)
     parser.add_argument('--nonce', type=lambda value: bytes.fromhex(value), required=True)
     parser.add_argument('--epoch', type=int, required=True)
     parser.add_argument('--binary', required=True)
@@ -786,6 +875,13 @@ def main(argv=None):
     except BaseException as error:
         print(f'ker-nginx-companion: {error}', file=sys.stderr)
         return 2
+    finally:
+        cycle_fd = getattr(args, 'cycle_control_fd', None)
+        if cycle_fd is not None:
+            try:
+                os.close(cycle_fd)
+            except OSError:
+                pass
 
 
 if __name__ == '__main__':

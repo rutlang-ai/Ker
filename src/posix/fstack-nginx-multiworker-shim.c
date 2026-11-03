@@ -180,6 +180,14 @@ ker_fstack_nginx_owner_activation_abi_matches(void)
     return main_binary_matches_pinned_build();
 }
 
+static pid_t
+cycle_safe_fork(pid_t (*real_fork)(void), void (*close_cycle_child)(void))
+{
+    pid_t child = real_fork();
+    if (child == 0 && close_cycle_child) close_cycle_child();
+    return child;
+}
+
 /* Nginx 1.28.0's pinned ngx_spawn_process has one fork callsite. Only a
  * reaped worker in its existing respawn slot needs a new owner claim. Other
  * fork users, including first start and HUP cycles, pass straight through. */
@@ -188,11 +196,14 @@ fork(void)
 {
     typedef int (*respawn_prepare_fn)(void);
     typedef void (*respawn_finish_fn)(void);
+    typedef void (*cycle_child_close_fn)(void);
     typedef pid_t (*fork_fn)(void);
     uintptr_t caller_pc = (uintptr_t)__builtin_return_address(0);
     fork_fn real_fork = (fork_fn)dlsym(RTLD_NEXT, "fork");
     respawn_prepare_fn prepare;
     respawn_finish_fn commit, abort;
+    cycle_child_close_fn close_cycle_child = (cycle_child_close_fn)dlsym(
+        RTLD_DEFAULT, "ker_fstack_nginx_cycle_control_child_close");
     ngx_int_t *process_slot, *last_process;
     ngx_uint_t *process_kind;
     ngx_process_t *processes;
@@ -203,11 +214,11 @@ fork(void)
         return -1;
     }
     if (caller_pc != (uintptr_t)KER_FSTACK_NGINX_RESPAWN_FORK_RETURN_PC)
-        return real_fork();
+        return cycle_safe_fork(real_fork, close_cycle_child);
 
     prepare = (respawn_prepare_fn)dlsym(RTLD_DEFAULT,
         "ker_fstack_nginx_owner_activation_respawn_prepare");
-    if (!prepare) return real_fork();
+    if (!prepare) return cycle_safe_fork(real_fork, close_cycle_child);
     if (main_binary_matches_pinned_build() != 0) {
         errno = ENOTSUP;
         return -1;
@@ -222,19 +233,20 @@ fork(void)
     }
     if (*process_kind != NGX_PROCESS_MASTER || *process_slot < 0 ||
         *process_slot >= *last_process || *process_slot >= NGX_MAX_PROCESSES)
-        return real_fork();
+        return cycle_safe_fork(real_fork, close_cycle_child);
 
     entry = &processes[*process_slot];
     if (!entry->name || strcmp(entry->name, "worker process") != 0 ||
         (uintptr_t)entry->proc != (uintptr_t)KER_FSTACK_NGINX_WORKER_PROCESS_ADDRESS ||
         entry->pid <= 0 || !entry->exited || !entry->respawn || entry->exiting)
-        return real_fork();
+        return cycle_safe_fork(real_fork, close_cycle_child);
 
     if (prepare() != 0) {
         if (!errno) errno = EAGAIN;
         return -1;
     }
     pid_t result = real_fork();
+    if (result == 0 && close_cycle_child) close_cycle_child();
     if (result > 0) {
         commit = (respawn_finish_fn)dlsym(RTLD_DEFAULT,
             "ker_fstack_nginx_owner_activation_respawn_commit");
