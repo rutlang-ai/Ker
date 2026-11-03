@@ -1,5 +1,5 @@
 {
-  "scope": "C22 staged initial IPv4/TCP reuseport listener adoption; graceful_reload=0; one Nginx worker",
+  "scope": "staged initial listener or private delegated candidate; IPv4/TCP reuseport; graceful_reload=0; one Nginx worker",
   "fstackSourceRevision": "646a641cfff77f4815e1e29829a09e1ed15a2999",
   "nginxBinarySha256": "@ker_fstack_nginx_binary_sha256@",
   "nginxBinaryGnuBuildId": "0806707a980bac49a4874ecd4f0aa2419d5b9da2",
@@ -9,5 +9,12 @@
     "ngx_modules.c": "817dea55302110810c0cd9927761485f40d47f266e7eadf88f3ff7d8305d8d0e"
   },
   "adapterSourceSha256": "@ker_fstack_nginx_owner_activation_source_sha256@",
+  "privateCandidate": {
+    "scope": "one delegated slot-1 admission window; no Nginx generation FSM, HUP, respawn or USR2 qualification",
+    "adapterSha256": "@ker_nginx_candidate_admission_sha256@",
+    "namespaceSha256": "@ker_nginx_candidate_namespace_sha256@",
+    "wrapperSha256": "@ker_nginx_candidate_wrapper_sha256@",
+    "originalFlowMapSha256": "@ker_nginx_candidate_flow_map_sha256@"
+  },
   "reloadContract": "pinned legacy HUP with expected service interruption; graceful reload is not qualified"
 }

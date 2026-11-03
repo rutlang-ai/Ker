@@ -2,6 +2,8 @@
  * C22's opt-in initial listener adoption module for the pinned F-Stack Nginx.
  * The master reserves one staged owner-group slot per cycle. The worker gets
  * only slot zero and adopts it through the normal F-Stack socket bridge.
+ * The explicit private candidate profile instead claims one delegated slot
+ * one and requires broker admission before listener activation.
  */
 #define _GNU_SOURCE
 #include <ngx_config.h>
@@ -49,6 +51,9 @@ static struct sockaddr_in owner_address;
 static int owner_backlog;
 static bool respawn_plan_pending;
 static bool worker_prepared;
+static bool candidate_mode;
+int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle);
+int ker_nginx_candidate_worker_commit(int slot);
 
 /* Serial-cycle control exists only in the explicitly configured profile. */
 static int cycle_control_fd = -1;
@@ -774,6 +779,7 @@ failed:
 int
 ker_fstack_nginx_owner_activation_respawn_prepare(void)
 {
+    if (candidate_mode) { errno = EOPNOTSUPP; return -1; }
     /* The serial controller owns one watch per full HUP cycle. Nginx's
      * worker-crash respawn path does not pass through module_init, so it
      * cannot create a successor watch or obtain a matching outer receipt.
@@ -854,6 +860,28 @@ module_init(ngx_cycle_t *cycle)
             "C22 owner-activation module refuses unsupported Nginx profile");
         return NGX_ERROR;
     }
+    /* Candidate startup is one-shot. HUP must not fall back to creating an
+     * unrelated initial plan when Nginx rebuilds its environment. */
+    if (candidate_mode) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+            "private Nginx candidate reload is unsupported");
+        return NGX_ERROR;
+    }
+    const char *candidate_fd = getenv("KER_NGINX_CANDIDATE_SLOT_FD");
+    if (candidate_fd) {
+        char *end;
+        errno = 0;
+        long slot = strtol(candidate_fd, &end, 10);
+        if (errno || candidate_fd[0] < '0' || candidate_fd[0] > '9' || *end || slot < 3 || slot > INT_MAX ||
+            fcntl((int)slot, F_GETFD) < 0 || candidate_mode ||
+            getenv("KER_NGINX_CYCLE_FD")) return NGX_ERROR;
+        if (ngx_test_config) return NGX_OK;
+        if (ker_nginx_candidate_master_prepare(cycle)) return NGX_ERROR;
+        candidate_mode = true;
+        current_slot = (int)slot;
+        trace_line("NGINX_CANDIDATE_MASTER_READY pid=%ld\n", (long)getpid());
+        return NGX_OK;
+    }
     if (ngx_test_config) return NGX_OK;
     if (cycle_control_init() < 0) {
         ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
@@ -902,16 +930,19 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
     if (worker_prepared || !process || !worker ||
         *process != NGX_PROCESS_WORKER || *worker != 0 ||
         ngx_cycle != cycle ||
-        current_slot < 0 || current_plan < 0) { errno = EPROTO; return -1; }
+        current_slot < 0 || (!candidate_mode && current_plan < 0)) { errno = EPROTO; return -1; }
     int slot = current_slot;
     trace_line("C22_WORKER_SLOT pid=%ld slot=%d\n", (long)getpid(), slot);
-    (void)syscall(SYS_close, current_plan);
-    current_plan = -1;
+    if (current_plan >= 0) {
+        (void)syscall(SYS_close, current_plan);
+        current_plan = -1;
+    }
     if (broker_open) {
         ker_socket_client_close(&broker);
         broker_open = false;
     }
     prepare = (prepare_fn)dlsym(RTLD_DEFAULT,
+        candidate_mode ? "ker_sb_preload_ff_staged_group_claim" :
         "ker_sb_preload_ff_owner_initial_listener_prepare");
     if (!prepare || prepare(slot)) {
         int error = errno ? errno : ENOTSUP;
@@ -922,12 +953,27 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
         errno = error;
         return -1;
     }
-    (void)syscall(SYS_close, slot);
-    current_slot = -1;
+    if (!candidate_mode) {
+        (void)syscall(SYS_close, slot);
+        current_slot = -1;
+    }
     worker_prepared = true;
     respawn_plan_pending = false;
     trace_line("C22_WORKER_PREPARED pid=%ld\n", (long)getpid());
     return 0;
+}
+
+int ker_fstack_nginx_owner_activation_worker_commit(void)
+{
+    if (!candidate_mode) return 0;
+    if (!worker_prepared || current_slot < 0) { errno = EPROTO; return -1; }
+    int result = ker_nginx_candidate_worker_commit(current_slot);
+    int error = errno;
+    (void)syscall(SYS_close, current_slot);
+    current_slot = -1;
+    if (!result) trace_line("NGINX_CANDIDATE_TASK_READY pid=%ld\n", (long)getpid());
+    errno = error;
+    return result;
 }
 
 static void
