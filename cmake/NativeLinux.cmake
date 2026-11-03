@@ -243,6 +243,8 @@ set(KER_FSTACK_NGINX_BUILD_DIR "" CACHE PATH
     "Generated objs directory for the pinned FF-enabled nginx build")
 option(KER_ENABLE_C23_SOURCE_RELOAD_PROBES
     "Opt in to the 330-second unchanged upstream baseline plus measured graceful_reload=0 probe" OFF)
+option(KER_ENABLE_NGINX_SERIAL_GR0
+    "Run the unchanged 25-second gr0 probe across the private serial Nginx runtime cycle" OFF)
 set(KER_C23_INSTALL_PREFIX "" CACHE PATH
     "Normal installed Ker prefix used by the long C23 original-source reload probes")
 set(KER_C23_NGINX_BINARY "" CACHE FILEPATH
@@ -1058,8 +1060,8 @@ if(BUILD_TESTING)
                 set_tests_properties(native-nginx-fstack-owner-activation PROPERTIES
                     TIMEOUT 300 LABELS "native-tcp;fstack;socket-broker;nginx;staged-owner-activation")
                 if(TARGET ker-socket-broker-readiness-fixture)
-                    add_test(NAME native-nginx-fstack-serial-cycle
-                        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-serial-cycle.py"
+                    set(ker_serial_cycle_command
+                        "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/native-nginx-serial-cycle.py"
                             --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
                             --library "$<TARGET_FILE:ker-posix>"
                             --worker "$<TARGET_FILE:ker-io-worker>"
@@ -1070,8 +1072,15 @@ if(BUILD_TESTING)
                             --owner-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
                             --dpdk-plugin-dir "${ker_session_pmd_dir}"
                             --nginx "${KER_FSTACK_NGINX_BINARY}")
+                    add_test(NAME native-nginx-fstack-serial-cycle COMMAND ${ker_serial_cycle_command})
                     set_tests_properties(native-nginx-fstack-serial-cycle PROPERTIES
                         TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle")
+                    if(KER_ENABLE_NGINX_SERIAL_GR0)
+                        add_test(NAME native-nginx-fstack-serial-gr0
+                            COMMAND ${ker_serial_cycle_command} --source-gr0)
+                        set_tests_properties(native-nginx-fstack-serial-gr0 PROPERTIES
+                            TIMEOUT 180 LABELS "native-tcp;fstack;socket-broker;nginx;serial-cycle;source-reload")
+                    endif()
                 endif()
                 if(KER_ENABLE_C23_SOURCE_RELOAD_PROBES)
                     if(NOT KER_C23_INSTALL_PREFIX OR NOT KER_C23_NGINX_BINARY OR
