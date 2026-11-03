@@ -196,7 +196,7 @@ only. The separate manual `gr0` mode runs unchanged 25-second `m4_outage.py`,
 sends the real Nginx HUP at the source harness's five-second anchor, and applies
 the unchanged oracle and zero-FSM-log check. In the recorded run it observed
 one 0.028-second refusal window, below the source oracle's 0.3-second minimum;
-`gr0` therefore remains unqualified. The evidence records exact probe
+`gr0` was therefore unqualified at that checkpoint. The evidence records exact probe
 arguments and hashes, the installed Ker manifest, Nginx/module/runtime hashes,
 probe logs, and original-Linux broker statistics. The config preserves the
 source probe's `/` index response and 300-second keepalive settings. The
@@ -305,6 +305,45 @@ control channel. Final statistics must show explicit control retirement,
 discarded retired-path RX, and zero outstanding mbufs. The old worker fails
 this regression by exiting before control retirement.
 
-This qualifies the worker lifetime prerequisite only. It does not qualify the
+These worker-only tests qualify the lifetime prerequisite only. They do not qualify the
 original 25-second `gr0` outage oracle, `gr1`, or the complete reload matrix;
 the source migration entry remains `blocked` until those run end to end.
+
+## Original gr0 probe across a serial runtime cycle
+
+The private serial-cycle fixture now has an explicit `--source-gr0` mode. It
+runs the unchanged pinned `m4_outage.py` against `198.18.0.2:80` for 25 seconds
+with a 0.5-second timeout, sends the real Nginx reload at the five-second
+anchor, and invokes the unchanged `reload_checks.py summary outage` oracle.
+The oracle still requires a nonempty success sample and outage window with a
+longest outage between 0.3 and 2.5 seconds. Source hashes are checked before
+and after the probe, and the Nginx error log must contain no graceful-reload
+FSM completion or transition lines.
+
+The original master remains alive while the old worker retires, the old
+runtime settles, and the successor runtime becomes READY. Distinct worker,
+nonce and epoch identities, descriptor isolation, event order, final companion
+shutdown and zero outstanding mbufs retain the existing fixture checks. A
+rejected source oracle produces a nonzero result after normal runtime cleanup;
+a runtime error is never recorded as a qualified probe.
+
+Enable the optional test with `-DKER_ENABLE_NGINX_SERIAL_GR0=ON` in a build
+already configured with the pinned FF-enabled Nginx executable, source tree,
+generated headers and runtime module. Run:
+
+```sh
+ctest --test-dir build -R '^native-nginx-fstack-serial-gr0$' --output-on-failure
+```
+
+The fixture prints `C39_EVIDENCE <path>/result.json`. Preserve that directory:
+it contains the probe log, Nginx logs, both runtime logs/statistics and ordered
+lifecycle evidence. The result records source and executable hashes, and the
+installed native-Linux manifest when run using installed artifacts.
+
+On the worker-lifetime repair, the build-tree run passed with 1,822 successful
+requests and one 1.678-second outage. An independent installed-artifact run
+passed with 1,859 successes and one 1.754-second outage, with both runtime
+settlements reporting zero outstanding mbufs. These qualify this bounded
+original `gr0` probe over the serial caller path, not the complete original
+shell entrypoint or `graceful_reload=1`. The migration catalog remains
+362 scenario-adapted, zero partial and one blocked entry.

@@ -2,7 +2,7 @@
 """Physical pinned-Nginx A→B serial cycle with native retirement evidence."""
 import argparse
 from pathlib import Path
-import importlib.util, json, os, signal, subprocess, sys, tempfile, time, select
+import hashlib, importlib.util, json, os, re, signal, subprocess, sys, tempfile, time, select
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--launcher', type=Path, required=True)
@@ -16,6 +16,7 @@ parser.add_argument('--dpdk-plugin-dir', type=Path, required=True)
 parser.add_argument('--nginx', type=Path, required=True)
 parser.add_argument('--broker', type=Path, required=True)
 parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
+parser.add_argument('--source-gr0', action='store_true', help='Run the unchanged 25-second source outage probe and oracle')
 args = parser.parse_args()
 if not args.inside:
  command = ['unshare', '-Urn', sys.executable, str(Path(__file__).resolve()),
@@ -23,7 +24,8 @@ if not args.inside:
      '--worker', str(args.worker.resolve()), '--fstack-runtime', str(args.fstack_runtime.resolve()),
      '--preload-library', str(args.preload_library.resolve()), '--worker-shim', str(args.worker_shim.resolve()),
      '--owner-module', str(args.owner_module.resolve()), '--dpdk-plugin-dir', str(args.dpdk_plugin_dir.resolve()),
-     '--nginx', str(args.nginx.resolve()), '--broker', str(args.broker.resolve()), '--inside']
+     '--nginx', str(args.nginx.resolve()), '--broker', str(args.broker.resolve()), '--inside',
+     *(['--source-gr0'] if args.source_gr0 else [])]
  raise SystemExit(subprocess.run(command, env=os.environ | {'PYTHONDONTWRITEBYTECODE':'1'}).returncode)
 S=Path(__file__).resolve().parents[2]
 def load(name,path):
@@ -46,11 +48,12 @@ env LD_PRELOAD;
 env KER_SOCKET_BROKER_PATH;
 env KER_FSTACK_RUNTIME_TRACE;
 events {{ worker_connections 256; use epoll; }}
-http {{ access_log off; sendfile off; tcp_nopush off; keepalive_timeout 0;
+http {{ access_log off; sendfile off; tcp_nopush off; keepalive_timeout {300 if args.source_gr0 else 0};
 server {{ listen 198.18.0.2:80 reuseport; server_name ker.test; root {pre}/html; index index.html; }} }}
 ''')
 launch=ctlmod.InnerLaunch(args.launcher.resolve(),args.library.resolve(),args.worker.resolve(),args.broker.resolve(),args.dpdk_plugin_dir.resolve(),r,rpc_path=rpc)
 ctl=ctlmod.SerialGenerationController(launch,port=80);contexts=[];comp=None;cycle=None;fds=[];watches=[];out={'root':str(r),'events':[],'status':'FAIL'};helperfd=-1
+probe=None;probe_log=None;probe_ok=True
 def mark(name,**kw):out['events'].append({'event':name,'monotonic_ns':time.monotonic_ns(),**kw});print(name,kw,flush=True)
 def process_fds(pid):
  result={}
@@ -93,6 +96,22 @@ try:
  try:cycle.accept_initial_watch(comp,timeout=.05)
  except cy.CycleControlError:mark('DUPLICATE_INITIAL_WATCH_REJECTED')
  else:raise RuntimeError('duplicate initial watch accepted')
+ if args.source_gr0:
+  probe_root=S/'tests/upstream/fstack/tests/integration';probe_dir=probe_root/'common/reload_probes';checker=probe_root/'common/reload_checks.py'
+  expected={'m4_outage.py':'4d57b775a52ceab27b6a64aae6334ad168f6944cf74250054ab8ea6cc2231569','http_probe.py':'7c19eae3b1dd6eeaa914d12e4d42fbb45d03370aad40232c42c42cfe8c756b31','reload_checks.py':'686a57c12981af7be78a24f2f8e94e0070e456ee5042fe0f528b200bfc37bb7d'}
+  paths=[probe_dir/'m4_outage.py',probe_dir/'http_probe.py',checker]
+  actual={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+  if actual!=expected:raise RuntimeError(f'original gr0 source identity mismatch: {actual!r}')
+  argv=[sys.executable,str(probe_dir/'m4_outage.py'),'--server','198.18.0.2','--duration','25','--timeout','0.5']
+  out['gr0']={'argv':argv,'source_sha256':actual,'status':'RUNNING','probe_log':str(r/'gr0-outage.log')}
+  out['gr0']['source_revision']='646a641cfff77f4815e1e29829a09e1ed15a2999'
+  out['gr0']['artifacts']={name:{'path':str(path.resolve()),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for name,path in [('launcher',args.launcher),('library',args.library),('worker',args.worker),('broker',args.broker),('nginx',args.nginx),('fstack_runtime',args.fstack_runtime),('preload',args.preload_library),('worker_shim',args.worker_shim),('owner_module',args.owner_module),('harness',Path(__file__))]}
+  manifest=args.library.resolve().parent.parent/'share/ker/native-linux/build.json'
+  if manifest.is_file():out['gr0']['installed_manifest']={'path':str(manifest),'sha256':hashlib.sha256(manifest.read_bytes()).hexdigest(),'contents':json.loads(manifest.read_text())}
+  probe_log=(r/'gr0-outage.log').open('wb');probe=subprocess.Popen(argv,cwd=probe_dir,stdout=probe_log,stderr=subprocess.STDOUT)
+  out['gr0']['start_monotonic']=time.monotonic();time.sleep(5)
+  if probe.poll() is not None:raise RuntimeError('source gr0 probe exited before five-second HUP anchor')
+  out['gr0']['hup_monotonic']=time.monotonic()
  comp.reload();cycle.receive_drained();deadline=cycle.transition_deadline;mark('CYCLE_DRAINED',cycle=cycle.cycle,sequence=cycle.last_request[0])
  retired=ctl.verify_external_watch(a,af,comp,cycle,require_retired=True,live_watch=aw,deadline=deadline);os.close(af);fds.remove(af);mark('A_RETIRED',worker=aw.actor_identity.pid)
  settled=ctl.stop_inner(a,retired,deadline=deadline);mark('A_SETTLED',outstanding=settled.stats.get('outstanding'),control_eof=settled.stats.get('control_eof'));b=ctl.start_next(a,retired,settled);contexts.append(b);br=ctl.receive_ready(b,deadline=deadline);mark('B_READY',pid=b.process.pid,nonce=br[2].hex(),epoch=br[3],profile=br[4].hex())
@@ -101,14 +120,23 @@ try:
  assert_child_fd_isolation(comp.master_pid,bw.actor_identity.pid,cycle_inode,outer_pid)
  if br[2]==ar[2] or br[3]==ar[3]:raise RuntimeError('B reused A runtime nonce/epoch')
  mark('HTTP_B',worker=bw.actor_identity.pid,master=comp.master_pid,fd_isolation='PASS')
+ if args.source_gr0:
+  rc=probe.wait(timeout=35);probe_log.close();text=(r/'gr0-outage.log').read_text();oracle=subprocess.run([sys.executable,str(checker),'summary','outage'],input=text,text=True,capture_output=True)
+  graceful_lines=[line for line in (pre/'logs/error.log').read_text().splitlines() if re.search(r'graceful reload complete|graceful reload fsm:',line)]
+  if {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}!=expected:raise RuntimeError('source probes changed during gr0')
+  probe_ok=rc==0 and oracle.returncode==0 and not graceful_lines
+  out['gr0'].update(status='PASS' if probe_ok else 'UNQUALIFIED',exit_code=rc,oracle_exit_code=oracle.returncode,oracle_stdout=oracle.stdout,oracle_stderr=oracle.stderr,summary_lines=[line for line in text.splitlines() if line.startswith('OUTAGE_SUMMARY ')],graceful_log_lines=graceful_lines)
+  mark('GR0_PROBE_COMPLETE',qualified=probe_ok,oracle_exit_code=oracle.returncode)
  comp.stop();mark('COMPANION_SETTLED',master=comp.master_pid,helper_exit=comp.helper.returncode);shutdown=ctl.record_companion_shutdown(b,bw,comp,cycle);last=ctl.verify_external_shutdown_watch(b,bf,shutdown);os.close(bf);fds.remove(bf);settled_b=ctl.stop_inner(b,last);ctl.close_watch(bw);ctl.close_context(b,'settled');comp.close();cycle.close();out['status']='PASS';mark('B_SETTLED',outstanding=settled_b.stats.get('outstanding'),control_eof=settled_b.stats.get('control_eof'))
  names=[x['event'] for x in out['events']]
  expected=['A_READY','NGINX_STARTED','HTTP_A','CYCLE_DRAINED','A_RETIRED','A_SETTLED','B_READY','HTTP_B','COMPANION_SETTLED','B_SETTLED','ALL_SETTLED']
  positions=[names.index(name) for name in expected[:-1]]
  if positions!=sorted(positions):raise RuntimeError(f'physical lifecycle event order invalid: {names!r}')
  mark('ALL_SETTLED',event_order='PASS',worker_pids=[aw.actor_identity.pid,bw.actor_identity.pid],same_master=comp.master_pid)
+ if not probe_ok:out['status']='UNQUALIFIED'
 except BaseException as e:
  out.update(status='FAIL',error=repr(e));mark('FAIL',error=repr(e))
+ if 'gr0'in out and out['gr0']['status']=='RUNNING':out['gr0'].update(status='UNQUALIFIED',error=repr(e))
  # Explicit failed-test cleanup through exact owned process handles only.
  if comp is not None:
   if comp.master_pidfd>=0:killfd(comp.master_pidfd)
@@ -131,8 +159,14 @@ except BaseException as e:
  out['cleanup']='EXPLICIT_TEST_FAILURE_NOT_SETTLEMENT'
  raise
 finally:
+ if probe is not None and probe.poll() is None:
+  probe.terminate()
+  try:probe.wait(timeout=2)
+  except subprocess.TimeoutExpired:probe.kill();probe.wait(timeout=2)
+ if probe_log is not None:probe_log.close()
  for fd in fds:
   try:os.close(fd)
   except OSError:pass
  if helperfd>=0:os.close(helperfd)
  out['inner_events']=[{'label':c.label,'events':c.events}for c in contexts];(r/'result.json').write_text(json.dumps(out,indent=2));print(f'C39_EVIDENCE {r / 'result.json'}',flush=True)
+if out['status']!='PASS':raise SystemExit(1)
