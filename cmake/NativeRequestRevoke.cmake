@@ -201,6 +201,29 @@ if(BUILD_TESTING)
         set_tests_properties(native-c25-candidate-unbound-activation-tap PROPERTIES
             TIMEOUT 180 LABELS "native-tcp;admission;broker;original-linux;tap;wire;reuseport"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        if(TARGET ker-fstack-nginx-owner-activation AND
+           TARGET ker-fstack-nginx-worker-shim AND KER_FSTACK_NGINX_BINARY)
+            add_test(NAME native-nginx-candidate-admission-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --reuseport-group-client "$<TARGET_FILE:ker-socket-broker-reuseport-group-client>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-candidate-evidence.json")
+            set_tests_properties(native-nginx-candidate-admission-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        endif()
 
         add_test(NAME native-c28-broker-owned-cutover-tap
             COMMAND "${Python3_EXECUTABLE}"

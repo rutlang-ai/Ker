@@ -313,3 +313,13 @@ shim; the installed `nginx-owner-activation-build.json` records that boundary.
 Run `ctest -R 'native-nginx-fstack-owner-activation|fstack-nginx-worker-shim-build-id-boundary'`
 for the positive TAP cycle, unsupported-profile matrix, and wrong-main-build-ID
 guard.
+
+An explicit private `KER_NGINX_CANDIDATE_SLOT_FD` profile now binds a delegated
+slot-1 listener to a real Nginx worker and the existing broker admission
+channel. It retains `graceful_reload=0`, uses a separately namespaced original
+flow map for that private admission window, and gives Nginx no coordinator
+plan or selector authority. Run `native-nginx-candidate-admission-tap` for the
+invalid-capability boundary, candidate HTTP after selection, surviving old
+SDK TCP stream and cleanup qualification. This is a one-shot candidate leaf;
+candidate HUP, respawn, USR2 and the complete generation FSM remain outside
+the profile. See [qualification details](fstack-graceful-reload-gap.md#real-nginx-candidate-admission-leaf).

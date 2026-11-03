@@ -378,3 +378,43 @@ counters, continuous fresh traffic and resource-trend gates over the original
 round count. Serial runtime replacement still has an outage and does not
 preserve active TCP streams across kernel-instance retirement. The complete
 shell entrypoint therefore remains blocked.
+
+## Real Nginx candidate admission leaf
+
+The pinned owner-activation module accepts an explicit private
+`KER_NGINX_CANDIDATE_SLOT_FD` for one delegated staged slot-1 capability. The
+validated one-worker IPv4/TCP Nginx child claims that slot after authenticated
+FF-owner preflight. After normal runtime initialization, it attaches the
+broker admission channel on its event-loop thread and prepares the candidate
+socket before Nginx's unchanged socket/bind/listen sequence. The broker still
+requires a READY admission task, registers the exact listener before listen,
+and leaves selector zero unchanged. Nginx receives no coordinator plan or
+selector authority. Its listener tuple and backlog must match the delegated
+plan, and a wrong capability fails before socket activity.
+
+The original Nginx shared-state allocator initializes the inherited reload
+block. The private admission window compiles the pinned original
+`ff_flow_map.c` in a separate namespace and owns a separate configuration
+object. It does not change Nginx's `graceful_reload=0` configuration or bypass
+the original master's configuration-consistency check. Original flow-map
+admit/revoke callbacks are pumped by the existing authenticated owner loop;
+original Linux remains the TCP and SYN-ACK authority. This does not register
+Nginx's generation packet dispatcher or start its graceful-reload FSM.
+
+`native-nginx-candidate-admission-tap` verifies a real SDK initial owner and
+a real pinned Nginx candidate in the same original-Linux broker. A live
+ordinary descriptor is rejected as a slot capability; an early candidate
+publication remains rejected and the valid slot can still be used. After
+candidate publication, fresh traffic still reaches the initial owner until
+the separate coordinator selects member one. Nginx then serves an exact HTTP
+response through a recorded original-map admission, while a TCP connection
+established with the initial SDK owner before selection continues exchanging
+bytes. Nginx shutdown must remove the candidate listener, restore selector
+zero through the coordinator, and leave zero outstanding worker buffers.
+The test writes hashes, ordered events, native statistics and logs to
+`nginx-candidate-evidence.json` in the build directory.
+
+This leaf is one-shot. Candidate HUP/respawn, USR2 qualification, repeated
+candidate slots, same-master old/new Nginx orchestration and production FSM
+integration remain unsupported. The complete source shell entrypoint and
+its `rt01`/`rt02`/`rv9`/fault matrix remain blocked.

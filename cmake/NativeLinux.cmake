@@ -347,7 +347,9 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         RENAME nginx-worker-shim-build.json COMPONENT fstack-nginx-runtime)
     set_target_properties(ker-socket-client ker-ini PROPERTIES POSITION_INDEPENDENT_CODE ON)
     add_library(ker-fstack-nginx-owner-activation MODULE
-        src/posix/fstack-nginx-owner-activation-module.c)
+        src/posix/fstack-nginx-owner-activation-module.c
+        src/posix/nginx-candidate-admission.c
+        src/posix/nginx-candidate-map.c)
     set_target_properties(ker-fstack-nginx-owner-activation PROPERTIES
         PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation")
     target_include_directories(ker-fstack-nginx-owner-activation PRIVATE
@@ -358,13 +360,23 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         "${KER_FSTACK_NGINX_BUILD_DIR}"
         "${PROJECT_SOURCE_DIR}/include"
         "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
-        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map")
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+        "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
     target_compile_features(ker-fstack-nginx-owner-activation PRIVATE c_std_11)
     target_compile_options(ker-fstack-nginx-owner-activation PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-fstack-nginx-owner-activation PRIVATE
         ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/fstack-nginx-owner-activation-module.c"
         ker_fstack_nginx_owner_activation_source_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-admission.c"
+        ker_nginx_candidate_admission_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-map-namespace.h"
+        ker_nginx_candidate_namespace_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-map.c"
+        ker_nginx_candidate_wrapper_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map/ff_flow_map.c"
+        ker_nginx_candidate_flow_map_sha256)
     configure_file(cmake/fstack-nginx-owner-activation-manifest.json.in
         "${PROJECT_BINARY_DIR}/fstack-nginx-owner-activation-manifest.json" @ONLY)
     install(TARGETS ker-fstack-nginx-owner-activation

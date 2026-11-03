@@ -546,5 +546,8 @@ ff_init(int argc, char * const argv[])
 
     trace_worker_preparation(worker, worker_count, cycle->listening.nelts);
     secondary_authorization_active = 0;
-    return runtime_commit();
+    if (runtime_commit() != 0) return -1;
+    commit_fn owner_commit = (commit_fn)dlsym(RTLD_DEFAULT,
+        "ker_fstack_nginx_owner_activation_worker_commit");
+    return owner_commit ? owner_commit() : 0;
 }
