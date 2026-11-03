@@ -73,7 +73,9 @@ int ker_ff_admission_channel_open(int fd, pid_t expected_peer,
 				 struct ker_ff_admission_channel **channel);
 void ker_ff_admission_channel_close(struct ker_ff_admission_channel *channel);
 
-/* Controller-side nonblocking protocol. A full ADMIT send is one command; it
+/* Interrupted nonblocking sends/receives return -EAGAIN without transferring
+ * a record; retry on a later step with the same command, preserving deadlines.
+ * Controller-side nonblocking protocol. A full ADMIT send is one command; it
  * is never replayed. PREPARE_ACCEPT makes map rollback forbidden before the
  * controller submits NF_ACCEPT. FINALIZE follows a matched verdict ACK. */
 int ker_ff_admission_channel_send_admit(struct ker_ff_admission_channel *channel,

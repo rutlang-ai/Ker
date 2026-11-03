@@ -442,3 +442,17 @@ anchor retirement. See [configuration, evidence and limits](fstack-nginx-runtime
 This adds source traffic qualification but does not execute the original
 shell's generation FSM or its signal/transition assertions; the source matrix
 and migration inventory entry remain blocked.
+
+
+### Real Nginx abort continuity
+
+The two real Nginx profile now covers explicit C28 ABORT with a retained SYN:
+`native-nginx-overlap-abort-tap` requires the queued connection to reach old
+Nginx, then proves existing and fresh old-owner HTTP after the candidate's
+confirmed exit and LISTEN=0. Its companion
+`native-nginx-overlap-abort-source-streams-tap` runs the unchanged source
+stream probe and summary oracle across the abort and candidate retirement.
+See [abort scope and reproduction](fstack-nginx-runtime.md#queued-syn-abort-with-real-nginx-owners).
+This qualifies the abort prerequisite before the selector changes. It does not execute
+the original FSM's failure policy or certify post-commit rollback, repeated
+attempts or the complete shell matrix; the migration entry remains blocked.

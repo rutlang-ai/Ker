@@ -123,6 +123,16 @@ int main(int argc, char **argv)
         } else if (!strcmp(command, "COMMIT\n")) {
             CHECK(!ker_socket_client_owner_group_cutover_commit(&client, cutover));
             CHECK(!cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_COMMITTED, 0));
+        } else if (!strcmp(command, "ABORT\n")) {
+            CHECK(!ker_socket_client_owner_group_cutover_abort(&client, cutover));
+            CHECK(!cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_ABORTED, 0));
+        } else if (!strcmp(command, "RELEASE\n")) {
+            if (cutover >= 0) { close(cutover); cutover = -1; }
+            if (group >= 0) { close(group); group = -1; }
+            if (plan >= 0) { close(plan); plan = -1; }
+            for (unsigned index = 0; index < 2; ++index) {
+                if (slots[index] >= 0) { close(slots[index]); slots[index] = -1; }
+            }
         } else if (!strcmp(command, "CLOSED0\n") || !strcmp(command, "CLOSED1\n")) {
             unsigned index = command[6] - '0';
             struct ker_socket_member_census_snapshot state;
@@ -142,10 +152,10 @@ int main(int argc, char **argv)
     if (cutover >= 0) close(cutover);
     for (unsigned index = 0; index < 2; ++index) {
         if (census[index] >= 0) close(census[index]);
-        close(slots[index]);
+        if (slots[index] >= 0) close(slots[index]);
     }
     if (group >= 0) close(group);
-    close(plan);
+    if (plan >= 0) close(plan);
     ker_socket_client_close(&client);
     return 0;
 }

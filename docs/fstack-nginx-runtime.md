@@ -415,3 +415,89 @@ stalls and zero worker errors, and old Nginx drained for 47.917 seconds after
 SIGQUIT. The original-Linux broker reported outstanding=0 and worker_exit_code=0
 at final cleanup. A separate negative control changed only one byte of the new
 Nginx's payload; the unchanged source probe rejected the resulting responses.
+
+### Queued-SYN abort with real Nginx owners
+
+`native-nginx-overlap-abort-tap` exercises the other decision of the existing
+C28 transaction with both unchanged pinned Nginx callers. It waits for a real
+SYN to be retained in PREPARED, proves the host connection has not completed,
+requests ABORT and waits for ABORTED. The ingress freeze precedes socket and
+flow-map admission; the retained SYN must be replayed to the old selector.
+The queued connection must return the old Nginx's distinct body with the
+unchanged original HTTP helper's length, MD5 and EOF checks. This path does
+not expect the candidate's flow map to admit the frozen SYN.
+
+The candidate then quits through original Nginx SIGQUIT handling. Its exact
+worker pidfd must report death and its mark-scoped LISTEN census must reach
+zero. The old worker must remain alive, its established keepalive must still
+return the old body, and fresh HTTP must still reach that same old service.
+Premature initial-listener retirement remains rejected after abort and after
+candidate exit. At final shutdown the controller releases its plan/slot/group
+and terminal transaction handles; the independent old census must then show
+LISTEN=0 before broker shutdown and outstanding=0.
+
+`native-nginx-overlap-abort-source-streams-tap` adds the same unchanged
+12-stream, 8 MiB, 120-second source probe and original summary oracle used by
+the commit qualification. Every source worker must have a response in flight
+across PREPARED and must complete later waves after the candidate has exited.
+The probe must still be alive after candidate retirement. All old-owner HTTP
+checks, twelve-worker census, exact bodies, MD5/EOF, stall limits and final
+cleanup remain required. It uses the production activation module; the alias
+regression module is not involved. JSON evidence records outcome=abort and the
+candidate retirement separately from old-owner shutdown.
+
+Run the quick abort boundary or the full long-stream qualification separately:
+
+```sh
+ctest --test-dir <build> -R '^native-nginx-overlap-abort-tap$' --output-on-failure
+ctest --test-dir <build> -R '^native-nginx-overlap-abort-source-streams-tap$' --output-on-failure
+```
+
+This is one explicit abort before the selector changes. It does not qualify
+rollback after a committed handover, retrying this single-attempt group, the
+same-master generation FSM, fault-injection builds or the original shell
+matrix. Those remain open, and the source inventory stays at 362
+scenario-adapted, 0 partial, 1 blocked.
+
+
+The recorded abort/source run completed 36 correct responses (288 MiB), with
+all 12 workers active and complete, zero integrity failures, zero stalls and
+zero worker errors; broker outstanding was zero. A wrong-decision negative
+control replaced only the coordinator's ABORT request with COMMIT. The queued
+HTTP response then came from the candidate, and the unchanged response helper
+rejected its digest because the abort profile requires the old owner's body.
+The mutation was restored before the normal regression suite.
+
+
+### Admission channel interruptions
+
+A real commit/source-stream regression exposed an additional runtime fault:
+the candidate worker aborted when its owner pump returned -EINTR. This caused
+all twelve second-wave clients to fail after the first wave had completed.
+The failed trace is retained separately from successful qualification.
+
+The Ker admission channel now treats EINTR from nonblocking sendmsg/recvmsg
+before any record transfer as retryable -EAGAIN. The caller yields to its next
+bounded step, preserving the original command ID, pending response and
+deadline. No record is resent after successful transfer, authentication still
+runs on received records, and other errors retain their existing fail-closed
+handling. Nginx signal handling, timers and all upstream sources are unchanged.
+
+`admission-channel-eintr` injects EINTR at eleven syscall sites in the exact
+channel source, including empty receive, command send, request receive,
+result/PREPARED response send, controller receive, FINALIZE receive and
+cancellation reply. Uninterrupted operations use real credential-checked
+SOCK_SEQPACKET I/O. Its callbacks count effects rather
+than implementing protocol behavior: two admits and one revoke occur exactly
+once, and repeated interruptions yield once per step. The test fails at its
+first owner receive without the fix. The existing original flow-map ownership
+and original-LKL admission tests retain the independent runtime semantics
+coverage.
+
+
+With the channel fix, all eight focused native checks passed, including both
+complete commit/source and abort/source runs. Each long profile completed 36
+responses with zero integrity failures, stalls and worker errors, and both
+brokers ended with outstanding=0. The deterministic channel test also passed
+GCC and Clang with C11, -Wall -Wextra -Werror; the existing original-map channel
+and original-LKL admission checks passed unchanged.
