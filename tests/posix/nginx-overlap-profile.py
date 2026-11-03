@@ -11,6 +11,7 @@ import select
 import signal
 import socket
 import subprocess
+import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +30,10 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     held_alias = None
     alias_listener = None
     evidence = {'status': 'RUNNING', 'events': []}
+    stream_probe = None
+    stream_output = None
+    stream_started = None
+    stream_payload = bytes(8 * 1024 * 1024) if args.nginx_overlap_source_streams else None
 
     def record(event, **fields):
         evidence['events'].append({'event': event, 'monotonic_ns': time.monotonic_ns(), **fields})
@@ -55,6 +60,9 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         (prefix / 'logs').mkdir(parents=True); (prefix / 'html').mkdir()
         body = (label + '-nginx\n').encode()
         (prefix / 'html/index.html').write_bytes(body)
+        if stream_payload is not None:
+            (prefix / 'html/dl').mkdir()
+            (prefix / 'html/dl/big.bin').write_bytes(stream_payload)
         ini = prefix / 'fstack.ini'
         ini.write_text(f'[ker_socket_broker]\nversion=1\npath={rpc_path}\n\n[dpdk]\ngraceful_reload=0\n')
         config = prefix / 'nginx.conf'
@@ -102,7 +110,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
 
     def stop_nginx(process, worker_fd, label):
         process.send_signal(signal.SIGQUIT)
-        _, errors = process.communicate(timeout=20)
+        _, errors = process.communicate(timeout=80 if stream_probe is not None else 20)
         require(process.returncode == 0, f'{label} shutdown failed: {errors!r}')
         require(select.select([worker_fd], [], [], 0)[0], f'{label} worker is still alive')
         record(label.upper() + '_NGINX_RETIRED')
@@ -138,6 +146,32 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         command('CONTROL'); command('CENSUS0')
         held = socket.create_connection(('198.18.0.2', 4108), timeout=10)
         held.settimeout(10); http(held, old_body)
+        if stream_payload is not None:
+            stream_file = root / 'source-stream.log'
+            stream_output = stream_file.open('w')
+            stream_command = [sys.executable, str(probe_file.with_name('m4_stream.py')),
+                '--server', '198.18.0.2', '--port', '4108', '--path', '/dl/big.bin',
+                '--streams', '12', '--chunk', '16384', '--gap', '0.1',
+                '--timeout', '5', '--stall', '3.0', '--duration', '120',
+                '--expect-md5', hashlib.md5(stream_payload).hexdigest()]
+            # A host TCP client: no FF runtime, preload or broker authority.
+            stream_environment = os.environ.copy()
+            stream_environment.pop('LD_PRELOAD', None)
+            stream_environment['PYTHONDONTWRITEBYTECODE'] = '1'
+            stream_started = time.monotonic()
+            stream_probe = subprocess.Popen(stream_command, stdout=stream_output,
+                stderr=subprocess.STDOUT, env=stream_environment, start_new_session=True)
+            evidence['source_stream'] = {'command': stream_command,
+                'source_hashes': {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in (probe_file, probe_file.with_name('m4_stream.py'),
+                        probe_file.parent.parent / 'reload_checks.py')}}
+            # Preserve the original shell's three-second pre-handoff interval,
+            # and additionally prove all twelve connections reached old Linux.
+            while time.monotonic() - stream_started < 3:
+                require(stream_probe.poll() is None, 'source stream probe exited before handoff')
+                time.sleep(.01)
+            command('STREAMS0')
+            record('TWELVE_SOURCE_STREAMS_ON_OLD_OWNER', elapsed=time.monotonic() - stream_started)
         new, new_body, new_prefix, new_fd = start_nginx('new', caps[1], True)
         command('CENSUS1'); command('EARLY_RETIRE'); command('WRONG_RETIRE'); fresh(old_body)
         record('BOTH_NGINX_LIVE_SELECTOR_ZERO')
@@ -150,14 +184,49 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             with queued.result(timeout=10) as connection:
                 connection.settimeout(10); http(connection, new_body, True)
         http(held, old_body); record('OLD_KEEPALIVE_SURVIVED')
+        if stream_probe is not None:
+            command('STREAMS0')
         held.close(); held = None
+        if stream_probe is not None:
+            record('OLD_NGINX_DRAIN_BEGIN')
         stop_nginx(old, old_fd, 'old')
+        if stream_probe is not None:
+            require(stream_probe.poll() is None, 'source probe did not survive old-owner drain')
+            record('SOURCE_PROBE_ALIVE_AFTER_OLD_EXIT', elapsed=time.monotonic() - stream_started)
         if held_alias is not None:
             command('ALIAS_RETIRE')
             os.close(held_alias); held_alias = None
             record('INITIAL_MEMBER_ALIAS_CLOSED')
         command('RETIRE0'); command('CLOSED0')
         fresh(new_body); record('NEW_HTTP_AFTER_OLD_EXIT')
+        if stream_probe is not None:
+            stream_probe.wait(timeout=max(.1, 300 - (time.monotonic() - stream_started)))
+            stream_output.flush()
+            text = stream_file.read_text()
+            evidence['source_stream'].update(returncode=stream_probe.returncode, output=text)
+            require(stream_probe.returncode == 0, 'original source stream probe failed: ' + text)
+            checker_file = probe_file.parent.parent / 'reload_checks.py'
+            check_spec = importlib.util.spec_from_file_location('nginx_overlap_source_checks', checker_file)
+            checker = importlib.util.module_from_spec(check_spec); check_spec.loader.exec_module(checker)
+            fields = checker.summary('stream', text)
+            # Qualify both pre-cutover and post-retirement waves, independently
+            # of the source summary's aggregate complete-response counters.
+            rows = [re.fullmatch(r'STREAM wid=(\d+) wave=(\d+) bytes=(\d+) md5=([0-9a-f]+) '
+                r'md5_ok=1 eof_clean=1 start=([0-9.]+) end=([0-9.]+)', line)
+                for line in text.splitlines() if line.startswith('STREAM ')]
+            require(rows and all(rows), 'incomplete source stream response evidence')
+            cutover_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
+                if e['event'] == 'CUTOVER_PREPARED') - stream_started
+            retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
+                if e['event'] == 'OLD_NGINX_RETIRED') - stream_started
+            require({int(row[1]) for row in rows if float(row[5]) < cutover_at < float(row[6])}
+                == set(range(12)), 'not all source workers crossed cutover in-flight')
+            require({int(row[1]) for row in rows if float(row[6]) > retired_at and int(row[2]) >= 2}
+                == set(range(12)), 'source workers did not continue into new-owner waves')
+            require(all(int(row[3]) == len(stream_payload) for row in rows), 'source payload length changed')
+            evidence['source_stream']['summary'] = fields
+            record('ORIGINAL_STREAM_ORACLE_PASS', streams=int(fields['streams']),
+                elapsed=time.monotonic() - stream_started)
         stop_nginx(new, new_fd, 'new'); command('CLOSED1')
         command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
         _, errors = controller.communicate(timeout=10)
@@ -183,6 +252,15 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         evidence.update(status='FAIL', error=repr(error))
         raise
     finally:
+        if stream_probe is not None and stream_probe.poll() is None:
+            try: os.killpg(stream_probe.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            stream_probe.wait()
+        if stream_output is not None:
+            stream_output.close()
+            evidence.setdefault('source_stream', {}).update(
+                returncode=stream_probe.returncode if stream_probe is not None else None,
+                output=(root / 'source-stream.log').read_text(errors='replace'))
         if held is not None: held.close()
         if held_alias is not None: os.close(held_alias)
         if alias_listener is not None: alias_listener.close()

@@ -429,3 +429,16 @@ the dead old owner's listener pin through a pidfd-gated typed API, and proves
 new HTTP after old LISTEN=0. See the [runtime profile and exact limits](fstack-nginx-runtime.md#two-real-nginx-owners-and-a-committed-cutover).
 This advances the overlap prerequisite; the original shell entrypoint remains
 blocked and the source matrix is not counted as migrated.
+
+
+### Original source stream probe over explicit overlap
+
+`native-nginx-overlap-source-streams-tap` runs the unchanged original twelve
+stream probe and summary oracle over the two real Nginx callers. It retains
+the source 8 MiB/120-second shape and requires each worker's response to span
+the real cutover, followed by later waves after old-owner exit. A mark-scoped
+old-owner ESTABLISHED census anchors the handoff, and old LISTEN=0 plus new HTTP
+anchor retirement. See [configuration, evidence and limits](fstack-nginx-runtime.md#original-twelve-stream-probe-across-real-nginx-overlap).
+This adds source traffic qualification but does not execute the original
+shell's generation FSM or its signal/transition assertions; the source matrix
+and migration inventory entry remain blocked.

@@ -102,6 +102,18 @@ int main(int argc, char **argv)
             } while (now_ns() < deadline);
             CHECK(!result);
             CHECK(!ker_socket_client_owner_group_retire_initial_listener(&client, plan));
+        } else if (!strcmp(command, "STREAMS0\n")) {
+            struct ker_socket_member_census_snapshot state;
+            uint64_t deadline = now_ns() + UINT64_C(10000000000);
+            do {
+                CHECK(census[0] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[0], &state));
+                if (state.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED] >= 13) break;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(state.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED] >= 13);
+            printf("SOURCE_STREAM_CENSUS established=%llu\n",
+                (unsigned long long)state.state_counts[KER_SOCKET_TCP_STATE_ESTABLISHED]);
         } else if (!strcmp(command, "BEGIN\n")) {
             CHECK(cutover < 0);
             cutover = ker_socket_client_owner_group_cutover_begin(&client, plan);
