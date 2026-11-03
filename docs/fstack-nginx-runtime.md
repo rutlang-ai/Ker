@@ -360,7 +360,58 @@ not certify that all accepted sockets have drained.
 The test requires old LISTEN=0 before fresh new-owner HTTP, then new LISTEN=0
 and broker outstanding=0 at shutdown. The build directory's
 `nginx-overlap-evidence.json` records both Nginx logs, runtime traces and events.
-The full same-master F-Stack generation FSM, twelve long-lived source streams,
-repeated overlap, failure/rollback matrix and shell cleanup contract remain
-unqualified. Migration inventory remains362 scenario-adapted,0 partial,1
+The full same-master F-Stack generation FSM, repeated overlap,
+failure/rollback matrix and shell cleanup contract remain unqualified.
+A separate original twelve-stream qualification is described below. Migration inventory remains 362 scenario-adapted,0 partial,1
 blocked (`test_graceful_reload.sh::entrypoint`).
+
+### Original twelve-stream probe across real Nginx overlap
+
+`native-nginx-overlap-source-streams-tap` adds the unchanged imported
+`m4_stream.py`/`http_probe.py` process and `reload_checks.py` stream oracle to
+the two-real-Nginx profile. Both static roots contain the original shell's
+8 MiB zero payload. The host client uses twelve streams, 16384-byte chunks,
+0.1-second gaps, a five-second socket timeout, a three-second stall threshold
+and a 120-second duration. It completes the wave in flight at that duration,
+within the original 300-second probe budget. The only network adaptation is
+the existing TAP destination and port 4108. No FF runtime is preloaded into
+the host probe.
+
+Before handoff, the profile preserves the source shell's three-second delay
+and additionally requires the old member's original-Linux census to contain
+at least thirteen ESTABLISHED sockets: twelve probe streams and the separately
+held keepalive connection. It verifies that census again before asking old
+Nginx to quit. The existing cutover retains a real SYN and commits it to the
+new Nginx while every probe worker's first response remains in flight. Old
+Nginx handles SIGQUIT through its original graceful shutdown path while those
+responses drain; the probe must still be alive after the authenticated old
+worker exits. Old LISTEN=0 and a fresh new-owner HTTP response are required
+before the profile waits for the remaining source waves.
+
+Success requires the unchanged probe exit status and stream-summary oracle,
+exact 8 MiB bodies, all twelve worker IDs spanning cutover in flight, and later
+waves from every worker completing after old-owner exit. Each completed
+response must retain MD5 and clean EOF; the source stall threshold is not
+relaxed. The JSON evidence records the actual probe command, source SHA-256
+values, complete stream output, monotonic transition events, both Nginx logs
+and broker cleanup counters. Run the long case separately from the quick
+checks; CTest allows 360 seconds for startup, the bounded source probe and
+cleanup:
+
+```sh
+ctest --test-dir <build> -R '^native-nginx-overlap-source-streams-tap$' --output-on-failure
+```
+
+This qualifies the original traffic probe over an explicit two-master broker
+cutover. It does not run the source shell's same-master HUP/USR2 generation FSM,
+its transition-log assertions, repeated reloads or fault matrix. The source
+`rt02`/`rt23` cases and the complete shell entrypoint therefore remain blocked;
+the migration inventory remains 362 scenario-adapted, 0 partial, 1 blocked.
+
+
+The recorded Debug run completed 36 responses (288 MiB) across three waves in
+about 155.5 seconds. All 36 MD5 and EOF counters passed, the source reported zero
+stalls and zero worker errors, and old Nginx drained for 47.917 seconds after
+SIGQUIT. The original-Linux broker reported outstanding=0 and worker_exit_code=0
+at final cleanup. A separate negative control changed only one byte of the new
+Nginx's payload; the unchanged source probe rejected the resulting responses.
