@@ -175,7 +175,9 @@ static int send_wire(struct ker_ff_admission_channel *channel,
 	struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1};
 	ssize_t sent = syscall(SYS_sendmsg, channel->fd, &message,
 		MSG_DONTWAIT | MSG_NOSIGNAL);
-	if (sent < 0) return -errno;
+	/* No record was transferred on EINTR. Defer to the next bounded step,
+	 * preserving the command ID and any pending owner response. */
+	if (sent < 0) return errno == EINTR ? -EAGAIN : -errno;
 	return (size_t)sent == sizeof(*wire) ? 0 : -EIO;
 }
 
@@ -192,7 +194,7 @@ static int receive_wire(struct ker_ff_admission_channel *channel,
 	};
 	ssize_t received = syscall(SYS_recvmsg, channel->fd, &message,
 		MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
-	if (received < 0) return -errno;
+	if (received < 0) return errno == EINTR ? -EAGAIN : -errno;
 	int result = credentials_match(channel, &message);
 	if (received == 0) return -ECONNRESET;
 	if (result) return result;

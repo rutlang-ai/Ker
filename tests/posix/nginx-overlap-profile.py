@@ -29,7 +29,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     held = None
     held_alias = None
     alias_listener = None
-    evidence = {'status': 'RUNNING', 'events': []}
+    evidence = {'status': 'RUNNING', 'outcome': 'abort' if args.nginx_overlap_abort else 'commit', 'events': []}
     stream_probe = None
     stream_output = None
     stream_started = None
@@ -179,26 +179,43 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         with ThreadPoolExecutor(max_workers=1) as executor:
             queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 10)
             command('QUEUED')
-            require(not queued.done(), 'queued SYN completed before cutover commit')
-            command('COMMIT'); command('EARLY_RETIRE'); record('CUTOVER_COMMITTED_WITH_QUEUED_SYN')
+            require(not queued.done(), 'queued SYN completed before cutover decision')
+            if args.nginx_overlap_abort:
+                # The native ingress freeze precedes socket/flow-map admission.
+                # Abort must replay this real SYN to the unchanged old selector.
+                command('ABORT'); command('EARLY_RETIRE'); record('CUTOVER_ABORTED_WITH_QUEUED_SYN')
+            else:
+                command('COMMIT'); command('EARLY_RETIRE'); record('CUTOVER_COMMITTED_WITH_QUEUED_SYN')
             with queued.result(timeout=10) as connection:
-                connection.settimeout(10); http(connection, new_body, True)
+                connection.settimeout(10); http(connection, old_body if args.nginx_overlap_abort else new_body, True)
         http(held, old_body); record('OLD_KEEPALIVE_SURVIVED')
         if stream_probe is not None:
             command('STREAMS0')
-        held.close(); held = None
-        if stream_probe is not None:
-            record('OLD_NGINX_DRAIN_BEGIN')
-        stop_nginx(old, old_fd, 'old')
-        if stream_probe is not None:
-            require(stream_probe.poll() is None, 'source probe did not survive old-owner drain')
-            record('SOURCE_PROBE_ALIVE_AFTER_OLD_EXIT', elapsed=time.monotonic() - stream_started)
-        if held_alias is not None:
-            command('ALIAS_RETIRE')
-            os.close(held_alias); held_alias = None
-            record('INITIAL_MEMBER_ALIAS_CLOSED')
-        command('RETIRE0'); command('CLOSED0')
-        fresh(new_body); record('NEW_HTTP_AFTER_OLD_EXIT')
+        if args.nginx_overlap_abort:
+            stop_nginx(new, new_fd, 'new'); command('CLOSED1')
+            require(old.poll() is None and not select.select([old_fd], [], [], 0)[0],
+                'old Nginx did not survive candidate retirement')
+            command('EARLY_RETIRE')
+            http(held, old_body); record('OLD_KEEPALIVE_AFTER_CANDIDATE_EXIT')
+            fresh(old_body); record('OLD_HTTP_AFTER_CANDIDATE_EXIT')
+            if stream_probe is not None:
+                require(stream_probe.poll() is None, 'source probe did not survive candidate abort')
+                record('SOURCE_PROBE_ALIVE_AFTER_CANDIDATE_EXIT', elapsed=time.monotonic() - stream_started)
+            held.close(); held = None
+        else:
+            held.close(); held = None
+            if stream_probe is not None:
+                record('OLD_NGINX_DRAIN_BEGIN')
+            stop_nginx(old, old_fd, 'old')
+            if stream_probe is not None:
+                require(stream_probe.poll() is None, 'source probe did not survive old-owner drain')
+                record('SOURCE_PROBE_ALIVE_AFTER_OLD_EXIT', elapsed=time.monotonic() - stream_started)
+            if held_alias is not None:
+                command('ALIAS_RETIRE')
+                os.close(held_alias); held_alias = None
+                record('INITIAL_MEMBER_ALIAS_CLOSED')
+            command('RETIRE0'); command('CLOSED0')
+            fresh(new_body); record('NEW_HTTP_AFTER_OLD_EXIT')
         if stream_probe is not None:
             stream_probe.wait(timeout=max(.1, 300 - (time.monotonic() - stream_started)))
             stream_output.flush()
@@ -218,16 +235,23 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             cutover_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
                 if e['event'] == 'CUTOVER_PREPARED') - stream_started
             retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
-                if e['event'] == 'OLD_NGINX_RETIRED') - stream_started
+                if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort else 'OLD_NGINX_RETIRED')) - stream_started
             require({int(row[1]) for row in rows if float(row[5]) < cutover_at < float(row[6])}
                 == set(range(12)), 'not all source workers crossed cutover in-flight')
             require({int(row[1]) for row in rows if float(row[6]) > retired_at and int(row[2]) >= 2}
-                == set(range(12)), 'source workers did not continue into new-owner waves')
+                == set(range(12)), 'source workers did not continue past retired owner')
             require(all(int(row[3]) == len(stream_payload) for row in rows), 'source payload length changed')
             evidence['source_stream']['summary'] = fields
             record('ORIGINAL_STREAM_ORACLE_PASS', streams=int(fields['streams']),
                 elapsed=time.monotonic() - stream_started)
-        stop_nginx(new, new_fd, 'new'); command('CLOSED1')
+        if args.nginx_overlap_abort:
+            fresh(old_body)
+            stop_nginx(old, old_fd, 'old')
+            for cap in caps: os.close(cap)
+            caps.clear()
+            command('RELEASE'); command('CLOSED0')
+        else:
+            stop_nginx(new, new_fd, 'new'); command('CLOSED1')
         command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
         _, errors = controller.communicate(timeout=10)
         require(controller.returncode == 0, f'coordinator cleanup failed: {errors!r}')
@@ -244,9 +268,11 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             label: {'trace': (prefix / 'runtime.trace').read_text(),
                 'error_log': (prefix / 'logs/error.log').read_text()}
             for label, prefix in [('old', old_prefix), ('new', new_prefix)]})
-        require('private candidate admission: allowed=1 created=1' in
-            evidence['logs']['new']['error_log'], 'new Nginx did not consume original-map admission')
-        print('NGINX_OVERLAP_PASS queued_syn=true old_keepalive=true old_exit=true outstanding=0')
+        if not args.nginx_overlap_abort:
+            require('private candidate admission: allowed=1 created=1' in
+                evidence['logs']['new']['error_log'], 'new Nginx did not consume original-map admission')
+        print('NGINX_OVERLAP_PASS outcome=' + evidence['outcome'] +
+            ' queued_syn=true old_keepalive=true old_exit=true outstanding=0')
         return 0
     except BaseException as error:
         evidence.update(status='FAIL', error=repr(error))

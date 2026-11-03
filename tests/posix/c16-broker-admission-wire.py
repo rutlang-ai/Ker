@@ -1747,6 +1747,7 @@ def main():
     parser.add_argument('--nginx-candidate-evidence', type=Path)
     parser.add_argument('--nginx-overlap-controller', type=Path)
     parser.add_argument('--nginx-overlap-source-streams', action='store_true')
+    parser.add_argument('--nginx-overlap-abort', action='store_true')
     parser.add_argument('--nginx-overlap-alias-module', type=Path)
     parser.add_argument('--nginx-overlap-alias-regression', action='store_true')
     parser.add_argument('--staged-admission-only', action='store_true')
@@ -1775,6 +1776,8 @@ def main():
         parser.error('candidate Nginx requires its runtime, shim, module and group client')
     if args.nginx_overlap_controller and not all(candidate_inputs):
         parser.error('overlap profile requires all pinned Nginx artifacts')
+    if args.nginx_overlap_abort and (not args.nginx_overlap_controller or args.nginx_overlap_alias_regression):
+        parser.error('abort requires the ordinary overlapping Nginx profile')
     if args.nginx_overlap_source_streams and (not args.nginx_overlap_controller or args.nginx_overlap_alias_regression):
         parser.error('source streams require the ordinary overlapping Nginx profile')
     if args.nginx_overlap_alias_regression and (
@@ -1813,6 +1816,8 @@ def main():
             command += ['--nginx-overlap-alias-module', str(args.nginx_overlap_alias_module.resolve())]
         if args.nginx_overlap_source_streams:
             command += ['--nginx-overlap-source-streams']
+        if args.nginx_overlap_abort:
+            command += ['--nginx-overlap-abort']
         if args.nginx_overlap_alias_regression:
             command.append('--nginx-overlap-alias-regression')
     if args.staged_admission_only:
