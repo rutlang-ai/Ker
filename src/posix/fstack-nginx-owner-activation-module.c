@@ -57,7 +57,26 @@ static bool worker_prepared;
 static bool candidate_mode;
 static bool delegated_initial_mode;
 #ifdef KER_NGINX_OWNER_TEST_ALIAS
+#include <ngx_event.h>
 static int test_initial_alias_slot = -1;
+static ngx_event_t test_rearm_event;
+static void trace_line(const char *format, ...);
+static void test_rearm_sealed(ngx_event_t *event)
+{
+    const char *path = getenv("KER_NGINX_TEST_REARM_TRIGGER");
+    if (!path) return;
+    if (syscall(SYS_access, path, F_OK)) {
+        ngx_add_timer(event, 10);
+        return;
+    }
+    typedef int (*rearm_fn)(void);
+    rearm_fn rearm = (rearm_fn)dlsym(RTLD_DEFAULT,
+        "ker_sb_preload_ff_owner_admission_rearm");
+    errno = 0;
+    int result = rearm ? rearm() : -1;
+    int error = rearm ? errno : ENOSYS;
+    trace_line("NGINX_TEST_REARM_SEALED result=%d error=%d\n", result, error);
+}
 #endif
 int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle);
 int ker_nginx_candidate_worker_commit(int slot);
@@ -102,6 +121,12 @@ static ngx_int_t test_export_initial_member_alias(ngx_cycle_t *cycle)
     (void)syscall(SYS_close, alias);
     (void)syscall(SYS_close, channel);
     errno = error;
+    if (!result && getenv("KER_NGINX_TEST_REARM_TRIGGER")) {
+        ngx_memzero(&test_rearm_event, sizeof(test_rearm_event));
+        test_rearm_event.handler = test_rearm_sealed;
+        test_rearm_event.log = cycle->log;
+        ngx_add_timer(&test_rearm_event, 10);
+    }
     return result ? NGX_ERROR : NGX_OK;
 }
 #endif
@@ -1009,20 +1034,20 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
         errno = error;
         return -1;
     }
-    if (!candidate_mode) {
 #ifdef KER_NGINX_OWNER_TEST_ALIAS
-        if (getenv("KER_NGINX_TEST_INITIAL_ALIAS_SOCKET")) {
-            test_initial_alias_slot = (int)syscall(SYS_fcntl, slot,
-                F_DUPFD_CLOEXEC, 0);
-            if (test_initial_alias_slot < 0) {
-                int error = errno;
-                (void)syscall(SYS_close, slot);
-                current_slot = -1;
-                errno = error;
-                return -1;
-            }
+    if (getenv("KER_NGINX_TEST_INITIAL_ALIAS_SOCKET")) {
+        test_initial_alias_slot = (int)syscall(SYS_fcntl, slot,
+            F_DUPFD_CLOEXEC, 0);
+        if (test_initial_alias_slot < 0) {
+            int error = errno;
+            (void)syscall(SYS_close, slot);
+            current_slot = -1;
+            errno = error;
+            return -1;
         }
+    }
 #endif
+    if (!candidate_mode) {
         (void)syscall(SYS_close, slot);
         current_slot = -1;
     }

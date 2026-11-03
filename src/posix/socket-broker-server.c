@@ -76,6 +76,9 @@ struct sb_group {
     bool member_present[2];
     uint8_t selected_member;
     bool cutover_started;
+    bool successor_issued;
+    bool predecessor_pinned;
+    int predecessor_cap_fd;
     bool cutover_orphaned;
     int cutover_object_slot;
     struct sb_group_cutover cutover;
@@ -456,6 +459,7 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_FF_OWNER_GROUP_CUTOVER_POLL:
     case KER_SB_FF_OWNER_GENERATION_WATCH_CREATE:
     case KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER:
+    case KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN:
         return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_GROUP_CLAIM:
     case KER_SB_FF_OWNER_GROUP_MEMBER:
@@ -572,6 +576,10 @@ static void close_object(struct ker_socket_broker_server *server, struct sb_obje
             }
             if (group->base_fd[0] >= 0) (void)close(group->base_fd[0]);
             if (group->base_fd[1] >= 0) (void)close(group->base_fd[1]);
+            if (group->predecessor_pinned) {
+                (void)host_close(group->predecessor_cap_fd);
+                group->predecessor_pinned = false;
+            }
             if (group->watch_refs) {
                 /* A watch pins metadata only. Listener and task descriptors
                  * have already been closed above and are never retained by it. */
@@ -3541,16 +3549,29 @@ static int owner_group_retire_initial_listener(
         group->incarnation != plan->group_incarnation) return -ESTALE;
     if (group->failed) return -ECANCELED;
     if (group->activation_state[0] == SB_MEMBER_ACTIVATION_RETIRED) return 0;
-    /* member_create() can make a live initial-member alias without marking it
-     * as an activation capability. Keep the old reuseport member published
-     * until every broker-owned descriptor for that physical member is closed. */
+    /* Adopted initial aliases still belong to the predecessor's logical slot
+     * 1. Check the physical listener cookie across all plans and all internal
+     * pins, rather than treating a logical group index as socket identity. */
     for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
         const struct sb_object *alias = &server->objects[i];
+        uint64_t cookie = 0;
         if (alias->live && alias->kind == KER_SOCKET_BROKER_SOCKET &&
-            alias->group_slot == plan->group_slot &&
-            alias->group_incarnation == group->incarnation &&
-            alias->group_index == 0 && alias->native_fd >= 0)
-            return -EAGAIN;
+            alias->native_fd >= 0) {
+            if (socket_cookie(alias->native_fd, &cookie)) return -errno;
+            if (cookie == group->member_cookie[0]) return -EAGAIN;
+        }
+        const struct sb_group *other = &server->groups[i];
+        if (!other->live) continue;
+        for (unsigned index = 0; index < 2; ++index) {
+            if (other->base_fd[index] >= 0 && !(other == group && !index)) {
+                if (socket_cookie(other->base_fd[index], &cookie)) return -errno;
+                if (cookie == group->member_cookie[0]) return -EAGAIN;
+            }
+            if (other->activation_task_fd[index] >= 0) {
+                if (socket_cookie(other->activation_task_fd[index], &cookie)) return -errno;
+                if (cookie == group->member_cookie[0]) return -EAGAIN;
+            }
+        }
     }
     if (!group->cutover_started || group->selected_member != 1 ||
         group->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED ||
@@ -3567,6 +3588,15 @@ static int owner_group_retire_initial_listener(
     if (status != -ESRCH) return status;
     status = owner_pidfd_confirmed_dead(owner);
     if (status != 1) return status < 0 ? status : -EAGAIN;
+    /* A predecessor task retains an extra ker_fd reference even after its
+     * group's descriptors close. Confirm release before Linux can compact the
+     * reuseport array. The pidfd above prevents stopping a live application. */
+    if (owner->admission_task) {
+        (void)ker_posix_ff_admission_task_request_stop(owner->admission_task);
+        status = owner_admission_task_release(owner);
+        if (status) return status == -EBUSY ? -EAGAIN : status;
+        owner->admission_listener_native_fd = -1;
+    }
     owner = owner_by_token(server, group->member_owner_token[1]);
     if (!owner || owner->pid != group->member_owner_pid[1] ||
         owner->start_time != group->member_owner_start_time[1] ||
@@ -3584,6 +3614,10 @@ static int owner_group_retire_initial_listener(
     group->member_present[0] = false;
     group->member_cookie[0] = group->activation_cookie[0] = 0;
     group->activation_state[0] = SB_MEMBER_ACTIVATION_RETIRED;
+    if (group->predecessor_pinned) {
+        (void)host_close(group->predecessor_cap_fd);
+        group->predecessor_pinned = false;
+    }
     if (reuseport_filter(group->base_fd[1], 0)) {
         status = -errno;
         struct sb_object candidate = {.group_index = 1, .native_fd = -1};
@@ -3591,6 +3625,93 @@ static int owner_group_retire_initial_listener(
         owner_group_activation_poison(server, group, &candidate);
         return status;
     }
+    return 0;
+}
+
+static int owner_group_successor_plan(struct ker_socket_broker_server *server,
+    int plan_cap, int *capability_out)
+{
+    struct sb_object *plan = lookup_cap(server, plan_cap);
+    if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
+        plan->group_slot < 0 || !(plan->rights & KER_SOCKET_BROKER_CONTROL))
+        return -ENOTSOCK;
+    struct sb_group *parent = &server->groups[plan->group_slot];
+    if (!parent->live || !parent->owner_aware || !parent->staged_owner_group ||
+        parent->incarnation != plan->group_incarnation) return -ESTALE;
+    if (parent->successor_issued) return -EALREADY;
+    if (parent->failed) return -ECANCELED;
+    if (parent->cutover_started && group_cutover_terminal(parent->cutover.phase) &&
+        parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED)
+        return -EOPNOTSUPP;
+    if (!parent->cutover_started || parent->selected_member != 1 ||
+        parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED ||
+        parent->cutover.controller || parent->cutover_object_slot >= 0 ||
+        parent->activation_state[0] != SB_MEMBER_ACTIVATION_RETIRED ||
+        parent->member_present[0] || parent->base_fd[0] >= 0)
+        return -EAGAIN;
+    struct sb_owner *owner = owner_by_token(server, parent->member_owner_token[1]);
+    if (!owner || owner->pid != parent->member_owner_pid[1] ||
+        owner->start_time != parent->member_owner_start_time[1] ||
+        owner->mark != parent->member_mark[1] || !owner->admission_task ||
+        owner->admission_failed) return -ESTALE;
+    int status = owner_identity_alive(owner);
+    if (status) return status;
+    if (parent->activation_state[1] != SB_MEMBER_ACTIVATION_PUBLISHED ||
+        !parent->member_present[1] || parent->base_fd[1] < 0) return -ESTALE;
+    status = group_cutover_candidate_listener_validate(parent);
+    if (status) return status;
+    uint64_t lease = 0;
+    int state = ker_posix_ff_admission_task_poll(owner->admission_task, &lease);
+    if (state == KER_FF_ADMISSION_TASK_READY) {
+        status = ker_posix_ff_admission_task_window_action(owner->admission_task,
+            KER_FF_ADMISSION_WINDOW_RETIRE, -1);
+        return status ? status : -EAGAIN;
+    }
+    if (state != KER_FF_ADMISSION_TASK_RETIRED)
+        return state < 0 ? state : -EAGAIN;
+    size_t slot = KER_SB_OBJECTS;
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i)
+        if (!server->groups[i].live) { slot = i; break; }
+    if (slot == KER_SB_OBJECTS) return -EMFILE;
+    if (server->next_group_incarnation == UINT64_MAX) return -EOVERFLOW;
+    int native_fd = fcntl(parent->base_fd[1], F_DUPFD_CLOEXEC, 0);
+    if (native_fd < 0) return -errno;
+    int pin = (int)syscall(SYS_fcntl, plan_cap, F_DUPFD_CLOEXEC, 0);
+    if (pin < 0) { status = -errno; (void)close(native_fd); return status; }
+    server->groups[slot] = (struct sb_group){.live = true, .owner_aware = true,
+        .staged_owner_group = true, .materialized = true,
+        .staged_state = SB_STAGED_INITIAL_PUBLISHED,
+        .activation_state = {SB_MEMBER_ACTIVATION_PUBLISHED, SB_MEMBER_ACTIVATION_NONE},
+        .member_present = {true, false}, .slot_issued = {true, false},
+        .base_fd = {native_fd, -1}, .activation_task_fd = {-1, -1},
+        .incarnation = ++server->next_group_incarnation,
+        .claim_generation = {parent->claim_generation[1], 1},
+        .member_owner_token = {owner->token, 0}, .member_owner_pid = {owner->pid, 0},
+        .member_owner_start_time = {owner->start_time, 0},
+        .member_mark = {owner->mark, 0},
+        .member_cookie = {parent->member_cookie[1], 0},
+        .activation_cookie = {parent->member_cookie[1], 0},
+        .address = parent->address, .port = parent->port, .backlog = parent->backlog,
+        .group_rights = parent->group_rights, .cutover_object_slot = -1,
+        .predecessor_pinned = true, .predecessor_cap_fd = pin};
+    int capability = group_handle(server, (int)slot, -1,
+        KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN, KER_SOCKET_BROKER_CONTROL, 0);
+    if (capability < 0) {
+        status = -errno;
+        (void)host_close(pin); (void)close(native_fd);
+        server->groups[slot] = (struct sb_group){.base_fd = {-1, -1},
+            .activation_task_fd = {-1, -1}, .cutover_object_slot = -1};
+        return status;
+    }
+    status = ker_posix_ff_admission_task_seal_retired(owner->admission_task);
+    if (status) {
+        struct sb_object *created = lookup_cap(server, capability);
+        if (created) close_object(server, created);
+        (void)host_close(capability);
+        return status;
+    }
+    parent->successor_issued = true;
+    *capability_out = capability;
     return 0;
 }
 
@@ -4123,7 +4244,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
             request->operation == KER_SB_FF_OWNER_GROUP_CUTOVER_POLL)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_CUTOVER;
         else if (request->operation == KER_SB_FF_OWNER_GENERATION_WATCH_CREATE ||
-            request->operation == KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER)
+            request->operation == KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER ||
+            request->operation == KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
         else if (request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
@@ -4252,6 +4374,13 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         int capability = -1;
         status = owner_group_control_create(server, plan, &capability,
             request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT);
+        if (status) return status;
+        *passed_fd = capability; *result = 1; return 0;
+    }
+    case KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN: {
+        if (input_length || fd_count != 1) return -EPROTO;
+        int capability = -1;
+        status = owner_group_successor_plan(server, fds[0], &capability);
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
     }

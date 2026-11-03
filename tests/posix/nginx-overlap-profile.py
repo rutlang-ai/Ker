@@ -1,5 +1,6 @@
-"""Two real Nginx callers over one original-Linux staged owner group."""
+"""Explicit real Nginx callers over original-Linux staged owner groups."""
 import array
+import errno
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
@@ -102,7 +103,9 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         config = prefix / 'nginx.conf'
         module = args.nginx_candidate_module
         user_directive = 'user root;'
-        if args.nginx_overlap_alias_regression and not candidate:
+        export_alias = args.nginx_overlap_alias_regression and (
+            label == 'new' if args.nginx_overlap_successor else not candidate)
+        if export_alias:
             module = args.nginx_overlap_alias_module
         config.write_text(f'''load_module {module};
 daemon off; master_process on; worker_processes 1; {user_directive}
@@ -110,6 +113,7 @@ fstack_conf "fstack.ini"; timer_resolution 1ms;
 pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
 env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
 env KER_FSTACK_RUNTIME_TRACE; env KER_NGINX_TEST_INITIAL_ALIAS_SOCKET;
+env KER_NGINX_TEST_REARM_TRIGGER;
 events {{ worker_connections 256; use epoll; }}
 http {{ access_log off; sendfile off; keepalive_timeout 300; keepalive_requests 100000;
 server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
@@ -119,8 +123,10 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             args.nginx_candidate_runtime, args.preload])), 'KER_FSTACK_NGINX_INI': str(ini),
             'KER_FSTACK_RUNTIME_TRACE': str(trace),
             ('KER_NGINX_CANDIDATE_SLOT_FD' if candidate else 'KER_NGINX_INITIAL_SLOT_FD'): str(slot)}
-        if not candidate and args.nginx_overlap_alias_regression:
+        if export_alias:
             env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
+            if args.nginx_overlap_successor:
+                env['KER_NGINX_TEST_REARM_TRIGGER'] = str(root / 'rearm.trigger')
         process = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
             '-c', str(config)], pass_fds=(slot,), env=env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -141,6 +147,21 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         worker_fd = os.pidfd_open(int(worker_pids[0])); pidfds.append(worker_fd)
         record(label.upper() + '_NGINX_READY', master=process.pid, worker=int(worker_pids[0]))
         return process, body, prefix, worker_fd
+
+    def receive_alias():
+        nonlocal held_alias
+        alias_channel, _ = alias_listener.accept()
+        message, ancillary, flags, _ = alias_channel.recvmsg(1, socket.CMSG_SPACE(4))
+        alias_channel.close()
+        for level, kind, data in ancillary:
+            require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
+                'member alias transfer used unexpected authority')
+            values = array.array('i'); values.frombytes(data)
+            require(len(values) == 1 and held_alias is None, 'expected one member alias')
+            held_alias = values[0]
+        require(message == b'A' and not flags and held_alias is not None,
+            'Nginx owner did not export its live member alias')
+        record('PREDECESSOR_MEMBER_ALIAS_HELD' if args.nginx_overlap_successor else 'INITIAL_MEMBER_ALIAS_HELD_BY_COORDINATOR')
 
     def stop_nginx(process, worker_fd, label):
         process.send_signal(signal.SIGQUIT)
@@ -164,20 +185,11 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             alias_listener.bind(str(root / 'initial-alias.sock'))
             alias_listener.listen(1); alias_listener.settimeout(15)
         old, old_body, old_prefix, old_fd = start_nginx('old', caps[0], False)
-        if alias_listener is not None:
-            alias_channel, _ = alias_listener.accept()
-            message, ancillary, flags, _ = alias_channel.recvmsg(1, socket.CMSG_SPACE(4))
-            alias_channel.close()
-            for level, kind, data in ancillary:
-                require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
-                    'initial member alias transfer used unexpected authority')
-                values = array.array('i'); values.frombytes(data)
-                require(len(values) == 1 and held_alias is None, 'expected one initial member alias')
-                held_alias = values[0]
-            require(message == b'A' and not flags and held_alias is not None,
-                'initial Nginx owner did not export its live member(0) alias')
-            record('INITIAL_MEMBER_ALIAS_HELD_BY_COORDINATOR')
+        if alias_listener is not None and not args.nginx_overlap_successor:
+            receive_alias()
         command('CONTROL'); command('CENSUS0')
+        if args.nginx_overlap_successor:
+            command('EARLY_NEXT'); command('WRONG_NEXT')
         held = socket.create_connection(('198.18.0.2', 4108), timeout=10)
         held.settimeout(10); http(held, old_body)
         if args.nginx_overlap_source_streams or args.nginx_overlap_source_lc:
@@ -230,6 +242,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 command(census_command)
                 record('TWELVE_SOURCE_STREAMS_ON_OLD_OWNER', elapsed=time.monotonic() - source_started)
         new, new_body, new_prefix, new_fd = start_nginx('new', caps[1], True)
+        if alias_listener is not None and args.nginx_overlap_successor:
+            receive_alias()
         command('CENSUS1'); command('EARLY_RETIRE'); command('WRONG_RETIRE'); fresh(old_body)
         record('BOTH_NGINX_LIVE_SELECTOR_ZERO')
         command('BEGIN'); record('CUTOVER_PREPARED')
@@ -240,9 +254,11 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             if args.nginx_overlap_abort:
                 # The native ingress freeze precedes socket/flow-map admission.
                 # Abort must replay this real SYN to the unchanged old selector.
-                command('ABORT'); command('EARLY_RETIRE'); record('CUTOVER_ABORTED_WITH_QUEUED_SYN')
+                command('ABORT'); command('ABORT_NEXT'); command('EARLY_RETIRE'); record('CUTOVER_ABORTED_WITH_QUEUED_SYN')
             else:
-                command('COMMIT'); command('EARLY_RETIRE'); record('CUTOVER_COMMITTED_WITH_QUEUED_SYN')
+                command('COMMIT'); command('EARLY_RETIRE')
+                if args.nginx_overlap_successor: command('EARLY_NEXT')
+                record('CUTOVER_COMMITTED_WITH_QUEUED_SYN')
             with queued.result(timeout=10) as connection:
                 connection.settimeout(10); http(connection, old_body if args.nginx_overlap_abort else new_body, True)
         http(held, old_body); record('OLD_KEEPALIVE_SURVIVED')
@@ -267,12 +283,71 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             if source_probe is not None:
                 require(source_probe.poll() is None, 'source probe did not survive old-owner drain')
                 record('SOURCE_PROBE_ALIVE_AFTER_OLD_EXIT', elapsed=time.monotonic() - source_started)
-            if held_alias is not None:
+            if held_alias is not None and not args.nginx_overlap_successor:
                 command('ALIAS_RETIRE')
                 os.close(held_alias); held_alias = None
                 record('INITIAL_MEMBER_ALIAS_CLOSED')
             command('RETIRE0'); command('CLOSED0')
             fresh(new_body); record('NEW_HTTP_AFTER_OLD_EXIT')
+            if args.nginx_overlap_successor:
+                held = socket.create_connection(('198.18.0.2', 4108), timeout=10)
+                held.settimeout(10); http(held, new_body)
+                command('NEXT')
+                message, ancillary, flags, _ = transfer.recvmsg(1, socket.CMSG_SPACE(4))
+                delegated = []
+                for level, kind, data in ancillary:
+                    require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
+                        'unexpected successor authority')
+                    values = array.array('i'); values.frombytes(data); delegated.extend(values)
+                caps.extend(delegated)
+                require(message == b'N' and not flags and len(delegated) == 1,
+                    'successor must delegate only one candidate slot')
+                cookies = [re.search(r'SUCCESSOR_COOKIE preserved=(\d+)', line)
+                    for line in getattr(controller, '_ker_recent_lines', [])]
+                preserved = [int(match[1]) for match in cookies if match]
+                require(len(preserved) == 1 and preserved[0], 'missing exact adopted-listener cookie proof')
+                record('SUCCESSOR_ADOPTED_SAME_LISTENER', cookie=preserved[0])
+                http(held, new_body); fresh(new_body)
+                if held_alias is not None:
+                    (root / 'rearm.trigger').touch()
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        text = (new_prefix / 'runtime.trace').read_text()
+                        if f'NGINX_TEST_REARM_SEALED result=-1 error={errno.EOPNOTSUPP}' in text: break
+                        time.sleep(.01)
+                    else: raise RuntimeError('predecessor REARM was not permanently sealed: ' + text)
+                    record('PREDECESSOR_REARM_REJECTED')
+                third, third_body, third_prefix, third_fd = start_nginx('next', delegated[0], True)
+                command('CENSUS1'); command('OLD_CAPS'); fresh(new_body)
+                record('OLD_CAPABILITIES_CANNOT_CHANGE_SUCCESSOR_SELECTOR')
+                command('DROP_PARENT')
+                for cap in caps[:2]: os.close(cap)
+                del caps[:2]
+                command('BEGIN'); record('SECOND_CUTOVER_PREPARED')
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 10)
+                    command('QUEUED')
+                    require(not queued.done(), 'second queued SYN completed before commit')
+                    command('COMMIT'); record('SECOND_CUTOVER_COMMITTED_WITH_QUEUED_SYN')
+                    with queued.result(timeout=10) as connection:
+                        connection.settimeout(10); http(connection, third_body, True)
+                http(held, new_body); record('PREDECESSOR_KEEPALIVE_SURVIVED_SECOND_COMMIT')
+                held.close(); held = None
+                stop_nginx(new, new_fd, 'new')
+                if held_alias is not None:
+                    # Wait for the predecessor task's independent ker_fd pin to
+                    # be released. Its transient EBUSY must not mask an alias bug.
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        if 'listener-ref-put-at-task-release' in broker_logs['stdout'].read_text(): break
+                        time.sleep(.001)
+                    else: raise RuntimeError('predecessor task did not release its listener reference')
+                    command('ALIAS_RETIRE')
+                    record('PREDECESSOR_ALIAS_BLOCKED_SUCCESSOR_RETIREMENT')
+                    os.close(held_alias); held_alias = None
+                command('RETIRE0'); command('CLOSED0')
+                fresh(third_body); record('THIRD_HTTP_AFTER_PREDECESSOR_EXIT')
+                new, new_body, new_prefix, new_fd = third, third_body, third_prefix, third_fd
         if source_probe is not None:
             source_probe.wait(timeout=max(.1, source_budget - (time.monotonic() - source_started)))
             source_output.flush()
@@ -321,7 +396,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             caps.clear()
             command('RELEASE'); command('CLOSED0')
         else:
-            stop_nginx(new, new_fd, 'new'); command('CLOSED1')
+            stop_nginx(new, new_fd, 'next' if args.nginx_overlap_successor else 'new'); command('CLOSED1')
         command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
         _, errors = controller.communicate(timeout=10)
         require(controller.returncode == 0, f'coordinator cleanup failed: {errors!r}')
@@ -341,11 +416,14 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         evidence.update(status='PASS', stats=report, logs={
             label: {'trace': (prefix / 'runtime.trace').read_text(),
                 'error_log': (prefix / 'logs/error.log').read_text()}
-            for label, prefix in [('old', old_prefix), ('new', new_prefix)]})
+            for label in ('old', 'new', 'next') if (prefix := root / label).exists()})
         if not args.nginx_overlap_abort:
-            require('private candidate admission: allowed=1 created=1' in
-                evidence['logs']['new']['error_log'], 'new Nginx did not consume original-map admission')
+            for label in (('new', 'next') if args.nginx_overlap_successor else ('new',)):
+                require('private candidate admission: allowed=1 created=1' in
+                    evidence['logs'][label]['error_log'],
+                    label + ' Nginx did not consume original-map admission')
         print('NGINX_OVERLAP_PASS outcome=' + evidence['outcome'] +
+            ' successor=' + str(args.nginx_overlap_successor).lower() +
             ' queued_syn=true old_keepalive=true old_exit=true outstanding=0')
         return 0
     except BaseException as error:
@@ -382,12 +460,13 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             except (OSError, subprocess.TimeoutExpired):
                 broker.kill(); broker.wait()
         for reader in broker_readers: reader.join(timeout=2)
+        evidence['controller_log'] = getattr(controller, '_ker_recent_lines', []) if controller is not None else []
         evidence['broker_logs'] = {name: path.read_text(errors='replace') for name, path in broker_logs.items()}
         evidence['logs'] = {
             label: {name: path.read_text(errors='replace')
                 for name, path in [('trace', root / label / 'runtime.trace'),
                     ('error_log', root / label / 'logs/error.log')] if path.exists()}
-            for label in ('old', 'new')}
+            for label in ('old', 'new', 'next')}
         if args.nginx_candidate_evidence:
             args.nginx_candidate_evidence.parent.mkdir(parents=True, exist_ok=True)
             args.nginx_candidate_evidence.write_text(json.dumps(evidence, indent=2) + '\n')

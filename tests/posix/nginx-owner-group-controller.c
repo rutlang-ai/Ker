@@ -70,7 +70,7 @@ int main(int argc, char **argv)
     header->cmsg_len = CMSG_LEN(sizeof(slots));
     memcpy(CMSG_DATA(header), slots, sizeof(slots));
     CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
-    close((int)transfer);
+    int previous_plan = -1, previous_group = -1;
     int group = -1, census[2] = {-1, -1}, cutover = -1;
     char command[32];
     while (fgets(command, sizeof(command), stdin)) {
@@ -85,10 +85,75 @@ int main(int argc, char **argv)
             struct ker_socket_member_census_snapshot state;
             CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[index], &state));
             CHECK(state.listener_cookie && state.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+        } else if (!strcmp(command, "EARLY_NEXT\n")) {
+            CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EAGAIN);
+        } else if (!strcmp(command, "ABORT_NEXT\n")) {
+            CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
+        } else if (!strcmp(command, "WRONG_NEXT\n")) {
+            CHECK(ker_socket_client_owner_group_successor_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
+        } else if (!strcmp(command, "NEXT\n")) {
+            CHECK(previous_plan < 0 && previous_group < 0 && cutover >= 0);
+            CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EAGAIN);
+            close(cutover); cutover = -1;
+            uint64_t deadline = now_ns() + UINT64_C(10000000000);
+            int next;
+            do {
+                next = ker_socket_client_owner_group_successor_plan(&client, plan);
+                if (next >= 0 || errno != EAGAIN) break;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(next >= 0);
+            enum ker_socket_broker_kind kind;
+            int flags = -1;
+            CHECK(!ker_socket_client_describe(&client, next, &kind, &flags) &&
+                kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN && !flags);
+            CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EALREADY);
+            CHECK(ker_socket_client_owner_group_slot(&client, next, 0) == -1 && errno == EALREADY);
+            int next_group = ker_socket_client_owner_group_control(&client, next);
+            CHECK(next_group >= 0);
+            int next_census = ker_socket_client_member_census_create(&client, next_group, 0);
+            struct ker_socket_member_census_snapshot before, after;
+            CHECK(next_census >= 0 && !ker_socket_client_member_census_snapshot(&client, census[1], &before));
+            CHECK(!ker_socket_client_member_census_snapshot(&client, next_census, &after));
+            CHECK(before.listener_cookie && before.listener_cookie == after.listener_cookie &&
+                after.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+            printf("SUCCESSOR_COOKIE preserved=%llu\n", (unsigned long long)after.listener_cookie);
+            previous_plan = plan; plan = next;
+            previous_group = group; group = next_group;
+            for (unsigned index = 0; index < 2; ++index) {
+                close(slots[index]); slots[index] = -1;
+                close(census[index]); census[index] = -1;
+            }
+            census[0] = next_census;
+            slots[1] = ker_socket_client_owner_group_slot(&client, plan, 1);
+            CHECK(slots[1] >= 0);
+            CHECK(ker_socket_client_owner_group_slot(&client, plan, 1) == -1 && errno == EALREADY);
+            memcpy(CMSG_DATA(header), &slots[1], sizeof(slots[1]));
+            header->cmsg_len = CMSG_LEN(sizeof(slots[1]));
+            message.msg_controllen = CMSG_SPACE(sizeof(slots[1]));
+            CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
+        } else if (!strcmp(command, "OLD_CAPS\n")) {
+            CHECK(previous_plan >= 0 && previous_group >= 0);
+            CHECK(ker_socket_client_owner_group_cutover_begin(&client, previous_plan) == -1 && errno == EALREADY);
+            CHECK(ker_socket_client_reuseport_group_select(&client, previous_group, 0) == -1 && errno == EOPNOTSUPP);
+            CHECK(!ker_socket_client_reuseport_group_select(&client, previous_group, 1));
+        } else if (!strcmp(command, "DROP_PARENT\n")) {
+            CHECK(previous_plan >= 0 && previous_group >= 0);
+            close(previous_plan); previous_plan = -1;
+            close(previous_group); previous_group = -1;
         } else if (!strcmp(command, "EARLY_RETIRE\n")) {
             CHECK(ker_socket_client_owner_group_retire_initial_listener(&client, plan) == -1 && errno == EAGAIN);
         } else if (!strcmp(command, "ALIAS_RETIRE\n")) {
-            CHECK(ker_socket_client_owner_group_retire_initial_listener(&client, plan) == -1 && errno == EAGAIN);
+            uint64_t deadline = now_ns() + UINT64_C(200000000);
+            unsigned attempts = 0;
+            do {
+                CHECK(ker_socket_client_owner_group_retire_initial_listener(&client, plan) == -1 && errno == EAGAIN);
+                ++attempts;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(attempts > 1);
         } else if (!strcmp(command, "WRONG_RETIRE\n")) {
             CHECK(ker_socket_client_owner_group_retire_initial_listener(&client, slots[0]) == -1 && errno == ENOTSOCK);
         } else if (!strcmp(command, "RETIRE0\n")) {
@@ -156,6 +221,9 @@ int main(int argc, char **argv)
     }
     if (group >= 0) close(group);
     if (plan >= 0) close(plan);
+    if (previous_plan >= 0) close(previous_plan);
+    if (previous_group >= 0) close(previous_group);
+    close((int)transfer);
     ker_socket_client_close(&client);
     return 0;
 }
