@@ -586,3 +586,46 @@ actual `LC_PROGRESS elapsed=3.0 n=360 fail=0` line. The six oracle controls,
 twelve related native regressions (including the original long-stream probe,
 identity rejection, cancellation/quarantine and retirement cycles), and three
 channel/LKL checks passed. Earlier failed runs remain separately archived.
+
+### Admission queue handoff between live owners
+
+A retired admission window previously retained the process-wide task singleton.
+Consequently, a second owner could not attach until the retired owner exited,
+even after its original flow map and kernel queue were safely closed. This was
+an additional blocker for a subsequent Nginx generation on the same broker.
+
+The adaptation layer now tracks up to 64 attached tasks independently of the
+single fixed NFQUEUE reservation. Retirement relinquishes the reservation only
+after disabling the kernel gate, draining notifications, closing the queue and
+receiving the authenticated owner's map-close acknowledgment. The retired task
+keeps its original channel, pidfd and listener reference until exit or stop.
+A new task or a rearming retired task must exclusively reserve the queue;
+`EBUSY` leaves the retired task's epoch, lease and closed map unchanged. Failed
+or quarantined tasks retain their reservation until terminal release. Releasing
+one retired task cannot release another task's reservation.
+
+Runtime shutdown pins a snapshot of all tasks, stops and joins each worker and
+puts every listener reference before native finalization. It does not hold the
+registry mutex while joining: retirement completion also needs that mutex.
+Repeated/concurrent shutdown waits for the first shutdown to complete. New
+attachments are rejected once shutdown begins.
+
+`native-c17-admission-window-handoff` uses three real FF processes, their pinned
+original flow maps and one original-Linux TAP broker. It exchanges four strictly
+increasing leases, verifies busy start/rearm rejection, echoes nine TCP payloads
+through active and retired listeners, and checks per-owner map accounting. It
+also releases retired owners while another owner remains active, then proves the
+active reservation is still exclusive. The unmodified task singleton fails when
+the second owner attaches after the first retirement.
+
+`native-c17-admission-handoff-stop-live` stops both owners while one is retired
+and the other is active, shuts down the broker and checks that both listener
+references are put exactly once before native finalization. Both tests require
+zero outstanding broker I/O state. TCP behavior and imported upstream sources
+are unchanged.
+
+This is a prerequisite for repeated overlapping Nginx handoffs. The staged
+owner-group plan still permits one cutover attempt; adopting its surviving
+listener into a successor plan and the full same-master HUP/USR2 generation FSM
+remain outstanding. The migration inventory remains 362 scenario-adapted,
+0 partial and 1 blocked (`test_graceful_reload.sh::entrypoint`).

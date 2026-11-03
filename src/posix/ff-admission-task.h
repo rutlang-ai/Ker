@@ -33,7 +33,13 @@ struct ker_ff_admission_task_config {
 };
 
 /* Private cross-DSO lifecycle bridge. The task retains authenticated host
- * descriptors and all original-LKL queue/identity state inside ker-posix. */
+ * descriptors and all original-LKL queue/identity state inside ker-posix.
+ * Up to 64 tasks may remain attached, but only one can reserve the fixed queue.
+ * Successful retirement releases that reservation after both the kernel drain
+ * and authenticated owner map-close ACK. Retired tasks retain their channel and
+ * listener reference until owner exit/stop. Start or rearm while another task
+ * reserves the queue returns EBUSY without changing a retired window. Failed or
+ * quarantined reservations remain held until terminal task release. */
 int ker_posix_ff_admission_task_start(
 	const struct ker_ff_admission_task_config *config,
 	struct ker_ff_admission_task **task);
