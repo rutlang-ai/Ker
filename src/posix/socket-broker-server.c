@@ -3541,6 +3541,17 @@ static int owner_group_retire_initial_listener(
         group->incarnation != plan->group_incarnation) return -ESTALE;
     if (group->failed) return -ECANCELED;
     if (group->activation_state[0] == SB_MEMBER_ACTIVATION_RETIRED) return 0;
+    /* member_create() can make a live initial-member alias without marking it
+     * as an activation capability. Keep the old reuseport member published
+     * until every broker-owned descriptor for that physical member is closed. */
+    for (size_t i = 0; i < KER_SB_OBJECTS; ++i) {
+        const struct sb_object *alias = &server->objects[i];
+        if (alias->live && alias->kind == KER_SOCKET_BROKER_SOCKET &&
+            alias->group_slot == plan->group_slot &&
+            alias->group_incarnation == group->incarnation &&
+            alias->group_index == 0 && alias->native_fd >= 0)
+            return -EAGAIN;
+    }
     if (!group->cutover_started || group->selected_member != 1 ||
         group->cutover.phase != KER_SOCKET_GROUP_CUTOVER_COMMITTED ||
         group->cutover.controller || group->activation_caps[0] ||

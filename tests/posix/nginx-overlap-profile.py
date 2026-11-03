@@ -26,6 +26,8 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     controller = None
     processes, caps, pidfds = [], [], []
     held = None
+    held_alias = None
+    alias_listener = None
     evidence = {'status': 'RUNNING', 'events': []}
 
     def record(event, **fields):
@@ -56,12 +58,16 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         ini = prefix / 'fstack.ini'
         ini.write_text(f'[ker_socket_broker]\nversion=1\npath={rpc_path}\n\n[dpdk]\ngraceful_reload=0\n')
         config = prefix / 'nginx.conf'
-        config.write_text(f'''load_module {args.nginx_candidate_module};
-daemon off; master_process on; worker_processes 1; user root;
+        module = args.nginx_candidate_module
+        user_directive = 'user root;'
+        if args.nginx_overlap_alias_regression and not candidate:
+            module = args.nginx_overlap_alias_module
+        config.write_text(f'''load_module {module};
+daemon off; master_process on; worker_processes 1; {user_directive}
 fstack_conf "fstack.ini"; timer_resolution 1ms;
 pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
 env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
-env KER_FSTACK_RUNTIME_TRACE;
+env KER_FSTACK_RUNTIME_TRACE; env KER_NGINX_TEST_INITIAL_ALIAS_SOCKET;
 events {{ worker_connections 256; use epoll; }}
 http {{ access_log off; sendfile off; keepalive_timeout 300;
 server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
@@ -71,6 +77,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             args.nginx_candidate_runtime, args.preload])), 'KER_FSTACK_NGINX_INI': str(ini),
             'KER_FSTACK_RUNTIME_TRACE': str(trace),
             ('KER_NGINX_CANDIDATE_SLOT_FD' if candidate else 'KER_NGINX_INITIAL_SLOT_FD'): str(slot)}
+        if not candidate and args.nginx_overlap_alias_regression:
+            env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
         process = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
             '-c', str(config)], pass_fds=(slot,), env=env, start_new_session=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -109,7 +117,24 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS, 'unexpected delegated authority')
             values = array.array('i'); values.frombytes(data); caps.extend(values)
         require(message == b'N' and not flags and len(caps) == 2, 'expected exactly two owner slots')
+        if args.nginx_overlap_alias_regression:
+            alias_listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            alias_listener.bind(str(root / 'initial-alias.sock'))
+            alias_listener.listen(1); alias_listener.settimeout(15)
         old, old_body, old_prefix, old_fd = start_nginx('old', caps[0], False)
+        if alias_listener is not None:
+            alias_channel, _ = alias_listener.accept()
+            message, ancillary, flags, _ = alias_channel.recvmsg(1, socket.CMSG_SPACE(4))
+            alias_channel.close()
+            for level, kind, data in ancillary:
+                require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
+                    'initial member alias transfer used unexpected authority')
+                values = array.array('i'); values.frombytes(data)
+                require(len(values) == 1 and held_alias is None, 'expected one initial member alias')
+                held_alias = values[0]
+            require(message == b'A' and not flags and held_alias is not None,
+                'initial Nginx owner did not export its live member(0) alias')
+            record('INITIAL_MEMBER_ALIAS_HELD_BY_COORDINATOR')
         command('CONTROL'); command('CENSUS0')
         held = socket.create_connection(('198.18.0.2', 4108), timeout=10)
         held.settimeout(10); http(held, old_body)
@@ -126,7 +151,12 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 connection.settimeout(10); http(connection, new_body, True)
         http(held, old_body); record('OLD_KEEPALIVE_SURVIVED')
         held.close(); held = None
-        stop_nginx(old, old_fd, 'old'); command('RETIRE0'); command('CLOSED0')
+        stop_nginx(old, old_fd, 'old')
+        if held_alias is not None:
+            command('ALIAS_RETIRE')
+            os.close(held_alias); held_alias = None
+            record('INITIAL_MEMBER_ALIAS_CLOSED')
+        command('RETIRE0'); command('CLOSED0')
         fresh(new_body); record('NEW_HTTP_AFTER_OLD_EXIT')
         stop_nginx(new, new_fd, 'new'); command('CLOSED1')
         command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
@@ -154,6 +184,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         raise
     finally:
         if held is not None: held.close()
+        if held_alias is not None: os.close(held_alias)
+        if alias_listener is not None: alias_listener.close()
         for process in processes:
             if process.poll() is None:
                 try: os.killpg(process.pid, signal.SIGKILL)

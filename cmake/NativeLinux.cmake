@@ -367,6 +367,31 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     target_compile_options(ker-fstack-nginx-owner-activation PRIVATE -Wall -Wextra -Werror)
     target_link_libraries(ker-fstack-nginx-owner-activation PRIVATE
         ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    if(BUILD_TESTING)
+        add_library(ker-fstack-nginx-owner-activation-alias-test MODULE
+            src/posix/fstack-nginx-owner-activation-module.c
+            src/posix/nginx-candidate-admission.c
+            src/posix/nginx-candidate-map.c)
+        set_target_properties(ker-fstack-nginx-owner-activation-alias-test PROPERTIES
+            PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation-alias-test")
+        target_include_directories(ker-fstack-nginx-owner-activation-alias-test PRIVATE
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/core"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/event/modules"
+            "${KER_FSTACK_NGINX_SOURCE_ROOT}/app/nginx-1.28.0/src/os/unix"
+            "${KER_FSTACK_NGINX_BUILD_DIR}"
+            "${PROJECT_SOURCE_DIR}/include"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-address-policy"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-flow-map"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-ipc"
+            "${PROJECT_SOURCE_DIR}/third_party/fstack-reload")
+        target_compile_features(ker-fstack-nginx-owner-activation-alias-test PRIVATE c_std_11)
+        target_compile_options(ker-fstack-nginx-owner-activation-alias-test PRIVATE -Wall -Wextra -Werror)
+        target_compile_definitions(ker-fstack-nginx-owner-activation-alias-test PRIVATE
+            KER_NGINX_OWNER_TEST_ALIAS=1)
+        target_link_libraries(ker-fstack-nginx-owner-activation-alias-test PRIVATE
+            ker-socket-client ker-ini OpenSSL::Crypto ${CMAKE_DL_LIBS})
+    endif()
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/fstack-nginx-owner-activation-module.c"
         ker_fstack_nginx_owner_activation_source_sha256)
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-admission.c"

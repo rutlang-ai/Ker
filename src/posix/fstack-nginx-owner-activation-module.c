@@ -29,6 +29,9 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include <sys/socket.h>
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+#include <sys/un.h>
+#endif
 #include <poll.h>
 #include <sys/stat.h>
 
@@ -53,8 +56,55 @@ static bool respawn_plan_pending;
 static bool worker_prepared;
 static bool candidate_mode;
 static bool delegated_initial_mode;
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+static int test_initial_alias_slot = -1;
+#endif
 int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle);
 int ker_nginx_candidate_worker_commit(int slot);
+
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+static ngx_int_t test_export_initial_member_alias(ngx_cycle_t *cycle)
+{
+    (void)cycle;
+    const char *path = getenv("KER_NGINX_TEST_INITIAL_ALIAS_SOCKET");
+    if (!path) return NGX_OK;
+    if (test_initial_alias_slot < 0 ||
+        strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return NGX_ERROR;
+    typedef int (*member_fn)(int);
+    member_fn member = (member_fn)dlsym(RTLD_DEFAULT,
+        "ker_sb_preload_ff_staged_group_member");
+    if (!member) return NGX_ERROR;
+    int alias = member(test_initial_alias_slot);
+    int error = errno;
+    (void)syscall(SYS_close, test_initial_alias_slot);
+    test_initial_alias_slot = -1;
+    if (alias < 0) { errno = error; return NGX_ERROR; }
+    int channel = (int)syscall(SYS_socket, AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if (channel < 0) { error = errno; (void)syscall(SYS_close, alias); errno = error; return NGX_ERROR; }
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    memcpy(address.sun_path, path, strlen(path) + 1);
+    socklen_t address_length = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + strlen(path) + 1);
+    int result = (int)syscall(SYS_connect, channel, &address, address_length);
+    char byte = 'A';
+    struct iovec vector = {.iov_base = &byte, .iov_len = 1};
+    char control[CMSG_SPACE(sizeof(alias))] = {0};
+    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control)};
+    if (!result) {
+        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+        header->cmsg_level = SOL_SOCKET;
+        header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(sizeof(alias));
+        memcpy(CMSG_DATA(header), &alias, sizeof(alias));
+        result = (int)syscall(SYS_sendmsg, channel, &message, MSG_NOSIGNAL) == 1 ? 0 : -1;
+    }
+    error = errno;
+    (void)syscall(SYS_close, alias);
+    (void)syscall(SYS_close, channel);
+    errno = error;
+    return result ? NGX_ERROR : NGX_OK;
+}
+#endif
 
 /* Serial-cycle control exists only in the explicitly configured profile. */
 static int cycle_control_fd = -1;
@@ -960,6 +1010,19 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
         return -1;
     }
     if (!candidate_mode) {
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+        if (getenv("KER_NGINX_TEST_INITIAL_ALIAS_SOCKET")) {
+            test_initial_alias_slot = (int)syscall(SYS_fcntl, slot,
+                F_DUPFD_CLOEXEC, 0);
+            if (test_initial_alias_slot < 0) {
+                int error = errno;
+                (void)syscall(SYS_close, slot);
+                current_slot = -1;
+                errno = error;
+                return -1;
+            }
+        }
+#endif
         (void)syscall(SYS_close, slot);
         current_slot = -1;
     }
@@ -1013,7 +1076,11 @@ ngx_module_t ker_fstack_nginx_owner_activation_module = {
     NGX_CORE_MODULE,
     NULL,
     module_init,
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+    test_export_initial_member_alias,
+#else
     NULL,
+#endif
     NULL,
     NULL,
     NULL,

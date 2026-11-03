@@ -87,6 +87,8 @@ int main(int argc, char **argv)
             CHECK(state.listener_cookie && state.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
         } else if (!strcmp(command, "EARLY_RETIRE\n")) {
             CHECK(ker_socket_client_owner_group_retire_initial_listener(&client, plan) == -1 && errno == EAGAIN);
+        } else if (!strcmp(command, "ALIAS_RETIRE\n")) {
+            CHECK(ker_socket_client_owner_group_retire_initial_listener(&client, plan) == -1 && errno == EAGAIN);
         } else if (!strcmp(command, "WRONG_RETIRE\n")) {
             CHECK(ker_socket_client_owner_group_retire_initial_listener(&client, slots[0]) == -1 && errno == ENOTSOCK);
         } else if (!strcmp(command, "RETIRE0\n")) {
