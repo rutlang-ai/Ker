@@ -418,3 +418,14 @@ This leaf is one-shot. Candidate HUP/respawn, USR2 qualification, repeated
 candidate slots, same-master old/new Nginx orchestration and production FSM
 integration remain unsupported. The complete source shell entrypoint and
 its `rt01`/`rt02`/`rv9`/fault matrix remain blocked.
+
+
+### Real old/new Nginx overlap qualification
+
+The candidate leaf now has a separate two-real-Nginx qualification:
+`native-nginx-overlapping-owner-cutover-tap`. It exercises the existing C28
+queued-SYN transaction, preserves an old established HTTP connection, retires
+the dead old owner's listener pin through a pidfd-gated typed API, and proves
+new HTTP after old LISTEN=0. See the [runtime profile and exact limits](fstack-nginx-runtime.md#two-real-nginx-owners-and-a-committed-cutover).
+This advances the overlap prerequisite; the original shell entrypoint remains
+blocked and the source matrix is not counted as migrated.

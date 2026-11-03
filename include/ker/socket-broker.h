@@ -253,6 +253,13 @@ int ker_socket_client_owner_group_control(struct ker_socket_client *client,
 int ker_socket_client_owner_group_control_after_exit(
     struct ker_socket_client *client, int plan_cap);
 
+/* Release the initial listener pin after a committed cutover, confirmed initial
+ * owner exit and closure of all application listener aliases. This does not
+ * retire accepted sockets or certify that their TCP state has drained. Live
+ * owners, outstanding aliases and incomplete cutovers return EAGAIN. */
+int ker_socket_client_owner_group_retire_initial_listener(
+    struct ker_socket_client *client, int plan_cap);
+
 /* Bounded first-cutover coordinator for one staged owner group. The broker
  * derives both member identities and the original-Linux listener from the
  * plan. begin starts asynchronous gate setup and can return in STARTING; poll

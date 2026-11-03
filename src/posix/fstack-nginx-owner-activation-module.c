@@ -52,6 +52,7 @@ static int owner_backlog;
 static bool respawn_plan_pending;
 static bool worker_prepared;
 static bool candidate_mode;
+static bool delegated_initial_mode;
 int ker_nginx_candidate_master_prepare(ngx_cycle_t *cycle);
 int ker_nginx_candidate_worker_commit(int slot);
 
@@ -779,7 +780,7 @@ failed:
 int
 ker_fstack_nginx_owner_activation_respawn_prepare(void)
 {
-    if (candidate_mode) { errno = EOPNOTSUPP; return -1; }
+    if (candidate_mode || delegated_initial_mode) { errno = EOPNOTSUPP; return -1; }
     /* The serial controller owns one watch per full HUP cycle. Nginx's
      * worker-crash respawn path does not pass through module_init, so it
      * cannot create a successor watch or obtain a matching outer receipt.
@@ -860,26 +861,31 @@ module_init(ngx_cycle_t *cycle)
             "C22 owner-activation module refuses unsupported Nginx profile");
         return NGX_ERROR;
     }
-    /* Candidate startup is one-shot. HUP must not fall back to creating an
+    /* Delegated startup is one-shot. HUP must not fall back to creating an
      * unrelated initial plan when Nginx rebuilds its environment. */
-    if (candidate_mode) {
+    if (candidate_mode || delegated_initial_mode) {
         ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
-            "private Nginx candidate reload is unsupported");
+            "private delegated Nginx owner reload is unsupported");
         return NGX_ERROR;
     }
     const char *candidate_fd = getenv("KER_NGINX_CANDIDATE_SLOT_FD");
-    if (candidate_fd) {
+    const char *initial_fd = getenv("KER_NGINX_INITIAL_SLOT_FD");
+    if (candidate_fd && initial_fd) return NGX_ERROR;
+    const char *delegated_fd = candidate_fd ? candidate_fd : initial_fd;
+    if (delegated_fd) {
         char *end;
         errno = 0;
-        long slot = strtol(candidate_fd, &end, 10);
-        if (errno || candidate_fd[0] < '0' || candidate_fd[0] > '9' || *end || slot < 3 || slot > INT_MAX ||
-            fcntl((int)slot, F_GETFD) < 0 || candidate_mode ||
+        long slot = strtol(delegated_fd, &end, 10);
+        if (errno || delegated_fd[0] < '0' || delegated_fd[0] > '9' || *end || slot < 3 || slot > INT_MAX ||
+            fcntl((int)slot, F_GETFD) < 0 ||
             getenv("KER_NGINX_CYCLE_FD")) return NGX_ERROR;
         if (ngx_test_config) return NGX_OK;
-        if (ker_nginx_candidate_master_prepare(cycle)) return NGX_ERROR;
-        candidate_mode = true;
+        if (candidate_fd && ker_nginx_candidate_master_prepare(cycle)) return NGX_ERROR;
+        candidate_mode = candidate_fd != NULL;
+        delegated_initial_mode = initial_fd != NULL;
         current_slot = (int)slot;
-        trace_line("NGINX_CANDIDATE_MASTER_READY pid=%ld\n", (long)getpid());
+        trace_line(candidate_mode ? "NGINX_CANDIDATE_MASTER_READY pid=%ld\n" :
+            "NGINX_INITIAL_DELEGATED_MASTER_READY pid=%ld\n", (long)getpid());
         return NGX_OK;
     }
     if (ngx_test_config) return NGX_OK;
@@ -930,7 +936,7 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
     if (worker_prepared || !process || !worker ||
         *process != NGX_PROCESS_WORKER || *worker != 0 ||
         ngx_cycle != cycle ||
-        current_slot < 0 || (!candidate_mode && current_plan < 0)) { errno = EPROTO; return -1; }
+        current_slot < 0 || (!candidate_mode && !delegated_initial_mode && current_plan < 0)) { errno = EPROTO; return -1; }
     int slot = current_slot;
     trace_line("C22_WORKER_SLOT pid=%ld slot=%d\n", (long)getpid(), slot);
     if (current_plan >= 0) {

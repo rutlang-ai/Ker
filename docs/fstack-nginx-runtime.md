@@ -323,3 +323,44 @@ invalid-capability boundary, candidate HTTP after selection, surviving old
 SDK TCP stream and cleanup qualification. This is a one-shot candidate leaf;
 candidate HUP, respawn, USR2 and the complete generation FSM remain outside
 the profile. See [qualification details](fstack-graceful-reload-gap.md#real-nginx-candidate-admission-leaf).
+
+
+### Two real Nginx owners and a committed cutover
+
+`native-nginx-overlapping-owner-cutover-tap` replaces the old SDK actor with
+another unchanged pinned Nginx executable. A test-only coordinator reserves
+one staged group and delegates slot zero through `KER_NGINX_INITIAL_SLOT_FD`
+and slot one through `KER_NGINX_CANDIDATE_SLOT_FD`. Each Nginx master forks one
+broker-authenticated worker; neither receives the plan or selector authority.
+Both use the existing restricted IPv4/reuseport, `graceful_reload=0` profile.
+Delegated initial and candidate masters reject HUP and worker respawn; this
+one-shot overlap profile does not change the existing serial-cycle path.
+
+The coordinator begins the existing broker cutover, waits for PREPARED, and
+observes a real host SYN retained before requesting commit. The original Linux
+stack accepts that connection on the new Nginx after COMMITTED. A previously
+established keepalive connection still returns the old Nginx body. Response
+length, MD5 and requested EOF are checked by the unchanged upstream
+`reload_probes/http_probe.py` response helper; this is not the complete shell
+matrix or its stream-duration oracle.
+
+After graceful exit and pidfd-confirmed death of the old worker, the new typed
+`ker_socket_client_owner_group_retire_initial_listener` operation releases only
+the initial listener pin. It requires a CONTROL plan, a settled committed
+cutover to member one, no remaining initial application listener aliases,
+exact owner identities and validated original-Linux listener cookies/marks.
+Premature calls return EAGAIN; a slot capability is rejected, and successful
+retirement is idempotent. Linux compacts the surviving reuseport member to
+physical index zero, and the adapter reattaches the existing native selector
+accordingly. A selector-attachment failure marks the group failed and poisons
+the remaining listener instead of reporting success. Accepted TCP sockets and
+protocol state remain under original Linux ownership; listener retirement does
+not certify that all accepted sockets have drained.
+
+The test requires old LISTEN=0 before fresh new-owner HTTP, then new LISTEN=0
+and broker outstanding=0 at shutdown. The build directory's
+`nginx-overlap-evidence.json` records both Nginx logs, runtime traces and events.
+The full same-master F-Stack generation FSM, twelve long-lived source streams,
+repeated overlap, failure/rollback matrix and shell cleanup contract remain
+unqualified. Migration inventory remains362 scenario-adapted,0 partial,1
+blocked (`test_graceful_reload.sh::entrypoint`).
