@@ -1582,6 +1582,18 @@ if(BUILD_TESTING)
     add_test(NAME native-fstack-host-runtime COMMAND ker-host-runtime-test)
     set_tests_properties(native-fstack-host-runtime PROPERTIES TIMEOUT 30 LABELS "native-tcp;fstack")
     set(ker_exception_ring_pmd "${ker_session_pmd_dir}/librte_net_ring.so")
+    foreach(ker_packet_retirement_mode command eof)
+        set(ker_packet_retirement_args)
+        if(ker_packet_retirement_mode STREQUAL "eof")
+            list(APPEND ker_packet_retirement_args --control-eof)
+        endif()
+        add_test(NAME native-worker-packet-retirement-${ker_packet_retirement_mode}
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/worker-packet-retirement.py"
+                --worker "$<TARGET_FILE:ker-io-worker>" --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                ${ker_packet_retirement_args})
+        set_tests_properties(native-worker-packet-retirement-${ker_packet_retirement_mode}
+            PROPERTIES TIMEOUT 30 LABELS "native-tcp;worker-lifetime;tap")
+    endforeach()
     add_executable(ker-exception-tap-test tests/posix/exception-tap.c
         src/posix/worker-exception-filter.c src/posix/worker-exception.c src/posix/worker-mbuf.c src/posix/pcap.c)
     target_include_directories(ker-exception-tap-test PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
