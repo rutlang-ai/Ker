@@ -4,6 +4,7 @@ import argparse
 import array
 import errno
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -935,6 +936,11 @@ def inside(args):
                 'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root),
             }
             if args.nginx_candidate_binary:
+                if args.nginx_overlap_controller:
+                    path = Path(__file__).with_name('nginx-overlap-profile.py')
+                    spec = importlib.util.spec_from_file_location('nginx_overlap_profile', path)
+                    profile = importlib.util.module_from_spec(spec); spec.loader.exec_module(profile)
+                    return profile.run(args, rpc_path, stop_path, stats, root, broker, app_env, wait_line)
                 return run_nginx_candidate(args, rpc_path, stop_path, stats, root, broker, app_env)
             if args.cutover_lifetime_only:
                 app_env.update({
@@ -1739,6 +1745,9 @@ def main():
     for name in ('binary', 'runtime', 'shim', 'module'):
         parser.add_argument('--nginx-candidate-' + name, type=Path)
     parser.add_argument('--nginx-candidate-evidence', type=Path)
+    parser.add_argument('--nginx-overlap-controller', type=Path)
+    parser.add_argument('--nginx-overlap-alias-module', type=Path)
+    parser.add_argument('--nginx-overlap-alias-regression', action='store_true')
     parser.add_argument('--staged-admission-only', action='store_true')
     parser.add_argument('--candidate-activation-only', action='store_true')
     parser.add_argument('--cutover-coordinator', action='store_true')
@@ -1760,8 +1769,14 @@ def main():
     args = parser.parse_args()
     candidate_inputs = [getattr(args, 'nginx_candidate_' + name)
         for name in ('binary', 'runtime', 'shim', 'module')]
-    if any(candidate_inputs) and (not all(candidate_inputs) or not args.reuseport_group_client):
+    if any(candidate_inputs) and (not all(candidate_inputs) or
+            not (args.reuseport_group_client or args.nginx_overlap_controller)):
         parser.error('candidate Nginx requires its runtime, shim, module and group client')
+    if args.nginx_overlap_controller and not all(candidate_inputs):
+        parser.error('overlap profile requires all pinned Nginx artifacts')
+    if args.nginx_overlap_alias_regression and (
+            not args.nginx_overlap_controller or not args.nginx_overlap_alias_module):
+        parser.error('initial alias regression requires the overlap controller and test module')
     if args.nginx_candidate_evidence and not args.nginx_candidate_binary:
         parser.error('candidate evidence requires the candidate Nginx profile')
     if args.inside:
@@ -1789,6 +1804,12 @@ def main():
             command += ['--nginx-candidate-' + name, str(getattr(args, 'nginx_candidate_' + name).resolve())]
         if args.nginx_candidate_evidence:
             command += ['--nginx-candidate-evidence', str(args.nginx_candidate_evidence.resolve())]
+        if args.nginx_overlap_controller:
+            command += ['--nginx-overlap-controller', str(args.nginx_overlap_controller.resolve())]
+        if args.nginx_overlap_alias_module:
+            command += ['--nginx-overlap-alias-module', str(args.nginx_overlap_alias_module.resolve())]
+        if args.nginx_overlap_alias_regression:
+            command.append('--nginx-overlap-alias-regression')
     if args.staged_admission_only:
         command.append('--staged-admission-only')
     if args.candidate_activation_only:

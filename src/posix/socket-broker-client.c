@@ -278,7 +278,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
     requires_zero = requires_zero ||
         operation == KER_SB_FF_OWNER_GROUP_PUBLISH_CANDIDATE ||
         operation == KER_SB_FF_OWNER_GROUP_CUTOVER_COMMIT ||
-        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT;
+        operation == KER_SB_FF_OWNER_GROUP_CUTOVER_ABORT ||
+        operation == KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER;
     if ((requires_cap && (!new_cap || result != 1)) || (requires_zero && result != 0)) {
         if (reply_rights[0] >= 0) (void)syscall(SYS_close, reply_rights[0]);
         ker_socket_client_close(client);
@@ -836,6 +837,15 @@ int ker_socket_client_owner_group_control_after_exit(
     if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT,
             NULL, 0, NULL, 0, &group, NULL) < 0) return -1;
     return group;
+}
+
+int ker_socket_client_owner_group_retire_initial_listener(
+    struct ker_socket_client *client, int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    return socket_call(client, plan_cap,
+        KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER, NULL, 0,
+        NULL, 0, NULL, NULL) < 0 ? -1 : 0;
 }
 
 int ker_socket_client_owner_group_cutover_begin(
