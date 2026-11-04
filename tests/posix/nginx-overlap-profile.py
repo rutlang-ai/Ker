@@ -53,6 +53,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     if args.nginx_overlap_abandon: evidence['outcome'] = 'abandon-before-cutover-retry-commit'
     if args.nginx_overlap_recover_dead: evidence['outcome'] = 'dead-candidate-recovery-retry-commit'
     if args.nginx_overlap_prelisten_death: evidence['outcome'] = 'prelisten-death-recovery-retry-commit'
+    if args.nginx_overlap_before_socket_death: evidence['outcome'] = 'before-socket-death-recovery-retry-commit'
     source_probe = None
     source_output = None
     source_started = None
@@ -133,7 +134,7 @@ fstack_conf "fstack.ini"; timer_resolution 1ms;
 pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
 env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
 env KER_FSTACK_RUNTIME_TRACE; env KER_NGINX_TEST_INITIAL_ALIAS_SOCKET;
-env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD; env KER_NGINX_TEST_SUPPRESS_READY; env KER_NGINX_TEST_STOP_BEFORE_LISTEN;
+env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD; env KER_NGINX_TEST_SUPPRESS_READY; env KER_NGINX_TEST_STOP_BEFORE_LISTEN; env KER_NGINX_TEST_STOP_BEFORE_SOCKET;
 events {{ worker_connections 256; use epoll; }}
 http {{ access_log off; sendfile off; keepalive_timeout 300; keepalive_requests 100000;
 server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
@@ -144,7 +145,9 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             'KER_FSTACK_RUNTIME_TRACE': str(trace),
             ('KER_NGINX_CANDIDATE_SLOT_FD' if candidate else 'KER_NGINX_INITIAL_SLOT_FD'): str(slot)}
         if suppress_ready: env['KER_NGINX_TEST_SUPPRESS_READY'] = '1'
-        if prelisten: env['KER_NGINX_TEST_STOP_BEFORE_LISTEN'] = '1'
+        if prelisten:
+            env['KER_NGINX_TEST_STOP_BEFORE_SOCKET' if args.nginx_overlap_before_socket_death else
+                'KER_NGINX_TEST_STOP_BEFORE_LISTEN'] = '1'
         if export_alias:
             env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
             if args.nginx_overlap_successor or args.nginx_overlap_retry:
@@ -203,8 +206,12 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             require('name=ff_listen ' not in text, 'stopped candidate reached ff_listen')
         else:
             require(re.search(r'name=ff_listen .*result=0\b', text), 'worker READY preceded listener publication')
-        require(not candidate or 'NGINX_CANDIDATE_TASK_READY' in text,
-            'worker READY preceded candidate admission setup')
+        if prelisten and args.nginx_overlap_before_socket_death:
+            require('NGINX_TEST_ADMISSION_ATTACHED_BEFORE_SOCKET' in text and
+                'NGINX_CANDIDATE_TASK_READY' not in text, 'worker reached socket activation')
+        else:
+            require(not candidate or 'NGINX_CANDIDATE_TASK_READY' in text,
+                'worker READY preceded candidate admission setup')
         record(label.upper() + ('_NGINX_INITIALIZED_WITHOUT_READY' if suppress_ready or prelisten else '_NGINX_READY'),
             master=process.pid, worker=int(worker_pids[0]))
         return process, body, prefix, worker_fd
@@ -467,6 +474,12 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                     command('RECOVER_BLOCKED'); record('DEAD_CANDIDATE_ALIAS_BLOCKED_RECOVERY')
                     os.close(held_alias); held_alias = None
                 command('RECOVER')
+                if args.nginx_overlap_before_socket_death:
+                    deadline = time.monotonic() + 5
+                    while 'DEAD_RECOVERY_CLAIM_WITHOUT_SOCKET' not in broker_logs['stdout'].read_text():
+                        require(time.monotonic() < deadline, 'broker did not confirm zero socket history at recovery')
+                        time.sleep(.01)
+                    record('BROKER_CONFIRMED_CLAIM_WITHOUT_SOCKET')
             else:
                 command('ABANDON' if args.nginx_overlap_abandon else 'RETRY')
             cookies = [re.search(r'SUCCESSOR_COOKIE preserved=(\d+)', line)

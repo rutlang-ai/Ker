@@ -112,6 +112,12 @@ int ker_nginx_candidate_worker_commit(int slot)
     int entered = ker_sb_preload_owner_loop_enter();
     if (entered) { errno = -entered; return -1; }
     int result = ker_sb_preload_ff_owner_admission_attach(&ops);
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+    if (!result) {
+        extern void ker_fstack_nginx_test_stop_before_socket(void);
+        ker_fstack_nginx_test_stop_before_socket();
+    }
+#endif
     if (!result) result = ker_sb_preload_ff_owner_candidate_listener_prepare(slot);
     int error = errno;
     ker_sb_preload_owner_loop_leave();

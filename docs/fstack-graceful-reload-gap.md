@@ -535,3 +535,15 @@ exit(2), and successfully retries with the unchanged initial listener. See
 [the startup-failure qualification](fstack-nginx-runtime.md#candidate-death-after-activation-but-before-listen).
 Death before activation, selected candidates, quarantined ingress and original
 same-master FSM orchestration remain gaps; the source entrypoint stays blocked.
+
+### Claimed and admission-attached candidate death before activation
+
+The typed dead-candidate recovery path now also covers a candidate with no
+socket history after successful slot claim and admission attach. Exact claim
+identity, pidfd death, task release and a nonzero saved lease are required before
+clearing the stale gate and adopting the initial listener. A real Nginx failure
+profile pauses before candidate socket creation, requires native LISTEN=0 and
+broker zero-socket-history proof, then completes recovery/retry. See
+[qualification and limits](fstack-nginx-runtime.md#claimed-candidate-death-before-socket-activation).
+Pre-attach/unknown-lease failures, selected candidates, quarantine recovery and
+the original same-master HUP/USR2 FSM remain unsupported. Counts are unchanged.

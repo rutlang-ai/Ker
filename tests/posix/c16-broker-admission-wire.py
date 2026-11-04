@@ -1759,6 +1759,7 @@ def main():
     parser.add_argument('--nginx-overlap-abandon', action='store_true')
     parser.add_argument('--nginx-overlap-recover-dead', action='store_true')
     parser.add_argument('--nginx-overlap-prelisten-death', action='store_true')
+    parser.add_argument('--nginx-overlap-before-socket-death', action='store_true')
     parser.add_argument('--nginx-overlap-history-rejection', action='store_true')
     parser.add_argument('--nginx-overlap-owner-death', choices=('before-begin', 'prepared'))
     parser.add_argument('--nginx-overlap-alias-module', type=Path)
@@ -1796,6 +1797,8 @@ def main():
         parser.error('source LC requires the ordinary overlap profile without a stream/alias probe')
     if args.nginx_overlap_history_rejection and args.nginx_overlap_owner_death != 'before-begin':
         parser.error('history rejection requires before-begin owner death')
+    if args.nginx_overlap_before_socket_death and not args.nginx_overlap_prelisten_death:
+        parser.error('before-socket death requires prelisten recovery')
     if args.nginx_overlap_prelisten_death and (not args.nginx_overlap_recover_dead or args.nginx_overlap_alias_regression):
         parser.error('prelisten death requires plain dead recovery')
     if args.nginx_overlap_recover_dead and not args.nginx_overlap_abandon:
@@ -1868,6 +1871,8 @@ def main():
             command += ['--nginx-overlap-recover-dead']
         if args.nginx_overlap_prelisten_death:
             command += ['--nginx-overlap-prelisten-death']
+        if args.nginx_overlap_before_socket_death:
+            command += ['--nginx-overlap-before-socket-death']
         if args.nginx_overlap_history_rejection:
             command += ['--nginx-overlap-history-rejection']
         if args.nginx_overlap_owner_death:
