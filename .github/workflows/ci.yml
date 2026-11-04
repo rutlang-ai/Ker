@@ -389,4 +389,5 @@ jobs:
           path: |
             ${{ runner.temp }}/native-full-ctest.xml
             build-native-on/linux-original-*.json
+            build-native-on/linux-original-mptcp-*-captures/
             ${{ runner.temp }}/session-native-packets.log

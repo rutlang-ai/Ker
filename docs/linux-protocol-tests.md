@@ -38,6 +38,10 @@ native CI 显式启用该构建选项，构建全部目标并运行完整 CTest 
 
 另外接入了 [5 个原版 AF_UNIX 程序、74 个子用例](linux-af-unix-tests.md)，分别运行宿主基线与实际 Ker socket preload 适配层。结果属于 host-backed IPC 兼容性，不增加本页 3 种导入内核 TCP 配置的数量。
 
+## MPTCP 首批原版场景
+
+[原版 mptcp_connect 在导入内核上的执行](linux-mptcp-tests.md)覆盖 IPv4/IPv6 客户端和服务端、三种 I/O 模式，以及拒绝把普通 TCP 回退计为 MPTCP 的对照。完整上游 shell 矩阵仍单独记录为未完成。
+
 ## 仍未覆盖
 
 当前固定 native 内核配置未启用 `CONFIG_KUNIT`；没有把 KUnit 结果算作通过。固定 Linux 源码中的 `tools/testing/selftests/net/packetdrill` 尚未接入 Ker 执行。Linux 完整 networking selftests 也尚未跑完。
