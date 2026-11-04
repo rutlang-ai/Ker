@@ -44,6 +44,7 @@ struct ker_ff_admission_task {
 	pthread_t thread;
 	bool thread_started;
 	bool joined;
+	bool shutdown_pinned;
 	bool stop_requested;
 	bool retire_requested;
 	bool rearm_requested;
@@ -73,7 +74,14 @@ struct ker_ff_admission_task {
 };
 
 static pthread_mutex_t task_global_lock = PTHREAD_MUTEX_INITIALIZER;
+/* One fixed NFQUEUE can be owned at a time, but retired owners retain their
+ * authenticated channels and listener references until they actually exit. */
+#define TASK_LIMIT 64
+static struct ker_ff_admission_task *tasks[TASK_LIMIT];
 static struct ker_ff_admission_task *active_task;
+static bool tasks_stopping;
+static bool tasks_shutdown_complete;
+static pthread_cond_t tasks_shutdown_done = PTHREAD_COND_INITIALIZER;
 static uint64_t task_now_ns(void);
 
 #ifdef KER_C16_ADMISSION_TEST_TRACE
@@ -572,10 +580,15 @@ static int task_retire_window(struct ker_ff_admission_task *task,
 	status = task_wait_window_reply(task, KER_FF_ADMISSION_RETIRED,
 		command_id, task->lease, &response);
 	if (status) return status;
-	task_set_window(task, WINDOW_RETIRED);
+	/* Publish retirement and release the queue reservation together, only after
+	 * kernel drain, queue close and the authenticated owner map-close ACK. */
+	pthread_mutex_lock(&task_global_lock);
 	pthread_mutex_lock(&task->lock);
+	task->window_state = WINDOW_RETIRED;
 	task->retire_requested = false;
+	if (active_task == task) active_task = NULL;
 	pthread_mutex_unlock(&task->lock);
+	pthread_mutex_unlock(&task_global_lock);
 	return 0;
 }
 
@@ -891,22 +904,25 @@ int ker_posix_ff_admission_task_start(
 		goto fail;
 	}
 	pthread_mutex_lock(&task_global_lock);
-	if (active_task) {
+	size_t slot;
+	for (slot = 0; slot < TASK_LIMIT && tasks[slot]; ++slot) { }
+	if (tasks_stopping || active_task || slot == TASK_LIMIT) {
+		status = tasks_stopping ? -ESHUTDOWN : active_task ? -EBUSY : -ENOSPC;
 		pthread_mutex_unlock(&task_global_lock);
-		status = -EBUSY;
 		goto fail;
 	}
+	tasks[slot] = task;
 	active_task = task;
-	pthread_mutex_unlock(&task_global_lock);
 	int created = pthread_create(&task->thread, NULL, task_worker, task);
 	if (created) {
-		pthread_mutex_lock(&task_global_lock);
-		active_task = NULL;
+		if (active_task == task) active_task = NULL;
+		tasks[slot] = NULL;
 		pthread_mutex_unlock(&task_global_lock);
 		status = -created;
 		goto fail;
 	}
 	task->thread_started = true;
+	pthread_mutex_unlock(&task_global_lock);
 	*output = task;
 	return 0;
 
@@ -996,16 +1012,21 @@ int ker_posix_ff_admission_task_window_action(
 		if (listener_fd < 0) return -EINVAL;
 		int status = task_listener_revalidate(task, listener_fd);
 		if (status) return status;
+		pthread_mutex_lock(&task_global_lock);
 		pthread_mutex_lock(&task->lock);
-		if (task->state != TASK_READY || task->window_state != WINDOW_RETIRED ||
+		if (tasks_stopping || active_task ||
+		    task->state != TASK_READY || task->window_state != WINDOW_RETIRED ||
 		    task->listener_closed || task->stop_requested || task->rearm_requested ||
 		    task->accept_uncertain) {
 			pthread_mutex_unlock(&task->lock);
+			pthread_mutex_unlock(&task_global_lock);
 			return -EBUSY;
 		}
+		active_task = task;
 		task->rearm_requested = true;
 		task->window_state = WINDOW_REARMING;
 		pthread_mutex_unlock(&task->lock);
+		pthread_mutex_unlock(&task_global_lock);
 		return 0;
 	}
 	return -EOPNOTSUPP;
@@ -1117,12 +1138,15 @@ int ker_posix_ff_admission_task_release(struct ker_ff_admission_task *task)
 {
 	if (!task) return -EINVAL;
 	pthread_mutex_lock(&task_global_lock);
-	if (active_task != task) {
+	size_t slot;
+	for (slot = 0; slot < TASK_LIMIT && tasks[slot] != task; ++slot) { }
+	if (slot == TASK_LIMIT) {
 		pthread_mutex_unlock(&task_global_lock);
 		return -ESTALE;
 	}
 	pthread_mutex_lock(&task->lock);
-	if (task->state != TASK_TERMINAL && task->state != TASK_FAILED) {
+	if (task->shutdown_pinned ||
+	    (task->state != TASK_TERMINAL && task->state != TASK_FAILED)) {
 		pthread_mutex_unlock(&task->lock);
 		pthread_mutex_unlock(&task_global_lock);
 		return -EBUSY;
@@ -1136,7 +1160,8 @@ int ker_posix_ff_admission_task_release(struct ker_ff_admission_task *task)
 		}
 		task->joined = true;
 	}
-	active_task = NULL;
+	if (active_task == task) active_task = NULL;
+	tasks[slot] = NULL;
 	pthread_mutex_unlock(&task_global_lock);
 	if (task->listener_entry) {
 		task_test_lifecycle_trace("listener-ref-put-at-task-release");
@@ -1151,29 +1176,51 @@ int ker_posix_ff_admission_task_release(struct ker_ff_admission_task *task)
 
 void ker_ff_admission_task_runtime_shutdown(void)
 {
-	struct ker_fd *listener_entry = NULL;
+	struct ker_ff_admission_task *snapshot[TASK_LIMIT];
 	pthread_mutex_lock(&task_global_lock);
-	struct ker_ff_admission_task *task = active_task;
-	if (task) {
+	if (tasks_stopping) {
+		while (!tasks_shutdown_complete)
+			pthread_cond_wait(&tasks_shutdown_done, &task_global_lock);
+		pthread_mutex_unlock(&task_global_lock);
+		return;
+	}
+	tasks_stopping = true;
+	for (size_t i = 0; i < TASK_LIMIT; ++i) {
+		struct ker_ff_admission_task *task = snapshot[i] = tasks[i];
+		if (!task) continue;
 		pthread_mutex_lock(&task->lock);
+		task->shutdown_pinned = true;
 		task->stop_requested = true;
 		if (task->state != TASK_FAILED && task->state != TASK_TERMINAL)
 			task->state = TASK_STOPPING;
 		pthread_mutex_unlock(&task->lock);
 	}
-	if (task && task->thread_started && !task->joined) {
-		if (!pthread_join(task->thread, NULL)) task->joined = true;
-	}
-	if (task && task->joined) {
-		pthread_mutex_lock(&task->lock);
-		listener_entry = task->listener_entry;
-		task->listener_entry = NULL;
-		task->listener_ref_released = true;
-		pthread_mutex_unlock(&task->lock);
-	}
 	pthread_mutex_unlock(&task_global_lock);
-	if (listener_entry) {
-		ker_fd_put(listener_entry);
-		task_test_lifecycle_trace("listener-ref-put-before-native-finalize");
+	/* A retiring worker takes task_global_lock to relinquish its reservation.
+	 * Pin the snapshot instead of holding that lock while joining workers. */
+	for (size_t i = 0; i < TASK_LIMIT; ++i) {
+		struct ker_ff_admission_task *task = snapshot[i];
+		if (!task) continue;
+		if (task->thread_started && !task->joined &&
+		    !pthread_join(task->thread, NULL)) task->joined = true;
+		struct ker_fd *listener_entry = NULL;
+		if (task->joined) {
+			pthread_mutex_lock(&task->lock);
+			listener_entry = task->listener_entry;
+			task->listener_entry = NULL;
+			task->listener_ref_released = true;
+			pthread_mutex_unlock(&task->lock);
+		}
+		if (listener_entry) {
+			ker_fd_put(listener_entry);
+			task_test_lifecycle_trace("listener-ref-put-before-native-finalize");
+		}
+		pthread_mutex_lock(&task_global_lock);
+		task->shutdown_pinned = false;
+		pthread_mutex_unlock(&task_global_lock);
 	}
+	pthread_mutex_lock(&task_global_lock);
+	tasks_shutdown_complete = true;
+	pthread_cond_broadcast(&tasks_shutdown_done);
+	pthread_mutex_unlock(&task_global_lock);
 }

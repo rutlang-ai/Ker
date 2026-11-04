@@ -935,6 +935,11 @@ def inside(args):
                 'LD_PRELOAD': str(args.preload),
                 'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root),
             }
+            if args.window_handoff_only:
+                path = Path(__file__).with_name('admission-window-handoff.py')
+                spec = importlib.util.spec_from_file_location('admission_window_handoff', path)
+                profile = importlib.util.module_from_spec(spec); spec.loader.exec_module(profile)
+                return profile.run(args, stop_path, stats, broker, app_env, wait_line)
             if args.nginx_candidate_binary:
                 if args.nginx_overlap_controller:
                     path = Path(__file__).with_name('nginx-overlap-profile.py')
@@ -1767,6 +1772,8 @@ def main():
     parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
     parser.add_argument('--window-cycles-only', action='store_true')
+    parser.add_argument('--window-handoff-only', action='store_true')
+    parser.add_argument('--window-handoff-stop-live', action='store_true')
     parser.add_argument('--window-cancel-only', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -1856,6 +1863,12 @@ def main():
         command.append('--finalized-timeout-only')
     if args.cancel_unsent_timeout_only:
         command.append('--cancel-unsent-timeout-only')
+    if args.window_handoff_stop_live and not args.window_handoff_only:
+        parser.error('--window-handoff-stop-live requires --window-handoff-only')
+    if args.window_handoff_stop_live:
+        command.append('--window-handoff-stop-live')
+    if args.window_handoff_only:
+        command.append('--window-handoff-only')
     if args.window_cycles_only:
         command.append('--window-cycles-only')
     if args.window_cancel_only:
