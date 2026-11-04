@@ -293,6 +293,16 @@ int ker_socket_client_owner_group_retry_plan(struct ker_socket_client *client,
 int ker_socket_client_owner_group_abandon_plan(struct ker_socket_client *client,
     int plan_cap);
 
+/* Recover a published, never-selected candidate's confirmed death before BEGIN. The initial
+ * owner/listener must remain live and unchanged. EAGAIN waits for exact pidfd
+ * death, capability/alias closure and confirmed admission task release. Success
+ * adopts the initial listener into one fresh plan; no actor ACK is fabricated.
+ * Requires the serialized LKL profile and exact stale mark/lease gate release.
+ * Live owners are never stopped by this call. Started/watched plans reject
+ * recovery with EOPNOTSUPP; quarantine remains ECANCELED. */
+int ker_socket_client_owner_group_recover_dead_plan(struct ker_socket_client *client,
+    int plan_cap);
+
 /* Bounded first-cutover coordinator for one staged owner group. The broker
  * derives both member identities and the original-Linux listener from the
  * plan. begin starts asynchronous gate setup and can return in STARTING; poll

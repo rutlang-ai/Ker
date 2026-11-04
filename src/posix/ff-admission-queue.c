@@ -632,6 +632,17 @@ int ker_ff_admission_queue_retire_drained(
 	return queue->pending || queue->deferred_count ? 0 : 1;
 }
 
+int ker_posix_ff_admission_release_dead_gate(uint32_t mark, uint64_t lease)
+{
+#ifndef KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL
+    (void)mark; (void)lease;
+    return -EOPNOTSUPP;
+#else
+    if (!mark || !lease) return -EINVAL;
+    return set_kernel_mark(mark, 0, &lease);
+#endif
+}
+
 void ker_ff_admission_queue_close(struct ker_ff_admission_queue *queue)
 {
 	if (!queue)

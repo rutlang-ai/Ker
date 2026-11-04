@@ -881,7 +881,7 @@ matching identities and native listener cookies, selector zero, and no ingress
 controller or generation watch. Started cutovers reject it with `EOPNOTSUPP`;
 quarantine remains `ECANCELED`. The normal acknowledged-abort retry API keeps its
 original contract. No synthetic ABORTED state, ingress lease or FSM receipt is
-created. Dead/failed candidates still require a separate recovery design.
+created. Dead candidates use the separate recovery contract below; failed ingress transactions remain unsupported.
 
 `native-nginx-abandon-retry-cutover-tap` and its `-alias-tap` companion suppress
 only the test module's candidate READY notification. The original Nginx worker
@@ -898,3 +898,41 @@ This supplies pre-BEGIN caller recovery for a missing READY notification. It doe
 not implement original `FF_FAULT=ready_never`, the original master's timeout/FSM,
 or quarantined-ingress recovery. Inventory remains 362 scenario-adapted, 0 partial,
 1 blocked until the complete source shell contract is implemented.
+
+### Recover a dead, never-selected candidate before BEGIN
+
+`ker_socket_client_owner_group_recover_dead_plan()` recovers a published
+candidate's confirmed death before any cutover starts. It requires the exact
+candidate pidfd death, closure of all candidate listener aliases/pins, confirmed
+admission task release/join and no remaining broker socket or group pin carrying
+that owner's identity. A retained publication cookie and claim generation prevent
+death cleanup from erasing the physical-listener correlation. The original
+owner must still be alive with the same validated initial listener.
+
+Task release normally leaves a fail-closed admission gate behind. After these
+proofs, recovery disables only the exact stale mark/lease using the existing
+kernel compare-and-clear ioctl. A stale lease cannot clear another window. If the gate was already retired or
+replaced, `ESTALE` rejects recovery rather than guessing the global state.
+The lease snapshot is captured only from a final task window before release.
+The joined task has closed q87's netlink consumer, which flushes its pending skbs;
+no old listener or marked socket remains able to generate a later SYNACK.
+This path requires the serialized LKL profile. It does not alter Linux protocol
+code, acknowledge a dead actor's map-close message, or disable an ingress freeze.
+
+Success adopts the unchanged initial listener into one fresh plan and transfers
+only its old broker pin. New slot 1 can be delegated immediately because old
+candidate death and complete closure are already proven. Duplicate recovery is
+`EALREADY`; live candidates/retained aliases return `EAGAIN`. Watched plans,
+started cutovers and any history of selecting the candidate reject recovery,
+even if the selector returned to zero. Quarantine stays `ECANCELED`.
+
+`native-nginx-dead-recovery-cutover-tap` and `-alias-tap` start a real READY
+candidate and kill its worker via pidfd before BEGIN. They prove refusal while
+alive and, in the alias profile, after death while an external alias remains.
+Both preserve old fresh HTTP/keepalive and the listener cookie, create a new
+candidate, commit a real queued SYN and retire the original owner. The separate
+`-history-tap` profile selects candidate 1 then restores initial 0 before death;
+recovery must still return `EOPNOTSUPP`. Existing prepared-death tests require
+quarantine and refuse the new API. This extends native recovery prerequisites,
+not the original same-master HUP/USR2 FSM or an original shell fault case.
+Inventory remains 362 scenario-adapted, 0 partial, 1 blocked.
