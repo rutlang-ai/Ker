@@ -283,6 +283,16 @@ int ker_socket_client_owner_group_successor_plan(struct ker_socket_client *clien
 int ker_socket_client_owner_group_retry_plan(struct ker_socket_client *client,
     int plan_cap);
 
+/* Explicitly abandon a published, still-live candidate before any cutover has
+ * started and adopt the live initial listener into a fresh plan. EAGAIN waits
+ * for candidate map retirement; success seals it permanently. Stop that owner
+ * and wait for all its aliases/task pins to disappear before slot(1) succeeds.
+ * Only one child is permitted. Started cutovers and generation watches reject
+ * this operation with EOPNOTSUPP; it cannot recover dead owners or quarantine.
+ * No ingress freeze, selector flip or synthetic abort receipt is produced. */
+int ker_socket_client_owner_group_abandon_plan(struct ker_socket_client *client,
+    int plan_cap);
+
 /* Bounded first-cutover coordinator for one staged owner group. The broker
  * derives both member identities and the original-Linux listener from the
  * plan. begin starts asynchronous gate setup and can return in STARTING; poll

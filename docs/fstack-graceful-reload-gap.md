@@ -497,3 +497,16 @@ keepalive remains usable, but this is not fresh-service recovery. See
 These are native fault qualifications, not completion of an original source
 case. Quarantined-cutover recovery and the same-master original generation FSM
 remain gaps; the source entrypoint remains blocked.
+
+### Pre-BEGIN missing-READY recovery
+
+The native caller can now explicitly abandon a live published candidate before
+any cutover begins, wait for its actual map-close ACK, and obtain a fresh plan
+preserving the original listener. The unready owner and all its listener aliases
+must disappear before another candidate slot is delegated. Two real-Nginx tests
+suppress the test module's READY message, observe a one-second caller timeout and
+complete a later queued-SYN cutover. See
+[the abandon API and boundaries](fstack-nginx-runtime.md#abandon-an-unready-candidate-before-ingress-freeze).
+This is caller recovery before ingress freeze, not original `ready_never` fault
+or same-master FSM integration. Dead candidates and quarantined cutovers remain
+outside this recovery contract; inventory remains 362 adapted, 0 partial, 1 blocked.

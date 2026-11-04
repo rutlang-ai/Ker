@@ -77,6 +77,9 @@ static int owner_ready_master_init(void)
 int ker_fstack_nginx_owner_activation_worker_ready(void)
 {
     if (!owner_ready_configured) return 0;
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+    if (getenv("KER_NGINX_TEST_SUPPRESS_READY")) return -EAGAIN;
+#endif
     if (!worker_prepared || ngx_process != NGX_PROCESS_WORKER) return -EPERM;
     return ker_nginx_owner_ready_sender_send(&owner_ready);
 }

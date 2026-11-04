@@ -329,6 +329,28 @@ if(BUILD_TESTING)
             set_tests_properties(native-nginx-abort-retry-cutover-tap PROPERTIES
                 TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
                 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-abandon-retry-cutover-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-abort --nginx-overlap-retry --nginx-overlap-abandon
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abandon-retry-evidence.json")
+            set_tests_properties(native-nginx-abandon-retry-cutover-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
             add_test(NAME native-nginx-abort-retry-alias-tap
                 COMMAND "${Python3_EXECUTABLE}"
                     "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
@@ -350,6 +372,29 @@ if(BUILD_TESTING)
                     --nginx-overlap-abort --nginx-overlap-retry
                     --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abort-retry-alias-evidence.json")
             set_tests_properties(native-nginx-abort-retry-alias-tap PROPERTIES
+                TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+            add_test(NAME native-nginx-abandon-retry-alias-tap
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"
+                    --launcher "${PROJECT_SOURCE_DIR}/tools/ker-run.py"
+                    --library "$<TARGET_FILE:ker-posix>"
+                    --worker "$<TARGET_FILE:ker-io-worker>"
+                    --dpdk-plugin-dir "${ker_session_pmd_dir}"
+                    --preload "$<TARGET_FILE:ker-socket-preload>"
+                    --broker "$<TARGET_FILE:ker-c16-admission-broker>"
+                    --client "$<TARGET_FILE:ker-c16-admission-ff-app>"
+                    --progress-client "$<TARGET_FILE:ker-c16-admission-rpc-progress>"
+                    --nginx-candidate-binary "${KER_FSTACK_NGINX_BINARY}"
+                    --nginx-candidate-runtime "$<TARGET_FILE:ker-fstack-nginx-runtime>"
+                    --nginx-candidate-shim "$<TARGET_FILE:ker-fstack-nginx-worker-shim>"
+                    --nginx-candidate-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation>"
+                    --nginx-overlap-controller "$<TARGET_FILE:ker-nginx-owner-group-controller>"
+                    --nginx-overlap-alias-module "$<TARGET_FILE:ker-fstack-nginx-owner-activation-alias-test>"
+                    --nginx-overlap-alias-regression
+                    --nginx-overlap-abort --nginx-overlap-retry --nginx-overlap-abandon
+                    --nginx-candidate-evidence "${PROJECT_BINARY_DIR}/nginx-abandon-retry-alias-evidence.json")
+            set_tests_properties(native-nginx-abandon-retry-alias-tap PROPERTIES
                 TIMEOUT 120 LABELS "native-tcp;admission;nginx;original-linux;tap;cutover"
                 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
             add_test(NAME native-nginx-successor-owner-cutover-tap
