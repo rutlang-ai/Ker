@@ -510,3 +510,17 @@ complete a later queued-SYN cutover. See
 This is caller recovery before ingress freeze, not original `ready_never` fault
 or same-master FSM integration. Dead candidates and quarantined cutovers remain
 outside this recovery contract; inventory remains 362 adapted, 0 partial, 1 blocked.
+
+### Pre-BEGIN published-candidate death recovery
+
+A separate typed recovery API now preserves the original live owner/listener
+after a published, never-selected candidate dies before BEGIN. Recovery waits
+for exact pidfd death, joined task release and complete owner socket/alias/pin
+closure, then compare-and-clears only the dead admission mark/lease. A fresh
+plan can delegate a replacement candidate and complete a queued-SYN cutover.
+Published cookie/claim metadata survives death cleanup. Real-Nginx plain/alias
+profiles and a selection-history rejection profile qualify this path; see
+[proofs and limits](fstack-nginx-runtime.md#recover-a-dead-never-selected-candidate-before-begin).
+This does not recover started/quarantined ingress transactions or candidates
+that had been selected, and it does not implement the original master FSM.
+The source shell entrypoint remains blocked; migration counts are unchanged.

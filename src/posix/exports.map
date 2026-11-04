@@ -17,6 +17,7 @@
         ker_posix_ff_admission_task_seal_retired;
         ker_posix_ff_admission_task_poll_window;
         ker_posix_ff_admission_task_release;
+        ker_posix_ff_admission_release_dead_gate;
         ker_posix_ff_ingress_controller_start;
         ker_posix_ff_ingress_controller_start_poll;
         ker_posix_ff_ingress_controller_check;

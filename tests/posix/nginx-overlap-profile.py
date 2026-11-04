@@ -51,6 +51,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     if args.nginx_overlap_owner_death:
         evidence['outcome'] = 'owner-death-' + args.nginx_overlap_owner_death
     if args.nginx_overlap_abandon: evidence['outcome'] = 'abandon-before-cutover-retry-commit'
+    if args.nginx_overlap_recover_dead: evidence['outcome'] = 'dead-candidate-recovery-retry-commit'
     source_probe = None
     source_output = None
     source_started = None
@@ -121,7 +122,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         user_directive = 'user root;'
         export_alias = args.nginx_overlap_alias_regression and (
             label == 'new' if (args.nginx_overlap_successor or args.nginx_overlap_retry) else not candidate)
-        suppress_ready = args.nginx_overlap_abandon and label == 'new'
+        suppress_ready = args.nginx_overlap_abandon and not args.nginx_overlap_recover_dead and label == 'new'
         if export_alias or suppress_ready:
             module = args.nginx_overlap_alias_module
         config.write_text(f'''load_module {module};
@@ -231,6 +232,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
     def qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd):
         nonlocal held
         queued = None
+        if args.nginx_overlap_history_rejection:
+            command('SELECT_HISTORY'); record('CANDIDATE_SELECTED_THEN_INITIAL_RESTORED')
         with ThreadPoolExecutor(max_workers=1) as executor:
             if args.nginx_overlap_owner_death == 'prepared':
                 command('BEGIN'); record('CUTOVER_PREPARED')
@@ -270,6 +273,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 record('QUARANTINED_PORT_REJECTED_FRESH_CONNECTION')
             else:
                 command('DEAD_BEGIN')
+                if args.nginx_overlap_history_rejection:
+                    command('HISTORY_REFUSED'); record('PREVIOUSLY_SELECTED_CANDIDATE_RECOVERY_REFUSED')
                 fresh(old_body); record('OLD_HTTP_SURVIVED_PRE_CUTOVER_CANDIDATE_DEATH')
             http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_CANDIDATE_DEATH')
             new.send_signal(signal.SIGCONT)
@@ -428,16 +433,29 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         if source_probe is not None:
             command(census_command)
         if args.nginx_overlap_retry:
-            command('ABANDON' if args.nginx_overlap_abandon else 'RETRY')
+            if args.nginx_overlap_recover_dead:
+                command('RECOVER_BLOCKED'); record('LIVE_CANDIDATE_RECOVERY_REFUSED')
+                signal.pidfd_send_signal(new_fd, signal.SIGKILL)
+                require(select.select([new_fd], [], [], 5)[0], 'candidate death not confirmed')
+                record('READY_CANDIDATE_DIED_BEFORE_BEGIN', worker=evidence['worker_ready']['new']['pid'])
+                http(held, old_body); fresh(old_body)
+                if held_alias is not None:
+                    command('RECOVER_BLOCKED'); record('DEAD_CANDIDATE_ALIAS_BLOCKED_RECOVERY')
+                    os.close(held_alias); held_alias = None
+                command('RECOVER')
+            else:
+                command('ABANDON' if args.nginx_overlap_abandon else 'RETRY')
             cookies = [re.search(r'SUCCESSOR_COOKIE preserved=(\d+)', line)
                 for line in getattr(controller, '_ker_recent_lines', [])]
             preserved = [int(match[1]) for match in cookies if match]
             require(len(preserved) == 1 and preserved[0], 'missing exact retry-listener cookie proof')
-            record('ABANDON_PLAN_ADOPTED_INITIAL_LISTENER' if args.nginx_overlap_abandon else
+            record('DEAD_RECOVERY_ADOPTED_INITIAL_LISTENER' if args.nginx_overlap_recover_dead else
+                'ABANDON_PLAN_ADOPTED_INITIAL_LISTENER' if args.nginx_overlap_abandon else
                 'ABORT_RETRY_PLAN_ADOPTED_INITIAL_LISTENER', cookie=preserved[0])
             http(held, old_body); fresh(old_body)
-            command('RETRY_SLOT_BLOCKED')
-            record('LIVE_REJECTED_CANDIDATE_BLOCKED_NEW_SLOT')
+            if not args.nginx_overlap_recover_dead:
+                command('RETRY_SLOT_BLOCKED')
+                record('LIVE_REJECTED_CANDIDATE_BLOCKED_NEW_SLOT')
             if held_alias is not None:
                 (root / 'rearm.trigger').touch()
                 deadline = time.monotonic() + 5

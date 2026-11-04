@@ -50,6 +50,10 @@ int ker_ff_admission_queue_test_drop_wrong_id(
  * and prove no queued packet/command remains. */
 int ker_ff_admission_queue_disarm_after_quiescence(
 	struct ker_ff_admission_queue *queue);
+/* Broker-only recovery: exact owner pidfd must be dead, task joined, all
+ * owner socket aliases/pins closed, no ingress cutover and no prior selection.
+ * Never use this to recover a live actor or an uncertain ingress transaction. */
+int ker_posix_ff_admission_release_dead_gate(uint32_t mark, uint64_t lease);
 void ker_ff_admission_queue_close(struct ker_ff_admission_queue *queue);
 
 #endif

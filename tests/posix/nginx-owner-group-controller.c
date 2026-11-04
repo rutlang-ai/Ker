@@ -100,10 +100,12 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
         } else if (!strcmp(command, "WRONG_RETRY\n")) {
             CHECK(ker_socket_client_owner_group_retry_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
-        } else if (!strcmp(command, "NEXT\n") || !strcmp(command, "RETRY\n") || !strcmp(command, "ABANDON\n")) {
-            int abandon = command[0] == 'A';
+        } else if (!strcmp(command, "NEXT\n") || !strcmp(command, "RETRY\n") || !strcmp(command, "ABANDON\n") || !strcmp(command, "RECOVER\n")) {
+            int recover = !strcmp(command, "RECOVER\n");
+            int abandon = command[0] == 'A' || recover;
             int retry = command[0] == 'R' || abandon;
-            int (*adopt)(struct ker_socket_client *, int) = abandon ?
+            int (*adopt)(struct ker_socket_client *, int) = recover ?
+                ker_socket_client_owner_group_recover_dead_plan : abandon ?
                 ker_socket_client_owner_group_abandon_plan : retry ?
                 ker_socket_client_owner_group_retry_plan : ker_socket_client_owner_group_successor_plan;
             CHECK(previous_plan < 0 && previous_group < 0 && (abandon ? cutover < 0 : cutover >= 0));
@@ -112,6 +114,7 @@ int main(int argc, char **argv)
                 close(cutover); cutover = -1;
             }
             CHECK(ker_socket_client_owner_group_abandon_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
+            CHECK(ker_socket_client_owner_group_recover_dead_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
             uint64_t deadline = now_ns() + UINT64_C(10000000000);
             int next;
             do {
@@ -149,7 +152,7 @@ int main(int argc, char **argv)
             }
             census[0] = next_census;
             if (retry) {
-                CHECK(ker_socket_client_owner_group_slot(&client, plan, 1) == -1 && errno == EAGAIN);
+                if (!recover) CHECK(ker_socket_client_owner_group_slot(&client, plan, 1) == -1 && errno == EAGAIN);
             } else {
                 slots[1] = ker_socket_client_owner_group_slot(&client, plan, 1);
                 CHECK(slots[1] >= 0);
@@ -161,6 +164,18 @@ int main(int argc, char **argv)
                 message.msg_controllen = CMSG_SPACE(sizeof(slots[1]));
                 CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
             }
+        } else if (!strcmp(command, "SELECT_HISTORY\n")) {
+            CHECK(!ker_socket_client_reuseport_group_select(&client, group, 1));
+            CHECK(!ker_socket_client_reuseport_group_select(&client, group, 0));
+        } else if (!strcmp(command, "HISTORY_REFUSED\n")) {
+            CHECK(ker_socket_client_owner_group_recover_dead_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
+        } else if (!strcmp(command, "RECOVER_BLOCKED\n")) {
+            uint64_t deadline = now_ns() + UINT64_C(200000000);
+            do {
+                CHECK(ker_socket_client_owner_group_recover_dead_plan(&client, plan) == -1 && errno == EAGAIN);
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
         } else if (!strcmp(command, "RETRY_SLOT_BLOCKED\n")) {
             uint64_t deadline = now_ns() + UINT64_C(200000000);
             do {
@@ -237,6 +252,7 @@ int main(int argc, char **argv)
             cutover = ker_socket_client_owner_group_cutover_begin(&client, plan);
             CHECK(cutover >= 0 && !cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_PREPARED, 0));
             CHECK(ker_socket_client_owner_group_abandon_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
+            CHECK(ker_socket_client_owner_group_recover_dead_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
         } else if (!strcmp(command, "QUEUED\n")) {
             CHECK(cutover >= 0 && !cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_PREPARED, 1));
         } else if (!strcmp(command, "DEAD_BEGIN\n")) {
@@ -283,6 +299,7 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_cutover_abort(&client, cutover) == -1 && errno == EALREADY);
             CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == ECANCELED);
             CHECK(ker_socket_client_owner_group_abandon_plan(&client, plan) == -1 && errno == ECANCELED);
+            CHECK(ker_socket_client_owner_group_recover_dead_plan(&client, plan) == -1 && errno == ECANCELED);
         } else if (!strcmp(command, "COMMIT\n")) {
             CHECK(!ker_socket_client_owner_group_cutover_commit(&client, cutover));
             CHECK(!cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_COMMITTED, 0));
