@@ -349,6 +349,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
     add_library(ker-fstack-nginx-owner-activation MODULE
         src/posix/fstack-nginx-owner-activation-module.c
         src/posix/nginx-candidate-admission.c
+        src/posix/nginx-owner-ready.c
         src/posix/nginx-candidate-map.c)
     set_target_properties(ker-fstack-nginx-owner-activation PROPERTIES
         PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation")
@@ -371,6 +372,7 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         add_library(ker-fstack-nginx-owner-activation-alias-test MODULE
             src/posix/fstack-nginx-owner-activation-module.c
             src/posix/nginx-candidate-admission.c
+            src/posix/nginx-owner-ready.c
             src/posix/nginx-candidate-map.c)
         set_target_properties(ker-fstack-nginx-owner-activation-alias-test PROPERTIES
             PREFIX "" OUTPUT_NAME "ker-fstack-nginx-owner-activation-alias-test")
@@ -396,6 +398,8 @@ if(KER_FSTACK_NGINX_SOURCE_ROOT OR KER_FSTACK_NGINX_BUILD_DIR)
         ker_fstack_nginx_owner_activation_source_sha256)
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-admission.c"
         ker_nginx_candidate_admission_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-owner-ready.c" ker_nginx_ready_source_sha256)
+    file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-owner-ready.h" ker_nginx_ready_header_sha256)
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-map-namespace.h"
         ker_nginx_candidate_namespace_sha256)
     file(SHA256 "${PROJECT_SOURCE_DIR}/src/posix/nginx-candidate-map.c"

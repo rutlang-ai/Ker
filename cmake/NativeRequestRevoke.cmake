@@ -208,6 +208,15 @@ if(BUILD_TESTING)
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
         if(TARGET ker-fstack-nginx-owner-activation AND
            TARGET ker-fstack-nginx-worker-shim AND KER_FSTACK_NGINX_BINARY)
+            add_executable(ker-nginx-owner-ready-test
+                tests/posix/nginx-owner-ready-test.c src/posix/nginx-owner-ready.c)
+            target_include_directories(ker-nginx-owner-ready-test PRIVATE src/posix)
+            target_compile_options(ker-nginx-owner-ready-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+            add_test(NAME native-nginx-worker-ready-transport
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/posix/nginx-owner-ready-test.py"
+                    "$<TARGET_FILE:ker-nginx-owner-ready-test>")
+            set_tests_properties(native-nginx-worker-ready-transport PROPERTIES
+                TIMEOUT 30 LABELS "nginx;host;ready" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
             add_test(NAME native-nginx-candidate-admission-tap
                 COMMAND "${Python3_EXECUTABLE}"
                     "${PROJECT_SOURCE_DIR}/tests/posix/c16-broker-admission-wire.py"

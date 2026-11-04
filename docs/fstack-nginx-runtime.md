@@ -789,3 +789,47 @@ coordination. It does not run source `FF_FAULT=flip_fail_once`, send the two HUP
 to one master, or manufacture original FSM completion/drain logs. Those source
 case assertions and production HUP/USR2 orchestration remain outstanding; the
 full shell entrypoint stays blocked and the migration inventory is unchanged.
+
+### Authenticated worker event-loop READY
+
+The explicit owner-overlap profiles now wait for a host Unix seqpacket READY
+record emitted from the pinned worker's `ff_run`, after owner-loop entry and its
+first successful owner pump. Listener/admission trace lines remain diagnostic
+checks; they no longer authorize the controller to advance. This covers initial,
+candidate, successor and abort/retry workers without modifying upstream Nginx.
+
+The caller optionally passes `KER_NGINX_OWNER_READY_FD` (a connected host
+`AF_UNIX/SOCK_SEQPACKET` endpoint, also retained by Nginx's `env` directive).
+The module authenticates the master parent's PID/UID/GID using `SO_PEERCRED`
+and obtains `SO_PEERPIDFD`. A forked worker binds its report only after the
+broker-authenticated slot claim. The fixed 64-byte, same-host native-endian
+version-1 record contains role, slot pipe device/inode, worker PID/start ticks
+and endpoint `SO_COOKIE`; reserved fields must be zero. The test coordinator
+checks kernel `SCM_CREDENTIALS`, the exact delegated slot and socket cookie,
+`/proc` start ticks and the expected worker's live pidfd before accepting it.
+Unexpected ancillary data, rights, truncation, stale identities and exited
+workers fail closed. Received rights are closed, including on truncated frames.
+
+The sender rechecks endpoint/pidfd identity, detects coordinator death or
+endpoint closure, and retries nonblocking queue pressure only until a five-second
+monotonic deadline. Successful send is idempotent and closes the worker's
+transport copies; descendants cannot reuse its bound report. Identity-guarded
+cleanup preserves unrelated descriptors that reused those fd numbers. The master
+retains its own endpoint copy until exit; the endpoint is close-on-exec, so this
+contract does not claim USR2 inheritance. With no optional fd, existing runtime
+and serial-cycle profiles retain their behavior.
+
+`native-nginx-worker-ready-transport` exercises the production sender across
+master/worker forks, credential rejection, slot binding, descendant rejection,
+idempotent delivery, fd reuse, queue pressure/deadline and disconnected peer.
+Receiver checks cover every wire identity field, credential/frame rejection,
+actual truncated rights without leaks and a dead worker. The real overlap profile
+also has a validation mutation: suppressing the runtime notification leaves its
+listener trace intact but fails with `worker loop READY timed out`.
+
+This is a cooperative pinned-caller report of loop entry, not isolation from
+same-process code, a future health guarantee, or an original shared-FSM READY
+transition. Broker cutover still independently validates owner capabilities.
+Same-master original HUP/USR2 FSM integration and the complete source shell
+entrypoint remain outstanding; inventory stays **362 scenario-adapted, 0 partial,
+1 blocked**.
