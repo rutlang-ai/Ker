@@ -15,6 +15,11 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 
+LINUX_PROTOCOL_SELFTESTS = (
+    "linux-original-sk-connect-zero-addr", "linux-original-tcp-inq-ipv4",
+    "linux-original-tcp-inq-ipv6", "linux-original-reject-host-only",
+)
+
 HOSTED_SAFE = (
     "native-fstack-fortify-bounds",
     "native-linux-fetch-lock",
@@ -324,7 +329,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     by_name = {item["name"]: item for item in inventory}
     names = set(by_name)
     missing = sorted((set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) |
-                      set(REQUIRED_SOFTWARE_DATAPATH) |
+                      set(REQUIRED_SOFTWARE_DATAPATH) | set(LINUX_PROTOCOL_SELFTESTS) |
                       set(SESSION_CTEST) | {SESSION_DIRECT}) - names)
     if missing:
         raise RuntimeError("native CTest inventory is missing required tests: " + repr(missing))
@@ -339,7 +344,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
         }))
     expected = names - {SESSION_DIRECT}
     required = (set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) |
-                set(REQUIRED_SOFTWARE_DATAPATH) | set(SESSION_CTEST))
+                set(REQUIRED_SOFTWARE_DATAPATH) | set(LINUX_PROTOCOL_SELFTESTS) | set(SESSION_CTEST))
     result = subprocess.run(
         ["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
          "--output-junit", str(junit), "--parallel", "1", "-E", "^" + re.escape(SESSION_DIRECT) + "$"],

@@ -270,6 +270,9 @@ static int child_worker(struct fixture *fixture)
         {&settled, sizeof(settled)}};
     struct msghdr final_message = {.msg_iov = final_vectors, .msg_iovlen = 2};
     if (sendmsg(fixture->worker_fd, &final_message, MSG_NOSIGNAL) != settled_header.message_bytes) return 37;
+    /* The real worker stays alive after RX settlement for independent shutdown. */
+    char byte;
+    if (read(fixture->worker_fd, &byte, 1) != 0) return 43;
     return 0;
 }
 

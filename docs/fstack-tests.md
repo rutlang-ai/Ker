@@ -2,6 +2,7 @@
 
 全量范围、源快照、433 项清单及未完成项见 [全量迁移清单](fstack-migration.md)。
 下表仅列既有场景适配，不能作为上游全部测试迁移完成的声明。
+这些场景只计回归覆盖，不能代替 Linux 自己的协议测试；[原版 Linux selftests 的执行与缺口](linux-protocol-tests.md)单独记录。
 
 F-Stack 的 tests/unit 和 tests/integration 主要针对 lib/ff_* glue layer；
 unit 使用多种 stub/wrap，部分 integration 启动实际 EAL，但也用 stub 替代
