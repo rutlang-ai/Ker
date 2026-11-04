@@ -154,7 +154,7 @@ class NativeTestSelectorTests(unittest.TestCase):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
                      set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
                      set(native_tests.LINUX_PROTOCOL_SELFTESTS) | set(native_tests.LINUX_AF_UNIX_SELFTESTS) |
-                     set(native_tests.LINUX_MPTCP_SELFTESTS) |
+                     set(native_tests.LINUX_MPTCP_SELFTESTS) | set(native_tests.LINUX_TCP_AO_SELFTESTS) |
                      set(native_tests.SESSION_CTEST) |
                      {native_tests.SESSION_DIRECT, "optional-hardware"})
         inventory = [{"name": name, "properties": [
@@ -196,7 +196,7 @@ class NativeTestSelectorTests(unittest.TestCase):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
                      set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
                      set(native_tests.LINUX_PROTOCOL_SELFTESTS) | set(native_tests.LINUX_AF_UNIX_SELFTESTS) |
-                     set(native_tests.LINUX_MPTCP_SELFTESTS) |
+                     set(native_tests.LINUX_MPTCP_SELFTESTS) | set(native_tests.LINUX_TCP_AO_SELFTESTS) |
                      set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT})
         session_names = set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT}
         inventory = [{"name": name, "properties": [
@@ -240,7 +240,7 @@ class NativeTestSelectorTests(unittest.TestCase):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
                      set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
                      set(native_tests.LINUX_PROTOCOL_SELFTESTS) | set(native_tests.LINUX_AF_UNIX_SELFTESTS) |
-                     set(native_tests.LINUX_MPTCP_SELFTESTS) |
+                     set(native_tests.LINUX_MPTCP_SELFTESTS) | set(native_tests.LINUX_TCP_AO_SELFTESTS) |
                      set(native_tests.SESSION_CTEST) | {native_tests.SESSION_DIRECT})
         inventory = [{"name": name, "properties": [
             {"name": "LABELS", "value": ["session", "fstack"]}
@@ -248,7 +248,7 @@ class NativeTestSelectorTests(unittest.TestCase):
             else {"name": "LABELS", "value": ["fstack"]}
         ]} for name in sorted(all_names)]
         for skipped in (*native_tests.REQUIRED_SOFTWARE_DATAPATH, *native_tests.LINUX_PROTOCOL_SELFTESTS,
-                        *native_tests.LINUX_AF_UNIX_SELFTESTS, *native_tests.LINUX_MPTCP_SELFTESTS):
+                        *native_tests.LINUX_AF_UNIX_SELFTESTS, *native_tests.LINUX_MPTCP_SELFTESTS, *native_tests.LINUX_TCP_AO_SELFTESTS):
             with self.subTest(skipped=skipped), tempfile.TemporaryDirectory() as temporary:
                 junit = Path(temporary) / "full.xml"
 
@@ -271,10 +271,10 @@ class NativeTestSelectorTests(unittest.TestCase):
         all_names = (set(native_tests.HOSTED_SAFE) | set(native_tests.NOHUGE_EAL) |
                      set(native_tests.NOHUGE_TAP) | set(native_tests.REQUIRED_SOFTWARE_DATAPATH) |
                      set(native_tests.LINUX_PROTOCOL_SELFTESTS) | set(native_tests.LINUX_AF_UNIX_SELFTESTS) |
-                     set(native_tests.LINUX_MPTCP_SELFTESTS) |
+                     set(native_tests.LINUX_MPTCP_SELFTESTS) | set(native_tests.LINUX_TCP_AO_SELFTESTS) |
                      set(native_tests.SESSION_CTEST) |
                      {native_tests.SESSION_DIRECT})
-        for missing in (*native_tests.LINUX_PROTOCOL_SELFTESTS, *native_tests.LINUX_AF_UNIX_SELFTESTS, *native_tests.LINUX_MPTCP_SELFTESTS):
+        for missing in (*native_tests.LINUX_PROTOCOL_SELFTESTS, *native_tests.LINUX_AF_UNIX_SELFTESTS, *native_tests.LINUX_MPTCP_SELFTESTS, *native_tests.LINUX_TCP_AO_SELFTESTS):
             with self.subTest(missing=missing), mock.patch.object(
                     native_tests, "ctest_inventory",
                     return_value=[{"name": name} for name in sorted(all_names - {missing})]), \

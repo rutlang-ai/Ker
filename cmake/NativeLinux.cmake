@@ -74,7 +74,7 @@ if(ker_ff_admission_window_serialized_lkl)
         KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL=1)
 endif()
 if(BUILD_TESTING)
-    target_sources(ker-posix PRIVATE tests/posix/linux-selftest-input.c)
+    target_sources(ker-posix PRIVATE tests/posix/linux-selftest-input.c tests/posix/linux-selftest-runtime.c)
     target_include_directories(ker-posix PRIVATE "${PROJECT_SOURCE_DIR}/src/posix")
     add_executable(ker-nginx-cycle-wire-test tests/posix/nginx-cycle-wire-test.c)
     target_include_directories(ker-nginx-cycle-wire-test PRIVATE
@@ -95,7 +95,7 @@ if(BUILD_TESTING)
     # uninstalled RX decision fixture. Never expose it from tests-OFF builds.
     file(READ "${PROJECT_SOURCE_DIR}/src/posix/exports.map" ker_posix_test_exports)
     string(REPLACE "local: *;"
-        "ker_posix_run_test_set_shutdown_barrier; ker_posix_rx_decision_test_shutdown_ebusy_once; ker_linux_selftest_input; local: *;"
+        "ker_posix_run_test_set_shutdown_barrier; ker_posix_rx_decision_test_shutdown_ebusy_once; ker_linux_selftest_input; ker_linux_selftest_call; local: *;"
         ker_posix_test_exports "${ker_posix_test_exports}")
     set(ker_posix_exports_map "${CMAKE_CURRENT_BINARY_DIR}/rx-decision-test-exports.map")
     file(WRITE "${ker_posix_exports_map}" "${ker_posix_test_exports}")
@@ -827,6 +827,7 @@ if(BUILD_TESTING)
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxProtocolSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxUnixSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/LinuxMptcpSelftests.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/LinuxTcpAoSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeAdmissionRequestIdentity.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeIngressFreezeTests.cmake")
     add_executable(ker-socket-broker-inherited-group-client
