@@ -1099,6 +1099,16 @@ ker_fstack_nginx_owner_activation_worker_prepare(ngx_cycle_t *cycle)
     return 0;
 }
 
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+void ker_fstack_nginx_test_stop_before_socket(void)
+{
+    if (getenv("KER_NGINX_TEST_STOP_BEFORE_SOCKET")) {
+        trace_line("NGINX_TEST_ADMISSION_ATTACHED_BEFORE_SOCKET pid=%ld\n", (long)getpid());
+        if (raise(SIGSTOP)) abort();
+    }
+}
+#endif
+
 int ker_fstack_nginx_owner_activation_worker_commit(void)
 {
     if (!candidate_mode) return 0;

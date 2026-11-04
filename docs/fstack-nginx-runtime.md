@@ -963,3 +963,30 @@ original owner and serves new HTTP. No upstream source or initialization-success
 semaphore is patched, and the stop hook is absent from the production module.
 This qualifies a caller recovery prerequisite for real startup failure, not the
 original same-master HUP/USR2 failure FSM. Migration counts are unchanged.
+
+### Claimed candidate death before socket activation
+
+Recovery now also accepts a slot-1 owner that completed admission attach but
+never activated a socket. The broker must match that owner's token, PID/start
+identity, incarnation, claim generation and candidate role. Without a socket
+ledger it additionally requires zero owned/unowned socket history, activation
+state NONE, initial-published topology and no candidate fds/pins. All existing
+initial-owner, pidfd death, task join, namespace-wide owner socket closure,
+selection history, no-cutover/watch and exact gate lease proofs remain required.
+An absent final task lease returns `EOPNOTSUPP`; recovery never guesses whether
+an earlier ARM happened. Pre-attach failure remains outside this contract.
+
+`native-nginx-before-socket-death-recovery-tap` stops the real worker in the test
+module immediately after admission attach and before candidate listener prepare.
+No activation-complete marker, READY or ff_listen may appear, and the native
+unpublished census must report cookie=0/LISTEN=0. A broker-side test diagnostic
+independently confirms the zero-socket-history recovery branch. After pidfd death,
+old HTTP/keepalive and the original listener cookie survive. The candidate master
+runs its original failed-start timeout/exit(2), then a replacement candidate
+completes a queued-SYN cutover and old-owner retirement.
+
+The hook is absent from production binaries and upstream sources are unchanged.
+Restoring the former socket-ledger requirement prevents this recovery; deleting
+the saved lease must also prevent recovery. These are native startup-failure
+qualifications, not original same-master FSM completion. Inventory remains
+362 scenario-adapted, 0 partial, 1 blocked.

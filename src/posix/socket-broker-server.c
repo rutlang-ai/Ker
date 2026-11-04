@@ -3885,10 +3885,11 @@ static int owner_group_recover_dead_plan(struct ker_socket_broker_server *server
     if (parent->failed) return -ECANCELED;
     if (parent->cutover_started || parent->watch_refs || parent->candidate_was_selected) return -EOPNOTSUPP;
     if (parent->selected_member || parent->cutover.controller ||
-        parent->cutover_object_slot >= 0 || !parent->candidate_socket_cookie ||
+        parent->cutover_object_slot >= 0 ||
         parent->activation_state[0] != SB_MEMBER_ACTIVATION_PUBLISHED ||
         !parent->member_present[0] || parent->base_fd[0] < 0) return -EAGAIN;
-    if (parent->candidate_socket_claim != parent->claim_generation[1]) return -ESTALE;
+    bool activated = parent->candidate_socket_cookie != 0;
+    if (activated && parent->candidate_socket_claim != parent->claim_generation[1]) return -ESTALE;
     struct sb_owner *initial = owner_by_token(server, parent->member_owner_token[0]);
     struct sb_owner *candidate = owner_by_token(server, parent->member_owner_token[1]);
     if (!initial || initial->pid != parent->member_owner_pid[0] ||
@@ -3897,14 +3898,22 @@ static int owner_group_recover_dead_plan(struct ker_socket_broker_server *server
         !candidate || candidate->pid != parent->member_owner_pid[1] ||
         candidate->start_time != parent->member_owner_start_time[1] ||
         candidate->mark != parent->member_mark[1]) return -ESTALE;
+    if (!candidate->owner_group_claimed ||
+        candidate->owner_group_incarnation != parent->incarnation ||
+        candidate->owner_group_claim_generation != parent->claim_generation[1] ||
+        candidate->owner_group_index != 1 || !candidate->admission_attached) return -ESTALE;
+    if (!activated && (candidate->owned_socket_history || candidate->unowned_network_history))
+        return -EOPNOTSUPP;
     int status = owner_identity_alive(initial);
     if (status) return status;
     status = owner_pidfd_confirmed_dead(candidate);
     if (status != 1) return status < 0 ? status : -EAGAIN;
     if (parent->activation_caps[1] || parent->base_fd[1] >= 0 ||
         parent->activation_task_fd[1] >= 0 ||
-        parent->activation_state[1] != SB_MEMBER_ACTIVATION_FAILED ||
-        parent->staged_state != SB_STAGED_CANDIDATE_FAILED) return -EAGAIN;
+        (activated ? (parent->activation_state[1] != SB_MEMBER_ACTIVATION_FAILED ||
+            parent->staged_state != SB_STAGED_CANDIDATE_FAILED) :
+            (parent->activation_state[1] != SB_MEMBER_ACTIVATION_NONE ||
+             parent->staged_state != SB_STAGED_INITIAL_PUBLISHED))) return -EAGAIN;
     if (candidate->admission_task) {
         status = ker_posix_ff_admission_task_request_stop(candidate->admission_task);
         if (status) return status;
@@ -3912,8 +3921,10 @@ static int owner_group_recover_dead_plan(struct ker_socket_broker_server *server
         if (status) return status == -EBUSY ? -EAGAIN : status;
         candidate->admission_listener_native_fd = -1;
     }
-    status = listener_pins_closed(server, parent->candidate_socket_cookie, NULL);
-    if (status) return status;
+    if (activated) {
+        status = listener_pins_closed(server, parent->candidate_socket_cookie, NULL);
+        if (status) return status;
+    }
     status = owner_group_staged_initial_listener_validate(parent);
     if (status) return status;
     status = owner_identity_alive(initial);
@@ -3931,6 +3942,13 @@ static int owner_group_recover_dead_plan(struct ker_socket_broker_server *server
             if (group->member_owner_token[index] == candidate->token &&
                 (group->base_fd[index] >= 0 || group->activation_task_fd[index] >= 0)) return -EAGAIN;
     }
+    if (!candidate->released_admission_lease) return -EOPNOTSUPP;
+#ifdef KER_C16_ADMISSION_TEST_TRACE
+    if (!activated) {
+        static const char proof[] = "DEAD_RECOVERY_CLAIM_WITHOUT_SOCKET\n";
+        (void)syscall(SYS_write, STDOUT_FILENO, proof, sizeof(proof) - 1);
+    }
+#endif
     if (!parent->dead_candidate_gate_released) {
         status = ker_posix_ff_admission_release_dead_gate(candidate->mark,
             candidate->released_admission_lease);
