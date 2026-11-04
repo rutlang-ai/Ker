@@ -50,6 +50,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     evidence = {'status': 'RUNNING', 'outcome': 'abort-retry-commit' if args.nginx_overlap_retry else 'abort' if args.nginx_overlap_abort else 'commit', 'events': []}
     if args.nginx_overlap_owner_death:
         evidence['outcome'] = 'owner-death-' + args.nginx_overlap_owner_death
+    if args.nginx_overlap_abandon: evidence['outcome'] = 'abandon-before-cutover-retry-commit'
     source_probe = None
     source_output = None
     source_started = None
@@ -120,7 +121,8 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         user_directive = 'user root;'
         export_alias = args.nginx_overlap_alias_regression and (
             label == 'new' if (args.nginx_overlap_successor or args.nginx_overlap_retry) else not candidate)
-        if export_alias:
+        suppress_ready = args.nginx_overlap_abandon and label == 'new'
+        if export_alias or suppress_ready:
             module = args.nginx_overlap_alias_module
         config.write_text(f'''load_module {module};
 daemon off; master_process on; worker_processes 1; {user_directive}
@@ -128,7 +130,7 @@ fstack_conf "fstack.ini"; timer_resolution 1ms;
 pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
 env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
 env KER_FSTACK_RUNTIME_TRACE; env KER_NGINX_TEST_INITIAL_ALIAS_SOCKET;
-env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD;
+env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD; env KER_NGINX_TEST_SUPPRESS_READY;
 events {{ worker_connections 256; use epoll; }}
 http {{ access_log off; sendfile off; keepalive_timeout 300; keepalive_requests 100000;
 server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
@@ -138,6 +140,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             args.nginx_candidate_runtime, args.preload])), 'KER_FSTACK_NGINX_INI': str(ini),
             'KER_FSTACK_RUNTIME_TRACE': str(trace),
             ('KER_NGINX_CANDIDATE_SLOT_FD' if candidate else 'KER_NGINX_INITIAL_SLOT_FD'): str(slot)}
+        if suppress_ready: env['KER_NGINX_TEST_SUPPRESS_READY'] = '1'
         if export_alias:
             env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
             if args.nginx_overlap_successor or args.nginx_overlap_retry:
@@ -167,15 +170,28 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         require(len(worker_pids) == 1, f'{label} has unexpected children {worker_pids!r}')
         worker_pid = int(worker_pids[0])
         worker_fd = os.pidfd_open(worker_pid); pidfds.append(worker_fd)
-        report = ready_protocol.receive(ready, timeout=max(.01, deadline - time.monotonic()),
-            pid=worker_pid, pidfd=worker_fd, slot_identity=slot_identity,
-            endpoint_cookie=ready_cookie, role=1 if candidate else 0)
-        evidence.setdefault('worker_ready', {})[label] = report
+        if suppress_ready:
+            try:
+                ready_protocol.receive(ready, timeout=1, pid=worker_pid, pidfd=worker_fd,
+                    slot_identity=slot_identity, endpoint_cookie=ready_cookie, role=1)
+            except RuntimeError as error:
+                require(str(error) == 'worker loop READY timed out', f'candidate READY failed unexpectedly: {error}')
+            else:
+                raise RuntimeError('silent candidate unexpectedly published READY')
+            require(process.poll() is None and not select.select([worker_fd], [], [], 0)[0],
+                'silent candidate died before cancellation')
+            record('CANDIDATE_READY_TIMEOUT', master=process.pid, worker=worker_pid, timeout_seconds=1)
+        else:
+            report = ready_protocol.receive(ready, timeout=max(.01, deadline - time.monotonic()),
+                pid=worker_pid, pidfd=worker_fd, slot_identity=slot_identity,
+                endpoint_cookie=ready_cookie, role=1 if candidate else 0)
+            evidence.setdefault('worker_ready', {})[label] = report
         text = trace.read_text()
         require(re.search(r'name=ff_listen .*result=0\b', text), 'worker READY preceded listener publication')
         require(not candidate or 'NGINX_CANDIDATE_TASK_READY' in text,
             'worker READY preceded candidate admission setup')
-        record(label.upper() + '_NGINX_READY', master=process.pid, worker=int(worker_pids[0]))
+        record(label.upper() + ('_NGINX_INITIALIZED_WITHOUT_READY' if suppress_ready else '_NGINX_READY'),
+            master=process.pid, worker=int(worker_pids[0]))
         return process, body, prefix, worker_fd
 
     def receive_candidate_slot():
@@ -392,31 +408,33 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         if args.nginx_overlap_owner_death:
             qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd)
             return finish()
-        command('BEGIN'); record('CUTOVER_PREPARED')
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 10)
-            command('QUEUED')
-            require(not queued.done(), 'queued SYN completed before cutover decision')
-            if args.nginx_overlap_abort:
-                # The native ingress freeze precedes socket/flow-map admission.
-                # Abort must replay this real SYN to the unchanged old selector.
-                command('ABORT'); command('ABORT_NEXT'); command('EARLY_RETIRE'); record('CUTOVER_ABORTED_WITH_QUEUED_SYN')
-            else:
-                command('COMMIT'); command('EARLY_RETIRE')
-                if args.nginx_overlap_successor: command('EARLY_NEXT')
-                record('CUTOVER_COMMITTED_WITH_QUEUED_SYN')
-            with queued.result(timeout=10) as connection:
-                connection.settimeout(10); http(connection, old_body if args.nginx_overlap_abort else new_body, True)
+        if not args.nginx_overlap_abandon:
+            command('BEGIN'); record('CUTOVER_PREPARED')
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 10)
+                command('QUEUED')
+                require(not queued.done(), 'queued SYN completed before cutover decision')
+                if args.nginx_overlap_abort:
+                    # The native ingress freeze precedes socket/flow-map admission.
+                    # Abort must replay this real SYN to the unchanged old selector.
+                    command('ABORT'); command('ABORT_NEXT'); command('EARLY_RETIRE'); record('CUTOVER_ABORTED_WITH_QUEUED_SYN')
+                else:
+                    command('COMMIT'); command('EARLY_RETIRE')
+                    if args.nginx_overlap_successor: command('EARLY_NEXT')
+                    record('CUTOVER_COMMITTED_WITH_QUEUED_SYN')
+                with queued.result(timeout=10) as connection:
+                    connection.settimeout(10); http(connection, old_body if args.nginx_overlap_abort else new_body, True)
         http(held, old_body); record('OLD_KEEPALIVE_SURVIVED')
         if source_probe is not None:
             command(census_command)
         if args.nginx_overlap_retry:
-            command('RETRY')
+            command('ABANDON' if args.nginx_overlap_abandon else 'RETRY')
             cookies = [re.search(r'SUCCESSOR_COOKIE preserved=(\d+)', line)
                 for line in getattr(controller, '_ker_recent_lines', [])]
             preserved = [int(match[1]) for match in cookies if match]
             require(len(preserved) == 1 and preserved[0], 'missing exact retry-listener cookie proof')
-            record('ABORT_RETRY_PLAN_ADOPTED_INITIAL_LISTENER', cookie=preserved[0])
+            record('ABANDON_PLAN_ADOPTED_INITIAL_LISTENER' if args.nginx_overlap_abandon else
+                'ABORT_RETRY_PLAN_ADOPTED_INITIAL_LISTENER', cookie=preserved[0])
             http(held, old_body); fresh(old_body)
             command('RETRY_SLOT_BLOCKED')
             record('LIVE_REJECTED_CANDIDATE_BLOCKED_NEW_SLOT')
@@ -471,11 +489,13 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 with queued.result(timeout=10) as connection:
                     connection.settimeout(10); http(connection, retry_body, True)
             command('OLD_CAPS'); fresh(retry_body)
-            record('ABORTED_CAPABILITIES_CANNOT_REDIRECT_RETRY')
+            record('ABANDONED_CAPABILITIES_CANNOT_REDIRECT_RETRY' if args.nginx_overlap_abandon else
+                'ABORTED_CAPABILITIES_CANNOT_REDIRECT_RETRY')
             command('DROP_PARENT')
             for cap in caps[:2]: os.close(cap)
             del caps[:2]
-            http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_ABORT_AND_RETRY_COMMIT')
+            http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_ABANDON_AND_RETRY_COMMIT' if args.nginx_overlap_abandon else
+                'OLD_KEEPALIVE_SURVIVED_ABORT_AND_RETRY_COMMIT')
             held.close(); held = None
             retirement_started = time.monotonic()
             stop_nginx(old, old_fd, 'old')

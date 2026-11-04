@@ -262,7 +262,8 @@ static int socket_call(struct ker_socket_client *client, int cap_fd,
     requires_cap = requires_cap ||
         operation == KER_SB_FF_OWNER_GROUP_CUTOVER_BEGIN ||
         operation == KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN ||
-        operation == KER_SB_FF_OWNER_GROUP_RETRY_PLAN;
+        operation == KER_SB_FF_OWNER_GROUP_RETRY_PLAN ||
+        operation == KER_SB_FF_OWNER_GROUP_ABANDON_PLAN;
     bool requires_zero = operation == KER_SB_BIND || operation == KER_SB_CONNECT ||
         operation == KER_SB_LISTEN || operation == KER_SB_SHUTDOWN ||
         operation == KER_SB_GETSOCKNAME || operation == KER_SB_GETPEERNAME ||
@@ -866,6 +867,16 @@ int ker_socket_client_owner_group_retry_plan(struct ker_socket_client *client,
     if (!client || plan_cap < 0) return fail(EINVAL);
     int capability = -1;
     if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_RETRY_PLAN,
+            NULL, 0, NULL, 0, &capability, NULL) < 0) return -1;
+    return capability;
+}
+
+int ker_socket_client_owner_group_abandon_plan(struct ker_socket_client *client,
+    int plan_cap)
+{
+    if (!client || plan_cap < 0) return fail(EINVAL);
+    int capability = -1;
+    if (socket_call(client, plan_cap, KER_SB_FF_OWNER_GROUP_ABANDON_PLAN,
             NULL, 0, NULL, 0, &capability, NULL) < 0) return -1;
     return capability;
 }

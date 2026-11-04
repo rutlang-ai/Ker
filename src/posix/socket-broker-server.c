@@ -468,6 +468,7 @@ static uint32_t required_right(uint16_t operation)
     case KER_SB_FF_OWNER_GENERATION_WATCH_CREATE:
     case KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER:
     case KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN:
+    case KER_SB_FF_OWNER_GROUP_ABANDON_PLAN:
     case KER_SB_FF_OWNER_GROUP_RETRY_PLAN:
         return KER_SOCKET_BROKER_CONTROL;
     case KER_SB_FF_OWNER_GROUP_CLAIM:
@@ -2222,7 +2223,7 @@ static int owner_group_plan_create(struct ker_socket_broker_server *server,
     if (server->next_group_incarnation == UINT64_MAX) return -EOVERFLOW;
     uint64_t incarnation = ++server->next_group_incarnation;
     server->groups[slot] = (struct sb_group){.live = true, .owner_aware = true,
-        .staged_owner_group = staged,
+        .staged_owner_group = staged, .cutover_object_slot = -1,
         .staged_state = staged ? SB_STAGED_INITIAL_RESERVED : SB_STAGED_NONE,
         .port = port, .base_fd = {-1, -1}, .activation_task_fd = {-1, -1},
         .incarnation = incarnation,
@@ -3126,6 +3127,7 @@ static int group_cutover_create(struct ker_socket_broker_server *server,
     if (!group->live || !group->staged_owner_group ||
         plan->group_incarnation != group->incarnation) return -ESTALE;
     if (group->watch_refs) return -EOPNOTSUPP;
+    if (group->successor_issued && !group->cutover_started) return -EOPNOTSUPP;
     if (group->cutover_started) return -EALREADY;
     if (group->selected_member != 0 || group->staged_state != SB_STAGED_BOTH_PUBLISHED)
         return -EAGAIN;
@@ -3788,7 +3790,7 @@ static int owner_group_successor_plan(struct ker_socket_broker_server *server,
 }
 
 static int owner_group_retry_plan(struct ker_socket_broker_server *server,
-    int plan_cap, int *capability_out)
+    int plan_cap, bool abandon, int *capability_out)
 {
     struct sb_object *plan = lookup_cap(server, plan_cap);
     if (!plan || plan->kind != KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN ||
@@ -3802,11 +3804,13 @@ static int owner_group_retry_plan(struct ker_socket_broker_server *server,
     if (parent->staged_state == SB_STAGED_CANDIDATE_FAILED ||
         parent->activation_state[1] == SB_MEMBER_ACTIVATION_FAILED)
         return -EOPNOTSUPP;
+    if (abandon && (parent->cutover_started || parent->watch_refs)) return -EOPNOTSUPP;
     if (parent->cutover_started && group_cutover_terminal(parent->cutover.phase) &&
         parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_ABORTED)
         return -EOPNOTSUPP;
-    if (!parent->cutover_started || parent->selected_member != 0 ||
-        parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_ABORTED ||
+    if ((!abandon && (!parent->cutover_started ||
+         parent->cutover.phase != KER_SOCKET_GROUP_CUTOVER_ABORTED)) ||
+        parent->selected_member != 0 ||
         parent->cutover.controller || parent->cutover_object_slot >= 0 ||
         parent->activation_state[0] != SB_MEMBER_ACTIVATION_PUBLISHED ||
         !parent->member_present[0] || parent->base_fd[0] < 0 ||
@@ -4373,7 +4377,8 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         else if (request->operation == KER_SB_FF_OWNER_GENERATION_WATCH_CREATE ||
             request->operation == KER_SB_FF_OWNER_GROUP_RETIRE_INITIAL_LISTENER ||
             request->operation == KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN ||
-            request->operation == KER_SB_FF_OWNER_GROUP_RETRY_PLAN)
+            request->operation == KER_SB_FF_OWNER_GROUP_RETRY_PLAN ||
+            request->operation == KER_SB_FF_OWNER_GROUP_ABANDON_PLAN)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
         else if (request->operation == KER_SB_FF_OWNER_GROUP_CONTROL_AFTER_EXIT)
             expected_kind = KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN;
@@ -4505,12 +4510,14 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
     }
+    case KER_SB_FF_OWNER_GROUP_ABANDON_PLAN:
     case KER_SB_FF_OWNER_GROUP_RETRY_PLAN:
     case KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN: {
         if (input_length || fd_count != 1) return -EPROTO;
         int capability = -1;
-        status = request->operation == KER_SB_FF_OWNER_GROUP_RETRY_PLAN ?
-            owner_group_retry_plan(server, fds[0], &capability) :
+        status = request->operation != KER_SB_FF_OWNER_GROUP_SUCCESSOR_PLAN ?
+            owner_group_retry_plan(server, fds[0],
+                request->operation == KER_SB_FF_OWNER_GROUP_ABANDON_PLAN, &capability) :
             owner_group_successor_plan(server, fds[0], &capability);
         if (status) return status;
         *passed_fd = capability; *result = 1; return 0;
@@ -4694,6 +4701,10 @@ static int dispatch_request(struct ker_socket_broker_server *server,
         struct sb_group *group = &server->groups[object->group_slot];
         if (!group->live) return -EBADF;
         if (object->group_incarnation != group->incarnation) return -ESTALE;
+        if (group->successor_issued) {
+            if (args.index != group->selected_member) return -EOPNOTSUPP;
+            *result = 0; return 0;
+        }
         if (group->cutover_started) {
             if (!group_cutover_terminal(group->cutover.phase)) return -EBUSY;
             if (group->cutover.phase == KER_SOCKET_GROUP_CUTOVER_QUARANTINED)

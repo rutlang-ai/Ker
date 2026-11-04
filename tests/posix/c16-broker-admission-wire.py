@@ -1756,6 +1756,7 @@ def main():
     parser.add_argument('--nginx-overlap-abort', action='store_true')
     parser.add_argument('--nginx-overlap-successor', action='store_true')
     parser.add_argument('--nginx-overlap-retry', action='store_true')
+    parser.add_argument('--nginx-overlap-abandon', action='store_true')
     parser.add_argument('--nginx-overlap-owner-death', choices=('before-begin', 'prepared'))
     parser.add_argument('--nginx-overlap-alias-module', type=Path)
     parser.add_argument('--nginx-overlap-alias-regression', action='store_true')
@@ -1790,6 +1791,9 @@ def main():
     if args.nginx_overlap_source_lc and (not args.nginx_overlap_controller or
             args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
         parser.error('source LC requires the ordinary overlap profile without a stream/alias probe')
+    if args.nginx_overlap_abandon and (not args.nginx_overlap_retry or not args.nginx_overlap_alias_module or
+            args.nginx_overlap_source_lc or args.nginx_overlap_owner_death):
+        parser.error('abandon requires a retry profile without source LC or owner death')
     if args.nginx_overlap_owner_death and (not args.nginx_overlap_controller or
             args.nginx_overlap_abort or args.nginx_overlap_retry or args.nginx_overlap_successor or
             args.nginx_overlap_source_lc or args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
@@ -1849,6 +1853,8 @@ def main():
             command += ['--nginx-overlap-successor']
         if args.nginx_overlap_retry:
             command += ['--nginx-overlap-retry']
+        if args.nginx_overlap_abandon:
+            command += ['--nginx-overlap-abandon']
         if args.nginx_overlap_owner_death:
             command += ['--nginx-overlap-owner-death', args.nginx_overlap_owner_death]
         if args.nginx_overlap_alias_regression:

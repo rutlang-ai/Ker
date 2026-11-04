@@ -71,7 +71,7 @@ int main(int argc, char **argv)
     memcpy(CMSG_DATA(header), slots, sizeof(slots));
     CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
     int previous_plan = -1, previous_group = -1, discarded_census = -1;
-    int previous_aborted = 0;
+    int previous_aborted = 0, previous_abandoned = 0;
     int group = -1, census[2] = {-1, -1}, cutover = -1;
     char command[32];
     while (fgets(command, sizeof(command), stdin)) {
@@ -100,13 +100,18 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
         } else if (!strcmp(command, "WRONG_RETRY\n")) {
             CHECK(ker_socket_client_owner_group_retry_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
-        } else if (!strcmp(command, "NEXT\n") || !strcmp(command, "RETRY\n")) {
-            int retry = command[0] == 'R';
-            int (*adopt)(struct ker_socket_client *, int) = retry ?
+        } else if (!strcmp(command, "NEXT\n") || !strcmp(command, "RETRY\n") || !strcmp(command, "ABANDON\n")) {
+            int abandon = command[0] == 'A';
+            int retry = command[0] == 'R' || abandon;
+            int (*adopt)(struct ker_socket_client *, int) = abandon ?
+                ker_socket_client_owner_group_abandon_plan : retry ?
                 ker_socket_client_owner_group_retry_plan : ker_socket_client_owner_group_successor_plan;
-            CHECK(previous_plan < 0 && previous_group < 0 && cutover >= 0);
-            CHECK(adopt(&client, plan) == -1 && errno == EAGAIN);
-            close(cutover); cutover = -1;
+            CHECK(previous_plan < 0 && previous_group < 0 && (abandon ? cutover < 0 : cutover >= 0));
+            if (!abandon) {
+                CHECK(adopt(&client, plan) == -1 && errno == EAGAIN);
+                close(cutover); cutover = -1;
+            }
+            CHECK(ker_socket_client_owner_group_abandon_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
             uint64_t deadline = now_ns() + UINT64_C(10000000000);
             int next;
             do {
@@ -131,7 +136,7 @@ int main(int argc, char **argv)
             CHECK(before.listener_cookie && before.listener_cookie == after.listener_cookie &&
                 after.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
             printf("SUCCESSOR_COOKIE preserved=%llu\n", (unsigned long long)after.listener_cookie);
-            previous_aborted = retry;
+            previous_aborted = retry; previous_abandoned = abandon;
             previous_plan = plan; plan = next;
             previous_group = group; group = next_group;
             for (unsigned index = 0; index < 2; ++index) {
@@ -183,7 +188,7 @@ int main(int argc, char **argv)
             CHECK(!state.state_counts[KER_SOCKET_TCP_STATE_LISTEN]);
         } else if (!strcmp(command, "OLD_CAPS\n")) {
             CHECK(previous_plan >= 0 && previous_group >= 0);
-            CHECK(ker_socket_client_owner_group_cutover_begin(&client, previous_plan) == -1 && errno == EALREADY);
+            CHECK(ker_socket_client_owner_group_cutover_begin(&client, previous_plan) == -1 && errno == (previous_abandoned ? EOPNOTSUPP : EALREADY));
             CHECK(ker_socket_client_reuseport_group_select(&client, previous_group, previous_aborted ? 1 : 0) == -1 && errno == EOPNOTSUPP);
             CHECK(!ker_socket_client_reuseport_group_select(&client, previous_group, previous_aborted ? 0 : 1));
         } else if (!strcmp(command, "DROP_PARENT\n")) {
@@ -231,6 +236,7 @@ int main(int argc, char **argv)
             CHECK(cutover < 0);
             cutover = ker_socket_client_owner_group_cutover_begin(&client, plan);
             CHECK(cutover >= 0 && !cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_PREPARED, 0));
+            CHECK(ker_socket_client_owner_group_abandon_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
         } else if (!strcmp(command, "QUEUED\n")) {
             CHECK(cutover >= 0 && !cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_PREPARED, 1));
         } else if (!strcmp(command, "DEAD_BEGIN\n")) {
@@ -276,6 +282,7 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_cutover_commit(&client, cutover) == -1 && errno == EALREADY);
             CHECK(ker_socket_client_owner_group_cutover_abort(&client, cutover) == -1 && errno == EALREADY);
             CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == ECANCELED);
+            CHECK(ker_socket_client_owner_group_abandon_plan(&client, plan) == -1 && errno == ECANCELED);
         } else if (!strcmp(command, "COMMIT\n")) {
             CHECK(!ker_socket_client_owner_group_cutover_commit(&client, cutover));
             CHECK(!cutover_wait(&client, cutover, KER_SOCKET_GROUP_CUTOVER_COMMITTED, 0));

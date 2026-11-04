@@ -864,3 +864,37 @@ The test injects a real process death, not a forged READY/FSM status or upstream
 claiming an original shell case or increasing migration counts. Recovery from a
 quarantined cutover, the original same-master HUP/USR2 FSM and the full source
 entrypoint remain outstanding (362 scenario-adapted, 0 partial, 1 blocked).
+
+### Abandon an unready candidate before ingress freeze
+
+`ker_socket_client_owner_group_abandon_plan()` explicitly cancels a live,
+published candidate before BEGIN and adopts the unchanged initial Linux listener
+into one fresh staged plan. `EAGAIN` means its admission map-close ACK is pending;
+success permanently seals that window against REARM. New slot 1 remains blocked
+until the rejected worker's pidfd confirms death and all physical listener aliases
+and task pins disappear. Listener cookie, existing old connections and the native
+initial-owner registration are preserved. Old capabilities cannot start a cutover
+or select the abandoned candidate after adoption.
+
+The operation requires CONTROL on the exact plan, both published live owners,
+matching identities and native listener cookies, selector zero, and no ingress
+controller or generation watch. Started cutovers reject it with `EOPNOTSUPP`;
+quarantine remains `ECANCELED`. The normal acknowledged-abort retry API keeps its
+original contract. No synthetic ABORTED state, ingress lease or FSM receipt is
+created. Dead/failed candidates still require a separate recovery design.
+
+`native-nginx-abandon-retry-cutover-tap` and its `-alias-tap` companion suppress
+only the test module's candidate READY notification. The original Nginx worker
+and its event loop remain live; the caller's one-second READY budget expires,
+then the caller abandons the plan. Both profiles prove the same initial listener
+cookie, old fresh HTTP/keepalive, refusal to delegate while the unready owner is
+alive, and a successful retry with a real queued SYN. The alias profile also
+proves permanent REARM refusal and blocks a new slot after owner death until an
+external listener alias closes. After retry commit the old owner retires and new
+HTTP succeeds. Suppression exists only in the test module, not the installed
+activation module. Upstream sources are unchanged.
+
+This supplies pre-BEGIN caller recovery for a missing READY notification. It does
+not implement original `FF_FAULT=ready_never`, the original master's timeout/FSM,
+or quarantined-ingress recovery. Inventory remains 362 scenario-adapted, 0 partial,
+1 blocked until the complete source shell contract is implemented.
