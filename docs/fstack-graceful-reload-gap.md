@@ -442,3 +442,31 @@ anchor retirement. See [configuration, evidence and limits](fstack-nginx-runtime
 This adds source traffic qualification but does not execute the original
 shell's generation FSM or its signal/transition assertions; the source matrix
 and migration inventory entry remain blocked.
+
+
+### Real Nginx abort continuity
+
+The two real Nginx profile now covers explicit C28 ABORT with a retained SYN:
+`native-nginx-overlap-abort-tap` requires the queued connection to reach old
+Nginx, then proves existing and fresh old-owner HTTP after the candidate's
+confirmed exit and LISTEN=0. Its companion
+`native-nginx-overlap-abort-source-streams-tap` runs the unchanged source
+stream probe and summary oracle across the abort and candidate retirement.
+See [abort scope and reproduction](fstack-nginx-runtime.md#queued-syn-abort-with-real-nginx-owners).
+This qualifies the abort prerequisite before the selector changes. It does not execute
+the original FSM's failure policy or certify post-commit rollback, repeated
+attempts or the complete shell matrix; the migration entry remains blocked.
+
+
+### Original keepalive probe over explicit overlap
+
+The real old/new Nginx profile now consumes the unchanged 180-second original
+LC probe and summary oracle in both commit and abort modes. It preserves the
+source progress anchor, the perf oracle's bounded closure rule for handover,
+and the stricter zero-failure/reconnect rule for abort. This workload also
+exposed the single-packet admission queue limit and interrupted identity checks;
+the host adapters now retain a bounded notification FIFO and an unverified
+received record until identity validation finishes. See [LC scope and runtime
+qualification](fstack-nginx-runtime.md#original-keepalive-probe-through-commit-and-abort).
+The original same-master FSM, performance comparison and complete shell matrix
+remain unqualified; inventory remains 362 scenario-adapted, 0 partial, 1 blocked.

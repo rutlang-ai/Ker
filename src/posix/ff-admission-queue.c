@@ -23,6 +23,7 @@
 
 #define KER_FF_QUEUE_MAX_MESSAGE 4096U
 #define KER_FF_QUEUE_COPY_RANGE 256U
+#define KER_FF_QUEUE_BACKLOG 64U
 #define KER_FF_QUEUE_MISC_NAME "ker-ff-admission-queue"
 #define KER_FF_QUEUE_MINOR_MAX ((1U << 20) - 1)
 #define KER_NLA_ALIGN(length) (((length) + 3U) & ~3U)
@@ -36,6 +37,13 @@ struct ker_nlattr {
 	uint16_t nla_type;
 };
 
+struct deferred_notification {
+    size_t length;
+    uint64_t deadline_ns;
+    struct lkl_sockaddr_nl sender;
+    unsigned char bytes[KER_FF_QUEUE_MAX_MESSAGE];
+};
+
 struct ker_ff_admission_queue {
 	int fd;
 	uint32_t sequence;
@@ -45,10 +53,9 @@ struct ker_ff_admission_queue {
 	uint64_t lease;
 	int armed;
 	int pending;
-	int deferred_valid;
-	size_t deferred_length;
-	struct lkl_sockaddr_nl deferred_sender;
-	unsigned char deferred[KER_FF_QUEUE_MAX_MESSAGE];
+    unsigned deferred_head;
+    unsigned deferred_count;
+    struct deferred_notification deferred[KER_FF_QUEUE_BACKLOG];
 };
 
 
@@ -123,12 +130,19 @@ static int wait_ack(struct ker_ff_admission_queue *queue, uint32_t sequence,
 		if (header->nlmsg_len != (uint32_t)result) return -EPROTO;
 		if (header->nlmsg_type == ((NFNL_SUBSYS_QUEUE << 8) | NFQNL_MSG_PACKET) &&
 		    header->nlmsg_seq == 0) {
-			if (queue->deferred_valid || (size_t)result > sizeof(queue->deferred))
-				return -ENOBUFS;
-			memcpy(queue->deferred, reply, (size_t)result);
-			queue->deferred_length = (size_t)result;
-			queue->deferred_sender = sender;
-			queue->deferred_valid = 1;
+            /* A verdict ACK can follow an entire SYNACK notification burst.
+             * Preserve each original datagram while matching the exact ACK. */
+            if (queue->deferred_count == KER_FF_QUEUE_BACKLOG) return -ENOBUFS;
+            unsigned tail = (queue->deferred_head + queue->deferred_count) % KER_FF_QUEUE_BACKLOG;
+            struct deferred_notification *deferred = &queue->deferred[tail];
+            struct timespec arrived;
+            if (clock_gettime(CLOCK_MONOTONIC, &arrived)) return -errno;
+            deferred->deadline_ns = (uint64_t)arrived.tv_sec * UINT64_C(1000000000) +
+                arrived.tv_nsec + UINT64_C(250000000);
+            memcpy(deferred->bytes, reply, (size_t)result);
+            deferred->length = (size_t)result;
+            deferred->sender = sender;
+            ++queue->deferred_count;
 			continue;
 		}
 		if (header->nlmsg_type != LKL_NLMSG_ERROR || header->nlmsg_pid != queue->portid ||
@@ -298,7 +312,7 @@ int ker_ff_admission_queue_start(uint32_t owner_mark,
 	};
 	unsigned char attributes[128];
 	size_t offset = 0;
-	uint32_t maxlen = htonl(1);
+	uint32_t maxlen = htonl(KER_FF_QUEUE_BACKLOG);
 	uint32_t flags = 0, mask = htonl(NFQA_CFG_F_FAIL_OPEN);
 	int fd, control_fd, result;
 	long native;
@@ -385,16 +399,20 @@ int ker_ff_admission_queue_receive(struct ker_ff_admission_queue *queue,
 	int have_packet_header = 0, have_packet_mark = 0;
 	unsigned char *payload = NULL;
 	size_t payload_length = 0;
+    uint64_t deferred_deadline = 0;
 	int result;
 	int remaining;
 
 	if (!queue || !packet || timeout_ms > 250 || queue->pending)
 		return -EINVAL;
-	if (queue->deferred_valid) {
-		result = (int)queue->deferred_length;
-		sender = queue->deferred_sender;
-		memcpy(bytes, queue->deferred, (size_t)result);
-		queue->deferred_valid = 0;
+    if (queue->deferred_count) {
+        const struct deferred_notification *deferred = &queue->deferred[queue->deferred_head];
+        result = (int)deferred->length;
+        sender = deferred->sender;
+        deferred_deadline = deferred->deadline_ns;
+        memcpy(bytes, deferred->bytes, (size_t)result);
+        queue->deferred_head = (queue->deferred_head + 1) % KER_FF_QUEUE_BACKLOG;
+        --queue->deferred_count;
 	} else {
 		result = receive_datagram(queue, bytes, sizeof(bytes), &sender,
 			&sender_length, timeout_ms);
@@ -470,8 +488,9 @@ int ker_ff_admission_queue_receive(struct ker_ff_admission_queue *queue,
 	packet->lease = queue->lease;
 	struct timespec arrived;
 	if (clock_gettime(CLOCK_MONOTONIC, &arrived) != 0) return -errno;
-	packet->deadline_ns = (uint64_t)arrived.tv_sec * UINT64_C(1000000000) +
-		arrived.tv_nsec + UINT64_C(250000000);
+    packet->deadline_ns = deferred_deadline ? deferred_deadline :
+        (uint64_t)arrived.tv_sec * UINT64_C(1000000000) +
+        arrived.tv_nsec + UINT64_C(250000000);
 	packet->id = ntohl(packet_header.packet_id);
 	packet->mark = packet_mark;
 	/* NFQA carries the outgoing SYNACK; recover the original request tuple. */
@@ -590,7 +609,7 @@ int ker_ff_admission_queue_test_drop_wrong_id(
 int ker_ff_admission_queue_disarm_after_quiescence(
 	struct ker_ff_admission_queue *queue)
 {
-	if (!queue || !queue->armed || queue->pending || queue->deferred_valid)
+	if (!queue || !queue->armed || queue->pending || queue->deferred_count)
 		return -EBUSY;
 	int status = set_kernel_mark(queue->mark, 0, &queue->lease);
 	if (!status) queue->armed = 0;
@@ -610,7 +629,7 @@ int ker_ff_admission_queue_retire_drained(
 	const struct ker_ff_admission_queue *queue)
 {
 	if (!queue || queue->armed) return -EINVAL;
-	return queue->pending || queue->deferred_valid ? 0 : 1;
+	return queue->pending || queue->deferred_count ? 0 : 1;
 }
 
 void ker_ff_admission_queue_close(struct ker_ff_admission_queue *queue)
