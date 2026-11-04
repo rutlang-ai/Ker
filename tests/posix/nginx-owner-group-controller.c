@@ -86,6 +86,14 @@ int main(int argc, char **argv)
             struct ker_socket_member_census_snapshot state;
             CHECK(census[index] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[index], &state));
             CHECK(state.listener_cookie && state.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
+        } else if (!strcmp(command, "CENSUS_UNPUBLISHED\n")) {
+            CHECK(group >= 0 && census[1] < 0);
+            census[1] = ker_socket_client_member_census_create(&client, group, 1);
+            struct ker_socket_member_census_snapshot state;
+            CHECK(census[1] >= 0 && !ker_socket_client_member_census_snapshot(&client, census[1], &state));
+            CHECK(!state.listener_cookie && !state.state_counts[KER_SOCKET_TCP_STATE_LISTEN]);
+            CHECK(ker_socket_client_owner_group_cutover_begin(&client, plan) == -1 && errno == EAGAIN);
+            CHECK(ker_socket_client_owner_group_abandon_plan(&client, plan) == -1 && errno == EAGAIN);
         } else if (!strcmp(command, "EARLY_NEXT\n")) {
             CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EAGAIN);
         } else if (!strcmp(command, "ABORT_NEXT\n")) {

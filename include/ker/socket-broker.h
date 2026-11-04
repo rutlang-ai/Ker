@@ -293,7 +293,8 @@ int ker_socket_client_owner_group_retry_plan(struct ker_socket_client *client,
 int ker_socket_client_owner_group_abandon_plan(struct ker_socket_client *client,
     int plan_cap);
 
-/* Recover a published, never-selected candidate's confirmed death before BEGIN. The initial
+/* Recover an activated, never-selected candidate's confirmed death before BEGIN.
+ * The candidate socket may still be unbound or not yet listening. The initial
  * owner/listener must remain live and unchanged. EAGAIN waits for exact pidfd
  * death, capability/alias closure and confirmed admission task release. Success
  * adopts the initial listener into one fresh plan; no actor ACK is fabricated.

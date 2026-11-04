@@ -37,6 +37,9 @@
 
 #include "nginx-cycle-wire.h"
 #include "nginx-owner-ready.h"
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+#include <signal.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -1105,6 +1108,12 @@ int ker_fstack_nginx_owner_activation_worker_commit(void)
     (void)syscall(SYS_close, current_slot);
     current_slot = -1;
     if (!result) trace_line("NGINX_CANDIDATE_TASK_READY pid=%ld\n", (long)getpid());
+#ifdef KER_NGINX_OWNER_TEST_ALIAS
+    if (!result && getenv("KER_NGINX_TEST_STOP_BEFORE_LISTEN")) {
+        trace_line("NGINX_TEST_CANDIDATE_STOP_BEFORE_LISTEN pid=%ld\n", (long)getpid());
+        if (raise(SIGSTOP)) return -1;
+    }
+#endif
     errno = error;
     return result;
 }

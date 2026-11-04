@@ -905,7 +905,7 @@ or quarantined-ingress recovery. Inventory remains 362 scenario-adapted, 0 parti
 candidate's confirmed death before any cutover starts. It requires the exact
 candidate pidfd death, closure of all candidate listener aliases/pins, confirmed
 admission task release/join and no remaining broker socket or group pin carrying
-that owner's identity. A retained publication cookie and claim generation prevent
+that owner's identity. A retained activation socket cookie and claim generation prevent
 death cleanup from erasing the physical-listener correlation. The original
 owner must still be alive with the same validated initial listener.
 
@@ -936,3 +936,30 @@ recovery must still return `EOPNOTSUPP`. Existing prepared-death tests require
 quarantine and refuse the new API. This extends native recovery prerequisites,
 not the original same-master HUP/USR2 FSM or an original shell fault case.
 Inventory remains 362 scenario-adapted, 0 partial, 1 blocked.
+
+### Candidate death after activation but before LISTEN
+
+Dead-candidate recovery now accepts a socket that was activated but never
+published as a listener. The broker retains its immutable socket cookie and
+claim generation at successful activation rather than waiting for LISTEN.
+All #514 death, task join, owner socket/alias/pin closure, stale gate lease,
+initial-listener identity and never-selected/no-cutover guards still apply.
+No socket activation means no ledger and remains outside this contract.
+
+`native-nginx-prelisten-death-recovery-tap` uses only the test module to stop the
+real worker after authenticated admission attach and candidate socket activation,
+before the pinned Nginx caller executes its first listener socket/bind/listen
+sequence. The coordinator confirms the child is stopped and its pidfd is live,
+receives no READY, and requires no ff_listen trace plus a broker-native unpublished
+census with cookie=0 and LISTEN=0. BEGIN and live abandonment are refused. Recovery
+is also refused while the worker remains alive.
+
+The test kills that exact child through pidfd, preserves old HTTP/keepalive and
+the original listener cookie, and recovers into a fresh plan. The failed-start
+candidate master takes the unchanged original 15-second initialization timeout
+and exit(2) path; this is recorded as startup failure, not clean retirement.
+A replacement real Nginx then enters its loop, commits a queued SYN, retires the
+original owner and serves new HTTP. No upstream source or initialization-success
+semaphore is patched, and the stop hook is absent from the production module.
+This qualifies a caller recovery prerequisite for real startup failure, not the
+original same-master HUP/USR2 failure FSM. Migration counts are unchanged.
