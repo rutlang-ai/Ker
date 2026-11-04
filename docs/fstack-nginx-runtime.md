@@ -684,3 +684,64 @@ an explicit coordinator; production same-master HUP/USR2 orchestration, the full
 generation FSM and its fault matrix remain outstanding. The migration inventory
 remains 362 scenario-adapted, 0 partial and 1 blocked
 (`test_graceful_reload.sh::entrypoint`).
+
+### Retry plans after a confirmed candidate abort
+
+`ker_socket_client_owner_group_retry_plan()` supplies the planned-abort recovery
+boundary needed before wiring same-master reload orchestration. A predecessor
+must have a confirmed ABORTED cutover, selector 0, no ingress controller and no
+live cutover capability. Its initial owner and published candidate must still
+have their exact authenticated pid/start time/mark and Linux listener identities.
+Failed/quarantined cutovers, committed predecessors and a candidate that exited
+before cooperative retirement cannot authorize this recovery.
+
+The call asynchronously retires the rejected candidate's admission window and
+returns `EAGAIN` until the authenticated map-close acknowledgment. It then seals
+that window against REARM and creates one fresh staged plan that duplicates the
+still-serving initial listener, preserving its SO_COOKIE and owner identity.
+The predecessor's broker initial pin is transferred to the fresh plan, not left
+behind as another physical listener reference. Existing application aliases keep
+their original group/role metadata. A transferred predecessor pin is explicitly
+distinct from a listener retired after owner exit; stale operations cannot treat
+it as a fresh initial member. Successor and retry creation share the one-child
+limit, so they cannot fork a predecessor into competing plans.
+
+The returned plan can be inspected while the rejected candidate is alive, but
+candidate slot 1 is withheld with `EAGAIN`. The caller stops that candidate and
+retries delegation. Delegation verifies its exact pidfd has confirmed exit,
+releases the old admission task's extra `ker_fd` reference and checks every
+physical listener-cookie alias/internal pin before allowing a replacement.
+Thus the replacement occupies Linux reuseport index 1, rather than accidentally
+creating a third physical listener behind an externally retained old alias.
+Accepted sockets are not counted as listener aliases. Initial listener traffic
+continues through original Linux while the candidate is being retired and the
+new slot remains unavailable.
+
+`native-nginx-abort-retry-cutover-tap` runs three real Nginx master/worker pairs
+on the same broker/listen tuple: abort with a queued SYN, create a retry plan,
+stop the rejected owner, then commit another queued SYN to the replacement.
+The unchanged original HTTP oracle verifies old keepalive across both decisions,
+initial-listener cookie continuity, fresh HTTP before commit and replacement
+HTTP after initial-owner retirement. Old capabilities cannot select the new
+candidate; the new candidate records original flow-map admission. Premature,
+wrong-kind, duplicate, committed and noncooperative-death recovery attempts are
+checked by the controller or the existing abort regression.
+
+`native-nginx-abort-retry-alias-tap` retains a rejected listener alias externally.
+It verifies slot delegation remains blocked both before owner exit and, after
+the task pin has been released, while that alias is still held. Closing the alias
+allows replacement startup and successful commit. The test-only module also
+confirms the rejected actor cannot reopen its sealed admission window. Both
+profiles require final broker outstanding I/O to be zero.
+
+The related 19 native C16/C17/C28/Nginx regressions pass. Three negative controls
+fail as expected: bypassing the rejected-owner barrier delegates too early;
+removing the physical-cookie check permits an externally retained alias; and
+retaining the predecessor's old initial pin prevents final listener retirement.
+All protections were restored before final validation.
+
+This is explicit coordinator recovery from an acknowledged abort. Same-master
+HUP/USR2 orchestration and the complete generation FSM/fault matrix remain
+outstanding; no imported upstream source is modified. Migration inventory stays
+at 362 scenario-adapted, 0 partial and 1 blocked
+(`test_graceful_reload.sh::entrypoint`).

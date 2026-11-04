@@ -271,6 +271,18 @@ int ker_socket_client_owner_group_retire_initial_listener(
 int ker_socket_client_owner_group_successor_plan(struct ker_socket_client *client,
     int plan_cap);
 
+/* After a confirmed aborted cutover, retire and seal the rejected candidate's
+ * admission window and adopt the still-live initial listener in one fresh plan.
+ * EAGAIN means map retirement is pending; close the completed cutover cap first.
+ * Once a plan is returned, stop the rejected candidate and retry slot(1) until
+ * it succeeds: delegation stays EAGAIN until its exact pidfd confirms exit and
+ * every physical candidate-listener alias/task pin is gone. The old plan's
+ * initial pin is transferred; stale operations cannot reuse it. One child plan
+ * is allowed per predecessor. This does not recover an unacknowledged failure
+ * or a quarantined cutover. */
+int ker_socket_client_owner_group_retry_plan(struct ker_socket_client *client,
+    int plan_cap);
+
 /* Bounded first-cutover coordinator for one staged owner group. The broker
  * derives both member identities and the original-Linux listener from the
  * plan. begin starts asynchronous gate setup and can return in STARTING; poll

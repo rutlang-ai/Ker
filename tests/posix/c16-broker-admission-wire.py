@@ -1755,6 +1755,7 @@ def main():
     parser.add_argument('--nginx-overlap-source-lc', action='store_true')
     parser.add_argument('--nginx-overlap-abort', action='store_true')
     parser.add_argument('--nginx-overlap-successor', action='store_true')
+    parser.add_argument('--nginx-overlap-retry', action='store_true')
     parser.add_argument('--nginx-overlap-alias-module', type=Path)
     parser.add_argument('--nginx-overlap-alias-regression', action='store_true')
     parser.add_argument('--staged-admission-only', action='store_true')
@@ -1791,7 +1792,11 @@ def main():
     if args.nginx_overlap_successor and (not args.nginx_overlap_controller or
             args.nginx_overlap_abort or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
         parser.error('--nginx-overlap-successor requires the plain commit overlap profile')
-    if args.nginx_overlap_abort and (not args.nginx_overlap_controller or args.nginx_overlap_alias_regression):
+    if args.nginx_overlap_retry and (not args.nginx_overlap_controller or not args.nginx_overlap_abort or
+            args.nginx_overlap_successor or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
+        parser.error('--nginx-overlap-retry requires the plain abort overlap profile')
+    if args.nginx_overlap_abort and (not args.nginx_overlap_controller or
+            (args.nginx_overlap_alias_regression and not args.nginx_overlap_retry)):
         parser.error('abort requires the ordinary overlapping Nginx profile')
     if args.nginx_overlap_source_streams and (not args.nginx_overlap_controller or args.nginx_overlap_alias_regression):
         parser.error('source streams require the ordinary overlapping Nginx profile')
@@ -1837,6 +1842,8 @@ def main():
             command += ['--nginx-overlap-abort']
         if args.nginx_overlap_successor:
             command += ['--nginx-overlap-successor']
+        if args.nginx_overlap_retry:
+            command += ['--nginx-overlap-retry']
         if args.nginx_overlap_alias_regression:
             command.append('--nginx-overlap-alias-regression')
     if args.staged_admission_only:

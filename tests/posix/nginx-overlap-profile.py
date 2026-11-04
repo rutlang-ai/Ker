@@ -39,7 +39,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     held = None
     held_alias = None
     alias_listener = None
-    evidence = {'status': 'RUNNING', 'outcome': 'abort' if args.nginx_overlap_abort else 'commit', 'events': []}
+    evidence = {'status': 'RUNNING', 'outcome': 'abort-retry-commit' if args.nginx_overlap_retry else 'abort' if args.nginx_overlap_abort else 'commit', 'events': []}
     source_probe = None
     source_output = None
     source_started = None
@@ -104,7 +104,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         module = args.nginx_candidate_module
         user_directive = 'user root;'
         export_alias = args.nginx_overlap_alias_regression and (
-            label == 'new' if args.nginx_overlap_successor else not candidate)
+            label == 'new' if (args.nginx_overlap_successor or args.nginx_overlap_retry) else not candidate)
         if export_alias:
             module = args.nginx_overlap_alias_module
         config.write_text(f'''load_module {module};
@@ -125,7 +125,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             ('KER_NGINX_CANDIDATE_SLOT_FD' if candidate else 'KER_NGINX_INITIAL_SLOT_FD'): str(slot)}
         if export_alias:
             env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
-            if args.nginx_overlap_successor:
+            if args.nginx_overlap_successor or args.nginx_overlap_retry:
                 env['KER_NGINX_TEST_REARM_TRIGGER'] = str(root / 'rearm.trigger')
         process = subprocess.Popen([str(args.nginx_candidate_binary), '-p', str(prefix) + '/',
             '-c', str(config)], pass_fds=(slot,), env=env, start_new_session=True,
@@ -148,6 +148,18 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         record(label.upper() + '_NGINX_READY', master=process.pid, worker=int(worker_pids[0]))
         return process, body, prefix, worker_fd
 
+    def receive_candidate_slot():
+        message, ancillary, flags, _ = transfer.recvmsg(1, socket.CMSG_SPACE(4))
+        delegated = []
+        for level, kind, data in ancillary:
+            require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
+                'unexpected candidate authority')
+            values = array.array('i'); values.frombytes(data); delegated.extend(values)
+        caps.extend(delegated)
+        require(message == b'N' and not flags and len(delegated) == 1,
+            'plan must delegate only one candidate slot')
+        return delegated[0]
+
     def receive_alias():
         nonlocal held_alias
         alias_channel, _ = alias_listener.accept()
@@ -161,7 +173,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             held_alias = values[0]
         require(message == b'A' and not flags and held_alias is not None,
             'Nginx owner did not export its live member alias')
-        record('PREDECESSOR_MEMBER_ALIAS_HELD' if args.nginx_overlap_successor else 'INITIAL_MEMBER_ALIAS_HELD_BY_COORDINATOR')
+        record('PREDECESSOR_MEMBER_ALIAS_HELD' if (args.nginx_overlap_successor or args.nginx_overlap_retry) else 'INITIAL_MEMBER_ALIAS_HELD_BY_COORDINATOR')
 
     def stop_nginx(process, worker_fd, label):
         process.send_signal(signal.SIGQUIT)
@@ -185,11 +197,13 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             alias_listener.bind(str(root / 'initial-alias.sock'))
             alias_listener.listen(1); alias_listener.settimeout(15)
         old, old_body, old_prefix, old_fd = start_nginx('old', caps[0], False)
-        if alias_listener is not None and not args.nginx_overlap_successor:
+        if alias_listener is not None and not (args.nginx_overlap_successor or args.nginx_overlap_retry):
             receive_alias()
         command('CONTROL'); command('CENSUS0')
         if args.nginx_overlap_successor:
             command('EARLY_NEXT'); command('WRONG_NEXT')
+        if args.nginx_overlap_retry:
+            command('EARLY_RETRY'); command('WRONG_RETRY')
         held = socket.create_connection(('198.18.0.2', 4108), timeout=10)
         held.settimeout(10); http(held, old_body)
         if args.nginx_overlap_source_streams or args.nginx_overlap_source_lc:
@@ -242,7 +256,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 command(census_command)
                 record('TWELVE_SOURCE_STREAMS_ON_OLD_OWNER', elapsed=time.monotonic() - source_started)
         new, new_body, new_prefix, new_fd = start_nginx('new', caps[1], True)
-        if alias_listener is not None and args.nginx_overlap_successor:
+        if alias_listener is not None and (args.nginx_overlap_successor or args.nginx_overlap_retry):
             receive_alias()
         command('CENSUS1'); command('EARLY_RETIRE'); command('WRONG_RETIRE'); fresh(old_body)
         record('BOTH_NGINX_LIVE_SELECTOR_ZERO')
@@ -264,8 +278,62 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         http(held, old_body); record('OLD_KEEPALIVE_SURVIVED')
         if source_probe is not None:
             command(census_command)
-        if args.nginx_overlap_abort:
-            stop_nginx(new, new_fd, 'new'); command('CLOSED1')
+        if args.nginx_overlap_retry:
+            command('RETRY')
+            cookies = [re.search(r'SUCCESSOR_COOKIE preserved=(\d+)', line)
+                for line in getattr(controller, '_ker_recent_lines', [])]
+            preserved = [int(match[1]) for match in cookies if match]
+            require(len(preserved) == 1 and preserved[0], 'missing exact retry-listener cookie proof')
+            record('ABORT_RETRY_PLAN_ADOPTED_INITIAL_LISTENER', cookie=preserved[0])
+            http(held, old_body); fresh(old_body)
+            command('RETRY_SLOT_BLOCKED')
+            record('LIVE_REJECTED_CANDIDATE_BLOCKED_NEW_SLOT')
+            if held_alias is not None:
+                (root / 'rearm.trigger').touch()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    text = (new_prefix / 'runtime.trace').read_text()
+                    if f'NGINX_TEST_REARM_SEALED result=-1 error={errno.EOPNOTSUPP}' in text: break
+                    time.sleep(.01)
+                else: raise RuntimeError('aborted candidate REARM was not sealed: ' + text)
+                record('ABORTED_CANDIDATE_REARM_REJECTED')
+            stop_nginx(new, new_fd, 'new')
+            if held_alias is not None:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if 'listener-ref-put-at-task-release' in broker_logs['stdout'].read_text(): break
+                    time.sleep(.001)
+                else: raise RuntimeError('aborted task did not release its listener reference')
+                command('RETRY_SLOT_BLOCKED')
+                record('DEAD_REJECTED_CANDIDATE_ALIAS_BLOCKED_NEW_SLOT')
+                http(held, old_body); fresh(old_body)
+                os.close(held_alias); held_alias = None
+            command('RETRY_SLOT'); command('CLOSED_REJECTED')
+            retry_slot = receive_candidate_slot()
+            retry, retry_body, retry_prefix, retry_fd = start_nginx('retry', retry_slot, True)
+            command('CENSUS1'); command('OLD_CAPS'); fresh(old_body)
+            command('BEGIN'); record('RETRY_CUTOVER_PREPARED')
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 10)
+                command('QUEUED')
+                require(not queued.done(), 'retry queued SYN completed before commit')
+                command('COMMIT'); command('COMMITTED_RETRY')
+                record('RETRY_CUTOVER_COMMITTED_WITH_QUEUED_SYN')
+                with queued.result(timeout=10) as connection:
+                    connection.settimeout(10); http(connection, retry_body, True)
+            command('OLD_CAPS'); fresh(retry_body)
+            record('ABORTED_CAPABILITIES_CANNOT_REDIRECT_RETRY')
+            command('DROP_PARENT')
+            for cap in caps[:2]: os.close(cap)
+            del caps[:2]
+            http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_ABORT_AND_RETRY_COMMIT')
+            held.close(); held = None
+            stop_nginx(old, old_fd, 'old')
+            command('RETIRE0'); command('CLOSED0')
+            fresh(retry_body); record('RETRY_HTTP_AFTER_INITIAL_OWNER_EXIT')
+            new, new_body, new_prefix, new_fd = retry, retry_body, retry_prefix, retry_fd
+        elif args.nginx_overlap_abort:
+            stop_nginx(new, new_fd, 'new'); command('CLOSED1'); command('DEAD_RETRY')
             require(old.poll() is None and not select.select([old_fd], [], [], 0)[0],
                 'old Nginx did not survive candidate retirement')
             command('EARLY_RETIRE')
@@ -293,15 +361,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 held = socket.create_connection(('198.18.0.2', 4108), timeout=10)
                 held.settimeout(10); http(held, new_body)
                 command('NEXT')
-                message, ancillary, flags, _ = transfer.recvmsg(1, socket.CMSG_SPACE(4))
-                delegated = []
-                for level, kind, data in ancillary:
-                    require(level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS,
-                        'unexpected successor authority')
-                    values = array.array('i'); values.frombytes(data); delegated.extend(values)
-                caps.extend(delegated)
-                require(message == b'N' and not flags and len(delegated) == 1,
-                    'successor must delegate only one candidate slot')
+                delegated_slot = receive_candidate_slot()
                 cookies = [re.search(r'SUCCESSOR_COOKIE preserved=(\d+)', line)
                     for line in getattr(controller, '_ker_recent_lines', [])]
                 preserved = [int(match[1]) for match in cookies if match]
@@ -317,7 +377,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                         time.sleep(.01)
                     else: raise RuntimeError('predecessor REARM was not permanently sealed: ' + text)
                     record('PREDECESSOR_REARM_REJECTED')
-                third, third_body, third_prefix, third_fd = start_nginx('next', delegated[0], True)
+                third, third_body, third_prefix, third_fd = start_nginx('next', delegated_slot, True)
                 command('CENSUS1'); command('OLD_CAPS'); fresh(new_body)
                 record('OLD_CAPABILITIES_CANNOT_CHANGE_SUCCESSOR_SELECTOR')
                 command('DROP_PARENT')
@@ -389,7 +449,9 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 evidence[source_key]['summary'] = fields
                 record('ORIGINAL_STREAM_ORACLE_PASS', streams=int(fields['streams']),
                     elapsed=time.monotonic() - source_started)
-        if args.nginx_overlap_abort:
+        if args.nginx_overlap_retry:
+            stop_nginx(new, new_fd, 'retry'); command('CLOSED1')
+        elif args.nginx_overlap_abort:
             fresh(old_body)
             stop_nginx(old, old_fd, 'old')
             for cap in caps: os.close(cap)
@@ -416,14 +478,18 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         evidence.update(status='PASS', stats=report, logs={
             label: {'trace': (prefix / 'runtime.trace').read_text(),
                 'error_log': (prefix / 'logs/error.log').read_text()}
-            for label in ('old', 'new', 'next') if (prefix := root / label).exists()})
+            for label in ('old', 'new', 'next', 'retry') if (prefix := root / label).exists()})
         if not args.nginx_overlap_abort:
             for label in (('new', 'next') if args.nginx_overlap_successor else ('new',)):
                 require('private candidate admission: allowed=1 created=1' in
                     evidence['logs'][label]['error_log'],
                     label + ' Nginx did not consume original-map admission')
+        if args.nginx_overlap_retry:
+            require('private candidate admission: allowed=1 created=1' in
+                evidence['logs']['retry']['error_log'], 'retry owner did not consume original-map admission')
         print('NGINX_OVERLAP_PASS outcome=' + evidence['outcome'] +
             ' successor=' + str(args.nginx_overlap_successor).lower() +
+            ' retry=' + str(args.nginx_overlap_retry).lower() +
             ' queued_syn=true old_keepalive=true old_exit=true outstanding=0')
         return 0
     except BaseException as error:
@@ -466,7 +532,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             label: {name: path.read_text(errors='replace')
                 for name, path in [('trace', root / label / 'runtime.trace'),
                     ('error_log', root / label / 'logs/error.log')] if path.exists()}
-            for label in ('old', 'new', 'next')}
+            for label in ('old', 'new', 'next', 'retry')}
         if args.nginx_candidate_evidence:
             args.nginx_candidate_evidence.parent.mkdir(parents=True, exist_ok=True)
             args.nginx_candidate_evidence.write_text(json.dumps(evidence, indent=2) + '\n')

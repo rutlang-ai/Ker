@@ -70,7 +70,8 @@ int main(int argc, char **argv)
     header->cmsg_len = CMSG_LEN(sizeof(slots));
     memcpy(CMSG_DATA(header), slots, sizeof(slots));
     CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
-    int previous_plan = -1, previous_group = -1;
+    int previous_plan = -1, previous_group = -1, discarded_census = -1;
+    int previous_aborted = 0;
     int group = -1, census[2] = {-1, -1}, cutover = -1;
     char command[32];
     while (fgets(command, sizeof(command), stdin)) {
@@ -91,14 +92,25 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
         } else if (!strcmp(command, "WRONG_NEXT\n")) {
             CHECK(ker_socket_client_owner_group_successor_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
-        } else if (!strcmp(command, "NEXT\n")) {
+        } else if (!strcmp(command, "EARLY_RETRY\n")) {
+            CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == EAGAIN);
+        } else if (!strcmp(command, "COMMITTED_RETRY\n")) {
+            CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
+        } else if (!strcmp(command, "DEAD_RETRY\n")) {
+            CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1 && errno == EOPNOTSUPP);
+        } else if (!strcmp(command, "WRONG_RETRY\n")) {
+            CHECK(ker_socket_client_owner_group_retry_plan(&client, slots[1]) == -1 && errno == ENOTSOCK);
+        } else if (!strcmp(command, "NEXT\n") || !strcmp(command, "RETRY\n")) {
+            int retry = command[0] == 'R';
+            int (*adopt)(struct ker_socket_client *, int) = retry ?
+                ker_socket_client_owner_group_retry_plan : ker_socket_client_owner_group_successor_plan;
             CHECK(previous_plan < 0 && previous_group < 0 && cutover >= 0);
-            CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EAGAIN);
+            CHECK(adopt(&client, plan) == -1 && errno == EAGAIN);
             close(cutover); cutover = -1;
             uint64_t deadline = now_ns() + UINT64_C(10000000000);
             int next;
             do {
-                next = ker_socket_client_owner_group_successor_plan(&client, plan);
+                next = adopt(&client, plan);
                 if (next >= 0 || errno != EAGAIN) break;
                 struct timespec pause = {.tv_nsec = 1000000};
                 (void)nanosleep(&pause, NULL);
@@ -108,36 +120,72 @@ int main(int argc, char **argv)
             int flags = -1;
             CHECK(!ker_socket_client_describe(&client, next, &kind, &flags) &&
                 kind == KER_SOCKET_BROKER_FF_OWNER_GROUP_PLAN && !flags);
-            CHECK(ker_socket_client_owner_group_successor_plan(&client, plan) == -1 && errno == EALREADY);
+            CHECK(adopt(&client, plan) == -1 && errno == EALREADY);
             CHECK(ker_socket_client_owner_group_slot(&client, next, 0) == -1 && errno == EALREADY);
             int next_group = ker_socket_client_owner_group_control(&client, next);
             CHECK(next_group >= 0);
             int next_census = ker_socket_client_member_census_create(&client, next_group, 0);
             struct ker_socket_member_census_snapshot before, after;
-            CHECK(next_census >= 0 && !ker_socket_client_member_census_snapshot(&client, census[1], &before));
+            CHECK(next_census >= 0 && !ker_socket_client_member_census_snapshot(&client, census[retry ? 0 : 1], &before));
             CHECK(!ker_socket_client_member_census_snapshot(&client, next_census, &after));
             CHECK(before.listener_cookie && before.listener_cookie == after.listener_cookie &&
                 after.state_counts[KER_SOCKET_TCP_STATE_LISTEN] == 1);
             printf("SUCCESSOR_COOKIE preserved=%llu\n", (unsigned long long)after.listener_cookie);
+            previous_aborted = retry;
             previous_plan = plan; plan = next;
             previous_group = group; group = next_group;
             for (unsigned index = 0; index < 2; ++index) {
                 close(slots[index]); slots[index] = -1;
-                close(census[index]); census[index] = -1;
+                if (retry && index == 1) {
+                    if (discarded_census >= 0) close(discarded_census);
+                    discarded_census = census[index];
+                } else close(census[index]);
+                census[index] = -1;
             }
             census[0] = next_census;
-            slots[1] = ker_socket_client_owner_group_slot(&client, plan, 1);
+            if (retry) {
+                CHECK(ker_socket_client_owner_group_slot(&client, plan, 1) == -1 && errno == EAGAIN);
+            } else {
+                slots[1] = ker_socket_client_owner_group_slot(&client, plan, 1);
+                CHECK(slots[1] >= 0);
+            }
+            if (!retry) {
+                CHECK(ker_socket_client_owner_group_slot(&client, plan, 1) == -1 && errno == EALREADY);
+                memcpy(CMSG_DATA(header), &slots[1], sizeof(slots[1]));
+                header->cmsg_len = CMSG_LEN(sizeof(slots[1]));
+                message.msg_controllen = CMSG_SPACE(sizeof(slots[1]));
+                CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
+            }
+        } else if (!strcmp(command, "RETRY_SLOT_BLOCKED\n")) {
+            uint64_t deadline = now_ns() + UINT64_C(200000000);
+            do {
+                CHECK(ker_socket_client_owner_group_slot(&client, plan, 1) == -1 && errno == EAGAIN);
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+        } else if (!strcmp(command, "RETRY_SLOT\n")) {
+            uint64_t deadline = now_ns() + UINT64_C(10000000000);
+            do {
+                slots[1] = ker_socket_client_owner_group_slot(&client, plan, 1);
+                if (slots[1] >= 0 || errno != EAGAIN) break;
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
             CHECK(slots[1] >= 0);
             CHECK(ker_socket_client_owner_group_slot(&client, plan, 1) == -1 && errno == EALREADY);
             memcpy(CMSG_DATA(header), &slots[1], sizeof(slots[1]));
             header->cmsg_len = CMSG_LEN(sizeof(slots[1]));
             message.msg_controllen = CMSG_SPACE(sizeof(slots[1]));
             CHECK(sendmsg((int)transfer, &message, MSG_NOSIGNAL) == 1);
+        } else if (!strcmp(command, "CLOSED_REJECTED\n")) {
+            struct ker_socket_member_census_snapshot state;
+            CHECK(discarded_census >= 0 && !ker_socket_client_member_census_snapshot(&client, discarded_census, &state));
+            CHECK(!state.state_counts[KER_SOCKET_TCP_STATE_LISTEN]);
         } else if (!strcmp(command, "OLD_CAPS\n")) {
             CHECK(previous_plan >= 0 && previous_group >= 0);
             CHECK(ker_socket_client_owner_group_cutover_begin(&client, previous_plan) == -1 && errno == EALREADY);
-            CHECK(ker_socket_client_reuseport_group_select(&client, previous_group, 0) == -1 && errno == EOPNOTSUPP);
-            CHECK(!ker_socket_client_reuseport_group_select(&client, previous_group, 1));
+            CHECK(ker_socket_client_reuseport_group_select(&client, previous_group, previous_aborted ? 1 : 0) == -1 && errno == EOPNOTSUPP);
+            CHECK(!ker_socket_client_reuseport_group_select(&client, previous_group, previous_aborted ? 0 : 1));
         } else if (!strcmp(command, "DROP_PARENT\n")) {
             CHECK(previous_plan >= 0 && previous_group >= 0);
             close(previous_plan); previous_plan = -1;
@@ -221,6 +269,7 @@ int main(int argc, char **argv)
     }
     if (group >= 0) close(group);
     if (plan >= 0) close(plan);
+    if (discarded_census >= 0) close(discarded_census);
     if (previous_plan >= 0) close(previous_plan);
     if (previous_group >= 0) close(previous_group);
     close((int)transfer);
