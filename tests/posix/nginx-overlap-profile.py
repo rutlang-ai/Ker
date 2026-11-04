@@ -253,7 +253,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                         'quarantined port admitted a fresh connection')
                 record('QUARANTINED_PORT_REJECTED_FRESH_CONNECTION')
             else:
-                command('DEAD_BEGIN'); command('DEAD_RETRY')
+                command('DEAD_BEGIN')
                 fresh(old_body); record('OLD_HTTP_SURVIVED_PRE_CUTOVER_CANDIDATE_DEATH')
             http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_CANDIDATE_DEATH')
             new.send_signal(signal.SIGCONT)

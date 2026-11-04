@@ -238,6 +238,20 @@ int main(int argc, char **argv)
             CHECK(ker_socket_client_owner_group_cutover_begin(&client, plan) == -1);
             CHECK(errno == EAGAIN || errno == ESTALE || errno == ESRCH);
             printf("DEAD_OWNER_BEGIN_REJECTED errno=%d\n", errno);
+            /* pidfd death can precede capability-HUP processing. Require a
+             * bounded transition to permanent rejection, not event ordering. */
+            int retry_error = 0;
+            uint64_t deadline = now_ns() + UINT64_C(5000000000);
+            do {
+                CHECK(ker_socket_client_owner_group_retry_plan(&client, plan) == -1);
+                retry_error = errno;
+                if (retry_error == EOPNOTSUPP) break;
+                CHECK(retry_error == EAGAIN || retry_error == ESTALE || retry_error == ESRCH);
+                struct timespec pause = {.tv_nsec = 1000000};
+                (void)nanosleep(&pause, NULL);
+            } while (now_ns() < deadline);
+            CHECK(retry_error == EOPNOTSUPP);
+            printf("DEAD_OWNER_PRE_CUTOVER_RETRY_REJECTED errno=%d\n", retry_error);
         } else if (!strcmp(command, "DEAD_CUTOVER\n")) {
             /* A request can race autonomous quarantine. API success only
              * acknowledges the request; it must never certify commitment. */
