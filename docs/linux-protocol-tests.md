@@ -34,6 +34,10 @@ ctest --test-dir build-native-on -R '^linux-original-' --output-on-failure
 
 native CI 显式启用该构建选项，构建全部目标并运行完整 CTest 图。CI helper 同时要求这 4 个 CTest 出现在清单和 JUnit 结果中，拒绝缺失、失败和跳过，避免选项被关闭后静默减少覆盖。
 
+## AF_UNIX 接口验证
+
+另外接入了 [5 个原版 AF_UNIX 程序、74 个子用例](linux-af-unix-tests.md)，分别运行宿主基线与实际 Ker socket preload 适配层。结果属于 host-backed IPC 兼容性，不增加本页 3 种导入内核 TCP 配置的数量。
+
 ## 仍未覆盖
 
 当前固定 native 内核配置未启用 `CONFIG_KUNIT`；没有把 KUnit 结果算作通过。固定 Linux 源码中的 `tools/testing/selftests/net/packetdrill` 尚未接入 Ker 执行。Linux 完整 networking selftests 也尚未跑完。

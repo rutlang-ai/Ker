@@ -1627,6 +1627,9 @@ ssize_t writev(int fd, const struct iovec *vectors, int count)
 int epoll_create1(int flags)
 {
     if (!ker_sb_preload_runtime_ready()) { errno = ENOTCONN; return -1; }
+    /* Host-only callers (including AF_UNIX IPC) need no broker epoll. */
+    const char *broker = getenv("KER_SOCKET_BROKER_PATH");
+    if (!broker || !*broker) return (int)syscall(SYS_epoll_create1, flags);
     ker_sb_preload_lock(); int result = ker_sb_preload_epoll_create_locked(flags);
     ker_sb_preload_unlock(); return result;
 }
