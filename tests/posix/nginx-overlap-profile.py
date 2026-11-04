@@ -52,6 +52,7 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         evidence['outcome'] = 'owner-death-' + args.nginx_overlap_owner_death
     if args.nginx_overlap_abandon: evidence['outcome'] = 'abandon-before-cutover-retry-commit'
     if args.nginx_overlap_recover_dead: evidence['outcome'] = 'dead-candidate-recovery-retry-commit'
+    if args.nginx_overlap_prelisten_death: evidence['outcome'] = 'prelisten-death-recovery-retry-commit'
     source_probe = None
     source_output = None
     source_started = None
@@ -122,8 +123,9 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
         user_directive = 'user root;'
         export_alias = args.nginx_overlap_alias_regression and (
             label == 'new' if (args.nginx_overlap_successor or args.nginx_overlap_retry) else not candidate)
+        prelisten = args.nginx_overlap_prelisten_death and label == 'new'
         suppress_ready = args.nginx_overlap_abandon and not args.nginx_overlap_recover_dead and label == 'new'
-        if export_alias or suppress_ready:
+        if export_alias or suppress_ready or prelisten:
             module = args.nginx_overlap_alias_module
         config.write_text(f'''load_module {module};
 daemon off; master_process on; worker_processes 1; {user_directive}
@@ -131,7 +133,7 @@ fstack_conf "fstack.ini"; timer_resolution 1ms;
 pid {prefix}/logs/nginx.pid; error_log {prefix}/logs/error.log notice;
 env LD_PRELOAD; env KER_SOCKET_BROKER_PATH; env KER_FSTACK_NGINX_INI;
 env KER_FSTACK_RUNTIME_TRACE; env KER_NGINX_TEST_INITIAL_ALIAS_SOCKET;
-env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD; env KER_NGINX_TEST_SUPPRESS_READY;
+env KER_NGINX_TEST_REARM_TRIGGER; env KER_NGINX_OWNER_READY_FD; env KER_NGINX_TEST_SUPPRESS_READY; env KER_NGINX_TEST_STOP_BEFORE_LISTEN;
 events {{ worker_connections 256; use epoll; }}
 http {{ access_log off; sendfile off; keepalive_timeout 300; keepalive_requests 100000;
 server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index index.html; }} }}
@@ -142,6 +144,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             'KER_FSTACK_RUNTIME_TRACE': str(trace),
             ('KER_NGINX_CANDIDATE_SLOT_FD' if candidate else 'KER_NGINX_INITIAL_SLOT_FD'): str(slot)}
         if suppress_ready: env['KER_NGINX_TEST_SUPPRESS_READY'] = '1'
+        if prelisten: env['KER_NGINX_TEST_STOP_BEFORE_LISTEN'] = '1'
         if export_alias:
             env['KER_NGINX_TEST_INITIAL_ALIAS_SOCKET'] = str(root / 'initial-alias.sock')
             if args.nginx_overlap_successor or args.nginx_overlap_retry:
@@ -171,7 +174,15 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         require(len(worker_pids) == 1, f'{label} has unexpected children {worker_pids!r}')
         worker_pid = int(worker_pids[0])
         worker_fd = os.pidfd_open(worker_pid); pidfds.append(worker_fd)
-        if suppress_ready:
+        if prelisten:
+            while Path(f'/proc/{worker_pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'T':
+                require(process.poll() is None and not select.select([worker_fd], [], [], 0)[0]
+                    and time.monotonic() < deadline, 'candidate did not stop before LISTEN')
+                time.sleep(.01)
+            require(not select.select([ready], [], [], .1)[0], 'prelisten candidate published READY')
+            evidence['prelisten_worker'] = worker_pid
+            record('CANDIDATE_STOPPED_BEFORE_LISTEN', master=process.pid, worker=worker_pid)
+        elif suppress_ready:
             try:
                 ready_protocol.receive(ready, timeout=1, pid=worker_pid, pidfd=worker_fd,
                     slot_identity=slot_identity, endpoint_cookie=ready_cookie, role=1)
@@ -188,10 +199,13 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 endpoint_cookie=ready_cookie, role=1 if candidate else 0)
             evidence.setdefault('worker_ready', {})[label] = report
         text = trace.read_text()
-        require(re.search(r'name=ff_listen .*result=0\b', text), 'worker READY preceded listener publication')
+        if prelisten:
+            require('name=ff_listen ' not in text, 'stopped candidate reached ff_listen')
+        else:
+            require(re.search(r'name=ff_listen .*result=0\b', text), 'worker READY preceded listener publication')
         require(not candidate or 'NGINX_CANDIDATE_TASK_READY' in text,
             'worker READY preceded candidate admission setup')
-        record(label.upper() + ('_NGINX_INITIALIZED_WITHOUT_READY' if suppress_ready else '_NGINX_READY'),
+        record(label.upper() + ('_NGINX_INITIALIZED_WITHOUT_READY' if suppress_ready or prelisten else '_NGINX_READY'),
             master=process.pid, worker=int(worker_pids[0]))
         return process, body, prefix, worker_fd
 
@@ -223,11 +237,18 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         record('PREDECESSOR_MEMBER_ALIAS_HELD' if (args.nginx_overlap_successor or args.nginx_overlap_retry) else 'INITIAL_MEMBER_ALIAS_HELD_BY_COORDINATOR')
 
     def stop_nginx(process, worker_fd, label):
-        process.send_signal(signal.SIGQUIT)
-        _, errors = process.communicate(timeout=80 if source_probe is not None else 20)
-        require(process.returncode == 0, f'{label} shutdown failed: {errors!r}')
+        if args.nginx_overlap_prelisten_death and label == 'new':
+            _, errors = process.communicate(timeout=20)
+            require(process.returncode == 2 and 'primary worker process failed to initialize' in
+                (root / 'new/logs/error.log').read_text(), 'failed-start master did not take original exit(2) path')
+            record('CANDIDATE_MASTER_ORIGINAL_INITIALIZATION_FAILURE', returncode=process.returncode)
+        else:
+            process.send_signal(signal.SIGQUIT)
+            _, errors = process.communicate(timeout=80 if source_probe is not None else 20)
+            require(process.returncode == 0, f'{label} shutdown failed: {errors!r}')
         require(select.select([worker_fd], [], [], 0)[0], f'{label} worker is still alive')
-        record(label.upper() + '_NGINX_RETIRED')
+        record(label.upper() + ('_NGINX_FAILED_START_CONFIRMED' if args.nginx_overlap_prelisten_death and label == 'new'
+            else '_NGINX_RETIRED'))
 
     def qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd):
         nonlocal held
@@ -408,7 +429,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         new, new_body, new_prefix, new_fd = start_nginx('new', caps[1], True)
         if alias_listener is not None and (args.nginx_overlap_successor or args.nginx_overlap_retry):
             receive_alias()
-        command('CENSUS1'); command('EARLY_RETIRE'); command('WRONG_RETIRE'); fresh(old_body)
+        command('CENSUS_UNPUBLISHED' if args.nginx_overlap_prelisten_death else 'CENSUS1')
+        command('EARLY_RETIRE'); command('WRONG_RETIRE'); fresh(old_body)
         record('BOTH_NGINX_LIVE_SELECTOR_ZERO')
         if args.nginx_overlap_owner_death:
             qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd)
@@ -437,7 +459,9 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 command('RECOVER_BLOCKED'); record('LIVE_CANDIDATE_RECOVERY_REFUSED')
                 signal.pidfd_send_signal(new_fd, signal.SIGKILL)
                 require(select.select([new_fd], [], [], 5)[0], 'candidate death not confirmed')
-                record('READY_CANDIDATE_DIED_BEFORE_BEGIN', worker=evidence['worker_ready']['new']['pid'])
+                record('UNPUBLISHED_CANDIDATE_DIED_BEFORE_BEGIN' if args.nginx_overlap_prelisten_death else
+                    'READY_CANDIDATE_DIED_BEFORE_BEGIN', worker=evidence['prelisten_worker'] if args.nginx_overlap_prelisten_death else
+                    evidence['worker_ready']['new']['pid'])
                 http(held, old_body); fresh(old_body)
                 if held_alias is not None:
                     command('RECOVER_BLOCKED'); record('DEAD_CANDIDATE_ALIAS_BLOCKED_RECOVERY')

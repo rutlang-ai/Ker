@@ -524,3 +524,14 @@ profiles and a selection-history rejection profile qualify this path; see
 This does not recover started/quarantined ingress transactions or candidates
 that had been selected, and it does not implement the original master FSM.
 The source shell entrypoint remains blocked; migration counts are unchanged.
+
+### Activated but unpublished candidate death
+
+The dead-candidate API now also covers death after socket activation and admission
+attach but before LISTEN. Retaining the cookie/claim ledger at activation lets
+the broker prove full closure even without a published listener. A real-Nginx
+profile confirms LISTEN=0/no READY, observes the original failed-start master's
+exit(2), and successfully retries with the unchanged initial listener. See
+[the startup-failure qualification](fstack-nginx-runtime.md#candidate-death-after-activation-but-before-listen).
+Death before activation, selected candidates, quarantined ingress and original
+same-master FSM orchestration remain gaps; the source entrypoint stays blocked.

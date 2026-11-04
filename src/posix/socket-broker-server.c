@@ -80,8 +80,8 @@ struct sb_group {
     bool successor_issued;
     bool candidate_was_selected;
     bool dead_candidate_gate_released;
-    uint64_t candidate_published_cookie; /* Retained after death poisoning. */
-    uint64_t candidate_published_claim;
+    uint64_t candidate_socket_cookie; /* Retained from activation through death poisoning. */
+    uint64_t candidate_socket_claim;
     bool predecessor_pinned;
     int predecessor_cap_fd;
     bool cutover_orphaned;
@@ -2903,6 +2903,8 @@ static int owner_group_activate_candidate(struct ker_socket_broker_server *serve
     activated->owner_group_activation = true;
     group->activation_caps[1] = 1;
     group->activation_cookie[1] = cookie;
+    group->candidate_socket_cookie = cookie;
+    group->candidate_socket_claim = group->claim_generation[1];
     group->activation_state[1] = SB_MEMBER_ACTIVATION_UNBOUND;
     owner->owned_socket_history = true;
     *socket_cap = capability;
@@ -3533,8 +3535,6 @@ static int owner_group_candidate_listen(struct ker_socket_broker_server *server,
     }
     group->base_fd[1] = group_fd;
     group->member_cookie[1] = cookie;
-    group->candidate_published_cookie = cookie;
-    group->candidate_published_claim = group->claim_generation[1];
     group->member_present[1] = true;
     group->activation_state[1] = SB_MEMBER_ACTIVATION_PUBLISHED;
     group->staged_state = SB_STAGED_BOTH_PUBLISHED;
@@ -3885,10 +3885,10 @@ static int owner_group_recover_dead_plan(struct ker_socket_broker_server *server
     if (parent->failed) return -ECANCELED;
     if (parent->cutover_started || parent->watch_refs || parent->candidate_was_selected) return -EOPNOTSUPP;
     if (parent->selected_member || parent->cutover.controller ||
-        parent->cutover_object_slot >= 0 || !parent->candidate_published_cookie ||
+        parent->cutover_object_slot >= 0 || !parent->candidate_socket_cookie ||
         parent->activation_state[0] != SB_MEMBER_ACTIVATION_PUBLISHED ||
         !parent->member_present[0] || parent->base_fd[0] < 0) return -EAGAIN;
-    if (parent->candidate_published_claim != parent->claim_generation[1]) return -ESTALE;
+    if (parent->candidate_socket_claim != parent->claim_generation[1]) return -ESTALE;
     struct sb_owner *initial = owner_by_token(server, parent->member_owner_token[0]);
     struct sb_owner *candidate = owner_by_token(server, parent->member_owner_token[1]);
     if (!initial || initial->pid != parent->member_owner_pid[0] ||
@@ -3912,7 +3912,7 @@ static int owner_group_recover_dead_plan(struct ker_socket_broker_server *server
         if (status) return status == -EBUSY ? -EAGAIN : status;
         candidate->admission_listener_native_fd = -1;
     }
-    status = listener_pins_closed(server, parent->candidate_published_cookie, NULL);
+    status = listener_pins_closed(server, parent->candidate_socket_cookie, NULL);
     if (status) return status;
     status = owner_group_staged_initial_listener_validate(parent);
     if (status) return status;
