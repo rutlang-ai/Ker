@@ -48,6 +48,7 @@ struct ker_ff_admission_task {
 	bool stop_requested;
 	bool retire_requested;
 	bool rearm_requested;
+	bool retired_sealed;
 	bool accept_uncertain;
 	bool listener_closed;
 	bool listener_ref_released;
@@ -1014,6 +1015,11 @@ int ker_posix_ff_admission_task_window_action(
 		if (status) return status;
 		pthread_mutex_lock(&task_global_lock);
 		pthread_mutex_lock(&task->lock);
+		if (task->retired_sealed) {
+			pthread_mutex_unlock(&task->lock);
+			pthread_mutex_unlock(&task_global_lock);
+			return -EOPNOTSUPP;
+		}
 		if (tasks_stopping || active_task ||
 		    task->state != TASK_READY || task->window_state != WINDOW_RETIRED ||
 		    task->listener_closed || task->stop_requested || task->rearm_requested ||
@@ -1030,6 +1036,27 @@ int ker_posix_ff_admission_task_window_action(
 		return 0;
 	}
 	return -EOPNOTSUPP;
+#endif
+}
+
+/* The coordinator seals a completed predecessor window before publishing its
+ * successor plan. Actor-side REARM must never reclaim this retired window. */
+int ker_posix_ff_admission_task_seal_retired(struct ker_ff_admission_task *task)
+{
+#ifndef KER_FF_ADMISSION_WINDOW_SERIALIZED_LKL
+	(void)task;
+	return -EOPNOTSUPP;
+#else
+	if (!task) return -EINVAL;
+	pthread_mutex_lock(&task->lock);
+	if (task->state != TASK_READY || task->window_state != WINDOW_RETIRED ||
+	    task->stop_requested || task->listener_closed || task->accept_uncertain) {
+		pthread_mutex_unlock(&task->lock);
+		return -EAGAIN;
+	}
+	task->retired_sealed = true;
+	pthread_mutex_unlock(&task->lock);
+	return 0;
 #endif
 }
 
