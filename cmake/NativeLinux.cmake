@@ -1920,7 +1920,8 @@ if(BUILD_TESTING)
     # target is test-only and is never installed or used by the production CLI.
     get_target_property(ker_posix_sources ker-posix SOURCES)
     add_library(ker-posix-startup-failure SHARED ${ker_posix_sources} tests/posix/startup-stage-failure.c)
-    target_include_directories(ker-posix-startup-failure PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    target_include_directories(ker-posix-startup-failure PRIVATE "${PROJECT_SOURCE_DIR}/include"
+        "${PROJECT_SOURCE_DIR}/src/posix")
     target_include_directories(ker-posix-startup-failure SYSTEM PRIVATE
         "${ker_native_source}/tools/lkl/include" "${ker_native_tools}/include")
     target_compile_definitions(ker-posix-startup-failure PRIVATE KER_NATIVE_KERNEL_RELEASE="${ker_native_release}")
