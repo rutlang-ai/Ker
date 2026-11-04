@@ -470,3 +470,17 @@ received record until identity validation finishes. See [LC scope and runtime
 qualification](fstack-nginx-runtime.md#original-keepalive-probe-through-commit-and-abort).
 The original same-master FSM, performance comparison and complete shell matrix
 remain unqualified; inventory remains 362 scenario-adapted, 0 partial, 1 blocked.
+
+### Original rt24 LC traffic over acknowledged abort recovery
+
+`native-nginx-abort-retry-source-lc-tap` now runs the original rt24 30-second LC
+probe through the native abort/retry adapter. It preserves 12 connections,
+0.1-second requests, 0.5-second fresh connects, two-second timeout, the observed
+three-second progress anchor and at least five seconds of zero-failure source
+progress after abort before replacement startup. The original perf summary
+oracle accepts the bounded old-connection closures after successful retry.
+
+This is source traffic qualification over three explicit Nginx callers, not a
+completed `case_rt24`: its original `flip_fail_once` fault, same-master two-HUP
+sequence and original FSM completion/drain assertions are not claimed. See
+[evidence and exact limits](fstack-nginx-runtime.md#original-rt24-traffic-probe-across-abort-and-retry).

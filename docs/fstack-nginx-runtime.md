@@ -745,3 +745,47 @@ HUP/USR2 orchestration and the complete generation FSM/fault matrix remain
 outstanding; no imported upstream source is modified. Migration inventory stays
 at 362 scenario-adapted, 0 partial and 1 blocked
 (`test_graceful_reload.sh::entrypoint`).
+
+### Original rt24 traffic probe across abort and retry
+
+`native-nginx-abort-retry-source-lc-tap` runs the unchanged `m4_lc.py` and
+`http_probe.py` used by the source shell's `case_rt24`: 12 persistent connections,
+0.1-second interval, 30-second duration, a fresh connection every 0.5 seconds
+and a two-second timeout. The source shell's `launch_probe ... 240` is its outer
+command budget, not the probe duration. The native profile substitutes only its
+own server address/listen port. The probe, HTTP helper, original summary checker
+and source shell are hashed before and after the run.
+
+The first native cutover aborts after an actual queued SYN. An observed source
+`LC_PROGRESS` line establishes the original three-second startup anchor. Before
+replacement startup, another source progress line must lie at least five seconds
+after the confirmed abort, show increasing request count and have no failures
+anywhere in the aborted-round interval. A native census confirms all 12 source
+connections and the independent held connection still belong to the original
+owner. The rejected candidate exits, a fresh retry candidate starts and another
+queued SYN crosses a committed cutover. Old keepalive is checked before old-owner
+shutdown; source request progress must continue after its exit and listener
+retirement.
+
+The original `reload_checks.py` perf LC oracle judges the final summary, matching
+`case_rt24`'s allowance of one old-connection closure/reconnect per connection
+and zero fresh failures even when the strict probe exits 1. A pure abort retains
+its stronger zero-failure/exit-0 requirement. The native profile additionally
+measures old-owner exit plus listener retirement against 15000ms; this is not
+presented as the original FSM's T3 drain receipt.
+
+Recorded evidence: `LC_PROGRESS elapsed=3.0 n=360 fail=0` at startup and
+`LC_PROGRESS elapsed=9.0 n=1080 fail=0` after the abort interval. The complete
+30-second run recorded 3600 persistent request attempts, 12 closures/reconnects,
+60 fresh requests, `fresh_fail=0`, all 13 workers active/done and zero worker
+errors. Strict probe exit 1 is accepted by the unchanged original perf checker.
+Old-owner exit/listener retirement took about 15ms and final broker outstanding
+I/O was zero. The phase/oracle controls reject stale progress, no request growth,
+failures during the aborted interval, excess final closures, fresh failures,
+missing workers and abnormal process exits.
+
+This qualifies the original rt24 traffic probe over explicit broker abort/retry
+coordination. It does not run source `FF_FAULT=flip_fail_once`, send the two HUPs
+to one master, or manufacture original FSM completion/drain logs. Those source
+case assertions and production HUP/USR2 orchestration remain outstanding; the
+full shell entrypoint stays blocked and the migration inventory is unchanged.

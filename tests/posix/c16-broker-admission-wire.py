@@ -1793,8 +1793,8 @@ def main():
             args.nginx_overlap_abort or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
         parser.error('--nginx-overlap-successor requires the plain commit overlap profile')
     if args.nginx_overlap_retry and (not args.nginx_overlap_controller or not args.nginx_overlap_abort or
-            args.nginx_overlap_successor or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
-        parser.error('--nginx-overlap-retry requires the plain abort overlap profile')
+            args.nginx_overlap_successor or args.nginx_overlap_source_streams):
+        parser.error('--nginx-overlap-retry requires an abort overlap profile without source streams')
     if args.nginx_overlap_abort and (not args.nginx_overlap_controller or
             (args.nginx_overlap_alias_regression and not args.nginx_overlap_retry)):
         parser.error('abort requires the ordinary overlapping Nginx profile')
