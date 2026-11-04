@@ -586,3 +586,162 @@ actual `LC_PROGRESS elapsed=3.0 n=360 fail=0` line. The six oracle controls,
 twelve related native regressions (including the original long-stream probe,
 identity rejection, cancellation/quarantine and retirement cycles), and three
 channel/LKL checks passed. Earlier failed runs remain separately archived.
+
+### Admission queue handoff between live owners
+
+A retired admission window previously retained the process-wide task singleton.
+Consequently, a second owner could not attach until the retired owner exited,
+even after its original flow map and kernel queue were safely closed. This was
+an additional blocker for a subsequent Nginx generation on the same broker.
+
+The adaptation layer now tracks up to 64 attached tasks independently of the
+single fixed NFQUEUE reservation. Retirement relinquishes the reservation only
+after disabling the kernel gate, draining notifications, closing the queue and
+receiving the authenticated owner's map-close acknowledgment. The retired task
+keeps its original channel, pidfd and listener reference until exit or stop.
+A new task or a rearming retired task must exclusively reserve the queue;
+`EBUSY` leaves the retired task's epoch, lease and closed map unchanged. Failed
+or quarantined tasks retain their reservation until terminal release. Releasing
+one retired task cannot release another task's reservation.
+
+Runtime shutdown pins a snapshot of all tasks, stops and joins each worker and
+puts every listener reference before native finalization. It does not hold the
+registry mutex while joining: retirement completion also needs that mutex.
+Repeated/concurrent shutdown waits for the first shutdown to complete. New
+attachments are rejected once shutdown begins.
+
+`native-c17-admission-window-handoff` uses three real FF processes, their pinned
+original flow maps and one original-Linux TAP broker. It exchanges four strictly
+increasing leases, verifies busy start/rearm rejection, echoes nine TCP payloads
+through active and retired listeners, and checks per-owner map accounting. It
+also releases retired owners while another owner remains active, then proves the
+active reservation is still exclusive. The unmodified task singleton fails when
+the second owner attaches after the first retirement.
+
+`native-c17-admission-handoff-stop-live` stops both owners while one is retired
+and the other is active, shuts down the broker and checks that both listener
+references are put exactly once before native finalization. Both tests require
+zero outstanding broker I/O state. TCP behavior and imported upstream sources
+are unchanged.
+
+This is a prerequisite for repeated overlapping Nginx handoffs. The staged
+owner-group plan still permits one cutover attempt; adopting its surviving
+listener into a successor plan and the full same-master HUP/USR2 generation FSM
+remain outstanding. The migration inventory remains 362 scenario-adapted,
+0 partial and 1 blocked (`test_graceful_reload.sh::entrypoint`).
+
+### Successor plans for repeated explicit owner overlap
+
+`ker_socket_client_owner_group_successor_plan()` creates a fresh staged plan
+from a successfully committed predecessor. It requires the old initial listener
+to have been retired and the completed cutover capability closed. The broker
+checks the survivor's exact authenticated pid/start time/mark and original-Linux
+listener identity, retires its admission window asynchronously and returns
+`EAGAIN` until the authenticated map-close acknowledgment arrives. It then seals
+that retired window: actor-side REARM returns `EOPNOTSUPP`, preventing the old
+owner from reclaiming the fixed queue after the next generation starts.
+
+The new initial member duplicates the surviving Linux listener's open file
+description and preserves its SO_COOKIE. No socket is rebound and no logical
+role in the predecessor is rewritten. Only new candidate slot 1 can be
+delegated. A predecessor can issue one successor (`EALREADY` on duplication),
+and an aborted cutover cannot issue a successor (`EOPNOTSUPP`). The successor
+retains an internal host reference to its predecessor capability until initial
+retirement or plan cleanup, allowing coordinator copies to close. Allocation
+failures do not publish a successor or seal the retired window.
+
+Retirement now checks physical listener cookies across all broker socket
+objects and internal group/task descriptors. An adopted initial listener's
+application aliases still belong to its predecessor's logical candidate slot;
+checking only the new plan's slot 0 would miss them. The broker also waits for
+the confirmed-dead owner's admission task to release its extra `ker_fd` pin
+before closing the new plan's final listener pin and changing the reuseport
+selector. Accepted TCP sockets have distinct cookies and do not certify or
+block listener retirement as if they were listener aliases.
+
+`native-nginx-successor-owner-cutover-tap` runs three real Nginx master/worker
+pairs on one authoritative Linux broker and the same listen tuple. Two actual
+queued SYNs cross two separate committed ingress freezes. Both predecessors'
+keepalive connections continue across their respective commits. The adopted
+cookie is checked against the predecessor census; old capabilities cannot
+restart a cutover or change the new selector. The coordinator closes its old
+plan/slot copies, the second old listener is retired and fresh HTTP reaches the
+third owner. Both candidates record admission through their original flow maps.
+
+`native-nginx-successor-alias-retirement-tap` additionally retains an alias of
+the second owner's listener in the coordinator. It waits for that owner's task
+pin to be released after process exit, repeatedly verifies `EAGAIN` while the
+alias remains held, then closes it and verifies successful retirement and third
+owner HTTP. The test-only activation module also attempts actor REARM after
+succession and confirms permanent rejection. Both cases require zero outstanding
+broker I/O state. Replacing the physical-cookie guard with the former logical
+slot guard fails the alias case; removing the retired seal fails the REARM case.
+The original initial-member alias regression and the related C16/C17/C28 and
+real Nginx commit/abort regressions continue to pass.
+
+Each plan still has one cutover attempt. This qualification chains plans through
+an explicit coordinator; production same-master HUP/USR2 orchestration, the full
+generation FSM and its fault matrix remain outstanding. The migration inventory
+remains 362 scenario-adapted, 0 partial and 1 blocked
+(`test_graceful_reload.sh::entrypoint`).
+
+### Retry plans after a confirmed candidate abort
+
+`ker_socket_client_owner_group_retry_plan()` supplies the planned-abort recovery
+boundary needed before wiring same-master reload orchestration. A predecessor
+must have a confirmed ABORTED cutover, selector 0, no ingress controller and no
+live cutover capability. Its initial owner and published candidate must still
+have their exact authenticated pid/start time/mark and Linux listener identities.
+Failed/quarantined cutovers, committed predecessors and a candidate that exited
+before cooperative retirement cannot authorize this recovery.
+
+The call asynchronously retires the rejected candidate's admission window and
+returns `EAGAIN` until the authenticated map-close acknowledgment. It then seals
+that window against REARM and creates one fresh staged plan that duplicates the
+still-serving initial listener, preserving its SO_COOKIE and owner identity.
+The predecessor's broker initial pin is transferred to the fresh plan, not left
+behind as another physical listener reference. Existing application aliases keep
+their original group/role metadata. A transferred predecessor pin is explicitly
+distinct from a listener retired after owner exit; stale operations cannot treat
+it as a fresh initial member. Successor and retry creation share the one-child
+limit, so they cannot fork a predecessor into competing plans.
+
+The returned plan can be inspected while the rejected candidate is alive, but
+candidate slot 1 is withheld with `EAGAIN`. The caller stops that candidate and
+retries delegation. Delegation verifies its exact pidfd has confirmed exit,
+releases the old admission task's extra `ker_fd` reference and checks every
+physical listener-cookie alias/internal pin before allowing a replacement.
+Thus the replacement occupies Linux reuseport index 1, rather than accidentally
+creating a third physical listener behind an externally retained old alias.
+Accepted sockets are not counted as listener aliases. Initial listener traffic
+continues through original Linux while the candidate is being retired and the
+new slot remains unavailable.
+
+`native-nginx-abort-retry-cutover-tap` runs three real Nginx master/worker pairs
+on the same broker/listen tuple: abort with a queued SYN, create a retry plan,
+stop the rejected owner, then commit another queued SYN to the replacement.
+The unchanged original HTTP oracle verifies old keepalive across both decisions,
+initial-listener cookie continuity, fresh HTTP before commit and replacement
+HTTP after initial-owner retirement. Old capabilities cannot select the new
+candidate; the new candidate records original flow-map admission. Premature,
+wrong-kind, duplicate, committed and noncooperative-death recovery attempts are
+checked by the controller or the existing abort regression.
+
+`native-nginx-abort-retry-alias-tap` retains a rejected listener alias externally.
+It verifies slot delegation remains blocked both before owner exit and, after
+the task pin has been released, while that alias is still held. Closing the alias
+allows replacement startup and successful commit. The test-only module also
+confirms the rejected actor cannot reopen its sealed admission window. Both
+profiles require final broker outstanding I/O to be zero.
+
+The related 19 native C16/C17/C28/Nginx regressions pass. Three negative controls
+fail as expected: bypassing the rejected-owner barrier delegates too early;
+removing the physical-cookie check permits an externally retained alias; and
+retaining the predecessor's old initial pin prevents final listener retirement.
+All protections were restored before final validation.
+
+This is explicit coordinator recovery from an acknowledged abort. Same-master
+HUP/USR2 orchestration and the complete generation FSM/fault matrix remain
+outstanding; no imported upstream source is modified. Migration inventory stays
+at 362 scenario-adapted, 0 partial and 1 blocked
+(`test_graceful_reload.sh::entrypoint`).

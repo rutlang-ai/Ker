@@ -935,6 +935,11 @@ def inside(args):
                 'LD_PRELOAD': str(args.preload),
                 'RUNTIME_DIRECTORY': str(root), 'TMPDIR': str(root),
             }
+            if args.window_handoff_only:
+                path = Path(__file__).with_name('admission-window-handoff.py')
+                spec = importlib.util.spec_from_file_location('admission_window_handoff', path)
+                profile = importlib.util.module_from_spec(spec); spec.loader.exec_module(profile)
+                return profile.run(args, stop_path, stats, broker, app_env, wait_line)
             if args.nginx_candidate_binary:
                 if args.nginx_overlap_controller:
                     path = Path(__file__).with_name('nginx-overlap-profile.py')
@@ -1749,6 +1754,8 @@ def main():
     parser.add_argument('--nginx-overlap-source-streams', action='store_true')
     parser.add_argument('--nginx-overlap-source-lc', action='store_true')
     parser.add_argument('--nginx-overlap-abort', action='store_true')
+    parser.add_argument('--nginx-overlap-successor', action='store_true')
+    parser.add_argument('--nginx-overlap-retry', action='store_true')
     parser.add_argument('--nginx-overlap-alias-module', type=Path)
     parser.add_argument('--nginx-overlap-alias-regression', action='store_true')
     parser.add_argument('--staged-admission-only', action='store_true')
@@ -1767,6 +1774,8 @@ def main():
     parser.add_argument('--finalized-timeout-only', action='store_true')
     parser.add_argument('--cancel-unsent-timeout-only', action='store_true')
     parser.add_argument('--window-cycles-only', action='store_true')
+    parser.add_argument('--window-handoff-only', action='store_true')
+    parser.add_argument('--window-handoff-stop-live', action='store_true')
     parser.add_argument('--window-cancel-only', action='store_true')
     parser.add_argument('--inside', action='store_true')
     args = parser.parse_args()
@@ -1780,7 +1789,14 @@ def main():
     if args.nginx_overlap_source_lc and (not args.nginx_overlap_controller or
             args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
         parser.error('source LC requires the ordinary overlap profile without a stream/alias probe')
-    if args.nginx_overlap_abort and (not args.nginx_overlap_controller or args.nginx_overlap_alias_regression):
+    if args.nginx_overlap_successor and (not args.nginx_overlap_controller or
+            args.nginx_overlap_abort or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
+        parser.error('--nginx-overlap-successor requires the plain commit overlap profile')
+    if args.nginx_overlap_retry and (not args.nginx_overlap_controller or not args.nginx_overlap_abort or
+            args.nginx_overlap_successor or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
+        parser.error('--nginx-overlap-retry requires the plain abort overlap profile')
+    if args.nginx_overlap_abort and (not args.nginx_overlap_controller or
+            (args.nginx_overlap_alias_regression and not args.nginx_overlap_retry)):
         parser.error('abort requires the ordinary overlapping Nginx profile')
     if args.nginx_overlap_source_streams and (not args.nginx_overlap_controller or args.nginx_overlap_alias_regression):
         parser.error('source streams require the ordinary overlapping Nginx profile')
@@ -1824,6 +1840,10 @@ def main():
             command += ['--nginx-overlap-source-streams']
         if args.nginx_overlap_abort:
             command += ['--nginx-overlap-abort']
+        if args.nginx_overlap_successor:
+            command += ['--nginx-overlap-successor']
+        if args.nginx_overlap_retry:
+            command += ['--nginx-overlap-retry']
         if args.nginx_overlap_alias_regression:
             command.append('--nginx-overlap-alias-regression')
     if args.staged_admission_only:
@@ -1856,6 +1876,12 @@ def main():
         command.append('--finalized-timeout-only')
     if args.cancel_unsent_timeout_only:
         command.append('--cancel-unsent-timeout-only')
+    if args.window_handoff_stop_live and not args.window_handoff_only:
+        parser.error('--window-handoff-stop-live requires --window-handoff-only')
+    if args.window_handoff_stop_live:
+        command.append('--window-handoff-stop-live')
+    if args.window_handoff_only:
+        command.append('--window-handoff-only')
     if args.window_cycles_only:
         command.append('--window-cycles-only')
     if args.window_cancel_only:
