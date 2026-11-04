@@ -9,6 +9,9 @@ struct ker_native_counters {
     uint64_t udp6_in_datagrams, udp6_out_datagrams, udp6_in_errors, udp6_no_ports;
     uint64_t ip6_frag_ok, ip6_frag_creates, ip6_reasm_ok, ip6_reasm_fails, ip6_reasm_timeouts;
     uint64_t ip_frag_ok, ip_frag_creates, ip_reasm_ok, ip_reasm_fails;
+    uint64_t mptcp_capable_syn_tx, mptcp_capable_syn_rx;
+    uint64_t mptcp_capable_synack_rx, mptcp_capable_ack_rx;
+    uint64_t mptcp_fallback_synack, mptcp_fallback_ack;
 };
 int ker_native_counters(struct ker_native_counters *out);
 #endif

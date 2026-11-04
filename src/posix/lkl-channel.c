@@ -555,7 +555,10 @@ int ker_native_finalize_finish(int *finalize_result_out)
             "\"udp_in_datagrams\":%llu,\"udp_out_datagrams\":%llu,\"udp_in_errors\":%llu,\"udp_no_ports\":%llu,"
             "\"udp6_in_datagrams\":%llu,\"udp6_out_datagrams\":%llu,\"udp6_in_errors\":%llu,\"udp6_no_ports\":%llu,"
             "\"ip6_frag_ok\":%llu,\"ip6_frag_creates\":%llu,\"ip6_reasm_ok\":%llu,\"ip6_reasm_fails\":%llu,\"ip6_reasm_timeouts\":%llu,"
-            "\"ip_frag_ok\":%llu,\"ip_frag_creates\":%llu,\"ip_reasm_ok\":%llu,\"ip_reasm_fails\":%llu,\"tcp_ecn\":%llu}\n",
+            "\"ip_frag_ok\":%llu,\"ip_frag_creates\":%llu,\"ip_reasm_ok\":%llu,\"ip_reasm_fails\":%llu,\"tcp_ecn\":%llu,"
+            "\"mptcp_capable_syn_tx\":%llu,\"mptcp_capable_syn_rx\":%llu,"
+            "\"mptcp_capable_synack_rx\":%llu,\"mptcp_capable_ack_rx\":%llu,"
+            "\"mptcp_fallback_synack\":%llu,\"mptcp_fallback_ack\":%llu}\n",
             (unsigned long long)buffers.allocations, (unsigned long long)buffers.releases,
             (unsigned long long)buffers.shutdown_releases, (unsigned long long)buffers.live, (unsigned long long)buffers.bytes, (unsigned long long)buffers.option_guards_live,
             (unsigned long long)counters.active_opens, (unsigned long long)counters.passive_opens,
@@ -570,7 +573,13 @@ int ker_native_finalize_finish(int *finalize_result_out)
             (unsigned long long)counters.ip6_reasm_timeouts,
             (unsigned long long)counters.ip_frag_ok, (unsigned long long)counters.ip_frag_creates,
             (unsigned long long)counters.ip_reasm_ok, (unsigned long long)counters.ip_reasm_fails,
-            (unsigned long long)counters.tcp_ecn);
+            (unsigned long long)counters.tcp_ecn,
+            (unsigned long long)counters.mptcp_capable_syn_tx,
+            (unsigned long long)counters.mptcp_capable_syn_rx,
+            (unsigned long long)counters.mptcp_capable_synack_rx,
+            (unsigned long long)counters.mptcp_capable_ack_rx,
+            (unsigned long long)counters.mptcp_fallback_synack,
+            (unsigned long long)counters.mptcp_fallback_ack);
         if (length > 0 && (size_t)length < sizeof(json))
             (void)syscall(SYS_write, startup_fd, json, (size_t)length);
     }

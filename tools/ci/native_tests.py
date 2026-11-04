@@ -26,6 +26,11 @@ LINUX_AF_UNIX_SELFTESTS = (
     "linux-original-af-unix-unix_connect",
 )
 
+LINUX_MPTCP_SELFTESTS = (
+    "linux-original-mptcp-ipv4-client", "linux-original-mptcp-ipv4-server",
+    "linux-original-mptcp-ipv6-client", "linux-original-mptcp-ipv6-server",
+)
+
 HOSTED_SAFE = (
     "native-fstack-fortify-bounds",
     "native-linux-fetch-lock",
@@ -336,7 +341,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     names = set(by_name)
     missing = sorted((set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) |
                       set(REQUIRED_SOFTWARE_DATAPATH) | set(LINUX_PROTOCOL_SELFTESTS) |
-                      set(LINUX_AF_UNIX_SELFTESTS) |
+                      set(LINUX_AF_UNIX_SELFTESTS) | set(LINUX_MPTCP_SELFTESTS) |
                       set(SESSION_CTEST) | {SESSION_DIRECT}) - names)
     if missing:
         raise RuntimeError("native CTest inventory is missing required tests: " + repr(missing))
@@ -352,7 +357,7 @@ def run_full_ctest(build: Path, junit: Path) -> None:
     expected = names - {SESSION_DIRECT}
     required = (set(HOSTED_SAFE) | set(NOHUGE_EAL) | set(NOHUGE_TAP) |
                 set(REQUIRED_SOFTWARE_DATAPATH) | set(LINUX_PROTOCOL_SELFTESTS) |
-                set(LINUX_AF_UNIX_SELFTESTS) | set(SESSION_CTEST))
+                set(LINUX_AF_UNIX_SELFTESTS) | set(LINUX_MPTCP_SELFTESTS) | set(SESSION_CTEST))
     result = subprocess.run(
         ["ctest", "--test-dir", str(build), "--no-tests=error", "--output-on-failure",
          "--output-junit", str(junit), "--parallel", "1", "-E", "^" + re.escape(SESSION_DIRECT) + "$"],
