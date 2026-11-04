@@ -833,3 +833,34 @@ transition. Broker cutover still independently validates owner capabilities.
 Same-master original HUP/USR2 FSM integration and the complete source shell
 entrypoint remain outstanding; inventory stays **362 scenario-adapted, 0 partial,
 1 blocked**.
+
+### READY does not survive candidate worker death
+
+Two real pinned-Nginx profiles now kill the authenticated READY candidate worker
+with `pidfd_send_signal(SIGKILL)`, while its master is confirmed stopped. This
+separates broker liveness checks from Nginx reaping and respawn. Both masters
+remain the original processes; after the observation the candidate master resumes,
+reaps its worker and refuses delegated-slot respawn before any new worker forks.
+The shim/module does not silently reuse the dead worker's authority.
+
+- `native-nginx-ready-owner-death-before-begin-tap`: the dead candidate cannot
+  begin a cutover or obtain a retry plan. No ingress lease was armed; both a new
+  HTTP request and the held keepalive still reach the unchanged initial owner.
+- `native-nginx-ready-owner-death-prepared-tap`: a real SYN is observed in q88
+  before killing the candidate. Broker polling must reach **QUARANTINED** with a
+  negative error, at least one received packet and zero accepted/replayed packets.
+  A COMMIT request after the death proof must never become COMMITTED: request
+  acknowledgement alone is not completion. Subsequent COMMIT and ABORT reject the terminal state with `EALREADY`; retry rejects it
+  with `ECANCELED`. The queued client and another fresh client time out, while
+  the preexisting old-owner keepalive still works. Kernel quarantine retains the
+  fail-closed ingress gate; it is not an abort receipt or restored fresh service.
+
+Both profiles require the worker's pidfd death proof, no replacement children,
+clean Nginx master shutdown, kernel-confirmed quarantine where applicable and
+broker `outstanding=0`. READY credentials establish only past loop entry; the
+broker's independent owner/capability validation remains necessary at cutover.
+The test injects a real process death, not a forged READY/FSM status or upstream
+`FF_FAULT` implementation. This expands native fault qualification without
+claiming an original shell case or increasing migration counts. Recovery from a
+quarantined cutover, the original same-master HUP/USR2 FSM and the full source
+entrypoint remain outstanding (362 scenario-adapted, 0 partial, 1 blocked).

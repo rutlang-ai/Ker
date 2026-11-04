@@ -880,7 +880,12 @@ failed:
 int
 ker_fstack_nginx_owner_activation_respawn_prepare(void)
 {
-    if (candidate_mode || delegated_initial_mode) { errno = EOPNOTSUPP; return -1; }
+    if (candidate_mode || delegated_initial_mode) {
+        trace_line("NGINX_DELEGATED_RESPAWN_UNSUPPORTED pid=%ld candidate=%d\n",
+            (long)getpid(), candidate_mode);
+        errno = EOPNOTSUPP;
+        return -1;
+    }
     /* The serial controller owns one watch per full HUP cycle. Nginx's
      * worker-crash respawn path does not pass through module_init, so it
      * cannot create a successor watch or obtain a matching outer receipt.

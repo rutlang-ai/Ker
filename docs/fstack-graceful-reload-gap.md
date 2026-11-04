@@ -484,3 +484,16 @@ This is source traffic qualification over three explicit Nginx callers, not a
 completed `case_rt24`: its original `flip_fail_once` fault, same-master two-HUP
 sequence and original FSM completion/drain assertions are not claimed. See
 [evidence and exact limits](fstack-nginx-runtime.md#original-rt24-traffic-probe-across-abort-and-retry).
+
+### READY candidate death is not an acknowledged abort
+
+Native pinned-Nginx profiles now distinguish worker death before cutover from
+worker death after a SYN is frozen. The first preserves fresh old-owner HTTP;
+the second must reach kernel-confirmed QUARANTINED with zero accepted packets,
+reject retry and retain the fail-closed ingress gate. An asynchronous COMMIT
+request may have returned success before that terminal failure. Existing old
+keepalive remains usable, but this is not fresh-service recovery. See
+[the death profiles and exact limits](fstack-nginx-runtime.md#ready-does-not-survive-candidate-worker-death).
+These are native fault qualifications, not completion of an original source
+case. Quarantined-cutover recovery and the same-master original generation FSM
+remain gaps; the source entrypoint remains blocked.

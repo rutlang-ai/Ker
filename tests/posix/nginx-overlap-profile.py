@@ -48,6 +48,8 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     held_alias = None
     alias_listener = None
     evidence = {'status': 'RUNNING', 'outcome': 'abort-retry-commit' if args.nginx_overlap_retry else 'abort' if args.nginx_overlap_abort else 'commit', 'events': []}
+    if args.nginx_overlap_owner_death:
+        evidence['outcome'] = 'owner-death-' + args.nginx_overlap_owner_death
     source_probe = None
     source_output = None
     source_started = None
@@ -210,6 +212,104 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
         require(select.select([worker_fd], [], [], 0)[0], f'{label} worker is still alive')
         record(label.upper() + '_NGINX_RETIRED')
 
+    def qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd):
+        nonlocal held
+        queued = None
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            if args.nginx_overlap_owner_death == 'prepared':
+                command('BEGIN'); record('CUTOVER_PREPARED')
+                queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 5)
+                command('QUEUED')
+                require(not queued.done(), 'SYN completed before candidate death')
+                record('SYN_QUEUED_BEFORE_CANDIDATE_DEATH')
+            # Freeze only the master to make worker death/reap distinct and
+            # ensure no respawn changes the identity under observation.
+            new.send_signal(signal.SIGSTOP)
+            deadline = time.monotonic() + 5
+            while Path(f'/proc/{new.pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'T':
+                require(new.poll() is None and time.monotonic() < deadline, 'candidate master did not stop')
+                time.sleep(.001)
+            signal.pidfd_send_signal(new_fd, signal.SIGKILL)
+            require(select.select([new_fd], [], [], 5)[0], 'candidate death was not confirmed by pidfd')
+            require(new.poll() is None, 'candidate master unexpectedly exited')
+            record('READY_CANDIDATE_WORKER_KILLED', worker=evidence['worker_ready']['new']['pid'])
+            if args.nginx_overlap_owner_death == 'prepared':
+                command('DEAD_CUTOVER')
+                rows = getattr(controller, '_ker_recent_lines', [])
+                proof = next((row for row in rows if row.startswith('DEAD_OWNER_QUARANTINED ')), None)
+                require(proof is not None, 'missing broker-confirmed quarantine evidence')
+                record('KERNEL_QUARANTINE_CONFIRMED', proof=proof)
+                try:
+                    connection = queued.result(timeout=8)
+                except TimeoutError:
+                    require(queued.done(), 'queued client did not finish its timeout probe')
+                    record('QUEUED_CONNECTION_TIMED_OUT_WITHOUT_REPLAY')
+                else:
+                    connection.close()
+                    raise RuntimeError('quarantined queued connection unexpectedly completed')
+                with socket.socket() as probe:
+                    probe.settimeout(.3)
+                    require(probe.connect_ex(('198.18.0.2', 4108)) in (errno.EAGAIN, errno.ETIMEDOUT),
+                        'quarantined port admitted a fresh connection')
+                record('QUARANTINED_PORT_REJECTED_FRESH_CONNECTION')
+            else:
+                command('DEAD_BEGIN'); command('DEAD_RETRY')
+                fresh(old_body); record('OLD_HTTP_SURVIVED_PRE_CUTOVER_CANDIDATE_DEATH')
+            http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_CANDIDATE_DEATH')
+            new.send_signal(signal.SIGCONT)
+            deadline = time.monotonic() + 5
+            while 'NGINX_DELEGATED_RESPAWN_UNSUPPORTED' not in (new_prefix / 'runtime.trace').read_text():
+                require(new.poll() is None and time.monotonic() < deadline,
+                    'master did not refuse delegated worker respawn')
+                time.sleep(.01)
+            children = Path(f'/proc/{new.pid}/task/{new.pid}/children').read_text().split()
+            require(not children, f'dead delegated worker unexpectedly respawned: {children!r}')
+            record('DELEGATED_RESPAWN_REFUSED')
+        held.close(); held = None
+        stop_nginx(new, new_fd, 'new')
+        stop_nginx(old, old_fd, 'old')
+        for cap in caps: os.close(cap)
+        caps.clear()
+        command('RELEASE')
+
+    def finish():
+        command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
+        _, errors = controller.communicate(timeout=10)
+        require(controller.returncode == 0, f'coordinator cleanup failed: {errors!r}')
+        for cap in caps: os.close(cap)
+        caps.clear()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
+            stop.sendto(b'STOP', str(stop_path))
+        broker.wait(timeout=35)
+        for reader in broker_readers: reader.join(timeout=2)
+        require(all(not reader.is_alive() for reader in broker_readers),
+            'broker output remained open after process exit')
+        errors = broker_logs['stderr'].read_text(errors='replace')
+        report = json.loads(stats.read_text())
+        require(broker.returncode == 0 and report.get('outstanding') == 0,
+            f'broker did not settle: {errors!r}; {report!r}')
+        if args.nginx_overlap_owner_death:
+            require(report.get('rx', 0) > 0 and report.get('tx', 0) > 0, 'missing native packet evidence')
+        record('BROKER_SETTLED')
+        evidence.update(status='PASS', stats=report, logs={
+            label: {'trace': (prefix / 'runtime.trace').read_text(),
+                'error_log': (prefix / 'logs/error.log').read_text()}
+            for label in ('old', 'new', 'next', 'retry') if (prefix := root / label).exists()})
+        if not args.nginx_overlap_abort and not args.nginx_overlap_owner_death:
+            for label in (('new', 'next') if args.nginx_overlap_successor else ('new',)):
+                require('private candidate admission: allowed=1 created=1' in
+                    evidence['logs'][label]['error_log'],
+                    label + ' Nginx did not consume original-map admission')
+        if args.nginx_overlap_retry:
+            require('private candidate admission: allowed=1 created=1' in
+                evidence['logs']['retry']['error_log'], 'retry owner did not consume original-map admission')
+        print('NGINX_OVERLAP_PASS outcome=' + evidence['outcome'] +
+            ' successor=' + str(args.nginx_overlap_successor).lower() +
+            ' retry=' + str(args.nginx_overlap_retry).lower() +
+            ' queued_syn=' + str(args.nginx_overlap_owner_death != 'before-begin').lower() +
+            ' old_keepalive=true old_exit=true outstanding=0')
+        return 0
+
     try:
         controller = subprocess.Popen([str(args.nginx_overlap_controller), str(rpc_path),
             str(child.fileno())], pass_fds=(child.fileno(),), stdin=subprocess.PIPE,
@@ -289,6 +389,9 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             receive_alias()
         command('CENSUS1'); command('EARLY_RETIRE'); command('WRONG_RETIRE'); fresh(old_body)
         record('BOTH_NGINX_LIVE_SELECTOR_ZERO')
+        if args.nginx_overlap_owner_death:
+            qualify_owner_death(old, old_body, old_fd, new, new_prefix, new_fd)
+            return finish()
         command('BEGIN'); record('CUTOVER_PREPARED')
         with ThreadPoolExecutor(max_workers=1) as executor:
             queued = executor.submit(socket.create_connection, ('198.18.0.2', 4108), 10)
@@ -515,39 +618,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             command('RELEASE'); command('CLOSED0')
         else:
             stop_nginx(new, new_fd, 'next' if args.nginx_overlap_successor else 'new'); command('CLOSED1')
-        command_text = b'STOP\n'; controller.stdin.write(command_text); controller.stdin.flush()
-        _, errors = controller.communicate(timeout=10)
-        require(controller.returncode == 0, f'coordinator cleanup failed: {errors!r}')
-        for cap in caps: os.close(cap)
-        caps.clear()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stop:
-            stop.sendto(b'STOP', str(stop_path))
-        broker.wait(timeout=35)
-        for reader in broker_readers: reader.join(timeout=2)
-        require(all(not reader.is_alive() for reader in broker_readers),
-            'broker output remained open after process exit')
-        errors = broker_logs['stderr'].read_text(errors='replace')
-        report = json.loads(stats.read_text())
-        require(broker.returncode == 0 and report.get('outstanding') == 0,
-            f'broker did not settle: {errors!r}; {report!r}')
-        record('BROKER_SETTLED')
-        evidence.update(status='PASS', stats=report, logs={
-            label: {'trace': (prefix / 'runtime.trace').read_text(),
-                'error_log': (prefix / 'logs/error.log').read_text()}
-            for label in ('old', 'new', 'next', 'retry') if (prefix := root / label).exists()})
-        if not args.nginx_overlap_abort:
-            for label in (('new', 'next') if args.nginx_overlap_successor else ('new',)):
-                require('private candidate admission: allowed=1 created=1' in
-                    evidence['logs'][label]['error_log'],
-                    label + ' Nginx did not consume original-map admission')
-        if args.nginx_overlap_retry:
-            require('private candidate admission: allowed=1 created=1' in
-                evidence['logs']['retry']['error_log'], 'retry owner did not consume original-map admission')
-        print('NGINX_OVERLAP_PASS outcome=' + evidence['outcome'] +
-            ' successor=' + str(args.nginx_overlap_successor).lower() +
-            ' retry=' + str(args.nginx_overlap_retry).lower() +
-            ' queued_syn=true old_keepalive=true old_exit=true outstanding=0')
-        return 0
+        return finish()
     except BaseException as error:
         evidence.update(status='FAIL', error=repr(error))
         raise

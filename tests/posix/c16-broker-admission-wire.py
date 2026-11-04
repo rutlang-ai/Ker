@@ -1756,6 +1756,7 @@ def main():
     parser.add_argument('--nginx-overlap-abort', action='store_true')
     parser.add_argument('--nginx-overlap-successor', action='store_true')
     parser.add_argument('--nginx-overlap-retry', action='store_true')
+    parser.add_argument('--nginx-overlap-owner-death', choices=('before-begin', 'prepared'))
     parser.add_argument('--nginx-overlap-alias-module', type=Path)
     parser.add_argument('--nginx-overlap-alias-regression', action='store_true')
     parser.add_argument('--staged-admission-only', action='store_true')
@@ -1789,6 +1790,10 @@ def main():
     if args.nginx_overlap_source_lc and (not args.nginx_overlap_controller or
             args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
         parser.error('source LC requires the ordinary overlap profile without a stream/alias probe')
+    if args.nginx_overlap_owner_death and (not args.nginx_overlap_controller or
+            args.nginx_overlap_abort or args.nginx_overlap_retry or args.nginx_overlap_successor or
+            args.nginx_overlap_source_lc or args.nginx_overlap_source_streams or args.nginx_overlap_alias_regression):
+        parser.error('owner death requires a plain pinned Nginx overlap profile')
     if args.nginx_overlap_successor and (not args.nginx_overlap_controller or
             args.nginx_overlap_abort or args.nginx_overlap_source_streams or args.nginx_overlap_source_lc):
         parser.error('--nginx-overlap-successor requires the plain commit overlap profile')
@@ -1844,6 +1849,8 @@ def main():
             command += ['--nginx-overlap-successor']
         if args.nginx_overlap_retry:
             command += ['--nginx-overlap-retry']
+        if args.nginx_overlap_owner_death:
+            command += ['--nginx-overlap-owner-death', args.nginx_overlap_owner_death]
         if args.nginx_overlap_alias_regression:
             command.append('--nginx-overlap-alias-regression')
     if args.staged_admission_only:
