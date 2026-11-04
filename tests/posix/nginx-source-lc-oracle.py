@@ -50,6 +50,19 @@ class SourceLcOracle(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 profile.validate_source_lc(checker, text, 1, False)
 
+    def test_retry_interval_requires_observed_progress_past_five_seconds(self):
+        text = 'LC_PROGRESS elapsed=3.0 n=360 fail=0\nLC_PROGRESS elapsed=9.0 n=1080 fail=0\n'
+        self.assertEqual(profile.retry_lc_progress(text, 8.5, 360),
+            'LC_PROGRESS elapsed=9.0 n=1080 fail=0')
+        self.assertIsNone(profile.retry_lc_progress(text, 10.0, 360))
+        self.assertIsNone(profile.retry_lc_progress(text, 8.5, 1080))
+
+    def test_retry_interval_rejects_failures_before_commit(self):
+        for text in ('LC_PROGRESS elapsed=9.0 n=1080 fail=1\n',
+                     'LC_PROGRESS elapsed=4.0 n=480 fail=1\nLC_PROGRESS elapsed=9.0 n=1080 fail=0\n'):
+            with self.subTest(text=text), self.assertRaises(RuntimeError):
+                profile.retry_lc_progress(text, 8.5, 360)
+
     def test_abnormal_process_exit_is_not_a_closure(self):
         for result in [-9, 2, 77]:
             with self.subTest(result=result), self.assertRaises(RuntimeError):

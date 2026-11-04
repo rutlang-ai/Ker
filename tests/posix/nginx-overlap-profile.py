@@ -32,6 +32,13 @@ def validate_source_lc(checker, text, returncode, abort):
     return checker.summary('lc', text, '' if abort else 'perf')
 
 
+def retry_lc_progress(text, min_elapsed, previous_requests):
+    rows = list(re.finditer(r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$', text, re.MULTILINE))
+    require(all(int(row[3]) == 0 for row in rows), 'LC failure during the aborted-round interval')
+    qualifying = [row for row in rows if float(row[1]) >= min_elapsed and int(row[2]) > previous_requests]
+    return qualifying[0][0] if qualifying else None
+
+
 def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     transfer, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     controller = None
@@ -46,6 +53,8 @@ def run(args, rpc_path, stop_path, stats, root, broker, environment, wait_line):
     source_key = 'source_lc' if args.nginx_overlap_source_lc else 'source_stream'
     source_log_name = 'source-lc.log' if args.nginx_overlap_source_lc else 'source-stream.log'
     source_budget = 240 if args.nginx_overlap_source_lc else 300
+    source_rt24 = args.nginx_overlap_retry and args.nginx_overlap_source_lc
+    lc_duration = '30' if source_rt24 else '180'
     census_command = 'ACTIVE0' if args.nginx_overlap_source_lc else 'STREAMS0'
     stream_payload = bytes(8 * 1024 * 1024) if args.nginx_overlap_source_streams else None
 
@@ -213,7 +222,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             if args.nginx_overlap_source_lc:
                 source_command = [sys.executable, str(source_script),
                     '--server', '198.18.0.2', '--port', '4108', '--conns', '12',
-                    '--interval', '0.1', '--duration', '180', '--fresh', '0.5', '--timeout', '2']
+                    '--interval', '0.1', '--duration', lc_duration, '--fresh', '0.5', '--timeout', '2']
             else:
                 source_command = [sys.executable, str(source_script),
                     '--server', '198.18.0.2', '--port', '4108', '--path', '/dl/big.bin',
@@ -230,7 +239,8 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             evidence[source_key] = {'command': source_command,
                 'source_hashes': {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in (probe_file, source_script,
-                        probe_file.parent.parent / 'reload_checks.py')}}
+                        probe_file.parent.parent / 'reload_checks.py',
+                        probe_file.parent.parent.parent / 'test_graceful_reload.sh')}}
             if args.nginx_overlap_source_lc:
                 deadline = time.monotonic() + 60
                 while True:
@@ -308,6 +318,23 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 record('DEAD_REJECTED_CANDIDATE_ALIAS_BLOCKED_NEW_SLOT')
                 http(held, old_body); fresh(old_body)
                 os.close(held_alias); held_alias = None
+            if source_rt24:
+                aborted_at = next(event['monotonic_ns'] / 1e9 for event in evidence['events']
+                    if event['event'] == 'CUTOVER_ABORTED_WITH_QUEUED_SYN')
+                minimum_elapsed = aborted_at - source_started + 5
+                previous_requests = int(evidence[source_key]['anchor'].split('n=')[1].split()[0])
+                deadline = time.monotonic() + 20
+                while True:
+                    require(source_probe.poll() is None, 'rt24 LC probe exited before retry')
+                    interval = retry_lc_progress(source_file.read_text(), minimum_elapsed, previous_requests)
+                    if interval is not None: break
+                    require(time.monotonic() < deadline, 'no source progress after five-second abort interval')
+                    time.sleep(.01)
+                command('ACTIVE0')
+                evidence[source_key]['after_abort'] = interval
+                evidence[source_key]['source_case'] = 'rt24 traffic probe; explicit broker abort/retry'
+                record('RT24_ABORT_INTERVAL_WITHOUT_LC_FAILURE', line=interval,
+                    minimum_elapsed=minimum_elapsed)
             command('RETRY_SLOT'); command('CLOSED_REJECTED')
             retry_slot = receive_candidate_slot()
             retry, retry_body, retry_prefix, retry_fd = start_nginx('retry', retry_slot, True)
@@ -328,8 +355,14 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             del caps[:2]
             http(held, old_body); record('OLD_KEEPALIVE_SURVIVED_ABORT_AND_RETRY_COMMIT')
             held.close(); held = None
+            retirement_started = time.monotonic()
             stop_nginx(old, old_fd, 'old')
             command('RETIRE0'); command('CLOSED0')
+            if source_rt24:
+                retirement_ms = (time.monotonic() - retirement_started) * 1000
+                require(retirement_ms <= 15000, 'old owner exit/listener retirement exceeded rt24 bound')
+                record('RT24_OLD_OWNER_EXIT_AND_LISTENER_RETIREMENT', elapsed_ms=retirement_ms,
+                    bound_ms=15000, qualification='not an original FSM drain receipt')
             fresh(retry_body); record('RETRY_HTTP_AFTER_INITIAL_OWNER_EXIT')
             new, new_body, new_prefix, new_fd = retry, retry_body, retry_prefix, retry_fd
         elif args.nginx_overlap_abort:
@@ -413,18 +446,22 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
             source_output.flush()
             text = source_file.read_text()
             evidence[source_key].update(returncode=source_probe.returncode, output=text)
+            require({relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
+                for relative in evidence[source_key]['source_hashes']} == evidence[source_key]['source_hashes'],
+                'imported source probe/oracle changed during qualification')
             checker_file = probe_file.parent.parent / 'reload_checks.py'
             check_spec = importlib.util.spec_from_file_location('nginx_overlap_source_checks', checker_file)
             checker = importlib.util.module_from_spec(check_spec); check_spec.loader.exec_module(checker)
             if args.nginx_overlap_source_lc:
-                fields = validate_source_lc(checker, text, source_probe.returncode, args.nginx_overlap_abort)
+                fields = validate_source_lc(checker, text, source_probe.returncode,
+                    args.nginx_overlap_abort and not args.nginx_overlap_retry)
                 retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
-                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort else 'OLD_NGINX_RETIRED')) - source_started
+                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort and not args.nginx_overlap_retry else 'OLD_NGINX_RETIRED')) - source_started
                 progress = list(re.finditer(r'^LC_PROGRESS elapsed=([0-9.]+) n=(\d+) fail=(\d+)$', text, re.MULTILINE))
                 anchor_count = int(evidence[source_key]['anchor'].split('n=')[1].split()[0])
                 later = next((row for row in progress if float(row[1]) > retired_at + 1 and int(row[2]) > anchor_count), None)
                 require(later is not None, 'LC requests did not progress after owner retirement')
-                evidence[source_key].update(summary=fields, oracle_mode='' if args.nginx_overlap_abort else 'perf',
+                evidence[source_key].update(summary=fields, oracle_mode='' if args.nginx_overlap_abort and not args.nginx_overlap_retry else 'perf',
                     post_retirement_progress=later[0])
                 record('ORIGINAL_LC_ORACLE_PASS', reqs=int(fields['reqs']), fresh_n=int(fields['fresh_n']),
                     strict_probe_returncode=source_probe.returncode, elapsed=time.monotonic() - source_started)
@@ -440,7 +477,7 @@ server {{ listen 198.18.0.2:4108 reuseport backlog=16; root {prefix}/html; index
                 cutover_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
                     if e['event'] == 'CUTOVER_PREPARED') - source_started
                 retired_at = next(e['monotonic_ns'] / 1e9 for e in evidence['events']
-                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort else 'OLD_NGINX_RETIRED')) - source_started
+                    if e['event'] == ('NEW_NGINX_RETIRED' if args.nginx_overlap_abort and not args.nginx_overlap_retry else 'OLD_NGINX_RETIRED')) - source_started
                 require({int(row[1]) for row in rows if float(row[5]) < cutover_at < float(row[6])}
                     == set(range(12)), 'not all source workers crossed cutover in-flight')
                 require({int(row[1]) for row in rows if float(row[6]) > retired_at and int(row[2]) >= 2}
