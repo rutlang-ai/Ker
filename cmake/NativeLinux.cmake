@@ -822,6 +822,7 @@ if(BUILD_TESTING)
         "${ker_native_tools}/liblkl.a" Threads::Threads ${CMAKE_DL_LIBS} rt)
     target_link_libraries(ker-member-census-runtime-test PRIVATE ker-posix-member-census-test-runtime)
     include("${PROJECT_SOURCE_DIR}/cmake/NativeRequestRevoke.cmake")
+    include("${PROJECT_SOURCE_DIR}/cmake/LinuxProtocolSelftests.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeAdmissionRequestIdentity.cmake")
     include("${PROJECT_SOURCE_DIR}/cmake/NativeIngressFreezeTests.cmake")
     add_executable(ker-socket-broker-inherited-group-client

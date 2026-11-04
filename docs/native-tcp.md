@@ -2,6 +2,8 @@
 
 此组件将原始 Linux TCP 接入现有 POSIX socket 应用，支持 IPv4、IPv6 loopback、配置 IPv6 地址后的同链路 TCP/UDP，以及通过 IPv4 DPDK 链路互通的 IPv4-mapped 双栈连接。应用调用普通 `socket`、`connect`、`listen`、`accept`、`read/write`、`send/recv` 与事件接口；`ker-run` 加载 API 适配库并启动 DPDK Ethernet worker。握手、ACK、窗口、重传、拥塞控制、重组与关闭全部由原始 Linux 执行。
 
+原版 Linux 协议测试与 F-Stack 回归分开统计，当前执行范围和状态机测试缺口见 [Linux 原版协议测试](linux-protocol-tests.md)。
+
 ## 源码与架构
 
 完整内核使用 Linux stable **6.12.113**，提交 `7fdb7c1824a1f9979d648d7ae28ac446bcee9c6e`；用户态架构来自 LKL `d0f76a77e8c2ca68bd7d96190b8da09040eab072`。完整 pin 和受保护路径见 [`config/native-linux.json`](../config/native-linux.json)。它独立于现有 `third_party/linux` 的基础代码移植，避免将两个版本的内部结构混用。
